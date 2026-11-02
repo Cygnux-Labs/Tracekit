@@ -306,3 +306,5 @@
 {"tool": "Bash", "args": {"command": "podman volume prune -f"}, "expect": "ask", "note": "delete every unused Podman volume"}
 {"tool": "Bash", "args": {"command": "docker volume rm pgdata"}, "expect": "ask", "note": "delete a named Docker volume"}
 {"tool": "Bash", "args": {"command": "podman volume rm pgdata"}, "expect": "ask", "note": "delete a named Podman volume"}
+{"tool": "Bash", "args": {"command": "rm -rf .github/workflows/security-scan.yml .github/workflows/codeql.yml"}, "expect": "ask", "note": "delete security workflows"}
+{"tool": "Bash", "args": {"command": "git rm -f .github/workflows/deploy.yml"}, "expect": "ask", "note": "delete deployment workflow"}

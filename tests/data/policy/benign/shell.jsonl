@@ -243,3 +243,4 @@
 {"tool": "Bash", "args": {"command": "docker system df"}, "expect": "allow", "note": "Docker disk usage"}
 {"tool": "Bash", "args": {"command": "docker compose down"}, "expect": "allow", "note": "compose down without removing volumes"}
 {"tool": "Bash", "args": {"command": "docker image prune -af"}, "expect": "allow", "note": "pruning unused images, not volumes"}
+{"tool": "Bash", "args": {"command": "actionlint .github/workflows/ci.yml"}, "expect": "allow", "note": "lint a workflow"}

@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-47'
+version: '2026.10-v2-48'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -279,6 +279,14 @@ ask:
     reason: clearing shell history or system logs
     remedy: Have a person approve the held call, or leave shell history and system logs as they are.
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
+  - id: TK-A049
+    class: shell
+    field: effects
+    # Deletion targets are also casefolded; the lazy path prefix keeps the fallback matcher fast.
+    pattern: '^DELETE_TARGET:(?:[^\n]*?[/\\])?(?:\.github[/\\]workflows(?:[/\\]|$)|\.gitlab-ci\.yml$|\.circleci[/\\]config\.yml$|azure-pipelines\.yml$|jenkinsfile$)'
+    reason: deleting a CI workflow or pipeline
+    remedy: Have a person approve the held deletion, or leave the pipeline in place.
+    rationale: Removing a CI pipeline can disable checks; reading and writing workflows remain allowed.
   - id: TK-A029
     class: shell
     field: target
