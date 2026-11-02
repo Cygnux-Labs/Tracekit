@@ -6,7 +6,7 @@ import os
 import re
 import sys
 
-from . import __version__
+from . import __version__, agent_hooks, demo
 from .wiki import wiki_url
 
 NUDGE_WAIT_S = 5.0
@@ -136,8 +136,7 @@ def main(argv=None):
                    f"file, claude --bare may skip it; {wiki_url('docs/limits.md', 'dev-mode-vs-system-mode')})")
     p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly, which "
                    "stops every user's own Claude Code hooks on this machine (user, project, local and plugin ones)")
-    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
-                                       "antigravity", "crush"), default="claude",
+    p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
                    help="which coding agent's hooks to install (default: Claude Code)")
     p.add_argument("--harness", action="append", default=[], metavar="[NAME=]PATH",
                    help="system mode (0.3): the agent program whose processes may send events, e.g. /usr/local/bin/claude "
@@ -169,8 +168,7 @@ def main(argv=None):
     p.add_argument("--project", action="store_true")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
-    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
-                                       "antigravity", "crush"), default="claude")
+    p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -343,7 +341,7 @@ def main(argv=None):
                    help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
     p.add_argument("--why", action="store_true",
                    help="`tracekit why` on the signer: a 3-agent desk, a held email, its cause found and cited")
-    p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini", "opencode", "goose"],
+    p.add_argument("--agent", default="claude", choices=demo.AGENTS,
                    help="send the scripted run as this coding agent's own hook payloads (default: claude)")
 
     a = ap.parse_args(argv)
@@ -491,11 +489,9 @@ def _run(a):
             if settings and a.agent == "codex":
                 import pwd
 
-                from .agent_hooks import codex_trust_line
-                print(codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
+                print(agent_hooks.codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
             return 0
         if a.dev and a.v2 and a.agent != "claude":
-            from . import agent_hooks
             if not _signer_extra():
                 return 2
             try:
@@ -511,7 +507,6 @@ def _run(a):
                 print(agent_hooks.codex_trust_line())
             return 0
         if a.dev and a.agent != "claude":
-            from . import agent_hooks
             home = a.home or os.path.expanduser("~/.tracekit-signer")
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, None, fail_mode="closed" if a.fail_closed else None, signer=signer)
@@ -634,7 +629,6 @@ def _run(a):
         print("v2 system mode removed" + (f"; kept {' and user '.join(kept)} (--purge deletes them)" if kept else ""))
         return 0
     if a.cmd == "uninstall" and a.agent != "claude":
-        from . import agent_hooks
         agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # it says what it removed
         return 0
     if a.cmd == "uninstall":
@@ -797,7 +791,6 @@ def _run(a):
         from . import demo_server
         return demo_server.main(keep=a.keep)
     if a.cmd == "demo":
-        from . import demo
         return demo.main(real=a.real, keep=a.keep, agent=a.agent)
     return 2
 
