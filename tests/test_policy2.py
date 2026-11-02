@@ -697,6 +697,11 @@ class Speed(unittest.TestCase):
                   ("Bash", {"command": "psql -c 'SELECT 1' -c" + "x" * (n - 24)})]
         calls += [("mcp__db__run", {"rows": [{key: text}] * (n // 16)}) for key in ("sql", "query")
                   for text in ("/*", "-- ", "/* x")]
+        # #500 review: a `declare -x` read with a cluster repeat took the fallback engine past its 1 s on 64 KiB of x
+        # (it denied where RE2 allowed); and the base URL's name without its last letter, over and over
+        calls += [("Bash", {"command": "declare -" + "x" * n + ";echo ANTHROPIC_BASE_URL"}),
+                  ("Bash", {"command": "ANTHROPIC_BASE_UR" * (n // 17)}),
+                  ("Write", {"file_path": "a.env", "content": "ANTHROPIC_BASE_UR" * (n // 17)})]
         for tool, args in calls:
             with self.subTest(tool=tool, start=str(args)[:40]):
                 out = []

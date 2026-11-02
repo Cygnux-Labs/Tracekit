@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-49'
+version: '2026.10-v2-50'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -752,34 +752,29 @@ flag:
     # home config is crush.json, .crush.json, crushrc or .crushrc. The agy, goose and Droid paths are TK-F009's, and
     # a delete of a whole .agents folder (agy's hooks.json with it).
     # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
-    # worktree path is still flagged with a `..` among its parts after the worktree, and when it names only the
-    # worktree (`x/`, `x/.`, `x//`).
+    # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
+    # there that can make one (`$`, a backquote, `*`, `?`, `[`, `{`: `x/$D/`, `x/.{.,}/`, `x/.*/`), and when it names
+    # only the worktree (`x/`, `x/.`, `x//`).
     # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
     # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose|crush)|block[/\\]goose[/\\]config)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose|crush)|block[/\\]goose[/\\]config)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config
   - id: TK-F016
     class: fs
     tool: Write|Edit|MultiEdit
-    # Setting ANTHROPIC_BASE_URL, where the agent's model calls go, in what a file tool writes (its arguments as JSON,
-    # so a quote is \" and a newline \n): an assignment (`ANTHROPIC_BASE_URL=`, `export …=`, `os.environ['…'] =`,
-    # `${…:=}`), a JSON or YAML key holding a value (a settings file's env too; not `${…:-x}`), an `export`, a
-    # `declare -x`, `typeset -x`, Dockerfile `ENV`, `setx`, `read` or `printf -v`, fish's `set` with an option (not
-    # -e, -q), csh's `setenv`, Kubernetes' `name:`, a setenv, putenv, setdefault or SetEnvironmentVariable call, and
-    # PowerShell's Set-Item or New-Item Env:. A mention (a note, a comment, a read) is not one, nor is removing the
-    # variable (unset, env -u, a deleted line). TK-F017 reads the shell the same way
-    pattern: 'ANTHROPIC_BASE_URL(?:\\?["''])?\]?[ \t]*[:+]?=(?:[^=]|$)|ANTHROPIC_BASE_URL(?:\\?["''])?[ \t]*:[ \t]*(?:\\?["'']|[^\s,}\]\\#=+?0-9-])|(?:^|[^\w$]|\\[nt])(?:export|declare[ \t]+-[A-Za-z]*x[A-Za-z]*|typeset[ \t]+-[A-Za-z]*x[A-Za-z]*|ENV|setx|read|printf[ \t]+-v)(?:[ \t]+[-/][A-Za-z]+){0,8}[ \t]+(?:[A-Za-z_][A-Za-z0-9_]*(?:=[^\s;&|]*)?[ \t]+){0,8}ANTHROPIC_BASE_URL\b|(?:^|[^\w$]|\\[nt])set(?:[ \t]+(?:-[a-df-pr-zA-Z]+|--(?:export|global|universal))){1,4}[ \t]+ANTHROPIC_BASE_URL\b|(?:^|[^\w$]|\\[nt])setenv[ \t]+ANTHROPIC_BASE_URL\b|\bname(?:\\?["''])?[ \t]*:[ \t]*(?:\\?["''])?ANTHROPIC_BASE_URL\b|(?:putenv|setenv|setdefault|SetEnvironmentVariable|stubEnv)[ \t]*\([ \t]*\\?["'']ANTHROPIC_BASE_URL\b|(?:Set|New)-Item(?:[ \t]+-[A-Za-z]+){0,4}[ \t]+[Ee]nv:[\\/]{0,2}ANTHROPIC_BASE_URL\b'
+    # ANTHROPIC_BASE_URL (where the agent's model calls go) anywhere in a file tool's arguments. A mention is flagged
+    # with a setting: the ways to set or remove it are too many to list (an assignment, a settings key, os.Setenv,
+    # set_var, reg add, a value on the next line, …), and a flag only marks the call
+    pattern: 'ANTHROPIC_BASE_URL'
     label: harness_config
   - id: TK-F017
     class: shell
     field: line
-    # TK-F016's settings on each shell line, as typed and as the parser normalised it: an assignment prefix or
-    # statement (which the argv doesn't hold), `env … ANTHROPIC_BASE_URL=`, export, fish's set, csh's or launchctl's
-    # setenv, and the same text echoed, printed or heredoc'd into a file. A grep, a comment, `echo $…`, `unset` and
-    # `env -u` are not
-    pattern: 'ANTHROPIC_BASE_URL(?:\\?["''])?\]?[ \t]*[:+]?=(?:[^=]|$)|ANTHROPIC_BASE_URL(?:\\?["''])?[ \t]*:[ \t]*(?:\\?["'']|[^\s,}\]\\#=+?0-9-])|(?:^|[^\w$]|\\[nt])(?:export|declare[ \t]+-[A-Za-z]*x[A-Za-z]*|typeset[ \t]+-[A-Za-z]*x[A-Za-z]*|ENV|setx|read|printf[ \t]+-v)(?:[ \t]+[-/][A-Za-z]+){0,8}[ \t]+(?:[A-Za-z_][A-Za-z0-9_]*(?:=[^\s;&|]*)?[ \t]+){0,8}ANTHROPIC_BASE_URL\b|(?:^|[^\w$]|\\[nt])set(?:[ \t]+(?:-[a-df-pr-zA-Z]+|--(?:export|global|universal))){1,4}[ \t]+ANTHROPIC_BASE_URL\b|(?:^|[^\w$]|\\[nt])setenv[ \t]+ANTHROPIC_BASE_URL\b|\bname(?:\\?["''])?[ \t]*:[ \t]*(?:\\?["''])?ANTHROPIC_BASE_URL\b|(?:putenv|setenv|setdefault|SetEnvironmentVariable|stubEnv)[ \t]*\([ \t]*\\?["'']ANTHROPIC_BASE_URL\b|(?:Set|New)-Item(?:[ \t]+-[A-Za-z]+){0,4}[ \t]+[Ee]nv:[\\/]{0,2}ANTHROPIC_BASE_URL\b'
+    # TK-F016 on each shell line, as typed and as the parser normalised it, from every shell tool: the line holds what
+    # the argv doesn't (an assignment prefix, `ANTHROPIC_BASE_URL=x claude`, and the text a heredoc or echo writes)
+    pattern: 'ANTHROPIC_BASE_URL'
     label: harness_config
   - id: TK-F010
     class: shell
