@@ -575,6 +575,26 @@ ask:
     reason: reading a secret's value from a cloud secret store
     remedy: Have a person approve the held call, or ask the person for the one value the task needs.
     rationale: An agent that can read a live password or key can use it or send it anywhere; listing secrets, describing one and reading a parameter without decryption stay allowed.
+  - id: TK-A052
+    class: shell
+    # each command's argv: kubectl or oc get secret/secrets with an output format that prints values (-o yaml, -o json,
+    # -o jsonpath, -o go-template, -o template), kubectl/oc view-secret, and kubectl/oc create token. Up to eight options
+    # before get/create/view-secret and sixteen words between the resource and the output format. Listing secret names
+    # (kubectl get secrets -n default), describing sizes (kubectl describe secret db), cluster info and non-sensitive
+    # resources stay allowed
+    pattern: '^(?:kubectl|oc)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} get(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} secrets?\b(?: [^ ]+){0,16}? (?:-o[ =]?|--output[ =])(?:yaml|json|jsonpath\S*|go-template\S*|template\S*)\b|^(?:kubectl|oc)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} get(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:-o[ =]?|--output[ =])(?:yaml|json|jsonpath\S*|go-template\S*|template\S*)\b(?: [^ ]+){0,16}? secrets?\b|^(?:kubectl|oc)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} view-secret\b|^kubectl-view-secret\b|^(?:kubectl|oc)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} create(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} token\b'
+    reason: reading a Kubernetes secret's value or creating a token
+    remedy: Have a person approve the held call, or inspect secret metadata without printing values.
+    rationale: An agent that reads a live secret or creates a token can disclose cluster credentials; listing names and describing sizes stay allowed.
+  - id: TK-A053
+    class: shell
+    # each command's argv: vault kv get, vault read (which prints secrets from any engine), and vault token create. Up
+    # to eight options before the subcommand and between words. Listing secret engines (vault secrets list), policies,
+    # token lookups (vault token lookup), kv lists (vault kv list) and metadata reads (vault kv metadata get) stay allowed
+    pattern: '^vault(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} kv(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} get\b|^vault(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} read\b|^vault(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} token(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} create\b'
+    reason: reading a Vault secret or creating a token
+    remedy: Have a person approve the held call, or inspect Vault status or policy metadata rather than reading secret values.
+    rationale: Vault secrets and newly issued tokens provide access to protected credentials; listing engines, policies and token lookups stay allowed.
   - id: TK-A036
     class: mcp
     # TK-A035's commands as the cli_command, command or cmd argument of an MCP tool (the AWS API MCP server's

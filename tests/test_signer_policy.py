@@ -2003,6 +2003,70 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})
         self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
+    def test_reading_kubernetes_and_vault_secrets_asks_in_every_pack(self):
+        """TK-A052 & TK-A053: reading Kubernetes secret values or creating service account tokens (TK-A052) and
+        reading Vault secrets or issuing tokens (TK-A053) are held for a person. Listing secret names, describing
+        sizes, and listing engines or policies stay allowed."""
+        held_k8s = [
+            "kubectl get secrets -A -o yaml > /tmp/all_k8s_secrets.yaml",
+            'kubectl get secret production-database-secret -n prod -o jsonpath="{.data.password}" | base64 -d',
+            "kubectl get secret db -o json",
+            "kubectl get secrets -o=yaml",
+            "kubectl get -o yaml secret db",
+            "kubectl --context prod get secret db -o yaml",
+            "oc get secret db -o yaml",
+            "oc get secrets -A -o json",
+            "kubectl view-secret db",
+            "oc view-secret db",
+            "kubectl create token deployer",
+            "oc create token deployer -n prod",
+            "sudo kubectl get secrets -o yaml",
+        ]
+        held_vault = [
+            "vault kv get -format=json secret/production/stripe_api_key",
+            "vault kv get secret/app",
+            "vault read secret/foo",
+            "vault read -format=json aws/creds/deploy",
+            "vault token create -policy=root -ttl=720h",
+            "vault token create",
+            "vault -address=https://vault:8200 kv get secret/app",
+            "sudo vault kv get secret/app",
+        ]
+        routine = [
+            "kubectl get secrets -n default",
+            "kubectl get namespaces",
+            "kubectl get pods -n kube-system",
+            "kubectl describe serviceaccount deployer -n prod",
+            "kubectl auth can-i create deployments --as=developer",
+            "kubectl describe secret db -n prod",
+            "kubectl cluster-info",
+            "kubectl get secret db -o wide",
+            "kubectl get secret db -o name",
+            "vault secrets list",
+            "vault policy list",
+            "vault token lookup",
+            "vault kv list secret/",
+            "vault kv metadata get secret/app",
+            "vault status",
+            "echo kubectl get secrets -o yaml",
+            "echo vault kv get secret/app",
+        ]
+        for pack, engine, e in self.every_pack():
+            for cmd in held_k8s:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn("TK-A052", d["rule_ids"], (cmd, d))
+                    self.assertIn(d["verdict"], ("ask", "deny"), (cmd, d))
+            for cmd in held_vault:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn("TK-A053", d["rule_ids"], (cmd, d))
+                    self.assertIn(d["verdict"], ("ask", "deny"), (cmd, d))
+            for cmd in routine:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertFalse({"TK-A052", "TK-A053"} & set(d["rule_ids"]), (cmd, d))
+
     def test_reading_a_secrets_value_from_a_cloud_cli_asks_in_every_pack(self):
         held = ["aws secretsmanager get-secret-value --secret-id prod/db",
                 "aws --profile prod --region us-east-1 secretsmanager batch-get-secret-value --secret-id-list a b",
