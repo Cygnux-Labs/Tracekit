@@ -254,6 +254,9 @@ observed inputs, or that the records don't say.
 the outside world. A shield marks a restricted place, a jet a call out to a host, and a click on a place lists who went
 there and how we know (signed, observed by a sensor, or unverified). More: [Event Horizon](horizon.md).
 
+Egress observer records appear as network effects, including totals with no call link. Open their records for the
+byte counts, connection count and activity interval. A total does not prove which call caused the traffic.
+
 ### GRAPH: click a node
 
 ![GRAPH with the planner's model call clicked: NODE shows its model, time, tokens, what it saw and what it produced](viewer/1.5/graph-node.png)
@@ -273,6 +276,12 @@ policy decision and a **WHY DID THIS HAPPEN?** button; for an input or a message
 and **Led to** link the neighbours; **Record** gives its time, hash, previous hash and the signed Tracekit record it
 cites. Click the node again, or **CLEAR HIGHLIGHT**, to see the whole graph. The checkboxes add inferred links and ruled-out
 tests.
+
+Egress totals get a dashed cyan link only when the observer named their run by its token and their full activity
+interval fits one completed call in that run, with no other eligible call overlapping that interval. Denied calls and
+holds without consumed approval are excluded. The link and legend say **time/run match: not proof of causation**, and
+the tape's Happened column reads TIME MATCH. Unmatched totals remain on the tape (RUN TOTAL) and in HORIZON. Kernel
+effects keep their existing analysis and links.
 
 ### A signed run's graph
 

@@ -35,8 +35,9 @@ redirection's target, `tee`'s files: the move **wrote** there), then a path that
 keywords and builtins, and its verb (`git checkout -b feature/x` is **git checkout**), on this machine, and its rows
 show the command.
 
-Each mark is a call, or a file or network effect a kernel sensor saw: `●` read, ran or reached; `■` wrote, or a person
-approved it; `✕` blocked by policy; `◯` held for a person; `◆` flagged. A **shield** marks a restricted place: a `TK-F`
+Each mark is a call, a file or network effect a kernel sensor saw, or an egress observer's network total:
+`●` read, ran or reached; `■` wrote, or a person approved it; `✕` blocked by policy; `◯` held for a person;
+`◆` flagged. A **shield** marks a restricted place: a `TK-F`
 or `TK-D` rule about secrets, credentials, harness configuration or Tracekit's own files matched a call there. A flare
 on the shield means an agent was stopped there (blocked or held). A **jet**, a dashed line out to the outside world,
 marks each call to a host there.
@@ -55,7 +56,7 @@ Each move carries one grade:
 | Grade | Means |
 |---|---|
 | **SIGNED** | the signer's record says so: a call of a run the viewer verified |
-| **OBSERVED** | a sensor outside the agent saw it: an effect a kernel sensor recorded ([Tetragon](integrations/tetragon.md#checking-effects-against-calls)), in a run the viewer verified |
+| **OBSERVED** | a sensor outside the agent saw it: a kernel effect ([Tetragon](integrations/tetragon.md#checking-effects-against-calls)) or an egress observer's network total, in a run the viewer verified |
 | **UNVERIFIED** | its run did not verify, or a why log wrote it (the agent's own record, which nothing signs) |
 
 The grades are the viewer's check, operator-side: the run's bundle, checked with `tracekit verify`, is the evidence.
@@ -116,7 +117,8 @@ placed that way.
   them restricted places and stops first, then the busiest, and leaves out each that would cover one already drawn; a
   long path's callout names its last two parts, and hovering a place gives its whole path. A move's number that would cover another's is left out
   ([limits](limits.md#investigation-tracekit-why)).
-- It shows the network effects a kernel sensor saw, not the egress observer's records
+- Egress totals show their host, byte counts, connection count and activity interval. They do not prove which call
+  caused the traffic. A zero connection count can describe traffic on an existing connection or a failed attempt
   ([limits](limits.md#investigation-tracekit-why)).
 - A why log time it can't read is drawn as the oldest ([limits](limits.md#investigation-tracekit-why)).
 - Its grades are operator-side, not evidence ([limits](limits.md#viewer)).
