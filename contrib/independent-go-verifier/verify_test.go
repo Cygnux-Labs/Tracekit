@@ -655,6 +655,7 @@ func TestFailuresNameTheReferenceCheck(t *testing.T) {
 		"negative/json-record-too-deep.tkb":    "bundle structure",
 		"negative/run-second-run.tkb":          "bundle structure",
 		"negative/manifest-wrong-hash.tkb":     "manifest",
+		"negative/extra-trust-file.tkb":        "manifest",
 		"negative/checkpoint-body-edited.tkb":  "checkpoint",
 		"negative/witness-none.tkb":            "witness quorum",
 		"negative/keys-dropped.tkb":            "keys",

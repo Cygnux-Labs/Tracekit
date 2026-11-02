@@ -195,6 +195,11 @@ _RULE = re.compile(r"TK-[A-Z][0-9]{3}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _MODEL = re.compile(r"[A-Za-z0-9._:/@+-]{1,128}")
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
+# the files a bundle may hold besides its manifest (format-v2.md §9): no code, no trust config; a misnamed run part or
+# policy snapshot fails a line of its own (run parts, policy snapshot)
+_FILES = re.compile(r"runs/[0-9a-f]{32}(\.part-[0-9]+)?\.jsonl|keys/records\.jsonl|proofs/records\.json"
+                    r"|checkpoints/(registry-)?[0-9]+\.note|rekor/[0-9]+\.json|tsa/[0-9]+\.tsr|policies/.+"
+                    r"|registry/(run-set\.json|records\.jsonl)")
 _VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
 # control characters, and the bidirectional and zero-width format characters that would reorder or hide report text
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
@@ -521,15 +526,22 @@ def _ts(ts):
     return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
-def _manifest_detail(listed, hashes, bad):
-    """The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how."""
+def _manifest_detail(listed, hashes, bad, other):
+    """The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how, and
+    the files no bundle holds (the first 5)."""
     if not isinstance(listed, dict):
         return "the manifest lists no files"
-    if not bad:
+    if not (bad or other):
         return "every file is listed with its SHA-256 and nothing else is in the bundle"
-    how = [f"{n} ({'changed' if n in listed and n in hashes else 'missing' if n in listed else 'not listed'})"
-           for n in bad[:5]]
-    return "files differ from the manifest: " + ", ".join(how) + (f" and {len(bad) - 5} more" if len(bad) > 5 else "")
+    more = lambda names: f" and {len(names) - 5} more" if len(names) > 5 else ""
+    out = []
+    if bad:
+        out.append("files differ from the manifest: " + ", ".join(
+            f"{n} ({'changed' if n in listed and n in hashes else 'missing' if n in listed else 'not listed'})"
+            for n in bad[:5]) + more(bad))
+    if other:
+        out.append("files no bundle holds: " + ", ".join(other[:5]) + more(other))
+    return "; ".join(out)
 
 
 def _found(problems, passed, scope):
@@ -542,7 +554,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     listed, hashes = manifest.get("files"), {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
     bad = sorted(n for n in set(listed) | set(hashes) if n not in listed or n not in hashes or listed[n] != hashes[n]) \
         if isinstance(listed, dict) else []
-    rep.check("manifest", isinstance(listed, dict) and not bad, _manifest_detail(listed, hashes, bad))
+    other = sorted(n for n in hashes if not _FILES.fullmatch(n))
+    rep.check("manifest", isinstance(listed, dict) and not (bad or other), _manifest_detail(listed, hashes, bad, other))
 
     # checkpoint: the only thing the records' trust hangs on
     proofs = loads_strict(files["proofs/records.json"])

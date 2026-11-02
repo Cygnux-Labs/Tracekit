@@ -89,13 +89,23 @@ export class Report {
 type J = any;
 const isObj = (v: unknown): v is Record<string, J> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how. */
-function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad: string[]): string {
+/** The files a bundle may hold besides its manifest (format-v2.md §9): no code, no trust config; a misnamed run part or
+ * policy snapshot fails a line of its own (run parts, policy snapshot). */
+const FILES = new RegExp("^(runs/[0-9a-f]{32}(\\.part-[0-9]+)?\\.jsonl|keys/records\\.jsonl|proofs/records\\.json"
+  + "|checkpoints/(registry-)?[0-9]+\\.note|rekor/[0-9]+\\.json|tsa/[0-9]+\\.tsr|policies/.+"
+  + "|registry/(run-set\\.json|records\\.jsonl))$");
+
+/** The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how, and the
+ * files no bundle holds (the first 5). */
+function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad: string[], other: string[]): string {
   if (!isObj(listed)) return "the manifest lists no files";
-  if (bad.length === 0) return "every file is listed with its SHA-256 and nothing else is in the bundle";
-  const how = bad.slice(0, 5).map((n) => `${n} (${Object.hasOwn(listed, n) && hashes.has(n) ? "changed"
-    : Object.hasOwn(listed, n) ? "missing" : "not listed"})`);
-  return "files differ from the manifest: " + how.join(", ") + (bad.length > 5 ? ` and ${bad.length - 5} more` : "");
+  if (bad.length === 0 && other.length === 0) return "every file is listed with its SHA-256 and nothing else is in the bundle";
+  const more = (names: string[]) => names.length > 5 ? ` and ${names.length - 5} more` : "", out: string[] = [];
+  if (bad.length)
+    out.push("files differ from the manifest: " + bad.slice(0, 5).map((n) => `${n} (${Object.hasOwn(listed, n)
+      && hashes.has(n) ? "changed" : Object.hasOwn(listed, n) ? "missing" : "not listed"})`).join(", ") + more(bad));
+  if (other.length) out.push("files no bundle holds: " + other.slice(0, 5).join(", ") + more(other));
+  return out.join("; ");
 }
 /** A check's detail: what it found when it passed, else how many problems in what (its lines say which), so a failed
  * line never reads as a pass. */
@@ -324,7 +334,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   for (const [n, b] of files) hashes.set(n, await sha256hex(b));
   const bad = isObj(listed) ? [...new Set([...Object.keys(listed), ...hashes.keys()])]
     .filter((n) => !(Object.hasOwn(listed, n) && hashes.get(n) === listed[n])).sort() : [];
-  rep.check("manifest", isObj(listed) && bad.length === 0, manifestDetail(listed, hashes, bad));
+  const other = [...hashes.keys()].filter((n) => !FILES.test(n)).sort();
+  rep.check("manifest", isObj(listed) && bad.length === 0 && other.length === 0, manifestDetail(listed, hashes, bad, other));
 
   // the checkpoint: the only thing the records' trust hangs on
   const proofs = json("proofs/records.json");

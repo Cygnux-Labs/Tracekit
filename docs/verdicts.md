@@ -151,7 +151,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 |---|---|---|
 | `trust config` | — | the trust config can't be read or is malformed, and the line says how in plain words: `UNVERIFIABLE (the trust file can't be used)`, exit 2. A log key pinned under `witnesses` is no trust config error: it fails `checkpoint` (exit 1). In the browser page without one: a warning, and the bundle is never VERIFIED |
 | `bundle readable` | — | not a zip, unsafe entries, no manifest, or too new (exit 2): then it lists the commands that verify the bundle ([above](#a-bundle-that-needs-a-newer-verifier)) |
-| `manifest` | the files are exactly those listed, with those hashes | a file was added, removed or changed after export |
+| `manifest` | the files are exactly those listed, with those hashes | a file was added, removed or changed after export, or the bundle holds a file no bundle holds (`files no bundle holds: ...`: a name outside [format-v2 §9](format-v2.md#9-bundle-layout), such as a trust config or a script) |
 | `checkpoint` | the note is signed by the pinned log key named after its origin (and by its pinned hybrid SLH-DSA key, if any), and is of the proofs' tree size | wrong key, wrong origin, edited note, a pinned hybrid line missing or bad |
 | `witness quorum` | at least `witnesses_required` pinned cosignatures (any class) | too few |
 | `rekor anchor` | the checkpoint is in Rekor, timestamped by a pinned TSA. Only when the trust config pins `rekor` and the bundle has an anchor | a bad anchor fails the bundle |
