@@ -270,7 +270,11 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 		return stop()
 	}
 	rep.ExitCode, rep.Integrity = 1, "VERIFICATION FAILED"
-	listed, err := object(manifest["files"])
+	fileList, ok := manifest["files"]
+	if !ok {
+		fileList = map[string]any{} // no list lists no file: every file is unlisted, as in the reference
+	}
+	listed, err := object(fileList)
 	if err != nil {
 		fail("bundle structure", "invalid manifest file list")
 	} else {

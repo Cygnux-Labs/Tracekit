@@ -14,8 +14,9 @@ Two profiles: `default` (server.yaml, what E17 measures) and `strict` (strict.ya
 (c) eval/e21_benign_sessions.jsonl: calls of ordinary developer sessions, written by the pack's builder (so tuned),
     for false positives only; E17's benign calls are scored the same way on both profiles.
 (d) Latency per decision (the fastest of five per call), p50/p99/max, on both engines, for dev.yaml and both
-    profiles, over E17's corpus, the held-out pool and the sessions (not the blind pools); and p99_ref, the p99 of each decision over a fixed reference
-    workload timed right after each try (`reference`: no Tracekit code), which a busy or throttled machine slows alike.
+    profiles, over E17's corpus, the held-out pool and the sessions (not the blind pools); and p99_ref, the p99 of
+    each decision over a fixed reference workload timed right after each try (`reference`: no Tracekit code), which a
+    busy or throttled machine slows alike.
 (e) No-regression gates against the first run, recorded in eval/results/e21_policy_robustness.json and kept by later
     runs: per profile, held-out recall doesn't drop and the false-positive rate of each benign set (held-out, sessions,
     E17, blind) doesn't rise; p99_ref stays within 25% of the first run's on the same machine (re-measured once before
