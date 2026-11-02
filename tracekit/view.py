@@ -697,7 +697,7 @@ class Translator(observe.Translator):
         if t == "effect.observed" and d.get("kind") == "net" and not d.get("sensor"):
             target = f"{d['host']}:{d['port']}"
             run = {"token": "run named by its token", "identity": "run: the caller's latest open run"}
-            by = {"call": "a call of the run reached this host", "explains": "the policy's explains list covers it"}
+            by = {"call": "a call of the run was allowed to this host", "explains": "the policy's explains list covers it"}
             return alert("info", f"EFFECT · net {target}",
                          f"{d['bytes_out']} bytes out, {d['bytes_in']} bytes in, {d['connections']} connection(s)"
                          + f" · egress observer {d['observer']} · {d['first_ts']} to {d['last_ts']}"
