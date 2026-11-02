@@ -1888,16 +1888,86 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, command=command[:80]):
                     self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
 
-    def test_harness_base_url_keeps_its_existing_raw_subjects(self):
-        calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),
-                 ("Write", {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"}),
-                 ("Edit", {"file_path": "config.env", "old_string": "ANTHROPIC_BASE_URL", "new_string": "x"}),
-                 ("MultiEdit", {"file_path": "config.env", "edits": [{"old_string": "ANTHROPIC_BASE_URL",
-                                                                     "new_string": "x"}]}))
+    # #500: setting ANTHROPIC_BASE_URL (where the agent's model calls go) is flagged, from the shell (TK-F017, each
+    # line: an assignment prefix the argv never held, export, env, fish, csh, and the text written into a file) and
+    # in what a file tool writes (TK-F016: an assignment or a key holding a value); a mention is not
+    BASE_URL_SET_SHELL = (
+        "ANTHROPIC_BASE_URL=http://x claude -p hi", "ANTHROPIC_BASE_URL=http://x", "ANTHROPIC_BASE_URL='http://x' claude",
+        "ANTHROPIC_BASE_URL+=/v1 claude", "cd /tmp && ANTHROPIC_BASE_URL=http://x claude", "export ANTHROPIC_BASE_URL=http://x",
+        "export ANTHROPIC_BASE_URL", "export FOO=1 ANTHROPIC_BASE_URL", "declare -x ANTHROPIC_BASE_URL=http://x",
+        "declare -gx ANTHROPIC_BASE_URL", "typeset -x ANTHROPIC_BASE_URL", "env ANTHROPIC_BASE_URL=http://x claude",
+        "env -i PATH=/bin ANTHROPIC_BASE_URL=http://x claude", "env 'ANTHROPIC_BASE_URL=http://x' claude",
+        "bash -c 'ANTHROPIC_BASE_URL=http://x claude'", "fish -c 'set -x ANTHROPIC_BASE_URL http://x'",
+        "fish -c 'set -gx ANTHROPIC_BASE_URL http://x'", "fish -c 'set --export ANTHROPIC_BASE_URL http://x'",
+        "csh -c 'setenv ANTHROPIC_BASE_URL http://x'", "launchctl setenv ANTHROPIC_BASE_URL http://x",
+        ": ${ANTHROPIC_BASE_URL:=http://x}", "echo 'export ANTHROPIC_BASE_URL=http://x' >> ~/.zshrc",
+        "printf 'ANTHROPIC_BASE_URL=http://x\\n' >> .envrc", "cat >> ~/.bashrc <<'EOF'\nexport ANTHROPIC_BASE_URL=http://x\nEOF",
+        "echo '{\"env\": {\"ANTHROPIC_BASE_URL\": \"http://x\"}}' > .claude/settings.local.json",
+        "python3 -c 'import os; os.environ[\"ANTHROPIC_BASE_URL\"] = \"http://x\"; os.execvp(\"claude\", [\"claude\"])'",
+        "docker run -e ANTHROPIC_BASE_URL=http://x img", "pwsh -c '$env:ANTHROPIC_BASE_URL = \"http://x\"'",
+        "setx ANTHROPIC_BASE_URL http://x", "setx /M ANTHROPIC_BASE_URL http://x", "read -r ANTHROPIC_BASE_URL < url.txt",
+        "printf -v ANTHROPIC_BASE_URL %s http://x", "python3 -c 'import os; os.putenv(\"ANTHROPIC_BASE_URL\", \"x\")'",
+        "pwsh -c 'Set-Item -Path Env:ANTHROPIC_BASE_URL -Value http://x'",
+        "pwsh -c '[Environment]::SetEnvironmentVariable(\"ANTHROPIC_BASE_URL\", \"http://x\", \"User\")'")
+    BASE_URL_SET_FILES = (
+        ("Write", {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"}),
+        ("Write", {"file_path": ".envrc", "content": "x=1\nexport ANTHROPIC_BASE_URL=http://x\n"}),
+        ("Write", {"file_path": ".envrc", "content": "#!/bin/sh\nexport ANTHROPIC_BASE_URL\n"}),
+        ("Write", {"file_path": ".claude/settings.json", "content": '{"env": {"ANTHROPIC_BASE_URL": "http://x"}}'}),
+        ("Write", {"file_path": "s.json", "content": '{"env":{"ANTHROPIC_BASE_URL":"http://x"}}'}),
+        ("Write", {"file_path": "c.yaml", "content": "env:\n  ANTHROPIC_BASE_URL: http://x\n"}),
+        ("Write", {"file_path": "c.yaml", "content": "env:\n  'ANTHROPIC_BASE_URL': \"http://x\"\n"}),
+        ("Write", {"file_path": "d.yaml", "content": "env:\n  - name: ANTHROPIC_BASE_URL\n    value: http://x\n"}),
+        ("Write", {"file_path": "c.toml", "content": "[env]\nANTHROPIC_BASE_URL = \"http://x\"\n"}),
+        ("Write", {"file_path": "Dockerfile", "content": "FROM x\nENV ANTHROPIC_BASE_URL http://x\n"}),
+        ("Write", {"file_path": "a.py", "content": "import os\nos.environ['ANTHROPIC_BASE_URL'] = 'http://x'\n"}),
+        ("Write", {"file_path": "a.py", "content": "env = {\"ANTHROPIC_BASE_URL\": url}\n"}),
+        ("Write", {"file_path": "a.js", "content": "process.env.ANTHROPIC_BASE_URL = 'http://x';\n"}),
+        ("Write", {"file_path": "config.fish", "content": "set -gx ANTHROPIC_BASE_URL http://x\n"}),
+        ("Write", {"file_path": ".cshrc", "content": "setenv ANTHROPIC_BASE_URL http://x\n"}),
+        ("Write", {"file_path": "t.py", "content": "def test(monkeypatch):\n    monkeypatch.setenv(\"ANTHROPIC_BASE_URL\", u)\n"}),
+        ("Write", {"file_path": "a.py", "content": "os.environ.setdefault('ANTHROPIC_BASE_URL', 'http://x')\n"}),
+        ("Edit", {"file_path": "config.env", "old_string": "a", "new_string": "ANTHROPIC_BASE_URL=http://x"}),
+        ("MultiEdit", {"file_path": "s.json", "edits": [{"old_string": "a", "new_string": "b"},
+                                                       {"old_string": "c", "new_string": '"ANTHROPIC_BASE_URL": "x"'}]}))
+    BASE_URL_MENTIONS = (
+        ("Bash", {"command": "grep -rn ANTHROPIC_BASE_URL ."}), ("Bash", {"command": "rg ANTHROPIC_BASE_URL tracekit/"}),
+        ("Bash", {"command": 'grep -n "Intervention\\|ANTHROPIC_BASE_URL\\|ollama" notes.md'}),
+        ("Bash", {"command": "echo $ANTHROPIC_BASE_URL"}), ("Bash", {"command": 'echo "${ANTHROPIC_BASE_URL:-unset}"'}),
+        ("Bash", {"command": 'curl -s "${ANTHROPIC_BASE_URL:-https://api.anthropic.com}/v1/models"'}),
+        ("Bash", {"command": "printenv ANTHROPIC_BASE_URL"}), ("Bash", {"command": "unset ANTHROPIC_BASE_URL"}),
+        ("Bash", {"command": "ls # check ANTHROPIC_BASE_URL first"}),
+        ("Bash", {"command": "git commit -m 'TK-F016 reads ANTHROPIC_BASE_URL settings, not mentions'"}),
+        ("Bash", {"command": "cat > notes.md <<'EOF'\nTK-F017 flags setting `ANTHROPIC_BASE_URL`, not a mention.\nEOF"}),
+        ("Bash", {"command": "python3 -c 'import os; print(os.environ.get(\"ANTHROPIC_BASE_URL\"))'"}),
+        ("Write", {"file_path": "notes.md", "content": "Keep `ANTHROPIC_BASE_URL`, which isn't a path, where it is."}),
+        ("Write", {"file_path": "a.py", "content": "# reads ANTHROPIC_BASE_URL from the environment\n"}),
+        ("Write", {"file_path": "a.py", "content": "cur = os.environ.get(\"ANTHROPIC_BASE_URL\", \"\")\n"}),
+        ("Write", {"file_path": "a.py", "content": "url = os.environ[\"ANTHROPIC_BASE_URL\"]\nprint(url)\n"}),
+        ("Write", {"file_path": "a.js", "content": "const u = process.env.ANTHROPIC_BASE_URL;\n"}),
+        ("Write", {"file_path": "p.py", "content": "print('=== ANTHROPIC_BASE_URL ===')\nif os.environ['ANTHROPIC_BASE_URL'] == u: pass\n"}),
+        ("Write", {"file_path": "a.sh", "content": "curl \"${ANTHROPIC_BASE_URL:-https://api.anthropic.com}/v1\"\n"}),
+        ("Edit", {"file_path": "notes.md", "old_string": "x", "new_string": "see ANTHROPIC_BASE_URL in settings"}),
+        ("MultiEdit", {"file_path": "notes.md", "edits": [{"old_string": "x", "new_string": "ANTHROPIC_BASE_URL"}]}))
+
+    def test_setting_the_model_base_url_is_flagged_in_every_pack(self):
         for pack, engine, e in self.every_pack():
-            for tool, args in calls:
-                with self.subTest(pack=pack, engine=engine, tool=tool):
+            for command in self.BASE_URL_SET_SHELL:
+                for tool in ("Bash", "run_shell_command"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, command=command):
+                        self.assertIn("TK-F017", e.decide(tool, {"command": command})["rule_ids"])
+            for tool, args in self.BASE_URL_SET_FILES:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertIn("TK-F016", e.decide(tool, args)["rule_ids"])
+
+    def test_mentioning_the_model_base_url_is_not_flagged_in_every_pack(self):
+        for pack, engine, e in self.every_pack():
+            for tool, args in self.BASE_URL_MENTIONS:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F016", "TK-F017"} & set(e.decide(tool, args)["rule_ids"]))
+        e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex")
+        self.assertEqual({r["id"]: r.get("label") for r in e.policy["flag"] if r["id"] in ("TK-F016", "TK-F017")},
+                         {"TK-F016": "harness_config", "TK-F017": "harness_config"})
 
     def test_other_harnesses_shell_tools_and_the_server_pack(self):
         for tool in ("run_shell_command", "shell", "local_shell", "run_terminal_cmd", "container.exec"):
