@@ -1918,7 +1918,7 @@ class CodingPack(unittest.TestCase):
                     "cp x .claude/worktrees/$X/settings.json", "cp x .claude/worktrees/x/$D/settings.json",
                     "cp x .claude/worktrees/x/${D}/settings.json", "cp x .claude/worktrees/x/$(printf ../..)/settings.json",
                     "cp x .claude/worktrees/x/`printf ../..`/settings.json",
-                    "cp x .claude/worktrees/x/.{.,}/.{.,}/settings.json", "cp x .claude/worktrees/x/{..,a}/../settings.json",
+                    "tee .claude/worktrees/x/.{.,}/.{.,}/settings.json", "cp x .claude/worktrees/x/{..,a}/../settings.json",
                     "cp x .claude/worktrees/x/.*/.*/settings.json", "cp x .claude/worktrees/x/.?/.?/settings.json",
                     "cp x .claude/worktrees/x/.[.]/.[.]/settings.json", "cp x .claude/worktrees/x/.$E./.$E./settings.json",
                     r"cp x '.claude\worktrees\x\$D\settings.json'")
