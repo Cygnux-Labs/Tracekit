@@ -14,10 +14,11 @@ checkpoint, in the window; a run that fails is listed, never counted, and the co
 viewer names it: its tool and the field the tool is known by, from the dev signer's content vault when that signer is
 running (view.dev_content_source: redacted arguments, and only those that open their record's commitment; each read
 is a signed content.accessed record), else that its arguments aren't shown. It never starts a signer. An operator summary, not
-evidence: its last lines say how to hand evidence over.
+evidence: its last lines say how to hand evidence over. --share prints its counts alone, for a person to post as a field
+report (docs/field-reports.md), and reads no content.
 
     tracekit report [--dev | --config signer.yaml | --data-dir DIR] [--log-vkey VKEY] [--since 7d|24h|DATE]
-                    [--until DATE] [--tenant T] [--json]
+                    [--until DATE] [--tenant T] [--json | --share]
 """
 import argparse
 import bisect
@@ -31,7 +32,7 @@ import sys
 import tempfile
 import time
 
-from . import view
+from . import __version__, view
 from .format import canon, checkpoint
 from .merkle import leaf_hash
 from .merkle.tiles import MemoryTileStore, Tree
@@ -52,6 +53,7 @@ TOP_GAPS = 3   # runs named under the gaps
 EDITED = "was edited in the store (its hash doesn't match its event): listed whatever its tenant and times"
 STORE_FAILED = "the store doesn't match the signer's checkpoint: listed whatever its times"
 NO_ARGS = "arguments not shown (the record holds only their salted hash)"
+SHARE_NOTE = "read it before you post: agent names and rule ids are shown as your agents and your policy name them"
 
 
 def when(value, now=None):
@@ -317,6 +319,11 @@ def _wait(s):
     return f"{s // 3600}h {s % 3600 // 60}m" if s >= 3600 else f"{s // 60}m {s % 60}s" if s >= 60 else f"{s}s"
 
 
+def _days(seconds):
+    n = round(seconds / 86400, 1)
+    return f"{n:g} day{'s' * (n != 1)}"
+
+
 def _counts(counter):
     return ", ".join(f"{k} {n:,}" for k, n in counter.items())
 
@@ -399,6 +406,25 @@ def text(rep, config=None, data_dir=None):
     return "\n".join(_escaped(line) for line in out)
 
 
+def share(rep):
+    """The report's counts alone, for a person to post as a field report (docs/field-reports.md): of the window, its
+    length; no source, trust, tenant, run id, identity, time, call or rule description."""
+    w, runs, calls, holds = rep["window"], rep["runs"], rep["calls"], rep["holds"]
+    ok = sum(x["verdict"] == "verified" for x in runs)
+    why = {True: "", False: " (also matched, not why)", None: " (not placed)"}
+    days = _days(when(w["until"]) - when(w["since"]))
+    out = [f"Tracekit {__version__} field report (tracekit report --share): {days}",
+           f"Integrity: the store {rep['store']['verdict']}, {ok} of {len(runs)} runs verify",
+           f"Runs that verify, by agent: {_counts(rep['by_agent']) or 'none'}",
+           f"Tool calls: {calls['total']:,}   " + _counts({k: calls[k] for k in DECISIONS}),
+           f"Holds: {holds['total']:,}   {_counts(holds['outcomes'])}".rstrip(),
+           "Denied and flagged calls, by rule (one call can match several rules):" + " none" * (not rep["rules"])]
+    # the denies, then the flags: most first, and the rules that only also matched after the others
+    out += [f"  {g['decision']} {g['rule']} {g['count']:,}{why[g['why']]}"
+            for g in sorted(rep["rules"], key=lambda g: (g["decision"], g["why"] is False))]
+    return "\n".join(_escaped(line) for line in out)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit report", description="what the agents did in a window, on one page, "
                                  "from the v2 signer's store (read as tracekit view reads it, while the signer runs): "
@@ -414,18 +440,24 @@ def main(argv=None):
                                                              "(default: 7d)")
     ap.add_argument("--until", type=when, help="an ISO date or time, not included (default: now)")
     ap.add_argument("--tenant", help="this tenant's runs only (default: every tenant's)")
-    ap.add_argument("--json", action="store_true", help="print the report as one JSON object")
+    o = ap.add_mutually_exclusive_group()
+    o.add_argument("--json", action="store_true", help="print the report as one JSON object")
+    o.add_argument("--share", action="store_true", help="print its counts alone, to post as a field report: no run id, "
+                                                       "path, identity, time or call")
     a = ap.parse_args(argv)
     try:
         cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
         dev, notes = not (a.config or a.data_dir), []
         rep = build(cfg, a.since, time.time() if a.until is None else a.until, a.tenant, a.log_vkey,
-                    view.dev_content_source("tracekit report", _running, notes.append) if dev else None,
+                    # --share shows no call, so it reads none: each read is a signed content.accessed record
+                    view.dev_content_source("tracekit report", _running, notes.append) if dev and not a.share else None,
                     lambda s: print(f"tracekit report: {s}", file=sys.stderr, flush=True), notes)
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
         print(f"tracekit report: {e}", file=sys.stderr)
         return 1
-    print(json.dumps(rep, indent=2) if a.json else text(rep, a.config, a.data_dir))
+    if a.share:
+        print(f"tracekit report: {SHARE_NOTE}", file=sys.stderr)
+    print(json.dumps(rep, indent=2) if a.json else share(rep) if a.share else text(rep, a.config, a.data_dir))
     # as tracekit verify: 1 when the store or a run fails, or a run couldn't be checked
     return int(rep["store"]["verdict"] != "verified" or any(x["verdict"] in ("failed", "error") for x in rep["runs"]))
 

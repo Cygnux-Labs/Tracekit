@@ -6,16 +6,19 @@ record.
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from typing import Any
 
+from . import __version__
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
-from .report import call_text, when
+from .report import DECISIONS, _counts, _days, call_text, when
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
 from .view import ENGINE_RULES
 
@@ -198,6 +201,23 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
     return "\n".join(_escaped(line) for line in lines) + "\n"
 
 
+def share(report: dict) -> str:
+    """The report's counts alone, for a person to post as a field report (docs/field-reports.md), as tracekit report
+    --share gives them: of --since, the window's length; no session, path, policy file, time, call or rule
+    description."""
+    n, s = report["counts"], report["sessions"]
+    by_rule = collections.Counter((c["verdict"], rid) for c in report["calls"] for rid in c["rule_ids"])
+    window = _days(time.time() - when(report["since"])) if report["since"] else "every transcript"
+    lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
+             f"{report['disclaimer']}: {s:,} Claude Code session{'s' * (s != 1)}",
+             f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
+             "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule)]
+    # the denies, then the holds and the flags, most first
+    lines += [f"  {v} {rid} {k:,}" for (v, rid), k in sorted(by_rule.items(),
+                                                             key=lambda x: (-DECISIONS.index(x[0][0]), -x[1], x[0][1]))]
+    return "\n".join(_escaped(line) for line in lines) + "\n"
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
                                  "transcripts (Claude Code) through the policy and count what it would have held or "
@@ -207,7 +227,10 @@ def main(argv=None):
     ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
     ap.add_argument("--show", action="store_true", help="also print each call, with secrets redacted")
     ap.add_argument("--all", action="store_true", help="list every call, not only the denied and held ones")
-    ap.add_argument("--json", action="store_true", help="print the report as JSON (every call)")
+    o = ap.add_mutually_exclusive_group()
+    o.add_argument("--json", action="store_true", help="print the report as JSON (every call)")
+    o.add_argument("--share", action="store_true", help="print its counts alone, to post as a field report: no "
+                                                       "session, path, time or call")
     a = ap.parse_args(argv)
     root = os.path.expanduser(a.root)
     if not os.path.isdir(root):
@@ -219,5 +242,5 @@ def main(argv=None):
     except (ValueError, OSError) as e:   # an unreadable --since; a policy file that's missing or doesn't lint
         print(f"tracekit audit: {e}", file=sys.stderr)
         return 2
-    sys.stdout.write(format_report(report, as_json=a.json, every=a.all))
+    sys.stdout.write(share(report) if a.share else format_report(report, as_json=a.json, every=a.all))
     return 0

@@ -3,6 +3,7 @@ summarises a window of a signer's store on one page."""
 import argparse
 import collections
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -21,7 +22,7 @@ sys.path.insert(0, ROOT)
 from factories import patch_env, wait_for  # noqa: E402
 from report import tables  # noqa: E402
 from test_signer_service import tmpdir  # noqa: E402
-from tracekit import cli, report as weekly, view  # noqa: E402
+from tracekit import __version__, cli, report as weekly, view  # noqa: E402
 from tracekit.format import canon  # noqa: E402
 from tracekit.identity.base import CallerIdentity  # noqa: E402
 from tracekit.sdk import autospawn  # noqa: E402
@@ -220,6 +221,55 @@ class WeeklyReport(unittest.TestCase):
             self.assertIn(line + "\n", page + "\n")
         self.assertNotIn(SECRET, page + json.dumps(rep))   # nor any part of it the redaction left
         self.assertNotIn(SECRET[4:20], page + json.dumps(rep))
+
+    def test_share_is_counts_only(self):
+        """#521: --share, a field report a person posts where anyone reads it, holds the report's counts and the
+        window's length, never a run id, path, identity, tenant, time, call, rule description or what a run said, though
+        the report it comes from holds them. It reads no content: each read is a signed record."""
+        mark = "LEAKMARK"
+        b = self.client.run(agent="claude-code")
+        b.observe(f"{mark}-prompt: tidy /srv/{mark}-repo", "user", trust="trusted")
+        b.decide("m1", "Bash", {"command": f"curl -s https://{mark}-host.example/{mark}-path"})   # flagged: it runs
+        b.complete("m1", result=f"{mark}-result")
+        self.assertEqual(b.decide("m2", "rm", {"path": f"/home/{mark}-user/{mark}-file"})["decision"], "deny")
+        self.assertEqual(b.decide("m3", "pay", {"cents": 9, "memo": f"{mark}-memo"})["decision"], "ask")
+        aid = b.call("approval_request", tool_call_id="m3")["approval_id"]
+        self.client.call("approval_decide", {"approval_id": aid, "decision": "reject"})
+        b.call("tailer_lost", reason=f"{mark}-gap", offset=1)
+        b.close(reason=f"{mark}-close")
+        storage = self.service.log.storage
+        self.assertTrue(wait_for(lambda: list(storage.iter_run("default", b.run_id))[-1]["event"]["type"] ==
+                                 "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+        rep = self.build(content=view.dev_content_source("tracekit report", lambda: Client(self.cfg["socket"])))
+        self.assertIn(f"/home/{mark}-user/", json.dumps(rep))   # an example call
+        page = weekly.share(rep)
+        self.assertEqual(page.splitlines(), [
+            f"Tracekit {__version__} field report (tracekit report --share): 0 days",
+            "Integrity: the store verified, 4 of 4 runs verify",
+            "Runs that verify, by agent: claude-code 2, codex 1, cursor 1",
+            "Tool calls: 12   allow 2, flag 3, ask 5, deny 2",
+            "Holds: 4   rejected 2, approved · ran 1, expired 1",
+            "Denied and flagged calls, by rule (one call can match several rules):",
+            "  deny T-RM 2", "  deny T-PATH 2 (also matched, not why)", "  flag T-NET 3"])
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(weekly.autospawn, "data_dir", return_value=self.cfg["data_dir"]), \
+                mock.patch.object(weekly, "_running", lambda: Client(self.cfg["socket"])), \
+                mock.patch.object(view, "dev_content_source", wraps=view.dev_content_source) as content, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):   # the dev signer's store
+            code = cli.main(["report", "--share", "--since",
+                             datetime.datetime.fromtimestamp(self.cut, datetime.timezone.utc).isoformat()])
+        self.assertEqual((code, out.getvalue()), (0, page + "\n"))
+        content.assert_not_called()
+        self.assertIn(f"tracekit report: {weekly.SHARE_NOTE}\n", err.getvalue())
+        for text in (page, out.getvalue()):
+            self.assertNotIn(mark, text)
+            for x in rep["runs"]:
+                self.assertNotIn(x["run_id"][:8], text)
+            for g in rep["rules"]:
+                self.assertNotIn(g["reason"], text)
+            for word in (os.path.dirname(self.cfg["data_dir"]), "uid:", "beta"):   # the store's folder, identities
+                self.assertNotIn(word, text)
+            self.assertNotRegex(text, r"\d{4}-\d\d-\d\d|\d\d:\d\d")   # no date or time
 
     def test_rules_read_the_policy_the_signer_kept(self):
         """On a store decided under a policy this Tracekit doesn't ship (an older pack, the signer's own file), every
