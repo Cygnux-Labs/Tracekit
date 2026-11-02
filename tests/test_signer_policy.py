@@ -610,6 +610,30 @@ class CodingPack(unittest.TestCase):
                     if (tool, args, rule) in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_mass_email_reads_any_case_a_display_name_and_an_address_anywhere_in_the_string(self):
+        """TK-M003 (1.5.3 review): a whole-company address in another case, after another address in the same string
+        or after a display name, and ten recipients with quoted display names were allowed on the server packs."""
+        ten = [f'"User {i}" <u{i}@corp.com>' for i in range(10)]
+        held = [{"to": "All@corp.com"}, {"to": "ALL@corp.com"}, {"to": "Everyone@corp.com"},
+                {"to": "bob@corp.com, all@corp.com"}, {"to": "bob@corp.com;all@corp.com"},
+                {"to": "All Staff <all@corp.com>"}, {"to": ['"All Staff" <all@corp.com>']},
+                {"cc": ["bob@corp.com", "Staff@corp.com"]}, {"to": ten}, {"to": ", ".join(ten)},
+                {"to": "all@corp.com"}, {"bcc": [f"u{i}@corp.com" for i in range(10)]},
+                # after an escape pair (review of #542: a mail library reads "\"all@corp.com\"" as all@corp.com)
+                {"to": ['"all@corp.com"']}, {"to": "bob@corp.com\nall@corp.com"}, {"to": "bob@corp.com\tUsers@corp.com"}]
+        allowed = [{"to": "ball@corp.com"}, {"to": "smallstaff@corp.com"}, {"to": "u.all@corp.com"},
+                   {"to": "users-team@corp.com"}, {"to": "x+all@corp.com"},
+                   {"to": "bob@corp.com", "subject": "for all@corp.com", "body": "cc everyone@corp.com later"},
+                   {"to": ten[:9]}, {"to": ", ".join(ten[:9])}]
+        for pack, engine, e in self.every_pack():
+            if pack not in ("server.yaml", "strict.yaml"):
+                continue
+            for args in held + allowed:
+                with self.subTest(pack=pack, engine=engine, args=args):
+                    d = e.decide("send_email", args)
+                    self.assertEqual((d["verdict"], "TK-M003" in d["rule_ids"]),
+                                     ("ask", True) if args in held else ("allow", False), d)
+
     def test_deleting_container_volumes_asks_in_every_pack(self):
         """TK-A048: deleting Docker or Podman volumes, where a project's database usually lives, is held for a person;
         listing them, inspecting them and pruning only images or containers are not. Only TK-F003 flagged `volume rm`
@@ -643,7 +667,11 @@ class CodingPack(unittest.TestCase):
             # -v clustered with compose down's other short flag, -t (a timeout)
             "docker compose down -vt 5", "docker-compose down -vt5", "podman compose down -vt 10",
             # a wrapper, a nested shell and a command among others
-            "sudo docker volume rm pgdata", "bash -c 'docker compose down -v'", "cd app && docker compose down -v"]
+            "sudo docker volume rm pgdata", "bash -c 'docker compose down -v'", "cd app && docker compose down -v",
+            # 1.5.3 review: Docker's remote TLS form puts five options before the subcommand; podman-remote is podman
+            "docker --tlsverify --tlscacert ca.pem --tlscert c.pem --tlskey k.pem -H tcp://x:2376 volume rm pgdata",
+            "podman-remote volume rm pgdata", "podman-remote volume prune -f", "podman-remote compose down -v",
+            "podman-remote --url ssh://u@h/run/podman.sock system prune --volumes"]
         routine = [
             "docker volume ls", "docker volume ls -q --filter dangling=true", "docker volume inspect pgdata",
             "docker volume create pgdata", "podman volume ls", "podman volume inspect pgdata",
@@ -651,7 +679,8 @@ class CodingPack(unittest.TestCase):
             "podman volume --log-level debug ls", "docker system --log-level debug df", "podman-compose down --verbose",
             # asking for help runs nothing; a volume's name is not a help word
             "docker volume prune --help", "docker volume rm -h", "docker volume --help",
-            "docker compose down --help", "podman volume prune help",
+            "docker compose down --help", "podman volume prune help", "podman-remote volume rm --help",
+            "podman-remote volume prune help", "podman-remote volume ls",
             "docker compose down --volumes=false", "docker system prune --volumes=false", "docker-compose down -v=false",
             "docker compose down --volumes=0", "docker-compose down -v=f", "docker system prune --volumes=FALSE",
             "docker compose down", "docker compose down --remove-orphans", "docker-compose down", "podman-compose down",
@@ -1918,7 +1947,10 @@ class CodingPack(unittest.TestCase):
         "pwsh -c 'Remove-Item Env:ANTHROPIC_BASE_URL'", "sed -i '/ANTHROPIC_BASE_URL/d' ~/.zshrc",
         "kubectl set env deploy/a ANTHROPIC_BASE_URL-", "gh secret set ANTHROPIC_BASE_URL --body http://x",
         "grep -rn ANTHROPIC_BASE_URL .", "echo $ANTHROPIC_BASE_URL", "ls # check ANTHROPIC_BASE_URL first",
-        "git commit -m 'TK-F017 reads ANTHROPIC_BASE_URL'")
+        "git commit -m 'TK-F017 reads ANTHROPIC_BASE_URL'",
+        # 1.5.3 review: Windows reads an environment variable's name in any case
+        "set anthropic_base_url=http://x", r"reg add HKCU\Environment /v anthropic_base_url /d http://x /f",
+        "setx Anthropic_Base_Url http://x")
     BASE_URL_FILES = (
         {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"},
         {"file_path": ".claude/settings.json", "content": '{"env": {"ANTHROPIC_BASE_URL": "http://x"}}'},
@@ -1932,7 +1964,9 @@ class CodingPack(unittest.TestCase):
         {"file_path": "notes.md", "content": "Keep `ANTHROPIC_BASE_URL`, which isn't a path, where it is."},
         {"file_path": "config.env", "old_string": "ANTHROPIC_BASE_URL", "new_string": "x"},
         {"file_path": "config.env", "old_string": "X_URL", "new_string": "ANTHROPIC_BASE_URL"},
-        {"file_path": "config.env", "edits": [{"old_string": "ANTHROPIC_BASE_URL", "new_string": "x"}]})
+        {"file_path": "config.env", "edits": [{"old_string": "ANTHROPIC_BASE_URL", "new_string": "x"}]},
+        {"file_path": "a.ps1", "content": "$env:anthropic_base_url = 'http://x'\n"},
+        {"file_path": "a.cmd", "content": "set Anthropic_Base_Url=http://x\n"})
 
     def test_the_model_base_url_is_flagged_wherever_a_call_names_it_in_every_pack(self):
         calls = [(tool, {"command": c}) for c in self.BASE_URL_SHELL for tool in ("Bash", "run_shell_command", "shell")]
@@ -3030,6 +3064,25 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual((d["decision"], {"TK-UNKNOWN-TOOL", "TK-F009"} <= set(d["rule_ids"])), ("ask", True), d)
         # and what a renamed web search returns is untrusted content, as WebSearch's is (provenance)
         self.assertTrue(self.decide("web_search", {"query": "refund policy"}, tcid="tc-s").get("send_result"))
+
+    def test_a_spelling_two_listed_names_share_and_an_mcp_tools_bare_spelling_are_decided_as_each(self):
+        # 1.5.3 review (#484): server.yaml lists `bash` and coding.yaml `Bash`, server-net.yaml `web_fetch` and
+        # coding.yaml `WebFetch`, so their shared spellings named neither: `BASH` with sudo was only held as an unknown
+        # tool, and a renamed web fetch lost TK-N001 and the untrusted mark on its result
+        self.open(svc.load_policy(os.path.join(PACKS, "server.yaml")))
+        for i, tool in enumerate(("BASH", "b_a_s_h", "Ｂａｓｈ", "Bash​")):
+            d = self.decide(tool, {"command": "sudo ls"}, tcid=f"tc-{i}")
+            self.assertEqual((d["decision"], "TK-D001" in d["rule_ids"]), ("deny", True), d)
+        for i, tool in enumerate(("webfetch", "Web-Fetch")):
+            d = self.decide(tool, {"url": "http://10.0.0.1/admin"}, tcid=f"tc-f{i}")
+            self.assertEqual((d["decision"], "TK-N001" in d["rule_ids"]), ("deny", True), d)
+            self.assertTrue(self.decide(tool, {"url": "https://example.com/docs"}, tcid=f"tc-g{i}").get("send_result"))
+        # an MCP tool's bare name is read by spelling too: on the dev pack `mcp:srv/bash` was only flagged (TK-F006)
+        # where `mcp:srv/Bash` was denied
+        self.open()
+        for i, tool in enumerate(("mcp:srv/bash", "mcp:srv/Bash")):
+            d = self.decide(tool, {"command": "sudo ls"}, tcid=f"tc-m{i}")
+            self.assertEqual((d["decision"], "TK-D001" in d["rule_ids"]), ("deny", True), d)
 
     def test_two_readings_of_a_call_keep_what_either_found(self):
         # a renamed tool's and an MCP tool's bare-name reading: a rule that ran out of time in either counts as matched,
