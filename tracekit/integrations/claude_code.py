@@ -483,7 +483,7 @@ def _reworded(client, sid, args, cap):
         try:
             cap()
             a = client.approval_get({"approval_id": h["approval_id"]})
-        except RPCError:   # gone, timed out, or not this identity's to read (a remote signer's `authorize`)
+        except RPCError:   # gone, refused, or not this identity's to read (a remote signer's `authorize`)
             unread = True
             continue
         if a["run_id"] != st["run_id"] or a["tool"] != "Bash":
