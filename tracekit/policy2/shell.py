@@ -209,7 +209,12 @@ def analyse(command, persistent_target=None):
                     else:
                         parser.backtick()
                     pos = parser.i
-    _Parser(command, ctx, []).script()
+    top = _Parser(command, ctx, [])
+    try:
+        top.script()
+    except ParseError as e:
+        e.at = top.i   # where the line stops being readable: the words before it may still be (engine._plain)
+        raise
     ctx["cut"] += ctx["always_cut"]
     active = False
     for step in reversed(ctx["steps"]):
