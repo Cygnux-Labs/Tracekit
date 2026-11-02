@@ -192,9 +192,10 @@ class Engine:
                                                                   for p in self._persistent_targets))
                     else:
                         parsed = _shell(args)
-                except shell.ParseError:
+                except shell.ParseError as e:
                     unreadable.append("TK-SHELL-PARSE")
-                    parsed = _plain(command if isinstance(command, str) else canonical(command))
+                    parsed = _plain(command, getattr(e, "at", 0)) if isinstance(command, str) else \
+                        _plain(canonical(command))
                 # what trap, at or batch run later and the parser can't read (trap "$f" EXIT) isn't held, as before
                 # their code was read; with a writer's name in it, it counts for TK-D008 (_effects)
                 if any(c["opaque"] and not _SCHEDULED.intersection(c["via"]) for c in parsed[0]):
@@ -349,16 +350,26 @@ def _shell(args, persistent_target=None):
     raise shell.ParseError("the command is neither a string nor a list of strings")
 
 
-def _plain(raw):
-    """What a command the parser can't read is decided on: its text as its target and code, and each piece of it
-    between ;, &, | and newlines split on blanks as a command (shell.analyse_argv), so a rule that reads plain words
-    still holds what it held (`sudo id {1..3..1}`); a piece that can't be read so is left out."""
-    out = [], [], [raw], [], [raw]
-    for piece in re.split(r"[;&|\n]", raw):
+def _plain(raw, at=0):
+    """What a command the parser can't read is decided on: its text as its target and code; the line before the word
+    it stopped in (`at`: where), parsed; and each piece of the rest, from the one it stopped in, between ;, &, | and
+    newlines, split on blanks as a command (shell.analyse_argv), so a rule that reads plain words still holds what it
+    held (`sudo id {1..3..1}`). A part that can't be read so is left out."""
+    out, start = ([], [], [raw], [], [raw]), 0
+    head = raw[:max(0, *(raw.rfind(c, 0, at) for c in " \t\n"))]
+    readings = []
+    if head.strip():
         try:
-            found = shell.analyse_argv(piece.split()) if piece.split() else ()
+            readings.append(shell.analyse(head))
+            start = max(0, *(head.rfind(c) + 1 for c in ";&|\n"))
+        except shell.ParseError:
+            pass
+    for piece in re.split(r"[;&|\n]", raw[start:]):
+        try:
+            readings.append(shell.analyse_argv(piece.split()) if piece.split() else ())
         except shell.ParseError:
             continue
+    for found in readings:
         for into, more in zip(out, found):
             into += more
     return out

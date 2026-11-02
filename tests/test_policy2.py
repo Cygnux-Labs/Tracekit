@@ -1378,8 +1378,9 @@ class TimedAndBraced(unittest.TestCase):
 
     def test_an_unreadable_part_of_a_line_leaves_the_rest_decided(self):
         """A brace bash 4 expands its own way, or one beside a substitution, holds its command (TK-SHELL-PARSE) and the
-        rules still read the rest of it; a line the parser can't read at all is still decided on its plain words. A
-        deny-corpus command with such a word after it is still denied, as by 1.5.2."""
+        rules still read the rest of it; a line the parser can't read at all is still decided on the line before the
+        word it stopped in, and on its plain words. A deny-corpus command with such a word after it is still denied, as
+        by 1.5.2."""
         for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
             for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
@@ -1390,7 +1391,8 @@ class TimedAndBraced(unittest.TestCase):
                         if not isinstance(cmd, str) or "\n" in cmd or \
                                 e.decide("Bash", {"command": cmd + " {1..2}"})["verdict"] != "deny":
                             continue
-                        for word in ("{1..300}", "{1..3..1}", "{a..A}", "{01..02}", "x$(true){a,b}"):
+                        for word in ("{1..300}", "{1..3..1}", "{a..A}", "{01..02}", "x$(true){a,b}", "${X:-'$'}",
+                                     "\"${X+'}'}\"", "2\\\n> out.txt", "$\\\nX"):
                             d = e.decide("Bash", {"command": f"{cmd} {word}"})
                             self.assertEqual(d["verdict"], "deny", (pack, backend, cmd, word))
             for cmd, rule in (("sudo id", "TK-D001"), ("rm -rf ~/", "TK-D004")):
