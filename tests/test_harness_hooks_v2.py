@@ -1495,6 +1495,13 @@ class VersionNotice(HarnessCase):
                 self.assertIsNone(claude_code._skew(mock.Mock(hello={"version": theirs}, signer=None), "cc-x"))
         self.assertIn("1.4.0, older", claude_code._skew(mock.Mock(hello={"version": "1.4.0"}, signer=None), "cc-x"))
 
+    def test_a_version_is_ascii(self):
+        """Re-review of #512: \\w matched Unicode, so lookalike digits (fullwidth, Arabic-Indic) passed as a version."""
+        for theirs in ("１.５.０", "١.٤.٠", "1.4.0ﬁ"):
+            self.assertIsNone(claude_code.VERSION.fullmatch(theirs), theirs)
+        for theirs in ("1.5.2", "1.5.2rc1", "1.5.2+deb1", "1!1.5.2.post1-x_y"):
+            self.assertTrue(claude_code.VERSION.fullmatch(theirs), theirs)
+
     def test_once_said_no_event_takes_the_session_lock_for_it(self):
         """Review of #512: while the versions differed, every event took the session lock to find it said already."""
         with open(claude_code._state("cc-l"), "w") as f:

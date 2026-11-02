@@ -107,7 +107,7 @@ GONE = ("run_closed", "unknown_run", "run_token_invalid")
 SKEW = r"Tracekit signer .* serves client "   # tracekit.sdk.client's warning, which _skew tells the person instead
 
 
-VERSION = re.compile(r"[\w.+!-]{1,64}")   # a version shown to a person: no terminal control characters, no newline
+VERSION = re.compile(r"[\w.+!-]{1,64}", re.ASCII)   # a version shown to a person: ASCII, no control character
 
 
 def release(v):
