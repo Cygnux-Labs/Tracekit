@@ -422,6 +422,11 @@ def tracekit_rules():
             if isinstance(r, dict) and "id" in r} | policy_compile.RESERVED_IDS | set(view.ENGINE_RULES)
 
 
+# the ids the signer gives a consume it refuses (service.py, approval_consume): a refusal, or the approval's state
+APPROVAL_RULES = {f"TK-APPROVAL-{s}" for s in ("CONSUMED", "EXPIRED", "MISMATCH", "REJECTED", "REQUESTED", "REQUIRED",
+                                              "UNBOUND", "VETO")}
+
+
 def share_rules(counts):
     """--share's rule lines (report's and audit's) of `counts`, {(decision, rule id, why): calls}, `why` as _tally's:
     the denies, then the holds and the flags, most first, the rules that only also matched after the others. A rule id
@@ -429,7 +434,7 @@ def share_rules(counts):
     counted as "custom rule", one count for all of them."""
     ours, shown = tracekit_rules(), collections.Counter()
     for (dec, rid, why), n in counts.items():
-        shown[dec, rid if rid in ours or re.fullmatch(r"TK-APPROVAL-[A-Z]+", rid) else "custom rule", why] += n
+        shown[dec, rid if rid in ours or rid in APPROVAL_RULES else "custom rule", why] += n
     tag = {True: "", False: " (also matched, not why)", None: " (not placed)"}
     return [f"  {dec} {rid} {n:,}{tag[why]}" for (dec, rid, why), n in
             sorted(shown.items(), key=lambda x: (-DECISIONS.index(x[0][0]), x[0][2] is False, -x[1], x[0][1]))]
@@ -437,8 +442,8 @@ def share_rules(counts):
 
 def share(rep):
     """The report's counts alone, for a person to post as a field report (docs/field-reports.md): of the window, its
-    length; no source, trust, tenant, run id, identity, time, call or rule description, and no agent name or rule id
-    but Tracekit's own (AGENTS, share_rules)."""
+    length; no source, trust, tenant, run id, identity, time, call or rule description, and no agent name, rule id or
+    gap kind but Tracekit's own (AGENTS, share_rules, view.GAP_WORDS)."""
     w, runs, calls, holds = rep["window"], rep["runs"], rep["calls"], rep["holds"]
     ok = sum(x["verdict"] == "verified" for x in runs)
     agents = collections.Counter()
@@ -447,13 +452,18 @@ def share(rep):
     agents = dict(sorted(agents.items(), key=lambda x: (-x[1], x[0])))
     # the asks that are no hold of their own, as text() says them
     retries = holds["retries"] and f"   ({holds['retries']:,} of the agent's retries of a held call, counted with it)"
+    # a total alone reads as calls lost, which most kinds aren't (a late witness): by kind, the signer's own kinds only
+    gaps = collections.Counter()
+    for kind, n in rep["gaps"]["by_kind"].items():
+        gaps[kind if kind in view.GAP_WORDS else "other"] += n
     days = _days(when(w["until"]) - when(w["since"]))
     out = [f"Tracekit {__version__} field report (tracekit report --share): {days}",
            f"Integrity: the store {rep['store']['verdict']}, {ok} of {len(runs)} runs verify",
            f"Runs that verify, by agent: {_counts(agents) or 'none'}",
            f"Tool calls: {calls['total']:,}   " + _counts({k: calls[k] for k in DECISIONS}),
            f"Holds: {holds['total']:,}   {_counts(holds['outcomes'])}".rstrip() + (retries or ""),
-           f"Gaps (signed records that something may be missing): {rep['gaps']['total']:,}",
+           f"Gaps (signed records that something may be missing): {rep['gaps']['total']:,}"
+           + (f"   {_counts(dict(gaps.most_common()))}" if gaps else ""),
            "Denied and flagged calls, by rule (one call can match several rules):" + " none" * (not rep["rules"])]
     out += share_rules({(g["decision"], g["rule"], g["why"]): g["count"] for g in rep["rules"]})
     return "\n".join(_escaped(line) for line in out)

@@ -27,7 +27,7 @@ Integrity: the store verified, 31 of 31 runs verify
 Runs that verify, by agent: claude-code 27, codex 2, other 2
 Tool calls: 18,204   allow 15,733, flag 2,318, ask 61, deny 92
 Holds: 58   expired 41, approved · ran 12, rejected 5   (3 of the agent's retries of a held call, counted with it)
-Gaps (signed records that something may be missing): 14
+Gaps (signed records that something may be missing): 14   witness_late 9, tailer_lost 3, run_abandoned 2
 Denied and flagged calls, by rule (one call can match several rules):
   deny TK-D007 64
   deny TK-D002 19
@@ -66,8 +66,8 @@ of the calls it matched, marked as `report --share` marks it.
 | Whether the store verifies, and how many runs do (`report`) | A run id, a session id, a user id or any identity |
 | The runs that verify, by agent: Tracekit's own names, every other as `other` (`report`); the number of sessions (`audit`) | A tool's arguments, a command, a path or a URL it touched |
 | Tool calls by decision: allow, flag, ask, deny | An example call, a rule's description, a hold's reason or who answered it |
-| Holds by outcome: approved · ran, rejected, expired, ... (`report`) | What the model or the person said, a tool's result, a gap's kind or reason |
-| The number of gaps (`report`) | An agent name that isn't Tracekit's own |
+| Holds by outcome: approved · ran, rejected, expired, ... (`report`) | What the model or the person said, a tool's result, a gap's reason |
+| The gaps by kind: the signer's own kinds, any other as `other` (`report`) | An agent name that isn't Tracekit's own |
 | Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` | A rule id that isn't Tracekit's own; any record, hash or signature |
 
 An agent name is printed only when it is one Tracekit's own hooks and tools give a run (`claude-code`, `codex`,

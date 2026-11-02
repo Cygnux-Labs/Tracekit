@@ -258,10 +258,13 @@ class WeeklyReport(unittest.TestCase):
             # an ask that is no hold of its own: the agent's retry, under its approval, of a call held at once
             "Holds: 4   rejected 2, approved · ran 1, expired 1   (1 of the agent's retries of a held call, counted "
             "with it)",
-            "Gaps (signed records that something may be missing): 2",
+            "Gaps (signed records that something may be missing): 2   tailer_lost 2",
             "Denied and flagged calls, by rule (one call can match several rules):",
             # T-RM; T-PATH; T-NET 3 and the marker's rule 1: the test policy's ids are custom
             "  deny custom rule 2", "  deny custom rule 2 (also matched, not why)", "  flag custom rule 4"])
+        # a gap kind that isn't one this Tracekit names (another signer's, or any string) is counted as "other"
+        odd = weekly.share(dict(rep, gaps={"total": 3, "by_kind": {"tailer_lost": 2, f"{mark}-kind": 1}}))
+        self.assertIn("Gaps (signed records that something may be missing): 3   tailer_lost 2, other 1\n", odd)
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(weekly.autospawn, "data_dir", return_value=self.cfg["data_dir"]), \
                 mock.patch.object(weekly, "_running", lambda: Client(self.cfg["socket"])), \
@@ -272,7 +275,7 @@ class WeeklyReport(unittest.TestCase):
         self.assertEqual((code, out.getvalue()), (0, page + "\n"))
         content.assert_not_called()
         self.assertIn(f"tracekit report: {weekly.SHARE_NOTE}\n", err.getvalue())
-        for text in (page, out.getvalue()):
+        for text in (page, out.getvalue(), odd):
             self.assertNotIn(mark, text)
             for x in rep["runs"]:
                 self.assertNotIn(x["run_id"][:8], text)
@@ -616,8 +619,8 @@ class Rules(unittest.TestCase):
             ("flag", "TK-F011", True): 5, ("flag", "TK-UNKNOWN-TOOL", None): 4, ("deny", "TK-F011", False): 2,
             ("deny", "TK-APPROVAL-EXPIRED", True): 1, ("ask", "TK-A001", True): 6, ("ask", "TK-L001", True): 1,
             ("flag", "acme-prod-db.internal", True): 3, ("flag", "[x](https://e.example)", True): 1,
-            ("deny", "TK-APPROVAL-x @octocat", True): 1}), [
-            "  deny TK-APPROVAL-EXPIRED 1", "  deny custom rule 1", "  deny TK-F011 2 (also matched, not why)",
+            ("deny", "TK-APPROVAL-x @octocat", True): 1, ("deny", "TK-APPROVAL-ACMEPAYROLL", True): 1}), [
+            "  deny custom rule 2", "  deny TK-APPROVAL-EXPIRED 1", "  deny TK-F011 2 (also matched, not why)",
             "  ask TK-A001 6", "  ask TK-L001 1",   # a shipped pack's limit
             "  flag TK-F011 5", "  flag TK-UNKNOWN-TOOL 4 (not placed)", "  flag custom rule 4"])
 
