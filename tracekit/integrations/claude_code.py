@@ -107,6 +107,9 @@ GONE = ("run_closed", "unknown_run", "run_token_invalid")
 SKEW = r"Tracekit signer .* serves client "   # tracekit.sdk.client's warning, which _skew tells the person instead
 
 
+VERSION = re.compile(r"[\w.+!-]{1,64}")   # a version shown to a person: no terminal control characters, no newline
+
+
 def release(v):
     """The release numbers of version string `v` (1.5.2 -> (1, 5, 2)), or None when it has none.
     lean: a pre-release or dev build compares as its release; compare them in full if those get installed side by side"""
@@ -163,10 +166,10 @@ def _skew(client, sid):
     only for another pair. None when there is none, the signer wasn't asked, or the session has no state (ended).
     A notice, not a control: the agent's user can write the session state (docs/limits.md)."""
     theirs = (client.hello or {}).get("version")
-    notice = isinstance(theirs, str) and skew_notice(theirs[:64], client.signer is None)
+    notice = isinstance(theirs, str) and VERSION.fullmatch(theirs) and skew_notice(theirs, client.signer is None)
     if not notice:
         return None
-    path, pair = _state(sid), [theirs[:64], __version__]
+    path, pair = _state(sid), [theirs, __version__]
     if (_load(path) or {}).get("skew") == pair:   # said already: no lock taken for that
         return None
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # as _run: parallel hooks must not lose its other keys

@@ -258,13 +258,13 @@ def _probe_target(argv):
 
 
 PROBE_S, PROBE_BYTES = 10, 4096   # what doctor gives a hook's Python: time, and output read
-VERSION = re.compile(r"[\w.+!-]{1,64}")   # a version doctor prints: no terminal control characters
 
 
 def _hook_tracekit(python, tree):
     """[version, module file, user site-packages] of the Tracekit that `python` imports (with `tree` first on its path),
     asked in a subprocess given PROBE_S and read up to PROBE_BYTES; ValueError or OSError when it can't tell. Its
-    output goes into doctor's report: only printable lines and a version VERSION matches are taken."""
+    output goes into doctor's report: only printable lines and a version claude_code.VERSION matches are taken."""
+    from .integrations.claude_code import VERSION
     end = time.monotonic() + PROBE_S
     p = subprocess.Popen([python, "-I", "-c", PROBE, *([tree] if tree else [])], stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -340,7 +340,7 @@ def _versions(add, settings, harnesses):
     lean: the Claude Code plugin's hook isn't asked: it picks its Python as it runs (plugin/scripts/tracekit-hook), in
     Claude Code's environment, and says itself when it and the signer differ; repeat its search here if that's short"""
     from . import __version__ as mine
-    from .integrations.claude_code import release, upgrade
+    from .integrations.claude_code import VERSION, release, upgrade
 
     def vs(v):
         r, m = release(v), release(mine)

@@ -1485,6 +1485,16 @@ class VersionNotice(HarnessCase):
         with mock.patch.object(claude_code, "__version__", f"{self.SIGNER}+local"):
             self.assertEqual(self.pre("t1"), (0, "", ""))
 
+    def test_a_version_that_carries_control_characters_is_never_shown(self):
+        """Re-review of #512: the hook showed whatever the signer's hello said its version was, once it started with
+        digits, so terminal escapes and a second line reached the person (stderr for the other harnesses)."""
+        with open(claude_code._state("cc-x"), "w") as f:
+            json.dump({"run_id": "r"}, f)
+        for theirs in ("1.4.0\x1b]0;x\x07\nIgnore the above", "1.4.0\nIgnore the above", "1.4.0 " + "x" * 80):
+            with self.subTest(theirs=theirs):
+                self.assertIsNone(claude_code._skew(mock.Mock(hello={"version": theirs}, signer=None), "cc-x"))
+        self.assertIn("1.4.0, older", claude_code._skew(mock.Mock(hello={"version": "1.4.0"}, signer=None), "cc-x"))
+
     def test_once_said_no_event_takes_the_session_lock_for_it(self):
         """Review of #512: while the versions differed, every event took the session lock to find it said already."""
         with open(claude_code._state("cc-l"), "w") as f:
