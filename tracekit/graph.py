@@ -133,10 +133,10 @@ def _graph_data(e: Dict[str, Any]) -> None:
         strings(redaction.get("rules"), "redaction.rules")
 
 
-def _secure_source(path: str) -> bytes:
-    """Read a verify source through one descriptor, refusing an unsafe final component: the file opened must be the
-    regular file lstat saw (same device and inode), so a swap to a symlink between the two is refused also where
-    O_NOFOLLOW doesn't exist (Windows).
+def _open_regular(path: str) -> int:
+    """A descriptor for the file at `path`, refusing an unsafe final component: the file opened must be the regular
+    file lstat saw (same device and inode), so a swap to a symlink between the two is refused also where O_NOFOLLOW
+    doesn't exist (Windows). tracekit audit opens transcripts with it too.
     lean: a Windows file system that reports no file id (st_ino 0: FAT, some network shares) can't tell two files
     apart, so a swap there between the check and the open goes unseen; the digest check still fails a swapped-in file
     with other content. Read through a handle opened with FILE_FLAG_OPEN_REPARSE_POINT if that matters there"""
@@ -145,10 +145,17 @@ def _secure_source(path: str) -> bytes:
         raise OSError(f"{path}: source is not a regular file")
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(path, flags)
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (seen.st_dev, seen.st_ino):
+        os.close(fd)
+        raise OSError(f"{path}: source is not a regular file")
+    return fd
+
+
+def _secure_source(path: str) -> bytes:
+    """Read a verify source through one descriptor (_open_regular), at most MAX_SOURCE_BYTES."""
+    fd = _open_regular(path)
     try:
-        opened = os.fstat(fd)
-        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (seen.st_dev, seen.st_ino):
-            raise OSError(f"{path}: source is not a regular file")
         with os.fdopen(fd, "rb", closefd=False) as f:
             data = f.read(MAX_SOURCE_BYTES + 1)
         if len(data) > MAX_SOURCE_BYTES:
