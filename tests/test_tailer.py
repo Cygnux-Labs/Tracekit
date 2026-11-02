@@ -446,8 +446,10 @@ class Tailer(unittest.TestCase):
         self.write(TOOL_USE)
         rehashed, real = [], tailer._sha256
 
-        def sha256(f, n, h=None):   # as slow as a large transcript's: the next check is due in 2 s
-            time.sleep(0.02)
+        def sha256(f, n, h=None):   # as costly as a large transcript's (20 ms of CPU): the next check is due in 2 s
+            end = time.thread_time() + 0.02
+            while time.thread_time() < end:
+                pass
             if h is None:   # a check, not the digest of what it reads
                 rehashed.append(n)
             return real(f, n, h)
@@ -457,9 +459,15 @@ class Tailer(unittest.TestCase):
         self.assertEqual(self.lost(), [])
 
     def slow(self):
-        """_sha256 as slow as a large transcript's: once a check has run, the next is due 2 s later."""
+        """_sha256 as costly as a large transcript's (20 ms of CPU): once a check has run, the next is due 2 s later."""
         real = tailer._sha256
-        return mock.patch.object(tailer, "_sha256", lambda f, n, h=None: (time.sleep(0.02), real(f, n, h))[1])
+
+        def sha256(f, n, h=None):
+            end = time.thread_time() + 0.02
+            while time.thread_time() < end:
+                pass
+            return real(f, n, h)
+        return mock.patch.object(tailer, "_sha256", sha256)
 
     def test_an_edit_is_told_when_the_run_ends_before_the_next_check(self):
         """Review of #540: a large transcript's run ended (run_closed) before its next check, so an edit to a line
@@ -471,16 +479,15 @@ class Tailer(unittest.TestCase):
             tailer.tail(run, self.path, os.getuid(), None, lambda: steps.pop(0)())   # system mode: no `until`
         self.assertEqual(run.lost, ["a line already read changed in place"])
 
-    def test_the_last_wake_checks_every_transcript_before_the_runs_end_refuses_a_line(self):
-        """Review of #540: at SessionEnd (the hook closes the run, then removes the session state) the main
-        transcript's unread line was refused run_closed before a subagent's transcript had its last check, so an edit
-        to a line of it already read went untold."""
+    def last_wake(self, unread):
+        """A subagent's line already read is edited, then the session ends (the hook closes the run, then removes the
+        session state), with an `unread` line in the main transcript or none. -> the tailer_lost reasons."""
         run, until = _Ending(), os.path.join(self.d, "until")
         sub = os.path.join(self.d, "session", "subagents", "agent-a1.jsonl")
-        os.makedirs(os.path.dirname(sub))
+        os.makedirs(os.path.dirname(sub), exist_ok=True)
         with open(sub, "wb") as f:
             f.write(line(use_line("toolu_9", "Bash", {"command": "cat a"})))
-        self.write(TOOL_USE)
+        self.write(TOOL_USE, mode="wb")
         open(until, "w").close()
 
         def edit():
@@ -490,13 +497,23 @@ class Tailer(unittest.TestCase):
                 f.write(data.replace(b"cat a", b"cat b"))
 
         def session_end():
-            self.write(NEXT)
+            if unread:
+                self.write(NEXT)
             run.closing = True
             os.remove(until)
         steps = [lambda: None, edit, session_end]
         with self.slow():
             tailer.tail(run, self.path, os.getuid(), until, lambda: steps.pop(0)())
-        self.assertEqual(run.lost, ["subagent transcript agent-a1.jsonl: a line already read changed in place"])
+        return run.lost
+
+    def test_the_last_wake_checks_every_transcript_before_the_runs_end_refuses_a_line(self):
+        """Review of #540: at SessionEnd the main transcript's unread line was refused run_closed before a subagent's
+        transcript had its last check, so an edit to a line of it already read went untold; and with no line left to
+        report, a large transcript's last wake didn't check it."""
+        for unread in (True, False):
+            with self.subTest(unread=unread):
+                self.assertEqual(self.last_wake(unread),
+                                 ["subagent transcript agent-a1.jsonl: a line already read changed in place"])
 
     def test_a_line_nested_past_what_json_takes_is_lost(self):
         """Review of 1.5.3: its RecursionError ended the tailer with no tailer_lost, so the run's model text stopped

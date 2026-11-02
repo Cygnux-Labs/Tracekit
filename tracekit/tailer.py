@@ -18,7 +18,7 @@ config names the agent; dev mode: our own uid); the fd is kept. On every wake (i
 Linux, else a poll) its size may not go backwards, the path must still be that same file, of that uid, and each new
 complete line must be a JSON object; the bytes already read may not have changed (hashed again once the file's ctime
 has moved: on every wake while that takes under CHEAP_S, else once a hundred rehashes' time has passed, at most
-CHECK_S, so an edit to a transcript of hundreds of MB is caught that late, after the lines written meanwhile; and once
+CHECK_S, so an edit to a transcript over about 25 MB is caught that late, after the lines written meanwhile; and once
 the file has been still for a second, on the last wake, before any line is reported, and once more when the signer
 says the run ended). Otherwise the tailer sends `tailer_lost` (the signer writes the signed gap, the tailer never
 writes one) and exits; so does any other failure, naming its type.
@@ -226,24 +226,22 @@ def _verify(t, uid, last=False):
         t.f = _open(t.path, uid)
         if t.f is None:
             return False
-        began = time.monotonic()
+        began = time.thread_time()   # CPU time: a busy machine (or agent) doesn't make a rehash look costly
         _sha256(t.f, t.off, t.read)   # an earlier run's lines, from here on checked as the ones it reads
-        t.at = time.monotonic()
-        t.cost = t.at - began
+        t.at, t.cost = time.monotonic(), time.thread_time() - began
     _check(t.f, t.path, uid, t.off)
     ctime = os.fstat(t.f.fileno()).st_ctime_ns   # any write moves it, and no user can set it back
     # a ctime under a second old may not move for a change in the same clock tick: checked again once it is older
     still = time.time_ns() - ctime > 1_000_000_000
     if ctime != t.checked and (still or last or t.cost < CHEAP_S or time.monotonic() - t.at >= min(CHECK_S,
                                                                                                     100 * t.cost)):
-        # lean: a transcript of hundreds of MB (0.3 s to hash 816 MB) is hashed again at most every hundred rehashes'
+        # lean: a transcript over about 25 MB (0.3 s to hash 816 MB) is hashed again at most every hundred rehashes'
         # time while it changes, so an edit is caught that late, after the lines written meanwhile, and one undone
         # before then not at all (docs/limits.md); keep per-block hashes if such edits must be caught at once
-        began = time.monotonic()
+        began = time.thread_time()
         if _sha256(t.f, t.off).digest() != t.read.digest():
             raise Lost("a line already read changed in place")
-        t.checked, t.at = ctime if still else None, time.monotonic()
-        t.cost = t.at - began
+        t.checked, t.at, t.cost = ctime if still else None, time.monotonic(), time.thread_time() - began
     return True
 
 
