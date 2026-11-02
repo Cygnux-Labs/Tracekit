@@ -1006,6 +1006,8 @@ class SignerService:
             self.sweep()   # wakes a dev signer (which exits with no client connected) lands before the ticker's first sweep
         except RPCError:   # storage down: the ticker retries
             pass
+        except Exception:   # as the ticker: the signer still starts
+            self._loop_error("ticker")
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
