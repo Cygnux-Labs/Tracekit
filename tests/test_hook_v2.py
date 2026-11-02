@@ -870,6 +870,7 @@ class HookV2(unittest.TestCase):
             self.assertEqual(sent, ["keep_away", "no_push"])
 
     def test_session_end_closes_the_run_and_it_verifies(self):
+        os.environ["TRACEKIT_DEV_GRACE"] = "0.2"   # the dev signer started next makes a closed run final 0.2 s after
         self.pre("ls")
         self.post("ls")
         run = self.run_handle()
@@ -1034,6 +1035,7 @@ class HeldCalls(unittest.TestCase):
         return p.stdout.strip()
 
     def test_approve_then_retry_runs_the_same_call_once_and_the_run_verifies(self):
+        os.environ["TRACEKIT_DEV_GRACE"] = "0.2"   # the dev signer started next makes a closed run final 0.2 s after
         self.assertEqual(self.hook("SessionStart")[0], 0)
         aid = self.held(self.UPLOAD, "t1")
         early = self.held(self.UPLOAD, "t2")   # the agent retries before the person answered: held again
