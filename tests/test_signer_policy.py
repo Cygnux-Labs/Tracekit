@@ -1141,6 +1141,8 @@ class CodingPack(unittest.TestCase):
                 # or a folder that only looks like a home (a rootfs overlay, dotfiles mirrored in a repo)
                 "rm -rf root/.claude", "rm -rf build/home/x/.claude", "rm -rf /srv/app/root/.codex",
                 "rm -rf ./.claude", "rm -rf repo/./.gemini", "rm -rf ~/x/../repo/.claude",
+                # a folder named ~ or $HOME here, however it is spelled
+                "rm -rf ./~/.claude", "rm -rf x/../~/.codex", "rm -rf ./$HOME/.claude", r"rm -rf '.\~\.gemini'",
                 # find that only edits files in place writes them, it doesn't delete the folder
                 "find ~/.codex -maxdepth 1 -name config.toml -exec sed -i s/a/b/ {} +")
         for pack, engine, e in self.every_pack():

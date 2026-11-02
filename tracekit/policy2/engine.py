@@ -548,8 +548,11 @@ def _effects(parsed):
 def _normal(path):
     """A target with `.`, `..` and repeated separators resolved, a `\\` read as `/`: `~/./.claude` is `~/.claude`. A
     `..` after a symlink may lead elsewhere, so this is only a second reading: it adds matches, and the target as
-    written is still read."""
+    written is still read. One that resolves to a start of ~ or $ it didn't have (`./~/.claude`, `x/../$HOME`) names
+    a folder of that name here, and keeps a ./ in front."""
     p = posixpath.normpath(path.replace("\\", "/")) if path else path
+    if p.startswith(("~", "$")) and not path.startswith(("~", "$")):
+        p = "./" + p
     return path if p == "." else p
 
 
