@@ -677,7 +677,8 @@ class NoHooksChosen(unittest.TestCase):
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                 code = cli.main(list(argv))
             return code, out.getvalue()
-        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}), \
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                          "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None):
             self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, "v2 hooks: not installed\n"))
             code, out = run("doctor", "--json")
@@ -706,7 +707,8 @@ class NoHooksChosen(unittest.TestCase):
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(home)
         settings = os.path.join(home, ".claude", "settings.json")
-        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}), \
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                          "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None), \
                 contextlib.redirect_stderr(io.StringIO()):
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1028,6 +1030,16 @@ class Detect(unittest.TestCase):
         self.assertTrue(v2.call_args.args[0]["content"]["retain"])
         with mock.patch.dict(os.environ, {"TRACEKIT_DEV_CONTENT": "0"}):
             self.assertIsNone(self.collect(None)[1].call_args.args[0]["content"])
+
+    def test_dev_doctor_creates_no_data_dir(self):
+        """#515: doctor made the dev signer's data dir, which the plugin's hook reads as "Tracekit is set up"."""
+        from tracekit.sdk import autospawn
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        data = os.path.join(d, "data")
+        with mock.patch.object(autospawn, "data_dir", return_value=data):
+            self.assertEqual(self.collect(None)[1].call_args.args[0]["data_dir"], data)
+        self.assertFalse(os.path.exists(data))
 
     def test_dev_signer_finds_the_hooks_in_any_settings_file_init_writes(self):
         """Dev doctor read only $CLAUDE_CONFIG_DIR's (or ~/.claude's) settings: hooks in the other one, or in the
@@ -1620,6 +1632,16 @@ class DevProfile(unittest.TestCase):
         self.assertEqual(got["D-HOOKS-PRESENT"], "warn")
         self.assertEqual(got["D-DURABILITY"], "ok")
         self.assertNotIn("D-AGENT-PRIV", got)
+
+    def test_a_data_dir_not_made_yet_is_checked_where_it_will_be(self):
+        """#515: doctor no longer makes the dev data dir, so its file system is the nearest existing parent's."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.object(doctor, "fs_type", return_value="nfs4") as fs:
+            got = {r["id"]: r for r in doctor.v2_checks({"data_dir": os.path.join(d, "a", "data")}, "dev",
+                                                        settings=os.path.join(d, "none"))}
+        self.assertEqual(fs.call_args.args[0], d)
+        self.assertIn("is on nfs4", got["D-DATA-FS"]["detail"])
 
 
 if __name__ == "__main__":

@@ -52,6 +52,7 @@ class HookV2(unittest.TestCase):
                                            "TRACEKIT_DEV_IDLE": "60", "PYTHONPATH": ROOT,
                                            "HOME": os.path.join(self.dir, "home"),
                                            "XDG_DATA_HOME": os.path.join(self.dir, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.dir, "data"),
                                            claude_code.WAIT_ENV: str(claude_code.APPROVAL_WAIT_S)})
         env.start()
         self.addCleanup(env.stop)
@@ -1288,7 +1289,8 @@ class InitV2(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.home, True)
         env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,   # USERPROFILE: Windows' ~
                                            "CLAUDE_CONFIG_DIR": "",
-                                           "XDG_DATA_HOME": os.path.join(self.home, "data")})
+                                           "XDG_DATA_HOME": os.path.join(self.home, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.home, "data")})
         env.start()
         self.addCleanup(env.stop)
 

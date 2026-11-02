@@ -4714,7 +4714,7 @@ def signer_config(path=None, data_dir=None):
     if data_dir:
         return {"data_dir": data_dir_at(data_dir)}
     from tracekit.sdk.autospawn import SOCK, signer_dir
-    return {"data_dir": dev_data_dir(), "socket": os.path.join(signer_dir(), SOCK)}
+    return {"data_dir": dev_data_dir(create=False), "socket": os.path.join(signer_dir(), SOCK)}
 
 
 def data_dir_at(path):
@@ -4843,10 +4843,16 @@ def _dev_token():
     return DevToken("dev", [*REQUESTS, "hello"], ttl_s=365 * 86400)
 
 
-def dev_data_dir():
-    """The dev signer's per-user data dir (keys and store), created 0700."""
+def dev_data_dir(create=True):
+    """The dev signer's per-user data dir (keys and store), created 0700. A reader passes create=False: the plugin's
+    hook blocks the calls it can't record once this dir exists (#515), so reading makes nothing, and a dir no dev
+    signer has made yet is a FileNotFoundError that names `tracekit up`."""
     from tracekit.sdk.autospawn import data_dir
     d = data_dir()
+    if not create:
+        if not os.path.isdir(d):
+            raise FileNotFoundError(f"no dev signer data dir at {d} yet: start the dev signer once (tracekit up)")
+        return d
     os.makedirs(d, 0o700, exist_ok=True)
     os.chmod(d, 0o700)
     return d
