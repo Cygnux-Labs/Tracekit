@@ -857,11 +857,80 @@ def _install_opencode(path, uninstall=False, v2=False, python=None):
             files.close(d)
     except (files.UnsafePath, OSError) as e:
         raise SettingsError(f"{path}: {e}") from e
+    _said(path, {old} - {None}, uninstall, v2)
+    return path
+
+
+def _read(path):
+    """(the JSON object in the hook config `path`, its text), or ({}, None) when there is no file."""
+    from .install import SettingsError
+    if not os.path.exists(path):
+        return {}, None
+    try:
+        with open(path, encoding="utf-8") as f:
+            txt = f.read()
+        s = json.loads(txt) if txt.strip() else {}
+    except (OSError, ValueError) as e:
+        raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
+    if not isinstance(s, dict):
+        raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
+    return s, txt
+
+
+def _command(harness, ev, v2, python):
+    """The command of Tracekit's hook for `ev` (python: see install._hook_command). The v2 hook names its event, so it
+    can block a pre-tool payload it cannot read; agy's payload names none, so its v1 hook does too."""
+    from .install import _hook_command
+    c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
+                      (harness, ev) if v2 or harness == "antigravity" else (harness,), python, ev in PRE,
+                      harness == "antigravity")
+    # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
+    # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
+    # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
+    # which both run
+    # assume Droid runs hooks under cmd.exe; Qwen Code does, so a path that needs quotes keeps cmd.exe's form there,
+    # and one that doesn't goes bare, which either shell runs. goose (sh -c) and Crush keep _hook_command's form
+    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush"):
+        return c
+    m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
+    return m.group(1) + c[m.end():] if m else c if harness == "qwen" else f"& {c}"
+
+
+def _merge(hooks, path, events, entry, uninstall, flat=False):
+    """Take Tracekit's hooks, v1 and v2, out of each event's list in `hooks` (the event map of the config at `path`),
+    keeping a person's, then add entry(ev) unless uninstalling or it is None; an event left with none is dropped. flat:
+    each list holds hooks ({command, ...}), not groups of them ({hooks: [...]}). -> the versions taken out."""
+    from .install import SettingsError
+    removed = set()
+    for ev in events:
+        lst = hooks.get(ev, [])
+        if not isinstance(lst, list):
+            raise SettingsError(f"hooks.{ev} in {path} must be a list; Tracekit did not change it.")
+        kept = []
+        for h in lst:
+            cmds = ([h.get("command")] if flat else [x.get("command") for x in h.get("hooks") or ()
+                                                     if isinstance(x, dict)]) if isinstance(h, dict) else []
+            ours = {_version(c) for c in cmds} - {None}
+            removed |= ours
+            if not ours:
+                kept.append(h)
+        new = None if uninstall else entry(ev)
+        if new is not None:
+            kept.append(new)
+        if kept:
+            hooks[ev] = kept
+        else:
+            hooks.pop(ev, None)
+    return removed
+
+
+def _said(path, removed, uninstall, v2):
+    """Say which of Tracekit's hooks in `path` (`removed`: the versions taken out) init replaced or uninstall removed."""
     new = "v2" if v2 else "v1"
-    if old and (uninstall or old != new):
+    old = " and ".join(sorted(removed if uninstall else removed - {new}))
+    if old:
         print(f"Tracekit {old} hooks removed from {path}" if uninstall else
               f"Tracekit {old} hooks replaced by {new} hooks in {path}")
-    return path
 
 
 GOOSE_PLUGIN = {"name": "tracekit", "version": __version__,
@@ -873,7 +942,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
     """Install one owned goose plugin without overwriting a plugin that is not Tracekit's. goose runs a rule with no
     matcher for every tool (a bare "*" matcher is an invalid regex goose silently skips), its timeout is in seconds,
     and only a PreToolUse action carries on_failure: block."""
-    from .install import SettingsError, _atomic_write_json, _backup_changed, _hook_command
+    from .install import SettingsError, _atomic_write_json, _backup_changed
     path = os.path.abspath(path)
     plugin_dir = os.path.dirname(os.path.dirname(path))   # <plugin>/hooks/hooks.json
     manifest = os.path.join(plugin_dir, "plugin.json")
@@ -887,48 +956,20 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
             raise SettingsError(f"{manifest} is not valid JSON ({e}); Tracekit did not change it.") from e
         if not isinstance(owned, dict) or owned.get("name") != "tracekit":
             raise SettingsError(f"{manifest} is not Tracekit's plugin; Tracekit did not change it.")
-    s, txt = {}, None
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                txt = f.read()
-            s = json.loads(txt) if txt.strip() else {}
-        except (OSError, ValueError) as e:
-            raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
-        if not isinstance(s, dict):
-            raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
-    hooks = s.get("hooks", {})
+    s, txt = _read(path)
+    hooks = s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
-    new, removed = "v2" if v2 else "v1", set()
 
-    def ours(cmds):
-        vs = {_version(c) for c in cmds} - {None}
-        removed.update(vs)
-        return bool(vs)
-
-    def cmd(ev):
-        return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
-                             ("goose", ev) if v2 else ("goose",), python, ev == "PreToolUse")
-    for ev in GOOSE_EVENTS:
-        lst = hooks.get(ev)
-        if lst is not None and not isinstance(lst, list):
-            raise SettingsError(f"hooks.{ev} in {path} must be a list; Tracekit did not change it.")
-        kept = [g for g in (lst or []) if not (isinstance(g, dict) and ours(
-            [h.get("command") for h in (g.get("hooks") or []) if isinstance(h, dict)]))]
-        if not uninstall:
-            action = {"type": "command", "command": cmd(ev), "timeout": 600 if ev == "PreToolUse" else 30}
-            if ev == "PreToolUse":   # a hook that can't run blocks the call; other events ignore on_failure
-                action["on_failure"] = "block"
-            kept.append({"hooks": [action]})   # no matcher: goose matches every tool of the event
-        if kept:
-            hooks[ev] = kept
-        else:
-            hooks.pop(ev, None)
-    if hooks:
-        s["hooks"] = hooks
-    else:
-        s.pop("hooks", None)
+    def entry(ev):
+        action = {"type": "command", "command": _command("goose", ev, v2, python),
+                  "timeout": 600 if ev == "PreToolUse" else 30}
+        if ev == "PreToolUse":   # a hook that can't run blocks the call; other events ignore on_failure
+            action["on_failure"] = "block"
+        return {"hooks": [action]}   # no matcher: goose matches every tool of the event
+    removed = _merge(hooks, path, GOOSE_EVENTS, entry, uninstall)
+    if not hooks:
+        s.pop("hooks")
     changed = _backup_changed(path, txt, s)
     if uninstall and not s:
         # the only content was Tracekit's hooks: remove the plugin's files, not other content (a file with other
@@ -937,9 +978,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
             os.unlink(path)
         if os.path.exists(manifest):   # validated above as Tracekit's, when present
             os.unlink(manifest)
-        old = " and ".join(sorted(removed))
-        if old:
-            print(f"Tracekit {old} hooks removed from {path}")
+        _said(path, removed, uninstall, v2)
         return path
     if not uninstall:
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -947,9 +986,7 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
             _atomic_write_json(manifest, GOOSE_PLUGIN)
     if changed:
         _atomic_write_json(path, s)
-    old = " and ".join(sorted(removed if uninstall else removed - {new}))
-    if old:
-        print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")
+    _said(path, removed, uninstall, v2)
     return path
 
 
@@ -960,64 +997,32 @@ def _install_crush(path, uninstall=False, v2=False, python=None):
     """Install Tracekit's hooks in Crush's JSON config. Each event is a flat list of
     {name, command, timeout} entries (no nested `hooks` array), and no matcher: it matches every tool, and Crush
     rejects a matcher on an event that carries no tool name. A person's hooks are kept."""
-    from .install import SettingsError, _atomic_write_json, _backup_changed, _hook_command
+    from .install import SettingsError, _atomic_write_json, _backup_changed
     path = os.path.abspath(path)
     if uninstall and not os.path.exists(path):
         return path
     if not uninstall:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-    s, txt = {}, None
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                txt = f.read()
-            s = json.loads(txt) if txt.strip() else {}
-        except (OSError, ValueError) as e:
-            raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
-        if not isinstance(s, dict):
-            raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
-    hooks = s.get("hooks", {})
+    s, txt = _read(path)
+    hooks = s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
-    new, removed = "v2" if v2 else "v1", set()
-
-    def ours(cmds):
-        vs = {_version(c) for c in cmds} - {None}
-        removed.update(vs)
-        return bool(vs)
-
-    def cmd(ev):
-        return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
-                             ("crush", ev) if v2 else ("crush",), python, ev == "PreToolUse")
-    for ev in CRUSH_EVENTS:
-        lst = hooks.get(ev)
-        if lst is not None and not isinstance(lst, list):
-            raise SettingsError(f"hooks.{ev} in {path} must be a list; Tracekit did not change it.")
-        kept = [h for h in (lst or []) if not (isinstance(h, dict) and ours([h.get("command")]))]
-        if not uninstall:
-            # seconds; 600 leaves a person time to approve a held call (Crush's default is 30)
-            kept.append({"name": "tracekit", "command": cmd(ev), "timeout": 600 if ev == "PreToolUse" else 30})
-        if kept:
-            hooks[ev] = kept
-        else:
-            hooks.pop(ev, None)
-    if hooks:
-        s["hooks"] = hooks
-    else:
-        s.pop("hooks", None)
-    changed = _backup_changed(path, txt, s)
-    if changed:
+    # seconds; 600 leaves a person time to approve a held call (Crush's default is 30)
+    removed = _merge(hooks, path, CRUSH_EVENTS, lambda ev: {
+        "name": "tracekit", "command": _command("crush", ev, v2, python), "timeout": 600 if ev == "PreToolUse" else 30},
+        uninstall, flat=True)
+    if not hooks:
+        s.pop("hooks")
+    if _backup_changed(path, txt, s):
         _atomic_write_json(path, s)
-    old = " and ".join(sorted(removed if uninstall else removed - {new}))
-    if old:
-        print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")
+    _said(path, removed, uninstall, v2)
     return path
 
 
 def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
     """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
-    from .install import SettingsError, _atomic_write_json, _backup_changed, _hook_command
+    from .install import SettingsError, _atomic_write_json, _backup_changed
     path = path or config_path(harness, project)
     if harness == "opencode":
         return _install_opencode(path, uninstall, v2, python)
@@ -1033,98 +1038,43 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             raise SettingsError(f"{legacy} is Droid's legacy hooks file: save once in Droid's /hooks so Droid moves it "
                                 f"to {path}, then run init again. Tracekit did not change it.")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    s, txt = {}, None
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                txt = f.read()
-            s = json.loads(txt) if txt.strip() else {}
-        except (OSError, ValueError) as e:
-            raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
-        if not isinstance(s, dict):
-            raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
-    if harness == "droid" and not uninstall and not os.path.exists(path):
-        settings = os.path.join(os.path.dirname(path), "settings.json")
-        if os.path.exists(settings):
-            try:
-                with open(settings, encoding="utf-8") as f:
-                    fallback = json.load(f)
-                fallback = fallback.get("hooks", {})
-                if not isinstance(fallback, dict):
-                    raise ValueError("hooks must be an object")
-            except (OSError, ValueError, AttributeError) as e:
-                raise SettingsError(f"{settings}: {e}; Tracekit did not change it.") from e
-            # Droid reads settings hooks only while the standalone file is absent; preserve them when creating it.
-            s = dict(fallback)
+    s, txt = _read(path)
+    if harness == "droid" and not uninstall and txt is None:
+        # Droid reads settings hooks only while the standalone file is absent; preserve them when creating it.
+        s = dict(_droid_settings_hooks(path) or {})
     # Droid's standalone hooks.json is the event map; only its settings.json nests that map under `hooks`. agy's maps
     # each hook's name to its event map: Tracekit's is AGY_HOOK
     key = AGY_HOOK if harness == "antigravity" else "hooks"
     hooks = s if harness == "droid" else s.setdefault(key, {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'{key}' in {path} must be an object; Tracekit did not change it.")
-    new, removed = "v2" if v2 else "v1", set()
-
-    def cmd(ev):   # the v2 hook names its event, so it can block a pre-tool payload it cannot read; agy's payload names
-        # none, so its v1 hook does too
-        c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
-                          (harness, ev) if v2 or harness == "antigravity" else (harness,), python, ev in PRE,
-                          harness == "antigravity")
-        # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
-        # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
-        # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
-        # which both run
-        # assume Droid runs hooks under cmd.exe; Qwen Code does, so a path that needs quotes keeps cmd.exe's form there,
-        # and one that doesn't goes bare, which either shell runs
-        if os.name != "nt" or harness in ("cursor", "droid"):
-            return c
-        m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
-        return m.group(1) + c[m.end():] if m else c if harness == "qwen" else f"& {c}"
-
-    def ours(cmds):
-        vs = {_version(c) for c in cmds} - {None}
-        removed.update(vs)
-        return bool(vs)
-
-    def entries(ev):
-        lst = hooks.get(ev, [])
-        if not isinstance(lst, list):
-            raise SettingsError(f"hooks.{ev} in {path} must be a list; Tracekit did not change it.")
-        return lst
     if harness == "cursor":
         s.setdefault("version", 1)
         closed = v2 or H.fail_closed()   # v2: a hook that cannot run blocks, as the v2 hook does
         events = {"preToolUse": 600, "postToolUse": 30, "postToolUseFailure": 30, "beforeSubmitPrompt": 30, "sessionStart": 30,
                   "sessionEnd": 30, **dict.fromkeys(CURSOR_SAID, 30)}
-        for ev, timeout in events.items():
-            lst = [h for h in entries(ev) if not (isinstance(h, dict) and ours([h.get("command")]))]
-            if not uninstall and (v2 or ev not in CURSOR_SAID):   # the v1 hook records no model text
-                lst.append({"command": cmd(ev), "type": "command", "timeout": timeout,
-                            "failClosed": closed and ev in PRE})   # on another event Cursor blocks a prompt too
-            if lst:
-                hooks[ev] = lst
-            else:
-                hooks.pop(ev, None)
+
+        def entry(ev):
+            if v2 or ev not in CURSOR_SAID:   # the v1 hook records no model text
+                return {"command": _command(harness, ev, v2, python), "type": "command", "timeout": events[ev],
+                        "failClosed": closed and ev in PRE}   # on another event Cursor blocks a prompt too
+        removed = _merge(hooks, path, events, entry, uninstall, flat=True)
     else:
         events = (DROID_EVENTS if harness == "droid" else AGY_EVENTS if harness == "antigravity" else
                   ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
                   else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
                   if harness == "qwen" else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
         tools = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "BeforeTool", "AfterTool"}
-        for ev in events:
-            groups = [g for g in entries(ev) if not (isinstance(g, dict) and ours(
-                [h.get("command") for h in g.get("hooks", []) if isinstance(h, dict)]))]
-            if not uninstall:
-                h = {"type": "command", "command": cmd(ev)}
-                # ms for Gemini CLI; newer Qwen Code reads seconds, but 1000 or more still as ms, so 600 s in both
-                if harness in ("gemini", "qwen"):   # holds wait for approval (Qwen Code's default is 60 s)
-                    h.update(name="tracekit", timeout=600_000 if ev in PRE else 30_000)
-                else:
-                    h["timeout"] = 600 if ev == "PreToolUse" else 30
-                groups.append({"matcher": "*", "hooks": [h]} if ev in tools else {"hooks": [h]})
-            if groups:
-                hooks[ev] = groups
+
+        def entry(ev):
+            h = {"type": "command", "command": _command(harness, ev, v2, python)}
+            # ms for Gemini CLI; newer Qwen Code reads seconds, but 1000 or more still as ms, so 600 s in both
+            if harness in ("gemini", "qwen"):   # holds wait for approval (Qwen Code's default is 60 s)
+                h.update(name="tracekit", timeout=600_000 if ev in PRE else 30_000)
             else:
-                hooks.pop(ev, None)
+                h["timeout"] = 600 if ev == "PreToolUse" else 30
+            return {"matcher": "*", "hooks": [h]} if ev in tools else {"hooks": [h]}
+        removed = _merge(hooks, path, events, entry, uninstall)
     if harness == "antigravity":   # Tracekit's named hook holds only its own two entries, rewritten whole: agy loads a
         # named hook with "enabled": false and never runs it
         if not uninstall:
@@ -1143,10 +1093,25 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             codex_reasoning(path, uninstall=True)
         except SettingsError:   # a config.toml init can't have written to
             pass
-    old = " and ".join(sorted(removed if uninstall else removed - {new}))
-    if old:
-        print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")
+    _said(path, removed, uninstall, v2)
     return path
+
+
+def _droid_settings_hooks(path):
+    """The hooks in the settings.json beside Droid's hooks.json `path`, which Droid reads only while that is absent;
+    None without a settings.json."""
+    from .install import SettingsError
+    settings = os.path.join(os.path.dirname(path), "settings.json")
+    if not os.path.exists(settings):
+        return None
+    try:
+        with open(settings, encoding="utf-8") as f:
+            hooks = json.load(f).get("hooks", {})
+        if not isinstance(hooks, dict):
+            raise ValueError("hooks must be an object")
+    except (OSError, ValueError, AttributeError) as e:
+        raise SettingsError(f"{settings}: {e}; Tracekit did not change it.") from e
+    return hooks
 
 
 def stdin_text():
