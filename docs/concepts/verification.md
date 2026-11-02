@@ -88,7 +88,7 @@ log, but only a witness stops the operator.
 The TypeScript verifier was written from [format v2](../format-v2.md), not from the Python code. It has its own
 canonical JSON, zip reader, schema checks and Merkle and checkpoint code, uses only Web Crypto, and runs in Node and in
 browsers. Tests require both verifiers to give the same verdict, assurance, exit code and check lines on every golden
-bundle, on 55 deliberately broken ones, and on tampered copies of bundles from a real signer. A bug in one verifier
+bundle, on 57 deliberately broken ones, and on tampered copies of bundles from a real signer. A bug in one verifier
 therefore can't decide an audit on its own.
 
 The TypeScript verifier doesn't check SLH-DSA lines, Rekor anchors, record-key certificates or `tracekit why` findings

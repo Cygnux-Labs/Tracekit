@@ -32,6 +32,8 @@
     "negative/run-second-run.tkb": "8f7398817444d196ce37918464664aceccf2491ddbe451b62fd9c8a51af7beb5",
     "negative/run-set-float-bound.tkb": "0ed2a956336f93ca554f277c761c45aa1ab6883473bf805306a3323bb1d738fe",
     "negative/run-set-foreign-run.tkb": "26ecca52a68cd63bfeec460ae2e2671cd6fc70bed2ae4ff37278989a743f497a",
+    "negative/run-set-records-extra.tkb": "f3cad2bec2f51fc4ddfddada8d9243305d44ae5d04911906aa53ec1e907f4f98",
+    "negative/run-set-records-reordered.tkb": "819dba346678d4bbdc8f79636fd78b7df783e77bd8afc63a459ca9a2a426a08c",
     "negative/run-set-registry-uncosigned.tkb": "66838d8a2c2bb6e8ee3ad1d70d8cd21d6c415bd6a5310ae14b3a6b2e91c3d1e2",
     "negative/run-set-run-twice.tkb": "0f63beaa30c43717336efba16d3670b2d576754be1c3db7eb893647b142e9527",
     "negative/trust.json": "090951d638b56562abb560215bbf164f4d6cc7630227b97d7cf036050c012883",
@@ -472,6 +474,24 @@
         "exit_code": 1,
         "integrity": "FAILED",
         "first_failure": "run chain"
+      }
+    },
+    {
+      "name": "run-set with a record no leaf points to (a forged ext record)",
+      "bundle": "run-set-records-extra.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run-set"
+      }
+    },
+    {
+      "name": "run-set with its records out of leaf order",
+      "bundle": "run-set-records-reordered.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run-set"
       }
     },
     {

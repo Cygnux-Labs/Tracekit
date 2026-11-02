@@ -707,9 +707,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         out.update(runs)
     if len(runs) != 1 and not run_set and not _about_one(runs):
         raise ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set")
-    retired, proven_to, reg_cosigs = [], -1, []
+    retired, proven_to, reg_cosigs, pointed = [], -1, [], []
     if run_set:
-        retired, proven_to, reg_cosigs = _run_set(rep, files, trust, witnesses, origin, size, runs, included,
+        retired, proven_to, reg_cosigs, pointed = _run_set(rep, files, trust, witnesses, origin, size, runs, included,
                                                   lambda r, p: check_record(r, keys_at(r["event"]["seq"]), p))
         listed = {(r["event"]["seq"], r["hash"]) for r in key_records}
         key_problems.extend(f"seq {seq}: key.retire withheld (the registry log has it)"
@@ -893,7 +893,6 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
-    pointed = _jsonl(files["registry/records.jsonl"]) if run_set else []   # the records a run-set's leaves name
     _ext(rep, list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values()),
          manifest.get("verifier_version"))
 
@@ -1372,14 +1371,15 @@ def _constraints(rep, runs):
 def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):
     """The run-set line (COMPLETE or INCOMPLETE) and the log tail line. Returns the (seq, hash) of every key.retire
     the registry range points to, the highest seq the range points to when it starts at registry size 0 (else -1):
-    every key.retire up to there is in the range, and the pinned cosignatures of each registry note."""
+    every key.retire up to there is in the range, the pinned cosignatures of each registry note, and the records of
+    registry/records.jsonl it checked, each the one its leaf points to."""
     rs, problems = loads_strict(files["registry/run-set.json"]), []
     tsalt = base64.b64decode(rs["tenant_salt"], validate=True)
     lo, hi, reg_origin = rs["from"], rs["to"], registry.origin(origin, tsalt)
     span = f"registry {lo}..{hi}"
     if type(lo) is not int or type(hi) is not int:
         rep.check("run-set", False, f"INCOMPLETE, {span}", ["the registry range is not two integers"])
-        return [], -1, []
+        return [], -1, [], []
     # the registry notes are signed by the record log's own pinned key, under the registry origin
     vkeys = [checkpoint.vkey(reg_origin, *checkpoint.parse_vkey(k)[2:]) for k in trust["logs"]
              if checkpoint.parse_vkey(k)[0] == origin]
@@ -1397,13 +1397,16 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
             problems.append(f"registry checkpoint at size {n}: {n2}")
     if problems or not 0 <= lo <= hi or hi == 0:
         rep.check("run-set", False, f"INCOMPLETE, {span}", problems or [f"bad registry range {lo}..{hi}"])
-        return [], -1, reg_cosigs
+        return [], -1, reg_cosigs, []
     if 0 < lo < hi and not verify_consistency(lo, hi, roots[lo], roots[hi], [
             base64.b64decode(p, validate=True) for p in rs["consistency"]]):
         problems.append(f"registry checkpoint {lo} is not a prefix of {hi}")
-    leaves, pointed = rs["leaves"], {r["event"]["seq"]: r for r in _jsonl(files["registry/records.jsonl"])}
+    leaves, lines, pointed = rs["leaves"], _jsonl(files["registry/records.jsonl"]), []
     if len(leaves) != hi - lo:
         problems.append(f"{hi - lo} leaves in {lo}..{hi}, {len(leaves)} in the bundle: a leaf is missing")
+    if len(lines) != len(leaves):   # §9: the record each leaf points to, in leaf order, and nothing else
+        problems.append(f"{len(lines)} record(s) in registry/records.jsonl for {len(leaves)} leaves: one per leaf, "
+                        "in leaf order")
     registered, finals, retired, closed, tenant, targets, top, gaps = {}, {}, [], None, None, set(), -1, {}
     for i, x in enumerate(leaves[:hi - lo], lo):
         leaf = base64.b64decode(x["leaf"], validate=True)
@@ -1412,14 +1415,15 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
             problems.append(f"leaf {i} is not in the registry tree of size {hi}")
             continue
         typ, run_hash, log_id, seq, h = registry.parse(leaf)
-        r = pointed.get(seq)
+        r = lines[i - lo] if i - lo < len(lines) else None
         e = r and r["event"]
-        if (r is None or r["hash"] != h or e["type"] != typ or e["log_id"] != log_id or not included(r)
+        if (r is None or e["seq"] != seq or r["hash"] != h or e["type"] != typ or e["log_id"] != log_id or not included(r)
                 or registry.run_hash(tsalt, e["run_id"]) != run_hash
                 or typ not in registry.SIGNER_LEAVES and tenant not in (None, e["tenant"])):
             problems.append(f"leaf {i} points to a missing or different record (seq {seq})")
             continue
         check_record(r, problems)
+        pointed.append(r)
         top = max(top, seq)
         if typ in ("run.registered", "run.final"):
             targets.add(run_name(e["tenant"], e["run_id"]))
@@ -1458,7 +1462,7 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
         rep.check("tenant-level gaps", False, f"{sum(gaps.values())} in the range: {counted}", warn=True)
     rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
               f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
-    return retired, top if lo == 0 else -1, reg_cosigs
+    return retired, top if lo == 0 else -1, reg_cosigs, pointed
 
 
 def _bridge(rep, key_records, v1_ledger, v1_key):
