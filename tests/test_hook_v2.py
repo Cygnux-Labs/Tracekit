@@ -13,6 +13,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -1003,17 +1004,17 @@ class HeldCalls(unittest.TestCase):
         HookV2.setUp(self)
         os.environ.pop(claude_code.WAIT_ENV)
 
-    def pre(self, command, tid):
-        """(exit code, stdout, stderr) of the PreToolUse hook for Bash `command`."""
+    def pre(self, command, tid, **more):
+        """(exit code, stdout, stderr) of the PreToolUse hook for Bash `command`, with the tool_input keys `more`."""
         p = subprocess.run(HOOK, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60, input=json.dumps(
             {"hook_event_name": "PreToolUse", "session_id": "s1", "tool_name": "Bash", "tool_use_id": tid,
-             "tool_input": {"command": command}}))
+             "tool_input": {"command": command, **more}}))
         return p.returncode, p.stdout, p.stderr
 
-    def held(self, command, tid):
+    def held(self, command, tid, **more):
         """The approval id a held call's hook names, after checking what it says to whom."""
         start = time.monotonic()
-        code, out, err = self.pre(command, tid)
+        code, out, err = self.pre(command, tid, **more)
         self.assertLess(time.monotonic() - start, 30, "the hook waited")
         self.assertEqual(code, 2, err)
         aid = err.split()[4]
@@ -1066,6 +1067,105 @@ class HeldCalls(unittest.TestCase):
         export(store, "default", run.run_id, text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET), out)
         rep, code = v2.verify(out, trust)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+
+    def test_an_approved_retry_that_rewords_its_description_runs_the_approved_call(self):
+        """#509: Claude Code's Bash input carries a free-text `description`, which the model rewords on a retry, and the
+        approval bound it: one approved command was held three times in a row. A retry that differs from the approved
+        call only there is decided and consumed with the approved arguments and runs as sent, with no updatedInput (a
+        hook's updatedInput could change how Claude Code asks the person); one that differs in any other key is held
+        again, and so is the next retry once one ran."""
+        asked = {"command": self.UPLOAD, "description": "Upload the build", "timeout": 600000}
+        aid = self.held(tid="t1", **asked)
+        self.assertEqual(self.approvals("approve", aid), f"approved: {aid} (self-approved: dev mode only)")
+        for i, other in enumerate(({"command": self.UPLOAD.replace("releases", "backups")}, {"timeout": 5000},
+                                   {"run_in_background": True}, {"dangerouslyDisableSandbox": True})):
+            with self.subTest(other):
+                code, out, err = self.pre(tid=f"o{i}", **dict(asked, description="Retry the upload", **other))
+                self.assertEqual(code, 2, err)
+                self.assertTrue(err.startswith("[tracekit] held for approval "), err)
+                self.assertNotEqual(err.split()[4], aid)
+        self.assertEqual(self.pre(tid="t2", **dict(asked, description="Retry the upload to S3")), (0, "", ""))
+        self.assertEqual(self.post(self.UPLOAD, "t2"), (0, ""))
+        # the signer consumed the approval (for t2, the only call that ran): it does only for a decision of the
+        # approved arguments
+        self.assertEqual(self.consumed(), [aid])
+        again = self.held(tid="t3", **dict(asked, description="Upload once more"))   # once: held again, a new approval
+        self.assertNotEqual(again, aid)
+        self.approvals("approve", again)
+        # exactly the same arguments: the signer matches them itself, as before; nothing to hand back
+        self.assertEqual(self.pre(tid="t4", **dict(asked, description="Upload once more")), (0, "", ""))
+
+    def consumed(self):
+        return [e["data"]["approval_id"] for e in self.events() if e["type"] == "approval.consumed"]
+
+    def test_a_reworded_retry_after_a_reject_says_a_person_rejected_it(self):
+        """#509: a reworded retry of a command the person rejected is decided as the model sent it and held, as before,
+        and its block says first that a person rejected the command, so the agent asks before trying again. (The signer
+        keeps no copy of a rejected call's arguments to decide it with.)"""
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.approvals("reject", aid)
+        code, out, err = self.pre(self.UPLOAD, "t2", description="Retry the upload")
+        new = err.split()[4]
+        self.assertEqual(code, 2)
+        self.assertNotEqual(new, aid)
+        self.assertIn(f"`tracekit approvals reject {new}`). Why: a person rejected this command (with another "
+                      f"description) as {aid}; ask them before trying again; uploading to cloud storage. ", err)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
+        self.assertEqual(Client().approval_get({"approval_id": new})["args"],
+                         {"command": self.UPLOAD, "description": "Retry the upload"})
+        self.assertEqual(self.consumed(), [])
+
+    def test_a_reworded_retry_after_an_expired_approval_is_held_as_before(self):
+        """#509: an approval that expired lets nothing run in place of a reworded retry: the retry is decided as the
+        model sent it and held with a new approval of its own arguments."""
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.approvals("approve", aid)
+        self.run_handle().call("approval_abandon", approval_id=aid)
+        new = self.held(self.UPLOAD, "t2", description="Retry the upload")
+        self.assertNotEqual(new, aid)
+        self.assertEqual(Client().approval_get({"approval_id": new})["args"],
+                         {"command": self.UPLOAD, "description": "Retry the upload"})
+
+    def test_a_reworded_retry_runs_under_an_earlier_approval_when_a_later_hold_is_unanswered(self):
+        """#509: the agent retried before the person answered (a second hold), then the person approved the first
+        approval: a reworded retry runs under it, the newest held call of the command that a person answered."""
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.assertNotEqual(self.held(self.UPLOAD, "t2", description="Upload it again"), aid)
+        self.approvals("approve", aid)
+        self.assertEqual(self.pre(self.UPLOAD, "t3", description="Retry the upload"), (0, "", ""))
+        self.assertEqual(self.consumed(), [aid])
+
+    def test_a_planted_state_entry_lets_no_other_command_use_an_approval(self):
+        """#509: the session state is the agent's to write. An entry that points another command at an approved
+        approval runs nothing: the arguments come from the signer, checked against the call's but the description."""
+        other = self.UPLOAD.replace("releases", "backups")
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.approvals("approve", aid)
+        with open(claude_code._state("s1")) as f:
+            st = json.load(f)
+        st["held"].append({"rest": claude_code._rest({"command": other}), "approval_id": aid})
+        with open(claude_code._state("s1"), "w") as f:
+            json.dump(st, f)
+        self.assertNotEqual(self.held(other, "t2", description="Back it up"), aid)
+        self.assertEqual(self.consumed(), [])
+        self.assertEqual(self.pre(self.UPLOAD, "t3", description="Retry the upload"), (0, "", ""))
+        self.assertEqual(self.consumed(), [aid])
+
+    def test_parallel_reworded_retries_run_once(self):
+        """#509: four reworded retries of one approved call at once: exactly one runs, under the one approval."""
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.approvals("approve", aid)
+        codes = {}
+
+        def retry(i):
+            codes[i] = self.pre(self.UPLOAD, f"r{i}", description=f"Retry {i}")[0]
+        threads = [threading.Thread(target=retry, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sorted(codes.values()), [0, 2, 2, 2])
+        self.assertEqual(self.consumed(), [aid])
 
     def test_a_retry_of_a_rejected_call_says_who_rejected_it(self):
         """The person rejects a held call and the agent tries it again: the block said only to approve a new approval,
