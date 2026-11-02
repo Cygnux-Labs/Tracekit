@@ -5,9 +5,17 @@ the doc says the new number. CHANGELOG.md is left out: a release's notes quote t
 import glob
 import json
 import os
+import re
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def quotes(body, text):
+    """Whether `body` holds `text` with its whitespace collapsed, and a number at either end of it whole: "18 of 432"
+    is not in "118 of 432" or "18 of 4,321" (#500)."""
+    t = re.escape(" ".join(text.split()))
+    return re.search(r"(?<![\d.,])" * text[:1].isdigit() + t + r"(?![\d]|[.,]\d)" * text[-1:].isdigit(), body) is not None
 
 
 def res(name):
@@ -119,7 +127,7 @@ class EvalDocs(unittest.TestCase):
                 body = " ".join(f.read().split())
             for t in texts:
                 with self.subTest(doc=doc, claim=t):
-                    self.assertIn(" ".join(t.split()), body, "update the doc, or re-run the eval that wrote the file")
+                    self.assertTrue(quotes(body, t), "update the doc, or re-run the eval that wrote the file")
 
     def test_other_docs_link_to_the_evaluation_instead_of_copying_its_counts(self):
         """#500: E17's and E21's counts were copied into several pages, so every rule change edited them all. Only
@@ -131,7 +139,14 @@ class EvalDocs(unittest.TestCase):
             with open(path, encoding="utf-8") as f:
                 body = " ".join(f.read().split())
             with self.subTest(doc=os.path.relpath(path, ROOT)):
-                self.assertEqual([c for c in counts if c in body], [], "link to docs/evaluation.md instead")
+                self.assertEqual([c for c in counts if quotes(body, c)], [], "link to docs/evaluation.md instead")
+
+    def test_a_count_matches_only_as_a_whole_number(self):
+        self.assertTrue(quotes("held 18 of 432 benign", "18 of 432"))
+        self.assertTrue(quotes("(18 of 432)", "18 of 432"))
+        for body in ("held 118 of 432", "held 18 of 4321", "held 18 of 432.5", "held 1,18 of 432", "held 18 of 432,1"):
+            with self.subTest(body=body):
+                self.assertFalse(quotes(body, "18 of 432"))
 
 
 if __name__ == "__main__":
