@@ -1,4 +1,5 @@
-// Offline Vercel AI SDK v7: pause for approval, then resume the same run in a second process.
+// Offline Vercel AI SDK v7: pause for approval, then resume the same run in a second process. POSIX only (it checks
+// the state file's owner).
 // Needs `npm i -D ai@7`, `npm run build` and Python with tracekit (a dev signer is started on demand).
 //   STATE="$(mktemp -d)/state.json"
 //   node examples/v2_vercel_ai_resume.mjs "$STATE"
