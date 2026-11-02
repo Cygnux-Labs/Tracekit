@@ -80,7 +80,7 @@ def transcript_entries(f, final=False):
             return
         try:
             e = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):   # RecursionError: nested past what json.loads takes
             e = None
         yield len(line), e if isinstance(e, dict) else None
 

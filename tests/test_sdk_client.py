@@ -82,6 +82,23 @@ class DevSigner(unittest.TestCase):
             time.sleep(0.05)
         self.assertLessEqual(threading.active_count(), before + 2)
 
+    def test_a_client_that_reconnects_keeps_no_dead_connection_open(self):
+        """Review of 1.5.3: a lost connection's socket stayed open (its reader was never closed, and a finalizer per
+        connection kept it alive), one fd for each reconnection; the signer drops a connection idle READ_TIMEOUT_S,
+        so a heartbeating tailer reconnected and leaked nearly every beat."""
+        c = Client()
+        self.addCleanup(c.close)
+        c.status()
+        gc.collect()
+        before = len(os.listdir("/dev/fd"))
+        for _ in range(20):
+            conn = c._conn
+            conn.drop()
+            conn.threads[0].join(5)
+            c.status()
+        gc.collect()
+        self.assertLessEqual(len(os.listdir("/dev/fd")), before + 1)
+
     def test_close_returns_after_the_connection_threads_end(self):
         """A hook closes its client and exits at once; a connection thread still waking then can crash the process
         (#481: a hook segfaulted on CI's macOS runners under Python 3.13)."""

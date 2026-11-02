@@ -114,6 +114,12 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(report["by_rule"], {"TK-ENGINE-ERROR": 1})
         self.assertEqual(report["skipped_malformed"], 0)
 
+    def test_a_line_nested_past_what_json_takes_is_malformed_and_the_rest_is_read(self):
+        """Review of 1.5.3: its RecursionError made the whole file unreadable, its calls uncounted."""
+        _write_jsonl(self.root / "s.jsonl", ["[" * 5000 + "]" * 5000, _call("Bash", {"command": "ls"})])
+        report = audit.audit(str(self.root))
+        self.assertEqual((report["counts"]["allow"], report["skipped_malformed"], report["unreadable"]), (1, 1, []))
+
     def test_an_unreadable_file_is_counted_and_skipped(self):
         bad = self.root / "proj" / "bad.jsonl"
         _write_jsonl(bad, [_call("Bash", {"command": "rm -rf /"})])

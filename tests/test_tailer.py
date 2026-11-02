@@ -68,6 +68,21 @@ class Run:
         return self.signer.call(self.identity, method, req)
 
 
+class _Ending:
+    """A run handle with no signer: once `closing`, every call but tailer_lost is refused run_closed (a closing run's
+    grace window takes late gap records); `lost`: the tailer_lost reasons."""
+
+    def __init__(self):
+        self.closing, self.lost = False, []
+
+    def call(self, method, **fields):
+        if method == "tailer_lost":
+            self.lost.append(fields["reason"])
+        elif self.closing:
+            raise RPCError("run_closed", "the run is closed")
+        return {}
+
+
 @unittest.skipIf(os.name == "nt", "the tailer is POSIX-only")
 class Tailer(unittest.TestCase):
     def setUp(self):
@@ -404,17 +419,117 @@ class Tailer(unittest.TestCase):
         self.assertIn("another file replaced the transcript", self.lost()[0])
         self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 1)
 
+    def edit(self):   # same size, same inode
+        with open(self.path, "r+b") as f:
+            data = f.read()
+            f.seek(0)
+            f.write(data.replace(b"ls -la", b"ls -lR"))
+
     def test_a_line_already_read_edited_in_place_is_lost(self):
         self.write(TOOL_USE, RESULT)
+        self.tail(self.edit, lambda: self.write(NEXT))
+        self.assertIn("a line already read changed in place", self.lost()[0])
+        # a cheap check runs on every wake: caught before the line written after the edit was reported
+        self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 1)
 
-        def edit():   # same size, same inode
-            with open(self.path, "r+b") as f:
-                data = f.read()
-                f.seek(0)
-                f.write(data.replace(b"ls -la", b"ls -lR"))
-        self.tail(edit, lambda: self.write(NEXT))
+    def test_a_line_edited_in_a_transcript_being_written_is_lost_once_check_s_has_passed(self):
+        self.write(TOOL_USE, RESULT)
+        with mock.patch.object(tailer, "CHECK_S", 0):
+            self.tail(self.edit, lambda: self.write(NEXT))
         self.assertIn("a line already read changed in place", self.lost()[0])
         self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 1)
+
+    def test_a_large_transcript_being_written_is_rehashed_once_a_hundred_rehashes_time_has_passed(self):
+        """Review of 1.5.3: every wake while the transcript changed rehashed all the tailer had read of it (0.3 s for an
+        816 MB one); a rehash that takes over CHEAP_S now waits a hundred times as long (at most CHECK_S): within that,
+        only the last wake rehashes."""
+        self.write(TOOL_USE)
+        rehashed, real = [], tailer._sha256
+
+        def sha256(f, n, h=None):   # as costly as a large transcript's (20 ms of CPU): the next check is due in 2 s
+            end = time.thread_time() + 0.02
+            while time.thread_time() < end:
+                pass
+            if h is None:   # a check, not the digest of what it reads
+                rehashed.append(n)
+            return real(f, n, h)
+        with mock.patch.object(tailer, "_sha256", sha256):
+            self.tail(*[lambda: self.write(PROMPT)] * 5)
+        self.assertEqual(rehashed, [len(line(TOOL_USE)) + 5 * len(line(PROMPT))])
+        self.assertEqual(self.lost(), [])
+
+    def slow(self):
+        """_sha256 as costly as a large transcript's (20 ms of CPU): once a check has run, the next is due 2 s later."""
+        real = tailer._sha256
+
+        def sha256(f, n, h=None):
+            end = time.thread_time() + 0.02
+            while time.thread_time() < end:
+                pass
+            return real(f, n, h)
+        return mock.patch.object(tailer, "_sha256", sha256)
+
+    def test_an_edit_is_told_when_the_run_ends_before_the_next_check(self):
+        """Review of #540: a large transcript's run ended (run_closed) before its next check, so an edit to a line
+        already read went untold; the tailer now checks once more and tells it, while the signer takes late records."""
+        run, steps = _Ending(), [lambda: (self.edit(), self.write(NEXT)), lambda: (self.write(PROMPT),
+                                                                                  setattr(run, "closing", True))]
+        self.write(TOOL_USE, RESULT)
+        with self.slow():
+            tailer.tail(run, self.path, os.getuid(), None, lambda: steps.pop(0)())   # system mode: no `until`
+        self.assertEqual(run.lost, ["a line already read changed in place"])
+
+    def last_wake(self, unread):
+        """A subagent's line already read is edited, then the session ends (the hook closes the run, then removes the
+        session state), with an `unread` line in the main transcript or none. -> the tailer_lost reasons."""
+        run, until = _Ending(), os.path.join(self.d, "until")
+        sub = os.path.join(self.d, "session", "subagents", "agent-a1.jsonl")
+        os.makedirs(os.path.dirname(sub), exist_ok=True)
+        with open(sub, "wb") as f:
+            f.write(line(use_line("toolu_9", "Bash", {"command": "cat a"})))
+        self.write(TOOL_USE, mode="wb")
+        open(until, "w").close()
+
+        def edit():
+            with open(sub, "r+b") as f:
+                data = f.read()
+                f.seek(0)
+                f.write(data.replace(b"cat a", b"cat b"))
+
+        def session_end():
+            if unread:
+                self.write(NEXT)
+            run.closing = True
+            os.remove(until)
+        steps = [lambda: None, edit, session_end]
+        with self.slow():
+            tailer.tail(run, self.path, os.getuid(), until, lambda: steps.pop(0)())
+        return run.lost
+
+    def test_the_last_wake_checks_every_transcript_before_the_runs_end_refuses_a_line(self):
+        """Review of #540: at SessionEnd the main transcript's unread line was refused run_closed before a subagent's
+        transcript had its last check, so an edit to a line of it already read went untold; and with no line left to
+        report, a large transcript's last wake didn't check it."""
+        for unread in (True, False):
+            with self.subTest(unread=unread):
+                self.assertEqual(self.last_wake(unread),
+                                 ["subagent transcript agent-a1.jsonl: a line already read changed in place"])
+
+    def test_a_line_nested_past_what_json_takes_is_lost(self):
+        """Review of 1.5.3: its RecursionError ended the tailer with no tailer_lost, so the run's model text stopped
+        with no gap."""
+        self.write(TOOL_USE, b"[" * 5000 + b"]" * 5000 + b"\n")
+        self.tail()
+        self.assertIn(f"the line at offset {len(line(TOOL_USE))} is not a JSON object", self.lost()[0])
+
+    def test_a_failure_of_the_tailers_own_is_lost_naming_only_its_type(self):
+        """Review of 1.5.3: an exception other than Lost or a refusal ended the tailer silently."""
+        self.write(TOOL_USE)
+        with mock.patch.object(tailer, "_check", side_effect=OSError(116, "Stale file handle /home/agent/secret")):
+            self.tail()
+        self.assertEqual(len(self.lost()), 1)
+        self.assertIn("the tailer failed (OSError)", self.lost()[0])
+        self.assertNotIn("secret", self.lost()[0])
 
     def test_owner_mismatch_is_refused(self):
         self.write(TOOL_USE)
