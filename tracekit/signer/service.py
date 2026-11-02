@@ -1919,16 +1919,18 @@ class SignerService:
         unrecorded; a RecursionError is the request's nesting, which call() refuses."""
         try:
             d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
-            listed = self.policy.listed(tool)
-            if listed:   # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool
+            # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
+            # one when two listed names share it
+            for listed in self.policy.listed(tool):
                 d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
             if tool.startswith("mcp:") and "/" in tool:
-                # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class
-                # if the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an
-                # MCP one
+                # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
+                # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
+                # be dodged by naming the call an MCP one
                 bare = tool.split("/", 1)[1]
-                d = _stricter(d, self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls,
-                                                    untrusted))
+                for name in [bare] + self.policy.listed(bare):
+                    d = _stricter(d, self.policy.decide(
+                        name, args, None if self.policy.tool_class(name) != "unknown" else cls, untrusted))
             if hint is None or hint == cls:
                 return d, False, d["rule_ids"]
             h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
