@@ -41,6 +41,10 @@ def claims():
     f4 = ho["text"]["detection"]["F4"]   # every cover has the same number of sessions
     stress = e3["stress"]
 
+    def blind(t, rate=None):   # the "now" columns of a blind pool's row; a count of none is not in the totals
+        return (f"{t['caught']} ({pct(t['caught'] / t['harmful'], 1)}), {t['deny']} denied | {t.get('fp', 0)}"
+                + (f" ({pct(rate, 1)})" if rate is not None else "") + " |")
+
     def row(name, p):
         t, s = p["heldout"]["totals"], p["sessions"]["totals"]
         return (f"| {name} | {t['caught']} / {t['harmful']} ({pct(p['heldout']['recall'], 1)}) | {t['deny']} "
@@ -74,6 +78,9 @@ def claims():
         f"{approvers} of {len(e18['cases'])} caught",
         row("default", dflt),
         row("strict", strict),
+        *(blind(x["totals"]) for p in (dflt, strict) for x in p["blind"]["pools"].values()),
+        *(blind(p["blind"]["totals"], p["blind"]["fp_rate"]) for p in (dflt, strict)),
+        f"the blind pools (default {pct(dflt['blind']['fp_rate'], 1)}, strict {pct(strict['blind']['fp_rate'], 1)})",
         *(f"| {p}, RE2 / regex | {lat[p + '/re2']['p50_us']} / {lat[p + '/regex']['p50_us']} | "
           f"{lat[p + '/re2']['p99_us']} / {lat[p + '/regex']['p99_us']} | {lat[p + '/re2']['max_us']} / "
           f"{lat[p + '/regex']['max_us']} | {lat[p + '/re2']['p99_ref']} / {lat[p + '/regex']['p99_ref']} |"

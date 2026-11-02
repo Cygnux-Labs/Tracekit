@@ -33,41 +33,45 @@ func collectRuns(files map[string][]byte) (map[string][][]byte, error) {
 		}
 		parts := runFilePattern.FindStringSubmatch(name)
 		if parts == nil {
-			return nil, fmt.Errorf("invalid run part path: %s", name)
+			return nil, failure{"run parts", fmt.Errorf("invalid run part path: %s", name)}
 		}
 		number := 0
 		if parts[2] != "" {
 			n, _ := strconv.Atoi(parts[2])
 			if n < 1 {
-				return nil, errors.New("invalid run part number")
+				return nil, failure{"run parts", errors.New("invalid run part number")}
 			}
 			number = n
 		}
 		groups[parts[1]] = append(groups[parts[1]], entry{number, name})
 	}
 	if len(groups) == 0 {
-		return nil, errors.New("no run files")
+		check := "bundle structure" // a bundle holds a run, unless a run-set's registry says which it holds
+		if _, ok := files["registry/run-set.json"]; ok {
+			check = "run-set"
+		}
+		return nil, failure{check, errors.New("no run files")}
 	}
 	result := make(map[string][][]byte)
 	for id, entries := range groups {
 		sort.Slice(entries, func(i, j int) bool { return entries[i].part < entries[j].part })
 		if len(entries) > 1 && entries[0].part == 0 {
-			return nil, fmt.Errorf("run %s has both file and parts", id)
+			return nil, failure{"run parts", fmt.Errorf("run %s has both file and parts", id)}
 		}
 		if entries[0].part > 0 && entries[0].part != 1 {
-			return nil, fmt.Errorf("run %s missing part-0001", id)
+			return nil, failure{"run parts", fmt.Errorf("run %s missing part-0001", id)}
 		}
 		joined := make([][]byte, 0)
 		for i, e := range entries {
 			if e.part == 0 && len(entries) != 1 {
-				return nil, fmt.Errorf("mixed run layouts: %s", id)
+				return nil, failure{"run parts", fmt.Errorf("mixed run layouts: %s", id)}
 			}
 			if e.part > 0 && e.part != i+1 {
-				return nil, fmt.Errorf("nonconsecutive run parts: %s", id)
+				return nil, failure{"run parts", fmt.Errorf("nonconsecutive run parts: %s", id)}
 			}
 			lines, err := readLines(files[e.filename])
 			if err != nil {
-				return nil, fmt.Errorf("%s: %w", e.filename, err)
+				return nil, failure{"bundle structure", fmt.Errorf("%s: %w", e.filename, err)}
 			}
 			joined = append(joined, lines...)
 		}
@@ -84,6 +88,9 @@ func checkRunEvidence(files map[string][]byte, keys map[string]recordedKey, logI
 	if err != nil {
 		return nil, 0, err
 	}
+	// the checks of the reference verifier these errors fail: a record's signature, schema and log are its signature
+	// check's, its place in the run the run chain's
+	chainBroken := func(err error) ([]runEvidence, int, error) { return nil, 0, failure{"run chain", err} }
 	keysSorted := make([]string, 0, len(groups))
 	for id := range groups {
 		keysSorted = append(keysSorted, id)
@@ -101,66 +108,66 @@ func checkRunEvidence(files map[string][]byte, keys map[string]recordedKey, logI
 		for i, line := range lines {
 			rec, err := decodeRecord(line)
 			if err != nil {
-				return nil, 0, fmt.Errorf("run record: %w", err)
+				return nil, 0, failure{"bundle structure", fmt.Errorf("run record: %w", err)}
 			}
 			if err := checkRecord(rec, line, keys); err != nil {
-				return nil, 0, fmt.Errorf("seq %d: %w", rec.seq, err)
+				return nil, 0, failure{"signatures", fmt.Errorf("seq %d: %w", rec.seq, err)}
 			}
 			tenant, err := fieldString(rec.ev, "tenant")
 			if err != nil {
-				return nil, 0, err
+				return chainBroken(err)
 			}
 			id, err := fieldString(rec.ev, "run_id")
 			if err != nil {
-				return nil, 0, err
+				return chainBroken(err)
 			}
 			chain, err := fieldString(rec.ev, "run_prev_hash")
 			if err != nil {
-				return nil, 0, err
+				return chainBroken(err)
 			}
 			if rec.ev["log_id"] != logID {
-				return nil, 0, errors.New("run log_id mismatch")
+				return nil, 0, failure{"signatures", errors.New("run log_id mismatch")}
 			}
 			if i == 0 {
 				if rec.ev["type"] != "run.registered" {
-					return nil, 0, errors.New("run must start with run.registered")
+					return chainBroken(errors.New("run must start with run.registered"))
 				}
 				digest := sha256.Sum256([]byte(tenant + "/" + id))
 				if hex.EncodeToString(digest[:])[:32] != group {
-					return nil, 0, errors.New("run filename mismatches identity")
+					return chainBroken(errors.New("run filename mismatches identity"))
 				}
 				run.tenant, run.id = tenant, id
 				if seen[tenant+"/"+id] {
-					return nil, 0, errors.New("duplicate bundled run identity")
+					return chainBroken(errors.New("duplicate bundled run identity"))
 				}
 				seen[tenant+"/"+id] = true
 			} else if rec.seq <= prevSeq {
-				return nil, 0, errors.New("run seq out of order")
+				return chainBroken(errors.New("run seq out of order"))
 			}
 			if isFinal || rec.runSeq != uint64(i) || tenant != run.tenant || id != run.id || chain != prevHash {
-				return nil, 0, fmt.Errorf("run_seq %d (seq %d) does not continue the run", i, rec.seq)
+				return chainBroken(fmt.Errorf("run_seq %d (seq %d) does not continue the run", i, rec.seq))
 			}
 			if i > 0 && rec.seq == prevSeq+1 && rec.ev["prev_hash"] != prevHash {
-				return nil, 0, errors.New("contiguous log chain mismatch")
+				return chainBroken(errors.New("contiguous log chain mismatch"))
 			}
 			prevHash, prevSeq = rec.hash, rec.seq
 			if rec.ev["type"] == "run.final" {
 				if i == 0 {
-					return nil, 0, errors.New("run final cannot be its first record")
+					return chainBroken(errors.New("run final cannot be its first record"))
 				}
 				data, err := object(rec.ev["data"])
 				if err != nil {
-					return nil, 0, err
+					return chainBroken(err)
 				}
 				head, err := fieldInt(data, "head_run_seq")
 				if err != nil || head != uint64(i-1) || data["head_hash"] != run.records[len(run.records)-1].hash {
-					return nil, 0, errors.New("run.final head disagrees with signed run tail")
+					return chainBroken(errors.New("run.final head disagrees with signed run tail"))
 				}
 				isFinal = true
 			}
 			if i == 0 || i == len(lines)-1 {
 				if err := inclusion(rec); err != nil {
-					return nil, 0, fmt.Errorf("run inclusion: %w", err)
+					return nil, 0, failure{"inclusion", fmt.Errorf("run inclusion: %w", err)}
 				}
 			}
 			run.records = append(run.records, rec)
