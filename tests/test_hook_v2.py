@@ -713,7 +713,7 @@ class HookV2(unittest.TestCase):
             cmd = dict(zip(("approve", "reject"), re.findall(r"`tracekit ([^`]+)`", line)))[decision]
             out = subprocess.run(f"{shlex.quote(sys.executable)} -m tracekit {cmd}", shell=True, capture_output=True,
                                  text=True, timeout=60, env=person)
-            said = f", by you. {cli._self_approved(not named)}" if state == "approved" else ""   # named: not autospawn's
+            said = cli._self_approved(state, not named)   # named: not autospawn's
             self.assertEqual((out.returncode, out.stdout.strip()), (0, f"{state}: {aid}{said}"), out.stderr)
             err = proc.stderr.read()
             proc.wait(60)
@@ -1073,7 +1073,9 @@ class HeldCalls(unittest.TestCase):
         """The person rejects a held call and the agent tries it again: the block said only to approve a new approval,
         so the agent kept retrying. It says a person rejected it, first in its reasons, and still how to approve it."""
         aid = self.held(self.UPLOAD, "t1")
-        self.assertEqual(self.approvals("reject", aid), f"rejected: {aid}")
+        # #510: a self-rejection keeps the run's assurance at dev too (the verifier counts any self_approved answer)
+        self.assertEqual(self.approvals("reject", aid), f"rejected: {aid}, by you, recorded as self-approved (an answer "
+                         "from the call's own requester): the run's assurance stays dev")
         code, out, err = self.pre(self.UPLOAD, "t2")
         again = err.split()[4]
         self.assertEqual(code, 2)

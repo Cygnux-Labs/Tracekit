@@ -171,7 +171,8 @@ approvals:
 
   With `--signer` (or `TRACEKIT_SIGNER`) it can't tell a dev signer from one whose signer.yaml allows it, and says
   "this signer lets the call's own requester answer (a dev signer, or approvals: {self_approval: allow} in its
-  signer.yaml)" instead.
+  signer.yaml)" instead. A rejection from the requester is recorded the same way and caps the run's assurance at `dev`
+  too: `tracekit approvals reject` says so.
 - Approvals are listed and shown only to the run's owner and to those who may answer them; another tenant never sees
   them. `tracekit approvals list` names the identity it asked as when it shows none.
 - OIDC identities are compared by person id, and a run's attested principal never answers its run's approvals

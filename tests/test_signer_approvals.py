@@ -681,8 +681,8 @@ class TestCli(unittest.TestCase):
         listed = tracekit("approvals", "--signer", cfg["socket"], "list").stdout
         self.assertEqual([line.split()[:2] for line in listed.splitlines()], [[a, "requested"] for a in aids])
         out = tracekit("approvals", "--signer", cfg["socket"], "approve", aids[0], "--reason", "checked")
-        self.assertEqual((out.returncode, out.stdout.strip()), (0, f"approved: {aids[0]}, by you. "
-                                                                   + cli._self_approved(False)))
+        self.assertEqual((out.returncode, out.stdout.strip()),
+                         (0, f"approved: {aids[0]}" + cli._self_approved("approved", False)))
         self.assertEqual(tracekit("approvals", "--signer", cfg["socket"], "reject", aids[1]).returncode, 0)
         args = {"to": "acct-666", "memo": big}
         self.assertTrue(run.approval_consume("tc-1", "pay", args, approval_id_hint=aids[0])["ok"])
@@ -740,7 +740,7 @@ class TestCli(unittest.TestCase):
             env = dict(os.environ, TRACEKIT_SIGNER=cfg["socket"])
             for cmd, aid, state in (("approve", aids[0], "approved"), ("reject", aids[1], "rejected")):
                 out = tracekit(cmd, aid, env=env)
-                said = f", by you. {cli._self_approved(False)}" if state == "approved" else ""   # self_approval: allow
+                said = cli._self_approved(state, False)   # self_approval: allow
                 self.assertEqual((out.returncode, out.stdout.strip()), (0, f"{state}: {aid}{said}"), out.stderr)
             self.assertTrue(run.approval_consume("tc-1", "pay", PAY)["ok"])
             self.assertEqual(run.approval_consume("tc-2", "pay", PAY)["rule_ids"], ["TK-APPROVAL-REJECTED"])
