@@ -347,6 +347,37 @@ class TestRegistryNoteTrust(Case):
         self.assertIn("a run in the bundle is not of the run-set's tenant", line["problems"])
 
 
+class TestRegistryRecords(unittest.TestCase):
+    """registry/records.jsonl holds the record each leaf points to, in leaf order, and nothing else (format-v2.md §9):
+    a line no leaf points to is never read, so it can't add a line to the report."""
+    GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "v2")
+
+    def verify(self, edit):
+        out = os.path.join(tmpdir(self), "rs.tkb")
+        rewrite_bundle(os.path.join(self.GOLDEN, "run-set.tkb"), out, lambda f, m: f.update(
+            {"registry/records.jsonl": edit(f["registry/records.jsonl"])}))
+        rep, code = v2.verify(out, os.path.join(self.GOLDEN, "trust.json"))
+        self.assertEqual((code, rep.failures), (1, ["run-set"]), rep.checks)
+        return rep
+
+    def test_a_line_no_leaf_points_to_fails_the_run_set_and_is_not_read(self):
+        def forged(event):
+            return json.dumps({"v": 2, "event": event, "hash": "sha256:" + "0" * 64, "pad": "x" * 200}).encode() + b"\n"
+        rep = self.verify(lambda data: data + forged(
+            {"seq": 9999, "type": "ext", "source": "signer",
+             "data": {"name": "openshell.policy", "change": "egress.allow_all", "observer": "forged"}}) + forged(
+            {"seq": 9998, "type": "model.exchange", "source": "gateway", "data": {"phase": "request"},
+             "ext": {"amended": ["/messages/0/content"]}}))
+        self.assertIn("8 record(s) in registry/records.jsonl for 6 leaves: one per leaf, in leaf order",
+                      next(c for c in rep.checks if c["check"] == "run-set")["problems"])
+        self.assertFalse({"openshell policy", "gateway amendments"} & {c["check"] for c in rep.checks}, rep.checks)
+
+    def test_lines_out_of_leaf_order_fail_the_run_set(self):
+        rep = self.verify(lambda data: b"".join(reversed(data.splitlines(keepends=True))))
+        self.assertIn("leaf 0 points to a missing or different record (seq 1)",
+                      next(c for c in rep.checks if c["check"] == "run-set")["problems"])
+
+
 class TestLogClosed(RunSet):
     def test_closed_log_refuses_writes_and_covers_the_tail(self):
         a = self.register()

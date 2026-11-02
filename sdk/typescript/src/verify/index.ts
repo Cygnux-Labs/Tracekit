@@ -450,9 +450,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (why) rep.unsupport("tracekit why findings");
   else if (runs.size !== 1 && !runSet && !aboutOne(runs))
     throw new ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
-  let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
+  let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [], pointed: J[] = [];
   if (runSet) {
-    [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
+    [retired, provenTo, regCosigs, pointed] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
       origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p), floats);
     const keyed = new Set(keyRecords.map((r) => `${at(at(r, "event"), "seq")} ${at(r, "hash")}`));
     extend(keyProblems, retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
@@ -634,7 +634,6 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
-  const pointed = runSet ? jsonl("registry/records.jsonl") : [];   // the records a run-set's leaves name
   checkExt(rep, [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
     .values()], get(manifest, "verifier_version"));
 }
@@ -1087,12 +1086,12 @@ export async function verifyRecord(r: J, keys: Uint8Array[], algs: string[]): Pr
 }
 
 /** §7: the run-set line (COMPLETE or INCOMPLETE) and the log tail line. Returns the (seq, hash) of every key.retire the
- * range points to, the highest seq it points to when it starts at registry size 0 (else -1), and the pinned
- * cosignatures of each registry note. */
+ * range points to, the highest seq it points to when it starts at registry size 0 (else -1), the pinned cosignatures of
+ * each registry note, and the records of registry/records.jsonl it checked, each the one its leaf points to. */
 async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: (n: string) => Uint8Array, trust: Trust,
   witnesses: Map<string, string>, origin: string, size: number, runs: Map<string, J[]>,
   included: (r: J) => Promise<boolean>, checkRecord: (r: J, p: string[]) => Promise<void>, floats: Floats,
-): Promise<[[number, string][], number, [string, bigint][][]]> {
+): Promise<[[number, string][], number, [string, bigint][][], J[]]> {
   const problems: string[] = [], tsalt = b64decode(at(rs, "tenant_salt"));
   const lo = at(rs, "from"), hi = at(rs, "to"), regOrigin = await registryOrigin(origin, tsalt);
   // a bound as the reference prints it: 2.0 when its token had a fraction or exponent
@@ -1101,7 +1100,7 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   const span = `registry ${bound("from", lo)}..${bound("to", hi)}`;
   if (![lo, hi].every((n) => Number.isSafeInteger(n)) || floats.get(rs)?.has("from") || floats.get(rs)?.has("to")) {
     rep.check("run-set", false, `INCOMPLETE, ${span}`, ["the registry range is not two integers"]);
-    return [[], -1, []];
+    return [[], -1, [], []];
   }
   // the registry notes are signed by the record log's own pinned key, under the registry origin
   const vkeys: string[] = [];
@@ -1129,13 +1128,15 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   }
   if (problems.length || !(0 <= lo && lo <= hi) || hi === 0) {
     rep.check("run-set", false, `INCOMPLETE, ${span}`, problems.length ? problems : [`bad registry range ${lo}..${hi}`]);
-    return [[], -1, regCosigs];
+    return [[], -1, regCosigs, []];
   }
   if (0 < lo && lo < hi && !await verifyConsistency(lo, hi, roots.get(lo)!, roots.get(hi)!, list(at(rs, "consistency")).map(b64decode)))
     problems.push(`registry checkpoint ${lo} is not a prefix of ${hi}`);
   const leaves = list(at(rs, "leaves"));
-  const pointed = new Map<number, J>(jsonl("registry/records.jsonl").map((r) => [at(at(r, "event"), "seq"), r]));
+  const lines = jsonl("registry/records.jsonl"), pointed: J[] = [];
   if (leaves.length !== hi - lo) problems.push(`${hi - lo} leaves in ${lo}..${hi}, ${leaves.length} in the bundle: a leaf is missing`);
+  if (lines.length !== leaves.length)   // §9: the record each leaf points to, in leaf order, and nothing else
+    problems.push(`${lines.length} record(s) in registry/records.jsonl for ${leaves.length} leaves: one per leaf, in leaf order`);
   const registered = new Map<J, J>(), finals = new Map<J, J>(), retired: [number, string][] = [], targets = new Set<string>();
   const gaps = new Map<string, number>();
   let closed: J = null, tenant: J = null, top = -1;
@@ -1146,14 +1147,15 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
       continue;
     }
     const { type, runHash: rh, logId, seq, hash } = parseLeaf(leaf);
-    const r = pointed.get(seq) ?? null, e = r && truthy(r) ? at(r, "event") : r;
-    if (r === null || at(r, "hash") !== hash || at(e, "type") !== type || at(e, "log_id") !== logId || !await included(r)
+    const r = j < lines.length ? lines[j] : null, e = r && truthy(r) ? at(r, "event") : r;
+    if (r === null || !same(at(e, "seq"), seq) || at(r, "hash") !== hash || at(e, "type") !== type || at(e, "log_id") !== logId || !await included(r)
         || !equal(await runHash(tsalt, text(at(e, "run_id"))), rh)
         || !SIGNER_LEAVES.includes(type) && tenant !== null && !same(tenant, at(e, "tenant"))) {
       problems.push(`leaf ${i} points to a missing or different record (seq ${seq})`);
       continue;
     }
     await checkRecord(r, problems);
+    pointed.push(r);
     top = Math.max(top, seq);
     if (type === "run.registered" || type === "run.final") targets.add(await runName(at(e, "tenant"), e.run_id));
     if (type === "run.registered") {
@@ -1192,7 +1194,7 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
     [], true);
   rep.check("log tail", truthy(closed), truthy(closed) ? `none: log.closed at seq ${str(closed.seq)} is the last record`
     : `records after tree size ${size} are unproven (no log.closed in the range)`, [], true);
-  return [retired, lo === 0 ? top : -1, regCosigs];
+  return [retired, lo === 0 ? top : -1, regCosigs, pointed];
 }
 
 /** A run's part: the run's file name, the part's number (tracekit/bundle_v2.py PART). */
