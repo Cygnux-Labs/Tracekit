@@ -239,6 +239,32 @@ class TestClocksAcrossRestart(Case):
                          ["idle_timeout"])
         self.assertEqual([e["run_id"] for e in es if e["type"] == "run.final"], [closing["run_id"]])
 
+    def test_a_run_idle_past_its_timeout_is_closed_before_the_first_call_after_a_restart(self):
+        """A dev signer exits after 15 minutes with no client connected, before a quiet run's hour of idle is up, so
+        only a restart closed such a run; the ticker's first sweep came a second after the start, and the call that
+        woke the signer landed first. The session went on in the stale run with no transcript tailer (it had given up
+        after two hours with no new line), and each of its later calls was a reconcile.fabricated gap: 5,343 in one
+        Claude Code run over three days."""
+        s = self.open(idle_s=60)
+        run = self.register(s)
+        s.close()
+        real = time.time
+        with mock.patch("time.time", lambda: real() + 61):   # woken a minute later by the agent's next call
+            s = self.open(idle_s=60)
+            self.refused("run_closed", self.call, s, "decide", {**run, "stream": "s", "client_seq": 0,
+                                                                "tool_call_id": "tc-1", "tool": "pay",
+                                                                "args_source": "parsed", "args": PAY})
+        self.assertEqual([d["reason"] for d in self.types("run.closing")], ["idle_timeout"])
+
+    def test_a_sweep_that_fails_at_start_is_logged_and_the_signer_starts(self):
+        """Review of the sweep before serving: an error in it (a run whose state made finishing it raise) stopped the
+        signer from starting, where the ticker logs it and goes on."""
+        with mock.patch.object(svc.SignerService, "sweep", side_effect=KeyError("x")), \
+                self.assertLogs(svc.__name__, "ERROR") as logged:
+            s = self.open()
+        self.register(s)
+        self.assertIn("the ticker loop failed", logged.output[0])
+
     def test_a_record_from_the_future_is_not_idle_time(self):
         self.assertAlmostEqual(pipeline.since("2999-01-01T00:00:00Z"), time.monotonic(), delta=1)
 
