@@ -1002,6 +1002,12 @@ class SignerService:
         self._exporter = otel_out and signer_otel.Exporter(
             otel_out["endpoint"], otel_out.get("headers", {}), lambda key: list(self.log.storage.iter_run(*key)),
             self.metrics.otel_dropped)
+        try:   # a run idle past idle_s while the signer was down closes before a call can go on with it: the call that
+            self.sweep()   # wakes a dev signer (which exits with no client connected) lands before the ticker's first sweep
+        except RPCError:   # storage down: the ticker retries
+            pass
+        except Exception:   # as the ticker: the signer still starts
+            self._loop_error("ticker")
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
