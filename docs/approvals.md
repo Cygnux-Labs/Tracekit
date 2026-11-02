@@ -115,7 +115,8 @@ the newest of them whose approval was answered. Approved: the hook reads the app
 so the record is the call the person approved, description included; Claude Code runs the retry as the model sent it,
 the same command with only its caption reworded (the hook returns no `updatedInput`, which could change how Claude
 Code asks you). Rejected: the signer keeps no copy of a rejected call's arguments, so the retry is decided as the model
-sent it and held, and its block starts with `a person rejected this command (with another description) as apr-…`.
+sent it and held, and the first reason after `Why:` in its block (`[tracekit] held for approval …`) is `a person
+rejected this command (with another description) as apr-…`.
 Any other key that differs (`command`, `run_in_background`, `dangerouslyDisableSandbox`, `timeout`, ...), or an
 approval still unanswered, expired or used, and the retry is decided as the model sent it. The signer's rule above is
 unchanged: the hook only chooses which arguments the retry is decided with, and the signer still checks them against

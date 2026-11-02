@@ -22,7 +22,12 @@ from .report import DECISIONS, _counts, _days, call_text, share_rules, when
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
 from .view import ENGINE_RULES
 
-DEFAULT_ROOT = os.path.join("~", ".claude", "projects")
+
+def default_root():
+    """Claude Code's transcripts' folder: projects/ in $CLAUDE_CONFIG_DIR when set (Claude Code's own setting for
+    another config dir), else in ~/.claude, as install.user_settings finds its settings."""
+    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"),
+                        "projects")
 
 
 def _session_from_path(path: str) -> str:
@@ -224,7 +229,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
                                  "transcripts (Claude Code) through the policy and count what it would have held or "
                                  "denied. Read-only, local, and a replay against today's policy, not a signed record.")
-    ap.add_argument("root", nargs="?", default=DEFAULT_ROOT, help="the transcripts' folder (default: ~/.claude/projects)")
+    ap.add_argument("root", nargs="?", default=default_root(), help="the transcripts' folder (default: "
+                    "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)")
     ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
     ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
     ap.add_argument("--show", action="store_true", help="also print each call, with secrets redacted")
@@ -236,8 +242,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     root = os.path.expanduser(a.root)
     if not os.path.isdir(root):
-        print(f"tracekit audit: no such folder: {root} (Claude Code keeps its transcripts in ~/.claude/projects)",
-              file=sys.stderr)
+        print(f"tracekit audit: no such folder: {root} (Claude Code keeps its transcripts in "
+              "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
         return 2
     try:
         report = audit(root, a.policy, a.since, a.show)

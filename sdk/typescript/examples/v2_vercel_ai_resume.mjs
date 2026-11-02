@@ -1,22 +1,37 @@
-// Offline Vercel AI SDK v7: pause for approval, then resume the same run in a second process.
+// Offline Vercel AI SDK v7: pause for approval, then resume the same run in a second process. POSIX only (it checks
+// the state file's owner).
 // Needs `npm i -D ai@7`, `npm run build` and Python with tracekit (a dev signer is started on demand).
-//   node examples/v2_vercel_ai_resume.mjs /tmp/vercel-resume.json
+//   STATE="$(mktemp -d)/state.json"
+//   node examples/v2_vercel_ai_resume.mjs "$STATE"
 //   tracekit approvals approve <the printed id>                 # another terminal, same signer
-//   node examples/v2_vercel_ai_resume.mjs /tmp/vercel-resume.json
+//   node examples/v2_vercel_ai_resume.mjs "$STATE"
 //   tracekit last
-// The state file contains the run token: keep it private and out of git; it is deleted after the run closes.
+// The state file contains the run token: keep it private and out of git; it is deleted after the run closes. It is
+// read only when it is a regular file you own that no one else can read or write (not a symlink).
 import assert from "node:assert/strict";
-import { readFile, unlink, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, unlink, writeFile } from "node:fs/promises";
 import { generateText, jsonSchema, stepCountIs, tool, wrapLanguageModel } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { Client, RunHandle } from "../dist/v2/client.js";
 import { tracekitAI } from "../dist/v2/adapters/vercel-ai.js";
 
 const file = process.argv[2];
-if (!file) throw new Error("Usage: node examples/v2_vercel_ai_resume.mjs /path/to/private-state.json");
-let saved;
+if (!file) {
+  console.error('Usage: STATE="$(mktemp -d)/state.json"; node examples/v2_vercel_ai_resume.mjs "$STATE"');
+  process.exit(2);
+}
+let saved;   // none (ENOENT): a fresh start
 try {
-  saved = JSON.parse(await readFile(file, "utf8"));
+  const fh = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const st = await fh.stat();
+    if (!st.isFile() || st.uid !== process.getuid() || st.mode & 0o077)
+      throw new Error(`${file} must be a regular file owned by you with mode 0600; refused`);
+    saved = JSON.parse(await fh.readFile("utf8"));
+  } finally {
+    await fh.close();
+  }
 } catch (e) {
   if (e.code !== "ENOENT") throw e;
 }
@@ -62,19 +77,33 @@ try {
     console.log(`Approve in another terminal: tracekit approvals approve ${approval.approval_id}`);
     console.log("Then run this example again with the same state file and signer.");
   } else {
-    const responses = await tk.approvalResponses(saved.content);
-    if (!responses.length) {
-      console.log("No approval response available; executed 0 times.");
-      assert.equal(executions, 0);
-    } else {
-      const messages = [...saved.messages, { role: "tool", content: responses }];
-      const r = await generateText({ model, tools: tk.tools({ Bash }), toolApproval: tk.toolApproval,
-        messages, stopWhen: stepCountIs(3) });
-      assert.equal(executions, responses.some((p) => p.approved) ? 1 : 0);
-      console.log(r.text);
-      await run.close();
+    const { approvals } = await run.client.call("approval_list", { run_id: run.runId });
+    const approval = approvals.find((a) => a.tool_call_id === "held-call");
+    if (approval?.state === "requested" && !approval.run_closing) {
+      console.log(`Not answered yet; executed 0 times. Approve in another terminal: tracekit approvals approve ${approval.approval_id}`);
+      console.log(`Kept the private state file ${file}; run this example again after the approval.`);
+    } else if (approval?.state !== "approved" && approval?.state !== "rejected") {
+      // expired, already used, its run ended, or a signer that never held it: nothing to resume
+      const why = !approval ? "the signer has no approval for the held call"
+        : approval.run_closing ? "the run ended" : `the approval is ${approval.state}`;
+      await run.close().catch((e) => console.log(`Closing run ${run.runId}: ${e.message}`));
       await unlink(file);
-      console.log(`Executed ${executions} time(s); closed run ${run.runId} and deleted the private state file.`);
+      console.log(`Nothing to resume: ${why}. Executed 0 times; deleted the private state file.`);
+    } else {
+      const responses = await tk.approvalResponses(saved.content);
+      if (!responses.length) {
+        console.log("No approval response available; executed 0 times.");
+        assert.equal(executions, 0);
+      } else {
+        const messages = [...saved.messages, { role: "tool", content: responses }];
+        const r = await generateText({ model, tools: tk.tools({ Bash }), toolApproval: tk.toolApproval,
+          messages, stopWhen: stepCountIs(3) });
+        assert.equal(executions, responses.some((p) => p.approved) ? 1 : 0);
+        console.log(r.text);
+        await run.close();
+        await unlink(file);
+        console.log(`Executed ${executions} time(s); closed run ${run.runId} and deleted the private state file.`);
+      }
     }
   }
 } finally {

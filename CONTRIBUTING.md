@@ -9,7 +9,7 @@ make check          # lint + tests + build
 
 ## Tests and evals
 
-- Tests are plain `unittest` classes run by pytest (`make test`, about ten minutes on a laptop: many start a real
+- Tests are plain `unittest` classes run by pytest (`make test`, about 15 minutes on a laptop: many start a real
   signer). Add a regression test with every fix; a change to the signer, store, verifier or policy needs one that fails
   without it.
 - Run what you changed as a person would (the CLI, `tracekit view` in a browser, a verifier on a real bundle, an agent
