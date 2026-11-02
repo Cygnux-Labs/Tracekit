@@ -48,8 +48,10 @@ The report always begins with the disclaimer: "a replay against today's policy, 
 ## What it reads
 
 Every `.jsonl` file under ROOT, at any depth: each Claude Code session's transcript, and its subagents' files
-(`<session>/subagents/*.jsonl`), which count under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. The reader
-reuses `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
+(`<session>/subagents/*.jsonl`, a workflow's agents' in `<session>/subagents/workflows/<workflow>/`), which count
+under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
+was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
+`tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
 
 It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
 

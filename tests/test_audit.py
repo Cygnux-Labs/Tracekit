@@ -63,6 +63,36 @@ class TestAudit(unittest.TestCase):
         report = audit.audit(str(self.root))
         self.assertEqual((report["sessions"], {c["session"] for c in report["calls"]}), (1, {"s1"}))
 
+    def test_a_workflow_agents_calls_count_under_its_session(self):
+        """1.5.3 review: a workflow's agents (<session>/subagents/workflows/<wf>/agent-*.jsonl) were each counted as a
+        session of their own, 223 of 641 on a real folder."""
+        _write_jsonl(self.root / "proj" / "s1.jsonl", [_call("Bash", {"command": "ls"})])
+        _write_jsonl(self.root / "proj" / "s1" / "subagents" / "workflows" / "wf_1" / "agent-b.jsonl",
+                     [_call("Bash", {"command": "ls"})])
+        report = audit.audit(str(self.root))
+        self.assertEqual((report["sessions"], {c["session"] for c in report["calls"]}), (1, {"s1"}))
+
+    def test_a_call_copied_into_another_file_counts_once(self):
+        """1.5.3 review: a resumed or forked session's file repeats the tool uses it copied, and a subagent's file some
+        of its sidechain's: 2,529 of 158,283 calls on a real folder were counted twice, a deny read as two."""
+        deny = _call("Bash", {"command": "rm -rf /"})
+        deny["message"]["content"][0]["id"] = "toolu_1"
+        odd = _call("Bash", {"command": "rm -rf /"})
+        odd["message"]["content"][0]["id"] = {"not": "a string"}   # counted, as a call with no id is
+        _write_jsonl(self.root / "proj" / "s1.jsonl", [deny, odd])
+        _write_jsonl(self.root / "proj" / "s2.jsonl", [deny])
+        self.assertEqual(audit.audit(str(self.root))["counts"]["deny"], 2)
+
+    def test_a_since_out_of_range_or_not_in_the_past_exits_2(self):
+        """1.5.3 review: a --since of 400 digits of days ended in an OverflowError traceback."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        for since, said in (("9" * 400 + "d", "is out of range"), ("3000000d", "is out of range"),
+                            ("2999-01-01", "is not in the past")):
+            with self.subTest(since=since[:12]):
+                code, _, err = _run(str(self.root), "--since", since)
+                self.assertEqual(code, 2, err)
+                self.assertIn(said, err)
+
     def test_a_call_the_engine_fails_on_is_a_deny_as_the_signer_decides_it(self):
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         with mock.patch("tracekit.policy2.engine.Engine.decide", side_effect=RuntimeError("boom")):

@@ -26,11 +26,11 @@ DEFAULT_ROOT = os.path.join("~", ".claude", "projects")
 
 
 def _session_from_path(path: str) -> str:
-    """Best-effort session id from a Claude Code transcript path: a subagent's file (<session>/subagents/agent-*.jsonl)
-    counts under its session."""
-    folder = os.path.dirname(path)
-    if os.path.basename(folder) == "subagents":
-        return os.path.basename(os.path.dirname(folder))
+    """Best-effort session id from a Claude Code transcript path: a subagent's file (<session>/subagents/agent-*.jsonl,
+    a workflow's agents' in <session>/subagents/workflows/<workflow>/) counts under its session."""
+    folders = os.path.dirname(path).split(os.sep)
+    if "subagents" in folders:
+        return folders[len(folders) - 1 - folders[::-1].index("subagents") - 1]
     base = os.path.basename(path)
     if base.endswith(".jsonl"):
         return base[:-6]
@@ -87,15 +87,18 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
         since_ts = when(since) if since else 0.0
     except argparse.ArgumentTypeError as e:   # report's --since type: here an unreadable --since is a ValueError
         raise ValueError(str(e)) from None
+    if since_ts >= time.time():
+        raise ValueError(f"--since {since[:40]!r} is not in the past")
     engine = load_policy(policy_path or DEFAULT_POLICY)
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
     by_rule: dict[str, int] = {}
-    # lean: every call is kept in memory (about 0.5 KB each; --show text is capped at report.CALL_WIDTH); stream the
-    # report's lines instead if a real transcript folder outgrows that
+    # lean: every call is kept in memory (about 1 KB each, 2 KB with --json, measured on 158k calls; --show text is
+    # capped at report.CALL_WIDTH); stream the report's lines instead if a real transcript folder outgrows that
     calls: list[dict] = []
     skipped_malformed = 0
     unreadable: list[dict] = []
+    seen: set[str] = set()   # tool use ids: a resumed or forked session's file repeats the calls it copied
 
     for path, session in _iter_transcripts(root, unreadable):
         f, err = _safe_open(path)
@@ -118,6 +121,10 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                 for b in blocks:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
+                    if isinstance(b.get("id"), str):
+                        if b["id"] in seen:
+                            continue
+                        seen.add(b["id"])
                     tool = b.get("name") if isinstance(b.get("name"), str) else ""
                     args = b.get("input") if isinstance(b.get("input"), dict) else {}
                     try:

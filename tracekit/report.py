@@ -63,18 +63,28 @@ SHARE_NOTE = ("an agent name or rule id that isn't Tracekit's own is counted as 
 AGENTS = {"claude-code", *AGENT_NAMES.values(), "agentsh", "tracekit-why"}
 
 
+EPOCH = datetime.datetime(1970, 1, 1, tzinfo=datetime.timezone.utc)
+
+
 def when(value, now=None):
     """--since/--until as seconds since the epoch: `<N>d`, `<N>h` or `<N>m` before now, or an ISO 8601 date or time
-    (UTC unless it names its offset), in either case. tracekit audit's --since too."""
+    (UTC unless it names its offset), in either case; one a UTC date can name (years 1 to 9999). tracekit audit's
+    --since too."""
     value = value.strip()
     m = re.fullmatch(r"(\d+)([dhm])", value.lower())
-    if m:
-        return (time.time() if now is None else now) - int(m[1]) * {"d": 86400, "h": 3600, "m": 60}[m[2]]
     try:
-        t = datetime.datetime.fromisoformat(re.sub(r"[Zz]$", "+00:00", value))
+        if m:
+            t = (time.time() if now is None else now) - int(m[1]) * {"d": 86400, "h": 3600, "m": 60}[m[2]]
+        else:
+            d = datetime.datetime.fromisoformat(re.sub(r"[Zz]$", "+00:00", value))
+            t = (d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)).timestamp()
+        EPOCH + datetime.timedelta(seconds=t)   # it raised once the report was built: minutes later
+    except OverflowError:
+        raise argparse.ArgumentTypeError(f"{value[:40]!r} is out of range") from None
     except ValueError:
-        raise argparse.ArgumentTypeError(f"{value!r} is not 7d, 24h, 30m or an ISO date such as 2026-10-22") from None
-    return (t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)).timestamp()
+        raise argparse.ArgumentTypeError(f"{value[:40]!r} is not 7d, 24h, 30m or an ISO date such as 2026-10-22") \
+            from None
+    return t
 
 
 def call_text(tool, args):
@@ -315,7 +325,7 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
 
 
 def _iso(secs):
-    return datetime.datetime.fromtimestamp(secs, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (EPOCH + datetime.timedelta(seconds=secs)).strftime("%Y-%m-%dT%H:%M:%SZ")   # Windows: before 1970 too
 
 
 def _when(iso):
@@ -327,8 +337,9 @@ def _wait(s):
 
 
 def _days(seconds):
-    n = round(seconds / 86400, 1)
-    return f"{n:g} day{'s' * (n != 1)}"
+    """A window's length: in days, or in hours below a day."""
+    n, unit = (round(seconds / 86400, 1), "day") if seconds >= 86400 else (round(seconds / 3600, 1), "hour")
+    return f"{n:g} {unit}{'s' * (n != 1)}"
 
 
 def _counts(counter):
@@ -434,7 +445,7 @@ def share_rules(counts):
     counted as "custom rule", one count for all of them."""
     ours, shown = tracekit_rules(), collections.Counter()
     for (dec, rid, why), n in counts.items():
-        shown[dec, rid if rid in ours or rid in APPROVAL_RULES else "custom rule", why] += n
+        shown[dec, rid if rid in ours or rid in APPROVAL_RULES or rid == "no rule" else "custom rule", why] += n
     tag = {True: "", False: " (also matched, not why)", None: " (not placed)"}
     return [f"  {dec} {rid} {n:,}{tag[why]}" for (dec, rid, why), n in
             sorted(shown.items(), key=lambda x: (-DECISIONS.index(x[0][0]), x[0][2] is False, -x[1], x[0][1]))]
@@ -489,6 +500,8 @@ def main(argv=None):
     o.add_argument("--share", action="store_true", help="print its counts alone, to post as a field report: no run id, "
                                                        "path, identity, time or call")
     a = ap.parse_args(argv)
+    if a.since >= (time.time() if a.until is None else a.until):
+        ap.error("--since must be before --until (default: now)")
     try:
         cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
         dev, notes = not (a.config or a.data_dir), []
