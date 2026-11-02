@@ -1243,6 +1243,10 @@ class DemoPerAgent(unittest.TestCase):
             self.assertEqual(code, 0, agent + "\n" + out.getvalue())
             self.assertIn("BLOCKED  Bash: curl", out.getvalue())
             self.assertIn("original bundle exit 0, tampered bundle exit 1", out.getvalue())
+            # #499: the run-boundaries gap of a harness that sends no session end is said to be expected
+            self.assertEqual("[WARN] run boundaries" in out.getvalue(), agent in demo.NO_SESSION_EVENTS)
+            self.assertEqual(f"gap is expected: {agent} sends no session end" in out.getvalue(),
+                             agent in demo.NO_SESSION_EVENTS)
 
     def test_native_payloads_are_recorded_under_the_agent(self):
         import contextlib
@@ -1262,12 +1266,16 @@ class DemoPerAgent(unittest.TestCase):
                 inst.init_dev(home, [], start=True)
                 try:
                     proj = demo._project(d)
-                    with contextlib.redirect_stdout(io.StringIO()):
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
                         demo.scripted(env, proj, agent)
                     evs = [r["event"] for r in ledger_records(home)]
                     start = next(e for e in evs if e["type"] == "run.start")
                     self.assertEqual((start["run_id"], start["data"]["agent"]["name"]), (f"demo-{agent}-1", agent))
                     self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], tools)
+                    # #499: each step is labelled by the tool recorded (goose's cat is a Bash call, not a Read)
+                    self.assertEqual([line.split()[1].rstrip(":") for line in out.getvalue().splitlines()
+                                      if line.startswith(("  ran ", "  BLOCKED "))], tools)
                     self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
                     self.assertEqual(any(e["type"] in ("user.prompt", "run.end") for e in evs), sessions)
                 finally:

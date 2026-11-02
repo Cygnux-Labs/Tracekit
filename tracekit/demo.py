@@ -18,7 +18,7 @@ import sys
 import tempfile
 import zipfile
 
-from . import bundle, install
+from . import agent_hooks, bundle, install
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -155,12 +155,15 @@ def scripted(env, proj, agent="claude"):
         note(f"calling {name}")
         n[0] += 1
         tid = f"toolu_demo_{n[0]:02d}"
-        denied, err = _send(env, *_native(agent, base, "PreToolUse", name, ti, tid))
-        shown = ti.get("command") or ti.get("file_path")
+        payload, argv = _native(agent, base, "PreToolUse", name, ti, tid)
+        # the tool the hook records: goose and Codex read a file through their shell
+        recorded, args = agent_hooks.tool(agent, payload["tool_name"], payload["tool_input"])
+        shown = args.get("command") or args.get("file_path")
+        denied, err = _send(env, payload, argv)
         if denied:
-            print(f"  BLOCKED  {name}: {shown}\n           {err}")
+            print(f"  BLOCKED  {recorded}: {shown}\n           {err}")
             return False
-        print(f"  ran      {name}: {shown}")
+        print(f"  ran      {recorded}: {shown}")
         _send(env, *_native(agent, base, "PostToolUse" if ok else "PostToolUseFailure", name, ti, tid, result, ok))
         return True
 
@@ -252,6 +255,9 @@ def main(real=False, keep=False, agent="claude"):
         say("verify offline against the git witness")
         rep, code = bundle.verify(out, [f"git:{home}/witness"])
         bundle.print_report(rep, code)
+        if agent in NO_SESSION_EVENTS:
+            print(f"  note     the run-boundaries gap is expected: {agent} sends no session end, so the run has no "
+                  "signed run.end; every record in it verified")
         say("tamper test: rewrite one recorded command in a copy, then verify again")
         bad = os.path.join(d, "tampered.tkb")
         tamper_copy(out, bad)
