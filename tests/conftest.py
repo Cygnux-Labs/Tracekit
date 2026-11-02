@@ -16,7 +16,6 @@ sys.path.insert(0, TESTS)
 
 from tracekit import bundle_v2  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
-from tracekit.sdk import autospawn  # noqa: E402
 from tracekit.verify import v2 as verify_v2  # noqa: E402
 
 MARKERS = {
@@ -82,7 +81,11 @@ def _isolated_env():
 
 # The real home's Tracekit folders, as the session starts. A test that makes one wrote outside its temp dirs, and the
 # dev data dir also turns the plugin's hook from warning to blocking (#515). Silent where they already exist.
-HOME_DIRS = (os.path.join(os.path.expanduser("~"), ".tracekit-client"), autospawn.data_dir())
+try:   # the signer needs the v2 extra (the release dry run installs none); without it no dev data dir is made
+    from tracekit.sdk import autospawn
+    HOME_DIRS = (os.path.join(os.path.expanduser("~"), ".tracekit-client"), autospawn.data_dir())
+except ImportError:
+    HOME_DIRS = (os.path.join(os.path.expanduser("~"), ".tracekit-client"),)
 
 
 @pytest.fixture(autouse=True)
