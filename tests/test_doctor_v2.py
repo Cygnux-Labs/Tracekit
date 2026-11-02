@@ -1,11 +1,13 @@
 """`tracekit doctor` for the v2 signer: every check's ok path (the clean E16 layout) and fail path (its E16 case),
 setup detection, --json and the exit codes. The v1 doctor's own tests are in tests/test_system_install.py."""
+import base64
 import contextlib
 import copy
 import importlib.util
 import io
 import json
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -14,7 +16,9 @@ import types
 import unittest
 from unittest import mock
 
-from tracekit import cli, client, doctor, install
+from tracekit import __version__, cli, client, doctor, install
+from tracekit.locking import lock_file
+from tracekit.sdk import autospawn
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 spec = importlib.util.spec_from_file_location("e16_doctor", os.path.join(HERE, "..", "eval", "e16_doctor.py"))
@@ -1328,6 +1332,152 @@ class CodingAgentReasoning(unittest.TestCase):
 
 
 @unittest.skipIf(os.name == "nt", "POSIX modes")
+@unittest.skipIf(os.name == "nt", "the POSIX hook command init writes")
+class Versions(unittest.TestCase):
+    """#510 D-VERSIONS: an upgrade left the hook's Python and the running dev signer on an older Tracekit, without its
+    security fixes, and nothing said so. Doctor asks each hook's Python which Tracekit it imports and reads the running
+    signer's version, and says what to run; it upgrades and stops nothing."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp(dir="/tmp")   # short: a runtime dir too long for a socket path is moved (autospawn)
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.run_dir = os.path.join(self.d, "run")
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.run_dir, "HOME": os.path.join(self.d, "home"),
+                                           "XDG_DATA_HOME": os.path.join(self.d, "data")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.settings = os.path.join(self.d, "settings.json")
+        self.python = sys.executable
+
+    def tree(self, version):
+        """A directory whose tracekit package says `version`."""
+        tree = os.path.join(self.d, f"tree-{version}")
+        os.makedirs(os.path.join(tree, "tracekit"), exist_ok=True)
+        with open(os.path.join(tree, "tracekit", "__init__.py"), "w") as f:
+            f.write(f"__version__ = {version!r}\n")
+        return tree
+
+    def command(self, tree, module=install.V2_HOOK, call="_entry('PreToolUse')", python=None):
+        """The hook command init writes from a working tree (install._dev_hook_argv's -c form), for `tree`."""
+        r = base64.b64encode(tree.encode()).decode()
+        code = (f"import base64,sys; r=base64.b64decode('{r}').decode('utf-8'); sys.path.insert(0, r); "
+                f"from {module} import {call.split('(')[0]}; raise SystemExit({call})")
+        return install._blocking(f"{shlex.quote(python or self.python)} -I -c {shlex.quote(code)}")
+
+    def hooks(self, *commands):
+        with open(self.settings, "w") as f:
+            json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": c}
+                                                                            for c in commands]}]}}, f)
+
+    def signer(self, version):
+        """A running dev signer of `version`: it holds signer.lock and publishes its hello as endpoint.json."""
+        os.makedirs(self.run_dir, 0o700)
+        lock = open(os.path.join(self.run_dir, "signer.lock"), "a")
+        self.addCleanup(lock.close)
+        lock_file(lock)
+        with open(os.path.join(self.run_dir, "endpoint.json"), "w") as f:
+            json.dump({"proto": [15, 20], "version": version, "pid": 4242, "data_dir": autospawn.data_dir()}, f)
+
+    def rows(self, harnesses=None):
+        return [r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=self.settings, harnesses=harnesses)
+                if r["id"] == "D-VERSIONS"]
+
+    def test_an_older_hook_warns_with_the_upgrade_for_its_python(self):
+        self.hooks(self.command(self.tree("1.5.0")))
+        hook, signer = self.rows()
+        self.assertEqual(hook["status"], "warn")
+        self.assertIn(f"Claude Code ({self.settings}) run Tracekit 1.5.0 ({self.python}), older than this "
+                      f"doctor's {__version__}", hook["detail"])
+        self.assertEqual(hook["fix"], f"`{shlex.quote(self.python)} -m pip install -U tracekit-ai`")
+        self.assertEqual((signer["status"], signer["detail"]), ("ok", "no dev signer is running (the first call "
+                                                                        "starts one)"))
+        self.assertFalse(os.path.exists(self.run_dir))   # nothing created, nothing started
+
+    def test_an_equal_or_newer_hook_is_ok(self):
+        for version, said in ((__version__, "as this doctor does"), ("99.0.0", f"newer than this doctor's {__version__}")):
+            with self.subTest(version):
+                self.hooks(self.command(self.tree(version)))
+                hook = self.rows()[0]
+                self.assertEqual((hook["status"], hook["fix"]), ("ok", ""))
+                self.assertIn(f"run Tracekit {version} ({self.python}), {said}", hook["detail"])
+
+    def test_an_older_signer_warns_with_tracekit_down_after_the_hooks_upgrade(self):
+        self.signer("1.5.0")
+        self.hooks(self.command(self.tree("1.5.0")))
+        hook, signer = self.rows()
+        self.assertEqual((hook["status"], signer["status"]), ("warn", "warn"))
+        self.assertIn("then `tracekit down`, so the next call starts a signer of the new version (open sessions go on",
+                      hook["fix"])
+        self.assertIn(f"the running dev signer (pid 4242) runs Tracekit 1.5.0, older than this doctor's {__version__}",
+                      signer["detail"])
+        self.assertTrue(signer["fix"].startswith("`tracekit down` once the hooks above are upgraded: the next call"),
+                        signer["fix"])
+        self.hooks(self.command(self.tree(__version__)))   # the hook upgraded: only the signer is left
+        hook, signer = self.rows()
+        self.assertEqual((hook["status"], signer["status"]), ("ok", "warn"))
+        self.assertTrue(signer["fix"].startswith("`tracekit down`: the next call"), signer["fix"])
+
+    def test_a_current_signer_is_ok(self):
+        self.signer(__version__)
+        self.hooks()
+        [signer] = self.rows()
+        self.assertEqual((signer["status"], signer["detail"]),
+                         ("ok", f"the running dev signer (pid 4242) runs Tracekit {__version__}, as this doctor does"))
+
+    def test_an_unreadable_hook_python_is_a_warning_not_a_crash(self):
+        missing = os.path.join(self.d, "gone", "python")
+        self.hooks(self.command(self.tree("1.5.0"), python=missing), self.command(self.tree("dev")),
+                   "uv run my-own-hook PreToolUse")
+        rows = self.rows()
+        self.assertEqual([r["status"] for r in rows], ["warn", "warn", "warn", "ok"], rows)   # the signer's is ok
+        self.assertIn(f"can't tell which Python runs the Claude Code hooks in {self.settings}", rows[0]["detail"])
+        self.assertIn(f"can't read the Tracekit version the hooks of Claude Code ({self.settings}) run: {missing} -I -c "
+                      "'import tracekit' fails", rows[1]["detail"])
+        self.assertIn("its tracekit says version 'dev'", rows[2]["detail"])
+
+    def test_each_python_is_asked_once_and_names_every_agent_that_runs_it(self):
+        tree = self.tree("1.5.0")
+        codex = os.path.join(self.d, "codex.json")
+        with open(codex, "w") as f:
+            json.dump({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": self.command(
+                tree, "tracekit.integrations.harness_hooks", "entry('codex', 'PreToolUse')")}]}]}}, f)
+        self.hooks(self.command(tree), self.command(tree, call="_entry('PostToolUse')"))
+        with mock.patch.object(doctor, "_hook_tracekit", wraps=doctor._hook_tracekit) as asked:
+            hook = self.rows({"codex": codex})[0]
+        asked.assert_called_once_with(self.python, tree)
+        self.assertIn(f"the hooks of Claude Code ({self.settings}), codex ({codex}) run Tracekit 1.5.0", hook["detail"])
+
+    def test_as_root_it_runs_no_hook_python(self):
+        self.hooks(self.command(self.tree("1.5.0")))
+        with mock.patch.object(doctor.os, "geteuid", return_value=0, create=True), \
+                mock.patch.object(doctor, "_hook_tracekit", side_effect=AssertionError("ran as root")):
+            [row] = self.rows()
+        self.assertEqual(row["status"], "warn")
+        self.assertIn("not checked as root", row["detail"])
+
+    def test_the_upgrade_fits_how_tracekit_was_installed(self):
+        from tracekit.integrations.claude_code import upgrade
+        site = "/home/u/.local/lib/python3.12/site-packages"
+        self.assertEqual(upgrade("/v/bin/python", "/v/lib/site-packages/tracekit/__init__.py", site),
+                         "/v/bin/python -m pip install -U tracekit-ai")
+        self.assertEqual(upgrade("/usr/bin/python3", site + "/tracekit/__init__.py", site),
+                         "/usr/bin/python3 -m pip install -U --user tracekit-ai")
+        self.assertEqual(upgrade("/h/.local/share/uv/tools/tracekit-ai/bin/python", "/x/tracekit/__init__.py", site),
+                         "uv tool upgrade tracekit-ai")
+        self.assertEqual(upgrade("/h/.local/pipx/venvs/tracekit-ai/bin/python", "/x/tracekit/__init__.py", site),
+                         "pipx upgrade tracekit-ai")
+        uv = os.path.join(self.d, "uv-venv")   # `uv venv` makes one without pip
+        os.makedirs(uv)
+        with open(os.path.join(uv, "pyvenv.cfg"), "w") as f:
+            f.write("home = /usr/bin\nimplementation = CPython\nuv = 0.9.2\nversion_info = 3.12.3\n")
+        self.assertEqual(upgrade(os.path.join(uv, "bin", "python"), uv + "/lib/site-packages/tracekit/__init__.py", site),
+                         f"uv pip install -U --python {uv}/bin/python tracekit-ai")
+        tree = self.tree("1.5.0")
+        os.makedirs(os.path.join(tree, ".git"))
+        self.assertEqual(upgrade("/v/bin/python", os.path.join(tree, "tracekit", "__init__.py"), site),
+                         f"git -C {tree} pull")
+
+
 class DevProfile(unittest.TestCase):
     def test_dev_signer_warns_instead_of_failing(self):
         d = tempfile.mkdtemp()
