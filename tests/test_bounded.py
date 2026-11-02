@@ -261,13 +261,18 @@ class EveryStructuralMutation(unittest.TestCase):
         if not (code in (1, 2) and integrity != "VERIFIED" or code == 0 and integrity == cut_back(entries)):
             wrong.append((what, code, integrity))
 
-    def test_every_entry_dropped_or_duplicated(self):
-        """Every entry the bundle needs dropped, and every entry duplicated."""
+    def test_every_entry_dropped_duplicated_or_added(self):
+        """Every entry the bundle needs dropped, every entry duplicated, and, listed in the manifest, every entry added
+        under a name no bundle holds, and the trust config and a script added (a bundle carries neither)."""
         entries, wrong = self.entries, []
         for i in self.required:
             self.check(entries[:i] + entries[i + 1:], ("dropped", entries[i][0]), wrong)
         for i in range(len(entries)):
             self.check(entries + [entries[i]], ("duplicated", entries[i][0]), wrong)
+        with open(self.TRUST, "rb") as f:
+            planted = [("trust.json", f.read()), ("verify.sh", b"#!/bin/sh\necho VERIFIED\n")]
+        for n, b in [(n + ".orig", b) for n, b in entries] + planted:
+            self.check(entries + [(n, b)], ("added", n), wrong)
         self.assert_none(wrong)
 
     def test_every_line_deleted_duplicated_swapped_or_cut(self):

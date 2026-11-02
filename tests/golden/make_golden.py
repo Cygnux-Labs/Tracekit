@@ -389,6 +389,10 @@ def negative(out):
 
         # the manifest is only an index
         mutated("file not in the manifest", "manifest-unlisted-file.tkb", edit=lambda f, m: f.update({"extra.txt": b"x"}))
+        planted = {"trust.json": b'{"logs": ["attacker.example.org/log+00000000+AA=="], "algs": ["ed25519"]}',
+                   "verify.sh": b"#!/bin/sh\necho VERIFIED\n"}   # listed: a bundle carries no trust config and no code
+        mutated("a trust config and a script in the bundle", "extra-trust-file.tkb",
+                edit=lambda f, m: (f.update(planted), m["files"].update(dict.fromkeys(planted, ""))))
         wrong = json.loads(manifest)
         wrong["files"][next(iter(wrong["files"]))] = "0" * 64
         raw("manifest hash wrong", "manifest-wrong-hash.tkb", [("manifest.json", json.dumps(wrong))] + entries[1:])

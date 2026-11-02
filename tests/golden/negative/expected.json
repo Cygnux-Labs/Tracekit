@@ -2,6 +2,7 @@
   "files": {
     "negative/checkpoint-body-edited.tkb": "5b69e6ef7955d869f2d70fd42021fa68240da372e1a41e825a4e21c0378d98dd",
     "negative/checkpoint-wrong-origin.tkb": "35c02d6c18d66fe28ee03e06bcdcb262da07a6a96f78779d57335109b137def8",
+    "negative/extra-trust-file.tkb": "7f7af1c8a3c359320dd0b3fee365a5edd95ec0f49c09e8d725a854f6b76f476c",
     "negative/findings-run-twice.tkb": "9d86cfd8f70a02f8fa8684e7d136c19d2ffee91b2284137e704f700f2ad6add0",
     "negative/json-manifest-duplicate-key.tkb": "a989a2d11df1d94b865cfef93d18bbe532280c7f873affa93ff55d9a4c5507e5",
     "negative/json-manifest-too-deep.tkb": "88b01509cfc58d6ca3e80695d23ab60310b05bb4c8fc46951d7010b3546c4527",
@@ -227,6 +228,15 @@
     {
       "name": "file not in the manifest",
       "bundle": "manifest-unlisted-file.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "manifest"
+      }
+    },
+    {
+      "name": "a trust config and a script in the bundle",
+      "bundle": "extra-trust-file.tkb",
       "expected": {
         "exit_code": 1,
         "integrity": "FAILED",
