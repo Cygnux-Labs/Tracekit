@@ -1163,7 +1163,7 @@ class Installer(unittest.TestCase):
             with self.subTest(name=name):
                 mapped, ti = agent_hooks.tool("kilo", name, args)
                 self.assertEqual((mapped, ti.get("file_path")), (tool, args.get("path")))
-                self.assertIn(pol.decide(mapped, ti)["verdict"], ("deny", "ask"))
+                self.assertNotEqual(pol.decide(mapped, ti)["verdict"], "allow")   # a key read is flagged
                 # OpenCode has no such tool: under its own name the policy doesn't know it
                 self.assertEqual(agent_hooks.tool("opencode", name, args)[0], name)
 
