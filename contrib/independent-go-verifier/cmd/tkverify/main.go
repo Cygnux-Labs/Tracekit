@@ -33,15 +33,16 @@ const (
 func main() { os.Exit(run()) }
 
 // writeReport prints the report in the reference CLI's order: the check lines and the reason, then the verdict. A
-// reason a failed check line already gives is not repeated. A failed bundle's assurance is not rated: a level rates
-// only evidence that verified.
+// reason the failed check lines already give is not repeated: a failed bundle's (exit 1) are its failed checks, any
+// other's is printed unless a failed check line says it. A failed bundle's assurance is not rated: a level rates only
+// evidence that verified.
 func writeReport(w io.Writer, r report) {
-	named := false
+	given := false
 	for _, check := range r.Checks {
 		fmt.Fprintf(w, "[%s] %s — %s\n", strings.ToUpper(check.Status), check.Check, check.Detail)
-		named = named || check.Status == "fail"
+		given = given || check.Status == "fail" && (r.ExitCode == 1 || check.Detail == r.Detail)
 	}
-	if r.Detail != "" && !named {
+	if r.Detail != "" && !given {
 		if r.ExitCode == 1 {
 			fmt.Fprint(w, "[FAIL] ")
 		}

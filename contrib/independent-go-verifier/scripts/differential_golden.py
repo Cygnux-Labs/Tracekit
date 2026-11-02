@@ -125,25 +125,33 @@ def invoke(command, cwd, env):
         "warning_checks": names["warn"], "failed_checks": names["fail"]}
 
 
-# The checks the Python verifier reports that the Go verifier doesn't, by format: on these the gate compares verdicts
-# only. Verdicts are never exempted. Each is a check Go doesn't perform on evidence it accepts, so it can't name it:
+# The checks the Python verifier reports that the Go verifier doesn't, by format and by the status Python gives them:
+# on these the gate compares verdicts only. Verdicts are never exempted. Each is a check Go doesn't perform on evidence
+# it accepts, so it can't name it:
 KNOWN_GAPS = {
     "v1": {
-        "counter has no gaps",   # Go's chain check reports a missing record under `chain intact`, not on its own
-        "head matches a witness checkpoint",   # Go names this check's failures, but doesn't warn when the selected
-                                               # records run past the last checkpoint
-        "signing key",   # where the signing key lives, as the checkpoints state it
-        "policy unchanged during run", "capture sources", "harness attribution", "approvals", "coverage",
-        "opt-in content capture",   # what the run recorded about itself: warnings, never a failure
+        "warning_checks": {
+            "head matches a witness checkpoint",   # when the selected records run past the last checkpoint; Go names
+                                                   # this check's failures, which are compared
+            "signing key",   # where the signing key lives, as the checkpoints state it
+            "policy unchanged during run", "capture sources", "harness attribution", "approvals", "coverage",
+            "opt-in content capture",   # what the run recorded about itself
+        },
+        "failed_checks": {
+            "counter has no gaps",   # Go's chain check reports a missing record under `chain intact`, not on its own
+        },
     },
     "v2": {
-        "coverage", "tiers", "fail-open classes", "break-glass approvals",   # what the run recorded: warnings
-        "log tail",   # whether a run-set's registry range ends in log.closed: a warning
+        "warning_checks": {
+            "coverage", "tiers", "fail-open classes", "break-glass approvals",   # what the run recorded
+            "log tail",   # whether a run-set's registry range ends in log.closed
+        },
+        "failed_checks": set(),
     },
 }
-# Evidence Go doesn't support fails closed (exit 2), so its verdict differs whatever the names: the checks of v1 signed
-# findings, record-key issuers and revocations, monitors, the v1-to-v2 format bridge, agent approvals, incidents,
-# signed findings, reviews and replays, and ext fields are not compared here (README.md, "Current coverage").
+# Evidence Go doesn't support fails closed, so its verdict differs whatever the names (README.md, "Known differences"):
+# the checks of v1 signed findings, record-key issuers and revocations, monitors, the v1-to-v2 format bridge, agent
+# approvals, incidents, signed findings, reviews and replays, and ext fields are not compared here.
 
 
 def compare(python, go, section):
@@ -155,10 +163,10 @@ def compare(python, go, section):
     gaps, unexpected = {}, {}
     for field in ("warning_checks", "failed_checks"):
         differences = set(go[field]) - set(python[field]) if stops else set(python[field]) ^ set(go[field])
-        gaps[field] = sorted(differences & known)
-        unexpected[field] = sorted(differences - known)
+        gaps[field] = sorted(differences & known[field])
+        unexpected[field] = sorted(differences - known[field])
     if stops and not go["failed_checks"]:   # a failure Go gives no name
-        unexpected["failed_checks"] = sorted(set(python["failed_checks"]) - known)
+        unexpected["failed_checks"] = sorted(set(python["failed_checks"]) - known["failed_checks"])
     verdict = all(python[k] == go[k] for k in ("exit_code", "integrity", "assurance"))
     return verdict and not any(unexpected.values()), gaps, unexpected
 

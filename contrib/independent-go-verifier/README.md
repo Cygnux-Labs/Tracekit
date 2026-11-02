@@ -32,7 +32,8 @@ so on a v2 bundle that fails it names that one check and no warning, where Pytho
 differential gate requires Go's one failed check to be among Python's. The v1 verifier reports every check it performs.
 
 **Verdict-only checks.** Go doesn't perform these on evidence it accepts, so it can't name them, and where Python
-reports them the gate compares the verdict only (`KNOWN_GAPS` in `scripts/differential_golden.py`):
+reports them, with that status, the gate compares the verdict only (`KNOWN_GAPS` in
+`scripts/differential_golden.py`):
 
 - v1: `counter has no gaps` (Go's chain check reports a missing record under `chain intact` instead), the warning of
   `head matches a witness checkpoint` when the selected records run past the last checkpoint (Go names this check's
@@ -42,9 +43,15 @@ reports them the gate compares the verdict only (`KNOWN_GAPS` in `scripts/differ
   `break-glass approvals` and `log tail`.
 
 Each is a warning in the Python verifier, except `counter has no gaps`, which fails only together with `chain intact`,
-so none of them decides a verdict alone. Evidence Go doesn't support fails closed (exit 2), so its verdict differs from
-Python's whatever the names: the checks of v1 signed findings, record-key revocations, monitors, the format bridge,
-agent approvals, incidents, signed findings, reviews and replays, and `ext` fields are not compared.
+so none of them decides a verdict alone. Evidence Go doesn't support fails closed, so its verdict differs from Python's
+whatever the names, and its checks are not compared: agent approvals, incidents, signed findings, reviews and replays,
+`ext` fields, a format bridge in the key records and v1 signed findings are `UNVERIFIABLE` (exit 2); a trust config
+that pins issuers, monitors or analyzers can't be used (exit 2, `trust config`); a record key with an issuer
+certificate, or of an algorithm other than Ed25519, fails `keys` (exit 1).
+
+An invalid `signer.pub` stops the v1 verifier at `signatures valid` (exit 1, as Python's verdict). Python goes on: it
+also reports the checks that don't need the key, and fails every bundled checkpoint under `head matches a witness
+checkpoint`.
 
 The Go verifier rejects some inputs accepted by Python: a run with a findings companion, an open-only runset, empty monitors/issuers/analyzers lists, two log keys or extra algorithms, v2 numeric spellings `v: 2.0`, `run_seq: -0`, or `tree_size: 18.0`, noncanonical base64 signatures or inclusion nodes, checkpoint filenames outside its constraints, v1 ZIP archives with more than 10,000 entries, and v1 ZIP members whose name or extra field contains a crafted ambiguous local-header signature. An open run whose run-set range contains a second `run.registered` leaf gets `FAILED` from Go and `VERIFIED TO HEAD (open)` from Python. These are false rejections and remain verdict differences if present in the golden corpus.
 

@@ -27,6 +27,25 @@ func TestV1AnchorCompanionDoesNotCreateBoundaryGap(t *testing.T) {
 	}
 }
 
+// A manifest whose file list is not an object can't be checked against the files: the reference names that the
+// bundle's structure, not its files.
+func TestV1ManifestFileListIsStructure(t *testing.T) {
+	files, err := readV1Bundle(readGolden(t, "v1/demo-run.tkb"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := parseFileObject(files, "manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest["files"] = "records.jsonl"
+	files["manifest.json"], _ = json.Marshal(manifest)
+	r := VerifyV1(fixtureZip(files), readGolden(t, "v1/signer.pub"), nil)
+	if r.ExitCode != 1 || !hasCheck(r.Checks, "bundle structure") || hasCheck(r.Checks, "files match manifest") {
+		t.Fatalf("file list that is not an object: %+v", r)
+	}
+}
+
 func TestV1CompanionRunsDoNotRequireRunBoundaries(t *testing.T) {
 	for _, run := range []string{"findings:run-a", "anchors:causeway:run-a"} {
 		if !v1CompanionRun(run) {

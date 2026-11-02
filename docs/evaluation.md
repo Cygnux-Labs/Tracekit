@@ -515,7 +515,8 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   nobody has seen.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
   data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
-- Latency: each call's fastest of five decisions, over E17 and both E21 sets (2,481 calls). Each try is followed by
+- Latency: each call's fastest of five decisions, over E17, the held-out pool and the developer sessions (2,481 calls
+  in the recorded run; the blind pools are not timed). Each try is followed by
   a fixed reference workload (`reference` in the script: JSON, a shell split and regular expressions from the
   standard library, no Tracekit code), and `p99_ref` is the p99 of each call's fastest decision over the
   reference's fastest: a busy or throttled machine slows both alike, a slower engine or pack only the decision.

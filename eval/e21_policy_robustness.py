@@ -14,7 +14,7 @@ Two profiles: `default` (server.yaml, what E17 measures) and `strict` (strict.ya
 (c) eval/e21_benign_sessions.jsonl: calls of ordinary developer sessions, written by the pack's builder (so tuned),
     for false positives only; E17's benign calls are scored the same way on both profiles.
 (d) Latency per decision (the fastest of five per call), p50/p99/max, on both engines, for dev.yaml and both
-    profiles, over E17's corpus and both E21 sets; and p99_ref, the p99 of each decision over a fixed reference
+    profiles, over E17's corpus, the held-out pool and the sessions (not the blind pools); and p99_ref, the p99 of each decision over a fixed reference
     workload timed right after each try (`reference`: no Tracekit code), which a busy or throttled machine slows alike.
 (e) No-regression gates against the first run, recorded in eval/results/e21_policy_robustness.json and kept by later
     runs: per profile, held-out recall doesn't drop and the false-positive rate of each benign set (held-out, sessions,
@@ -60,9 +60,9 @@ def tags(value):
     return [str(v) for v in values if v not in (None, "", False)] or ["none"]
 
 
-def score(engines, cases):
-    """Both engines decide each case; (rows by breakdown, totals, engine mismatches)."""
-    rows = {k: collections.defaultdict(collections.Counter) for k in ("category", "severity", "evasion")}
+def score(engines, cases, dims=("category", "severity", "evasion")):
+    """Both engines decide each case; (rows by breakdown `dims`, totals, engine mismatches)."""
+    rows = {k: collections.defaultdict(collections.Counter) for k in dims}
     total, mismatches, missed, fps = collections.Counter(), [], [], []
     for c in cases:
         a, b = (e.decide(c["tool"], c["args"]) for e in engines)
@@ -135,7 +135,7 @@ def machine():
 def run(record=False):
     heldout = load(HELDOUT) if os.path.exists(HELDOUT) else None
     pools = {os.path.basename(p)[:-len(".jsonl")]: load(p) for p in sorted(glob.glob(os.path.join(BLIND, "*.jsonl")))}
-    blind = [c for cases in pools.values() for c in cases] or None
+    blind = [{**c, "pool": n} for n, cases in pools.items() for c in cases] or None
     sessions = load(SESSIONS)
     e17 = [(c["tool"], c["args"]) for p in sorted(glob.glob(os.path.join(E17, "*", "*.jsonl"))) for c in load(p)]
     calls = e17 + [(c["tool"], c["args"]) for c in (heldout or []) + sessions]
@@ -152,12 +152,12 @@ def run(record=False):
         for key, cases in (("heldout", heldout), ("blind", blind), ("sessions", sessions), ("e17", e17_benign)):
             if cases is None:
                 continue
-            by, total, mismatches, missed, fps = score(engines, cases)
+            dims = ("category", "severity", "evasion") + (("pool",) if key == "blind" else ())
+            by, total, mismatches, missed, fps = score(engines, cases, dims)
             prof[key] = {**rates(total), "totals": total, "by": by, "missed": missed, "false_positives": fps}
             out["engine_mismatches"] += [{"profile": name, "set": key, **m} for m in mismatches]
-        for pool, cases in pools.items():
-            total = score(engines, cases)[1]
-            prof["blind"].setdefault("pools", {})[pool] = {**rates(total), "totals": total}
+        if blind:   # each pool's totals, from the same decisions
+            prof["blind"]["pools"] = {n: {**rates(t), "totals": t} for n, t in prof["blind"]["by"].pop("pool").items()}
         for e in engines:
             out["latency"][f"{name}/{e.engine.split('@')[0]}"] = latency(e, calls)
     for e in (Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], x) for x in ("re2", "regex")):

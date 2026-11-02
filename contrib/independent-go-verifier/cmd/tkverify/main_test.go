@@ -50,6 +50,16 @@ func TestReportGivesTheReasonBeforeTheVerdict(t *testing.T) {
 		"Assurance: not rated (the bundle failed verification).\n"; b.String() != want {
 		t.Fatalf("report:\n%s\nwant:\n%s", b.String(), want)
 	}
+	// a bundle that failed a check, then reached evidence this verifier doesn't support: the reason it can't be
+	// checked is printed too
+	b.Reset()
+	writeReport(&b, report{ExitCode: 2, Integrity: "UNVERIFIABLE", Assurance: "dev",
+		Detail: "v1 findings semantics are not implemented",
+		Checks: []verifier.VerificationCheck{{Check: "chain intact", Status: "fail", Detail: "ledger chain mismatch"}}})
+	if want := "[FAIL] chain intact — ledger chain mismatch\nv1 findings semantics are not implemented\n\n" +
+		"Integrity: UNVERIFIABLE.\nAssurance: dev.\n"; b.String() != want {
+		t.Fatalf("report:\n%s\nwant:\n%s", b.String(), want)
+	}
 }
 
 // runCLI runs the CLI with args, as a person would, and returns its exit code and output.

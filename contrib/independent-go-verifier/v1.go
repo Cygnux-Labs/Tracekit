@@ -272,7 +272,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 	rep.ExitCode, rep.Integrity = 1, "VERIFICATION FAILED"
 	listed, err := object(manifest["files"])
 	if err != nil {
-		fail("files match manifest", "invalid manifest file list")
+		fail("bundle structure", "invalid manifest file list")
 	} else {
 		for name, digest := range listed {
 			if name == "replay.html" {

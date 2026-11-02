@@ -131,6 +131,12 @@ class Discovery(unittest.TestCase):
         # a check Go names is compared: these are no longer exempt
         self.assertFalse(compare({**base, "warning_checks": ["keys"]}, base, "v2")[0])
         self.assertFalse(compare({**base, "warning_checks": ["trust root"]}, base, "v1")[0])
+        # a check is exempt only with the status Python gives it: Go names this one's failures
+        witness = "head matches a witness checkpoint"
+        self.assertTrue(compare({**base, "warning_checks": [witness]}, base, "v1")[0])
+        failed = {**base, "exit_code": 1, "integrity": "VERIFICATION FAILED"}
+        self.assertFalse(compare({**failed, "failed_checks": [witness]}, {**failed, "failed_checks": ["chain intact"]},
+                                 "v1")[0])
 
     def test_a_failed_v2_bundle_names_one_of_the_reference_failures(self):
         python = {"exit_code": 1, "integrity": "FAILED", "assurance": "ok",
