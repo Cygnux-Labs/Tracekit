@@ -176,7 +176,18 @@ approvals:
 - The **dev signer** (`tracekit up`, or started by the SDK; it has no config) lets any identity of the run's tenant
   answer, including the requester. Such an answer is recorded `self_approved: true`, the report says `approvals:
   self`, and assurance is capped at `dev`. A signer started with `self_approval: allow` records a self-approval the
-  same way.
+  same way. The approval counts, and `tracekit approvals approve` says so:
+
+  ```text
+  approved: apr-…, by you. It counts: the dev signer runs as your own user and can't tell you from your agent, so it
+  records this as self-approved, and the run's assurance stays dev. A signer started from signer.yaml refuses an
+  approval from the call's own requester unless that file sets approvals: {self_approval: allow}.
+  ```
+
+  With `--signer` (or `TRACEKIT_SIGNER`) it can't tell a dev signer from one whose signer.yaml allows it, and says
+  "this signer lets the call's own requester answer (a dev signer, or approvals: {self_approval: allow} in its
+  signer.yaml)" instead. A rejection from the requester is recorded the same way and caps the run's assurance at `dev`
+  too: `tracekit approvals reject` says so.
 - Approvals are listed and shown only to the run's owner and to those who may answer them; another tenant never sees
   them. `tracekit approvals list` names the identity it asked as when it shows none.
 - OIDC identities are compared by person id, and a run's attested principal never answers its run's approvals
