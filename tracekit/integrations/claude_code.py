@@ -551,12 +551,15 @@ def _pre(client, p, sid, tid):
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
-            bang = "! " if AGENT == "claude-code" else ""   # Claude Code runs a `!` line as the person, in the session
+            # Claude Code runs a `!` line in the session as its OS user: the person, with the dev signer; with a named
+            # signer (system mode, a remote one) that user is the agent's, whom the signer refuses: another terminal
+            bang = "! " if AGENT == "claude-code" and not named else ""
             held = (f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is {waited['reason']}, then try the same "
                     "call again, with exactly the same arguments" if waited.get("reason") else
                     f"[tracekit] held for approval {aid} ({'; '.join(d['rule_ids'])}): a person lets it run with "
-                    f"`{bang}{cmd} approve {aid}`, then asks the agent to try the same call again (to refuse it: "
-                    f"`{bang}{cmd} reject {aid}`). Agent: wait for the person's answer") + (f". Why{why}" if why else "")
+                    f"`{bang}{cmd} approve {aid}`, then asks the agent to try the same call again, unchanged (to "
+                    f"refuse it: `{bang}{cmd} reject {aid}`). Agent: wait for the person's answer") + (
+                        f". Why{why}" if why else "")
             if _bash(tool, args):
                 _keep_held(sid, run.run_id, args, aid)
             print(held, file=sys.stderr)

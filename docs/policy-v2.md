@@ -482,7 +482,7 @@ a made-up constraint only makes the agent wait.
 The agent is told why, in its own words. The decide response carries it as `reason` (`the person's request in this run
 said not to modify billing.py; ask the person`, with `TK-CONSTRAINT` in its `rule_ids`), and Claude Code's hook blocks
 the call with it: `[tracekit] held for approval apr-… (TK-CONSTRAINT): a person lets it run with …, then asks the
-agent to try the same call again (…). Agent: wait for the person's answer. Why: the person's request in this run said
+agent to try the same call again, unchanged (…). Agent: wait for the person's answer. Why: the person's request in this run said
 not to modify billing.py; ask the person`, which names the commands that answer it ([coding agents](coding-agents.md#held-calls-approve-then-retry)). The file name comes from
 the call's own arguments. The log never holds it: `constraint.added` records the kind and, for a file, a salted
 commitment to its lower-cased base name ([format v2](format-v2.md#3-events)), and the signer matches a call by

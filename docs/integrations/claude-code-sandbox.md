@@ -56,7 +56,7 @@ The coding pack's `TK-A003` (an `ask` rule) adds what that prompt doesn't: it ho
 the decision:
 
 ```text
-[tracekit] held for approval apr-… (TK-A003): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: running a command outside Claude Code's sandbox. Have a person approve the held call, …
+[tracekit] held for approval apr-… (TK-A003): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: running a command outside Claude Code's sandbox. Have a person approve the held call, …
 tracekit approvals approve apr-…            # from another terminal; then ask Claude to run the same command again
 ```
 

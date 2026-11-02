@@ -1021,7 +1021,8 @@ class HeldCalls(unittest.TestCase):
         # #519: who runs what, ready to paste in Claude Code (`!` runs it as the person), and what the agent does
         self.assertTrue(err.startswith(f"[tracekit] held for approval {aid} (TK-A032): a person lets it run with "
                                        f"`! tracekit approvals approve {aid}`, then asks the agent to try the same "
-                                       f"call again (to refuse it: `! tracekit approvals reject {aid}`). Agent: wait "
+                                       f"call again, unchanged (to refuse it: `! tracekit approvals reject {aid}`). "
+                                       "Agent: wait "
                                        "for the person's answer. Why: uploading to cloud storage. "), err)
         self.assertEqual(err.count("\n"), 1, err)
         reply = json.loads(out)   # Claude Code shows the person the systemMessage and the model the deny's reason
@@ -1186,7 +1187,7 @@ class HeldCalls(unittest.TestCase):
         self.assertNotEqual(again, aid)
         self.assertTrue(err.startswith(
             f"[tracekit] held for approval {again} (TK-A032): a person lets it run with `! tracekit approvals "
-            f"approve {again}`, then asks the agent to try the same call again (to refuse it: `! tracekit approvals "
+            f"approve {again}`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals "
             f"reject {again}`). Agent: wait for the person's answer. Why: a person rejected this exact call ({aid}, by "
             f"uid:{os.getuid()}); ask them before trying again; uploading to cloud storage. "), err)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
@@ -1254,15 +1255,22 @@ class HeldCalls(unittest.TestCase):
 
     def test_a_command_the_policy_cant_read_says_why_and_the_readable_way(self):
         """#519: a hold for a command the parser can't read (a program named by a variable) gave no why, and its agent
-        didn't know naming the program itself, so every rule checks it, was its way through."""
-        code, out, err = self.pre('py=/usr/bin/python3; $py -c "import sys"', "t1")
+        didn't know naming the program itself, so the policy can read it, was its way through."""
+        code, out, err = self.pre("g=git; $g status", "t1")
         self.assertEqual(code, 2, err)
         self.assertIn("(TK-SHELL-PARSE): a person lets it run with `! tracekit approvals approve ", err)
-        self.assertIn("Why: the shell command can't be read (a program named by a variable or a command substitution, "
-                      "a function, code fed to an interpreter, or syntax the parser doesn't follow), so the policy "
-                      "can't check what it runs. Have a person approve it, or name the program itself "
-                      "(`/usr/bin/python3 -c …`, not `$py -c …`) so every rule checks the command", err)
-        self.assertEqual(self.pre('/usr/bin/python3 -c "import sys"', "t2")[0], 0)   # that way: read, checked, run
+        self.assertIn("Why: the policy can't read what this shell command runs. Name the program itself (`git push …`, "
+                      "not `$g push …`) so the policy can read it", err)
+        # Cursor (as Gemini CLI, Antigravity CLI, Codex and Droid) shows 500 characters: the remedy is in them
+        cursor = install._hook_command("tracekit.integrations.harness_hooks", "entry", ("cursor", "preToolUse"))
+        p = subprocess.run(cursor, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
+                           input=json.dumps({"hook_event_name": "preToolUse", "conversation_id": "c1",
+                                             "tool_name": "Shell", "tool_use_id": "c1",
+                                             "tool_input": {"command": "g=git; $g status"}}))
+        msg = json.loads(p.stdout)["agent_message"]
+        self.assertLessEqual(len(msg), 500)
+        self.assertIn("so the policy can read it", msg)
+        self.assertEqual(self.pre("git status", "t2")[0], 0)   # that way: read, checked by every rule, run
 
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
@@ -1606,7 +1614,8 @@ class HoldLine(unittest.TestCase):
                 code, lines, out = self.pre("force push. Push without --force.", wait=wait, answer="approved")
                 self.assertEqual(code, 2)
                 held = ("[tracekit] held for approval apr-1 (TK-A003): a person lets it run with `! tracekit "
-                        "approvals approve apr-1`, then asks the agent to try the same call again (to refuse it: `! "
+                        "approvals approve apr-1`, then asks the agent to try the same call again, unchanged (to "
+                        "refuse it: `! "
                         "tracekit approvals reject apr-1`). Agent: wait for the person's answer. Why: force push. Push "
                         "without --force")
                 self.assertEqual(lines, [held])   # no waiting line: nothing waited
@@ -1625,6 +1634,16 @@ class HoldLine(unittest.TestCase):
                          (2, [held], held))
         code, lines, _ = self.pre("x", wait="0.2", veto=veto)   # a wait that ended inside the delay
         self.assertEqual((code, lines[-1]), (2, held))
+
+    def test_a_named_signers_commands_are_for_the_persons_own_terminal(self):
+        """Review of #520: Claude Code runs a `!` line as the session's OS user; with a named signer (system mode, a
+        remote one) that is the agent's, whom the signer refuses as an approver: no `!` there."""
+        sock = "/run/tracekit-signer/signer.sock"
+        named = shlex.quote(sock) if os.name != "nt" else f'"{sock}"'
+        code, lines, _ = self.pre("x", signer=sock, wait="")
+        self.assertEqual(code, 2)
+        self.assertIn(f"a person lets it run with `tracekit approvals --signer {named} approve apr-1`", lines[-1])
+        self.assertNotIn("`! ", lines[-1])
 
     def test_an_unanswered_wait_ends_with_how_to_approve_and_retry(self):
         code, lines, _ = self.pre("x", wait="0.2", answer="requested")
