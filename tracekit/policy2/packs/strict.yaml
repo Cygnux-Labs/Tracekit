@@ -2,8 +2,8 @@
 # id with the coding pack's own patterns, moved from flag to ask; `on_parse_error: deny` denies a shell command the
 # parser can't read (TK-SHELL-PARSE) instead of holding it. Two flags stay flags: TK-F007 (background processes)
 # matches `crontab -l`, which only lists, and TK-F012 (any URL a call acts on) would hold every web request and
-# navigation (a fifth of E17's benign calls). Expect more holds than the server pack: docs/policy-v2.md#packs-shipped
-# gives the false-positive rate measured on E17's and E21's benign calls.
+# navigation (a fifth of E17's benign calls). Expect more holds than the server pack:
+# docs/evaluation.md#e21-policy-robustness gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
 version: '2026.10-strict-8'

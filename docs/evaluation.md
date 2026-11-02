@@ -9,6 +9,7 @@ socket) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurr
 E3, E4, E6, E10 to E12, E14 (`--quick`) and E16 to E21, on every pull request ("Offline evals"): each must pass its own
 gate, and their deterministic results must equal the committed files, so a change that moves a number commits the new
 file, and `tests/test_eval_docs.py` checks the numbers this page, the README and the known limits quote against them.
+This page is the numbers' one home: other docs link here instead of repeating a count a rule change moves.
 E2, E14 in full, E9 and E16 on Postgres, E22 and E7 run nightly (`.github/workflows/nightly-evals.yml`). Results are
 written to `eval/results/`. `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small,
 synthetic and written by the authors. They show how the mechanisms behave, not how Tracekit performs across real
@@ -515,8 +516,8 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   nobody has seen.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
   data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
-- Latency: each call's fastest of five decisions, over E17, the held-out pool and the developer sessions (2,481 calls
-  in the recorded run; the blind pools are not timed). Each try is followed by
+- Latency: each call's fastest of five decisions, over E17, the held-out pool and the developer sessions (the blind
+  pools are not timed). Each try is followed by
   a fixed reference workload (`reference` in the script: JSON, a shell split and regular expressions from the
   standard library, no Tracekit code), and `p99_ref` is the p99 of each call's fastest decision over the
   reference's fastest: a busy or throttled machine slows both alike, a slower engine or pack only the decision.
@@ -591,7 +592,7 @@ All 40 are benign calls strict holds: 26 as a push, publish, install, apply or `
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's 766 harmful calls are decided as they are, and each of the 440 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 440 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
 `bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 766

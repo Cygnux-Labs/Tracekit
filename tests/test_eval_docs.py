@@ -2,11 +2,20 @@
 
 Each claim renders its text from a results file and the doc must contain it, so a result that moves fails here until
 the doc says the new number. CHANGELOG.md is left out: a release's notes quote the numbers as they were then."""
+import glob
 import json
 import os
+import re
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def quotes(body, text):
+    """Whether `body` holds `text` with its whitespace collapsed, and a number at either end of it whole: "18 of 432"
+    is not in "118 of 432" or "18 of 4,321" (#500)."""
+    t = re.escape(" ".join(text.split()))
+    return re.search(r"(?<![\d.,])" * text[:1].isdigit() + t + r"(?![\d]|[.,]\d)" * text[-1:].isdigit(), body) is not None
 
 
 def res(name):
@@ -57,7 +66,9 @@ def claims():
         f"{alone} of {len(m)} caught by the log alone, **{wit} of {len(m)} with a witness**",
         f"{caught} of {harm}</h3>harmful calls stopped",
         f"{len(e17['classes'])} classes</a>, {fp} false alarm in {benign} (E17)",
+        f"{caught} of {harm} harmful calls stopped, {fp} false alarm in {benign} (E17)",
         f"{harm} harmful and {benign} benign tool calls in {len(e17['classes'])} classes",
+        f"**{caught} of {harm} stopped**; {fp} false alarm",
         f"{e9['ack_on_write']['p99_ms']} ms at p99</a>, signer round trip (E9)",
         f"**{round(e9['ack_on_write']['p50_ms'], 2)} ms p50, {e9['ack_on_write']['p99_ms']} ms p99** per call; "
         f"{e9['throughput']['events_per_s']:,} events/s",
@@ -85,6 +96,7 @@ def claims():
           f"{lat[p + '/re2']['p99_us']} / {lat[p + '/regex']['p99_us']} | {lat[p + '/re2']['max_us']} / "
           f"{lat[p + '/regex']['max_us']} | {lat[p + '/re2']['p99_ref']} / {lat[p + '/regex']['p99_ref']} |"
           for p in ("default", "strict", "dev")),
+        f"either: {se17['fp']} of {se17['benign']} ({pct(se17['fp'] / se17['benign'], 1)}). All {se17['fp']} are benign",
         f"each of the {e21r['rewritten_cases']} shell",
         f"all {e21r['source_cases']} originals and all {rewrites:,} rewrites are",
         f"| F1c | **pool v3 (held out)** | {covers(ho['detection']['F1c'])} |",
@@ -99,13 +111,20 @@ def claims():
         f"none of the {e22['forgeries']} forgeries",
     ]
     limits = [
-        f"({pct(se17['fp'] / se17['benign'], 1)} of E17's benign calls, {pct(strict['sessions']['fp_rate'], 1)} of "
-        f"E21's developer-session calls)",
-        f"and {h['caught']} ({h['deny']} denied) after rules were added",
-        f"it holds {h['fp']} of {h['benign']} benign ones",
         f"E20 `c5_line`, {round(ho['forged_flagged']['F1'] * 24)} of 24 flagged",
     ]
     return {"README.md": readme, "docs/evaluation.md": evaluation, "docs/limits.md": limits}
+
+
+def moving_counts():
+    """The E17 and E21 counts a policy rule change moves, as docs/evaluation.md quotes them."""
+    e17, e21 = res("e17_policy_corpus"), res("e21_policy_robustness")
+    harm, caught, benign = (sum(c[k] for c in e17["classes"].values()) for k in ("deny", "caught", "benign"))
+    dflt, se17 = e21["profiles"]["default"], e21["profiles"]["strict"]["e17"]["totals"]
+    h = dflt["heldout"]["totals"]
+    return [f"{caught} of {harm}", f"{harm} harmful and {benign} benign", f"false alarm in {benign}",
+            f"{h['caught']} ({pct(dflt['heldout']['recall'], 1)})", f"{h['fp']} of {h['benign']}",
+            f"{pct(se17['fp'] / se17['benign'], 1)} of E17's benign"]
 
 
 class EvalDocs(unittest.TestCase):
@@ -115,7 +134,26 @@ class EvalDocs(unittest.TestCase):
                 body = " ".join(f.read().split())
             for t in texts:
                 with self.subTest(doc=doc, claim=t):
-                    self.assertIn(" ".join(t.split()), body, "update the doc, or re-run the eval that wrote the file")
+                    self.assertTrue(quotes(body, t), "update the doc, or re-run the eval that wrote the file")
+
+    def test_other_docs_link_to_the_evaluation_instead_of_copying_its_counts(self):
+        """#500: E17's and E21's counts were copied into several pages, so every rule change edited them all. Only
+        docs/evaluation.md quotes them (the README too, checked above); another page links to it."""
+        counts = moving_counts()
+        for path in glob.glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True):
+            if os.path.relpath(path, ROOT) == os.path.join("docs", "evaluation.md"):
+                continue
+            with open(path, encoding="utf-8") as f:
+                body = " ".join(f.read().split())
+            with self.subTest(doc=os.path.relpath(path, ROOT)):
+                self.assertEqual([c for c in counts if quotes(body, c)], [], "link to docs/evaluation.md instead")
+
+    def test_a_count_matches_only_as_a_whole_number(self):
+        self.assertTrue(quotes("held 18 of 432 benign", "18 of 432"))
+        self.assertTrue(quotes("(18 of 432)", "18 of 432"))
+        for body in ("held 118 of 432", "held 18 of 4321", "held 18 of 432.5", "held 1,18 of 432", "held 18 of 432,1"):
+            with self.subTest(body=body):
+                self.assertFalse(quotes(body, "18 of 432"))
 
 
 if __name__ == "__main__":
