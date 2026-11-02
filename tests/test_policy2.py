@@ -1350,13 +1350,40 @@ class TimedAndBraced(unittest.TestCase):
         self.assertIn(["beta", "a", "b"], argvs("alpha $(beta {a,b})*"))
         for line in ("{alpha,beta} x", "{alpha,{}} x"):   # a command name brace expansion builds stays unreadable
             self.assertTrue(shell.parse(line)[0]["opaque"], line)
+        # unreadable (bash 4 expands it its own way, too many words, or a substitution beside it): kept as written,
+        # as 1.5.2 read it, and its command opaque, so a rule still reads the rest
         for line in ("alpha {1..10..2}", "alpha {01..03}", "alpha {a..A}", "alpha {1..1000}", "alpha {a,b}$(beta)",
                      "alpha " + "{a,b}" * 9, "alpha `#'`{-r,-f} x", "alpha {a{1,2}..b}", "alpha {x..{,}y}",
                      "alpha {'a,b'..c}", "alpha {+1..+3}", "alpha {1.." + "9" * 30 + "}", "alpha \"$(: '\"')\"{-r,-f} x",
                      "alpha $(: #'\n){-r,-f} x",
                      "alpha {" + "a," * 300 + "a}"):
-            with self.assertRaises(shell.ParseError, msg=line):
-                shell.parse(line)
+            self.assertTrue(next(c for c in shell.parse(line) if c["argv"][0] == "alpha")["opaque"], line)
+        self.assertEqual(argvs("alpha -x {1..10..2} y"), [["alpha", "-x", "{1..10..2}", "y"]])
+        with self.assertRaises(shell.ParseError):   # past the parse budget, the line is unreadable
+            shell.parse("alpha " + "{a,b}" * 20000)
+
+    def test_an_unreadable_part_of_a_line_leaves_the_rest_decided(self):
+        """A brace bash 4 expands its own way, or one beside a substitution, holds its command (TK-SHELL-PARSE) and the
+        rules still read the rest of it; a line the parser can't read at all is still decided on its plain words. A
+        deny-corpus command with such a word after it is still denied, as by 1.5.2."""
+        for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
+                with open(path) as f:
+                    for row in map(json.loads, f):
+                        cmd = row["args"].get("command")
+                        # (an argument after a command can change what it runs: python3 <<<"code" 1 2 runs the file 1)
+                        if not isinstance(cmd, str) or "\n" in cmd or \
+                                e.decide("Bash", {"command": cmd + " {1..2}"})["verdict"] != "deny":
+                            continue
+                        for word in ("{1..300}", "{1..3..1}", "{a..A}", "{01..02}", "x$(true){a,b}"):
+                            d = e.decide("Bash", {"command": f"{cmd} {word}"})
+                            self.assertEqual(d["verdict"], "deny", (pack, backend, cmd, word))
+            for cmd, rule in (("sudo id", "TK-D001"), ("rm -rf ~/", "TK-D004")):
+                for tail in ("${X:-'$'}", "\"${X+'}'}\"", "2\\\n> out.txt", "$\\\nX"):
+                    d = e.decide("Bash", {"command": f"{cmd} {tail}"})
+                    self.assertEqual((d["verdict"], rule in d["rule_ids"], "TK-SHELL-PARSE" in d["rule_ids"]),
+                                     ("deny", True, True), (pack, backend, cmd, tail))
 
     def test_a_parameter_expansion_ends_where_bash_ends_it(self):
         """Quotes pair up and a backslash escapes in ${...}: a } there doesn't end it. With X unset, bash runs
@@ -1479,8 +1506,8 @@ class TimedAndBraced(unittest.TestCase):
                 self.assertEqual(d["verdict"], "deny" if rule.startswith("TK-D") else "ask", (pack, backend, cmd))
 
     def test_a_deep_substitution_beside_a_brace_is_unreadable_not_a_crash(self):
-        with self.assertRaises(shell.ParseError):
-            shell.parse("alpha $(: #" + "$(" * 1000 + "\n)*{a,b}")
+        cmds = shell.parse("alpha $(: #" + "$(" * 1000 + "\n)*{a,b}")
+        self.assertTrue(next(c for c in cmds if c["argv"][0] == "alpha")["opaque"])
 
     def test_brace_expansion_stays_within_the_parse_budget(self):
         for line in ("alpha " + "{a,b}" * 20000, "alpha " + "{" * 30000 + "a,b" + "}" * 30000,

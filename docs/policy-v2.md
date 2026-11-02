@@ -239,7 +239,8 @@ heredoc or herestring), `awk` programs and sed's `e` command. The POSIX shells i
 `powershell`, `nu`, `xonsh` and `elvish` speak another language, so a command they run from their line (`-c`,
 `--command`, PowerShell's `-Command` or `-EncodedCommand`, any prefix and case) or from stdin is opaque. An argument
 with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`), up to 256; past that, a brace
-with `..` that isn't a plain sequence of two numbers or two letters, or a substitution in such a word, is unreadable. `time` before a group or another
+with `..` that isn't a plain sequence of two numbers or two letters, or a substitution in such a word, is kept as
+written and its command is opaque. `time` before a group or another
 compound command times what follows, which is read as the command. Variables are not expanded and encodings are
 not decoded: those stay tripwire territory. A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
 read twice, as written and as gone, because bash drops it when they expand to nothing: `git $X push --force` is
@@ -247,8 +248,9 @@ also `git push --force`. An empty expansion inside a word joins the rest of it, 
 every expansion empty (`rm $X-rf ~/$X` is `rm -rf ~/`), and with only those empty that touch a character other than
 `/ = : , @` (`gh ${X}api -X PUT "repos/$R/x"` keeps `$R`, which rules read as built at run time); `${X:?}`,
 `${X:-word}` and arithmetic never expand to nothing. A backslash-newline is gone before the words are read, as in bash; one after `$` or between
-two operator characters is unreadable. A command it cannot parse, or one that is
-opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a
+two operator characters is unreadable. A command it cannot parse is still decided on its text split at `;`, `&`,
+`|` and newlines into blank-separated words, so a deny on plain words stands. A command it cannot parse, or one that
+is opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a
 literal name is fine), a shell or interpreter reading its program from a pipe or file, `xargs -I` putting its input
 into a script or command name, sed's `s///e`.
 
