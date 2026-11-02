@@ -257,7 +257,7 @@ def main(real=False, keep=False, agent="claude"):
         bundle.print_report(rep, code)
         if agent in NO_SESSION_EVENTS:
             print(f"  note     the run-boundaries gap is expected: {agent} sends no session end, so the run has no "
-                  "signed run.end; every record in it verified")
+                  "signed run.end" + ("; every record in it verified" if code == 0 else ""))
         say("tamper test: rewrite one recorded command in a copy, then verify again")
         bad = os.path.join(d, "tampered.tkb")
         tamper_copy(out, bad)

@@ -1333,6 +1333,19 @@ class DemoPerAgent(unittest.TestCase):
             self.assertEqual(f"gap is expected: {agent} sends no session end" in out.getvalue(),
                              agent in demo.NO_SESSION_EVENTS)
 
+    def test_the_expected_gap_note_claims_no_verification_that_failed(self):
+        import contextlib
+        import io
+        from tracekit import demo
+        patch_env(self)
+        verify = demo.bundle.verify
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(demo.bundle, "verify",
+                                                                lambda *a: (verify(*a)[0], 1)):
+            self.assertEqual(demo.main(agent="goose"), 1)
+        self.assertIn("the run-boundaries gap is expected: goose sends no session end", out.getvalue())
+        self.assertNotIn("every record in it verified", out.getvalue())
+
     def test_native_payloads_are_recorded_under_the_agent(self):
         import contextlib
         import io

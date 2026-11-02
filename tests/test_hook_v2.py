@@ -777,7 +777,8 @@ class HookV2(unittest.TestCase):
     def test_a_signer_reset_starts_a_new_run_and_leaves_the_old_one_open(self):
         """#499: after a signer reset (a new run token key), the session's stored run token is one the signer never
         issued: the session's next event registers a new run, with the session's constraints, instead of every call
-        being refused with run_token_invalid. The old run is left as it was: open, with no run.end."""
+        being refused with run_token_invalid. The hook never closes the old run: it is left for the signer's idle close,
+        with no run.end from the hook."""
         self.assertEqual(self.hook("UserPromptSubmit", prompt="Don't touch billing.py."), (0, ""))
         self.assertEqual(self.pre("ls"), (0, ""))
         self.assertEqual(self.post("ls"), (0, ""))

@@ -96,7 +96,7 @@ WAIT_ENV = "TRACEKIT_APPROVAL_WAIT"   # seconds a held call's hook waits for its
 SESSION_KEEP_S = 30 * 86400
 # the signer no longer takes the session's stored run: closed (idle), unknown, or its token not one this signer issued
 # (a signer reset makes a new run token key). The session's next event that registers starts a new run; the old one is
-# left as it was, open (its tail unproven), never closed by the hook
+# never closed by the hook: it is left for the signer's idle close, its tail unproven
 GONE = ("run_closed", "unknown_run", "run_token_invalid")
 
 

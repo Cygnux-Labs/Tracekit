@@ -328,7 +328,7 @@ Without anything else installed, the signer turns what it saw and then never hea
 - writes after the run ended (`late_activity`, in a run-set), apart from each client's first one, from which it learns
   that the run ended (an idle close) and moves to a new run. A hook moves to a new run too when the signer was reset
   (its data dir or run token key made anew) and refuses the session's run token: the earlier run, if the store still
-  holds it, stays open with its tail unproven.
+  holds it, is left for the signer's idle close, its tail unproven.
 
 The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can't be used with the Claude Code hooks: they record a digest of each tool's raw output, not what the model is sent, so every result would mismatch ([gateway](gateway.md#verified-tool-results)).
 
