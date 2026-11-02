@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-50'
+version: '2026.10-v2-51'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -245,6 +245,16 @@ ask:
     reason: starting a container with host-level privileges or mounts
     remedy: Have a person approve the held call, or run the container without --privileged, host namespaces or a root mount.
     rationale: These options expose the host disk, process space or device access to the container; a person confirms it.
+  - id: TK-A049
+    class: shell
+    field: line
+    # driving the Docker or Podman API directly through its unix socket, or setting DOCKER_HOST to one for a command other
+    # than docker/podman; or writing into a cgroup's release_agent or notify_on_release handler to escape a container
+    pattern: '\b(curl|wget|socat|nc|ncat)\b[^\n]{0,128}\b(docker|podman)\.sock\b|\b(docker|podman)\.sock\b[^\n]{0,128}\b(curl|wget|socat|nc|ncat)\b|\bDOCKER_HOST=unix://|(?:\btee\b\s+[^\n]{0,64}|[0-9&]*(?:>>|>)\s*)/sys/fs/cgroup/[^\s;&|]*(release_agent|notify_on_release)\b'
+    unless: '\bDOCKER_HOST=unix://\S{0,128}\s+(docker|podman)\b'
+    reason: accessing a container control socket or configuring a cgroup release agent
+    remedy: Have a person approve the held call, or use the standard docker or podman command without direct socket access or cgroup writes.
+    rationale: Raw calls to a container socket or writes to cgroup release handlers can escape a container or control the host; a person confirms the access.
   - id: TK-A024
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit

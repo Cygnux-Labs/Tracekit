@@ -672,6 +672,43 @@ class CodingPack(unittest.TestCase):
                         if cmd in held:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+
+    def test_driving_container_socket_or_cgroup_release_agent_asks_in_every_pack(self):
+        """TK-A049: driving the Docker/Podman API directly through its socket, or writing into a cgroup release handler,
+        is held for a person; normal docker commands, socket stat/ls and cgroup reads remain unheld."""
+        held = [
+            "curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json",
+            "curl -s --unix-socket /var/run/docker.sock -X POST http://localhost/containers/create -H 'Content-Type: application/json' -d '{\"Image\":\"alpine\"}'",
+            "echo 1 > /sys/fs/cgroup/x/notify_on_release && echo '/cmd' > /sys/fs/cgroup/x/release_agent",
+            "socat - UNIX-CONNECT:/var/run/docker.sock",
+            "nc -U /var/run/podman.sock",
+            "wget --unix-socket=/var/run/docker.sock http://localhost/info",
+            "D=/var/run/docker.sock; curl -s --unix-socket $D http://localhost/images/json",
+            "DOCKER_HOST=unix:///var/run/docker.sock python3 test.py",
+            "echo 1 | tee /sys/fs/cgroup/x/release_agent",
+            "echo 1 | tee -a /sys/fs/cgroup/notify_on_release",
+        ]
+        routine = [
+            "docker ps",
+            "docker run --rm hello-world",
+            "ls -la /var/run/docker.sock",
+            "cat /sys/fs/cgroup/cpu.max",
+            "cat /sys/fs/cgroup/x/release_agent",
+            "cat /sys/fs/cgroup/x/notify_on_release",
+            "cat /sys/fs/cgroup/x/release_agent > /tmp/out",
+            "DOCKER_HOST=unix:///var/run/docker.sock docker ps",
+            "DOCKER_HOST=unix:///var/run/docker.sock docker run --rm hello-world",
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A049" in d["rule_ids"], cmd in held, d)
+                        if cmd in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
