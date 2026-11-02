@@ -30,7 +30,8 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` defaults to `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
+- `ROOT` defaults to `$CLAUDE_CONFIG_DIR/projects` when `CLAUDE_CONFIG_DIR` is set (Claude Code keeps its config
+  there then), else `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept.

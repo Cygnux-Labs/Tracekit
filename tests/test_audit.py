@@ -147,6 +147,17 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no such folder", err)
 
+    def test_the_default_folder_is_in_claude_config_dir_when_it_is_set(self):
+        _write_jsonl(self.root / "config" / "projects" / "p" / "s.jsonl", [_call("Bash", {"command": "rm -rf /"})])
+        home = self.root / "home"   # no .claude: a fallback to ~/.claude/projects finds nothing
+        home.mkdir()
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+            self.assertEqual(_run("--json")[0], 2)
+            os.environ["CLAUDE_CONFIG_DIR"] = str(self.root / "config")
+            code, out, _ = _run("--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["counts"]["deny"], 1)
+
     def test_share_is_counts_only(self):
         """#521: --share, a field report a person posts where anyone reads it, holds the counts and the window's length,
         never a session, path, time, call or what was said, though the transcripts and the report hold them. A rule that
