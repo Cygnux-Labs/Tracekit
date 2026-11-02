@@ -18,7 +18,7 @@ from . import __version__
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
-from .report import DECISIONS, _counts, _days, call_text, when
+from .report import DECISIONS, _counts, _days, call_text, share_rules, when
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
 from .view import ENGINE_RULES
 
@@ -153,6 +153,8 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
         "by_rule": by_rule,
         "reasons": {**{i: ENGINE_RULES[i] for i in by_rule if i in ENGINE_RULES},   # what each rule is, as the viewer says it
                     **{r["id"]: r.get("reason") or r.get("label", "") for _, r, *_ in engine.rules if r["id"] in by_rule}},
+        # the policy's section of each rule: an engine check has none
+        "sections": {r["id"]: sec for sec, r, *_ in engine.rules if r["id"] in by_rule},
         "skipped_malformed": skipped_malformed,
         "unreadable": unreadable,
         "calls": calls,
@@ -204,17 +206,17 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
 def share(report: dict) -> str:
     """The report's counts alone, for a person to post as a field report (docs/field-reports.md), as tracekit report
     --share gives them: of --since, the window's length; no session, path, policy file, time, call or rule
-    description."""
-    n, s = report["counts"], report["sessions"]
-    by_rule = collections.Counter((c["verdict"], rid) for c in report["calls"] for rid in c["rule_ids"])
+    description, and no rule id but Tracekit's own (report.share_rules). A rule is why its call was decided when its
+    section is the call's decision; an engine check, which has no section, is not placed."""
+    n, s, secs = report["counts"], report["sessions"], report["sections"]
+    by_rule = collections.Counter((c["verdict"], rid, secs[rid] == c["verdict"] if rid in secs else None)
+                                  for c in report["calls"] for rid in c["rule_ids"])
     window = _days(time.time() - when(report["since"])) if report["since"] else "every transcript"
     lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
              f"{report['disclaimer']}: {s:,} Claude Code session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
-             "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule)]
-    # the denies, then the holds and the flags, most first
-    lines += [f"  {v} {rid} {k:,}" for (v, rid), k in sorted(by_rule.items(),
-                                                             key=lambda x: (-DECISIONS.index(x[0][0]), -x[1], x[0][1]))]
+             "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule),
+             *share_rules(by_rule)]
     return "\n".join(_escaped(line) for line in lines) + "\n"
 
 

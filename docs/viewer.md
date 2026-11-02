@@ -525,8 +525,10 @@ can't be checked, as `tracekit verify` does.
   is the operator's word for the key: whoever verifies checks the key in it against their own copy.
 - **`--share`** prints the report's counts alone, to post as a [field report](field-reports.md): the window's length
   in days, the version, whether the store and how many runs verify, the runs that verify by agent, the calls by
-  decision, the holds by outcome, and each denied or flagged rule with its count. No source, tenant, run id,
-  identity, time, call or rule description; it reads no content, so it adds no `content.accessed` record.
+  decision, the holds by outcome (and how many retries it counted with their held calls), the number of gaps, and
+  each denied or flagged rule with its count. An agent name or rule id that isn't Tracekit's own is counted as
+  `other` or `custom rule` ([field reports](field-reports.md#what-is-shared-and-what-isnt)). No source, tenant, run
+  id, identity, time, call or rule description; it reads no content, so it adds no `content.accessed` record.
 
 It reads the store without the signer's lock, as the viewer does, and never starts, stops or replaces a signer. The
 report is the operator's view of the operator's own store, so its verdicts are operator-side (`dev` assurance on a

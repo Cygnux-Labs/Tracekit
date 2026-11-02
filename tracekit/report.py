@@ -24,6 +24,7 @@ import argparse
 import bisect
 import collections
 import datetime
+import glob
 import json
 import os
 import re
@@ -33,10 +34,12 @@ import tempfile
 import time
 
 from . import __version__, view
+from .agent_hooks import AGENT_NAMES
 from .format import canon, checkpoint
 from .merkle import leaf_hash
 from .merkle.tiles import MemoryTileStore, Tree
 from .policy import subject
+from .policy2 import compile as policy_compile
 from .sdk import autospawn
 from .sdk.client import Client, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
@@ -53,7 +56,11 @@ TOP_GAPS = 3   # runs named under the gaps
 EDITED = "was edited in the store (its hash doesn't match its event): listed whatever its tenant and times"
 STORE_FAILED = "the store doesn't match the signer's checkpoint: listed whatever its times"
 NO_ARGS = "arguments not shown (the record holds only their salted hash)"
-SHARE_NOTE = "read it before you post: agent names and rule ids are shown as your agents and your policy name them"
+SHARE_NOTE = ("an agent name or rule id that isn't Tracekit's own is counted as \"other\" or \"custom rule\": read it "
+              "before you post")
+# the names Tracekit's own hooks and tools give a run (integrations/claude_code.py, agent_hooks, follow.py,
+# why/signed.py): --share prints these, and counts any other, which a script, a person or an agent chose, as "other"
+AGENTS = {"claude-code", *AGENT_NAMES.values(), "agentsh", "tracekit-why"}
 
 
 def when(value, now=None):
@@ -406,22 +413,49 @@ def text(rep, config=None, data_dir=None):
     return "\n".join(_escaped(line) for line in out)
 
 
+def tracekit_rules():
+    """The rule ids Tracekit itself gives a decision: its shipped packs' rules and detections, and the engine's
+    checks."""
+    packs = glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))
+    return {r["id"] for p in packs for pol in [policy_compile.build(p)[0]]
+            for sec in policy_compile.SECTIONS + policy_compile.DETECT for r in pol.get(sec, [])
+            if isinstance(r, dict) and "id" in r} | policy_compile.RESERVED_IDS | set(view.ENGINE_RULES)
+
+
+def share_rules(counts):
+    """--share's rule lines (report's and audit's) of `counts`, {(decision, rule id, why): calls}, `why` as _tally's:
+    the denies, then the holds and the flags, most first, the rules that only also matched after the others. A rule id
+    that isn't Tracekit's own (tracekit_rules, or the signer's TK-APPROVAL-...), which a policy's author chose, is
+    counted as "custom rule", one count for all of them."""
+    ours, shown = tracekit_rules(), collections.Counter()
+    for (dec, rid, why), n in counts.items():
+        shown[dec, rid if rid in ours or re.fullmatch(r"TK-APPROVAL-[A-Z]+", rid) else "custom rule", why] += n
+    tag = {True: "", False: " (also matched, not why)", None: " (not placed)"}
+    return [f"  {dec} {rid} {n:,}{tag[why]}" for (dec, rid, why), n in
+            sorted(shown.items(), key=lambda x: (-DECISIONS.index(x[0][0]), x[0][2] is False, -x[1], x[0][1]))]
+
+
 def share(rep):
     """The report's counts alone, for a person to post as a field report (docs/field-reports.md): of the window, its
-    length; no source, trust, tenant, run id, identity, time, call or rule description."""
+    length; no source, trust, tenant, run id, identity, time, call or rule description, and no agent name or rule id
+    but Tracekit's own (AGENTS, share_rules)."""
     w, runs, calls, holds = rep["window"], rep["runs"], rep["calls"], rep["holds"]
     ok = sum(x["verdict"] == "verified" for x in runs)
-    why = {True: "", False: " (also matched, not why)", None: " (not placed)"}
+    agents = collections.Counter()
+    for name, n in rep["by_agent"].items():
+        agents[name if name in AGENTS else "other"] += n
+    agents = dict(sorted(agents.items(), key=lambda x: (-x[1], x[0])))
+    # the asks that are no hold of their own, as text() says them
+    retries = holds["retries"] and f"   ({holds['retries']:,} of the agent's retries of a held call, counted with it)"
     days = _days(when(w["until"]) - when(w["since"]))
     out = [f"Tracekit {__version__} field report (tracekit report --share): {days}",
            f"Integrity: the store {rep['store']['verdict']}, {ok} of {len(runs)} runs verify",
-           f"Runs that verify, by agent: {_counts(rep['by_agent']) or 'none'}",
+           f"Runs that verify, by agent: {_counts(agents) or 'none'}",
            f"Tool calls: {calls['total']:,}   " + _counts({k: calls[k] for k in DECISIONS}),
-           f"Holds: {holds['total']:,}   {_counts(holds['outcomes'])}".rstrip(),
+           f"Holds: {holds['total']:,}   {_counts(holds['outcomes'])}".rstrip() + (retries or ""),
+           f"Gaps (signed records that something may be missing): {rep['gaps']['total']:,}",
            "Denied and flagged calls, by rule (one call can match several rules):" + " none" * (not rep["rules"])]
-    # the denies, then the flags: most first, and the rules that only also matched after the others
-    out += [f"  {g['decision']} {g['rule']} {g['count']:,}{why[g['why']]}"
-            for g in sorted(rep["rules"], key=lambda g: (g["decision"], g["why"] is False))]
+    out += share_rules({(g["decision"], g["rule"], g["why"]): g["count"] for g in rep["rules"]})
     return "\n".join(_escaped(line) for line in out)
 
 

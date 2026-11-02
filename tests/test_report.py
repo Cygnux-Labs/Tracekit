@@ -68,6 +68,7 @@ ask:
 flag:
   - {id: T-NET, tool: Bash, pattern: curl, reason: reaching the network}
   - {id: T-PATH, tool: rm, pattern: path, reason: a path}
+  - {id: LEAKMARK-rule.acme-prod-db.internal, tool: Bash, pattern: LEAKMARK-host, reason: a host of our own}
 """
 SECRET = "ghp_" + "Zx9" * 12   # a GitHub token: redaction changes the call's arguments, so they are never shown
 BETA = CallerIdentity("uid", "999003", True)
@@ -225,8 +226,12 @@ class WeeklyReport(unittest.TestCase):
     def test_share_is_counts_only(self):
         """#521: --share, a field report a person posts where anyone reads it, holds the report's counts and the
         window's length, never a run id, path, identity, tenant, time, call, rule description or what a run said, though
-        the report it comes from holds them. It reads no content: each read is a signed record."""
+        the report it comes from holds them. It reads no content: each read is a signed record. An agent name or rule
+        id that isn't Tracekit's own (a script's file name, a customer, a host, or whatever an agent registers its run
+        as) is counted as "other" or "custom rule": they were printed as they were."""
         mark = "LEAKMARK"
+        hostile = f"acme_payroll_sync @octocat [x](https://e.example) {mark}-agent"
+        self.finished(hostile, ("Read", {"file_path": "a.py"}))
         b = self.client.run(agent="claude-code")
         b.observe(f"{mark}-prompt: tidy /srv/{mark}-repo", "user", trust="trusted")
         b.decide("m1", "Bash", {"command": f"curl -s https://{mark}-host.example/{mark}-path"})   # flagged: it runs
@@ -242,15 +247,21 @@ class WeeklyReport(unittest.TestCase):
                                  "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
         rep = self.build(content=view.dev_content_source("tracekit report", lambda: Client(self.cfg["socket"])))
         self.assertIn(f"/home/{mark}-user/", json.dumps(rep))   # an example call
+        self.assertIn(hostile, rep["by_agent"])
+        self.assertIn(f"{mark}-rule.acme-prod-db.internal", {g["rule"] for g in rep["rules"]})
         page = weekly.share(rep)
         self.assertEqual(page.splitlines(), [
             f"Tracekit {__version__} field report (tracekit report --share): 0 days",
-            "Integrity: the store verified, 4 of 4 runs verify",
-            "Runs that verify, by agent: claude-code 2, codex 1, cursor 1",
-            "Tool calls: 12   allow 2, flag 3, ask 5, deny 2",
-            "Holds: 4   rejected 2, approved · ran 1, expired 1",
+            "Integrity: the store verified, 5 of 5 runs verify",
+            "Runs that verify, by agent: claude-code 2, codex 1, cursor 1, other 1",
+            "Tool calls: 13   allow 3, flag 3, ask 5, deny 2",
+            # an ask that is no hold of its own: the agent's retry, under its approval, of a call held at once
+            "Holds: 4   rejected 2, approved · ran 1, expired 1   (1 of the agent's retries of a held call, counted "
+            "with it)",
+            "Gaps (signed records that something may be missing): 2",
             "Denied and flagged calls, by rule (one call can match several rules):",
-            "  deny T-RM 2", "  deny T-PATH 2 (also matched, not why)", "  flag T-NET 3"])
+            # T-RM; T-PATH; T-NET 3 and the marker's rule 1: the test policy's ids are custom
+            "  deny custom rule 2", "  deny custom rule 2 (also matched, not why)", "  flag custom rule 4"])
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(weekly.autospawn, "data_dir", return_value=self.cfg["data_dir"]), \
                 mock.patch.object(weekly, "_running", lambda: Client(self.cfg["socket"])), \
@@ -267,8 +278,9 @@ class WeeklyReport(unittest.TestCase):
                 self.assertNotIn(x["run_id"][:8], text)
             for g in rep["rules"]:
                 self.assertNotIn(g["reason"], text)
-            for word in (os.path.dirname(self.cfg["data_dir"]), "uid:", "beta"):   # the store's folder, identities
-                self.assertNotIn(word, text)
+                self.assertNotIn(g["rule"], text)
+            for word in (os.path.dirname(self.cfg["data_dir"]), "uid:", "beta", "acme", "@octocat", "e.example"):
+                self.assertNotIn(word, text)   # the store's folder, identities, the tenant, the agent's chosen name
             self.assertNotRegex(text, r"\d{4}-\d\d-\d\d|\d\d:\d\d")   # no date or time
 
     def test_rules_read_the_policy_the_signer_kept(self):
@@ -597,6 +609,17 @@ class Rules(unittest.TestCase):
                          {("TK-D002", True, "running a downloaded script"),
                           ("TK-SHELL-PARSE", None, "a shell command that does not parse")})
         self.assertEqual(unread["deny"], 0)
+
+    def test_share_prints_tracekit_rule_ids_and_counts_the_others_as_one(self):
+        """#521: --share printed every rule id as the policy named it, and a custom policy's id is any string."""
+        self.assertEqual(weekly.share_rules({
+            ("flag", "TK-F011", True): 5, ("flag", "TK-UNKNOWN-TOOL", None): 4, ("deny", "TK-F011", False): 2,
+            ("deny", "TK-APPROVAL-EXPIRED", True): 1, ("ask", "TK-A001", True): 6, ("ask", "TK-L001", True): 1,
+            ("flag", "acme-prod-db.internal", True): 3, ("flag", "[x](https://e.example)", True): 1,
+            ("deny", "TK-APPROVAL-x @octocat", True): 1}), [
+            "  deny TK-APPROVAL-EXPIRED 1", "  deny custom rule 1", "  deny TK-F011 2 (also matched, not why)",
+            "  ask TK-A001 6", "  ask TK-L001 1",   # a shipped pack's limit
+            "  flag TK-F011 5", "  flag TK-UNKNOWN-TOOL 4 (not placed)", "  flag custom rule 4"])
 
     def test_self_approved_and_break_glass_answers_are_marked(self):
         a = {"decision": "approve", "approver": "uid:501 (attested)", "self_approved": False, "break_glass": True}

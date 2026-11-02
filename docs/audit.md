@@ -39,8 +39,9 @@ denied and held calls (--all for every call):
 - `--all` lists every call; without it, only the calls Tracekit would have denied or held for a person.
 - `--json` emits a machine-readable report, with every call.
 - `--share` prints the counts alone, to post as a [field report](field-reports.md): the window's length, the number
-  of sessions, the calls by decision, and each rule by the decision of the calls it matched. No session, path, time,
-  call or rule description.
+  of sessions, the calls by decision, and each rule by the decision of the calls it matched, marked `also matched,
+  not why` when the rule's section isn't that decision and `not placed` for an engine check. A rule id that isn't
+  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 
