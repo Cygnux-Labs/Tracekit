@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import socketserver
 import sys
 import tempfile
@@ -59,10 +60,21 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True, scope="session")
 def _no_shell_env():
+    # and a runtime dir of the session's own: the per-user one is a developer's own dev signer's (a test that set none
+    # recorded into its store) and, on Windows, inside the dev data dir (#516's CI)
+    run = tempfile.mkdtemp(prefix="tk-run-", dir="/tmp" if os.name == "posix" else None)   # short: socket paths
     with pytest.MonkeyPatch.context() as mp:
         for k in SHELL_ENV:
             mp.delenv(k, raising=False)
+        mp.setenv("TRACEKIT_RUNTIME_DIR", run)
         yield
+    try:
+        from tracekit.sdk import autospawn
+    except ImportError:   # no v2 extra: no dev signer
+        pass
+    else:
+        autospawn.down(d=run)   # a dev signer a test started there and left running
+    shutil.rmtree(run, ignore_errors=True)
 
 
 @pytest.fixture(autouse=True)
