@@ -51,6 +51,9 @@ constraint can only hold more calls, so the agent's own identity adding one (it 
 the signer's cap of file constraints a further one is refused and every write of the run is held from then on, which the
 hook tells the person (exit 1, FULL on stderr, and in the prompt's notice when it prints one).
 
+A signer of another Tracekit version than this hook's is told to the person once per session (_skew), on an event the
+hook lets through, with what to run (skew_notice); the client's warning about it is not printed.
+
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
 unreachable is always fail-closed there, whatever the agent-writable state says. The run token stays in the agent's
@@ -59,9 +62,11 @@ neither read it nor use it. The agent never holds the signing keys, assigns sequ
 signer decides), or answers its own approvals (signer.yaml names a different approver uid). Its own uid can still use
 its run token, from any process it runs.
 """
+import contextlib
 import functools
 import glob
 import hashlib
+import io
 import json
 import os
 import re
@@ -71,9 +76,10 @@ import subprocess
 import sys
 import time
 import uuid
+import warnings
 from collections import deque
 
-from tracekit import constraints, privacy
+from tracekit import __version__, constraints, privacy
 from tracekit.client import system_config
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
@@ -105,6 +111,85 @@ HELD = 32
 # (a signer reset makes a new run token key). The session's next event that registers starts a new run; the old one is
 # never closed by the hook: it is left for the signer's idle close, its tail unproven
 GONE = ("run_closed", "unknown_run", "run_token_invalid")
+SKEW = r"Tracekit signer .* serves client "   # tracekit.sdk.client's warning, which _skew tells the person instead
+
+
+VERSION = re.compile(r"[\w.+!-]{1,64}", re.ASCII)   # a version shown to a person: ASCII, no control character
+
+
+def release(v):
+    """The release numbers of version string `v` (1.5.2 -> (1, 5, 2)), or None when it has none.
+    lean: a pre-release or dev build compares as its release; compare them in full if those get installed side by side"""
+    m = re.match(r"\d+(?:\.\d+)*", v) if isinstance(v, str) else None
+    return tuple(map(int, m.group().split("."))) if m else None
+
+
+def quote(path):
+    """`path` as one word of a command the person pastes: POSIX shell quoting, or double quotes on Windows."""
+    return shlex.quote(path) if os.name != "nt" else f'"{path}"'
+
+
+def upgrade(python, module, user_site):
+    """The command that upgrades the Tracekit that `python` imports from `module` (its tracekit/__init__.py;
+    `user_site`: that Python's user site-packages): a pull of the git working tree it runs from, `uv tool` or pipx's
+    upgrade for their tool installs, uv's pip for a venv uv made (it has no pip), else pip (--user for a user
+    install)."""
+    tree = os.path.dirname(os.path.dirname(module))
+    if os.path.exists(os.path.join(tree, ".git")):
+        return f"git -C {quote(tree)} pull"
+    if re.search(r"[/\\]uv[/\\]tools[/\\]", python):
+        return "uv tool upgrade tracekit-ai"
+    if re.search(r"[/\\]pipx[/\\]venvs[/\\]", python):
+        return "pipx upgrade tracekit-ai"
+    try:   # uv writes its version into the pyvenv.cfg of a venv it makes
+        with open(os.path.join(os.path.dirname(os.path.dirname(python)), "pyvenv.cfg"), encoding="utf-8") as f:
+            uv = re.search(r"^uv\s*=", f.read(), re.M)
+    except (OSError, ValueError):
+        uv = None
+    if uv:
+        return f"uv pip install -U --python {quote(python)} tracekit-ai"
+    user = bool(user_site) and os.path.realpath(module).startswith(os.path.realpath(user_site) + os.sep)
+    return f"{quote(python)} -m pip install -U {'--user ' if user else ''}tracekit-ai"
+
+
+def skew_notice(theirs, dev):
+    """The line that tells the person this hook runs another Tracekit version than its signer (`theirs`), with what to
+    run; `tracekit doctor` (D-VERSIONS) gives the same fixes. `dev`: the signer is the same-user dev signer, which
+    `tracekit down` stops; a signer keeps its runs and run tokens across a restart, so open sessions go on in the next.
+    None when their releases are the same (a pre-release or local build of it) or either has none."""
+    r, mine = release(theirs), release(__version__)
+    if not (r and mine) or r == mine:
+        return None
+    if r < mine:
+        fix = (f"run `tracekit down`, and the next call from this hook starts a {__version__} signer; open sessions go on "
+               "in it (it keeps their runs and run tokens)" if dev else
+               "upgrade the signer and restart it (docs/deploy.md#upgrading)")
+        return f"[tracekit] the signer runs Tracekit {theirs}, older than this hook's {__version__}: {fix}"
+    import site
+    import tracekit
+    return (f"[tracekit] this hook runs Tracekit {__version__} ({sys.executable}), older than the signer's {theirs}: "
+            f"upgrade it with `{upgrade(sys.executable, tracekit.__file__, site.getusersitepackages())}`. "
+            "`tracekit doctor` checks every hook's version")
+
+
+def _skew(client, sid):
+    """skew_notice, once per session: the session state keeps the versions it was said for, so a session hears it again
+    only for another pair. None when there is none, the signer wasn't asked, or the session has no state (ended).
+    A notice, not a control: the agent's user can write the session state (docs/limits.md)."""
+    theirs = (client.hello or {}).get("version")
+    notice = isinstance(theirs, str) and VERSION.fullmatch(theirs) and skew_notice(theirs, client.signer is None)
+    if not notice:
+        return None
+    path, pair = _state(sid), [theirs, __version__]
+    if (_load(path) or {}).get("skew") == pair:   # said already: no lock taken for that
+        return None
+    with open(path[:-len(".json")] + ".lock", "a") as lk:   # as _run: parallel hooks must not lose its other keys
+        lock_file(lk)
+        st = _load(path)
+        if not st or st.get("skew") == pair:
+            return None
+        files.write_json(path, dict(st, skew=pair))
+    return notice
 
 
 def approval_wait_s():
@@ -230,7 +315,7 @@ def _register(client, path, prev=None, offsets=None):
     # harness's processes (a root-owned harness helper) narrows that
     st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
           "stream": uuid.uuid4().hex, "seq": 0,
-          **{k: v for k, v in (prev or {}).items() if k in ("transcript", "offsets", "constraints")},
+          **{k: v for k, v in (prev or {}).items() if k in ("transcript", "offsets", "constraints", "skew")},
           **({"offsets": offsets} if offsets else {})}
     files.write_json(path, st)
     return st
@@ -928,7 +1013,35 @@ def handle(p):
     """One hook event in Claude Code's payload shape (tracekit.integrations.harness_hooks maps the other harnesses'
     onto it). -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr. Only a PreToolUse is ever
     blocked: any other event that fails returns 1, a non-blocking error the harness shows (2 would erase a prompt, or
-    send the agent back to work at Stop), and its tool calls are still decided at PreToolUse."""
+    send the agent back to work at Stop), and its tool calls are still decided at PreToolUse. An event let through (0)
+    may also tell the person, once per session, that the signer runs another Tracekit version (_skew): in Claude Code's
+    systemMessage, joined to the one JSON object it reads from stdout; for the other harnesses on stderr."""
+    out, notice = io.StringIO(), None
+    with contextlib.redirect_stdout(out), warnings.catch_warnings():
+        warnings.filterwarnings("ignore", SKEW)
+        code, client = _event(p)
+        if code == 0 and client:
+            try:
+                notice = _skew(client, p.get("session_id"))
+            except Exception:   # advice only: the call's answer stands without it
+                pass
+    text = out.getvalue()
+    if notice and AGENT == "claude-code":
+        try:
+            answer = json.loads(text) if text.strip() else {}
+        except ValueError:   # not the one object Claude Code reads: the notice goes to stderr
+            answer = None
+        if isinstance(answer, dict):
+            said = "\n".join(m for m in (notice, answer.get("systemMessage")) if isinstance(m, str))
+            text, notice = json.dumps({**answer, "systemMessage": said}) + "\n", None
+    sys.stdout.write(text)
+    if notice:
+        print(notice, file=sys.stderr)
+    return code
+
+
+def _event(p):
+    """handle's answer to one event: (exit code, the client that asked the signer, or None)."""
     name, sid, tid = p.get("hook_event_name"), p.get("session_id"), p.get("tool_use_id")
     pre = name == "PreToolUse"
     missing = [k for k, v in (("session_id", sid), ("tool_use_id", tid if name in TOOL_EVENTS else "-"))
@@ -936,15 +1049,15 @@ def handle(p):
     if missing:   # never defaulted: the signer records the gap from what it did not receive
         print(f"[tracekit] hook payload has no {', '.join(missing)}; "
               + ("tool call blocked" if pre else "event not recorded"), file=sys.stderr)
-        return 2 if pre else 0
+        return 2 if pre else 0, None
     failed, code = ("blocking", 2) if pre else ("event not recorded", 1)
     try:
         client = HookClient()
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
         print(f"[tracekit] {e}; {failed}", file=sys.stderr)
-        return code
+        return code, None
     try:
-        return _handle(client, p, name, sid, tid)
+        return _handle(client, p, name, sid, tid), client
     except SignerUnavailable as e:   # the signer unreachable: the run's fail mode for the tool's class (a local
         # OSError, a full disk, is no outage: it blocks below, as the call could not be counted)
         fix = ""
@@ -961,10 +1074,10 @@ def handle(p):
         if pre:
             failed, code = ("blocking (fail-closed)", 2) if closed else ("allowing (fail-open)", 0)
         print(f"[tracekit] signer unreachable ({e}); {failed}{fix}", file=sys.stderr)
-        return code
+        return code, client
     except Exception as e:   # a signer refusal or a crash: never a reason to let the call run
         print(f"[tracekit] hook error ({type(e).__name__}: {e}); {failed}", file=sys.stderr)
-        return code
+        return code, client
     finally:
         client.close()
 

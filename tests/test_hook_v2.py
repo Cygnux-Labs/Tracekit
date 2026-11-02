@@ -714,8 +714,8 @@ class HookV2(unittest.TestCase):
             cmd = dict(zip(("approve", "reject"), re.findall(r"`tracekit ([^`]+)`", line)))[decision]
             out = subprocess.run(f"{shlex.quote(sys.executable)} -m tracekit {cmd}", shell=True, capture_output=True,
                                  text=True, timeout=60, env=person)
-            self.assertEqual((out.returncode, out.stdout.strip()), (0, f"{state}: {aid} (self-approved: dev mode only)"),
-                             out.stderr)
+            said = cli._self_approved(state, not named)   # named: not autospawn's
+            self.assertEqual((out.returncode, out.stdout.strip()), (0, f"{state}: {aid}{said}"), out.stderr)
             err = proc.stderr.read()
             proc.wait(60)
             proc.stdout.close()
@@ -1041,7 +1041,11 @@ class HeldCalls(unittest.TestCase):
         aid = self.held(self.UPLOAD, "t1")
         early = self.held(self.UPLOAD, "t2")   # the agent retries before the person answered: held again
         self.assertNotEqual(early, aid)
-        self.assertEqual(self.approvals("approve", aid), f"approved: {aid} (self-approved: dev mode only)")
+        # #510: the dev signer's self-approval counts, and the line says so (an agent read "dev mode only" as "may not")
+        self.assertEqual(self.approvals("approve", aid), f"approved: {aid}, by you. It counts: the dev signer runs as "
+                         "your own user and can't tell you from your agent, so it records this as self-approved, and "
+                         "the run's assurance stays dev. A signer started from signer.yaml refuses an approval from "
+                         "the call's own requester unless that file sets approvals: {self_approval: allow}.")
         self.assertEqual(self.pre(self.UPLOAD, "t3"), (0, "", ""))   # the same call again: it runs
         self.assertEqual(self.post(self.UPLOAD, "t3"), (0, ""))
         self.assertNotIn(self.held(self.UPLOAD, "t4"), (aid, early))   # once: the next one is held again
@@ -1076,7 +1080,7 @@ class HeldCalls(unittest.TestCase):
         again, and so is the next retry once one ran."""
         asked = {"command": self.UPLOAD, "description": "Upload the build", "timeout": 600000}
         aid = self.held(tid="t1", **asked)
-        self.assertEqual(self.approvals("approve", aid), f"approved: {aid} (self-approved: dev mode only)")
+        self.assertTrue(self.approvals("approve", aid).startswith(f"approved: {aid}, by you. It counts: "))
         for i, other in enumerate(({"command": self.UPLOAD.replace("releases", "backups")}, {"timeout": 5000},
                                    {"run_in_background": True}, {"dangerouslyDisableSandbox": True})):
             with self.subTest(other):
@@ -1171,7 +1175,9 @@ class HeldCalls(unittest.TestCase):
         """The person rejects a held call and the agent tries it again: the block said only to approve a new approval,
         so the agent kept retrying. It says a person rejected it, first in its reasons, and still how to approve it."""
         aid = self.held(self.UPLOAD, "t1")
-        self.assertEqual(self.approvals("reject", aid), f"rejected: {aid} (self-approved: dev mode only)")
+        # #510: a self-rejection keeps the run's assurance at dev too (the verifier counts any self_approved answer)
+        self.assertEqual(self.approvals("reject", aid), f"rejected: {aid}, by you, recorded as self-approved (an answer "
+                         "from the call's own requester): the run's assurance stays dev")
         code, out, err = self.pre(self.UPLOAD, "t2")
         again = err.split()[4]
         self.assertEqual(code, 2)
