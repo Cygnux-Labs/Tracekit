@@ -7,14 +7,13 @@ import collections
 import importlib.util
 import itertools
 import json
-import multiprocessing
 import os
 import shutil
 import tempfile
 import unittest
-from concurrent.futures import ProcessPoolExecutor
 
 import test_signer_service as ts
+from factories import process_pool
 from test_verify_v2_property import ENTRIES, REQUIRED, TRUST, zipped
 
 from tracekit import merkle
@@ -303,10 +302,10 @@ RETRY_PREFIX = ("decide", "request", "approve")
 RETRY = ("consume_a", "decide_retry", "consume_retry", "consume_retry_hint", "complete_a", "complete_retry", "abandon")
 APPROVALS_DEPTH = int(os.environ.get("TRACEKIT_BOUND_APPROVALS", "5"))
 # a signer started and closed per RUNS_PER_SIGNER sequences (its start and close cost more than a sequence's calls),
-# with quotas on open runs, pending approvals and the event rate that hold them all: no sequence meets a quota. Past
-# ~200, the signer's scans of its live approvals cost more than the starts they save
+# with quotas on open runs, pending approvals and the event rate twice what they take: no sequence meets a quota (one
+# that does fails the test). Past ~200, the signer's scans of its live approvals cost more than the starts they save
 RUNS_PER_SIGNER = 200
-LIMITS = Limits(open_runs=RUNS_PER_SIGNER, pending_approvals=RUNS_PER_SIGNER, events_per_s=1e9, burst=10 ** 9)
+LIMITS = Limits(open_runs=2 * RUNS_PER_SIGNER, pending_approvals=2 * RUNS_PER_SIGNER, events_per_s=1e9, burst=10 ** 9)
 
 
 class ApprovalStateSpace(unittest.TestCase):
@@ -323,10 +322,9 @@ class ApprovalStateSpace(unittest.TestCase):
     was never reached; the retry space starts from an approved call (RETRY_PREFIX)."""
 
     def explore(self, actions, need, prefix=()):
-        # each RUNS_PER_SIGNER sequences on a signer of their own, in worker processes, one per CPU (spawned: this
-        # process has threads)
+        # each RUNS_PER_SIGNER sequences on a signer of their own, in worker processes
         starts = range(0, len(actions) ** APPROVALS_DEPTH, RUNS_PER_SIGNER)
-        with ProcessPoolExecutor(os.cpu_count(), mp_context=multiprocessing.get_context("spawn")) as pool:
+        with process_pool() as pool:
             parts = list(pool.map(self.part, [actions] * len(starts), [prefix] * len(starts), starts))
         self.assertEqual([w for wrong, _ in parts for w in wrong][:20], [])
         if APPROVALS_DEPTH >= 5:   # the shortest sequence to each outcome takes five steps
@@ -351,6 +349,8 @@ class ApprovalStateSpace(unittest.TestCase):
                 try:
                     return getattr(s, name)({"request_id": f"{name}-{n}-{state['step']}", **req})
                 except RPCError as e:
+                    if e.code == "quota_exceeded":   # LIMITS, not the approval path, refused it
+                        raise
                     return {"refused": str(e)}
 
             for step, action in enumerate(seq):

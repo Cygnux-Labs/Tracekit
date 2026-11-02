@@ -4,7 +4,6 @@ import importlib.util
 import io
 import itertools
 import json
-import multiprocessing
 import os
 import random
 import re
@@ -15,7 +14,6 @@ import time
 import tracemalloc
 import unittest
 import uuid
-from concurrent.futures import ProcessPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
@@ -23,7 +21,7 @@ import regex
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from factories import SLOWER  # noqa: E402
+from factories import SLOWER, process_pool  # noqa: E402
 from tracekit import cli  # noqa: E402
 from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
 from tracekit.policy2 import classes, compile as pc, engine, shell  # noqa: E402
@@ -651,11 +649,10 @@ class Speed(unittest.TestCase):
         return list(dict.fromkeys(found + [o for m in more for o in m]))
 
     def test_every_pack_pattern_searches_64_kib_within_budget(self):
-        # the first search of every filler (~57,000 of 64 KiB) in worker processes, one per CPU, spawned (this process
-        # has threads); a filler over the budget there, maybe only under the others' load, is searched again here,
-        # alone: its best of three is held to the budget
+        # the first search of every filler (~57,000 of 64 KiB) in worker processes; a filler over the budget there,
+        # maybe only under the others' load, is searched again here, alone: its best of three is held to the budget
         patterns = pack_patterns()
-        with ProcessPoolExecutor(os.cpu_count(), mp_context=multiprocessing.get_context("spawn")) as pool:
+        with process_pool() as pool:
             over = list(pool.map(_over_budget, patterns))
         slow = []
         for (rid, key, pattern), fillers in zip(patterns, over):
