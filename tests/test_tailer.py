@@ -404,17 +404,56 @@ class Tailer(unittest.TestCase):
         self.assertIn("another file replaced the transcript", self.lost()[0])
         self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 1)
 
+    def edit(self):   # same size, same inode
+        with open(self.path, "r+b") as f:
+            data = f.read()
+            f.seek(0)
+            f.write(data.replace(b"ls -la", b"ls -lR"))
+
     def test_a_line_already_read_edited_in_place_is_lost(self):
         self.write(TOOL_USE, RESULT)
+        self.tail(self.edit, lambda: self.write(NEXT))
+        self.assertIn("a line already read changed in place", self.lost()[0])
+        # caught on the last wake, CHECK_S not having passed: the line written after the edit was reported first
+        self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 2)
 
-        def edit():   # same size, same inode
-            with open(self.path, "r+b") as f:
-                data = f.read()
-                f.seek(0)
-                f.write(data.replace(b"ls -la", b"ls -lR"))
-        self.tail(edit, lambda: self.write(NEXT))
+    def test_a_line_edited_in_a_transcript_being_written_is_lost_once_check_s_has_passed(self):
+        self.write(TOOL_USE, RESULT)
+        with mock.patch.object(tailer, "CHECK_S", 0):
+            self.tail(self.edit, lambda: self.write(NEXT))
         self.assertIn("a line already read changed in place", self.lost()[0])
         self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 1)
+
+    def test_a_transcript_being_written_is_rehashed_at_most_every_check_s(self):
+        """Review of 1.5.3: every wake while the transcript changed rehashed all the tailer had read of it (0.3 s for an
+        816 MB one); now its last wake does, CHECK_S not having passed."""
+        self.write(TOOL_USE)
+        rehashed, real = [], tailer._sha256
+
+        def sha256(f, n, h=None):
+            if h is None:   # a check, not the digest of what it reads
+                rehashed.append(n)
+            return real(f, n, h)
+        with mock.patch.object(tailer, "_sha256", sha256):
+            self.tail(*[lambda: self.write(PROMPT)] * 5)
+        self.assertEqual(rehashed, [len(line(TOOL_USE)) + 5 * len(line(PROMPT))])
+        self.assertEqual(self.lost(), [])
+
+    def test_a_line_nested_past_what_json_takes_is_lost(self):
+        """Review of 1.5.3: its RecursionError ended the tailer with no tailer_lost, so the run's model text stopped
+        with no gap."""
+        self.write(TOOL_USE, b"[" * 5000 + b"]" * 5000 + b"\n")
+        self.tail()
+        self.assertIn(f"the line at offset {len(line(TOOL_USE))} is not a JSON object", self.lost()[0])
+
+    def test_a_failure_of_the_tailers_own_is_lost_naming_only_its_type(self):
+        """Review of 1.5.3: an exception other than Lost or a refusal ended the tailer silently."""
+        self.write(TOOL_USE)
+        with mock.patch.object(tailer, "_check", side_effect=OSError(116, "Stale file handle /home/agent/secret")):
+            self.tail()
+        self.assertEqual(len(self.lost()), 1)
+        self.assertIn("the tailer failed (OSError)", self.lost()[0])
+        self.assertNotIn("secret", self.lost()[0])
 
     def test_owner_mismatch_is_refused(self):
         self.write(TOOL_USE)

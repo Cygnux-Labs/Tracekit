@@ -15,10 +15,12 @@ tailer_heartbeat and status.
 
 The transcript is opened once, with O_NOFOLLOW, and must be a regular file of the agent's uid (the root-owned system
 config names the agent; dev mode: our own uid); the fd is kept. On every wake (inotify on the transcript's directory on
-Linux, else a poll) its size may not go backwards, the path must still be that same file, of that uid, the bytes
-already read may not have changed (rehashed whenever the file's ctime moves), and each new complete line must be a JSON
-object. Otherwise the tailer sends `tailer_lost` (the signer writes the signed gap, the
-tailer never writes one) and exits. Every assistant line (Claude Code writes one per content block: thinking, text,
+Linux, else a poll) its size may not go backwards, the path must still be that same file, of that uid, and each new
+complete line must be a JSON object; the bytes already read may not have changed (rehashed once the file's ctime has
+moved: at most every CHECK_S while it keeps changing, once it has been still for a second, and on the last wake, so an
+edit is caught up to CHECK_S late, after the lines written meanwhile). Otherwise the tailer sends `tailer_lost` (the
+signer writes the signed gap, the tailer never writes one) and exits; so does any other failure, naming its type.
+Every assistant line (Claude Code writes one per content block: thinking, text,
 tool use) becomes a model_event response (exchange id: the message id; a tool_use line's tool uses with the digest of
 their arguments as reconciliation compares them, reconcile.compared, and the tool results sent since the last one); a
 user prompt becomes a model_event request. Each carries the digest of the line as read, {"transcript": "main" or the
@@ -54,6 +56,7 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import HEARTBEAT_S, IDLE_S
 
 POLL_S = 1.0
+CHECK_S = 30   # while a transcript keeps changing, how often the bytes already read are hashed again
 # lean: twice the signer's default run idle timeout, so a quiet run has closed before the tailer gives up on it; ask the
 # signer for the run's state instead if signers run with a longer idle_s
 IDLE_TAILER_S = 2 * IDLE_S
@@ -184,7 +187,8 @@ class _Transcript:
 
     def __init__(self, path, name="main", off=0):
         self.path, self.name, self.f, self.off, self.sent = path, name, None, off, []
-        self.read, self.checked = hashlib.sha256(), None   # the bytes before `off`; the ctime they were last checked at
+        # the bytes before `off`; the ctime they were last checked at, and when (monotonic)
+        self.read, self.checked, self.at = hashlib.sha256(), None, None
 
 
 def _listed(*dirs):
@@ -211,22 +215,26 @@ def _subagents(path):
     return [p for p in found if os.path.basename(p).startswith("agent-") and p.endswith(".jsonl")]
 
 
-def _follow(send, t, uid):
-    """Report transcript t's new complete lines (`send`, a _Sender). -> whether it grew."""
+def _follow(send, t, uid, last=False):
+    """Report transcript t's new complete lines (`send`, a _Sender); `last`: the tailer's last wake, which checks the
+    bytes already read whenever they changed. -> whether it grew."""
     if t.f is None:
         t.f = _open(t.path, uid)
         if t.f is None:
             return False
         _sha256(t.f, t.off, t.read)   # an earlier run's lines, from here on checked as the ones it reads
+        t.at = time.monotonic()
     _check(t.f, t.path, uid, t.off)
     ctime = os.fstat(t.f.fileno()).st_ctime_ns   # any write moves it, and no user can set it back
-    if ctime != t.checked:
-        # lean: rehashes all it has read on every change to the file; keep per-block hashes and re-read
-        # only the blocks whose bytes changed if transcripts reach hundreds of MB
+    # a ctime under a second old may not move for a change in the same clock tick: checked again once it is older
+    still = time.time_ns() - ctime > 1_000_000_000
+    if ctime != t.checked and (still or last or time.monotonic() - t.at >= CHECK_S):
+        # lean: rehashes all it has read (0.3 s for an 816 MB transcript) at most every CHECK_S while it changes, so an
+        # edit is caught that late, after the lines written meanwhile, and one undone before then not at all; lower
+        # CHECK_S if edits must be caught sooner
         if _sha256(t.f, t.off).digest() != t.read.digest():
             raise Lost("a line already read changed in place")
-        # a ctime this recent may not move for a change in the same clock tick: check it again next wake
-        t.checked = ctime if time.time_ns() - ctime > 1_000_000_000 else None
+        t.checked, t.at = ctime if still else None, time.monotonic()
     t.f.seek(t.off)
     data, start = t.f.read(), t.off
     try:
@@ -283,7 +291,7 @@ def tail(run, path, uid, until=None, wait=None, status=None, offsets=None):
             for p in _subagents(path) if main.f is not None else ():
                 ts.setdefault(p, _Transcript(p, os.path.basename(p), start.get(p, 0)))
             for cur in ts.values():
-                if _follow(send, cur, uid):
+                if _follow(send, cur, uid, gone):
                     grew = time.monotonic()
             cur = main
             if main.f is None and (gone or idle):
@@ -295,12 +303,15 @@ def tail(run, path, uid, until=None, wait=None, status=None, offsets=None):
             if beat is not None and time.monotonic() - beat >= HEARTBEAT_S:
                 beat = _heartbeat(run)
             wait()
-    except Lost as e:
-        name = "" if cur is main else f"subagent transcript {os.path.basename(cur.path)}: "
-        run.call("tailer_lost", reason=name + str(e), offset=cur.off)
     except RPCError as e:
         if e.code not in ENDED:
             raise
+    except SignerUnavailable:
+        raise
+    except Exception as e:   # Lost, or a failure of the tailer's own (a bug, a read error): never a silent stop
+        name = "" if cur is main else f"subagent transcript {os.path.basename(cur.path)}: "
+        why = str(e) if isinstance(e, Lost) else f"the tailer failed ({type(e).__name__})"
+        run.call("tailer_lost", reason=name + why, offset=cur.off)
     finally:
         for t in ts.values():
             if t.f is not None:
