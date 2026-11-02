@@ -467,20 +467,24 @@ def _reworded(client, sid, args, cap):
     is decided and consumed with them, so the record is the approved call, and runs as the model sent it, which differs
     only in that caption. One of them rejected: the retry is decided as the model sent it (held, as before; the signer
     keeps no copy of a rejected call's arguments), and the note, its first reason, says a person rejected the command,
-    and approved it too if they did: the signer doesn't say which answer came last, so neither is taken as the person's
-    word. (None, None) otherwise: any other key differs (command, run_in_background, dangerouslyDisableSandbox,
-    timeout, ...), or the held calls' approvals are unanswered, expired or used."""
+    and that it was approved too if it was (by a person or an agent approver): the signer doesn't say which answer came
+    last, so neither is taken as the last word. (None, None) otherwise: any other key differs (command,
+    run_in_background, dangerouslyDisableSandbox, timeout, ...), the held calls' approvals are unanswered, expired or
+    used, or one of them couldn't be read (it may be the rejected one)."""
     st = _load(_state(sid))
     if not st or st.get("ended"):
         return None, None
-    rest, approved, rejected = _rest(args), None, None
+    rest, approved, rejected, unread = _rest(args), None, None, False
     for h in reversed(st.get("held") or ()):
         if h["rest"] != rest:
             continue
+        if approved and rejected:
+            break
         try:
             cap()
             a = client.approval_get({"approval_id": h["approval_id"]})
-        except RPCError:   # gone, or not this identity's to read (a remote signer's `authorize`): the next one
+        except RPCError:   # gone, timed out, or not this identity's to read (a remote signer's `authorize`)
+            unread = True
             continue
         if a["run_id"] != st["run_id"] or a["tool"] != "Bash":
             continue
@@ -494,9 +498,9 @@ def _reworded(client, sid, args, cap):
         if same and not approved:   # the same arguments: the signer's reason says so itself
             return None, None
         return None, (f"a person rejected this command{'' if same else ' (with another description)'} as {aid}" +
-                      (f" and approved it (with another description) as {approved[0]}" if approved else "") +
-                      "; ask them before trying again")
-    if approved:
+                      (f", and it was approved{'' if approved[1] == args else ' (with another description)'} as "
+                       f"{approved[0]}" if approved else "") + "; ask them before trying again")
+    if approved and not unread:
         return None if approved[1] == args else approved[1], None   # the same arguments: the signer matches them
     return None, None
 

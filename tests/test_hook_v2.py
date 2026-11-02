@@ -1160,8 +1160,8 @@ class HeldCalls(unittest.TestCase):
                 yes, no = (a, b) if first == "approve" else (b, a)
                 code, out, err = self.pre(upload, f"{first}-3", description="Retry the upload")
                 self.assertEqual(code, 2, err)
-                self.assertIn(f"Why: a person rejected this command (with another description) as {no} and approved "
-                              f"it (with another description) as {yes}; ask them before trying again; ", err)
+                self.assertIn(f"Why: a person rejected this command (with another description) as {no}, and it was "
+                              f"approved (with another description) as {yes}; ask them before trying again; ", err)
                 self.assertEqual(self.consumed(), used)
                 exact = "Upload the build" if first == "approve" else "Upload it again"
                 self.assertEqual(self.pre(upload, f"{first}-4", description=exact), (0, "", ""))

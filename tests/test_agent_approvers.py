@@ -587,8 +587,8 @@ class TestVetoAndRevoke(Case):
                                     "tc-2")
         self.assertEqual((code, err.getvalue()), (2, f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is "
                                                      "approved by an agent approver; people may still revoke it, so wait "
-                                                     "60 s, then try the same call again, with exactly the same "
-                                                     f"arguments. Why: {d['reason']}\n"))
+                                                     "60 s, then try the same call again, unchanged. "
+                                                     f"Why: {d['reason']}\n"))
 
     def test_a_retry_is_held_until_the_veto_delay_passed(self):
         """Approve, then retry with an agent approver: asking for the call, again or in a retry, reads `requested`
