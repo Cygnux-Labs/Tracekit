@@ -79,23 +79,39 @@ def _isolated_env():
                     "(urllib.request.build_opener) or run it in a child process")
 
 
-# The real home's Tracekit folders, as the session starts. A test that makes one wrote outside its temp dirs, and the
-# dev data dir also turns the plugin's hook from warning to blocking (#515). Silent where they already exist.
+# The real home's Tracekit folders, each with what places it, as the session starts. A test that makes one wrote outside
+# its temp dirs, and the dev data dir also turns the plugin's hook from warning to blocking (#515). Silent where they
+# already exist; a folder made outside any test (setUpClass, a module fixture) fails the session at its end.
+HOME_DIRS = {os.path.join(os.path.expanduser("~"), ".tracekit-client"): "TRACEKIT_CLIENT_HOME, or HOME"}
 try:   # the signer needs the v2 extra (the release dry run installs none); without it no dev data dir is made
     from tracekit.sdk import autospawn
-    HOME_DIRS = (os.path.join(os.path.expanduser("~"), ".tracekit-client"), autospawn.data_dir())
+    HOME_DIRS[autospawn.data_dir()] = "LOCALAPPDATA on Windows, else XDG_DATA_HOME and HOME"
 except ImportError:
-    HOME_DIRS = (os.path.join(os.path.expanduser("~"), ".tracekit-client"),)
+    pass
+_HOME_DIRS_BEFORE = {p for p in HOME_DIRS if os.path.exists(p)}
+
+
+def _made(before):
+    """The folders made since `before`, each as the error names it; counted as known from now on."""
+    made = [p for p in HOME_DIRS if p not in before and os.path.exists(p)]
+    _HOME_DIRS_BEFORE.update(made)
+    return [f"{p} (set {HOME_DIRS[p]} to a temp dir)" for p in made]
 
 
 @pytest.fixture(autouse=True)
 def _no_real_home_dirs(request):
-    before = [os.path.exists(p) for p in HOME_DIRS]
+    before = {p for p in HOME_DIRS if os.path.exists(p)}
     yield
-    made = [p for p, was in zip(HOME_DIRS, before) if not was and os.path.exists(p)]
+    made = _made(before)
     if made:
-        pytest.fail(f"{request.node.nodeid} made {made} in the real home folder: give it a temp HOME or "
-                    "TRACEKIT_CLIENT_HOME", pytrace=False)
+        pytest.fail(f"{request.node.nodeid} made {made} in the real home folder", pytrace=False)
+
+
+def pytest_sessionfinish(session):
+    made = _made(set(_HOME_DIRS_BEFORE))
+    if made:
+        print(f"\nthis session made {made} in the real home folder, outside any test", file=sys.stderr)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 # Every v2 bundle a test exports in this process is verified against the log key that signed its checkpoint: an honest

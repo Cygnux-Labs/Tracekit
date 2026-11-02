@@ -1176,7 +1176,7 @@ def main(argv=None):
         return 2
     from .sdk.client import Client, SignerUnavailable
     from .signer.pipeline import SIGNER_RUN
-    from .sdk import autospawn
+    from .signer.service import dev_data_dir
     from .why import import_v2
     from .verify.v2 import _CONTROL
     from .why.signed import EvidenceAlert, vault_content
@@ -1196,8 +1196,8 @@ def main(argv=None):
             return 2
         records = runs.get(run_id)
     else:
-        store = a.store or autospawn.data_dir()
         try:
+            store = a.store or dev_data_dir(create=False)
             run_id = a.run or _latest(store)
             records = run_id and import_v2.store_records(store, run_id).get(run_id)
         except FileNotFoundError as e:

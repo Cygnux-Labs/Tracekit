@@ -672,7 +672,8 @@ class NoHooksChosen(unittest.TestCase):
             with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                 code = cli.main(list(argv))
             return code, out.getvalue()
-        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}), \
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                          "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None):
             self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, "v2 hooks: not installed\n"))
             code, out = run("doctor", "--json")
@@ -701,7 +702,8 @@ class NoHooksChosen(unittest.TestCase):
         self.addCleanup(os.chdir, os.getcwd())
         os.chdir(home)
         settings = os.path.join(home, ".claude", "settings.json")
-        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}), \
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                          "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None), \
                 contextlib.redirect_stderr(io.StringIO()):
             with contextlib.redirect_stdout(io.StringIO()):

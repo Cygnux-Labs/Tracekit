@@ -78,8 +78,7 @@ from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
-from .sdk import autospawn
-from .signer.service import data_dir_at, load_config, lookup, read_vkeys, reader
+from .signer.service import data_dir_at, dev_data_dir, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
 from .verify import v2
@@ -1842,7 +1841,7 @@ def main(argv=None):
             tls.load_cert_chain(a.tls_cert, a.tls_key)
         v1 = a.ledger is not None or a.bundle
         alone = a.why and not (v1 or a.dev or a.config or a.data_dir)   # why logs alone, as `tracekit why serve`
-        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir or autospawn.data_dir()}
+        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
         view = cfg.get("view") or {}
         login = view.get("oidc") and OidcLogin(view["oidc"], (cfg.get("http") or {}).get("oidc"))
         desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),

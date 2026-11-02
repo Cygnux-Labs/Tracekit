@@ -1278,6 +1278,17 @@ class View(unittest.TestCase):
             self.assertEqual(cli.main(["last"]), 1)
         self.assertEqual((exported, err.getvalue()), (["r1"], ""))
 
+    def test_last_before_any_dev_signer_makes_nothing(self):
+        """#515: `tracekit last` made the dev signer's data dir, which the plugin's hook reads as "Tracekit is set up";
+        it says there are no runs yet and makes nothing."""
+        nope = os.path.join(self.d, "nope")
+        with mock.patch("tracekit.sdk.autospawn.data_dir", return_value=nope), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["last"]), 1)
+        self.assertTrue(err.getvalue().startswith(f"tracekit last: no runs in the dev signer's store "
+                                                  f"({os.path.join(nope, 'store')}) yet: "), err.getvalue())
+        self.assertFalse(os.path.exists(nope))
+
     @pytest.mark.unverified_bundles
     def test_tampered_record_shows_only_the_failure(self):
         run_id = self.finished_run()
@@ -1709,7 +1720,20 @@ class View(unittest.TestCase):
             with self.subTest(argv=argv):
                 with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
                     code = view.main(["--data-dir", nope, "--port", "0", *argv])
-                self.assertEqual((code, err.getvalue()), (1, f"tracekit view: no signer data dir at {nope}: a signer makes it when it first starts\n"))
+                self.assertEqual((code, err.getvalue()), (1, f"tracekit view: no signer data dir at {nope}\n"))
+
+    def test_the_dev_view_creates_no_data_dir(self):
+        """#515: `tracekit view --dev` made the dev signer's data dir, which the plugin's hook reads as "Tracekit is set
+        up"; it now names `tracekit up` and makes nothing."""
+        before = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, before)
+        nope = os.path.join(self.d, "nope")
+        with mock.patch("tracekit.sdk.autospawn.data_dir", return_value=nope), \
+                contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            code = view.main(["--dev", "--port", "0"])
+        self.assertEqual((code, err.getvalue().splitlines()[-1]), (1, f"tracekit view: no dev signer data dir at {nope} "
+                                                                       "yet: start the dev signer once (tracekit up)"))
+        self.assertFalse(os.path.exists(nope))
 
     def test_hostile_tool_names_are_data_and_the_page_escapes_every_sink(self):
         run = self.client.run(agent="a")
@@ -2455,7 +2479,7 @@ class LiveRuns(unittest.TestCase):
                            (["--config", "signer.yaml"], {"config": os.path.abspath("signer.yaml")})):
             with mock.patch.object(view, "StoreFeed", side_effect=feed), \
                     mock.patch.object(view, "load_config", return_value={"data_dir": self.d}), \
-                    mock.patch.object(view.autospawn, "data_dir", return_value=self.d), \
+                    mock.patch.object(view, "dev_data_dir", return_value=self.d), \
                     mock.patch.object(view, "dev_content_source"), mock.patch.object(view, "dev_analysis"), \
                     self.assertRaises(Built) as got:
                 view.main(argv)
@@ -2473,7 +2497,7 @@ class LiveRuns(unittest.TestCase):
         def started(argv):
             """The signer the page gets from `tracekit view --dev ARGV`, and whether the viewer imports signed runs."""
             with mock.patch.object(view, "StoreFeed", side_effect=feed), \
-                    mock.patch.object(view.autospawn, "data_dir", return_value=self.d), \
+                    mock.patch.object(view, "dev_data_dir", return_value=self.d), \
                     mock.patch.object(view, "dev_content_source"), mock.patch.object(view, "dev_analysis"), \
                     contextlib.redirect_stderr(io.StringIO()), self.assertRaises(Built) as got:
                 view.main(["--dev", *argv])

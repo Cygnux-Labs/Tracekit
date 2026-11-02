@@ -950,7 +950,8 @@ class CodexHookTrust(unittest.TestCase):
     def setUp(self):
         self.home = ac.tmpdir(self)
         env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,
-                                           "XDG_DATA_HOME": os.path.join(self.home, "data")})
+                                           "XDG_DATA_HOME": os.path.join(self.home, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.home, "data")})
         env.start()
         self.addCleanup(env.stop)
         self.hooks = os.path.join(self.home, ".codex", "hooks.json")
