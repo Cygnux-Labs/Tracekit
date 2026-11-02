@@ -3,6 +3,7 @@
 Patterns are limited to a syntax that RE2 and the `regex` module (ASCII mode, after `translate`) match the same way,
 so a decision does not depend on which engine made it. `build` returns every lint error at once.
 """
+import functools
 import hashlib
 import itertools
 import json
@@ -139,6 +140,9 @@ def _walk(items, room=MAX_REPEAT):
                 _walk(b, room)
 
 
+# cached: a pure check, and most of a build's time, which checks every pattern of a pack and of the packs it extends
+# again each time (a viewer, a report and each signer start build them); a raise is not cached
+@functools.lru_cache(maxsize=4096)
 def check_pattern(pattern):
     """Raise PolicyError unless the pattern is in the RE2 subset and has no super-linear nested repeat."""
     translate(pattern)

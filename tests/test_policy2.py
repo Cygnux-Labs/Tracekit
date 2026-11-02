@@ -13,6 +13,7 @@ import tempfile
 import time
 import tracemalloc
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
@@ -73,6 +74,17 @@ class Compile(unittest.TestCase):
                 self.assertIn("rule A: can never fire: unless matches every subject",
                               "\n".join(self.errors(f"deny:\n  - {{id: A, pattern: rm, unless: '{unless}'}}\n")))
         self.assertEqual(self.errors("deny:\n  - {id: A, pattern: rm, unless: '^$'}\n"), [])
+
+    def test_a_pattern_is_checked_once_and_one_outside_the_subset_raises_each_time(self):
+        """Every build checks each pattern of the pack and of the packs it extends again: a viewer, a report and a
+        signer start each build them, and that was most of their start (#496). check_pattern keeps a pattern's answer."""
+        ok, bad = rf"^cached-{uuid.uuid4().hex}\s", rf"(?=cached-{uuid.uuid4().hex})"
+        with mock.patch.object(pc, "translate", wraps=pc.translate) as translate:
+            for _ in range(2):
+                pc.check_pattern(ok)
+                with self.assertRaises(PolicyError):
+                    pc.check_pattern(bad)
+        self.assertEqual([c.args[0] for c in translate.call_args_list], [ok, bad, bad])
 
     def test_accepts_ordinary_patterns(self):
         for pattern in (r"^(sudo|doas)\b", r"\bgit\s+push\b.*--force", r"[^a-z]\.env$", r"\x41{2,5}", r"(?:-[a-z]*\s+)*x",
