@@ -512,7 +512,8 @@ class ClaudeConfigDir(unittest.TestCase):
                 self.addCleanup(shutil.rmtree, d, True)
                 settings, client_home = os.path.join(d, "conf", "settings.json"), os.path.join(d, "client")
                 install._write_client_dir(client_home, {"socket": "s"})   # an earlier init's client config
-                env = {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "TRACEKIT_CLIENT_HOME": client_home}
+                env = {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d,
+                       "TRACEKIT_CLIENT_HOME": client_home}
                 with mock.patch.dict(os.environ, dict(env, CLAUDE_CONFIG_DIR=os.path.dirname(settings))), \
                         contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(cli.main(argv), 0)

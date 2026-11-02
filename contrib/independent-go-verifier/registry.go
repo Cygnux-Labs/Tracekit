@@ -140,7 +140,7 @@ func verifyRunSet(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 	recordInclusion func(validatedRecord) error, keys map[string]recordedKey, runs []runEvidence, logID string, recordTreeSize uint64) error {
 	spec, err := parseFileObject(files, "registry/run-set.json")
 	if err != nil {
-		return err
+		return failed("bundle structure", err)
 	}
 	a, err := fieldInt(spec, "from")
 	if err != nil {
@@ -207,7 +207,7 @@ func verifyRunSet(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 	}
 	recordLines, err := readLines(files["registry/records.jsonl"])
 	if err != nil {
-		return err
+		return failed("bundle structure", err)
 	}
 	if len(recordLines) != len(leaves) {
 		return errors.New("registry record count mismatch")
@@ -219,12 +219,12 @@ func verifyRunSet(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 	keyRecords := make(map[string]bool)
 	keyLines, err := readLines(files["keys/records.jsonl"])
 	if err != nil {
-		return err
+		return failed("bundle structure", err)
 	}
 	for _, raw := range keyLines {
 		rec, err := decodeRecord(raw)
 		if err != nil {
-			return err
+			return failed("bundle structure", err)
 		}
 		keyRecords[fmt.Sprintf("%d/%s", rec.seq, rec.hash)] = true
 	}
@@ -253,7 +253,7 @@ func verifyRunSet(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 		}
 		rec, err := decodeRecord(recordLines[i])
 		if err != nil {
-			return err
+			return failed("bundle structure", err)
 		}
 		if err := checkRecord(rec, recordLines[i], keys); err != nil {
 			return fmt.Errorf("registry record signature: %w", err)
@@ -294,7 +294,7 @@ func verifyRunSet(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 			return errors.New("registry run-id commitment mismatch")
 		}
 		if kind == "key.retire" && !keyRecords[fmt.Sprintf("%d/%s", rec.seq, rec.hash)] {
-			return errors.New("registry key.retire absent from bundled key records")
+			return failure{"keys", errors.New("registry key.retire absent from bundled key records")}
 		}
 		if kind == "log.closed" && rec.seq != recordTreeSize-1 {
 			return errors.New("log.closed not at checkpointed record-tree head")

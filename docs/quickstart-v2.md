@@ -31,6 +31,24 @@ venv the agent already has. pipx and `uv tool` give you the `tracekit` command
 then run from that install), but nothing your agent can import. The command and the SDK can come from two installs:
 both use the same dev signer. Keep them at the same version.
 
+### Upgrading
+
+`pip install -U tracekit-ai` upgrades the environment you run it in. Two other places can keep the old version, and
+with it the bugs and security holes fixed since:
+
+- **The Python your hooks run.** `tracekit init --dev --v2` wires each coding agent's hooks to the Python it ran from.
+  Upgrade that one too: `<that python> -m pip install -U tracekit-ai` (`pipx upgrade tracekit-ai` or
+  `uv tool upgrade tracekit-ai` for those installs, `uv pip install -U --python <that python> tracekit-ai` for a venv
+  uv made), or run `tracekit init --dev --v2` again from the upgraded install to point the hooks at it.
+- **The running dev signer.** It keeps its version until it stops, after 15 minutes with no client connected (a Claude
+  Code session's transcript tailer stays connected while the session is open). Stop it with `tracekit down`; the next
+  call starts one from the calling hook's Python. Open sessions go on in it: a signer keeps its runs and their run tokens across a restart (a run open across
+  one gets an `unavailable` provenance index, so a `from: untrusted` rule holds more of its calls:
+  [limits](limits.md#provenance-11)).
+
+`tracekit doctor` checks both (`D-VERSIONS`) and prints the commands for your machine; it upgrades and stops nothing.
+A hook whose signer runs another version says so too, once per session, with the same fix.
+
 ## 2. One line in your agent
 
 ```python

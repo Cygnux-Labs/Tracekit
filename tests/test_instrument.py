@@ -182,6 +182,12 @@ class TestInstrument(unittest.TestCase):
         docs = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs")
         self.assertEqual([f[5] for f in autowire.FRAMEWORKS if not os.path.exists(os.path.join(docs, f[5] + ".md"))], [])
 
+    def test_every_frameworks_tested_versions_are_its_requirements(self):
+        """Each row states its tested versions twice, as the tuples instrument() compares and the pip requirement its
+        warning prints: a bump of one without the other would warn about the wrong versions."""
+        for name, dist, lo, hi, req, *_ in autowire.FRAMEWORKS:
+            self.assertEqual(autowire._tested(dist, req), (lo, hi), name)
+
     def test_instrument_called_while_wiring_returns_the_same_run(self):
         """A module imported while a framework is wired may call instrument() itself (a script named after the
         package it imports): it gets the run at once instead of waiting for the call that is wiring."""

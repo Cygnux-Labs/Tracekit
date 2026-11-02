@@ -23,7 +23,7 @@ arguments (the signer's copy, in full):
 }[exit 0]
 
 $ tracekit approvals approve apr-41231b925244ca5526a3fb5913812499
-approved: apr-41231b925244ca5526a3fb5913812499 (self-approved: dev mode only)
+approved: apr-41231b925244ca5526a3fb5913812499, by you. It counts: the dev signer runs as your own user and can't tell you from your agent, so it records this as self-approved, and the run's assurance stays dev. A signer started from signer.yaml refuses an approval from the call's own requester unless that file sets approvals: {self_approval: allow}.
 [exit 0]
 
 $ tracekit last

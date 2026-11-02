@@ -106,6 +106,24 @@ the next retry run. After a retry ran, the same call is held again: one approval
 ones every approval writes, so a bundle with a retry needs no newer verifier, Python or TypeScript, than one without.
 A held or quarantined run follows [its own rules](incidents.md).
 
+In Claude Code a Bash call's arguments include a free-text `description`, which the model rewords on almost every
+retry. A person approves a command, not its caption, so the Claude Code hook keeps the session's last 32 held Bash
+calls, each as digests of its arguments (with and without the description) and its approval's id: only which
+approvals to try. A retry that differs from held calls of the same command only in its `description` is matched with
+the answered ones. Approved, and none of them rejected: the hook reads the newest approved call's arguments from the
+signer (`approval_get`), checks them against the retry's but the description, and decides and consumes the retry with
+them, so the record is the call that was approved, description included; Claude Code runs the retry as the model sent
+it, the same command with only its caption reworded (the hook returns no `updatedInput`, which could change how Claude
+Code asks you). One of them rejected: the signer keeps no copy of a rejected call's arguments and doesn't say which
+answer came last, so the retry is decided as the model sent it and held, and the first reason after `Why:` in its block
+(`[tracekit] held for approval …`) is `a person rejected this command (with another description) as apr-…`, adding
+`, and it was approved (with another description) as apr-…` when one was. One the hook can't read (a signer whose
+`authorize` doesn't grant it `approval_get`, or one restarting) runs nothing in place of the retry either.
+Any other key that differs (`command`, `run_in_background`, `dangerouslyDisableSandbox`, `timeout`, ...), or an
+approval still unanswered, expired or used, and the retry is decided as the model sent it. The signer's rule above is
+unchanged: the hook only chooses which arguments the retry is decided with, and the signer still checks them against
+the approval.
+
 ## Tiers: T1 and T2 executors
 
 - **T1** (default): the approval binds the arguments the agent reported. The adapter runs the call in the agent's
@@ -161,7 +179,18 @@ approvals:
 - The **dev signer** (`tracekit up`, or started by the SDK; it has no config) lets any identity of the run's tenant
   answer, including the requester. Such an answer is recorded `self_approved: true`, the report says `approvals:
   self`, and assurance is capped at `dev`. A signer started with `self_approval: allow` records a self-approval the
-  same way.
+  same way. The approval counts, and `tracekit approvals approve` says so:
+
+  ```text
+  approved: apr-…, by you. It counts: the dev signer runs as your own user and can't tell you from your agent, so it
+  records this as self-approved, and the run's assurance stays dev. A signer started from signer.yaml refuses an
+  approval from the call's own requester unless that file sets approvals: {self_approval: allow}.
+  ```
+
+  With `--signer` (or `TRACEKIT_SIGNER`) it can't tell a dev signer from one whose signer.yaml allows it, and says
+  "this signer lets the call's own requester answer (a dev signer, or approvals: {self_approval: allow} in its
+  signer.yaml)" instead. A rejection from the requester is recorded the same way and caps the run's assurance at `dev`
+  too: `tracekit approvals reject` says so.
 - Approvals are listed and shown only to the run's owner and to those who may answer them; another tenant never sees
   them. `tracekit approvals list` names the identity it asked as when it shows none.
 - OIDC identities are compared by person id, and a run's attested principal never answers its run's approvals

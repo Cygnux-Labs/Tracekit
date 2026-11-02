@@ -7,14 +7,19 @@ Two profiles: `default` (server.yaml, what E17 measures) and `strict` (strict.ya
     when it is denied or held (ask); deny-only is reported beside it, and so are catches by TK-UNKNOWN-TOOL alone (a
     tool no pack maps, held by the server pack's `unknown_tools: ask`). A benign call is a false positive when it is
     denied or held. Broken down by category, severity and evasion.
+(b) The blind pools, eval/e21_blind/*.jsonl: in the held-out pool's shape, each written blind to the rules by someone
+    outside the project and scored like it, together (`blind`) and pool by pool. Rules written after a pool was
+    published were informed by its misses, so these are not blind scores: a pool's blind score is the one at its
+    publication (docs/evaluation.md).
 (c) eval/e21_benign_sessions.jsonl: calls of ordinary developer sessions, written by the pack's builder (so tuned),
     for false positives only; E17's benign calls are scored the same way on both profiles.
 (d) Latency per decision (the fastest of five per call), p50/p99/max, on both engines, for dev.yaml and both
-    profiles, over E17's corpus and both E21 sets; and p99_ref, the p99 of each decision over a fixed reference
-    workload timed right after each try (`reference`: no Tracekit code), which a busy or throttled machine slows alike.
+    profiles, over E17's corpus, the held-out pool and the sessions (not the blind pools); and p99_ref, the p99 of
+    each decision over a fixed reference workload timed right after each try (`reference`: no Tracekit code), which a
+    busy or throttled machine slows alike.
 (e) No-regression gates against the first run, recorded in eval/results/e21_policy_robustness.json and kept by later
     runs: per profile, held-out recall doesn't drop and the false-positive rate of each benign set (held-out, sessions,
-    E17) doesn't rise; p99_ref stays within 25% of the first run's on the same machine (re-measured once before
+    E17, blind) doesn't rise; p99_ref stays within 25% of the first run's on the same machine (re-measured once before
     failing; another machine is not compared). False positives over 2% (default) or 5% (strict) are reported as over
     target.
 Exit 0 only when every gate holds and both engines decide every call the same. `--record` writes the gates anew."""
@@ -37,11 +42,12 @@ PACKS = os.path.join(ROOT, "tracekit", "policy2", "packs")
 PROFILES = {"default": "server.yaml", "strict": "strict.yaml"}
 TARGET_FP = {"default": 0.02, "strict": 0.05}   # reported, not gated
 HELDOUT = os.path.join(ROOT, "eval", "e21_heldout", "corpus.jsonl")
+BLIND = os.path.join(ROOT, "eval", "e21_blind")
 SESSIONS = os.path.join(ROOT, "eval", "e21_benign_sessions.jsonl")
 E17 = os.path.join(ROOT, "tests", "data", "policy")
 RESULTS = os.path.join(ROOT, "eval", "results", "e21_policy_robustness.json")
 HELD = ("deny", "ask")
-SETS = ("heldout", "sessions", "e17")   # the sets whose benign calls are scored for false positives
+SETS = ("heldout", "blind", "sessions", "e17")   # the sets whose benign calls are scored for false positives
 
 
 def load(path):
@@ -55,9 +61,9 @@ def tags(value):
     return [str(v) for v in values if v not in (None, "", False)] or ["none"]
 
 
-def score(engines, cases):
-    """Both engines decide each case; (rows by breakdown, totals, engine mismatches)."""
-    rows = {k: collections.defaultdict(collections.Counter) for k in ("category", "severity", "evasion")}
+def score(engines, cases, dims=("category", "severity", "evasion")):
+    """Both engines decide each case; (rows by breakdown `dims`, totals, engine mismatches)."""
+    rows = {k: collections.defaultdict(collections.Counter) for k in dims}
     total, mismatches, missed, fps = collections.Counter(), [], [], []
     for c in cases:
         a, b = (e.decide(c["tool"], c["args"]) for e in engines)
@@ -129,11 +135,14 @@ def machine():
 
 def run(record=False):
     heldout = load(HELDOUT) if os.path.exists(HELDOUT) else None
+    pools = {os.path.basename(p)[:-len(".jsonl")]: load(p) for p in sorted(glob.glob(os.path.join(BLIND, "*.jsonl")))}
+    blind = [{**c, "pool": n} for n, cases in pools.items() for c in cases] or None
     sessions = load(SESSIONS)
     e17 = [(c["tool"], c["args"]) for p in sorted(glob.glob(os.path.join(E17, "*", "*.jsonl"))) for c in load(p)]
     calls = e17 + [(c["tool"], c["args"]) for c in (heldout or []) + sessions]
     e17_benign = [c for p in sorted(glob.glob(os.path.join(E17, "benign", "*.jsonl"))) for c in load(p)]
     out = {"machine": machine(), "heldout_cases": len(heldout) if heldout is not None else None,
+           "blind_cases": {n: len(cases) for n, cases in pools.items()},
            "session_calls": len(sessions), "profiles": {}, "latency": {}, "engine_mismatches": []}
     for name, pack in PROFILES.items():
         pol, errors = pc.build(os.path.join(PACKS, pack))
@@ -141,12 +150,15 @@ def run(record=False):
             raise SystemExit("\n".join(errors))
         engines = [Engine(pol, "re2"), Engine(pol, "regex")]
         prof = out["profiles"][name] = {"pack": pack, "policy_hash": engines[0].policy_hash}
-        for key, cases in (("heldout", heldout), ("sessions", sessions), ("e17", e17_benign)):
+        for key, cases in (("heldout", heldout), ("blind", blind), ("sessions", sessions), ("e17", e17_benign)):
             if cases is None:
                 continue
-            by, total, mismatches, missed, fps = score(engines, cases)
+            dims = ("category", "severity", "evasion") + (("pool",) if key == "blind" else ())
+            by, total, mismatches, missed, fps = score(engines, cases, dims)
             prof[key] = {**rates(total), "totals": total, "by": by, "missed": missed, "false_positives": fps}
             out["engine_mismatches"] += [{"profile": name, "set": key, **m} for m in mismatches]
+        if blind:   # each pool's totals, from the same decisions
+            prof["blind"]["pools"] = {n: {**rates(t), "totals": t} for n, t in prof["blind"]["by"].pop("pool").items()}
         for e in engines:
             out["latency"][f"{name}/{e.engine.split('@')[0]}"] = latency(e, calls)
     for e in (Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], x) for x in ("re2", "regex")):
@@ -203,6 +215,10 @@ def main():
         json.dump(out, f, indent=2)
     if out["heldout_cases"] is None:
         print(f"no held-out pool at {os.path.relpath(HELDOUT, ROOT)}: held-out scores skipped")
+    if out["blind_cases"]:
+        print(f"blind: {len(out['blind_cases'])} pools written blind to the rules ({os.path.relpath(BLIND, ROOT)}), "
+              "scored after rules informed by their misses: not blind scores; each pool's blind score is the one at "
+              "its publication (docs/evaluation.md)")
     for name, p in out["profiles"].items():
         for key in SETS:
             if key not in p:
@@ -210,6 +226,10 @@ def main():
             r = p[key]
             print(f"{name:8s} {key:9s} recall {_pct(r['recall'])} (deny only {_pct(r['deny_recall'])}, by an "
                   f"unmapped tool alone {r['totals'].get('unknown_only', 0)}), benign FP {_pct(r['fp_rate'])}")
+            for pool, n in r.get("pools", {}).items():
+                t = n["totals"]
+                print(f"    pool      {pool:24s} caught {t.get('caught', 0)}/{t.get('harmful', 0)} "
+                      f"deny {t.get('deny', 0)}  FP {t.get('fp', 0)}/{t.get('benign', 0)}")
             if key == "heldout":
                 for dim in ("category", "severity", "evasion"):
                     for t, n in r["by"][dim].items():

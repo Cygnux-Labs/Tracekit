@@ -76,7 +76,8 @@ func fixtureManifest(files map[string][]byte) {
 	files["manifest.json"] = raw
 }
 
-func bundleFixture(t *testing.T) (map[string][]byte, []byte) {
+// bundleFixture is a closed one-run bundle and its trust config; its signer.epoch declares the signing key and `extra`.
+func bundleFixture(t *testing.T, extra ...any) (map[string][]byte, []byte) {
 	t.Helper()
 	seed := sha256.Sum256([]byte("test signer seed"))
 	priv := ed25519.NewKeyFromSeed(seed[:])
@@ -108,7 +109,7 @@ func bundleFixture(t *testing.T) (map[string][]byte, []byte) {
 		raw, _ := json.Marshal(map[string]any{"v": 2, "event": ev, "hash": hash, "alg": "ed25519", "kid": kid, "sig": base64.StdEncoding.EncodeToString(sig)})
 		return append(raw, '\n'), hash
 	}
-	r0, h0 := record(0, 0, "signer.epoch", ZeroHash, ZeroHash, "tracekit/signer", "tracekit", map[string]any{"keys": []any{map[string]any{"kid": kid, "alg": "ed25519", "spki": base64.StdEncoding.EncodeToString(spki)}}})
+	r0, h0 := record(0, 0, "signer.epoch", ZeroHash, ZeroHash, "tracekit/signer", "tracekit", map[string]any{"keys": append([]any{map[string]any{"kid": kid, "alg": "ed25519", "spki": base64.StdEncoding.EncodeToString(spki)}}, extra...)})
 	r1, h1 := record(1, 0, "run.registered", h0, ZeroHash, runID, tenant, map[string]any{"agent": map[string]any{"name": "demo", "version": "1.0"}, "identity": map[string]any{"scheme": "uid", "subject": "test", "attested": true}})
 	r2, h2 := record(2, 1, "run.final", h1, h1, runID, tenant, map[string]any{"head_run_seq": float64(0), "head_hash": h1})
 	hashes := []string{h0, h1, h2}

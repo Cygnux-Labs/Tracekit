@@ -3,6 +3,7 @@
 Patterns are limited to a syntax that RE2 and the `regex` module (ASCII mode, after `translate`) match the same way,
 so a decision does not depend on which engine made it. `build` returns every lint error at once.
 """
+import functools
 import hashlib
 import itertools
 import json
@@ -31,7 +32,14 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
     "reason": "an agent-to-agent name (sender, receiver, projector, modality, weights, a skill or a part kind) is not "
               "printable ASCII without spaces, so a rule written for that name could miss it",
     "remedy": "Spell each name in printable ASCII without spaces: no look-alike, fullwidth, zero-width or control "
-              "characters."}}
+              "characters."},
+    # #519: a hold for these said no why, and an agent didn't know a readable command was its way through. Short: a
+    # harness that cuts the message at 500 characters keeps the remedy and other rules' reasons; and no "a person
+    # approves it", which a deny (the strict pack's on_parse_error) can't be
+    "TK-SHELL-PARSE": {"reason": "the policy can't read what this shell command runs",
+                       "remedy": "Name the program itself (`git push …`, not `$g push …`) so the policy can read it."},
+    "TK-SQL-PARSE": {"reason": "the policy can't read this SQL",
+                     "remedy": "Close the quote or comment so the policy can read it."}}
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
@@ -139,6 +147,9 @@ def _walk(items, room=MAX_REPEAT):
                 _walk(b, room)
 
 
+# cached: a pure check, and most of a build's time, which checks every pattern of a pack and of the packs it extends
+# again each time (a viewer, a report and each signer start build them); a raise is not cached
+@functools.lru_cache(maxsize=4096)
 def check_pattern(pattern):
     """Raise PolicyError unless the pattern is in the RE2 subset and has no super-linear nested repeat."""
     translate(pattern)

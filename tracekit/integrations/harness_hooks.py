@@ -29,6 +29,7 @@ import json
 import os
 import stat
 import sys
+import warnings
 
 from tracekit import agent_hooks, parsers
 from tracekit.format.canon import event_hash
@@ -64,7 +65,9 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         q = agent_hooks.normalise(harness, p)
         if q is not None or p.get("hook_event_name") in agent_hooks.CURSOR_SAID:
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]   # a run said() registers is the harness's
-            said_since(harness, p, stderr)
+            with warnings.catch_warnings():   # a version skew is told once per session (claude_code.handle) instead
+                warnings.filterwarnings("ignore", claude_code.SKEW)
+                said_since(harness, p, stderr)
         reason = agent_hooks._blocked(harness, p, raw) if q is not None and is_pre else None
         if q is None:   # an event Tracekit does not record
             code = 0
