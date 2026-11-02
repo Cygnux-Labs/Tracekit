@@ -243,22 +243,36 @@ func verifyV1Checkpoint(cp map[string]any, pub []byte, kid string) bool {
 // contents of the caller-selected file witness, never a bundle-provided path.
 func VerifyV1(bundle, key, witness []byte) Verification {
 	rep := Verification{ExitCode: 2, Integrity: "UNUSABLE BUNDLE", Assurance: "unknown (no run.start checked)", Checks: []VerificationCheck{}}
+	// problems are reported under the reference verifier's check they fail, one line per check
+	var problems []string
+	failedAt := map[string]int{}
+	fail := func(check, s string) {
+		problems = append(problems, s)
+		if i, ok := failedAt[check]; ok {
+			rep.Checks[i].Detail += "; " + s
+			return
+		}
+		failedAt[check] = len(rep.Checks)
+		rep.Checks = append(rep.Checks, VerificationCheck{check, "fail", s})
+	}
+	stop := func() Verification {
+		rep.Detail = strings.Join(problems, "; ")
+		return rep
+	}
 	files, err := readV1Bundle(bundle)
 	if err != nil {
-		rep.Detail = err.Error()
-		return rep
+		fail("bundle readable", err.Error())
+		return stop()
 	}
 	manifest, err := parseFileObject(files, "manifest.json")
 	if err != nil || manifest["format"] != "tracekit.bundle.v1" {
-		rep.Detail = "invalid v1 manifest"
-		return rep
+		fail("bundle readable", "invalid v1 manifest")
+		return stop()
 	}
 	rep.ExitCode, rep.Integrity = 1, "VERIFICATION FAILED"
-	var problems []string
-	fail := func(s string) { problems = append(problems, s) }
 	listed, err := object(manifest["files"])
 	if err != nil {
-		fail("invalid manifest file list")
+		fail("files match manifest", "invalid manifest file list")
 	} else {
 		for name, digest := range listed {
 			if name == "replay.html" {
@@ -267,65 +281,65 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 			raw, ok := files[name]
 			sum := sha256.Sum256(raw)
 			if !ok || digest != hex.EncodeToString(sum[:]) {
-				fail("manifest hash mismatch: " + name)
+				fail("files match manifest", "manifest hash mismatch: "+name)
 			}
 		}
 		for name := range files {
 			if name != "manifest.json" && name != "replay.html" {
 				if _, ok := listed[name]; !ok {
-					fail("unlisted file: " + name)
+					fail("files match manifest", "unlisted file: "+name)
 				}
 			}
 		}
 	}
 	pub := files["signer.pub"]
 	if len(pub) != 32 || !validEd25519PublicKey(pub) {
-		rep.Detail = "invalid signer key"
-		return rep
+		fail("signatures valid", "invalid signer key")
+		return stop()
 	}
 	kid := v1Kid(pub)
 	if manifest["kid"] != kid {
-		fail("manifest signer key mismatch")
+		fail("signatures valid", "manifest signer key mismatch")
 	}
 	records, err := parseV1Lines(files["records.jsonl"])
 	if err != nil {
-		rep.Detail = err.Error()
-		return rep
+		fail("chain intact", err.Error())
+		return stop()
 	}
 	hashes := map[uint64]string{}
 	prev := strings.Repeat("0", 64)
 	var events []map[string]any
-	stubs := false
+	stubs := 0
 	for i, r := range records {
 		var ev map[string]any
 		var seq uint64
 		var ph any
 		if r["elided"] == true {
-			stubs = true
+			stubs++
 			seq, err = fieldInt(r, "seq")
 			ph = r["prev_hash"]
 		} else {
 			ev, err = object(r["event"])
 			if err != nil {
-				fail("invalid event")
+				fail("chain intact", "invalid event")
 				continue
 			}
 			seq, err = fieldInt(ev, "seq")
 			ph = ev["prev_hash"]
 			events = append(events, ev)
 			if v1Hash(ev) != r["hash"] {
-				fail(fmt.Sprintf("record seq %v: event hash mismatch", ev["seq"]))
+				fail("chain intact", fmt.Sprintf("record seq %v: event hash mismatch", ev["seq"]))
 			}
 			if err := validateSchema(ev, v1Schema, v1Schema, "event", 0); err != nil {
-				fail(err.Error())
+				fail("events match schema v1", err.Error())
 			}
 		}
 		if err != nil || seq != uint64(i) || ph != prev {
-			fail("ledger chain mismatch")
+			fail("chain intact", "ledger chain mismatch")
 		}
 		hash, ok := r["hash"].(string)
 		if !ok {
-			fail("invalid record hash")
+			fail("chain intact", "invalid record hash")
 		}
 		hashes[seq] = hash
 		prev = hash
@@ -333,32 +347,32 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 		sig, e := b64(sigText)
 		msg, _ := v1Canonical(map[string]any{"hash": hash, "prev_hash": ph, "seq": json.Number(fmt.Sprint(seq))})
 		if e != nil || r["kid"] != kid || !ed25519.Verify(pub, msg, sig) {
-			fail("invalid record signature")
+			fail("signatures valid", "invalid record signature")
 		}
 	}
 	if len(records) == 0 {
-		fail("empty ledger")
+		fail("chain intact", "empty ledger")
 	}
 	if r, ok := manifest["seq_range"].([]any); ok && len(r) == 2 && len(records) > 0 {
 		if n, ok := r[1].(json.Number); !ok || string(n) != fmt.Sprint(len(records)-1) {
-			fail("manifest sequence range mismatch")
+			fail("manifest range", "manifest sequence range mismatch")
 		}
 	}
 	cps, err := parseV1JSONL(files["checkpoints.jsonl"], true)
 	if err != nil {
-		fail("invalid checkpoint file")
+		fail("head matches a witness checkpoint", "invalid checkpoint file")
 	}
 	for _, cp := range cps {
 		seq, e := fieldInt(cp, "head_seq")
 		if e != nil || !verifyV1Checkpoint(cp, pub, kid) || hashes[seq] != cp["head_hash"] {
-			fail("invalid bundled checkpoint")
+			fail("head matches a witness checkpoint", "invalid bundled checkpoint")
 		}
 	}
 	anchored := false
 	if len(key) > 0 {
 		if strings.HasPrefix(string(key), "ed25519:") {
 			if string(key) != kid {
-				fail("trusted signer key mismatch")
+				fail("trust root", "trusted signer key mismatch")
 			} else {
 				anchored = true
 			}
@@ -368,11 +382,11 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 				var e error
 				pin, e = b64(strings.TrimSpace(string(key)))
 				if e != nil {
-					fail("invalid trusted key")
+					fail("trust root", "invalid trusted key")
 				}
 			}
 			if !bytes.Equal(pin, pub) {
-				fail("trusted signer key mismatch")
+				fail("trust root", "trusted signer key mismatch")
 			} else {
 				anchored = true
 			}
@@ -382,7 +396,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 	if witness != nil {
 		ws, e := parseV1JSONL(witness, true)
 		if e != nil {
-			fail("invalid witness JSONL")
+			fail("head matches a witness checkpoint", "invalid witness JSONL")
 		}
 		matching := 0
 		consistent := 0
@@ -393,12 +407,12 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 			matching++
 			seq, e := fieldInt(cp, "head_seq")
 			if e != nil || !verifyV1Checkpoint(cp, pub, kid) {
-				fail("invalid witness checkpoint")
+				fail("head matches a witness checkpoint", "invalid witness checkpoint")
 				continue
 			}
 			if h, ok := hashes[seq]; ok {
 				if cp["head_hash"] != h {
-					fail("witness head mismatch")
+					fail("head matches a witness checkpoint", "witness head mismatch")
 				} else {
 					consistent++
 				}
@@ -406,7 +420,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 			witnessSeqs[seq] = true
 		}
 		if len(ws) > 0 && matching == 0 {
-			fail("witness has no checkpoints for signer")
+			fail("head matches a witness checkpoint", "witness has no checkpoints for signer")
 		}
 		if e == nil && consistent > 0 {
 			anchored = true
@@ -468,16 +482,22 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 		}
 	}
 	if err := checkV1Policies(files, events, selected); err != nil {
-		fail(err.Error())
+		fail("policy hash consistent", err.Error())
 	}
-	boundaries := len(selected) == 0
+	var unbounded, unwitnessed []string // why a run's boundaries are unproven; runs whose last checkpoint no witness holds
+	if len(selected) == 0 {
+		unbounded = append(unbounded, "no selected run has a record in the bundle")
+	}
 	for run := range selected {
 		if v1CompanionRun(run) {
 			continue
 		}
 		end, ok := ends[run]
-		if !starts[run] || !ok {
-			boundaries = true
+		if !starts[run] {
+			unbounded = append(unbounded, "run "+run+": no run.start in the bundle")
+		}
+		if !ok {
+			unbounded = append(unbounded, "run "+run+": no signed run.end in the bundle; the run may have continued")
 		}
 		if witness != nil && ok {
 			var first uint64
@@ -496,7 +516,11 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 					}
 				}
 				if !atHead {
-					fail("run tail not covered by witnessed checkpoint")
+					fail("run tail witnessed", "run tail not covered by witnessed checkpoint")
+				} else {
+					unwitnessed = append(unwitnessed, fmt.Sprintf("run %s: checkpoint not on the witness (the bundle "+
+						"ends at its signed checkpoint seq %d, after run.end at seq %d; the witness holds seq %d)",
+						run, len(records)-1, end, first))
 				}
 			}
 		}
@@ -518,7 +542,7 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 				}
 			}
 			if !has {
-				fail("bundle ends between witnessed checkpoints")
+				fail("head matches a witness checkpoint", "bundle ends between witnessed checkpoints")
 			}
 		}
 	}
@@ -548,9 +572,24 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 	} else {
 		rep.Assurance = "unknown (client-reported signer_isolation=" + iso + ")"
 	}
+	if stubs > 0 {
+		rep.Checks = append(rep.Checks, VerificationCheck{"run completeness", "warn",
+			fmt.Sprintf("%d elided record(s): v1 signatures do not bind a stub to its run", stubs)})
+	}
+	if len(unwitnessed) > 0 && !hasCheck(rep.Checks, "run tail witnessed") {
+		sort.Strings(unwitnessed)
+		rep.Checks = append(rep.Checks, VerificationCheck{"run tail witnessed", "warn", strings.Join(unwitnessed, "; ")})
+	}
+	if len(unbounded) > 0 {
+		sort.Strings(unbounded)
+		rep.Checks = append(rep.Checks, VerificationCheck{"run boundaries", "warn", strings.Join(unbounded, "; ")})
+	}
+	if !anchored && !hasCheck(rep.Checks, "trust root") {
+		rep.Checks = append(rep.Checks, VerificationCheck{"trust root", "warn", "UNANCHORED: nothing outside the " +
+			"bundle vouches for its signer key or checkpoints; pass -key <signer.pub> and/or -witness file:<copy>"})
+	}
 	if len(problems) > 0 {
-		rep.Detail = strings.Join(problems, "; ")
-		return rep
+		return stop()
 	}
 	rep.ExitCode, rep.Integrity = 0, "VERIFIED"
 	var gaps []string
@@ -560,10 +599,10 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 	if rejected {
 		gaps = append(gaps, "rejected writes")
 	}
-	if stubs {
+	if stubs > 0 {
 		gaps = append(gaps, "run completeness")
 	}
-	if boundaries {
+	if len(unbounded) > 0 {
 		gaps = append(gaps, "run boundaries")
 	}
 	if len(gaps) > 0 {
@@ -573,6 +612,15 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 		rep.Integrity += " BUT UNANCHORED (internally consistent only; no trusted key or witness was checked)"
 	}
 	return rep
+}
+
+func hasCheck(checks []VerificationCheck, name string) bool {
+	for _, c := range checks {
+		if c.Check == name {
+			return true
+		}
+	}
+	return false
 }
 
 func v1CompanionRun(run string) bool {

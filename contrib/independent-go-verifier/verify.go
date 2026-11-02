@@ -3,6 +3,7 @@ package verifier
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -30,6 +31,25 @@ var versionPattern = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,9}){0,2}$`)
 // TrustUnusable is the integrity of a trust config that can't be used: nothing in the bundle was checked (exit 2).
 const TrustUnusable = "UNVERIFIABLE (the trust file can't be used)"
 
+// failure is an error that names the reference verifier's check it fails, so both reports name the same check.
+type failure struct {
+	check string
+	err   error
+}
+
+func (f failure) Error() string { return f.err.Error() }
+func (f failure) Unwrap() error { return f.err }
+
+// failed names the check err fails, unless err already names one: a caller names the check of the errors of what it
+// calls that don't.
+func failed(check string, err error) error {
+	var named failure
+	if err == nil || errors.As(err, &named) {
+		return err
+	}
+	return failure{check, err}
+}
+
 func registryOrigin(origin string, salt []byte) string {
 	digest := sha256.Sum256(append([]byte("registry "), salt...))
 	return origin + "/registry/" + hex.EncodeToString(digest[:])[:32]
@@ -39,85 +59,88 @@ func registryOrigin(origin string, salt []byte) string {
 // additional cryptographic protocols remain explicitly UNVERIFIABLE.
 func VerifyBundle(bundle, trustBytes []byte) Verification {
 	rep := Verification{ExitCode: 2, Integrity: "UNUSABLE BUNDLE", Assurance: "none", Checks: []VerificationCheck{}}
+	// Verification stops at the first failure: the report names its check, as the reference verifier does.
+	fail := func(err error) Verification {
+		rep.Detail = err.Error()
+		var named failure
+		if errors.As(err, &named) {
+			rep.Checks = []VerificationCheck{{named.check, "fail", rep.Detail}}
+		}
+		return rep
+	}
 	log, witnesses, quorum, err := loadTrust(trustBytes)
 	if err != nil {
-		rep.Integrity, rep.Detail = TrustUnusable, "trust config: "+err.Error()
-		return rep
+		rep.Integrity = TrustUnusable
+		return fail(failure{"trust config", fmt.Errorf("trust config: %w", err)})
 	}
 	files, err := ReadBundle(bundle)
 	if err != nil {
-		rep.Detail = err.Error()
-		return rep
+		return fail(failed("bundle readable", err))
 	}
 	if _, ok := files["manifest.json"]; !ok {
-		rep.Detail = "the bundle file is damaged: no manifest.json"
-		return rep
+		return fail(failure{"bundle readable", errors.New("the bundle file is damaged: no manifest.json")})
 	}
 	manifest, err := parseFileObject(files, "manifest.json")
 	if err != nil {
-		rep.Detail = err.Error()
-		return rep
+		return fail(failed("bundle readable", err))
 	}
 	version, ok := manifest["verifier_min_version"].(string)
 	newer, versionErr := newerVersion(version, "1.4.2")
 	if manifest["format"] != "tracekit.bundle.v2" || !ok || versionErr != nil {
-		rep.Detail = "invalid manifest format or version"
-		return rep
+		return fail(failure{"bundle readable", errors.New("invalid manifest format or version")})
 	}
 	if newer {
 		rep.Integrity = "UNVERIFIABLE (needs tracekit >= " + version + ")"
+		rep.Checks = []VerificationCheck{{"bundle readable", "fail", rep.Integrity}}
 		return rep
 	}
 	rep.ExitCode, rep.Integrity = 1, "FAILED"
 	proofs, err := parseFileObject(files, "proofs/records.json")
 	if err != nil {
-		rep.Detail = err.Error()
-		return rep
+		return fail(failed("bundle structure", err))
 	}
 	name, ok := proofs["checkpoint"].(string)
-	if !ok {
-		rep.Detail = "missing checkpoint"
-		return rep
+	note, present := files[name]
+	if !ok || !present {
+		return fail(failure{"bundle structure", errors.New("missing checkpoint")})
 	}
-	cp, err := VerifyCheckpoint(files[name], log, witnesses, 0)
+	cp, err := VerifyCheckpoint(note, log, witnesses, 0)
 	if err != nil {
-		rep.Detail = err.Error()
-		return rep
+		return fail(failed("checkpoint", err))
 	}
 	// Reports may retain assurance on failed evidence, but only authenticated
 	// checkpoint signatures are allowed to contribute to that assurance.
 	runs, keyRecords, err := reportRecords(files)
 	if err != nil {
-		rep.Detail = err.Error()
-		return rep
+		return fail(failed("bundle structure", err))
 	}
 	if len(runs) != 1 {
 		if _, ok := files["registry/run-set.json"]; !ok {
 			if !aboutOne(runs) {
-				rep.Detail = "multiple runs without run-set"
-				return rep
+				return fail(failure{"bundle structure", errors.New("multiple runs without run-set")})
 			}
 		}
 	}
-	anchors, anchorErr := verifyAnchor(files, trustBytes, log, cp, files[name])
-	rep.Assurance = assuranceFor(files, trustBytes, log, witnesses, quorum, cp, runs, keyRecords, anchors)
+	anchors, anchorErr := verifyAnchor(files, trustBytes, log, cp, note)
+	var proven bool
+	rep.Assurance, proven = assuranceFor(files, trustBytes, log, witnesses, quorum, cp, runs, keyRecords, anchors)
 	if anchorErr != nil {
-		rep.Detail = anchorErr.Error()
-		return rep
+		return fail(failed("rekor anchor", anchorErr))
 	}
-	_, err = inspectFiles(files, log, witnesses, quorum)
-	if err != nil {
-		rep.Detail = err.Error()
-		return rep
+	if _, err = inspectFiles(files, log, witnesses, quorum); err != nil {
+		return fail(err)
 	}
 	if err = checkSemantics(files, runs, keyRecords); err != nil {
-		rep.Detail = err.Error()
 		if _, ok := err.(unsupportedEvidence); ok {
 			rep.ExitCode, rep.Integrity = 2, "UNVERIFIABLE"
 		}
-		return rep
+		return fail(err)
 	}
 	rep.Checks = warningChecks(files, runs)
+	if !proven && rotated(keyRecords) {
+		rep.Checks = append(rep.Checks, VerificationCheck{"keys", "warn", "retirements not proven complete: no run-set " +
+			"from registry size 0 reaches the last record, so a withheld key.retire would not show"})
+	}
 	open := 0
 	var head uint64
 	for _, run := range runs {
@@ -136,6 +159,21 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 		}
 	}
 	return rep
+}
+
+// rotated says whether the log declares more than one record key or retires one: then a key.retire withheld from the
+// bundle would change which records verify.
+func rotated(keys []validatedRecord) bool {
+	declared := 0
+	for _, r := range keys {
+		if r.ev["type"] == "key.retire" {
+			return true
+		}
+		d, _ := r.ev["data"].(map[string]any)
+		ks, _ := d["keys"].([]any)
+		declared += len(ks)
+	}
+	return declared > 1
 }
 
 // Signed gaps do not invalidate intact evidence. They must remain visible in
@@ -315,7 +353,8 @@ func aboutOne(runs []runEvidence) bool {
 	return true
 }
 
-func assuranceFor(files map[string][]byte, trustBytes []byte, log VKey, witnesses []VKey, quorum int, cp Checkpoint, runs []runEvidence, keys []validatedRecord, anchors []verifiedAnchor) string {
+// assuranceFor is the assurance line, and whether a run-set from registry size 0 proves the key retirements complete.
+func assuranceFor(files map[string][]byte, trustBytes []byte, log VKey, witnesses []VKey, quorum int, cp Checkpoint, runs []runEvidence, keys []validatedRecord, anchors []verifiedAnchor) (string, bool) {
 	v, _ := ParseStrict(trustBytes)
 	trust := v.(map[string]any)
 	classes := map[string]string{}
@@ -478,7 +517,7 @@ func assuranceFor(files map[string][]byte, trustBytes []byte, log VKey, witnesse
 	if !proven {
 		result += "; key retirements not proven complete"
 	}
-	return result
+	return result, proven
 }
 
 type unsupportedEvidence string
@@ -488,7 +527,7 @@ func (e unsupportedEvidence) Error() string { return string(e) }
 func checkSemantics(files map[string][]byte, runs []runEvidence, keys []validatedRecord) error {
 	for name, raw := range files {
 		if strings.HasPrefix(name, "policies/") && name != "policies/"+strings.TrimPrefix(SHA256Hex(raw), "sha256:")+".json" {
-			return fmt.Errorf("policy snapshot name does not match digest: %s", name)
+			return failure{"policy snapshot", fmt.Errorf("policy snapshot name does not match digest: %s", name)}
 		}
 	}
 	for _, r := range keys {
@@ -509,7 +548,7 @@ func checkSemantics(files map[string][]byte, runs []runEvidence, keys []validate
 				if ids, ok := d["rule_ids"].([]any); ok {
 					for _, id := range ids {
 						if id == "TK-CONSTRAINT" && (!constraint || d["decision"] != "ask") {
-							return fmt.Errorf("invalid constraint decision at seq %d", r.seq)
+							return failure{"constraints", fmt.Errorf("invalid constraint decision at seq %d", r.seq)}
 						}
 					}
 				}

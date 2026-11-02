@@ -118,16 +118,30 @@ class Discovery(unittest.TestCase):
     def test_known_and_unknown_check_differences_and_verdicts(self):
         base = {"exit_code": 0, "integrity": "VERIFIED", "assurance": "ok",
                 "warning_checks": [], "failed_checks": []}
-        other = {**base, "warning_checks": ["keys", "reviews"]}
+        other = {**base, "warning_checks": ["fail-open classes", "log tail"]}
         match, known, unexpected = compare(base, other, "v2")
         self.assertTrue(match)
-        self.assertEqual(known["warning_checks"], ["keys", "reviews"])
+        self.assertEqual(known["warning_checks"], ["fail-open classes", "log tail"])
         self.assertFalse(any(unexpected.values()))
         self.assertFalse(compare(base, other, "v1")[0])
         self.assertFalse(compare(base, {**other, "failed_checks": ["chain"]}, "v2")[0])
         self.assertFalse(compare({**base, "warning_checks": ["chain"]},
                                  {**base, "failed_checks": ["chain"]}, "v2")[0])
         self.assertFalse(compare(base, {**other, "exit_code": 1}, "v2")[0])
+        # a check Go names is compared: these are no longer exempt
+        self.assertFalse(compare({**base, "warning_checks": ["keys"]}, base, "v2")[0])
+        self.assertFalse(compare({**base, "warning_checks": ["trust root"]}, base, "v1")[0])
+
+    def test_a_failed_v2_bundle_names_one_of_the_reference_failures(self):
+        python = {"exit_code": 1, "integrity": "FAILED", "assurance": "ok",
+                  "warning_checks": ["reviews"], "failed_checks": ["inclusion", "run chain"]}
+        go = {**python, "warning_checks": [], "failed_checks": ["run chain"]}
+        self.assertTrue(compare(python, go, "negative")[0])   # Go stopped at one of Python's failures
+        self.assertFalse(compare(python, {**go, "failed_checks": ["signatures"]}, "negative")[0])   # another check
+        self.assertFalse(compare(python, {**go, "failed_checks": []}, "parts")[0])   # a failure without a name
+        self.assertFalse(compare(python, {**go, "warning_checks": ["keys"]}, "v2")[0])   # a warning Python lacks
+        # v1 is compared whole: Go's v1 verifier reports every check it performs, failed or not
+        self.assertFalse(compare({**python, "warning_checks": []}, go, "v1")[0])
 
     def test_non_json_invocation_is_reported_as_error(self):
         import os
