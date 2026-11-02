@@ -3,13 +3,16 @@ within the bound and a failure is a real bug. The decision logic over its whole 
 for every tree size up to MERKLE_N (TRACEKIT_BOUND_MERKLE raises it); the v2 verifier against every structural mutation
 of the golden closed bundle (tests/test_verify_v2_property.py samples bit flips of it)."""
 import base64
+import collections
 import importlib.util
 import itertools
 import json
+import multiprocessing
 import os
 import shutil
 import tempfile
 import unittest
+from concurrent.futures import ProcessPoolExecutor
 
 import test_signer_service as ts
 from test_verify_v2_property import ENTRIES, REQUIRED, TRUST, zipped
@@ -19,6 +22,7 @@ from tracekit.format.canon import event_hash
 from tracekit.policy2 import compile as pc
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
+from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import STRICTNESS, _stricter
 from tracekit.verify import v2
@@ -298,7 +302,11 @@ BASIC = ("decide", "request", "approve", "reject", "consume_a", "consume_b", "co
 RETRY_PREFIX = ("decide", "request", "approve")
 RETRY = ("consume_a", "decide_retry", "consume_retry", "consume_retry_hint", "complete_a", "complete_retry", "abandon")
 APPROVALS_DEPTH = int(os.environ.get("TRACEKIT_BOUND_APPROVALS", "5"))
-RUNS_PER_SIGNER = 40   # under the default quotas on open runs and pending approvals per identity
+# a signer started and closed per RUNS_PER_SIGNER sequences (its start and close cost more than a sequence's calls),
+# with quotas on open runs, pending approvals and the event rate that hold them all: no sequence meets a quota. Past
+# ~200, the signer's scans of its live approvals cost more than the starts they save
+RUNS_PER_SIGNER = 200
+LIMITS = Limits(open_runs=RUNS_PER_SIGNER, pending_approvals=RUNS_PER_SIGNER, events_per_s=1e9, burst=10 ** 9)
 
 
 class ApprovalStateSpace(unittest.TestCase):
@@ -315,26 +323,24 @@ class ApprovalStateSpace(unittest.TestCase):
     was never reached; the retry space starts from an approved call (RETRY_PREFIX)."""
 
     def explore(self, actions, need, prefix=()):
-        d, s, expect, wrong, reached = ts.tmpdir(self), None, {}, [], set()
+        # each RUNS_PER_SIGNER sequences on a signer of their own, in worker processes, one per CPU (spawned: this
+        # process has threads)
+        starts = range(0, len(actions) ** APPROVALS_DEPTH, RUNS_PER_SIGNER)
+        with ProcessPoolExecutor(os.cpu_count(), mp_context=multiprocessing.get_context("spawn")) as pool:
+            parts = list(pool.map(self.part, [actions] * len(starts), [prefix] * len(starts), starts))
+        self.assertEqual([w for wrong, _ in parts for w in wrong][:20], [])
+        if APPROVALS_DEPTH >= 5:   # the shortest sequence to each outcome takes five steps
+            self.assertEqual(set().union(*(reached for _, reached in parts)), need)
 
-        def close_and_check():
-            s.close()
-            events = [r["event"] for r in ts.records(d)]
-            for run_id, (seq, gap, mismatch) in expect.items():
-                kinds = [e["data"].get("kind") for e in events if e["run_id"] == run_id and e["type"] == "capture.gap"]
-                mismatches = sum(e["run_id"] == run_id and e["type"] == "approval.binding_mismatch" for e in events)
-                if kinds.count("executed_against_policy") != gap or mismatches != mismatch:
-                    wrong.append((seq, "records", kinds, mismatches, gap, mismatch))
-            expect.clear()
-            shutil.rmtree(d)
-            os.makedirs(d)
-
-        for n, rest in enumerate(itertools.product(actions, repeat=APPROVALS_DEPTH)):
+    @staticmethod
+    def part(actions, prefix, start):
+        """(in a worker process) Sequences start.. of the space, RUNS_PER_SIGNER of them, on a signer of their own:
+        (what was wrong, the outcomes reached)."""
+        d, expect, wrong, reached = tempfile.mkdtemp(), {}, [], set()   # lean: left behind when a part raises
+        s = svc.SignerService(d, policy=ts.PAY_ASKS, limits=LIMITS)
+        sequences = itertools.islice(itertools.product(actions, repeat=APPROVALS_DEPTH), start, start + RUNS_PER_SIGNER)
+        for n, rest in enumerate(sequences, start):
             seq = prefix + rest
-            if n % RUNS_PER_SIGNER == 0:
-                if s is not None:
-                    close_and_check()
-                s = svc.SignerService(d, policy=ts.PAY_ASKS)
             reg = s.register_run({"request_id": f"reg{n}", "agent": {"name": "a"}})
             run = {"run_id": reg["run_id"], "run_token": reg["run_token"]}
             call = {**run, "stream": "s", "tool_call_id": "tc-1"}
@@ -417,10 +423,19 @@ class ApprovalStateSpace(unittest.TestCase):
                             state["early"] += 1
                             reached.add("completed before it ran")
             expect[run["run_id"]] = (seq, state["early"], state["mismatch"])
-        close_and_check()
-        self.assertEqual(wrong[:20], [])
-        if APPROVALS_DEPTH >= 5:   # the shortest sequence to each outcome takes five steps
-            self.assertEqual(reached, need)
+        s.close()
+        gaps, mismatches = collections.defaultdict(list), collections.Counter()
+        for e in (r["event"] for r in ts.records(d)):
+            if e["type"] == "capture.gap":
+                gaps[e["run_id"]].append(e["data"].get("kind"))
+            elif e["type"] == "approval.binding_mismatch":
+                mismatches[e["run_id"]] += 1
+        for run_id, (seq, gap, mismatch) in expect.items():
+            kinds = gaps[run_id]
+            if kinds.count("executed_against_policy") != gap or mismatches[run_id] != mismatch:
+                wrong.append((seq, "records", kinds, mismatches[run_id], gap, mismatch))
+        shutil.rmtree(d)
+        return wrong, reached
 
     def test_one_call(self):
         self.explore(BASIC, {"ran", "mismatch", "refused after it ran", "completed after it ran",
