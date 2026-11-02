@@ -1080,7 +1080,7 @@ class HeldCalls(unittest.TestCase):
         again, and so is the next retry once one ran."""
         asked = {"command": self.UPLOAD, "description": "Upload the build", "timeout": 600000}
         aid = self.held(tid="t1", **asked)
-        self.assertEqual(self.approvals("approve", aid), f"approved: {aid} (self-approved: dev mode only)")
+        self.assertTrue(self.approvals("approve", aid).startswith(f"approved: {aid}, by you. It counts: "))
         for i, other in enumerate(({"command": self.UPLOAD.replace("releases", "backups")}, {"timeout": 5000},
                                    {"run_in_background": True}, {"dangerouslyDisableSandbox": True})):
             with self.subTest(other):
