@@ -135,7 +135,7 @@ class Engine:
         tool declared `Bash`, `multi_edit` for `MultiEdit`."""
         if tool in self.policy.get("tools", {}) or self.tool_class(tool) != "unknown":
             return []
-        return self._spelled.get(_spelling(tool), [])
+        return list(self._spelled.get(_spelling(tool), ()))
 
     def untrusted_results(self, tool):
         """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted,

@@ -58,8 +58,9 @@ ask:
     # too), or a whole-company address in any case, anywhere in the list or string, after a display name too (`All
     # Staff <all@corp.com>`); the list and the string are read forward to that address (`*?`), so the fallback engine
     # never backs off over a long list without one, and the list a whole string at a time, so the address is read
-    # only from a string's opening quote (from each escaped one, 64 KiB of `\"` took the fallback seconds)
-    pattern: '"(to|cc|bcc|recipients)":(\[("([^"\\]|\\.)*",){9}|"(([^"@\\]|\\.)*@){10})|"(to|cc|bcc|recipients)":(\[([^\]\["\\]|"([^"\\]|\\.)*")*?)?"(([^"\\]|\\.)*?[^A-Za-z0-9._%+-])?([Aa][Ll][Ll]|[Ee][Vv][Ee][Rr][Yy][Oo][Nn][Ee]|[Aa][Ll][Ll]-?[Ss][Tt][Aa][Ff][Ff]|[Ss][Tt][Aa][Ff][Ff]|[Aa][Ll][Ll]-[Hh][Aa][Nn][Dd][Ss]|[Cc][Uu][Ss][Tt][Oo][Mm][Ee][Rr][Ss]|[Uu][Ss][Ee][Rr][Ss])@'
+    # from a string's opening quote (from each escaped one, 64 KiB of `\"` took the fallback seconds), the address
+    # after any other character but one of an address, or after any escape pair (`\"all@…\"`, `\n`)
+    pattern: '"(to|cc|bcc|recipients)":(\[("([^"\\]|\\.)*",){9}|"(([^"@\\]|\\.)*@){10})|"(to|cc|bcc|recipients)":(\[([^\]\["\\]|"([^"\\]|\\.)*")*?)?"(([^"\\]|\\.)*?([^\\A-Za-z0-9._%+-]|\\.))?([Aa][Ll][Ll]|[Ee][Vv][Ee][Rr][Yy][Oo][Nn][Ee]|[Aa][Ll][Ll]-?[Ss][Tt][Aa][Ff][Ff]|[Ss][Tt][Aa][Ff][Ff]|[Aa][Ll][Ll]-[Hh][Aa][Nn][Dd][Ss]|[Cc][Uu][Ss][Tt][Oo][Mm][Ee][Rr][Ss]|[Uu][Ss][Ee][Rr][Ss])@'
     reason: mass email
     rationale: One message to many people (or to a list address) cannot be recalled; a person checks the audience and the text.
   - id: TK-M004

@@ -618,7 +618,9 @@ class CodingPack(unittest.TestCase):
                 {"to": "bob@corp.com, all@corp.com"}, {"to": "bob@corp.com;all@corp.com"},
                 {"to": "All Staff <all@corp.com>"}, {"to": ['"All Staff" <all@corp.com>']},
                 {"cc": ["bob@corp.com", "Staff@corp.com"]}, {"to": ten}, {"to": ", ".join(ten)},
-                {"to": "all@corp.com"}, {"bcc": [f"u{i}@corp.com" for i in range(10)]}]
+                {"to": "all@corp.com"}, {"bcc": [f"u{i}@corp.com" for i in range(10)]},
+                # after an escape pair (review of #542: a mail library reads "\"all@corp.com\"" as all@corp.com)
+                {"to": ['"all@corp.com"']}, {"to": "bob@corp.com\nall@corp.com"}, {"to": "bob@corp.com\tUsers@corp.com"}]
         allowed = [{"to": "ball@corp.com"}, {"to": "smallstaff@corp.com"}, {"to": "u.all@corp.com"},
                    {"to": "users-team@corp.com"}, {"to": "x+all@corp.com"},
                    {"to": "bob@corp.com", "subject": "for all@corp.com", "body": "cc everyone@corp.com later"},
