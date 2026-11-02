@@ -1637,11 +1637,25 @@ class DevProfile(unittest.TestCase):
         """#515: doctor no longer makes the dev data dir, so its file system is the nearest existing parent's."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
+        missing = os.path.join(d, "a", "data")
         with mock.patch.object(doctor, "fs_type", return_value="nfs4") as fs:
-            got = {r["id"]: r for r in doctor.v2_checks({"data_dir": os.path.join(d, "a", "data")}, "dev",
+            got = {r["id"]: r for r in doctor.v2_checks({"data_dir": missing}, "dev",
                                                         settings=os.path.join(d, "none"))}
         self.assertEqual(fs.call_args.args[0], d)
-        self.assertIn("is on nfs4", got["D-DATA-FS"]["detail"])
+        self.assertIn(f"{missing} (not made yet) will be on nfs4", got["D-DATA-FS"]["detail"])
+        self.assertNotIn(" is on ", got["D-DATA-FS"]["detail"])
+
+    def test_an_existing_data_dir_says_is_on_its_file_system(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        data = os.path.join(d, "data")
+        os.makedirs(data)
+        with mock.patch.object(doctor, "fs_type", return_value="apfs") as fs:
+            got = {r["id"]: r for r in doctor.v2_checks({"data_dir": data}, "dev",
+                                                        settings=os.path.join(d, "none"))}
+        self.assertEqual(fs.call_args.args[0], data)
+        self.assertIn(f"{data} is on apfs", got["D-DATA-FS"]["detail"])
+        self.assertNotIn("will be on", got["D-DATA-FS"]["detail"])
 
 
 if __name__ == "__main__":
