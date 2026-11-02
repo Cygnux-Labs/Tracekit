@@ -887,6 +887,7 @@ class Shell(unittest.TestCase):
     def test_glob_detection(self):
         self.assertEqual([c["glob"] for c in shell.parse("rm *.pyc; ls 'x*'; [ -f a ]; ls a[0-9]")],
                          [True, True, False, False, True, True])   # each glob command again without it (nullglob)
+        self.assertEqual([c["glob"] for c in shell.parse("ls []x]; ls x[]")], [True, True, False])   # ] first is in the set
 
     def test_ordinary_commands(self):
         cases = {
@@ -1468,6 +1469,7 @@ class TimedAndBraced(unittest.TestCase):
                             ("rm $X -rf $HOME", ["rm", "-rf", "$HOME"]), ("rm *.none -rf ${HOME}", ["rm", "-rf", "${HOME}"]),
                             ("HOME=; rm $HOME -rf /", ["rm", "-rf", "/"]),   # a line can empty HOME too
                             ("git *.none push -f", ["git", "push", "-f"]),   # nullglob
+                            ("alpha []x] beta", ["alpha", "beta"]), ("alpha [!]x] beta", ["alpha", "beta"]),
                             ("sh $X <<< 'alpha x'", ["alpha", "x"]), ("sh $X <<EOF\nalpha x\nEOF", ["alpha", "x"])):
             self.assertIn(empty, argvs(line), line)
         for line in ('git "$X" push', 'git "$*" push', "git $'' push", "git -$X push", "git $((0)) push",
