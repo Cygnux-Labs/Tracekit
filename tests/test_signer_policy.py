@@ -2107,6 +2107,59 @@ class CodingPack(unittest.TestCase):
                     if (tool, args) in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_turning_off_aws_audit_logging_or_detection_asks_in_the_server_and_strict_packs(self):
+        """TK-C010 held Google's and Azure's audit-log deletes (`gcloud logging sinks delete`, `az monitor log-profiles
+        delete`) and let AWS's through (#403): stopping or deleting a CloudTrail trail, narrowing what it records,
+        deleting a GuardDuty detector, a Config recorder or an Access Analyzer analyzer, disabling Security Hub. The CLI
+        calls those services configservice and accessanalyzer; the spellings `config` and `access-analyzer` are held
+        too, and so is GuardDuty's older master-account command. Describing, listing and starting them is not."""
+        held = [
+            "aws cloudtrail stop-logging --name production-org-trail", "aws cloudtrail delete-trail --name audit-logs",
+            "aws cloudtrail put-event-selectors --trail-name t --event-selectors '[]'",
+            "aws cloudtrail put-event-selectors --trail-name t --advanced-event-selectors file://none.json",
+            "aws guardduty delete-detector --detector-id 12abc34d567e8fa901bc2d34e56789f0",
+            "aws guardduty disassociate-from-master-account --detector-id d",
+            "aws guardduty disassociate-from-administrator-account --detector-id d",
+            "aws configservice stop-configuration-recorder --configuration-recorder-name default",
+            "aws configservice delete-configuration-recorder --configuration-recorder-name default",
+            "aws config stop-configuration-recorder --configuration-recorder-name default",
+            "aws config delete-configuration-recorder --configuration-recorder-name default",
+            "aws securityhub disable-security-hub", "aws securityhub disable-security-hub --region eu-west-1",
+            "aws accessanalyzer delete-analyzer --analyzer-name org-analyzer",
+            "aws access-analyzer delete-analyzer --analyzer-name org-analyzer",
+            # a global option before the service or after the command, a wrapper, a path and a command among others
+            "aws --profile prod --region us-east-1 cloudtrail stop-logging --name t",
+            "aws cloudtrail stop-logging --name t --region us-east-1 --profile prod",
+            "AWS_PROFILE=prod aws cloudtrail delete-trail --name t", "/usr/local/bin/aws cloudtrail stop-logging --name t",
+            "bash -c 'aws guardduty delete-detector --detector-id d'", "cd infra && aws securityhub disable-security-hub"]
+        routine = [
+            "aws cloudtrail describe-trails", "aws cloudtrail get-trail-status --name production-org-trail",
+            "aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=ConsoleLogin",
+            "aws cloudtrail get-event-selectors --trail-name t", "aws cloudtrail list-trails",
+            "aws cloudtrail start-logging --name t", "aws cloudtrail create-trail --name t --s3-bucket-name b",
+            "aws guardduty list-detectors", "aws guardduty get-detector --detector-id d",
+            "aws guardduty create-detector --enable", "aws guardduty list-findings --detector-id d",
+            "aws configservice describe-configuration-recorders",
+            "aws configservice describe-configuration-recorder-status",
+            "aws configservice start-configuration-recorder --configuration-recorder-name default",
+            "aws securityhub describe-hub", "aws securityhub enable-security-hub", "aws securityhub get-findings",
+            "aws accessanalyzer list-analyzers", "aws accessanalyzer create-analyzer --analyzer-name a --type ACCOUNT",
+            "echo aws cloudtrail stop-logging", "git commit -m 'aws cloudtrail stop-logging'",
+            "grep -rn 'securityhub disable-security-hub' docs"]
+        for pack, engine, e in self.every_pack():
+            if pack not in ("server.yaml", "strict.yaml"):
+                continue
+            for cmd in held + routine:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual("TK-C010" in d["rule_ids"], cmd in held, d)
+                    if cmd in held:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                    # over MCP a CLI line counts only when it starts with the program
+                    for tool in ("mcp:aws/call_aws", "mcp__aws-api__call_aws") if cmd.startswith("aws ") else ():
+                        d = e.decide(tool, {"cli_command": cmd})
+                        self.assertEqual("TK-C010" in d["rule_ids"], cmd in held, (tool, d))
+
     def test_a_call_over_64_kib_is_not_held_by_the_secret_rules(self):
         # a rule on every MCP call would make each of these ask (TK-OVERSIZE); only a tool the rule is for may
         big = "x" * 70000
