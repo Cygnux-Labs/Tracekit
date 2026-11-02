@@ -159,7 +159,7 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                     if show:   # what an approver sees: redacted as the signer redacts it (.env content too)
                         rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
                     calls.append(rec)
-        except (OSError, RecursionError) as e:   # a read that fails, or a line nested past what json.loads takes
+        except OSError as e:   # a read that fails (a line nested past what json.loads takes is malformed)
             unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
             f.close()
