@@ -187,7 +187,7 @@ so why none waits by default:
 | Cursor | not documented (closed source; a Hooks output channel for debugging) | `user_message` to you, `agent_message` to the model |
 | Gemini CLI | "Executing Hook: <name>" (stderr is collected and read on exit) | "Tool execution blocked: …" to both |
 | Qwen Code | a fixed `statusMessage`, if configured (stderr is read on exit) | to the model, and shown to you |
-| OpenCode 1.x | nothing: the plugin runs the hook synchronously | the error the plugin throws |
+| OpenCode 1.x | nothing (the plugin reads stderr once the hook exits, and kills one still running at 600 s) | the error the plugin throws |
 | goose | nothing (stdout and stderr are read on exit) | to the model |
 | Factory Droid | not documented | to Droid (the model) |
 | Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |

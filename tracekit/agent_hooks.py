@@ -770,18 +770,22 @@ OPENCODE_MARKER = "// Installed by Tracekit; tracekit uninstall --agent opencode
 
 
 def _opencode_plugin(python, v2):
-    """The local OpenCode plugin. OpenCode runs plugins with Bun, whose synchronous child process API lets a
-    before hook wait for Tracekit's allow/deny (or a person's approval) before returning to the tool executor. Each
+    """The local OpenCode plugin. OpenCode runs plugins with Bun and awaits a before hook, so the hook's process,
+    spawned without blocking OpenCode's event loop (parallel calls are decided at once), holds the call until Tracekit
+    allows or denies it (or a person approves it); one that doesn't answer in time is killed and its call blocked. Each
     event's command names the event, and runs the hook as install._hook_command does (python, or this interpreter)."""
     from .install import _dev_hook_argv
+    from .integrations.claude_code import APPROVAL_WAIT_S
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, "opencode", ev] if python else
                 _dev_hook_argv(module, "entry", ("opencode", ev)) for ev in ("tool.execute.before", "tool.execute.after")}
     return f'''{OPENCODE_MARKER}
 const commands = {json.dumps(commands)};
-const decoder = new TextDecoder();
+// a hook answers within {APPROVAL_WAIT_S} s, a held call's approval wait included: one still running at 600 s (the other
+// coding agents' pre-tool timeout) hung, so it is killed and its call blocked
+const KILL_MS = 600000;
 
-function tracekit(event, input, toolInput, toolResponse) {{
+async function tracekit(event, input, toolInput, toolResponse) {{
   const payload = {{
     hook_event_name: event,
     session_id: input.sessionID,
@@ -791,17 +795,23 @@ function tracekit(event, input, toolInput, toolResponse) {{
     tool_response: toolResponse,
     cwd: input.cwd,
   }};
+  let timer, killed = false;
   try {{
-    const result = Bun.spawnSync({{
+    const hook = Bun.spawn({{
       cmd: commands[event],
       cwd: input.cwd,
       stdin: new TextEncoder().encode(JSON.stringify(payload)),
-      stdout: "pipe",
+      stdout: "ignore",
       stderr: "pipe",
     }});
-    return {{ code: result.exitCode, message: decoder.decode(result.stderr).trim() }};
+    timer = setTimeout(() => {{ killed = true; hook.kill("SIGKILL"); }}, KILL_MS);
+    const [message] = await Promise.all([new Response(hook.stderr).text(), hook.exited]);
+    return killed ? {{ code: 1, message: `[tracekit] the OpenCode hook did not answer in ${{KILL_MS / 1000}} s and was stopped` }}
+      : {{ code: hook.exitCode, message: message.trim() }};
   }} catch (error) {{
     return {{ code: 1, message: `[tracekit] OpenCode hook error (${{error}})` }};
+  }} finally {{
+    clearTimeout(timer);
   }}
 }}
 
@@ -811,13 +821,13 @@ export const TracekitPlugin = async ({{ directory }}) => ({{
       throw new Error("Blocked by Tracekit: OpenCode's experimental batch tool runs its calls without plugin hooks, " +
         "so Tracekit can't decide them. Turn it off (experimental.batch_tool in opencode.json) and make each call itself.");
     }}
-    const result = tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
+    const result = await tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
     if (result.code !== 0) {{   // blocked (2), or the hook could not decide the call: it doesn't run
       throw new Error(result.message || "Blocked by Tracekit: the hook could not decide this call");
     }}
   }},
   "tool.execute.after": async (input, output) => {{
-    const result = tracekit("tool.execute.after", {{ ...input, cwd: directory }}, input.args, output);
+    const result = await tracekit("tool.execute.after", {{ ...input, cwd: directory }}, input.args, output);
     if (result.code !== 0) console.error(result.message);
   }},
 }});

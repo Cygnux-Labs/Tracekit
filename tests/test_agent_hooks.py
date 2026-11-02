@@ -503,17 +503,20 @@ class Harnesses(DaemonCase):
         self.assertEqual(code, 2)
         self.assertIn("Blocked by tracekit policy: TK-D004", err)
 
-    @unittest.skipUnless(shutil.which("node"), "runs the OpenCode plugin under Node, with Bun's spawnSync stood in")
+    @unittest.skipUnless(shutil.which("node"), "runs the OpenCode plugin under Node, with Bun's spawn stood in")
     def test_the_opencode_plugin_decides_each_call_and_blocks_a_batch(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         with open(os.path.join(d, "tracekit.mjs"), "w") as f:
             f.write(agent_hooks._opencode_plugin(None, False))
         with open(os.path.join(d, "drive.mjs"), "w") as f:
-            f.write('import { spawnSync } from "node:child_process";\n'
-                    'globalThis.Bun = { spawnSync: ({ cmd, cwd, stdin }) => {\n'
-                    '  const r = spawnSync(cmd[0], cmd.slice(1), { cwd, input: stdin });\n'
-                    '  return { exitCode: r.status, stderr: r.stderr };\n} };\n'
+            f.write('import { spawn } from "node:child_process";\n'
+                    'import { Readable } from "node:stream";\n'
+                    'globalThis.Bun = { spawn: ({ cmd, cwd, stdin }) => {\n'
+                    '  const p = spawn(cmd[0], cmd.slice(1), { cwd, stdio: ["pipe", "ignore", "pipe"] });\n'
+                    '  p.stdin.end(stdin);\n'
+                    '  return { stderr: Readable.toWeb(p.stderr), exited: new Promise((done) => p.on("close", done)),\n'
+                    '           get exitCode() { return p.exitCode; }, kill: (signal) => p.kill(signal) };\n} };\n'
                     'const { TracekitPlugin } = await import("./tracekit.mjs");\n'
                     'const hooks = await TracekitPlugin({ directory: process.argv[2] });\n'
                     'const out = [];\n'

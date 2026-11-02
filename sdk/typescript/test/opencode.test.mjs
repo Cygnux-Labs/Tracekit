@@ -10,6 +10,20 @@ import { pathToFileURL } from "node:url";
 const ROOT = resolve(import.meta.dirname, "../../..");
 const PY = process.env.TRACEKIT_PYTHON ?? "python3";
 
+// a hook process as Bun.spawn returns it: exit(code) ends it, as kill(signal) does (exit code null)
+function hookProcess() {
+  let exit;
+  const hook = {
+    exitCode: null,
+    killed: null,
+    stderr: new Uint8Array(),
+    exited: new Promise((resolve) => { exit = resolve; }),
+    exit: (code) => { hook.exitCode = code; exit(code); },
+    kill: (signal) => { hook.killed = signal; exit(null); },
+  };
+  return hook;
+}
+
 test("OpenCode: the generated plugin refuses undecided calls and its after hook never throws", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "tk-opencode-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
@@ -29,9 +43,11 @@ test("OpenCode: the generated plugin refuses undecided calls and its after hook 
     ["exit 0", 0], ["exit 2", 2], ["exit 1", 1], ["signal", null], ["spawn throws", new Error("spawn failed")],
   ]) {
     await t.test(name, async () => {
-      globalThis.Bun = { spawnSync: () => {
+      globalThis.Bun = { spawn: () => {
         if (exitCode instanceof Error) throw exitCode;
-        return { exitCode, stderr: new Uint8Array() };
+        const hook = hookProcess();
+        hook.exit(exitCode);
+        return hook;
       } };
       const input = { tool: "bash", sessionID: "opencode-test", callID: name };
       const args = { command: "echo allowed" };
@@ -46,4 +62,27 @@ test("OpenCode: the generated plugin refuses undecided calls and its after hook 
       await assert.doesNotReject(() => hooks["tool.execute.after"]({ ...input, args }, { output: "done" }));
     });
   }
+
+  await t.test("parallel calls are decided at once, not one after another", async () => {
+    const started = [];
+    globalThis.Bun = { spawn: () => { const hook = hookProcess(); started.push(hook); return hook; } };
+    const calls = ["a", "b"].map((callID) =>
+      hooks["tool.execute.before"]({ tool: "bash", sessionID: "opencode-test", callID }, { args: { command: "ls" } }));
+    assert.equal(started.length, 2);   // the second hook runs while the first still decides
+    started.forEach((hook) => hook.exit(0));
+    await Promise.all(calls);
+  });
+
+  await t.test("a hook that never answers is killed after 600 s and its call blocked", async (st) => {
+    st.mock.timers.enable({ apis: ["setTimeout"] });
+    const hook = hookProcess();
+    globalThis.Bun = { spawn: () => hook };
+    const call = hooks["tool.execute.before"]({ tool: "bash", sessionID: "opencode-test", callID: "hung" },
+      { args: { command: "ls" } });
+    st.mock.timers.tick(599_999);
+    assert.equal(hook.killed, null);   // above the hook's 540 s approval wait: a held call still gets its answer
+    st.mock.timers.tick(1);
+    assert.equal(hook.killed, "SIGKILL");
+    await assert.rejects(call, /did not answer in 600 s/);
+  });
 });
