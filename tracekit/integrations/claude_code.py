@@ -141,8 +141,12 @@ def upgrade(python, module, user_site):
 def skew_notice(theirs, dev):
     """The line that tells the person this hook runs another Tracekit version than its signer (`theirs`), with what to
     run; `tracekit doctor` (D-VERSIONS) gives the same fixes. `dev`: the signer is the same-user dev signer, which
-    `tracekit down` stops; a signer keeps its runs and run tokens across a restart, so open sessions go on in the next."""
-    if (release(theirs) or ()) < (release(__version__) or ()):
+    `tracekit down` stops; a signer keeps its runs and run tokens across a restart, so open sessions go on in the next.
+    None when their releases are the same (a pre-release or local build of it) or either has none."""
+    r, mine = release(theirs), release(__version__)
+    if not (r and mine) or r == mine:
+        return None
+    if r < mine:
         fix = (f"run `tracekit down`, and the next call from this hook starts a {__version__} signer; open sessions go on "
                "in it (it keeps their runs and run tokens)" if dev else
                "upgrade the signer and restart it (docs/deploy.md#upgrading)")
@@ -156,18 +160,22 @@ def skew_notice(theirs, dev):
 
 def _skew(client, sid):
     """skew_notice, once per session: the session state keeps the versions it was said for, so a session hears it again
-    only for another pair. None when they match, the signer wasn't asked, or the session has no state (ended)."""
+    only for another pair. None when there is none, the signer wasn't asked, or the session has no state (ended).
+    A notice, not a control: the agent's user can write the session state (docs/limits.md)."""
     theirs = (client.hello or {}).get("version")
-    if not isinstance(theirs, str) or theirs == __version__:
+    notice = isinstance(theirs, str) and skew_notice(theirs[:64], client.signer is None)
+    if not notice:
         return None
     path, pair = _state(sid), [theirs[:64], __version__]
+    if (_load(path) or {}).get("skew") == pair:   # said already: no lock taken for that
+        return None
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # as _run: parallel hooks must not lose its other keys
         lock_file(lk)
         st = _load(path)
         if not st or st.get("skew") == pair:
             return None
         files.write_json(path, dict(st, skew=pair))
-    return skew_notice(pair[0], client.signer is None)
+    return notice
 
 
 def approval_wait_s():

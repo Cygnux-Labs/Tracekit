@@ -1472,6 +1472,27 @@ class VersionNotice(HarnessCase):
                                f"{claude_code.upgrade(sys.executable, tracekit.__file__, site.getusersitepackages())}`. "
                                "`tracekit doctor` checks every hook's version")
 
+    def test_a_build_of_the_same_release_says_nothing_and_a_newer_signer_is_named_newer(self):
+        """Review of #512: the hook compared whole strings and called any difference an older hook, so a 1.5.2 hook
+        under a 1.5.2rc1 or 1.5.2+deb1 signer was told to upgrade."""
+        with mock.patch.object(claude_code, "__version__", "1.5.2"):
+            for same in ("1.5.2rc1", "1.5.2+deb1", "1.5.2.dev0", "unknown"):
+                self.assertIsNone(claude_code.skew_notice(same, dev=True), same)
+            self.assertTrue(claude_code.skew_notice("1.5.3", dev=True).startswith(
+                "[tracekit] this hook runs Tracekit 1.5.2 ("))
+            self.assertTrue(claude_code.skew_notice("1.5.1", dev=True).startswith(
+                "[tracekit] the signer runs Tracekit 1.5.1, older than this hook's 1.5.2"))
+        with mock.patch.object(claude_code, "__version__", f"{self.SIGNER}+local"):
+            self.assertEqual(self.pre("t1"), (0, "", ""))
+
+    def test_once_said_no_event_takes_the_session_lock_for_it(self):
+        """Review of #512: while the versions differed, every event took the session lock to find it said already."""
+        with open(claude_code._state("cc-l"), "w") as f:
+            json.dump({"run_id": "r", "skew": [self.SIGNER, __version__]}, f)
+        hook = mock.Mock(hello={"version": self.SIGNER}, signer=None)
+        with mock.patch.object(claude_code, "lock_file", side_effect=AssertionError("took the session lock")):
+            self.assertIsNone(claude_code._skew(hook, "cc-l"))
+
     def test_the_dev_signer_is_stopped_with_tracekit_down_and_open_sessions_go_on(self):
         self.assertEqual(claude_code.skew_notice("1.5.0", dev=True), (
             f"[tracekit] the signer runs Tracekit 1.5.0, older than this hook's {__version__}: run `tracekit down`, "
