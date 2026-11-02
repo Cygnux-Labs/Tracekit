@@ -211,6 +211,24 @@ class Translate(unittest.TestCase):
         self.assertEqual((policy["tape"], policy["title"]), ("STATE", "OPENSHELL POLICY · approved"))
         self.assertIn("by user:dev@example.com · policy 3f3f3f3f3f3f3f3f", policy["text"])
 
+    def test_egress_network_totals_are_structured_effects_without_a_call_claim(self):
+        [row] = self.feed(v2rec(7, "effect.observed", {
+            "observer": "mtls:spiffe://acme/egress", "kind": "net", "host": "example.com", "port": 443,
+            "bytes_out": 128, "bytes_in": 256, "connections": 1,
+            "first_ts": "2026-10-10T17:00:03.000000Z", "last_ts": "2026-10-10T17:00:05.000000Z",
+            "attribution": "token"}, run="egress-run", source="signer"))
+        self.assertEqual(row["v2"].get("effect"), {"kind": "net", "target": "example.com:443", "claim": None})
+        self.assertEqual((row["tape"], row["session_id"], row["v2"]["run_seq"]), ("EFFECT", "egress-run", 7))
+        self.assertIn("128 bytes out", row["text"])
+        self.assertIn("256", row["text"])
+        self.assertIn("1 connection", row["text"])
+        self.assertIn("mtls:spiffe://acme/egress", row["text"])
+        self.assertIn("run named by its token", row["text"])
+        self.assertEqual(row["v2"]["attribution"], "token")
+        self.assertEqual({k: row["v2"].get(k) for k in ("bytes_out", "bytes_in", "connections", "first_ts", "last_ts")},
+                         {"bytes_out": 128, "bytes_in": 256, "connections": 1,
+                          "first_ts": "2026-10-10T17:00:03.000000Z", "last_ts": "2026-10-10T17:00:05.000000Z"})
+
     def test_holds_and_approvals_are_their_own_rows_in_words(self):
         rows = self.feed(
             v2rec(1, "policy.decision", {"tool_use_id": "c6", "tool": "create_refund", "decision": "ask",
@@ -1028,6 +1046,49 @@ class View(unittest.TestCase):
         self.assertEqual(rep["title"], f"RUN {run.run_id} · Integrity VERIFIED · Assurance dev")
         self.assertEqual(rows[-1]["review"]["findings"]["line"], "1 problem (1 medium) · reasoning readable before 1 "
                                                                  "of 1 actions (100%)")
+
+    def test_a_signed_egress_total_reaches_the_graph_with_a_heuristic_link(self):
+        if not shutil.which("node"):
+            self.skipTest("needs node to run the page's graph")
+        run = self.client.run(agent="egress-test")
+        run.decide("c1", "Bash", {"command": "curl https://api.example.com"})
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        run.complete("c1")
+        self.service.call(SENSOR, "observe_effect", {
+            "request_id": os.urandom(8).hex(), "instance": "egress-test", "effects": [{
+                "run_id": run.run_id, "run_token": run.run_token, "kind": "net", "host": "api.example.com",
+                "port": 443, "bytes_out": 128, "bytes_in": 256, "connections": 1, "first_ts": ts, "last_ts": ts}]})
+        run.close()
+        storage = self.service.log.storage
+        self.assertTrue(wait_for(lambda: list(storage.iter_run("default", run.run_id))[-1]["event"]["type"] ==
+                                 "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+        feed = store_feed(self, {"data_dir": self.d})
+        [report] = self.report(feed, run.run_id)
+        self.assertEqual(report["review"]["verdict"], "verified")
+        rows = self.rows(feed, run.run_id)
+        pre = next(r for r in rows if r["event"] == "PreToolUse")
+        post = next(r for r in rows if r["event"] == "PostToolUse")
+        effect = next(r for r in rows if r.get("v2", {}).get("effect", {}).get("kind") == "net")
+        out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS",
+                                  "subject", "rel", "ingest", "joinEgress", "whyRef", "netEffects", "effectHow", "dict",
+                                  "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
+                                  "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"], f"""
+            let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
+            const [pre, post, effect] = {json.dumps([pre, post, effect])};
+            ingest(pre); ingest(effect); joinEgress();
+            const pending = [...S.effects.values()][0].call;
+            ingest(post); joinEgress();
+            const WHY = {{ calls: {{ [pre.session_id + "|" + pre.v2.run_seq]: ["w1", "call"] }} }};
+            const GV = {{ inferred: false, ruled: false, focus: null, fit: true }}, CSS = {{ escape: s => s }}, got = {{}};
+            const el = {{ clientWidth: 900, clientHeight: 600, querySelector: () => null }}, $ = id => id === "gsvg" ? null : (got[id] ??= {{}});
+            graphView(el, {{ run_id: "w1", agents: [{{ name: "egress-test" }}], nodes: [{{ id: "call", type: "action", agent: "egress-test", seq: 1, label: "Bash" }}], edges: [] }});
+            process.stdout.write(JSON.stringify({{ pending, call: [...S.effects.values()][0].call, html: el.innerHTML }}));"""))
+        self.assertIsNone(out["pending"])
+        self.assertEqual(out["call"], run.run_id + "|c1")
+        self.assertIn("api.example.com:443", out["html"])
+        self.assertIn("time/run match: not proof of causation", out["html"])
+        self.assertIn("stroke-dasharray:4 3", out["html"])
+        self.assertIn("128 bytes out, 256 bytes in, 1 connection(s)", out["html"])
 
     def test_what_a_sensor_saw_shows_joined_to_its_call_and_what_no_call_explains_is_a_finding(self):
         """#309 TK-X206: each kernel sensor effect is an EFFECT row; once the run is final its analysis joins each to

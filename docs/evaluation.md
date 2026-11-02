@@ -506,9 +506,18 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   measured after rule changes and overstates what the packs catch on calls nobody has seen. The next release should
   score a fresh blind pool. A harmful call is caught when it is denied or held (ask); a benign call is a false positive
   when it is denied or held.
+- Blind pools (`eval/e21_blind/`, the `blind` set): two more pools in the held-out pool's shape, each written blind to
+  the rules by an outside contributor, scored pool by pool and together: `juliasadler.jsonl`, 57 harmful and 50 benign
+  calls (#357, published 2026-10-24), and `amandeavor.jsonl`, 45 harmful and 45 benign (#401, 2026-10-25). A pool's
+  blind score is the one at its publication: the code and packs of the commit that merged it, the numbers its pull
+  request reported. Its misses were then read and turned into rule issues (#359 to #361 from the first pool, all
+  merged; #402 to #405 from the second, #402 merged), so the rules written since were informed by the pools and
+  today's score is not a blind score: it shows what those rules added, and guards them, not how the packs do on calls
+  nobody has seen.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
   data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
-- Latency: each call's fastest of five decisions, over E17 and both E21 sets. Each try is followed by
+- Latency: each call's fastest of five decisions, over E17, the held-out pool and the developer sessions (the blind
+  pools are not timed). Each try is followed by
   a fixed reference workload (`reference` in the script: JSON, a shell split and regular expressions from the
   standard library, no Tracekit code), and `p99_ref` is the p99 of each call's fastest decision over the
   reference's fastest: a busy or throttled machine slows both alike, a slower engine or pack only the decision.
@@ -526,6 +535,27 @@ destructive 16 of 36, defence evasion 14 of 30, supply chain 15 of 27; strongest
 of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
+The blind pools, at publication (blind) and now (after the rules their misses informed), a call caught when it is
+denied or held:
+
+| Pool | Profile | Caught at publication | Benign held at publication | Caught now | Benign held now |
+|---|---|---|---|---|---|
+| juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 54 (94.7%), 3 denied | 8 |
+| | strict | 41 (71.9%), 4 denied | 10 | 55 (96.5%), 4 denied | 11 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 28 (62.2%), 17 denied | 0 |
+| | strict | 25 (55.6%), 19 denied | 2 | 31 (68.9%), 19 denied | 2 |
+| both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 82 (80.4%), 20 denied | 8 (8.4%) |
+| | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 86 (84.3%), 23 denied | 13 (13.7%) |
+
+The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
+(`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
+scored: the one policy change between the two (#383) changes none of its numbers. On the default profile, every
+call caught since is held by a rule written after its pool was published: for the first pool, the database-client
+rules `TK-A039` to `TK-A041` (10 calls, #359), repository deletion `TK-A042` (4, #360), infrastructure removal in
+`TK-A001` (3, #361) and a secret read through a cloud CLI, `TK-A037` (1, #372); for the second, all 6 by `TK-A047`
+(repository secrets and branch protection through `gh`, #402). One benign call of the first pool is newly held on both
+profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBACK;"`, whose drop is rolled back.
+
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
 | default, RE2 / regex | 90 / 85 | 185 / 220 | 297 / 374 | 3.46 / 4.12 |
@@ -535,14 +565,14 @@ and false positive: `eval/results/e21_policy_robustness.json`. The two engines d
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.13% default; 10.9%, 10.0%, 4.6%
-strict); `p99_ref` stays within 25% of its on the same machine (re-measured once before failing; another machine,
+strict; the blind pools', recorded when they joined: 8.4% default, 13.7% strict); `p99_ref` stays within 25% of its on the same machine (re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
 every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5
 times and `p99_ref` at most 14%. 60 literal-free rules added to `dev.yaml` doubled dev's `p99_ref` (RE2 5.53, regex
 5.18: the gate failed) and 15 raised it about 20% (3.38 and 3.44, under the gate's 3.45 and 3.6). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
-(default 4.2%, strict 10.9%) and on strict's sessions (10.0%).
+(default 4.2%, strict 10.9%), the blind pools (default 8.4%, strict 13.7%) and strict's sessions (10.0%).
 
 How the held-out numbers moved, the pool unchanged: the first run, the only blind one, caught 211 of 420 (50.2%) by
 default and 246 (58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%)

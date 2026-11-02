@@ -4,6 +4,7 @@ Import with `from factories import ...` (tests/ is on sys.path under pytest; see
 """
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
 import sys
@@ -11,6 +12,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+from concurrent.futures import ProcessPoolExecutor
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -127,6 +129,13 @@ def persisted_queue(signer):
     can't open the file while it's being replaced."""
     with signer._queue_lock:
         return signer.log.storage.witness_queue()
+
+
+def process_pool():
+    """Worker processes, one per CPU this process may use (at most 61: Windows takes no more), spawned: a test process
+    has threads, which a fork would copy mid-lock."""
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    return ProcessPoolExecutor(min(cpus, 61), mp_context=multiprocessing.get_context("spawn"))
 
 
 def wait_for(cond, timeout=10, interval=0.05):

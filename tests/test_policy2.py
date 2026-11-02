@@ -13,6 +13,7 @@ import tempfile
 import time
 import tracemalloc
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
@@ -20,7 +21,7 @@ import regex
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from factories import SLOWER  # noqa: E402
+from factories import SLOWER, process_pool  # noqa: E402
 from tracekit import cli  # noqa: E402
 from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
 from tracekit.policy2 import classes, compile as pc, engine, shell  # noqa: E402
@@ -73,6 +74,17 @@ class Compile(unittest.TestCase):
                 self.assertIn("rule A: can never fire: unless matches every subject",
                               "\n".join(self.errors(f"deny:\n  - {{id: A, pattern: rm, unless: '{unless}'}}\n")))
         self.assertEqual(self.errors("deny:\n  - {id: A, pattern: rm, unless: '^$'}\n"), [])
+
+    def test_a_pattern_is_checked_once_and_one_outside_the_subset_raises_each_time(self):
+        """Every build checks each pattern of the pack and of the packs it extends again: a viewer, a report and a
+        signer start each build them, and that was most of their start (#496). check_pattern keeps a pattern's answer."""
+        ok, bad = rf"^cached-{uuid.uuid4().hex}\s", rf"(?=cached-{uuid.uuid4().hex})"
+        with mock.patch.object(pc, "translate", wraps=pc.translate) as translate:
+            for _ in range(2):
+                pc.check_pattern(ok)
+                with self.assertRaises(PolicyError):
+                    pc.check_pattern(bad)
+        self.assertEqual([c.args[0] for c in translate.call_args_list], [ok, bad, bad])
 
     def test_accepts_ordinary_patterns(self):
         for pattern in (r"^(sudo|doas)\b", r"\bgit\s+push\b.*--force", r"[^a-z]\.env$", r"\x41{2,5}", r"(?:-[a-z]*\s+)*x",
@@ -637,12 +649,17 @@ class Speed(unittest.TestCase):
         return list(dict.fromkeys(found + [o for m in more for o in m]))
 
     def test_every_pack_pattern_searches_64_kib_within_budget(self):
+        # the first search of every filler (~57,000 of 64 KiB) in worker processes; a filler over the budget there,
+        # maybe only under the others' load, is searched again here, alone: its best of three is held to the budget
+        patterns = pack_patterns()
+        with process_pool() as pool:
+            over = list(pool.map(_over_budget, patterns))
         slow = []
-        for rid, key, pattern in pack_patterns():
+        for (rid, key, pattern), fillers in zip(patterns, over):
             budget = self.RULE_BUDGET_S.get(rid, self.BUDGET_S)
             rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
-            for s in self.fillers(rid, pattern):
-                took = min(self.search(rx, s) for _ in range(3)) if self.search(rx, s) > budget else 0
+            for s in fillers:
+                took = min(self.search(rx, s) for _ in range(3))
                 if took > budget:
                     slow.append(f"{rid} {key} {took * 1e3:.0f} ms on {s[:24]!r}")
         self.assertEqual(slow, [])
@@ -785,6 +802,15 @@ class Speed(unittest.TestCase):
         took.sort()
         self.assertLess(took[len(took) // 2], 0.002)        # 45 us on an M-series laptop
         self.assertLess(took[len(took) * 99 // 100], 0.01)  # 100 us
+
+
+def _over_budget(item):
+    """(in a worker process) The fillers of pack pattern `item` whose first search took longer than its budget."""
+    rid, _, pattern = item
+    speed = Speed()
+    budget = speed.RULE_BUDGET_S.get(rid, speed.BUDGET_S)
+    rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
+    return [s for s in speed.fillers(rid, pattern) if speed.search(rx, s) > budget]
 
 
 def argvs(command):

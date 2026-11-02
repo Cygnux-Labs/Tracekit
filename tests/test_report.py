@@ -86,6 +86,12 @@ class WeeklyReport(unittest.TestCase):
     run of another tenant; and a run whose record is edited afterwards."""
 
     def setUp(self):
+        # the tests wait for a closed run's run.final and for a checkpoint of the store: a sweep and a checkpoint every
+        # 0.05 s, not every 1 s (TICK_S, CHECKPOINT_MIN_S) and 10 s (CHECKPOINT_S)
+        for name in ("TICK_S", "CHECKPOINT_S", "CHECKPOINT_MIN_S"):
+            p = mock.patch.object(svc, name, 0.05)
+            p.start()
+            self.addCleanup(p.stop)
         d = tmpdir(self)
         with open(os.path.join(d, "policy.yaml"), "w") as f:
             f.write(POLICY)

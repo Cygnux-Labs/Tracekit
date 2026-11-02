@@ -1,6 +1,7 @@
 """`tracekit doctor` for the v2 signer: every check's ok path (the clean E16 layout) and fail path (its E16 case),
 setup detection, --json and the exit codes. The v1 doctor's own tests are in tests/test_system_install.py."""
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -208,17 +209,23 @@ class CodingAgentHooks(unittest.TestCase):
         from tracekit.integrations.claude_code import APPROVAL_WAIT_S
         for harness in ("codex", "cursor", "gemini", "goose", "qwen", "crush"):
             scale = 1000 if harness in ("gemini", "qwen") else 1
+            path, installed = self.installed(harness)   # once: each value changes a copy
             for value in (None, "600000", False, -1, float("nan"), APPROVAL_WAIT_S * scale):
                 with self.subTest(harness=harness, timeout=value):
-                    path, settings = self.installed(harness)
+                    settings = copy.deepcopy(installed)
                     for ev, h in self.entries(settings):
                         if ev in agent_hooks.PRE:
                             if value is None:
                                 h.pop("timeout")
                             else:
                                 h["timeout"] = value
-                    got = self.check(harness, path, settings)["D-HOOKS-TIMEOUT"]
-                    self.assertEqual(got["status"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
+                    with open(path, "w") as f:
+                        json.dump(settings, f)
+                    # the harness checks alone: v2_checks would also compile the policy pack for each of these
+                    got = {}
+                    doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=doctor.FAIL: got.setdefault(
+                        rid, doctor.OK if ok else bad), {harness: path}, False, self.d)
+                    self.assertEqual(got["D-HOOKS-TIMEOUT"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
 
     def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
         # agy and Crush wait 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states theirs
