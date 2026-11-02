@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-50'
+version: '2026.10-v2-51'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -74,11 +74,13 @@ deny:
     # -true or -print, which pick nothing) before -delete, so a find there that picks files by name isn't denied. The
     # root or home may be any of up to nine starting points (BSD's -f before one too), after up to eight of GNU's and
     # BSD's options (-H, -L, -P, -E, -X, -d, -s, -x in a cluster, -D with its value, -O3), and spelled with extra
-    # slashes, `.` or `..` (`//`, `/.`, `~/.`); a starting point past the home (~/.cache) isn't one
-    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/\.\.?|/)+ .*-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(~|\$HOME|\$\{HOME\}|/+home|/+Users|/+root)(/\.\.?|/)* ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ )*-delete( |$)'
-    reason: recursive delete of root or home
-    remedy: Delete only the project's own paths, named in full; a person deletes anything at / or the home directory themselves.
-    rationale: Irrecoverable data loss.
+    # slashes, `.` or `..` (`//`, `/.`, `~/.`); a starting point past the home (~/.cache) isn't one; recursive rm,
+    # find -delete or git clean targeting a system folder (/etc, /usr, /var, /bin, /sbin, /lib, /lib64, /boot, /opt,
+    # /srv, /System, /Library, /Applications, C:\Windows), or recursive chmod/chown of / or a system folder
+    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/\.\.?|/)+ .*-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(~|\$HOME|\$\{HOME\}|/+home|/+Users|/+root)(/\.\.?|/)* ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ )*-delete( |$)|^rm\s+([^\n]{0,128}\s)?-[a-zA-Z0-9]*[rR]\S*[^\n]{0,128}?\s(/+(etc|usr|var|bin|sbin|lib|lib64|boot|opt|srv|[Ss]ystem|[Ll]ibrary|[Aa]pplications)|[a-zA-Z]:[/\\\\][Ww]indows)(/\*?|/\.\.?|\*)?( |$)|^(chmod|chown)\s+([^\n]{0,128}\s)?(-[a-zA-Z0-9]*[rR]\S*|--recursive)[^\n]{0,128}?\s(/|/+(etc|usr|var|bin|sbin|lib|lib64|boot|opt|srv|[Ss]ystem|[Ll]ibrary|[Aa]pplications)|[a-zA-Z]:[/\\\\][Ww]indows)(/\*?|/\.\.?|\*)?( |$)|^find\s+([^\n]{0,128}\s)?(/+(etc|usr|var|bin|sbin|lib|lib64|boot|opt|srv|[Ss]ystem|[Ll]ibrary|[Aa]pplications)|[a-zA-Z]:[/\\\\][Ww]indows)(/\*?|/\.\.?|\*)?\s[^\n]{0,256}?-delete( |$)|^git(\s+-[^\s]+(\s+[^\s]+)?){0,8}\s+clean\s+([^\n]{0,128}\s)?(/+(etc|usr|var|bin|sbin|lib|lib64|boot|opt|srv|[Ss]ystem|[Ll]ibrary|[Aa]pplications)|[a-zA-Z]:[/\\\\][Ww]indows)(/\*?|/\.\.?|\*)?( |$)'
+    reason: recursive delete of root, home or system folders, or recursive permissions change on root or system folders
+    remedy: Delete and change permissions only within the project's own paths, named in full; a person manages system and root folders.
+    rationale: Deleting or recursively changing permissions on root, home or operating-system folders corrupts the system; a person manages them.
   - id: TK-D010
     class: shell
     field: target

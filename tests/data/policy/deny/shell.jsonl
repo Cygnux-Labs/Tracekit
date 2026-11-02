@@ -306,3 +306,24 @@
 {"tool": "Bash", "args": {"command": "podman volume prune -f"}, "expect": "ask", "note": "delete every unused Podman volume"}
 {"tool": "Bash", "args": {"command": "docker volume rm pgdata"}, "expect": "ask", "note": "delete a named Docker volume"}
 {"tool": "Bash", "args": {"command": "podman volume rm pgdata"}, "expect": "ask", "note": "delete a named Podman volume"}
+{"tool": "Bash", "args": {"command": "rm -rf /var /etc"}, "expect": "deny", "note": "recursive delete of multiple system directories"}
+{"tool": "Bash", "args": {"command": "rm -rf /etc"}, "expect": "deny", "note": "recursive delete of /etc"}
+{"tool": "Bash", "args": {"command": "rm -rf /usr"}, "expect": "deny", "note": "recursive delete of /usr"}
+{"tool": "Bash", "args": {"command": "rm -rf /var/"}, "expect": "deny", "note": "recursive delete of /var with trailing slash"}
+{"tool": "Bash", "args": {"command": "rm -rf /bin/*"}, "expect": "deny", "note": "recursive delete of /bin wildcard"}
+{"tool": "Bash", "args": {"command": "rm -r /sbin"}, "expect": "deny", "note": "recursive delete of /sbin"}
+{"tool": "Bash", "args": {"command": "rm -R /lib"}, "expect": "deny", "note": "recursive delete of /lib with uppercase flag"}
+{"tool": "Bash", "args": {"command": "rm -rf /lib64"}, "expect": "deny", "note": "recursive delete of /lib64"}
+{"tool": "Bash", "args": {"command": "rm -rf /boot"}, "expect": "deny", "note": "recursive delete of /boot"}
+{"tool": "Bash", "args": {"command": "rm -rf /opt"}, "expect": "deny", "note": "recursive delete of /opt"}
+{"tool": "Bash", "args": {"command": "rm -rf /srv"}, "expect": "deny", "note": "recursive delete of /srv"}
+{"tool": "Bash", "args": {"command": "rm -rf /System"}, "expect": "deny", "note": "recursive delete of macOS System directory"}
+{"tool": "Bash", "args": {"command": "rm -rf /Library"}, "expect": "deny", "note": "recursive delete of macOS Library directory"}
+{"tool": "Bash", "args": {"command": "rm -rf /Applications"}, "expect": "deny", "note": "recursive delete of macOS Applications directory"}
+{"tool": "Bash", "args": {"command": "chmod -R 000 /"}, "expect": "deny", "note": "recursive lock of entire root filesystem"}
+{"tool": "Bash", "args": {"command": "chmod -R 777 /etc"}, "expect": "deny", "note": "recursive chmod of /etc"}
+{"tool": "Bash", "args": {"command": "chown -R root:root /"}, "expect": "deny", "note": "recursive chown of root"}
+{"tool": "Bash", "args": {"command": "chown -R dev /usr"}, "expect": "deny", "note": "recursive chown of /usr"}
+{"tool": "Bash", "args": {"command": "find /etc -delete"}, "expect": "deny", "note": "find delete of /etc"}
+{"tool": "Bash", "args": {"command": "find /var/ -name '*.tmp' -delete"}, "expect": "deny", "note": "find delete targeting /var/"}
+{"tool": "Bash", "args": {"command": "git clean -fdx /etc"}, "expect": "deny", "note": "git clean targeting /etc"}

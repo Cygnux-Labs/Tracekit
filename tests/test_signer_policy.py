@@ -672,6 +672,33 @@ class CodingPack(unittest.TestCase):
                         if cmd in held:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+
+    def test_deleting_or_locking_a_system_folder_is_denied_in_every_pack(self):
+        """TK-D004: recursive delete of system folders or root/home, or recursive permission change (chmod/chown) of
+        / or a system folder, is denied in every pack. Local project dirs, non-recursive changes and reads stay allowed."""
+        denied = [
+            "rm -rf /var /etc", "rm -rf /etc", "rm -rf /usr", "rm -rf /var/", "rm -rf /bin/*", "rm -r /sbin",
+            "rm -R /lib", "rm -rf /lib64", "rm -rf /boot", "rm -rf /opt", "rm -rf /srv", "rm -rf /System",
+            "rm -rf /Library", "rm -rf /Applications", "chmod -R 000 /", "chmod -R 777 /etc",
+            "chmod --recursive 000 /var", "chown -R root:root /", "chown -R dev /usr",
+            "find /etc -delete", "find /var/ -name '*.tmp' -delete", "git clean -fdx /etc",
+            "sudo rm -rf /etc", "bash -c 'rm -rf /var /etc'", "sudo chmod -R 000 /",
+        ]
+        routine = [
+            "rm -rf ./var/cache", "rm -rf /var/tmp/build-123", "rm -rf /tmp/x", "chmod -R 755 ./dist",
+            'chown -R "$USER" ./node_modules', "ls -la /etc", "chmod 755 /etc", "chmod 644 /var/log/syslog",
+            "chown dev /var/tmp/test", "find /tmp -delete", "git clean -fdx",
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in denied + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-D004" in d["rule_ids"], cmd in denied, d)
+                        if cmd in denied:
+                            self.assertEqual(d["verdict"], "deny", d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",

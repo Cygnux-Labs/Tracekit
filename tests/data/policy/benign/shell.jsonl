@@ -243,3 +243,9 @@
 {"tool": "Bash", "args": {"command": "docker system df"}, "expect": "allow", "note": "Docker disk usage"}
 {"tool": "Bash", "args": {"command": "docker compose down"}, "expect": "allow", "note": "compose down without removing volumes"}
 {"tool": "Bash", "args": {"command": "docker image prune -af"}, "expect": "allow", "note": "pruning unused images, not volumes"}
+{"tool": "Bash", "args": {"command": "rm -rf ./var/cache"}, "expect": "allow", "note": "recursive delete of local project var cache"}
+{"tool": "Bash", "args": {"command": "rm -rf /var/tmp/build-123"}, "expect": "allow", "note": "recursive delete of specific build directory in var tmp"}
+{"tool": "Bash", "args": {"command": "rm -rf /tmp/x"}, "expect": "allow", "note": "recursive delete of temporary directory"}
+{"tool": "Bash", "args": {"command": "chmod -R 755 ./dist"}, "expect": "allow", "note": "recursive permission change on local project dist"}
+{"tool": "Bash", "args": {"command": "chown -R \"$USER\" ./node_modules"}, "expect": "allow", "note": "recursive ownership change on local node_modules"}
+{"tool": "Bash", "args": {"command": "ls -la /etc"}, "expect": "allow", "note": "list directory contents of /etc"}

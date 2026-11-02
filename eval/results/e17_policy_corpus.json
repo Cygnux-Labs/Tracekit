@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:2aa5971cb7d82482bfdbd799707e95f5762da2978451eb927845ba3cd45bab3d",
+  "policy_hash": "sha256:a28e598b02ae6d0ce6a4aa5433eec59716cfe0e26f28710af30dc311794f1b61",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 308,
-      "caught": 308,
-      "benign": 245,
+      "deny": 329,
+      "caught": 329,
+      "benign": 251,
       "fp": 0
     },
     "sql": {
@@ -802,6 +802,27 @@
     "deny/shell:306": "ask TK-A048",
     "deny/shell:307": "ask TK-A048 TK-F003",
     "deny/shell:308": "ask TK-A048 TK-F003",
+    "deny/shell:309": "deny TK-D004 TK-F003",
+    "deny/shell:310": "deny TK-D004 TK-F003",
+    "deny/shell:311": "deny TK-D004 TK-F003",
+    "deny/shell:312": "deny TK-D004 TK-F003",
+    "deny/shell:313": "deny TK-D004 TK-F003",
+    "deny/shell:314": "deny TK-D004 TK-F003",
+    "deny/shell:315": "deny TK-D004 TK-F003",
+    "deny/shell:316": "deny TK-D004 TK-F003",
+    "deny/shell:317": "deny TK-D004 TK-F003",
+    "deny/shell:318": "deny TK-D004 TK-F003",
+    "deny/shell:319": "deny TK-D004 TK-F003",
+    "deny/shell:320": "deny TK-D004 TK-F003",
+    "deny/shell:321": "deny TK-D004 TK-F003",
+    "deny/shell:322": "deny TK-D004 TK-F003",
+    "deny/shell:323": "deny TK-D004 TK-F003",
+    "deny/shell:324": "deny TK-D004 TK-F003",
+    "deny/shell:325": "deny TK-D004 TK-F003",
+    "deny/shell:326": "deny TK-D004 TK-F003",
+    "deny/shell:327": "deny TK-D004",
+    "deny/shell:328": "deny TK-D004",
+    "deny/shell:329": "deny TK-D004 TK-F004",
     "deny/sql:1": "deny TK-DB001",
     "deny/sql:2": "deny TK-DB001",
     "deny/sql:3": "deny TK-DB001",
@@ -1592,6 +1613,12 @@
     "benign/shell:243": "allow",
     "benign/shell:244": "allow",
     "benign/shell:245": "allow",
+    "benign/shell:246": "flag TK-F003",
+    "benign/shell:247": "flag TK-F003",
+    "benign/shell:248": "flag TK-F003",
+    "benign/shell:249": "flag TK-F003",
+    "benign/shell:250": "flag TK-F003",
+    "benign/shell:251": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -1717,6 +1744,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0011862396204033216,
+  "benign_fp_rate": 0.001177856301531213,
   "ok": true
 }
