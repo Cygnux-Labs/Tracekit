@@ -306,3 +306,20 @@
 {"tool": "Bash", "args": {"command": "podman volume prune -f"}, "expect": "ask", "note": "delete every unused Podman volume"}
 {"tool": "Bash", "args": {"command": "docker volume rm pgdata"}, "expect": "ask", "note": "delete a named Docker volume"}
 {"tool": "Bash", "args": {"command": "podman volume rm pgdata"}, "expect": "ask", "note": "delete a named Podman volume"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/sda bs=1M"}, "expect": "ask", "note": "dd writing to a raw disk device"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/urandom of=/dev/nvme0n1 bs=4k"}, "expect": "ask", "note": "dd writing to an nvme drive"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/mapper/vg0-lv1 bs=4k"}, "expect": "ask", "note": "dd writing to a device mapper volume"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 /dev/sda1"}, "expect": "ask", "note": "mkfs reformatting a disk partition"}
+{"tool": "Bash", "args": {"command": "mkfs -t ext4 /dev/sda1"}, "expect": "ask", "note": "mkfs with type option reformatting a partition"}
+{"tool": "Bash", "args": {"command": "mke2fs -t ext4 /dev/sdb1"}, "expect": "ask", "note": "mke2fs creating a filesystem on a partition"}
+{"tool": "Bash", "args": {"command": "mkswap /dev/sdb2"}, "expect": "ask", "note": "mkswap setting up swap on a partition"}
+{"tool": "Bash", "args": {"command": "newfs /dev/rdisk1s1"}, "expect": "ask", "note": "newfs on a raw disk device"}
+{"tool": "Bash", "args": {"command": "newfs_apfs /dev/disk1s1"}, "expect": "ask", "note": "newfs_apfs on a disk partition"}
+{"tool": "Bash", "args": {"command": "shred -n 3 -z /dev/sdb"}, "expect": "ask", "note": "shred wiping a block device"}
+{"tool": "Bash", "args": {"command": "shred /dev/sda"}, "expect": "ask", "note": "shred wiping a raw disk device"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/sdb"}, "expect": "ask", "note": "wipefs wiping signatures on a block device"}
+{"tool": "Bash", "args": {"command": "wipefs /dev/nvme0n1"}, "expect": "ask", "note": "wipefs on an nvme device"}
+{"tool": "Bash", "args": {"command": "diskutil eraseDisk APFS MyDisk /dev/disk2"}, "expect": "ask", "note": "diskutil eraseDisk erasing a whole disk"}
+{"tool": "Bash", "args": {"command": "diskutil eraseDisk APFS MyDisk disk2"}, "expect": "ask", "note": "diskutil eraseDisk erasing a disk without dev prefix"}
+{"tool": "Bash", "args": {"command": "diskutil eraseVolume APFS MyVol /dev/disk2s1"}, "expect": "ask", "note": "diskutil eraseVolume erasing a volume"}
+{"tool": "Bash", "args": {"command": "diskutil zeroDisk /dev/disk2"}, "expect": "ask", "note": "diskutil zeroDisk wiping a whole disk"}

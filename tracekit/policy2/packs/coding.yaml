@@ -340,6 +340,16 @@ ask:
     reason: deleting Docker or Podman volumes
     remedy: Wait for a person to approve the held call, or remove containers and images and leave the volumes, where the data lives.
     rationale: A volume usually holds a project's database or cache; deleting it can't be undone, and a person confirms it.
+  - id: TK-A051
+    class: shell
+    # dd whose of= is a block device; mkfs, mkfs.*, mke2fs, mkswap and newfs* on such a device; shred and wipefs on such
+    # a device; and macOS's diskutil eraseDisk, eraseVolume and zeroDisk. Up to sixteen arguments before of= or the block
+    # device. Reads from a device (dd if=/dev/sda of=disk.img), formatting an image file (mkfs.ext4 disk.img), shredding
+    # an ordinary file (shred -u secrets.txt), lsblk and diskutil list stay allowed
+    pattern: '^dd\b(?: [^ ]+){0,16}? of=/dev/(?:r?disk[0-9a-zA-Z_./-]*|sd[a-zA-Z0-9_.-]+|nvme[a-zA-Z0-9_.-]+|hd[a-zA-Z0-9_.-]+|vd[a-zA-Z0-9_.-]+|xvd[a-zA-Z0-9_.-]+|mmcblk[a-zA-Z0-9_.-]+|mapper/[a-zA-Z0-9_./-]+)(?: |$)|^(?:mkfs(?:[._-][a-zA-Z0-9_-]+)?|mke2fs|mkswap|newfs(?:[._-][a-zA-Z0-9_-]+)?)(?: [^ ]+){0,16}? /dev/(?:r?disk[0-9a-zA-Z_./-]*|sd[a-zA-Z0-9_.-]+|nvme[a-zA-Z0-9_.-]+|hd[a-zA-Z0-9_.-]+|vd[a-zA-Z0-9_.-]+|xvd[a-zA-Z0-9_.-]+|mmcblk[a-zA-Z0-9_.-]+|mapper/[a-zA-Z0-9_./-]+)(?: |$)|^(?:shred|wipefs)(?: [^ ]+){0,16}? /dev/(?:r?disk[0-9a-zA-Z_./-]*|sd[a-zA-Z0-9_.-]+|nvme[a-zA-Z0-9_.-]+|hd[a-zA-Z0-9_.-]+|vd[a-zA-Z0-9_.-]+|xvd[a-zA-Z0-9_.-]+|mmcblk[a-zA-Z0-9_.-]+|mapper/[a-zA-Z0-9_./-]+)(?: |$)|^diskutil (?:-[^ ]+ ){0,4}?(?:eraseDisk|eraseVolume|zeroDisk)(?: |$)'
+    reason: wiping a disk, partition or filesystem
+    remedy: Have a person approve the held call, or write to an ordinary file or image rather than a raw block device.
+    rationale: Writing directly to a block device or reformatting a partition erases existing data irreversibly; a person confirms it.
   - id: TK-A039
     class: shell
     field: argv

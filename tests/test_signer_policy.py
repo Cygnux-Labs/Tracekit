@@ -610,6 +610,63 @@ class CodingPack(unittest.TestCase):
                     if (tool, args, rule) in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_wiping_a_disk_or_filesystem_asks_in_every_pack(self):
+        """TK-A051: wiping a disk, partition or filesystem (dd to a block device, mkfs, mke2fs, mkswap, newfs*,
+        shred or wipefs on a block device, or macOS diskutil eraseDisk/eraseVolume/zeroDisk) is held for a person.
+        Normal file lookalikes (dd if=disk.img of=backup.img, mkfs.ext4 disk.img, shred -u secrets.txt, lsblk,
+        diskutil list) stay allowed."""
+        held = [
+            "dd if=/dev/zero of=/dev/sda bs=1M",
+            "dd of=/dev/nvme0n1 if=/dev/zero",
+            "dd if=/dev/urandom of=/dev/disk2 bs=512",
+            "dd if=/dev/zero of=/dev/mapper/vg0-lv1 bs=4k",
+            "dd if=/dev/zero of=/dev/vda bs=1M status=progress",
+            "dd if=/dev/zero of=/dev/mmcblk0 bs=1M",
+            "mkfs.ext4 /dev/sda1",
+            "mkfs -t ext4 /dev/sda1",
+            "mke2fs /dev/sda1",
+            "mke2fs -t ext4 /dev/sdb1",
+            "mkswap /dev/sdb2",
+            "newfs /dev/rdisk1s1",
+            "newfs_apfs /dev/disk1s1",
+            "shred -n 3 -z /dev/sdb",
+            "shred /dev/sda",
+            "wipefs -a /dev/sdb",
+            "wipefs /dev/nvme0n1",
+            "diskutil eraseDisk APFS MyDisk /dev/disk2",
+            "diskutil eraseDisk APFS MyDisk disk2",
+            "diskutil eraseVolume APFS MyVol /dev/disk2s1",
+            "diskutil zeroDisk /dev/disk2",
+            "diskutil zeroDisk disk3",
+            "sudo dd if=/dev/zero of=/dev/sda bs=1M",
+            "sudo mkfs.ext4 /dev/sda1",
+            "sudo shred -n 3 -z /dev/sdb",
+            "sudo wipefs -a /dev/sdb",
+        ]
+        routine = [
+            "dd if=disk.img of=backup.img bs=4M",
+            "dd if=/dev/urandom of=key.bin bs=32 count=1",
+            "dd if=/dev/sda of=disk.img bs=4M",
+            "mkfs.ext4 disk.img",
+            "shred -u secrets.txt",
+            "shred myfile.txt",
+            "lsblk",
+            "lsblk /dev/sda",
+            "diskutil list",
+            "diskutil info /dev/disk0",
+            "diskutil mount /dev/disk1s1",
+            "echo dd if=/dev/zero of=/dev/sda",
+        ]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A051" in d["rule_ids"], cmd in held, (cmd, d))
+                        if cmd in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), (cmd, d))
+
     def test_deleting_container_volumes_asks_in_every_pack(self):
         """TK-A048: deleting Docker or Podman volumes, where a project's database usually lives, is held for a person;
         listing them, inspecting them and pruning only images or containers are not. Only TK-F003 flagged `volume rm`
