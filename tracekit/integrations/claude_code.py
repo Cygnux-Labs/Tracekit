@@ -94,6 +94,10 @@ WAIT_ENV = "TRACEKIT_APPROVAL_WAIT"   # seconds a held call's hook waits for its
 # which it deletes the transcript); a session continued later starts without its constraints; keep the state while
 # its transcript exists if sessions are continued later than that
 SESSION_KEEP_S = 30 * 86400
+# the signer no longer takes the session's stored run: closed (idle), unknown, or its token not one this signer issued
+# (a signer reset makes a new run token key). The session's next event that registers starts a new run; the old one is
+# left as it was, open (its tail unproven), never closed by the hook
+GONE = ("run_closed", "unknown_run", "run_token_invalid")
 
 
 def approval_wait_s():
@@ -179,7 +183,7 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
             try:
                 full = _constrain(client, path, st)
             except RPCError as e:
-                if e.code not in ("run_closed", "unknown_run"):
+                if e.code not in GONE:
                     raise
                 if not register:   # as for a send below
                     files.write_json(path, dict(st, ended=True))
@@ -199,7 +203,7 @@ def _run(client, sid, register=True, send=None, transcript=None, start=None, sta
         try:
             return _send(client, path, st, send, fields, seen, skip)
         except RPCError as e:
-            if e.code not in ("run_closed", "unknown_run"):
+            if e.code not in GONE:
                 raise
             if not register:   # the session's next event registers a new run instead of trying this one again
                 files.write_json(path, dict(st, ended=True))
@@ -239,7 +243,7 @@ def _constrain(client, path, st):
                 full = RunHandle(client, st).call("constraint_add", constraint={
                     "kind": kind, **({"object": obj} if obj else {})}).get("refused") is True or full
             except RPCError as e:
-                if e.code in ("run_closed", "unknown_run"):
+                if e.code in GONE:
                     raise
                 refused.append(e)
             done += 1
@@ -754,7 +758,7 @@ def _handle(client, p, event, sid, tid):
                 run.call("close_run", reason=str(p.get("reason") or "session end")[:256],
                          **({"last_client_seq": last} if last else {}))
         except RPCError as e:
-            if e.code not in ("run_closed", "unknown_run"):   # closed already (idle): only the state is left
+            if e.code not in GONE:   # closed already (idle), or a signer reset: only the state is left
                 raise
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
             os.remove(f)
