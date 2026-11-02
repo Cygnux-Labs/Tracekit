@@ -106,6 +106,16 @@ the next retry run. After a retry ran, the same call is held again: one approval
 ones every approval writes, so a bundle with a retry needs no newer verifier, Python or TypeScript, than one without.
 A held or quarantined run follows [its own rules](incidents.md).
 
+In Claude Code a Bash call's arguments include a free-text `description`, which the model rewords on almost every
+retry. A person approves a command, not its caption, so the Claude Code hook keeps the session's held Bash calls (the
+arguments but the description only as a digest, the description, and the approval). A retry that differs from the
+latest held call of the same command only in its `description`, once that call's approval reads `approved`, is decided
+and consumed with the approved arguments, and the hook hands them to Claude Code as `updatedInput`: the retry runs, and
+is recorded, as the call the person approved, description included. Any other key that differs (`command`,
+`run_in_background`, `dangerouslyDisableSandbox`, `timeout`, ...) makes it another call, held with a new approval; and
+after a reject, an expiry or a use of that approval, the retry is decided as the model sent it. The signer's rule above
+is unchanged: the hook only chooses which arguments the retry is decided with.
+
 ## Tiers: T1 and T2 executors
 
 - **T1** (default): the approval binds the arguments the agent reported. The adapter runs the call in the agent's

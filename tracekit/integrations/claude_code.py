@@ -14,16 +14,18 @@ Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr); only a PreToo
 hook fails exits 1, an error the harness shows without blocking. A call the policy holds (`ask`) is blocked at once,
 with its approval's id and the command that approves it (Claude Code: also the deny reason the model reads and a
 systemMessage the person sees); once a person approves it, the agent's retry of the same call (the same tool and
-exactly the same arguments, Bash's free-text `description` too) runs under that approval, which approval_request returns
-for it. With $TRACEKIT_APPROVAL_WAIT the hook first waits that long for the answer
-(approval_wait_s). An approval with a T2 executor runs the
-consume returns: the hook prints them as `updatedInput` (Claude Code only; the other harnesses run the arguments the
-signer consumed, which it checked against the approved ones). The signer unreachable: the run's fail mode for the
-tool's class, from register_run (closed before a run is registered). A rate limit (quota_exceeded with retry_after_ms)
-is waited out within the client's timeout (HookClient). A signer refusal, a failure while a call waits for its
-approval, or any other error: blocked. A call allowed here that gets no PostToolUse (declined in the harness's own
-permission prompt, interrupted, or an unreadable payload) is completed as an error at SessionEnd; one that is never
-completed is the signer's decided_not_completed gap.
+exactly the same arguments) runs under that approval, which approval_request returns for it. A Claude Code Bash call's
+free-text `description`, which a model rewords on almost every retry, is the exception: a retry that differs from the
+session's latest held call of the same command only there, once a person approved that call, is decided, consumed and
+run with the approved arguments, which the hook prints as `updatedInput` (_reworded); any other key that differs makes
+it another call. With $TRACEKIT_APPROVAL_WAIT the hook first waits that long for the answer (approval_wait_s). An
+approval with a T2 executor runs the arguments the consume returns: the hook prints them as `updatedInput` (Claude Code
+only; the other harnesses run the arguments the signer consumed, which it checked against the approved ones). The
+signer unreachable: the run's fail mode for the tool's class, from register_run (closed before a run is registered). A
+rate limit (quota_exceeded with retry_after_ms) is waited out within the client's timeout (HookClient). A signer
+refusal, a failure while a call waits for its approval, or any other error: blocked. A call allowed here that gets no
+PostToolUse (declined in the harness's own permission prompt, interrupted, or an unreadable payload) is completed as
+an error at SessionEnd; one that is never completed is the signer's decided_not_completed gap.
 
 Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript the hook payloads name, from the
 run's first event: it records the model's tool uses, thinking and text, and the user's prompts (as commitments, with
@@ -94,6 +96,9 @@ WAIT_ENV = "TRACEKIT_APPROVAL_WAIT"   # seconds a held call's hook waits for its
 # which it deletes the transcript); a session continued later starts without its constraints; keep the state while
 # its transcript exists if sessions are continued later than that
 SESSION_KEEP_S = 30 * 86400
+# lean: a retry is matched against the session's last 32 held Bash commands (_keep_held); a retry of an older one that
+# rewords its description is held again; raise it if sessions hold more commands than that before they are approved
+HELD = 32
 
 
 def approval_wait_s():
@@ -338,6 +343,58 @@ def _send(client, path, st, method, fields, seen=None, skip=0):
     return run, out
 
 
+def _bash(tool, args):
+    """Whether this is a Claude Code Bash call, whose free-text `description` a model rewords on a retry (_reworded)."""
+    return AGENT == "claude-code" and tool == "Bash" and isinstance(args, dict)
+
+
+def _rest(args):
+    """The digest of a Bash call's arguments but its `description`: everything that decides what the command does."""
+    return event_hash({k: v for k, v in args.items() if k != "description"})
+
+
+def _caption(args):
+    return [args["description"]] if "description" in args else []
+
+
+def _keep_held(sid, run_id, args, aid):
+    """Keep a held Bash call in the session state for _reworded: its _rest, its description and its approval, the
+    latest one per _rest, for the session's last HELD commands. The command itself is kept only as a digest."""
+    path = _state(sid)
+    with open(path[:-len(".json")] + ".lock", "a") as lk:   # as _run: parallel hooks write the same state
+        lock_file(lk)
+        st = _load(path)
+        if st and st["run_id"] == run_id:   # a new run (_register) starts with none: the old run's approvals expired
+            rest = _rest(args)
+            st["held"] = [*[h for h in st.get("held") or () if h["rest"] != rest][-(HELD - 1):],
+                          {"rest": rest, "description": _caption(args), "approval_id": aid}]
+            files.write_json(path, st)
+
+
+def _reworded(client, sid, args):
+    """The arguments of the session's latest held Bash call that `args` repeats in every key but `description`, with a
+    description of its own, when a person has approved that call; None otherwise. A person approves a command, not
+    the caption the model gave it: the retry is decided, consumed and run with the approved arguments (updatedInput),
+    so the record and what runs are what was approved. Any other key that differs (command, run_in_background,
+    dangerouslyDisableSandbox, timeout, ...), or an approval that is not `approved` (still requested, rejected,
+    expired or used), and the retry is decided as the model sent it."""
+    st = _load(_state(sid))
+    if not st or st.get("ended"):
+        return None
+    rest = _rest(args)
+    h = next((h for h in reversed(st.get("held") or ()) if h["rest"] == rest), None)
+    if h is None or h["description"] == _caption(args):   # the same arguments: the signer matches them itself
+        return None
+    try:
+        state = RunHandle(client, st).call("approval_wait", approval_id=h["approval_id"], timeout_ms=0)["state"]
+    except RPCError:   # its run closed (the retry's decide registers a new one) or the signer refused: as sent
+        return None
+    if state != "approved":
+        return None
+    return {**{k: v for k, v in args.items() if k != "description"},
+            **({"description": h["description"][0]} if h["description"] else {})}
+
+
 def _pre(client, p, sid, tid):
     end, per_call = time.monotonic() + APPROVAL_WAIT_S, client.timeout   # every signer call is capped to the time left
 
@@ -346,6 +403,10 @@ def _pre(client, p, sid, tid):
 
     tool, args = p.get("tool_name") or "?", p.get("tool_input")
     cap()
+    approved = _reworded(client, sid, args) if _bash(tool, args) else None
+    if approved is not None:
+        args = approved
+        cap()
     run, d = _run(client, sid, send="decide", transcript=_transcript(p), tool_call_id=tid, tool=tool, args=args,
                   args_source="parsed")
     if d["decision"] == "deny":
@@ -398,6 +459,8 @@ def _pre(client, p, sid, tid):
                     f"`{cmd} approve {aid}`, then ask the agent to try the same call again, with exactly the same "
                     "arguments (to refuse it: "
                     f"`{cmd} reject {aid}`)") + (f". Why{why}" if why else "")
+            if _bash(tool, args):
+                _keep_held(sid, run.run_id, args, aid)
             print(held, file=sys.stderr)
             if AGENT == "claude-code":   # the reason goes to the model, the system message to the person
                 print(json.dumps({"systemMessage": held, "hookSpecificOutput": {
@@ -415,8 +478,8 @@ def _pre(client, p, sid, tid):
         why = " ".join(x for x in ("; ".join(c["rule_ids"]), c.get("reason", "")) if x)
         print(f"Held by tracekit policy: {why}", file=sys.stderr)
         return 2
-    if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
-        args = c["args"]
+    if AGENT == "claude-code" and ("args" in c or approved is not None):
+        args = c.get("args", args)   # T2: the signer's copy is what runs; a reworded retry: the approved arguments
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "tool_call_id": tid, "decision_id": d["decision_id"],
                                         "args_digest": event_hash({"tool": tool, "args": args}),
