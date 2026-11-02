@@ -762,6 +762,35 @@ class ReasoningCaptureOn(DaemonCase):
         self.assertEqual(decision["data"]["policy_hash"], start[0]["data"]["policy"]["hash"])
 
 
+class HarnessList(unittest.TestCase):
+    def test_every_harness_is_taken_by_init_and_uninstall_and_checked_by_doctor(self):
+        """#499: one harness list, agent_hooks.HARNESSES. Each harness in it is an --agent init and uninstall take,
+        has a config path and a payload mapping, and is found and checked by doctor (OpenCode's plugin is JavaScript,
+        whose hook events doctor doesn't read): a harness left out of any of them fails here."""
+        from tracekit import cli, doctor
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        patch_env(self, HOME=d, USERPROFILE=d, XDG_CONFIG_HOME=None, CODEX_HOME=None, CRUSH_GLOBAL_CONFIG=None)
+        with mock.patch("os.getcwd", return_value=d):
+            for harness in agent_hooks.HARNESSES:
+                with self.subTest(harness=harness):
+                    for command in ("init", "uninstall"):
+                        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+                                self.assertRaises(SystemExit) as e:
+                            cli.main([command, "--agent", harness, "--help"])
+                        self.assertEqual(e.exception.code, 0, f"tracekit {command} --agent {harness}")
+                    self.assertIn(harness, agent_hooks.AGENT_NAMES)
+                    agent_hooks.normalise(harness, {})   # raises for a harness it doesn't map
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        agent_hooks.install(harness, d, v2=True)
+            found = doctor._dev_harnesses()
+            rows = []
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append(detail), found, False, d)
+        self.assertEqual(sorted(found), sorted(agent_hooks.HARNESSES))
+        self.assertEqual({h for h in agent_hooks.HARNESSES if any(r.startswith(f"{h} pre-tool timeout") for r in rows)},
+                         set(agent_hooks.HARNESSES) - {"opencode"})
+
+
 class Installer(unittest.TestCase):
     def test_droid_uninstall_without_standalone_file_preserves_legacy_and_settings(self):
         for with_settings in (False, True):

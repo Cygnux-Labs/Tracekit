@@ -64,9 +64,10 @@ from .core import canon
 from .locking import lock_file, unlock_file
 from .policy2.classes import PATH_KEYS, first
 
-HARNESSES = ("codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid", "antigravity", "crush")
+# each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
                "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush"}
+HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
