@@ -256,6 +256,15 @@ class TestClocksAcrossRestart(Case):
                                                                 "args_source": "parsed", "args": PAY})
         self.assertEqual([d["reason"] for d in self.types("run.closing")], ["idle_timeout"])
 
+    def test_a_sweep_that_fails_at_start_is_logged_and_the_signer_starts(self):
+        """Review of the sweep before serving: an error in it (a run whose state made finishing it raise) stopped the
+        signer from starting, where the ticker logs it and goes on."""
+        with mock.patch.object(svc.SignerService, "sweep", side_effect=KeyError("x")), \
+                self.assertLogs(svc.__name__, "ERROR") as logged:
+            s = self.open()
+        self.register(s)
+        self.assertIn("the ticker loop failed", logged.output[0])
+
     def test_a_record_from_the_future_is_not_idle_time(self):
         self.assertAlmostEqual(pipeline.since("2999-01-01T00:00:00Z"), time.monotonic(), delta=1)
 
