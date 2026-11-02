@@ -35,8 +35,10 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.dir = tempfile.mkdtemp(dir="/tmp")   # short path: macOS caps socket paths at 104 bytes
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.run_dir = os.path.join(self.dir, "run")
+        # TRACEKIT_DEV_GRACE: a closed run is final 0.2 s after, not 5 s; tests wait for run.final before exporting
         env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.run_dir, "TRACEKIT_DEV_IDLE": "60",
-                                           "PYTHONPATH": ROOT, "HOME": os.path.join(self.dir, "home"),
+                                           "TRACEKIT_DEV_GRACE": "0.2", "PYTHONPATH": ROOT,
+                                           "HOME": os.path.join(self.dir, "home"),
                                            "XDG_DATA_HOME": os.path.join(self.dir, "data")})
         env.start()
         self.addCleanup(env.stop)
