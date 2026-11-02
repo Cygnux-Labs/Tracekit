@@ -194,16 +194,20 @@ class Tailer(unittest.TestCase):
         monitor = {"command": "tail -f /tmp/tkhz/hq3.log | grep --line-buffered -E 'place:|Traceback'",
                    "description": "orbit/place capture: completion, errors, or stalls"}
         write = {"file_path": "/work/proj/notes.md", "content": "# Notes\n"}
+        # a held Bash call the model retried with its description reworded runs under the approved arguments (#509)
+        bash = {"command": "make test", "description": "Run the tests"}
         calls = [("toolu_a", "Agent", agent), ("toolu_s", "SendMessage", {**send, "summary": message.split("\n")[0]}),
                  ("toolu_l", "SendMessage", {**long_send, "summary": long.split("\n")[0][:199] + "…"}),
                  ("toolu_m", "Monitor", {**monitor, "timeout_ms": 300000}),
-                 ("toolu_p", "Monitor", {**monitor, "timeout_ms": 1800000}), ("toolu_w", "Write", write)]
+                 ("toolu_p", "Monitor", {**monitor, "timeout_ms": 1800000}), ("toolu_w", "Write", write),
+                 ("toolu_r", "Bash", bash)]
         found = self.reconciled(calls, use_line("toolu_a", "Agent", {**agent, "run_in_background": "true"}),
                                 use_line("toolu_s", "SendMessage", send, wire={"to": send["to"], "message": message}),
                                 use_line("toolu_l", "SendMessage", long_send, wire={"to": send["to"], "message": long}),
                                 use_line("toolu_m", "Monitor", {**monitor, "timeout": "1500000"}),
                                 use_line("toolu_p", "Monitor", {**monitor, "persistent": "true", "timeout_ms": 1800000}),
-                                use_line("toolu_w", "Write", {**write, "description": "x"}))
+                                use_line("toolu_w", "Write", {**write, "description": "x"}),
+                                use_line("toolu_r", "Bash", {**bash, "description": "Run the test suite again"}))
         self.assertEqual(found, [])
         self.assertEqual(self.lost(), [])
 
