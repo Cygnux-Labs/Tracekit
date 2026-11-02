@@ -776,14 +776,13 @@ def _opencode_plugin(python, v2):
     allows or denies it (or a person approves it); one that doesn't answer in time is killed and its call blocked. Each
     event's command names the event, and runs the hook as install._hook_command does (python, or this interpreter)."""
     from .install import _dev_hook_argv
-    from .integrations.claude_code import APPROVAL_WAIT_S
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, "opencode", ev] if python else
                 _dev_hook_argv(module, "entry", ("opencode", ev)) for ev in ("tool.execute.before", "tool.execute.after")}
     return f'''{OPENCODE_MARKER}
 const commands = {json.dumps(commands)};
-// a hook answers within {APPROVAL_WAIT_S} s, a held call's approval wait included: one still running at 600 s (the
-// other coding agents' pre-tool timeout) hung, so it is killed and its call blocked
+// above the most a hook takes to answer, a held call's approval wait included (Tracekit's APPROVAL_WAIT_S), as the
+// other coding agents' pre-tool timeout: a hook still running then hung, so it is killed and its call blocked
 const KILL_MS = 600000;
 
 async function tracekit(event, input, toolInput, toolResponse) {{
