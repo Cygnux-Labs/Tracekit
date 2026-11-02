@@ -1,6 +1,7 @@
 """Policy decisions inside the v2 signer (tracekit/signer/service.py with tracekit/policy2): the coding packs, the
 v2 counterparts of the v1 policy known gaps, the benign corpus, engine conformance on the packs, class hints,
 memoisation, fresh decision ids and `complete`."""
+import functools
 import importlib.util
 import json
 import os
@@ -110,10 +111,14 @@ class CodingPack(unittest.TestCase):
                 self.assertEqual((d["verdict"], want in d["rule_ids"]), ("deny" if want.startswith("TK-D") else "ask", True),
                                  d)
 
-    def every_pack(self):
-        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
-            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
-                yield pack, engine, Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+    @staticmethod
+    @functools.lru_cache(maxsize=None)
+    def every_pack():
+        """(pack, engine name, engine) for each shipped pack on each engine, built once per run: a decision doesn't
+        change an engine, and building the eight took about a second a time (#500)."""
+        return tuple((pack, engine, Engine(pc.build(os.path.join(PACKS, pack))[0], engine))
+                     for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml")
+                     for engine in (("re2", "regex") if HAVE_RE2 else ("regex",)))
 
     def test_a_command_run_outside_claude_codes_sandbox_asks(self):
         self.verdicts([({"command": "npm install", "dangerouslyDisableSandbox": True}, "TK-A003"),
@@ -1823,6 +1828,65 @@ class CodingPack(unittest.TestCase):
             for tool, args in benign:
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+
+    def test_harness_flags_skip_source_files_in_claude_code_worktrees_in_every_pack(self):
+        # #500: edits under .claude/worktrees/<name>/, Claude Code's own worktrees, were 3,084 of 3,097 TK-F009 flags
+        # and 36 of 39 TK-F015 flags on maintainers' sessions; a file there is judged as it is in the worktree
+        paths = ("/repo/.claude/worktrees/issue-1/tracekit/cli.py", ".claude/worktrees/agent-a1/internal/a.go",
+                 "/repo/.claude/worktrees/x/.github/workflows/ci.yml", "/repo/.claude/worktrees/x/.gitignore",
+                 "/repo/.claude/worktrees/x/CLAUDE.md", "/repo/.claude/worktrees/x/a/../b.py",
+                 r"C:\repo\.claude\worktrees\x\src\a.py", "/REPO/.Claude/Worktrees/X/src/a.py")
+        commands = ("cp /tmp/a.py /repo/.claude/worktrees/issue-1/tracekit/cli.py",
+                    "sed -i s/a/b/ .claude/worktrees/x/src/a.py", "rm .claude/worktrees/x/.v3check.sh",
+                    "echo x > .claude/worktrees/x/bin/t.sh", "cp x .claude/worktrees/x/./a.py",
+                    "mkdir -p .claude/worktrees/x/d && cp a .claude/worktrees/x/d/", r"cp x 'C:\repo\.claude\worktrees\x\a.py'")
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertNotIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_a_worktrees_own_harness_config_and_paths_out_of_it_stay_flagged_in_every_pack(self):
+        # #500: what TK-F009 and TK-F015 skip in a worktree is its ordinary files: its own harness config, a path that
+        # leaves it (`..`, also with doubled or Windows separators), the worktree itself, a name that is a dot folder,
+        # and a path that is not in one are still flagged, also casefolded
+        paths = ("/repo/.claude/worktrees/x/.claude/settings.json", "/repo/.claude/worktrees/x/.claude/hooks/h.sh",
+                 ".claude/worktrees/x/.claude/settings.local.json", "/repo/.claude/worktrees/x/.codex/config.toml",
+                 "/repo/.claude/worktrees/x/.agents/hooks.json", "/repo/.claude/worktrees/x/.mcp.json",
+                 "/repo/.claude/worktrees/x/opencode.json", "/repo/.claude/worktrees/x/sub/.gemini/settings.json",
+                 "/repo/.claude/worktrees/x/.claude/worktrees/y/.claude/settings.json",
+                 "/repo/.claude/worktrees/x/../../settings.json", ".claude/worktrees/x/../../settings.json",
+                 "/repo/.claude/worktrees/x/a/../../../settings.json", "/repo/.claude//worktrees/x/../../settings.json",
+                 "/repo/.claude/worktrees", "/repo/.claude/worktrees/x", "/repo/.claude/worktrees/settings.json",
+                 "/repo/.claude/worktree/x/a.py", "/repo/.claude/worktreesx/a.py", "/repo/.claude/settings.json",
+                 "/repo/.claude/worktrees/.x/a.py", "/repo/.claude/worktrees/.claude/settings.json",
+                 "/repo/.claude/worktrees/../settings.json", "/repo/.CLAUDE/WORKTREES/X/.Claude/Settings.json",
+                 r"C:\repo\.claude\worktrees\x\.claude\settings.json", r"C:\repo\.claude\worktrees\x\..\..\settings.json")
+        commands = ("echo '{}' > .claude/worktrees/x/.claude/settings.json", "rm -rf .claude/worktrees/x/.claude",
+                    "cp x /repo/.claude/worktrees/x/.codex/config.toml", "tee .claude/worktrees/x/.agents/hooks.json",
+                    "cp x .claude/worktrees/x/../../settings.json", "cp x .claude/worktrees/x/..//../settings.json",
+                    "cp x .claude/worktrees/x//../../settings.json", "cp x .claude//worktrees/x/../../settings.json",
+                    "cp x .claude/worktrees/x/./../../settings.json", "cp x .claude/worktrees/x/a/b/../../../../s.json",
+                    "cp x .claude/worktrees/x/" + "a/" * 40 + "../" * 42 + "settings.json",
+                    r"cp x 'C:\repo\.claude\worktrees\x\..\..\settings.json'",
+                    r"cp x 'C:\repo\.claude\worktrees\x\.claude\settings.json'", r"cp x '.claude\worktrees\x\..\..\s.json'",
+                    "cp x .claude/worktrees/.x/a.py", "cp x .claude/worktrees/.claude/settings.json",
+                    "cp x .claude/worktrees/../settings.json", "cp x .claude/worktrees//x/a.py",
+                    "rm -rf .claude/worktrees/x", "rm -rf .claude/worktrees/x/", "rm -rf .claude/worktrees/x/.",
+                    "rm -rf .claude/worktrees/x//", "rm -rf .claude/worktrees", "rm -rf .claude/worktrees/",
+                    "cp x .CLAUDE/Worktrees/X/.Claude/settings.json", "cp x .claude/WORKTREES/x/../../settings.json",
+                    "cp x .claude/worktree/x/a.py", "echo '{}' > .claude/settings.json")
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command[:80]):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
 
     def test_harness_base_url_keeps_its_existing_raw_subjects(self):
         calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),

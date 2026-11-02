@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-47'
+version: '2026.10-v2-48'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -735,7 +735,11 @@ flag:
     # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
     # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
     # home, and ~/.config/crush/.
-    pattern: '(^|/)\.(claude|codex|gemini|opencode|qwen|factory)(/|$)|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|block/goose/config)(/|$)|\.cursor/hooks\.json|(^|/)opencode\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|managed-settings|\.mcp\.json'
+    # A file inside one of Claude Code's worktrees (.claude/worktrees/<name>/…) is judged as it is in the worktree: that
+    # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
+    # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
+    # itself, and a name starting with a dot
+    pattern: '(^|/)\.(codex|gemini|opencode|qwen|factory)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|block/goose/config)(/|$)|\.cursor/hooks\.json|(^|/)opencode\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|managed-settings|\.mcp\.json'
     # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     label: harness_config
@@ -747,7 +751,12 @@ flag:
     # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
     # home config is crush.json, .crush.json, crushrc or .crushrc. The agy, goose and Droid paths are TK-F009's, and
     # a delete of a whole .agents folder (agy's hooks.json with it).
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:claude|codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose|crush)|block[/\\]goose[/\\]config)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
+    # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
+    # worktree path is still flagged with a `..` among its parts after the worktree, and when it names only the
+    # worktree (`x/`, `x/.`, `x//`).
+    # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
+    # bounded and the fallback engine linear; read deeper if a real worktree nests further
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose|crush)|block[/\\]goose[/\\]config)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|opencode\.jsonc?$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\]hooks\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config
