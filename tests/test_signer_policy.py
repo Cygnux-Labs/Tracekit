@@ -121,11 +121,16 @@ class CodingPack(unittest.TestCase):
                    "rm azure-pipelines.yml", "git rm Jenkinsfile", "rm -rf .github/workflows",
                    "rm /work/project/.github/workflows/security.yml", "rm ./src/../.github/workflows/ci.yml",
                    r"rm 'C:\repo\.github\workflows\ci.yml'", r"git rm '.circleci\config.yml'",
+                   "rm -rf .github", "git rm -r .github", "rm -rf ./.github/",
+                   "rm -rf .github/*", "rm -r .circleci",
+                   "find .github -name '*.yml' -delete",
                    # A symlink may redirect .., so effects retain this path as given.
                    "rm .github/workflows/../dependabot.yml"]
         benign = ["actionlint .github/workflows/ci.yml", "git diff -- .github/workflows/ci.yml",
                   "cat .github/workflows/ci.yml", "rm src/workflows/ci.yml", "rm .circleci/config.yml.bak",
                   "rm myJenkinsfile", "echo 'rm .github/workflows/ci.yml'",
+                  "rm .github/dependabot.yml", "rm -rf .github-old", "rm -r .circleci-backup",
+                  ": > .github/workflows/ci.yml", "truncate -s 0 .github/workflows/ci.yml",
                   "git commit -m 'remove .github/workflows/test.yml later'"]
         for pack, backend, engine in self.every_pack():
             for command in deletes + benign:
