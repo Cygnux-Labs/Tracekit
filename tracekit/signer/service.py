@@ -4881,8 +4881,8 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
                 print("LOST: another dev signer holds signer.lock", file=sys.stderr)
                 return 1
             time.sleep(0.05)
-    stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    stop = []   # not an Event: its set() in the handler waits forever on the lock a wait() it interrupts holds
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)
     for p in (sock, endpoint):
         pathlib.Path(p).unlink(missing_ok=True)
@@ -4911,7 +4911,8 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
     threading.Thread(target=server.serve_forever, args=(0.2,), daemon=True).start()
     print(f"SERVING pid {os.getpid()}", file=sys.stderr, flush=True)
     try:
-        while not stop.wait(0.1):
+        while not stop:
+            time.sleep(0.1)
             with mutex:
                 if idle_s and not active[0] and time.monotonic() - last[0] > idle_s:
                     break
@@ -5251,8 +5252,8 @@ def main(argv=None):
         print("tracekit signer: the log is closed (log.closed) and takes no more records: give this signer a new log",
               file=sys.stderr)
         return 1
-    stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    stop = []   # not an Event, as in serve_dev
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     try:
         servers = serve(cfg, service)
     except Exception as e:
@@ -5266,8 +5267,8 @@ def main(argv=None):
         where = f" on {host}:{port}"
     print(f"tracekit signer {__version__} serving{where}", flush=True)
     try:
-        while not stop.wait(1):
-            pass
+        while not stop:
+            time.sleep(1)
     except KeyboardInterrupt:
         pass
     for s in servers:

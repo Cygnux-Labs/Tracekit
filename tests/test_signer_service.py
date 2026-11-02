@@ -36,6 +36,17 @@ OTHER = CallerIdentity("uid", "999999", True)
 # what the signer measures for a uid caller (ME, OTHER): Windows has no uid of its own to compare with
 SAME_USER, SEPARATE_USER = ("same-user", "separate-user") if hasattr(os, "getuid") else ("unknown", "unknown")
 PAY_ASKS = Engine({"ask": [{"id": "TEST-PAY", "tool": "pay", "pattern": "^"}]})
+# a child's prelude: each Event.wait that serve_dev or `signer serve` (service.main) makes raises SIGTERM while it holds
+# the Event's lock, as a signal that lands there does
+SIGTERM_IN_WAIT = ("import signal, sys, threading\n"
+                   "from tracekit.signer import service\n"
+                   "real = threading.Event.wait\n"
+                   "def wait(self, timeout=None):\n"
+                   "    if sys._getframe(1).f_code in (service.serve_dev.__code__, service.main.__code__):\n"
+                   "        with self._cond:\n"
+                   "            signal.raise_signal(signal.SIGTERM)\n"
+                   "    return real(self, timeout)\n"
+                   "threading.Event.wait = wait\n")
 
 
 class Unreachable(TlogWitness):
@@ -425,6 +436,20 @@ class TestCli(unittest.TestCase):
         self.assertEqual(p.wait(30), 0)
         out = subprocess.run(cmd + ["fsck", "--config", cfg], cwd=ROOT, capture_output=True, timeout=30)
         self.assertEqual((out.returncode, out.stdout.strip()), (0, b"ok"))
+
+    def test_a_sigterm_landing_while_the_serving_loop_waits_stops_the_signer(self):
+        """Review of 1.5.3: the loop waited on the Event its SIGTERM handler set, and a signal landing while wait() held
+        the Event's lock left the handler waiting for that lock for good."""
+        d = tmpdir(self)
+        cfg = os.path.join(d, "signer.yaml")
+        with open(cfg, "w") as f:
+            f.write("data_dir: data\nsocket: s.sock\n")
+        p = subprocess.Popen([sys.executable, "-c", SIGTERM_IN_WAIT + "sys.exit(service.main(sys.argv[1:]))", "serve",
+                              "--config", cfg], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        self.addCleanup(p.kill)
+        self.assertIn(b"serving", p.stdout.readline())
+        p.terminate()
+        self.assertEqual(p.wait(10), 0)
 
     def test_serve_names_the_http_port_it_bound(self):
         """http.listen with port 0 takes a free port, and the serving line names it: a script that picked a free port
