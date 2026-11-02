@@ -193,7 +193,7 @@ def analyse(command, persistent_target=None):
                 i = end + 1
             for literal in literals:
                 text = literal.group(2) if hasattr(literal, "re") else literal[2]
-                if not re.search(r"[A-Za-z_][A-Za-z0-9_]*\[[^]]*(?:\$\(|`)", text):
+                if not _subscript_substitution(text):
                     continue
                 pos = 0
                 while True:
@@ -676,6 +676,22 @@ def _ansi_c(text):
             return chr(int(e, 8))
         return _ANSI.get(e, e)
     return re.sub(r"\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|[0-7]{1,3}|.)", one, text, flags=re.S)
+
+
+_SUBSCRIPT = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9_]+\[|\]|\$\(|`")
+
+
+def _subscript_substitution(text):
+    """Whether a `$(` or backtick sits in an array subscript still open (`a[$(cmd)`, `` a[x`cmd` ``), in one pass (a
+    regex that scans from each name to the next `]` took seconds over a long word)."""
+    inside = False
+    for m in _SUBSCRIPT.finditer(text):
+        if m.group() in ("$(", "`"):
+            if inside:
+                return True
+        else:
+            inside = m.group() != "]"
+    return False
 
 
 def _has_parameterized_index(text):

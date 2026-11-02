@@ -1096,6 +1096,19 @@ class Shell(unittest.TestCase):
                 self.assertLess(big, 8 * small + 0.005 * SLOWER)
                 self.assertLess(big, 2 * SLOWER)
 
+    def test_a_long_word_on_a_line_with_an_arithmetic_context_is_read_in_linear_time(self):
+        # the scan for a substitution in a quoted literal's array subscript ran a regex from each letter of a word to
+        # the next `]`: 3 to 4 s for each of these on a laptop
+        n = MAX_SUBJECT - 100
+        for cmd in ('[[ 1 -eq 1 ]] && echo "' + "a" * n + '"', 'echo $((1)) "' + "a" * n + '"',
+                    "echo ${a[0]} '" + "a" * n + "'", 'let x=1; echo "' + "a[" * (n // 2) + '"'):
+            start = time.perf_counter()
+            shell.analyse(cmd)
+            self.assertLess(time.perf_counter() - start, 0.5 * SLOWER, cmd[:20])
+        for cmd in ("v='a[x$(alpha x)'; echo $((v))", "v='1a[`alpha x`'; echo $((v))", "v='a[b[$(alpha x)'; echo $((v))"):
+            self.assertIn(["alpha", "x"], argvs(cmd), cmd)
+        self.assertNotIn(["alpha", "x"], argvs("v='a[x]$(alpha x)'; echo $((v))"))   # a literal: run by nothing
+
     def test_nested_reparsed_consumers_are_bounded(self):
         cmd = 'eval "$(id)" "$(id)"'
         while len(cmd) * 2 < MAX_SUBJECT:
