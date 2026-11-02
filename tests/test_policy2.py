@@ -1422,6 +1422,24 @@ class TimedAndBraced(unittest.TestCase):
             with self.assertRaises(shell.ParseError, msg=line):
                 shell.parse(line)
 
+    def test_a_backslash_newline_joins_operators_only_where_the_shell_reads_them(self):
+        c = "\\\n"
+        for line in ("echo '(" + c + "('", "cat <<'EOF'\n| a | b |" + c + "| c | d |\nEOF", 'echo "a |' + c + '| b"'):
+            shell.parse(line)   # quoted text and a heredoc's body hold no operators
+        for line in ("true (" + c + "( x ))", "(" + c + c + "( x ))", "alpha &" + c + "& beta", "alpha |" + c + "| beta",
+                     "alpha >" + c + "> out", "alpha <" + c + "<EOF\nx\nEOF"):
+            with self.assertRaises(shell.ParseError, msg=line):   # bash reads `(\<newline>(` as `((`
+                shell.parse(line)
+
+    def test_a_shell_whose_script_word_may_be_empty_is_held_only_on_a_pipe_or_file(self):
+        """`bash $f` runs a script file; read without $f it is `bash`, which runs its stdin, and only a pipe or a
+        redirection gives it one to run: those are held, the ordinary script run isn't."""
+        for line in ("bash $f", "sh $SCRIPT", "bash -x $f", "zsh $f", "for f in *.sh; do bash $f; done",
+                     "bash scripts/*.sh", "bash ./setup*.sh"):
+            self.assertFalse(any(c["opaque"] for c in shell.parse(line)), line)
+        for line in ("beta | sh $X", "sh $X < s.sh", "sh $X <&3", "bash", "beta | bash scripts/*.sh"):
+            self.assertTrue(any(c["opaque"] for c in shell.parse(line)), line)
+
     def test_a_word_of_only_expansions_is_also_read_as_gone(self):
         """bash drops an unquoted word made only of expansions that expand to nothing, so `git $X push --force` runs
         `git push --force` when X is unset; the commands are read both ways, and a rule matches either."""
