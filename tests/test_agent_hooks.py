@@ -879,13 +879,69 @@ class Installer(unittest.TestCase):
                 with contextlib.redirect_stdout(out):
                     agent_hooks.install("droid", d, uninstall=True)
                 self.assertEqual(os.path.exists(path), bool(changed))
-                self.assertEqual(f"{path} kept: what is left" in out.getvalue(), bool(changed))
+                self.assertEqual(f"{path} kept: the hooks left in it aren't those in" in out.getvalue(), bool(changed))
                 if changed == "hooks.json":
                     with open(path) as f:
                         self.assertEqual(json.load(f), {**fallback, "SessionStart": group("echo mine")})
                 with open(settings_path) as f:
                     self.assertEqual(json.load(f)["hooks"], {**fallback, **(
                         {"SessionStart": group("echo mine")} if changed == "settings.json" else {})})
+
+    def test_droid_uninstall_names_a_kept_copy_whatever_settings_json_holds(self):
+        """#499: a copy whose hooks settings.json no longer has (removed, or the file deleted), or whose settings.json
+        can't be read, keeps the person's hooks and loses Tracekit's, and uninstall names it: never silent, never a
+        traceback."""
+        copied = {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo mine"}]}]}
+        for name, settings in (("hooks removed", '{"theme": "dark"}'), ("deleted", None), ("not JSON", "{"),
+                               ("hooks not an object", '{"hooks": []}')):
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                path = agent_hooks.config_path("droid", d)
+                settings_path = os.path.join(d, ".factory", "settings.json")
+                os.makedirs(os.path.dirname(path))
+                with open(settings_path, "w") as f:
+                    json.dump({"hooks": copied}, f)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    agent_hooks.install("droid", d, v2=True)
+                if settings is None:
+                    os.remove(settings_path)
+                else:
+                    with open(settings_path, "w") as f:
+                        f.write(settings)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    agent_hooks.install("droid", d, uninstall=True)
+                with open(path) as f:
+                    self.assertEqual(json.load(f), copied)
+                self.assertIn(f"Tracekit v2 hooks removed from {path}", out.getvalue())
+                self.assertIn(f"{path} kept: ", out.getvalue())
+
+    def test_a_null_hook_group_is_kept_and_a_null_event_list_refused(self):
+        """#499: one installer reads malformed configs one way. A group whose `hooks` is null is a person's, kept
+        (install() raised a TypeError); an event list that is null is refused, Tracekit changing nothing (goose and
+        Crush read it as empty)."""
+        from tracekit.install import SettingsError
+        group = {"matcher": "x", "hooks": None}
+        for harness in ("codex", "goose"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as d:
+                path = agent_hooks.config_path(harness, d)
+                os.makedirs(os.path.dirname(path))
+                with open(path, "w") as f:
+                    json.dump({"hooks": {"PreToolUse": [group]}}, f)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    agent_hooks.install(harness, d, v2=True)
+                    agent_hooks.install(harness, d, uninstall=True)
+                with open(path) as f:
+                    self.assertEqual(json.load(f), {"hooks": {"PreToolUse": [group]}})
+        for harness in ("goose", "crush", "codex"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as d:
+                path = agent_hooks.config_path(harness, d)
+                os.makedirs(os.path.dirname(path), exist_ok=True)   # Crush's is crush.json in the project
+                with open(path, "w") as f:
+                    json.dump({"hooks": {"PreToolUse": None}}, f)
+                with self.assertRaisesRegex(SettingsError, "hooks.PreToolUse in .* must be a list"):
+                    agent_hooks.install(harness, d, v2=True)
+                with open(path) as f:
+                    self.assertEqual(json.load(f), {"hooks": {"PreToolUse": None}})
 
     def test_droid_does_not_migrate_inactive_settings_hooks_into_existing_file(self):
         with tempfile.TemporaryDirectory() as d:

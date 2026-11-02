@@ -114,7 +114,8 @@ Droid's [hooks reference](https://docs.factory.com/harness/hooks) documents Clau
 Its standalone `hooks.json` is keyed directly by event name, with no `hooks` wrapper (that wrapper is for declarations
 inside `settings.json`). When creating it, the installer copies the effective hooks from `settings.json`, since Droid
 reads those only while `hooks.json` is absent. `tracekit uninstall --agent droid` deletes `hooks.json` again when what is
-left in it is that copy; if you changed the hooks in either file since, it keeps `hooks.json` and says so. If the legacy
+left in it is that copy. Otherwise (you changed the hooks in either file, or `settings.json` is gone or can't be read) it
+takes Tracekit's hooks out, keeps `hooks.json` and names it. If the legacy
 `.factory/hooks/hooks.json` exists, init refuses to proceed until you save once in Droid's `/hooks` UI to migrate it.
 On Windows Droid
 is assumed to run hooks under `cmd.exe`; the interpreter path stays quoted when it contains spaces.
