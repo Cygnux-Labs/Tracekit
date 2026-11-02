@@ -132,7 +132,8 @@ _VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typese
                              "let", "eval", "unset"}
 _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
-_GLOB = re.compile(r"[*?]|\[[^][]+\]")   # a pathname pattern in a word's unquoted text
+# a pathname pattern in a word's unquoted text; a ] first in a bracket is one of its characters ([]x], [!]x])
+_GLOB = re.compile(r"[*?]|\[[!^]?(?:\][^][]*|[^][]+)\]")
 _HOME_WORD = re.compile(r"\$(?:HOME|\{HOME\})")   # the one bare variable the packs name as a word
 # the start of "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
 _ALL_ITEMS = re.compile(r"\$(?:@|\{!?(?:@|[A-Za-z_][A-Za-z0-9_]*(?:\[@\]|@)))")
