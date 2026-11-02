@@ -352,7 +352,6 @@ T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decide
 TICK_S = 1.0
 WITNESS_START_S = 30.0   # start-up: how long the witnesses, asked at once, have to say how far they cosigned
 CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
-STOP_DUMP_S = 5.0   # a dev signer still stopping this long after SIGTERM writes every thread's stack to its log
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
 FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
@@ -4854,12 +4853,13 @@ def dev_data_dir():
 
 
 def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.RPC_VERSION), version=__version__,
-              idle_s=900, data_dir=None):
+              idle_s=900, data_dir=None, stacks=None):
     """Serve as the dev signer of `runtime_dir` (decision S3) until SIGTERM, or until `idle_s` seconds (0: never) pass
     with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life; then
     `open_handler()` -> (handle_frame, close); then binds the socket (loopback TCP without Unix sockets) and publishes
-    endpoint.json, which names `data_dir` as hello does (autospawn takes only its own HOME's); before returning,
-    unpublishes both, then calls close(). Call it from the main thread; returns an exit code."""
+    endpoint.json, which names `data_dir` as hello does (autospawn takes only its own HOME's), and `stacks`, the signal
+    on which this process writes every thread's stack to its log (autospawn.down sends it to a stop that hangs); before
+    returning, unpublishes both, then calls close(). Call it from the main thread; returns an exit code."""
     from tracekit.deploy import files
     from tracekit.sdk import autospawn
 
@@ -4885,7 +4885,7 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
     if hasattr(socket, "AF_UNIX"):
         from tracekit.transport.unix import UnixServer
         server = UnixServer(sock, handle)
-        files.write_json(endpoint, info)
+        files.write_json(endpoint, {**info, **({"stacks": stacks} if stacks else {})})
     else:
         from tracekit.transport.tcp_dev import TcpDevServer
         server = TcpDevServer(endpoint, _dev_token(), handle, publish=info)
@@ -4910,13 +4910,11 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
                     break
     except KeyboardInterrupt:
         pass
-    faulthandler.dump_traceback_later(STOP_DUMP_S)   # to stderr, the log: where a stop that hangs is stuck (#517)
     for p in (endpoint, sock):
         pathlib.Path(p).unlink(missing_ok=True)
     server.shutdown()
     server.server_close()
     close()
-    faulthandler.cancel_dump_traceback_later()
     return 0
 
 
@@ -4944,9 +4942,16 @@ def _serve_dev():
         service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
                                 grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
         return service.handle_frame, service.close
+    stacks = None
+    if hasattr(signal, "SIGUSR1"):
+        try:   # faulthandler writes them from C, so it does even with the main thread stuck (#517)
+            faulthandler.register(signal.SIGUSR1)
+            stacks = "SIGUSR1"
+        except (RuntimeError, OSError, ValueError):   # no stderr, or one with no file under it
+            pass
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)),
-                         data_dir=dev_data_dir())
+                         data_dir=dev_data_dir(), stacks=stacks)
     except BlockingIOError:
         print(f"tracekit signer: another signer holds {dev_data_dir()}", file=sys.stderr)
     except Exception as e:

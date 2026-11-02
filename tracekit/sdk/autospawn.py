@@ -179,12 +179,18 @@ def _try(d):
     return conn
 
 
-def _pid(d):
+def _published(d):
+    """endpoint.json's fields, {} while there is none."""
     try:
         with open(os.path.join(d, ENDPOINT)) as f:
-            return json.load(f)["pid"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
+            ep = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return ep if isinstance(ep, dict) else {}
+
+
+def _pid(d):
+    return _published(d).get("pid")
 
 
 def _env(d):
@@ -248,7 +254,7 @@ def _ensure(d, wait, timeout):
             if not _starts_ours(d):
                 raise Incompatible(f"{e}. `{sys.executable} -m tracekit` runs an older Tracekit than this process "
                                    "imports: install this version") from None
-            warnings.warn(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout, d)}) to "
+            warnings.warn(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout, d, show_log=False)}) to "
                           f"start this one's ({__version__})", stacklevel=3)
             conn = None
         if conn:
@@ -294,9 +300,10 @@ def _last_line(path):
     return "no log" if tail is None else (tail.splitlines() or ["no output"])[-1][:512]
 
 
-def down(timeout=10, d=None):
+def down(timeout=10, d=None, show_log=True):
     """Stop this HOME's dev signer, or the one of runtime dir `d` (SIGTERM to the pid in endpoint.json while it holds
-    signer.lock). Its pid, or None."""
+    signer.lock). Its pid, or None. One that doesn't stop is Hung, ending with the end of its log when `show_log` (the
+    stacks it wrote there; a hook replacing it leaves them out of what the agent reads)."""
     d = d or signer_dir()
     lock = os.path.join(d, LOCK)
     deadline = time.monotonic() + timeout
@@ -308,13 +315,20 @@ def down(timeout=10, d=None):
         time.sleep(0.05)
     if not _held(lock):   # the endpoint of a signer that has exited
         return None
+    stacks = _published(d).get("stacks") == "SIGUSR1"   # read before it unpublishes on stopping
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while _held(lock):
         if time.monotonic() > deadline:
-            log = os.path.join(d, LOG)   # it wrote its threads' stacks there after service.STOP_DUMP_S
-            raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; the end of {log}:\n"
-                       f"{_tail(log, 16384) or 'nothing'}")
+            log = os.path.join(d, LOG)
+            if show_log and stacks:   # where it is stuck: every thread's stack, which it writes to its stderr
+                os.kill(pid, signal.SIGUSR1)
+                time.sleep(0.5)
+            tail = _tail(log, 16384) or ""
+            start = tail.rfind("SERVING pid ")   # a foreground signer logs elsewhere: this log is another's
+            if not show_log or start >= 0 and tail[start:].split("\n", 1)[0].strip() != f"SERVING pid {pid}":
+                raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; see {log}")
+            raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; the end of {log}:\n{tail}")
         time.sleep(0.05)
     return pid
 

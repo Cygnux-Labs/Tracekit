@@ -820,10 +820,11 @@ def _over_budget(item, scale):
 @functools.lru_cache(maxsize=None)
 def machine_scale():
     """How many times slower than Speed.REF_S's Mac this machine runs a fixed linear search of 64 KiB on the fallback
-    engine, best of three, and at least 1: CI's runners are 2-3.5x slower. A pattern slow everywhere still fails."""
+    engine, best of three: at least 1, and at most 4 (CI's runners are 2-3.5x slower), so a busy moment while it is
+    timed can't stretch the budgets past what a slow runner needs. A pattern slow everywhere still fails."""
     rx = regex.compile(r"(^|\s)(\S{0,256}/)?redis-cli(\s+-\S*(\s+[^-\s]\S*)?){0,8}\s*<<<", regex.ASCII | regex.V0)
     s = "a/redis-cli -" * ((MAX_SUBJECT - 4) // 13)
-    return max(1.0, min(Speed().search(rx, s, 2.5) for _ in range(3)) / Speed.REF_S)
+    return min(4.0, max(1.0, min(Speed().search(rx, s, 2.5) for _ in range(3)) / Speed.REF_S))
 
 
 def argvs(command):
