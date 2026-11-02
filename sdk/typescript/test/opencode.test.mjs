@@ -64,13 +64,17 @@ test("OpenCode: the generated plugin refuses undecided calls and its after hook 
   }
 
   await t.test("parallel calls are decided at once, not one after another", async () => {
-    const started = [];
-    globalThis.Bun = { spawn: () => { const hook = hookProcess(); started.push(hook); return hook; } };
+    // both of Bun's process APIs, so a plugin on either runs: the order of the hooks' starts and ends tells them apart
+    const order = [], running = [];
+    globalThis.Bun = {
+      spawn: () => { const hook = hookProcess(); order.push("start"); running.push(hook); return hook; },
+      spawnSync: () => { order.push("start", "end"); return { exitCode: 0, stderr: new Uint8Array() }; },
+    };
     const calls = ["a", "b"].map((callID) =>
       hooks["tool.execute.before"]({ tool: "bash", sessionID: "opencode-test", callID }, { args: { command: "ls" } }));
-    assert.equal(started.length, 2);   // the second hook runs while the first still decides
-    started.forEach((hook) => hook.exit(0));
+    running.forEach((hook) => { order.push("end"); hook.exit(0); });
     await Promise.all(calls);
+    assert.deepEqual(order, ["start", "start", "end", "end"]);   // the second hook ran while the first still decided
   });
 
   await t.test("a hook that never answers is killed after 600 s and its call blocked", async (st) => {
