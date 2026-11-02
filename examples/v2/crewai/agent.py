@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional, Union
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from story import HELD, RISKY, SAFE, approver, export_and_verify   # noqa: E402
 
-os.environ.setdefault("CREWAI_DISABLE_TELEMETRY", "true")
-os.environ.setdefault("OTEL_SDK_DISABLED", "true")
+os.environ["CREWAI_DISABLE_TELEMETRY"] = "true"
+os.environ["OTEL_SDK_DISABLED"] = "true"
 os.environ["CREWAI_TRACING_ENABLED"] = "false"   # offline: no execution traces sent to CrewAI
 
 from crewai import Agent, BaseLLM, Crew, Task   # noqa: E402

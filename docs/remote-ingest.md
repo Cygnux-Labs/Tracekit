@@ -19,7 +19,8 @@ http:
   tokens: tokens.json          # named tokens, managed below
 authorize:   # + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
   "token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
-              state_write, status, read, observe, constraint_add]   # observe, constraint_add: the coding-agent hooks
+              state_write, status, read, observe, constraint_add, approval_get]   # observe, constraint_add: the coding-agent hooks
+  # approval_get: the Claude Code hook, to run an approved command the model retried with a new description
 tenants:
   "token:build-agent": acme    # or give the token a tenant with --tenant
 ```
@@ -53,7 +54,8 @@ This wires the v2 Claude Code hooks to the remote signer and prints the environm
 `TRACEKIT_SIGNER` (the URL), `TRACEKIT_SIGNER_TOKEN_FILE` (read on every call: rotate by rewriting the file) and
 `TRACEKIT_SIGNER_CA` (the CA the signer's certificate must chain to). The hooks record each prompt (`observe`) and send
 the live constraints it states (`constraint_add`): without both grants the hook reports an error at each prompt,
-records none and holds no constraint.
+records none and holds no constraint. Claude Code's hook also reads an answered approval (`approval_get`) when the model
+retries a held command with a new description: without the grant the retry is held again.
 
 ## What changes in the evidence
 

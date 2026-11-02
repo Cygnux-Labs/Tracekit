@@ -135,7 +135,8 @@ What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos
   signer, which lets that uid make only `model_event`, `state_write`, `tailer_lost`, `tailer_heartbeat` and `status`
   calls. The Claude Code hook (init's or the plugin's) starts it for each session through a sudo rule
   (`/etc/sudoers.d/tracekit-tailer`). An edited, truncated or replaced transcript, or a tailer that stops its
-  heartbeats while the run is open (killed), becomes a signed `tailer_lost` gap. When the ACL or the sudo rule can't
+  heartbeats while the run is open (killed), becomes a signed `tailer_lost` gap (an edit to a transcript over about
+  25 MB can be caught up to 30 s late, or not at all: [limits](limits.md#signer-and-capture)). When the ACL or the sudo rule can't
   be set up, init says so and each Claude Code session's run records a `tailer_lost` gap instead.
 
 An agent that runs through the SDK, such as a daemon that calls `tracekit.instrument()`, needs no hook: add
@@ -326,7 +327,8 @@ http:
   tokens: /var/lib/tracekit-signer/tokens.json
 tenants: {"token:*": default}
 authorize: {"token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
-                       state_write, status, observe, constraint_add]}   # observe, constraint_add: the coding-agent hooks
+                       state_write, status, observe, constraint_add, approval_get]}   # observe, constraint_add: the coding-agent hooks
+# approval_get: the Claude Code hook, to run an approved command the model retried with a new description
 # + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
 metrics: {listen: 127.0.0.1:9464}
 ```

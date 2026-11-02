@@ -9,7 +9,7 @@ It is experimental ([support](support.md)): it works and is tested, but may chan
 ## Usage
 
 ```
-tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--all] [--json]
+tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--all] [--json | --share]
 ```
 
 ```
@@ -30,22 +30,29 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` defaults to `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
+- `ROOT` defaults to `$CLAUDE_CONFIG_DIR/projects` when `CLAUDE_CONFIG_DIR` is set (Claude Code keeps its config
+  there then), else `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
-  without a timestamp is kept.
+  without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
 - `--show` includes each call as an approver sees it: its secrets redacted as the signer redacts them (`.env` content
   too), cut to 72 characters.
 - `--all` lists every call; without it, only the calls Tracekit would have denied or held for a person.
 - `--json` emits a machine-readable report, with every call.
+- `--share` prints the counts alone, to post as a [field report](field-reports.md): the window's length, the number
+  of sessions, the calls by decision, and each rule by the decision of the calls it matched, marked `also matched,
+  not why` when the rule's section isn't that decision and `not placed` for an engine check. A rule id that isn't
+  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 
 ## What it reads
 
 Every `.jsonl` file under ROOT, at any depth: each Claude Code session's transcript, and its subagents' files
-(`<session>/subagents/*.jsonl`), which count under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. The reader
-reuses `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
+(`<session>/subagents/*.jsonl`, a workflow's agents' in `<session>/subagents/workflows/<workflow>/`), which count
+under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
+was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
+`tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
 
 It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
 
