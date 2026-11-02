@@ -357,7 +357,8 @@ def _versions(add, settings, harnesses):
     signer = _dev_signer()
     if signer and not VERSION.fullmatch(str(signer.get("version"))):
         signer = {"pid": signer.get("pid")}   # an endpoint.json that names no version doctor prints
-    old_signer = signer is not None and (release(signer.get("version")) or ()) < release(mine)
+    # a signer whose version isn't known yet (still starting) is not called old
+    old_signer = bool(signer and signer.get("version")) and release(signer["version"]) < release(mine)
     pythons, old_hooks = {}, False   # (python, the -c hook's tree) -> the hook files that run it
     mine_files, relative = _user_hook_files()
     set_to = ", ".join(f"{k}={os.environ[k][:128]!r}" for k in relative)
@@ -1132,9 +1133,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     while not os.path.exists(where) and os.path.dirname(where) != where:
         where = os.path.dirname(where)
     kind = fs_type(where) if os.path.exists(where) else "unknown"
-    add("D-DATA-FS", kind.split(".")[0] not in NETWORK_FS, f"{data} is on {kind}" + (
-        ": file locking and fsync can't be trusted there" if kind.split(".")[0] in NETWORK_FS else ""),
-        "put data_dir on a local disk")
+    network = kind.split(".")[0] in NETWORK_FS
+    if os.path.exists(data):
+        detail = f"{data} is on {kind}"
+    else:
+        detail = f"{data} (not made yet) will be on {kind}"
+    if network:
+        detail += ": file locking and fsync can't be trusted there"
+    add("D-DATA-FS", not network, detail, "put data_dir on a local disk")
     return out
 
 

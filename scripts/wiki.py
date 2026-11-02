@@ -52,7 +52,7 @@ SECTIONS = [
     ("Security and privacy", ["threat-model-server.md", "threat-model-laptop.md", "security-checklist.md",
                               "review-packet.md", "privacy.md", "limits.md", "support.md"]),
     ("Compliance", ["compliance/README.md", "compliance/*.md"]),
-    ("Evaluation", ["evaluation.md", "case-study-oss-agents.md"]),
+    ("Evaluation", ["evaluation.md", "case-study-oss-agents.md", "field-reports.md"]),
     ("Use cases and demos", ["use-cases.md", "demos/README.md", "demos/*/README.md"]),
     ("Help", ["faq.md"]),
 ]

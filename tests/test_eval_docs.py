@@ -92,6 +92,9 @@ def claims():
         *(blind(x["totals"]) for p in (dflt, strict) for x in p["blind"]["pools"].values()),
         *(blind(p["blind"]["totals"], p["blind"]["fp_rate"]) for p in (dflt, strict)),
         f"the blind pools (default {pct(dflt['blind']['fp_rate'], 1)}, strict {pct(strict['blind']['fp_rate'], 1)})",
+        "E17's benign calls: " + "; ".join(f"{pct(g['heldout'], 1)}, {pct(g['sessions'], 1)}, "
+                                            f"{pct(g['e17'], 2 if g['e17'] < 0.01 else 1)} {p}"
+                                            for p, g in e21["gates"]["max_fp_rate"].items()),
         *(f"| {p}, RE2 / regex | {lat[p + '/re2']['p50_us']} / {lat[p + '/regex']['p50_us']} | "
           f"{lat[p + '/re2']['p99_us']} / {lat[p + '/regex']['p99_us']} | {lat[p + '/re2']['max_us']} / "
           f"{lat[p + '/regex']['max_us']} | {lat[p + '/re2']['p99_ref']} / {lat[p + '/regex']['p99_ref']} |"

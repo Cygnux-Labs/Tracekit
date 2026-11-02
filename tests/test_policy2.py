@@ -223,19 +223,25 @@ class Spellings(unittest.TestCase):
         # #483: frameworks rewrite tool names (CrewAI: `bash` for `Bash`, `multi_edit` for `MultiEdit`)
         e = Engine({"tools": {"Bash": "shell", "MultiEdit": "fs", "run_cmd": "shell", "Run-Cmd": "fs", "mcp:*/*": "mcp"}})
         self.assertEqual([e.listed(t) for t in ("bash", "BASH", "multi_edit", "Multi Edit")],
-                         ["Bash", "Bash", "MultiEdit", "MultiEdit"])
-        for t in ("Bash", "run_cmd", "RunCmd", "mcp:x/bash", "bsh", ""):   # listed; two names spell it; a glob's; none
-            self.assertIsNone(e.listed(t), t)
+                         [["Bash"], ["Bash"], ["MultiEdit"], ["MultiEdit"]])
+        # 1.5.3 review (#484): a spelling two listed names share names both (server.yaml's `bash`, coding.yaml's `Bash`)
+        self.assertEqual(e.listed("RunCmd"), ["run_cmd", "Run-Cmd"])
+        for t in ("Bash", "run_cmd", "mcp:x/bash", "bsh", ""):   # listed; listed; a glob's; none; none
+            self.assertEqual(e.listed(t), [], t)
         # CrewAI keeps an accented letter's ASCII base (`CaféTool` -> `cafe_tool`); a name with no ASCII letter or
         # digit spells nothing, so it takes no other such name
         e = Engine({"tools": {"CaféTool": "app", "検索": "app"}})
-        self.assertEqual([e.listed(t) for t in ("cafe_tool", "翻訳", "-", "é")], ["CaféTool", None, None, None])
+        self.assertEqual([e.listed(t) for t in ("cafe_tool", "翻訳", "-", "é")], [["CaféTool"], [], [], []])
 
     def test_a_renamed_tools_results_are_untrusted_when_the_listed_ones_are(self):
         for untrusted in (["http"], ["WebFetch"]):   # by class, by name
             e = Engine({"tools": {"WebFetch": "http"}, "untrusted": untrusted})
             self.assertEqual([e.untrusted_results(t) for t in ("web_fetch", "WebFetch", "web_search")],
                              [True, True, False], untrusted)
+        # 1.5.3 review (#484): the server pack lists both web_fetch (server-net) and WebFetch (coding), so their
+        # shared spelling named neither and its results weren't marked untrusted
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
+        self.assertEqual([e.untrusted_results(t) for t in ("webfetch", "Web-Fetch", "web_fetch")], [True, True, True])
 
 
 class Handoffs(unittest.TestCase):

@@ -241,7 +241,8 @@ def main(argv=None):
     p = sub.add_parser("graph", help="what agents did across verified bundles: `graph build|query|verify`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("report", help="what the agents did this week, on one page, from the v2 signer's store: runs, "
-                       "calls, holds, denies and flags by rule, gaps, integrity (--since, --json)", add_help=False)
+                       "calls, holds, denies and flags by rule, gaps, integrity (--since, --json, --share)",
+                       add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
                        "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)

@@ -74,12 +74,11 @@ class Engine:
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
                         for name, b in (r.get("approval") or {}).get("agent", {}).get("allow", {}).get("fields", {}).items()
                         if "pattern" in b}
-        # the names `tools:` lists (not its globs) by spelling, for listed(); a spelling two names share names neither
-        spelled = {}
+        # the names `tools:` lists (not its globs) by spelling, for listed(); a spelling two names share names both
+        self._spelled = {}
         for t in self.policy.get("tools", {}):
             if not any(c in t for c in "*?[") and _spelling(t):   # a name with no ASCII letter or digit spells none
-                spelled.setdefault(_spelling(t), []).append(t)
-        self._spelled = {k: v[0] for k, v in spelled.items() if len(v) == 1}
+                self._spelled.setdefault(_spelling(t), []).append(t)
 
     def bounds(self, rule, args, deadline):
         """[(condition, passed)] of ask rule `rule`'s approval.agent bounds over a call's `args`: a closed world, not
@@ -130,19 +129,20 @@ class Engine:
         return tools[hits[0][1]] if hits else "unknown"
 
     def listed(self, tool):
-        """The name `tools:` lists that `tool` spells with case, spaces and punctuation ignored, when it lists neither
-        `tool` nor a glob that takes it; None otherwise, and when two listed names spell it. Frameworks rewrite the
-        names they are given: CrewAI's hooks see `bash` for a tool declared `Bash`, `multi_edit` for `MultiEdit`."""
+        """The names `tools:` lists that `tool` spells with case, spaces and punctuation ignored (every one, when two
+        share the spelling: the server pack's `bash` and the coding pack's `Bash`), when it lists neither `tool` nor a
+        glob that takes it; [] otherwise. Frameworks rewrite the names they are given: CrewAI's hooks see `bash` for a
+        tool declared `Bash`, `multi_edit` for `MultiEdit`."""
         if tool in self.policy.get("tools", {}) or self.tool_class(tool) != "unknown":
-            return None
-        return self._spelled.get(_spelling(tool))
+            return []
+        return list(self._spelled.get(_spelling(tool), ()))
 
     def untrusted_results(self, tool):
         """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted,
-        or those of the tool it spells (listed)."""
-        return any(name is not None and any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
-                                for u in self.policy.get("untrusted", ()))
-                   for name in (tool, self.listed(tool)))
+        or those of a tool it spells (listed)."""
+        return any(any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
+                       for u in self.policy.get("untrusted", ()))
+                   for name in (tool, *self.listed(tool)))
 
     def reads(self, tool, cls=None):
         """{section: [rule ids]} decide() reads for a call of `tool` (`cls` overrides its class, as for decide): those
