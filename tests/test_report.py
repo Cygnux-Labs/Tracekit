@@ -251,7 +251,7 @@ class WeeklyReport(unittest.TestCase):
         self.assertIn(f"{mark}-rule.acme-prod-db.internal", {g["rule"] for g in rep["rules"]})
         page = weekly.share(rep)
         self.assertEqual(page.splitlines(), [
-            f"Tracekit {__version__} field report (tracekit report --share): 0 days",
+            f"Tracekit {__version__} field report (tracekit report --share): 0 hours",   # a minute
             "Integrity: the store verified, 5 of 5 runs verify",
             "Runs that verify, by agent: claude-code 2, codex 1, cursor 1, other 1",
             "Tool calls: 13   allow 3, flag 3, ask 5, deny 2",
@@ -664,6 +664,31 @@ class When(unittest.TestCase):
         self.assertEqual(weekly.when("2026-10-19T00:00:00"), weekly.when("2026-10-19T00:00:00+00:00"))
         with self.assertRaises(argparse.ArgumentTypeError):
             weekly.when("last week")
+
+    def test_a_time_no_date_can_name_is_refused_at_once(self):
+        """1.5.3 review: 400 digits of days raised OverflowError (a traceback, exit 1); 3000000d and times past year 1
+        or 9999 in UTC passed, and the report failed once it was built, minutes later."""
+        for value in ("9" * 400 + "d", "3000000d", "0001-01-01T00:00+05:00", "9999-12-31T23:59-05:00"):
+            with self.subTest(value=value[:24]), self.assertRaises(argparse.ArgumentTypeError):
+                weekly.when(value)
+        self.assertEqual(weekly._iso(-86400), "1969-12-31T00:00:00Z")
+
+    def test_a_window_that_ends_before_it_starts_is_refused_before_any_run_is_read(self):
+        """1.5.3 review: --since after --until, or in the future, printed a negative window (-1155.4 days)."""
+        for argv in (["--since", "2026-11-02", "--until", "2026-11-01"], ["--since", "2999-01-01"]):
+            with self.subTest(argv=argv), mock.patch.object(weekly, "build", side_effect=AssertionError("read")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as code:
+                weekly.main(["--data-dir", "nowhere", *argv])
+            self.assertEqual(code.exception.code, 2)
+            self.assertIn("--since must be before --until", err.getvalue())
+
+    def test_a_window_under_a_day_is_in_hours(self):
+        self.assertEqual([weekly._days(s) for s in (1800, 3600, 86400, 7 * 86400)],
+                         ["0.5 hours", "1 hour", "1 day", "7 days"])
+
+    def test_a_decision_with_no_rule_is_not_called_a_custom_rule(self):
+        """1.5.3 review: --share counted a deny or flag with no rule id as "custom rule", a policy of the user's own."""
+        self.assertEqual(weekly.share_rules({("deny", "no rule", True): 2}), ["  deny no rule 2"])
 
 
 if __name__ == "__main__":
