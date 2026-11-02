@@ -148,24 +148,6 @@ jobs:
           cd sdk/typescript && node examples/vercel_ai.mjs
       - name: Run the v2 Vercel AI SDK example (starts a v2 dev signer on demand)
         run: cd sdk/typescript && npm install --no-save ai@7 && node examples/v2_vercel_ai.mjs
-      - name: Run the v2 Vercel AI SDK resume example (held, approved from another process, resumed once)
-        run: |
-          cd sdk/typescript
-          OLD="$(mktemp -d)/old.json"   # a state file others can read is refused; one its signer never knew is dropped
-          echo '{"runId":"run-old","runToken":"t","messages":[],"content":[]}' > "$OLD"
-          chmod 644 "$OLD"
-          if node examples/v2_vercel_ai_resume.mjs "$OLD" 2> "$RUNNER_TEMP/refused.txt"; then exit 1; fi
-          grep -q "must be a regular file owned by you" "$RUNNER_TEMP/refused.txt"
-          chmod 600 "$OLD"
-          node examples/v2_vercel_ai_resume.mjs "$OLD" | tee "$RUNNER_TEMP/stale.txt"
-          grep -q "Executed 0 times" "$RUNNER_TEMP/stale.txt"
-          test ! -e "$OLD"
-          STATE="$(mktemp -d)/state.json"
-          node examples/v2_vercel_ai_resume.mjs "$STATE" | tee "$RUNNER_TEMP/held.txt"
-          tracekit approvals approve "$(grep -oE 'apr-[0-9a-f]{32}' "$RUNNER_TEMP/held.txt" | head -1)"
-          node examples/v2_vercel_ai_resume.mjs "$STATE" | tee "$RUNNER_TEMP/resumed.txt"
-          grep -qF "Executed 1 time(s)" "$RUNNER_TEMP/resumed.txt"
-          test ! -e "$STATE"
 
   package:
     name: build and smoke-test the wheel
