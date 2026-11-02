@@ -4,6 +4,7 @@ import importlib.util
 import io
 import itertools
 import json
+import multiprocessing
 import os
 import random
 import re
@@ -14,6 +15,7 @@ import time
 import tracemalloc
 import unittest
 import uuid
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
@@ -649,12 +651,18 @@ class Speed(unittest.TestCase):
         return list(dict.fromkeys(found + [o for m in more for o in m]))
 
     def test_every_pack_pattern_searches_64_kib_within_budget(self):
+        # the first search of every filler (~57,000 of 64 KiB) in worker processes, one per CPU, spawned (this process
+        # has threads); a filler over the budget there, maybe only under the others' load, is searched again here,
+        # alone: its best of three is held to the budget
+        patterns = pack_patterns()
+        with ProcessPoolExecutor(os.cpu_count(), mp_context=multiprocessing.get_context("spawn")) as pool:
+            over = list(pool.map(_over_budget, patterns))
         slow = []
-        for rid, key, pattern in pack_patterns():
+        for (rid, key, pattern), fillers in zip(patterns, over):
             budget = self.RULE_BUDGET_S.get(rid, self.BUDGET_S)
             rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
-            for s in self.fillers(rid, pattern):
-                took = min(self.search(rx, s) for _ in range(3)) if self.search(rx, s) > budget else 0
+            for s in fillers:
+                took = min(self.search(rx, s) for _ in range(3))
                 if took > budget:
                     slow.append(f"{rid} {key} {took * 1e3:.0f} ms on {s[:24]!r}")
         self.assertEqual(slow, [])
@@ -792,6 +800,15 @@ class Speed(unittest.TestCase):
         took.sort()
         self.assertLess(took[len(took) // 2], 0.002)        # 45 us on an M-series laptop
         self.assertLess(took[len(took) * 99 // 100], 0.01)  # 100 us
+
+
+def _over_budget(item):
+    """(in a worker process) The fillers of pack pattern `item` whose first search took longer than its budget."""
+    rid, _, pattern = item
+    speed = Speed()
+    budget = speed.RULE_BUDGET_S.get(rid, speed.BUDGET_S)
+    rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
+    return [s for s in speed.fillers(rid, pattern) if speed.search(rx, s) > budget]
 
 
 def argvs(command):
