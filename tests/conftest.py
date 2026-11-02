@@ -1,3 +1,4 @@
+import glob
 import io
 import json
 import os
@@ -68,13 +69,19 @@ def _no_shell_env():
             mp.delenv(k, raising=False)
         mp.setenv("TRACEKIT_RUNTIME_DIR", run)
         yield
-    try:
-        from tracekit.sdk import autospawn
-    except ImportError:   # no v2 extra: no dev signer
-        pass
-    else:
-        autospawn.down(d=run)   # a dev signer a test started there and left running
-    shutil.rmtree(run, ignore_errors=True)
+    for d in [run, *glob.glob(run + "-*")]:   # and the side dirs (autospawn._side) of other HOMEs' signers
+        try:   # a dev signer a test started there and left running
+            from tracekit.sdk import autospawn
+            autospawn.down(d=d)
+        except ImportError:   # no v2 extra: no dev signer
+            pass
+        except (OSError, autospawn.Hung) as e:   # fails the session at its end, not the test that ran last
+            _LEFT_RUNNING.append(f"{d}: {e}")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+_LEFT_RUNNING = []
 
 
 @pytest.fixture(autouse=True)
@@ -123,6 +130,10 @@ def pytest_sessionfinish(session):
     made = _made(set(_HOME_DIRS_BEFORE))
     if made:
         print(f"\nthis session made {made} in the real home folder, outside any test", file=sys.stderr)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    if _LEFT_RUNNING:
+        print(f"\na dev signer a test left running in the session's runtime dir didn't stop: {_LEFT_RUNNING}",
+              file=sys.stderr)
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
