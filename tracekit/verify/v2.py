@@ -252,6 +252,7 @@ def _openshell_policy(rep, events):
 # whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
 EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy}
 MAX_UNREAD = 20   # `not interpreted` lines, one per ext name; the rest on one line
+RUN_PROBLEMS = 20   # a run's problems past which its later records go unchecked: forged records cost a verifier little
 
 
 class Unusable(ValueError):
@@ -682,7 +683,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     # the runs: one, or with a run-set any number; each in one file or in parts
     names = run_files(files)
     run_set = "registry/run-set.json" in files
-    runs, problems, chain, outside, layout, seen = {}, [], [], [], [], set()
+    runs, problems, chain, outside, layout, seen, unchecked = {}, [], [], [], [], set(), 0
     reads = [files["keys/records.jsonl"].decode("utf-8"), trust, sorted(revocations.items())]   # besides the records
     keyed = isinstance(memo, Memo) and hashlib.sha256(json.dumps(reads, default=str).encode()).digest()
     for name, parts in names.items():
@@ -714,15 +715,20 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                 chain.append(f"run {key[1][:200]!r} of tenant {key[0][:64]!r} in {name}: its file is "
                              f"{run_name(*key)}")
         for i in range(start, len(records)):   # those a Memo kept were checked as they are
+            if len(problems) - marks[0] + len(chain) - marks[1] >= RUN_PROBLEMS:
+                unchecked += len(records) - i
+                chain.append(f"run {str(head.get('run_id'))[:200]!r}: {len(records) - i} record(s) from run_seq {i} on "
+                             f"not checked, after {RUN_PROBLEMS} problems in the run")
+                break
             r = records[i]
-            check_record(r, keys_at(r["event"]["seq"]), problems)
-            e = r["event"]
+            e = r["event"]   # its link to the record before it first: it costs nothing
             if (e.get("run_seq") != i or e.get("run_prev_hash") != (records[i - 1]["hash"] if i else ZERO_HASH)
                     or (e.get("tenant"), e.get("run_id")) != (head.get("tenant"), head.get("run_id"))
                     or (i and (e["seq"] <= records[i - 1]["event"]["seq"]
                                or records[i - 1]["event"].get("type") == "run.final"))):
                 chain.append(f"run {str(head.get('run_id'))[:200]!r} run_seq {i} (seq {e.get('seq')!r}) does not "
                              "continue the run")
+            check_record(r, keys_at(e["seq"]), problems)
         if not (included(records[0]) and included(records[-1])):
             outside.append(f"run {str(head.get('run_id'))[:200]!r}" + (
                 f": the last record of {parts[-1]} is not in the checkpointed tree, so a later part may be missing"
@@ -763,7 +769,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("run parts", not layout, _found(layout, f"{len(parted)} run(s) in {sum(map(len, parted))} parts, "
                                                           "each part continuing the one before it",
                                                   f"the parts of {len(parted)} run(s)"), layout)
-    count = sum(map(len, runs.values()))
+    count = sum(map(len, runs.values())) - unchecked
     rep.check("signatures", not problems, _found(problems, f"{count} record(s), keys valid at their position",
                                                  f"{count} record(s)"), problems)
     only = len(runs) == 1 and next(iter(runs.values()))[0]["event"]
