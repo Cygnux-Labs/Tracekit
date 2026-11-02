@@ -310,6 +310,23 @@ def _dev_signer():
     return hello if isinstance(hello, dict) else {}
 
 
+# the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path)
+USER_ENV = ("HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME", "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG")
+
+
+def _user_hook_files():
+    """(the realpaths of the user's own hook files, the USER_ENV variables set to a relative path). A file such a
+    variable places resolves against doctor's working directory, so it isn't counted as the user's (the XDG spec says
+    to ignore a relative XDG_CONFIG_HOME, and Codex resolves a relative CODEX_HOME against its own directory)."""
+    from . import agent_hooks
+    relative = [k for k in USER_ENV if os.environ.get(k) and not os.path.isabs(os.environ[k])]
+    paths = [install.user_settings(), os.path.join(os.path.expanduser("~"), ".claude", "settings.json"),
+             *(install.user_settings_all() if "TRACEKIT_CLIENT_HOME" not in relative else ()),   # + init's record
+             *(agent_hooks.config_path(h) for h in agent_hooks.HARNESSES   # it resolves CODEX_HOME itself
+               if not (h == "codex" and "CODEX_HOME" in relative))]
+    return {os.path.realpath(p) for p in paths if os.path.isabs(p)}, relative
+
+
 def _pid(hello):
     return hello.get("pid") if type(hello.get("pid")) is int else "?"
 
@@ -323,7 +340,6 @@ def _versions(add, settings, harnesses):
     lean: the Claude Code plugin's hook isn't asked: it picks its Python as it runs (plugin/scripts/tracekit-hook), in
     Claude Code's environment, and says itself when it and the signer differ; repeat its search here if that's short"""
     from . import __version__ as mine
-    from . import agent_hooks
     from .integrations.claude_code import release, upgrade
 
     def vs(v):
@@ -339,8 +355,8 @@ def _versions(add, settings, harnesses):
         signer = {"pid": signer.get("pid")}   # an endpoint.json that names no version doctor prints
     old_signer = signer is not None and (release(signer.get("version")) or ()) < release(mine)
     pythons, old_hooks = {}, False   # (python, the -c hook's tree) -> the hook files that run it
-    mine_files = {os.path.realpath(p) for p in (*install.user_settings_all(),
-                                                *map(agent_hooks.config_path, agent_hooks.HARNESSES))}
+    mine_files, relative = _user_hook_files()
+    set_to = ", ".join(f"{k}={os.environ[k][:128]!r}" for k in relative)
     sources = [("Claude Code", settings, lambda: [h.get("command") for hs in _hooks(settings).values() for h in hs])]
     for name, path, cmds in sources + [(h, p, lambda h=h, p=p: _hook_commands(h, p))
                                        for h, p in sorted((harnesses or {}).items())]:
@@ -350,10 +366,12 @@ def _versions(add, settings, harnesses):
         except (OSError, ValueError, AttributeError, TypeError):   # D-HOOKS-PRESENT and D-HOOKS-EVENT say why
             continue
         if argvs and os.path.realpath(path) not in mine_files:
-            add("D-VERSIONS", False, f"the {name} hooks in {path} not probed: a project hook file. Doctor never runs a "
-                "project's commands: running it in a cloned repository runs none of its code", "check the Tracekit "
-                "version the Python they name imports once you trust them, or install the hooks for your user: " + fix,
-                bad=WARN)
+            add("D-VERSIONS", False, f"the {name} hooks in {path} not probed: a project hook file"
+                + (f", or one that {set_to}, a relative path, places" if relative else "")
+                + ". Doctor never runs a project's commands: running it in a cloned repository runs none of its code",
+                (f"set {', '.join(relative)} to an absolute path, or unset it; " if relative else "")
+                + "check the Tracekit version the Python they name imports once you trust them, or install the hooks "
+                "for your user: " + fix, bad=WARN)
             continue
         if None in argvs:
             add("D-VERSIONS", False, f"can't tell which Python runs the {name} hooks in {path}: a command init doesn't "

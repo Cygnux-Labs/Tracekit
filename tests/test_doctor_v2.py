@@ -1506,6 +1506,38 @@ class Versions(unittest.TestCase):
                                                            ("cursor", cursor))])
         self.assertEqual({r["status"] for r in rows[:3]}, {"warn"})
 
+    def test_a_relative_config_variable_does_not_make_a_project_file_yours(self):
+        """Re-review of #512: with CODEX_HOME=.codex (or a relative CLAUDE_CONFIG_DIR or XDG_CONFIG_HOME), doctor took
+        the working directory's hook file for the user's own, and ran what it names."""
+        project = os.path.join(os.path.realpath(self.d), "repo")
+        ran = self.planted(project)
+        evil = os.path.join(project, "evil")
+        codex = os.path.join(project, ".codex", "hooks.json")
+        os.makedirs(os.path.dirname(codex))
+        with open(codex, "w") as f:
+            json.dump({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": self.command(
+                evil, "tracekit.integrations.harness_hooks", "entry('codex', 'PreToolUse')")}]}]}}, f)
+        self.hooks(self.command(evil), path=os.path.join(project, "cc", "settings.json"))
+        plugin = os.path.join(project, ".config", "opencode", "plugin", "tracekit.js")
+        os.makedirs(os.path.dirname(plugin))
+        code = (f"import base64,sys; r=base64.b64decode('{base64.b64encode(evil.encode()).decode()}').decode('utf-8'); "
+                "sys.path.insert(0, r); from tracekit.integrations.harness_hooks import entry; "
+                "raise SystemExit(entry('opencode', 'tool.execute.before'))")
+        with open(plugin, "w") as f:
+            f.write(f"const commands = {json.dumps({'tool.execute.before': [self.python, '-I', '-c', code]})};\n")
+        self.chdir(project)
+        with mock.patch.dict(os.environ, {"CODEX_HOME": ".codex", "CLAUDE_CONFIG_DIR": "cc", "XDG_CONFIG_HOME": ".config"}), \
+                mock.patch.object(doctor.client, "system_config", return_value=None):
+            rows = [r for r in doctor.collect() if r["id"] == "D-VERSIONS"]
+        self.assertFalse(os.path.exists(ran), "doctor ran a hook file a relative variable placed")
+        skipped = [r for r in rows if "not probed" in r["detail"]]
+        self.assertEqual([r["detail"].split(" hooks in ")[0] for r in skipped],
+                         ["the Claude Code", "the codex", "the opencode"], rows)
+        for r in skipped:
+            self.assertIn("or one that CLAUDE_CONFIG_DIR='cc', CODEX_HOME='.codex', XDG_CONFIG_HOME='.config', a relative "
+                          "path, places", r["detail"])
+            self.assertTrue(r["fix"].startswith("set CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_CONFIG_HOME to an absolute path"))
+
     def test_a_relative_interpreter_or_path_is_never_run(self):
         """Review of #512: a relative interpreter, or a relative working tree a -c hook puts on sys.path, resolves against
         doctor's working directory, not the hook's: doctor runs neither, from the user's own hook file either."""
