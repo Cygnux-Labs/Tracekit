@@ -1884,28 +1884,31 @@ class CodingPack(unittest.TestCase):
         d = self.e.decide("Bash", {"command": "terragrunt run-all apply " + "x " * 30000 + "-destroy"})
         self.assertEqual((d["verdict"], "TK-A001" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
 
+    # The commands TK-A035 holds. TK-A036 holds those that start with the program as an MCP tool's command
+    SECRET_READS = ["aws secretsmanager get-secret-value --secret-id prod/db",
+                    "aws --profile prod --region us-east-1 secretsmanager batch-get-secret-value --secret-id-list a b",
+                    "aws ssm get-parameter --name /prod/pw --with-decryption",
+                    "aws ssm get-parameter --with-decryption --name /prod/pw",
+                    "aws ssm get-parameters --names /a /b --with-decryption",
+                    "aws ssm get-parameters-by-path --path /prod --with-decryption",
+                    "aws ssm get-parameter-history --name /p --with-decryption",
+                    "aws ssm get-parameter --name $'a\nb' --with-decryption",
+                    "AWS_PROFILE=prod aws secretsmanager get-secret-value --secret-id x",
+                    "gcloud secrets versions access latest --secret=db",
+                    "gcloud --project p beta secrets versions access 3 --secret=db",
+                    "az keyvault secret show --vault-name v --name n",
+                    "az keyvault secret show-deleted --vault-name v --name n",
+                    "az keyvault secret download --vault-name v --name n --file f",
+                    # options between the words, and an abbreviated flag (the AWS CLI accepts any prefix)
+                    "aws secretsmanager --region us-east-1 get-secret-value --secret-id x",
+                    "aws ssm --region r get-parameter --name x --with-decryption",
+                    "aws ssm get-parameter --name x --with-d", "aws ssm get-parameter --name x --with-decrypt",
+                    "gcloud secrets --project p versions access latest --secret=db",
+                    "gcloud beta --project p secrets versions access latest --secret=db",
+                    "az keyvault --subscription s secret show --name n --vault-name v"]
+
     def test_reading_a_secrets_value_from_a_cloud_cli_asks_in_every_pack(self):
-        held = ["aws secretsmanager get-secret-value --secret-id prod/db",
-                "aws --profile prod --region us-east-1 secretsmanager batch-get-secret-value --secret-id-list a b",
-                "aws ssm get-parameter --name /prod/pw --with-decryption",
-                "aws ssm get-parameter --with-decryption --name /prod/pw",
-                "aws ssm get-parameters --names /a /b --with-decryption",
-                "aws ssm get-parameters-by-path --path /prod --with-decryption",
-                "aws ssm get-parameter-history --name /p --with-decryption",
-                "aws ssm get-parameter --name $'a\nb' --with-decryption",
-                "AWS_PROFILE=prod aws secretsmanager get-secret-value --secret-id x",
-                "gcloud secrets versions access latest --secret=db",
-                "gcloud --project p beta secrets versions access 3 --secret=db",
-                "az keyvault secret show --vault-name v --name n",
-                "az keyvault secret show-deleted --vault-name v --name n",
-                "az keyvault secret download --vault-name v --name n --file f",
-                # options between the words, and an abbreviated flag (the AWS CLI accepts any prefix)
-                "aws secretsmanager --region us-east-1 get-secret-value --secret-id x",
-                "aws ssm --region r get-parameter --name x --with-decryption",
-                "aws ssm get-parameter --name x --with-d", "aws ssm get-parameter --name x --with-decrypt",
-                "gcloud secrets --project p versions access latest --secret=db",
-                "gcloud beta --project p secrets versions access latest --secret=db",
-                "az keyvault --subscription s secret show --name n --vault-name v"]
+        held = self.SECRET_READS
         routine = ["aws secretsmanager list-secrets", "aws secretsmanager describe-secret --secret-id x",
                    "aws ssm get-parameter --name /p", "aws ssm get-parameter --name /p --no-with-decryption",
                    "aws ssm get-parameters-by-path --path /p", "aws ssm get-parameter --name x --wait",
@@ -1942,6 +1945,24 @@ class CodingPack(unittest.TestCase):
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
             # a tool not named for running a command is left to TK-A037 and TK-A038 (docs/limits.md)
             self.assertNotIn("TK-A036", e.decide("mcp__x__get_thing", held[0])["rule_ids"])
+
+    def test_every_command_tk_a035_holds_is_held_as_an_mcp_tools_command_whatever_separates_its_words(self):
+        """TK-A036 reads the command as JSON text, where it read one space between words: two spaces, or a tab or
+        newline, put a command the shell rule holds through call_aws with only a flag. The two rules stay in step."""
+        cmds = [c for c in self.SECRET_READS if c.split()[0] in ("aws", "gcloud", "az")]
+        routine = ["aws  secretsmanager  list-secrets", "aws\tssm\tget-parameter --name /p", "gcloud  secrets list",
+                   'aws --query "SecretString" secretsmanager list-secrets']
+        for pack, engine, e in self.every_pack():
+            for cmd in cmds:
+                for sep in (" ", "  ", "\t", "\n", " \t "):
+                    text = sep.join(cmd.split(" "))
+                    with self.subTest(pack=pack, engine=engine, cmd=text):
+                        self.assertIn("TK-A036", e.decide("mcp__aws-api__call_aws", {"cli_command": text})["rule_ids"])
+            for text in routine:
+                with self.subTest(pack=pack, engine=engine, cmd=text):
+                    self.assertNotIn("TK-A036", e.decide("mcp__aws-api__call_aws", {"cli_command": text})["rule_ids"])
+            d = e.decide("mcp__aws-api__call_aws", {"cli_command": "aws ssm get-parameter " + "x\t" * 19000})
+            self.assertEqual(("TK-A036" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
 
     def test_an_mcp_tool_that_returns_a_secrets_value_asks_in_every_pack_and_one_that_lists_or_describes_does_not(self):
         held = [("mcp__aws__get_secret_value", {"secret_id": "prod/db-password"}),
