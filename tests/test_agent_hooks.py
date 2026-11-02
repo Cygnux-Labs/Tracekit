@@ -1078,6 +1078,30 @@ class Installer(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(json.load(f), {})
 
+    def test_on_windows_qwen_runs_its_hook_under_powershell_and_keeps_exit_2(self):
+        # #406: Qwen Code ran it under cmd.exe, where Node's escaped quotes stop a quoted interpreter path from running,
+        # so a denied call ran unrecorded. Its hook's "shell" picks PowerShell, which hands a native exit 2 back as 1
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        exe = r"C:\Program Files\Python312\python.exe"
+        with mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", exe), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for harness in ("qwen", "codex", "gemini"):
+                agent_hooks.install(harness, d, v2=True)
+        for harness, ev in (("qwen", "PreToolUse"), ("codex", "PreToolUse"), ("gemini", "BeforeTool")):
+            with self.subTest(harness=harness):
+                with open(agent_hooks.config_path(harness, d)) as f:
+                    hook = json.load(f)["hooks"][ev][0]["hooks"][0]
+                self.assertTrue(hook["command"].startswith(f'& "{exe}" -I '), hook)
+                self.assertEqual(hook["command"].endswith("; exit $LASTEXITCODE"), harness == "qwen", hook)
+                self.assertEqual(hook.get("shell"), "powershell" if harness == "qwen" else None, hook)
+        with mock.patch("os.name", "posix"), contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("qwen", d, v2=True)
+        with open(agent_hooks.config_path("qwen", d)) as f:
+            hook = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]
+        self.assertNotIn("shell", hook)   # elsewhere Qwen Code's own shell runs it
+        self.assertFalse(hook["command"].startswith("&"), hook)
+
     def test_an_event_whose_hooks_are_not_a_list_is_refused_and_left_alone(self):
         from tracekit.install import SettingsError
         d = tempfile.mkdtemp()

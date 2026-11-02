@@ -104,8 +104,9 @@ need an update here. Qwen Code's are from its [hooks documentation](https://qwen
 it sends Claude Code's payloads and event names (with `tool_use_id`), reads exit 2 as a block, takes hook timeouts in
 milliseconds (versions since September 2026 in seconds, but 1000 or more still as milliseconds; 60 s unless set; `init` writes 600000, 600 s
 either way, for `PreToolUse`, so a person has time to approve a held call), and
-runs a project's hooks only in a trusted folder. On Windows it runs hooks under `cmd.exe`, so the interpreter path
-stays quoted when it contains spaces, as for Droid.
+runs a project's hooks only in a trusted folder. On Windows it runs a hook under cmd.exe or Git Bash, by how it was
+started, unless the hook names its `"shell"`: `init` writes `"shell": "powershell"` and the command in PowerShell's
+form, as for Codex and Gemini CLI, ending in `; exit $LASTEXITCODE` so that a block's exit 2 gets through PowerShell.
 
 A call on several files (a patch's `paths`, the files of a Gemini CLI or Qwen Code `read_many_files`) or URLs (a
 `web_fetch`'s `urls`) is decided on each: a rule that matches any of them applies.
