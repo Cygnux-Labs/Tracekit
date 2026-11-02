@@ -8,6 +8,7 @@ import shutil
 import signal
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
 import time
@@ -186,6 +187,22 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.assertIn("dev signer starting", self.cli("up"))
         self.assertIn("dev signer stopped (pid ", self.cli("down"))
         self.assertFalse(self.held())
+
+    def test_a_stop_that_hangs_says_where_it_is_stuck(self):
+        """#517: a dev signer that didn't stop said only its pid. After STOP_DUMP_S it writes every thread's stack to its
+        log, and down's error ends with them: here the main thread, in a close() that never returns."""
+        child = ("import sys, threading; from tracekit.signer import service; service.STOP_DUMP_S = 0.2; "
+                 "sys.exit(service.serve_dev(sys.argv[1], lambda: (lambda *a: None, threading.Event().wait)))")
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        with open(os.path.join(self.run_dir, autospawn.LOG), "ab") as log:
+            p = subprocess.Popen([sys.executable, "-c", child, self.run_dir], stdout=log, stderr=log)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        wait_for(lambda: autospawn._pid(self.run_dir), 30)
+        with self.assertRaises(autospawn.Hung) as got:
+            autospawn.down(timeout=2, d=self.run_dir)
+        self.assertIn(f"the dev signer (pid {p.pid}) did not stop within 2s; the end of ", str(got.exception))
+        self.assertIn("in serve_dev", str(got.exception))
 
     def test_a_previous_version_client_is_served(self):
         """RPC 16 adds only optional fields: the signer serves 15..16, and a 15 client keeps working unchanged."""

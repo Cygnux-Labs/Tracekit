@@ -278,14 +278,20 @@ def _ensure(d, wait, timeout):
                             f"{os.path.join(d, LOG)}")
 
 
-def _last_line(path):
-    """The last line of a signer's log: the reason it gave for exiting."""
+def _tail(path, size=4096):
+    """The last `size` bytes of a signer's log, as text; None when it can't be read."""
     try:
         with open(path, "rb") as f:
-            f.seek(max(0, os.fstat(f.fileno()).st_size - 4096))
-            return (f.read().decode("utf-8", "replace").strip().splitlines() or ["no output"])[-1][:512]
+            f.seek(max(0, os.fstat(f.fileno()).st_size - size))
+            return f.read().decode("utf-8", "replace").strip()
     except OSError:
-        return "no log"
+        return None
+
+
+def _last_line(path):
+    """The last line of a signer's log: the reason it gave for exiting."""
+    tail = _tail(path)
+    return "no log" if tail is None else (tail.splitlines() or ["no output"])[-1][:512]
 
 
 def down(timeout=10, d=None):
@@ -306,7 +312,9 @@ def down(timeout=10, d=None):
     deadline = time.monotonic() + timeout
     while _held(lock):
         if time.monotonic() > deadline:
-            raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s")
+            log = os.path.join(d, LOG)   # it wrote its threads' stacks there after service.STOP_DUMP_S
+            raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; the end of {log}:\n"
+                       f"{_tail(log, 16384) or 'nothing'}")
         time.sleep(0.05)
     return pid
 

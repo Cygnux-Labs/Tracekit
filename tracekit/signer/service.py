@@ -286,6 +286,7 @@ import argparse
 import base64
 import collections
 import datetime
+import faulthandler
 import functools
 import hashlib
 import hmac
@@ -351,6 +352,7 @@ T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decide
 TICK_S = 1.0
 WITNESS_START_S = 30.0   # start-up: how long the witnesses, asked at once, have to say how far they cosigned
 CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
+STOP_DUMP_S = 5.0   # a dev signer still stopping this long after SIGTERM writes every thread's stack to its log
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
 FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
@@ -4908,11 +4910,13 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
                     break
     except KeyboardInterrupt:
         pass
+    faulthandler.dump_traceback_later(STOP_DUMP_S)   # to stderr, the log: where a stop that hangs is stuck (#517)
     for p in (endpoint, sock):
         pathlib.Path(p).unlink(missing_ok=True)
     server.shutdown()
     server.server_close()
     close()
+    faulthandler.cancel_dump_traceback_later()
     return 0
 
 
