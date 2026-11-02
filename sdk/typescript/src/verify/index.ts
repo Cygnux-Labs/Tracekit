@@ -99,7 +99,7 @@ const FILES = new RegExp("^(runs/[0-9a-f]{32}(\\.part-[0-9]+)?\\.jsonl|keys/reco
  * files no bundle holds (the first 5). */
 function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad: string[], other: string[]): string {
   if (!isObj(listed)) return "the manifest lists no files";
-  if (bad.length === 0 && other.length === 0) return "every file is listed with its SHA-256 and nothing else is in the bundle";
+  if (!bad.length && !other.length) return "every file is listed with its SHA-256 and nothing else is in the bundle";
   const more = (names: string[]) => names.length > 5 ? ` and ${names.length - 5} more` : "", out: string[] = [];
   if (bad.length)
     out.push("files differ from the manifest: " + bad.slice(0, 5).map((n) => `${n} (${Object.hasOwn(listed, n)
@@ -335,7 +335,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const bad = isObj(listed) ? [...new Set([...Object.keys(listed), ...hashes.keys()])]
     .filter((n) => !(Object.hasOwn(listed, n) && hashes.get(n) === listed[n])).sort() : [];
   const other = [...hashes.keys()].filter((n) => !FILES.test(n)).sort();
-  rep.check("manifest", isObj(listed) && bad.length === 0 && other.length === 0, manifestDetail(listed, hashes, bad, other));
+  rep.check("manifest", isObj(listed) && !bad.length && !other.length, manifestDetail(listed, hashes, bad, other));
 
   // the checkpoint: the only thing the records' trust hangs on
   const proofs = json("proofs/records.json");
@@ -456,7 +456,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
           + `not checked, after ${RUN_PROBLEMS} problems in the run`);
         break;
       }
-      const e = at(r, "event"), prev = i ? records[i - 1] : null;   // its link to the record before it first: it costs nothing
+      const e = at(r, "event"), prev = i ? records[i - 1] : null;   // its link to the one before first: it costs nothing
       if (!same(get(e, "run_seq"), i) || !same(get(e, "run_prev_hash"), prev ? at(prev, "hash") : ZERO_HASH)
           || !same([get(e, "tenant"), get(e, "run_id")], [get(head, "tenant"), get(head, "run_id")])
           || prev && (num(at(e, "seq")) <= num(at(at(prev, "event"), "seq")) || get(prev.event, "type") === "run.final"))
@@ -474,8 +474,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     throw new ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
   let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [], pointed: J[] = [];
   if (runSet) {
-    [retired, provenTo, regCosigs, pointed] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
-      origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p), floats);
+    [retired, provenTo, regCosigs, pointed] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust,
+      witnesses, origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p), floats);
     const keyed = new Set(keyRecords.map((r) => `${at(at(r, "event"), "seq")} ${at(r, "hash")}`));
     extend(keyProblems, retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
       .map(([seq]) => `seq ${seq}: key.retire withheld (the registry log has it)`));
