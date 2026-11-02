@@ -27,6 +27,33 @@ func TestV1AnchorCompanionDoesNotCreateBoundaryGap(t *testing.T) {
 	}
 }
 
+// A manifest whose file list is not an object (null included) can't be checked against the files: the reference names
+// that the bundle's structure. A manifest with no list lists no file, so the files don't match it.
+func TestV1ManifestFileList(t *testing.T) {
+	for _, tc := range []struct {
+		files any
+		check string
+	}{{"records.jsonl", "bundle structure"}, {nil, "bundle structure"}, {"absent", "files match manifest"}} {
+		files, err := readV1Bundle(readGolden(t, "v1/demo-run.tkb"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest, err := parseFileObject(files, "manifest.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if manifest["files"] = tc.files; tc.files == "absent" {
+			delete(manifest, "files")
+		}
+		files["manifest.json"], _ = json.Marshal(manifest)
+		r := VerifyV1(fixtureZip(files), readGolden(t, "v1/signer.pub"), nil)
+		other := map[string]string{"bundle structure": "files match manifest", "files match manifest": "bundle structure"}
+		if r.ExitCode != 1 || !hasCheck(r.Checks, tc.check) || hasCheck(r.Checks, other[tc.check]) {
+			t.Errorf("file list %v: %+v, want %q", tc.files, r, tc.check)
+		}
+	}
+}
+
 func TestV1CompanionRunsDoNotRequireRunBoundaries(t *testing.T) {
 	for _, run := range []string{"findings:run-a", "anchors:causeway:run-a"} {
 		if !v1CompanionRun(run) {
