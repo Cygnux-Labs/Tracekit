@@ -1480,8 +1480,8 @@ class Versions(unittest.TestCase):
 
     def test_a_project_hook_file_is_never_run(self):
         """Review of #512: doctor ran the command a project's .cursor/hooks.json named, its working tree resolved against
-        the directory doctor ran in, so running doctor in a cloned repository ran the repository's code. Each harness
-        asks a person before it trusts a project's hooks; doctor runs only the user's own hook files' commands."""
+        the directory doctor ran in, so running doctor in a cloned repository ran the repository's code. Doctor never
+        runs a project's commands: it runs only the user's own hook files' commands."""
         project = os.path.join(os.path.realpath(self.d), "repo")   # as doctor's working directory names it
         ran = self.planted(project)
         evil = os.path.join(project, "evil")

@@ -318,8 +318,8 @@ def _versions(add, settings, harnesses):
     """D-VERSIONS (dev profile): the Tracekit that each hook's Python imports (Claude Code's in `settings`, the other
     coding agents' in `harnesses`), and the running dev signer's, against this doctor's. An older one is a warning that
     says what to run on this machine; doctor upgrades and stops nothing. It runs only what the user's own hook files
-    name (install.user_settings_all, agent_hooks.config_path), with absolute paths: a project's hook files are the
-    project's word, which its harness asks a person to trust first, so doctor never runs them.
+    name (install.user_settings_all, agent_hooks.config_path), with absolute paths: doctor never runs a project's
+    commands, so running it in a cloned repository runs none of its code.
     lean: the Claude Code plugin's hook isn't asked: it picks its Python as it runs (plugin/scripts/tracekit-hook), in
     Claude Code's environment, and says itself when it and the signer differ; repeat its search here if that's short"""
     from . import __version__ as mine
@@ -350,9 +350,10 @@ def _versions(add, settings, harnesses):
         except (OSError, ValueError, AttributeError, TypeError):   # D-HOOKS-PRESENT and D-HOOKS-EVENT say why
             continue
         if argvs and os.path.realpath(path) not in mine_files:
-            add("D-VERSIONS", False, f"the {name} hooks in {path} not probed: a project hook file, whose commands "
-                "doctor doesn't run (its harness asks a person to trust them first)", "check the Tracekit version the "
-                "Python they name imports once you trust them, or install the hooks for your user: " + fix, bad=WARN)
+            add("D-VERSIONS", False, f"the {name} hooks in {path} not probed: a project hook file. Doctor never runs a "
+                "project's commands: running it in a cloned repository runs none of its code", "check the Tracekit "
+                "version the Python they name imports once you trust them, or install the hooks for your user: " + fix,
+                bad=WARN)
             continue
         if None in argvs:
             add("D-VERSIONS", False, f"can't tell which Python runs the {name} hooks in {path}: a command init doesn't "
