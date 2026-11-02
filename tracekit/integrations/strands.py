@@ -37,7 +37,7 @@ class Tracekit(HookProvider):
     RunHandle (`Client().run(...)`); an AsyncRunHandle works too. One instance may serve several agents, in any threads."""
 
     def __init__(self, run):
-        version_check.warn_untested("Strands Agents", "strands-agents", (1, 61), (1, 62), "strands-agents>=1.61,<1.62")
+        version_check.warn_untested("Strands Agents", "strands-agents>=1.61,<1.62")
         self.run = run_handle(run, unwired=", and doesn't wire Strands")
         self._lock = threading.Lock()
         # lean: one entry per call id for the provider's life, and one per call interrupted and never resumed; prune

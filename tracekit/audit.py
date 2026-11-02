@@ -8,37 +8,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import stat
 import sys
-import time
 from datetime import datetime, timezone
 from typing import Any
 
 from .core import scrub
+from .graph import _open_regular
 from .hook import transcript_entries
-from .report import call_text
+from .report import call_text, when
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
 from .view import ENGINE_RULES
 
 DEFAULT_ROOT = os.path.join("~", ".claude", "projects")
-
-
-def _parse_since(s: str) -> float:
-    """Return epoch seconds for --since (e.g. 7d, 24h, 30m, or an ISO date or time, UTC unless it says)."""
-    s = s.strip().lower()
-    if s.endswith("d") and s[:-1].isdigit():
-        return time.time() - int(s[:-1]) * 86400
-    if s.endswith("h") and s[:-1].isdigit():
-        return time.time() - int(s[:-1]) * 3600
-    if s.endswith("m") and s[:-1].isdigit():
-        return time.time() - int(s[:-1]) * 60
-    try:
-        dt = datetime.fromisoformat(s.replace("z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.timestamp()
-    except ValueError:
-        raise ValueError(f"unrecognised --since {s!r} (use Nd, Nh, Nm or ISO-8601)")
 
 
 def _session_from_path(path: str) -> str:
@@ -66,23 +47,11 @@ def _entry_time(entry: dict) -> datetime | None:
 
 
 def _safe_open(path: str) -> tuple[Any, str | None]:
-    """Open a regular file without following a symlink (as graph._secure_source does). Returns (file, error)."""
+    """Open a regular file without following a symlink (graph._open_regular). Returns (file, error)."""
     try:
-        seen = os.lstat(path)
+        return os.fdopen(_open_regular(path), "rb"), None
     except OSError as e:
-        return None, f"cannot stat: {e}"
-    if not stat.S_ISREG(seen.st_mode):
-        return None, "not a regular file or is a symlink"
-    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
-    try:
-        fd = os.open(path, flags)
-    except OSError as e:
-        return None, f"cannot open: {e}"
-    opened = os.fstat(fd)
-    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (seen.st_dev, seen.st_ino):
-        os.close(fd)
-        return None, "changed while it was opened"
-    return os.fdopen(fd, "rb"), None
+        return None, str(e)
 
 
 def _iter_transcripts(root: str, unreadable: list):
@@ -111,7 +80,10 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
 
     Counts malformed lines and unreadable files. Never writes.
     """
-    since_ts = _parse_since(since) if since else 0.0
+    try:
+        since_ts = when(since) if since else 0.0
+    except argparse.ArgumentTypeError as e:   # report's --since type: here an unreadable --since is a ValueError
+        raise ValueError(str(e)) from None
     engine = load_policy(policy_path or DEFAULT_POLICY)
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
@@ -128,7 +100,7 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
             unreadable.append({"path": path, "error": err})
             continue
         try:
-            for _n, entry in transcript_entries(f):
+            for _n, entry in transcript_entries(f, final=True):
                 if entry is None:
                     skipped_malformed += 1
                     continue

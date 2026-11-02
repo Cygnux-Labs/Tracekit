@@ -416,7 +416,7 @@ the same way and prints one page you can read in two minutes, in a terminal or p
 
 ```bash
 tracekit report                                         # the dev signer's store, the last 7 days
-tracekit report --since 24h                             # 7d, 24h, or an ISO date or time (UTC unless it says)
+tracekit report --since 24h                             # 7d, 24h, 30m, or an ISO date or time (UTC unless it says)
 tracekit report --since 2026-10-19 --until 2026-10-26   # --until is not included
 tracekit report --config signer.yaml --tenant acme      # a configured signer's store, one tenant
 tracekit report --json > week.json                      # the same report as one JSON object, for scripts

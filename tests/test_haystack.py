@@ -31,6 +31,7 @@ from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import AsyncRunHandle, Client, RunHandle, current_run
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService
+from factories import VersionCheckCases
 
 
 def run(decision="allow", rule_ids=(), consume=True, state="approved", **more):
@@ -433,31 +434,9 @@ class RealSigner(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE, "haystack-ai not installed")
-class VersionCheck(unittest.TestCase):
-    """The version check the integration shares with the other hand-wired ones: a framework outside the version
-    Tracekit is tested with warns once when the integration is built, one inside the range does not warn."""
-
-    def test_it_warns_for_a_version_outside_the_tested_range(self):
-        from tracekit.integrations import version_check
-        from tracekit.integrations.haystack import Tracekit
-        with mock.patch.object(version_check, "_WARNED", set()), \
-                mock.patch.object(version_check, "_version", return_value="0.0.1"), \
-                warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            Tracekit(mock.Mock())
-        msgs = [str(x.message) for x in w if "is wired but untested" in str(x.message)]
-        self.assertEqual(1, len(msgs))
-        self.assertIn("Haystack 0.0.1 is wired but untested; Tracekit is tested with haystack-ai>=3.4,<3.5", msgs[0])
-
-    def test_it_does_not_warn_for_a_version_inside_the_tested_range(self):
-        from tracekit.integrations import version_check
-        from tracekit.integrations.haystack import Tracekit
-        with mock.patch.object(version_check, "_WARNED", set()), \
-                mock.patch.object(version_check, "_version", return_value="3.4.1"), \
-                warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            Tracekit(mock.Mock())
-        self.assertEqual([], [str(x.message) for x in w if "is wired but untested" in str(x.message)])
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "haystack", "3.4.1"
+    message = "Haystack 0.0.1 is wired but untested; Tracekit is tested with haystack-ai>=3.4,<3.5"
 
 
 if __name__ == "__main__":

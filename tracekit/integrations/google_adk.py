@@ -33,7 +33,7 @@ class Tracekit(BasePlugin):
     an AsyncRunHandle works too."""
 
     def __init__(self, run):
-        version_check.warn_untested("Google ADK", "google-adk", (2, 12), (2, 13), "google-adk>=2.12,<2.13")
+        version_check.warn_untested("Google ADK", "google-adk>=2.12,<2.13")
         run = run_handle(run)
         super().__init__(name="tracekit")
         self.run, self._warned = run, False

@@ -35,7 +35,7 @@ class Tracekit:
     list it last at both. `run` is a RunHandle (`Client().run(...)`); an AsyncRunHandle works too."""
 
     def __init__(self, run):
-        version_check.warn_untested("Haystack", "haystack-ai", (3, 4), (3, 5), "haystack-ai>=3.4,<3.5")
+        version_check.warn_untested("Haystack", "haystack-ai>=3.4,<3.5")
         self.handle = run_handle(run, instrument=True)
         self.said = said.Said(lambda **f: self.handle.call("model_event", **f), lambda: self.handle.client.status({}))
         # lean: one entry per call id for the hook's life; prune them at run end if agents run for days

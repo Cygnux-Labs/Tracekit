@@ -566,5 +566,18 @@ class DevContent(unittest.TestCase):
             self.assertEqual(view.dev_content_source("tracekit report", weekly._running)("r1", recs), {})
 
 
+class When(unittest.TestCase):
+    """--since and --until (and tracekit audit's --since): days, hours or minutes before now, or an ISO time."""
+
+    def test_counts_and_times_in_either_case(self):
+        now = 1_000_000.0
+        self.assertEqual(weekly.when("30m", now), now - 1800)
+        self.assertEqual(weekly.when(" 7D ", now), now - 7 * 86400)
+        self.assertEqual(weekly.when("2026-10-19T00:00:00z"), weekly.when("2026-10-19T00:00:00Z"))
+        self.assertEqual(weekly.when("2026-10-19T00:00:00"), weekly.when("2026-10-19T00:00:00+00:00"))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            weekly.when("last week")
+
+
 if __name__ == "__main__":
     unittest.main()
