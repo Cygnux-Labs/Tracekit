@@ -746,8 +746,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         raise ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set")
     retired, proven_to, reg_cosigs, pointed = [], -1, [], []
     if run_set:
-        retired, proven_to, reg_cosigs, pointed = _run_set(rep, files, trust, witnesses, origin, size, runs, included,
-                                                  lambda r, p: check_record(r, keys_at(r["event"]["seq"]), p))
+        retired, proven_to, reg_cosigs, pointed = _run_set(
+            rep, files, trust, witnesses, origin, size, runs, included,
+            lambda r, p: check_record(r, keys_at(r["event"]["seq"]), p))
         listed = {(r["event"]["seq"], r["hash"]) for r in key_records}
         key_problems.extend(f"seq {seq}: key.retire withheld (the registry log has it)"
                             for seq, h in retired if (seq, h) not in listed)
@@ -1457,8 +1458,8 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
         top = max(top, seq)   # the registry note proves the leaf, whatever record the bundle has for it
         r = lines[i - lo] if i - lo < len(lines) else None
         e = r and r["event"]
-        if (r is None or e["seq"] != seq or r["hash"] != h or e["type"] != typ or e["log_id"] != log_id or not included(r)
-                or registry.run_hash(tsalt, e["run_id"]) != run_hash
+        if (r is None or e["seq"] != seq or r["hash"] != h or e["type"] != typ or e["log_id"] != log_id
+                or not included(r) or registry.run_hash(tsalt, e["run_id"]) != run_hash
                 or typ not in registry.SIGNER_LEAVES and tenant not in (None, e["tenant"])):
             problems.append(f"leaf {i} points to a missing or different record (seq {seq})")
             continue
