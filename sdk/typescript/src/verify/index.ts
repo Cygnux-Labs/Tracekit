@@ -1173,6 +1173,7 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
       continue;
     }
     const { type, runHash: rh, logId, seq, hash } = parseLeaf(leaf);
+    top = Math.max(top, seq);   // the registry note proves the leaf, whatever record the bundle has for it
     const r = j < lines.length ? lines[j] : null, e = r && truthy(r) ? at(r, "event") : r;
     if (r === null || !same(at(e, "seq"), seq) || at(r, "hash") !== hash || at(e, "type") !== type || at(e, "log_id") !== logId || !await included(r)
         || !equal(await runHash(tsalt, text(at(e, "run_id"))), rh)
@@ -1182,7 +1183,6 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
     }
     await checkRecord(r, problems);
     pointed.push(r);
-    top = Math.max(top, seq);
     if (type === "run.registered" || type === "run.final") targets.add(await runName(at(e, "tenant"), e.run_id));
     if (type === "run.registered") {
       tenant = e.tenant;

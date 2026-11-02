@@ -1454,6 +1454,7 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
             problems.append(f"leaf {i} is not in the registry tree of size {hi}")
             continue
         typ, run_hash, log_id, seq, h = registry.parse(leaf)
+        top = max(top, seq)   # the registry note proves the leaf, whatever record the bundle has for it
         r = lines[i - lo] if i - lo < len(lines) else None
         e = r and r["event"]
         if (r is None or e["seq"] != seq or r["hash"] != h or e["type"] != typ or e["log_id"] != log_id or not included(r)
@@ -1463,7 +1464,6 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
             continue
         check_record(r, problems)
         pointed.append(r)
-        top = max(top, seq)
         if typ in ("run.registered", "run.final"):
             targets.add(run_name(e["tenant"], e["run_id"]))
         if typ == "run.registered":

@@ -373,9 +373,12 @@ class TestRunSetFiles(unittest.TestCase):
         self.assertFalse({"openshell policy", "gateway amendments"} & {c["check"] for c in rep.checks}, rep.checks)
 
     def test_lines_out_of_leaf_order_fail_the_run_set(self):
+        """...and the range still reaches the seq its last leaf points to: the registry note proves the leaves, whatever
+        records the bundle has for them (as the Go verifier reads it)."""
         rep = self.verify(lambda data: b"".join(reversed(data.splitlines(keepends=True))))
         self.assertIn("leaf 0 points to a missing or different record (seq 1)",
                       next(c for c in rep.checks if c["check"] == "run-set")["problems"])
+        self.assertNotIn("key retirements not proven complete", rep.assurance)
 
     def test_a_consistency_proof_for_a_range_from_zero_fails_the_run_set(self):
         rep = self.verify(lambda data: json.dumps(dict(json.loads(data), consistency=[
