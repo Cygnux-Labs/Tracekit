@@ -66,6 +66,12 @@ class CentralViewer(unittest.TestCase):
         return os.path.join(d, "reader.dsn"), service.vkey, ids, admin
 
     def setUp(self):
+        # each log waits for its closed runs' run.final and a checkpoint: a sweep every 0.05 s and a checkpoint at most
+        # 0.05 s after a nudge, not every 1 s (TICK_S, CHECKPOINT_MIN_S)
+        for name in ("TICK_S", "CHECKPOINT_MIN_S"):
+            p = mock.patch.object(svc, name, 0.05)
+            p.start()
+            self.addCleanup(p.stop)
         f0, self.vkey0, ids0, _ = self.make_log({"a1": ("acme", ["Bash", "rm"]), "b1": ("beta", ["Bash"]),
                                                  "a3": ("acme", ["Bash"])})
         f1, _, ids1, self.admin1 = self.make_log({"b2": ("beta", ["Bash"]), "a2": ("acme", ["Bash"])})

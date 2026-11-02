@@ -29,9 +29,11 @@ class Examples(unittest.TestCase):
         # importing crewai on Windows asks for these folders (#391)
         for sub in (("AppData", "Local"), ("AppData", "Roaming"), ("local",), ("data",)):
             os.makedirs(os.path.join(home, *sub), exist_ok=True)
+        # TRACEKIT_DEV_GRACE: the dev signer makes a closed run final 0.2 s after, not 5 s; each example exports its
+        # run once it is
         cls.env = dict(os.environ, HOME=home, USERPROFILE=home, LOCALAPPDATA=os.path.join(home, "local"),
                        XDG_DATA_HOME=os.path.join(home, "data"), TRACEKIT_RUNTIME_DIR=os.path.join(cls.dir, "run"),
-                       PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
+                       TRACEKIT_DEV_GRACE="0.2", PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
         for k in ("TRACEKIT_SIGNER", "TRACEKIT_SIGNER_TOKEN"):
             cls.env.pop(k, None)
         cls.addClassCleanup(python, "-m", "tracekit", "down", env=cls.env, cwd=cls.dir)
