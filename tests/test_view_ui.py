@@ -1096,6 +1096,146 @@ class GraphGrades(unittest.TestCase):
     """GRAPH drew every flow alike: a link between two signed records looked like one an unsigned why log claims, an
     arrow into a call the signer stopped like one into a call that ran, and what a sensor saw leave was not drawn."""
 
+    def test_egress_totals_join_only_one_completed_call_in_the_same_run(self):
+        needs_node(self)
+        out = json.loads(page_js(["joinEgress", "whyRef", "netEffects", "effectHow"], """
+            const WHY = { calls: { "r1|1": ["w1", "call"] } };
+            const call = (id, run, start, end, decision = "allow") => ({ id, start, end,
+              pre: { session_id: run, v2: { run_seq: 1 } }, v2: { decision }, denied: decision === "deny", approvals: [] });
+            const a = call("r1|c1", "r1", 1, 10);
+            const fx = (id, run, first, last) => [id, { call: null, how: null, status: null, rec: { session_id: run,
+              v2: { effect: { kind: "net", target: "api.example:443", claim: null },
+                    first_ts: new Date(first * 1000).toISOString(), last_ts: new Date(last * 1000).toISOString(),
+                    attribution: "token" } } }];
+            const S = { recs: [1], actList: [a, call("r2|c1", "r2", 1, 10)], actions: new Map([[a.id, a]]),
+              effects: new Map([fx("one", "r1", 2, 4), fx("spans", "r1", 2, 11), fx("other", "r3", 2, 4)]) };
+            const look = () => { joinEgress(); return [...S.effects.values()].map(e => e.call); };
+            const seen = [look()];
+            const nodes = netEffects({ run_id: "w1" }, { call: { agent: "coder", seq: 1 } });
+            const how = effectHow(S.effects.get("one"));
+            S.actList.push(call("denied", "r1", 1, 10, "deny"), call("held", "r1", 1, 10, "ask"));
+            S.recs.push(2); seen.push(look());
+            const overlap = call("overlap", "r1", 3, null);
+            S.actList.push(overlap); S.recs.push(3); seen.push(look());
+            overlap.end = 3.5; S.recs.push(4); seen.push(look());
+            S.actList.pop(); a.end = null; S.recs.push(5); seen.push(look());
+            a.end = 10; S.recs.push(6); seen.push(look());
+            a.v2.decision = "ask"; a.approvals.push({ v2: { approval: "consumed" } });
+            S.recs.push(7); seen.push(look());
+            process.stdout.write(JSON.stringify({ seen, nodes: nodes.map(n => [n.id, n.call]), how,
+              unmatched: effectHow(S.effects.get("spans")) }));"""))
+        self.assertEqual(out["seen"], [["r1|c1", None, None], ["r1|c1", None, None],
+                                       [None, None, None], [None, None, None], [None, None, None],
+                                       ["r1|c1", None, None], ["r1|c1", None, None]])
+        self.assertEqual(out["nodes"], [["fx:one", "call"]])
+        self.assertIn("not proof", out["how"])
+        self.assertIn("no unique completed call", out["unmatched"])
+
+    def test_egress_matching_preserves_microseconds_at_call_boundaries(self):
+        needs_node(self)
+        cases = [
+            ("contained", "01.000100", "01.000500", "01.000200", "01.000300", "contained|c1"),
+            ("ends-after", "00.990000", "01.000500", "00.999000", "01.000900", None),
+            ("equal", "01.000100", "01.000500", "01.000100", "01.000500", "equal|c1"),
+        ]
+        rows = []
+        for run, start, end, first, last, _ in cases:
+            tr = view.Translator()
+            stamp = lambda t: "2026-10-10T17:00:" + t + "Z"
+            for rec in [v2rec(1, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "allow"},
+                              run=run, ts=stamp(start)),
+                        v2rec(2, "tool.result", {"tool_use_id": "c1"}, run=run, ts=stamp(end)),
+                        v2rec(3, "effect.observed", {"kind": "net", "host": "api.example.com", "port": 443,
+                              "observer": "egress", "bytes_out": 1, "bytes_in": 2, "connections": 1,
+                              "first_ts": stamp(first), "last_ts": stamp(last), "attribution": "token"}, run=run)]:
+                rows.extend(tr.feed(rec))
+        out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
+                                  "ingest", "joinEgress"], f"""
+            let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
+            {json.dumps(rows)}.forEach(ingest); joinEgress();
+            process.stdout.write(JSON.stringify([...S.effects.values()].map(e => e.call)));"""))
+        self.assertEqual(out, [case[-1] for case in cases])
+
+    def test_an_egress_total_the_signer_put_in_its_run_by_identity_links_to_no_call(self):
+        """Sent with the caller's identity, not a run token, a total is in that owner's latest open run: a guess."""
+        needs_node(self)
+        out = json.loads(page_js(["joinEgress", "effectHow"], """
+            const a = { id: "r1|c1", start: 1, end: 10, pre: { session_id: "r1" }, v2: { decision: "allow" },
+              denied: false, approvals: [] };
+            const fx = attribution => ({ call: null, rec: { session_id: "r1", v2: { effect: { kind: "net" }, attribution,
+              first_ts: "1970-01-01T00:00:02.000000Z", last_ts: "1970-01-01T00:00:04.000000Z" } } });
+            const S = { recs: [1], actList: [a], effects: new Map([["t", fx("token")], ["i", fx("identity")]]) };
+            joinEgress();
+            process.stdout.write(JSON.stringify([...S.effects.values()].map(e => [e.call, effectHow(e)])));"""))
+        self.assertEqual(out[0][0], "r1|c1")
+        self.assertIsNone(out[1][0])
+        self.assertIn("latest open run", out[1][1])
+
+    def test_an_egress_totals_tape_row_says_whether_it_matched_a_call(self):
+        """Its Happened column read NOT JOINED YET for good: the run's analysis joins only a kernel sensor's effects."""
+        needs_node(self)
+        out = json.loads(page_js(["esc", "reader", "tapeRow"], """
+            const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", selected = null, V2 = true;
+            const total = seq => ({ ts: 1, i: seq, agent: { name: "signer" }, ev: "EFFECT", text: "EFFECT · net api.example:443",
+              rec: { session_id: "r1", v2: { run_seq: seq, effect: { kind: "net", target: "api.example:443", claim: null } } } });
+            const S = { effects: new Map([["r1|1", { call: "r1|c1", status: null }], ["r1|2", { call: null, status: null }]]) };
+            process.stdout.write(JSON.stringify([total(1), total(2)].map(r => tapeRow(r, ""))));"""))
+        self.assertIn("TIME MATCH", out[0])
+        self.assertIn("RUN TOTAL", out[1])
+        self.assertNotIn("NOT JOINED YET", "".join(out))
+
+    def test_graph_redraws_when_eviction_replaces_a_linked_egress_total(self):
+        needs_node(self)
+        out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
+                                  "ingest", "accept", "rebuild", "runRows", "inScope", "joinEgress", "renderWhyView",
+                                  "whyRef", "netEffects", "effectHow", "dict", "esc", "plural", "ANSWER", "DECIDED",
+                                  "decided", "signedNode", "edgeGrade", "GRADE", "reach", "GTYPE", "GRAPH_MAX", "pct",
+                                  "graphView"], """
+            let S; reset(); const STOPPED = "", pushTape = r => r, alert = () => {}, toastOf = () => {};
+            const ALL = [], RUNS = new Map([["r1", { id: "r1", verdict: "verified" }]]), LOADED = new Map();
+            let V2 = true, scope = "r1", R = null, DROPPED = 0, MAXREC = 5, tapeShown = 0;
+            const elements = {}, $ = id => id === "gsvg" ? null : elements[id] ??= {
+              clientWidth: 900, clientHeight: 600, querySelector: () => null };
+            const document = { body: { classList: { toggle() {} } }, activeElement: null }, CSS = { escape: s => s };
+            const NEEDWHY = new Set(["graph"]), GV = { inferred: false, ruled: false, focus: null, fit: true };
+            let VIEW = "graph", WRUN = "w1", WPICK = null, WBUSY = null, WMSG = "", wvKey = "";
+            const WHY = { runs: [{ run_id: "w1", agents: ["tester"] }],
+              calls: { "r1|1": ["w1", "c1"], "r1|4": ["w1", "c2"] } };
+            const WD = new Map([["w1", { run_id: "w1", agents: [{ name: "tester" }], edges: [],
+              nodes: [1, 2].map(n => ({ id: "c" + n, type: "action", agent: "tester", seq: n, label: "Bash" })) }]]);
+            const whyDetail = id => WD.get(id), agentsView = () => {}, overviewView = () => {},
+              timelineView = () => {}, whyView = () => {};
+            const row = (seq, event, ts, id) => ({ seq, tk_seq: seq, event, ts, session_id: "r1", tool_use_id: id,
+              tool_name: "Bash", v2: { run_seq: seq, decision: "allow" } });
+            const effect = (seq, t, host) => ({ ...row(seq, "tk_alert", t, null), tape: "EFFECT",
+              v2: { run_seq: seq, effect: { kind: "net", target: host, claim: null },
+                first_ts: new Date((t - .5) * 1000).toISOString(), last_ts: new Date((t - .5) * 1000).toISOString(),
+                attribution: "token" } });
+            [row(1, "PreToolUse", 1, "c1"), row(2, "PostToolUse", 3, "c1"), effect(3, 3, "old.example"),
+              row(4, "PreToolUse", 4, "c2"), row(5, "PostToolUse", 6, "c2")].forEach(accept);
+            joinEgress(); renderWhyView(); const before = $("whyv").innerHTML;
+            accept(effect(6, 6, "new.example")); joinEgress(); renderWhyView();
+            const after = $("whyv").innerHTML, matches = [...S.effects.values()].map(e => e.call);
+            MAXREC = 50;
+            accept({ ...row(7, "tk_alert", 7), v2: { run_seq: 7,
+              effect: { kind: "connect", target: "kernel.example", claim: "c2" } } });
+            renderWhyView(); const claimed = $("whyv").innerHTML;
+            accept({ ...row(8, "tk_alert", 8), v2: { effects: { 7: { call: "c2", how: "window", status: "found" } } } });
+            renderWhyView(); const flagged = $("whyv").innerHTML;
+            accept({ ...row(9, "tk_alert", 9), v2: { effects: { 7: { call: "c1", how: "window", status: "found" } } } });
+            renderWhyView();
+            process.stdout.write(JSON.stringify({ before, after, dropped: DROPPED, matches,
+              claimed, flagged, relinked: $("whyv").innerHTML }));"""))
+        self.assertEqual(out["dropped"], 1)
+        self.assertEqual(out["matches"], [None, "r1|c2"])
+        self.assertIn("old.example", out["before"])
+        self.assertIn("new.example", out["after"])
+        self.assertNotIn("old.example", out["after"])
+        self.assertIn("kernel.example", out["claimed"])
+        self.assertNotIn("DOESN'T FIT THIS CALL", html.unescape(out["claimed"]))
+        self.assertIn("DOESN'T FIT THIS CALL", html.unescape(out["flagged"]))
+        self.assertNotIn("kernel.example", out["relinked"])   # the new link names an evicted call
+
     def test_each_edge_is_graded_by_its_proof(self):
         needs_node(self)
         by = {"in": SIGNED, "cited": {"tracekit": {"run_seq": 2}}, "log": {}, "ran": call({"decision": "allow"}),
@@ -1237,6 +1377,21 @@ def why_call(seq, run, ts, **unread):
 
 class Horizon(unittest.TestCase):
     """HORIZON: where the agents went, from the calls' arguments, rules and runs, drawn on a canvas."""
+
+    def test_egress_totals_reach_the_outside_ring_even_without_a_call_link(self):
+        needs_node(self)
+        tr = view.Translator()
+        recs = [row for run in ("verified", "pending") for row in tr.feed(v2rec(3, "effect.observed", {
+            "kind": "net", "host": "api.example.com", "port": 443, "observer": "egress",
+            "bytes_out": 0, "bytes_in": 20, "connections": 0,
+            "first_ts": "2026-10-10T17:00:01Z", "last_ts": "2026-10-10T17:00:02Z"}, run=run))]
+        out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map([["verified", {{ verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null;
+            process.stdout.write(JSON.stringify(hzData().ev.map(e => [e.run, e.at, e.act, e.gr])));"""))
+        self.assertEqual(out, [["verified", "api.example.com", "net", "observed"],
+                               ["pending", "api.example.com", "net", "unverified"]])
 
     def test_each_call_is_placed_on_its_ring_graded_and_kept_in_seq_order(self):
         needs_node(self)
@@ -3034,7 +3189,7 @@ class NothingLost(unittest.TestCase):
         "renderTop", "renderPages", "renderWaiting", "renderTicker", "renderNeeds", "renderRunHead", "renderRunsPage",
         "renderApprovalsPage", "renderHorizon", "renderAgents", "renderTape", "renderAlerts", "renderMix", "renderLanes",
         "renderWaterfall", "renderReason", "renderFiles", "renderWhyView", "renderNode", "renderWhyPanel", "renderDetail",
-        "renderReview", "syncLink")) + """
+        "renderReview", "syncLink", "joinEgress")) + """
         const W = { runs: [{ run_id: "w1" }], calls: {}, alerts: [{ run_id: "w1", node: "ev:5" }] };
         const RUNS = new Map([["r1", { id: "r1", state: "open" }]]), CALL = { pre: { session_id: "r1" } };
         let V2 = true, WHY = W, scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, VIEW = "desk", WTAB = "detail",
