@@ -32,7 +32,18 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
     "reason": "an agent-to-agent name (sender, receiver, projector, modality, weights, a skill or a part kind) is not "
               "printable ASCII without spaces, so a rule written for that name could miss it",
     "remedy": "Spell each name in printable ASCII without spaces: no look-alike, fullwidth, zero-width or control "
-              "characters."}}
+              "characters."},
+    # #519: a hold for these said no why, and an agent didn't know a readable command was its way through
+    "TK-SHELL-PARSE": {
+        "reason": "the shell command can't be read (a program named by a variable or a command substitution, a "
+                  "function, code fed to an interpreter, or syntax the parser doesn't follow), so the policy can't "
+                  "check what it runs",
+        "remedy": "Have a person approve it, or name the program itself (`/usr/bin/python3 -c …`, not `$py -c …`) so "
+                  "every rule checks the command."},
+    "TK-SQL-PARSE": {
+        "reason": "the SQL can't be read (an unclosed quote or comment, or not text), so the policy can't check what "
+                  "it does",
+        "remedy": "Have a person approve it, or close the quote or comment so every rule checks the statement."}}
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;

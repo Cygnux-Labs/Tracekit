@@ -463,8 +463,8 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
         aid = err.split()[4]
         self.assertRegex(json.loads(out)["reason"],   # what Gemini CLI shows the person and the model
-                         rf"\(TK-A004\): to let it run, approve it with `tracekit approvals( --signer \S+)? approve {aid}`"
-                         ", then ask the agent to try the same call again, with exactly the same arguments")
+                         rf"\(TK-A004\): a person lets it run with `tracekit approvals( --signer \S+)? approve {aid}`"
+                         ", then asks the agent to try the same call again")
         pre["tool_input"]["additional_permissions"] = {"network": False}
         self.assertEqual(self.hook("gemini", pre)[0], 0)
 
@@ -483,7 +483,7 @@ class OnTheDevPolicy(HarnessCase):
         cmd = {"CommandLine": "mkdir -p /tmp/x", "BypassSandbox": True}
         code, out, err = self.hook("antigravity", pre(3, "run_command", cmd), "PreToolUse")   # held: blocked at once
         self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
-        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\): to let it run, approve it with `tracekit approvals "
+        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\): a person lets it run with `tracekit approvals "
                                                     r"(--signer \S+ )?approve apr-")
         self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
                          (0, '{"decision": "allow"}'))

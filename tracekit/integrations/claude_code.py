@@ -551,12 +551,12 @@ def _pre(client, p, sid, tid):
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
+            bang = "! " if AGENT == "claude-code" else ""   # Claude Code runs a `!` line as the person, in the session
             held = (f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is {waited['reason']}, then try the same "
                     "call again, with exactly the same arguments" if waited.get("reason") else
-                    f"[tracekit] held for approval {aid} ({'; '.join(d['rule_ids'])}): to let it run, approve it with "
-                    f"`{cmd} approve {aid}`, then ask the agent to try the same call again, with exactly the same "
-                    "arguments (to refuse it: "
-                    f"`{cmd} reject {aid}`)") + (f". Why{why}" if why else "")
+                    f"[tracekit] held for approval {aid} ({'; '.join(d['rule_ids'])}): a person lets it run with "
+                    f"`{bang}{cmd} approve {aid}`, then asks the agent to try the same call again (to refuse it: "
+                    f"`{bang}{cmd} reject {aid}`). Agent: wait for the person's answer") + (f". Why{why}" if why else "")
             if _bash(tool, args):
                 _keep_held(sid, run.run_id, args, aid)
             print(held, file=sys.stderr)

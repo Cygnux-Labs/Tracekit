@@ -158,11 +158,12 @@ the command that approves it, as the harness's block message (in Claude Code als
 you, and the deny reason, which the model reads):
 
 ```text
-[tracekit] held for approval apr-… (TK-A032): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: uploading to cloud storage. Have a person approve the held call, or write the files locally and let a person upload them.
+[tracekit] held for approval apr-… (TK-A032): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: uploading to cloud storage. Have a person approve the held call, or write the files locally and let a person upload them.
 ```
 
-Run the command from another terminal, then tell the agent to make the same call again, with exactly the same
-arguments: the signer lets that call run under your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
+In Claude Code, paste the `! …` line into the same session: `!` runs it as you, not as the agent. In another harness,
+or from another terminal, run the same command without the `!`. Then tell the agent to make the same call again: the
+signer lets that call run under your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
 The same call a third time, or one with other arguments, is held again, with a new approval. A call you rejected is
 held again if the agent tries it again, and the block says so first among its reasons (`Why: a person rejected this
 exact call (apr-…, by uid:501); ask them before trying again; …`), so the agent asks you. In Claude Code a Bash
@@ -213,7 +214,7 @@ The v2 coding pack holds these calls for a person whatever the key:
 The hold says what to check:
 
 ```text
-[tracekit] held for approval apr-… (TK-A043): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
+[tracekit] held for approval apr-… (TK-A043): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
 ```
 
 Read the command before you approve it, and the file it sends (`-d @body.json`): the approval covers that exact
@@ -271,7 +272,7 @@ in a sentence is live, though the text from that name on is recorded as untruste
 held for your approval ([held calls](#held-calls-approve-then-retry)), and you and the agent read why:
 
 ```text
-[tracekit] held for approval apr-… (TK-CONSTRAINT): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: the person's request in this run said not to modify billing.py; ask the person
+[tracekit] held for approval apr-… (TK-CONSTRAINT): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: the person's request in this run said not to modify billing.py; ask the person
 ```
 
 Answer it from another terminal with the command the line names (`tracekit approvals list` shows every held call), then
