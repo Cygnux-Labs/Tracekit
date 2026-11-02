@@ -1132,9 +1132,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     while not os.path.exists(where) and os.path.dirname(where) != where:
         where = os.path.dirname(where)
     kind = fs_type(where) if os.path.exists(where) else "unknown"
-    add("D-DATA-FS", kind.split(".")[0] not in NETWORK_FS, f"{data} is on {kind}" + (
-        ": file locking and fsync can't be trusted there" if kind.split(".")[0] in NETWORK_FS else ""),
-        "put data_dir on a local disk")
+    network = kind.split(".")[0] in NETWORK_FS
+    if os.path.exists(data):
+        detail = f"{data} is on {kind}"
+    else:
+        detail = f"{data} (not made yet) will be on {kind}"
+    if network:
+        detail += ": file locking and fsync can't be trusted there"
+    add("D-DATA-FS", not network, detail, "put data_dir on a local disk")
     return out
 
 
