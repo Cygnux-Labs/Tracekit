@@ -1,0 +1,53 @@
+name: Field report
+description: What Tracekit did over a week of your real use, as counts only
+title: "Field report: "
+labels: ["field report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        How to make one, and what it shares and doesn't: [field reports](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/field-reports.md).
+        `--share` needs Tracekit 1.5.3 or later; until that is on PyPI, `pip install git+https://github.com/Cygnux-Labs/Tracekit`.
+        A way an agent could get a call past the policy is a security problem: do not post it here, see SECURITY.md.
+  - type: textarea
+    id: share
+    attributes:
+      label: The output of `tracekit report --share` or `tracekit audit --share`
+      description: Paste it as it printed. An agent name or rule id that isn't Tracekit's own shows as `other` or `custom rule`; say below what they are, if you want to.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: agent
+    attributes:
+      label: Which agent or framework, and what kind of work
+      description: For example, Claude Code on a Django app's backlog; the OpenAI Agents SDK in a support bot.
+    validations:
+      required: true
+  - type: input
+    id: how-long
+    attributes:
+      label: How long, and on what
+      description: For example, five working days on a macOS laptop; two weeks in CI on Linux.
+  - type: textarea
+    id: false-alarms
+    attributes:
+      label: False alarms
+      description: Calls held or denied that shouldn't have been. The rule id, and what the call was doing in your own words.
+  - type: textarea
+    id: misses
+    attributes:
+      label: Misses
+      description: Calls that should have been held and weren't. What the call did, and what you expected Tracekit to do.
+  - type: textarea
+    id: broke
+    attributes:
+      label: Anything that broke
+      description: An error, a hang, a hook that blocked your work, a run that didn't verify. Your OS and `tracekit --version` help.
+  - type: checkboxes
+    id: private
+    attributes:
+      label: Before you post
+      options:
+        - label: I removed anything private (secrets, hostnames, customer or project names, paths) from this report.
+          required: true

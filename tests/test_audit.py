@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from tracekit import audit, cli
+from tracekit import __version__, audit, cli
 
 
 def _call(tool, args, days_ago=0):
@@ -146,6 +146,47 @@ class TestAudit(unittest.TestCase):
         code, _, err = _run(str(self.root / "missing"))
         self.assertEqual(code, 2)
         self.assertIn("no such folder", err)
+
+    def test_share_is_counts_only(self):
+        """#521: --share, a field report a person posts where anyone reads it, holds the counts and the window's length,
+        never a session, path, time, call or what was said, though the transcripts and the report hold them. A rule that
+        only also matched its call is marked so, and an engine check as not placed: a flag rule read as why a call was
+        denied. A rule id a policy's author chose is counted as "custom rule": it was printed as it was."""
+        mark = "LEAKMARK"
+        said = _call("Bash", {"command": f"rm -rf ~/{mark}-home"})
+        said["message"]["content"].insert(0, {"type": "text", "text": f"{mark}-said: I'll clear it"})
+        sub = _call("Read", {"file_path": f"/home/{mark}-user/notes.txt"})
+        _write_jsonl(self.root / f"{mark}-project" / f"{mark}-session.jsonl", [
+            {"type": "user", "message": {"content": f"{mark}-prompt: tidy /srv/{mark}-repo"}}, said,
+            _call("Bash", {"command": "rm -rf /"}),
+            _call("Bash", {"command": f"terraform destroy -auto-approve -var host={mark}-host"}),
+            _call("Bash", {"command": f"echo '{mark}-unterminated"}),
+            _call("Bash", {"command": "ls"}, days_ago=30)])
+        _write_jsonl(self.root / f"{mark}-project" / f"{mark}-session" / "subagents" / f"agent-{mark}.jsonl",
+                     [{**sub, "agentId": f"{mark}-agent", "slug": f"{mark}-agent-name"}])
+        report = audit.audit(str(self.root), since="7d", show=True)
+        self.assertIn(mark, json.dumps(report))
+        page = audit.share(report)
+        self.assertEqual(page.splitlines(), [
+            f"Tracekit {__version__} field report (tracekit audit --share): 7 days",
+            "a replay against today's policy, not a signed record: 1 Claude Code session",
+            "Tool calls: 5   allow 1, flag 1, ask 2, deny 1",
+            "Calls by decision and rule (one call can match several rules):",
+            "  deny TK-D004 1", "  deny TK-F003 1 (also matched, not why)", "  ask TK-A001 1",
+            "  ask TK-SHELL-PARSE 1 (not placed)", "  flag TK-F003 1"])
+        self.assertEqual(audit.share(audit.audit(str(self.root))).splitlines()[0],
+                         f"Tracekit {__version__} field report (tracekit audit --share): every transcript")
+        code, out, _ = _run(str(self.root), "--since", "7d", "--share")
+        self.assertEqual((code, out), (0, page))
+        policy = self.root / "policy.yaml"   # outside the transcripts: a .yaml file the audit doesn't read
+        policy.write_text(f"description: our own\ndeny:\n  - {{id: {mark}-rule.acme-prod-db.internal, tool: Bash, "
+                          f"pattern: {mark}-host, reason: a host of ours}}\n", encoding="utf-8")
+        custom = audit.share(audit.audit(str(self.root), str(policy), since="7d"))
+        self.assertIn("\n  deny custom rule 1\n", custom)
+        for text in (page, custom):
+            self.assertNotIn(mark, text)
+            self.assertNotIn(self.tmp.name, text)
+            self.assertNotRegex(text, r"\d{4}-\d\d-\d\d|\d\d:\d\d")   # no date or time
 
     def test_a_time_utc_cannot_hold_is_a_call_without_a_time(self):
         line = _call("Bash", {"command": "ls"})
