@@ -117,15 +117,19 @@ def release(v):
     return tuple(map(int, m.group().split("."))) if m else None
 
 
+def quote(path):
+    """`path` as one word of a command the person pastes: POSIX shell quoting, or double quotes on Windows."""
+    return shlex.quote(path) if os.name != "nt" else f'"{path}"'
+
+
 def upgrade(python, module, user_site):
     """The command that upgrades the Tracekit that `python` imports from `module` (its tracekit/__init__.py;
     `user_site`: that Python's user site-packages): a pull of the git working tree it runs from, `uv tool` or pipx's
     upgrade for their tool installs, uv's pip for a venv uv made (it has no pip), else pip (--user for a user
     install)."""
-    q = shlex.quote if os.name != "nt" else (lambda s: f'"{s}"')
     tree = os.path.dirname(os.path.dirname(module))
     if os.path.exists(os.path.join(tree, ".git")):
-        return f"git -C {q(tree)} pull"
+        return f"git -C {quote(tree)} pull"
     if re.search(r"[/\\]uv[/\\]tools[/\\]", python):
         return "uv tool upgrade tracekit-ai"
     if re.search(r"[/\\]pipx[/\\]venvs[/\\]", python):
@@ -136,9 +140,9 @@ def upgrade(python, module, user_site):
     except (OSError, ValueError):
         uv = None
     if uv:
-        return f"uv pip install -U --python {q(python)} tracekit-ai"
+        return f"uv pip install -U --python {quote(python)} tracekit-ai"
     user = bool(user_site) and os.path.realpath(module).startswith(os.path.realpath(user_site) + os.sep)
-    return f"{q(python)} -m pip install -U {'--user ' if user else ''}tracekit-ai"
+    return f"{quote(python)} -m pip install -U {'--user ' if user else ''}tracekit-ai"
 
 
 def skew_notice(theirs, dev):

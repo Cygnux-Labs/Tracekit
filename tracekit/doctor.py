@@ -340,7 +340,7 @@ def _versions(add, settings, harnesses):
     lean: the Claude Code plugin's hook isn't asked: it picks its Python as it runs (plugin/scripts/tracekit-hook), in
     Claude Code's environment, and says itself when it and the signer differ; repeat its search here if that's short"""
     from . import __version__ as mine
-    from .integrations.claude_code import VERSION, release, upgrade
+    from .integrations.claude_code import VERSION, quote, release, upgrade
 
     def vs(v):
         r, m = release(v), release(mine)
@@ -390,7 +390,7 @@ def _versions(add, settings, harnesses):
                 raise ValueError(f"its tracekit says version {version!r}")
         except (OSError, ValueError) as e:
             add("D-VERSIONS", False, f"can't read the Tracekit version {who} run: {python} -I -c 'import tracekit' "
-                f"fails ({str(e) or type(e).__name__})", f"install it there ({python} -m pip install tracekit-ai), or "
+                f"fails ({str(e) or type(e).__name__})", f"install it there ({quote(python)} -m pip install tracekit-ai), or "
                 "re-run tracekit init --dev --v2 [--agent NAME] from the Tracekit you use", bad=WARN)
             continue
         old = release(version) < release(mine)

@@ -1426,7 +1426,7 @@ class Versions(unittest.TestCase):
                          ("ok", f"the running dev signer (pid 4242) runs Tracekit {__version__}, as this doctor does"))
 
     def test_an_unreadable_hook_python_is_a_warning_not_a_crash(self):
-        missing = os.path.join(self.d, "gone", "python")
+        missing = os.path.join(self.d, "gone dir", "python")   # its fix quotes the path (re-review of #512)
         self.hooks(self.command(self.tree("1.5.0"), python=missing), self.command(self.tree("dev")),
                    "uv run my-own-hook PreToolUse")
         rows = self.rows()
@@ -1434,6 +1434,8 @@ class Versions(unittest.TestCase):
         self.assertIn(f"can't tell which Python runs the Claude Code hooks in {self.settings}", rows[0]["detail"])
         self.assertIn(f"can't read the Tracekit version the hooks of Claude Code ({self.settings}) run: {missing} -I -c "
                       "'import tracekit' fails", rows[1]["detail"])
+        self.assertTrue(rows[1]["fix"].startswith(f"install it there ({shlex.quote(missing)} -m pip install tracekit-ai)"),
+                        rows[1]["fix"])
         self.assertIn("its tracekit says version 'dev'", rows[2]["detail"])
 
     def test_each_python_is_asked_once_and_names_every_agent_that_runs_it(self):
