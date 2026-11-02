@@ -527,7 +527,7 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 250 / 420 (59.5%) | 111 (26.4%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| default | 250 / 420 (59.5%) | 112 (26.7%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
 | strict | 278 / 420 (66.2%) | 151 (36.0%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
@@ -559,13 +559,13 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 90 / 85 | 185 / 220 | 297 / 374 | 3.46 / 4.12 |
-| strict, RE2 / regex | 90 / 87 | 184 / 218 | 300 / 388 | 3.41 / 4.03 |
-| dev, RE2 / regex | 77 / 72 | 162 / 178 | 266 / 442 | 3.02 / 3.18 |
+| default, RE2 / regex | 95 / 92 | 214 / 259 | 400 / 530 | 4.28 / 5.15 |
+| strict, RE2 / regex | 96 / 92 | 214 / 258 | 406 / 540 | 4.32 / 5.17 |
+| dev, RE2 / regex | 83 / 81 | 196 / 212 | 364 / 365 | 3.87 / 4.17 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.9%
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.12% default; 10.9%, 10.0%, 4.7%
 strict; the blind pools', recorded when they joined: 8.4% default, 13.7% strict); `p99_ref` stays within 25% of its on the same machine (re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
@@ -597,7 +597,7 @@ Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as th
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
 `bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 778
-originals and all 2,173 rewrites are, and both engines decide each the same. The run gates against a recorded
+originals and all 2,162 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
