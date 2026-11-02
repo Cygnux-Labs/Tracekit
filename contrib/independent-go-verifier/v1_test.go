@@ -3,7 +3,9 @@ package verifier
 import (
 	"archive/zip"
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -50,6 +52,38 @@ func TestV1ManifestFileList(t *testing.T) {
 		other := map[string]string{"bundle structure": "files match manifest", "files match manifest": "bundle structure"}
 		if r.ExitCode != 1 || !hasCheck(r.Checks, tc.check) || hasCheck(r.Checks, other[tc.check]) {
 			t.Errorf("file list %v: %+v, want %q", tc.files, r, tc.check)
+		}
+	}
+}
+
+// The manifest's seq_range ends at the highest seq of the records present, as the reference reads it, whatever their
+// number: a record deleted or repeated in the middle fails the chain, not the range; a range past the last record fails.
+func TestV1ManifestRangeIsTheLastSeqPresent(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		edit       func([][]byte) [][]byte
+		failsRange bool
+	}{
+		{"a record deleted", func(l [][]byte) [][]byte { return append(l[:5:5], l[6:]...) }, false},
+		{"a record repeated", func(l [][]byte) [][]byte { return append(l[:6:6], l[5:]...) }, false},
+		{"the last record cut", func(l [][]byte) [][]byte { return l[:len(l)-1] }, true},
+	} {
+		files, err := readV1Bundle(readGolden(t, "v1/demo-run.tkb"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines := bytes.Split(bytes.TrimSuffix(files["records.jsonl"], []byte("\n")), []byte("\n"))
+		files["records.jsonl"] = append(bytes.Join(tc.edit(lines), []byte("\n")), '\n')
+		manifest, err := parseFileObject(files, "manifest.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sum := sha256.Sum256(files["records.jsonl"])
+		manifest["files"].(map[string]any)["records.jsonl"] = hex.EncodeToString(sum[:])
+		files["manifest.json"], _ = json.Marshal(manifest)
+		r := VerifyV1(fixtureZip(files), readGolden(t, "v1/signer.pub"), nil)
+		if r.ExitCode != 1 || hasCheck(r.Checks, "manifest range") != tc.failsRange {
+			t.Errorf("%s: %+v, want manifest range failed: %v", tc.name, r, tc.failsRange)
 		}
 	}
 }
