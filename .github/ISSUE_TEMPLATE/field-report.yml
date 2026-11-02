@@ -6,7 +6,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        How to make one, and what it shares and doesn't: [field reports](https://github.com/Cygnux-Labs/Tracekit/wiki/Field-Reports).
+        How to make one, and what it shares and doesn't: [field reports](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/field-reports.md).
+        `--share` needs Tracekit 1.5.3 or later; until that is on PyPI, `pip install git+https://github.com/Cygnux-Labs/Tracekit`.
         A way an agent could get a call past the policy is a security problem: do not post it here, see SECURITY.md.
   - type: textarea
     id: share
