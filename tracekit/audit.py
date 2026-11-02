@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import sys
@@ -26,11 +27,12 @@ DEFAULT_ROOT = os.path.join("~", ".claude", "projects")
 
 
 def _session_from_path(path: str) -> str:
-    """Best-effort session id from a Claude Code transcript path: a subagent's file (<session>/subagents/agent-*.jsonl,
-    a workflow's agents' in <session>/subagents/workflows/<workflow>/) counts under its session."""
+    """Best-effort session id from a Claude Code transcript's path under the root: a subagent's file
+    (<session>/subagents/agent-*.jsonl, a workflow's agents' in <session>/subagents/workflows/<workflow>/) counts under
+    its session."""
     folders = os.path.dirname(path).split(os.sep)
-    if "subagents" in folders:
-        return folders[len(folders) - 1 - folders[::-1].index("subagents") - 1]
+    if "subagents" in folders[1:]:
+        return folders[folders.index("subagents", 1) - 1]
     base = os.path.basename(path)
     if base.endswith(".jsonl"):
         return base[:-6]
@@ -65,8 +67,9 @@ def _iter_transcripts(root: str, unreadable: list):
     def failed(e):
         unreadable.append({"path": e.filename, "error": f"cannot list: {e}"})
     for dirpath, dirnames, filenames in os.walk(root, onerror=failed, followlinks=False):
-        dirnames[:] = [d for d in dirnames if not os.path.islink(os.path.join(dirpath, d))]
-        for name in filenames:
+        # in order: which file a copied call counts in (the first) is the same on every filesystem
+        dirnames[:] = sorted(d for d in dirnames if not os.path.islink(os.path.join(dirpath, d)))
+        for name in sorted(filenames):
             path = os.path.join(dirpath, name)
             if not name.endswith(".jsonl") or os.path.islink(path):
                 continue
@@ -75,7 +78,7 @@ def _iter_transcripts(root: str, unreadable: list):
                     continue
             except ValueError:   # another drive
                 continue
-            yield path, _session_from_path(path)
+            yield path, _session_from_path(os.path.relpath(path, root))
 
 
 def audit(root: str, policy_path: str | None = None, since: str | None = None, show: bool = False) -> dict:
@@ -83,11 +86,12 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
 
     Counts malformed lines and unreadable files. Never writes.
     """
+    now = time.time()
     try:
-        since_ts = when(since) if since else 0.0
+        since_ts = when(since, now) if since else 0.0
     except argparse.ArgumentTypeError as e:   # report's --since type: here an unreadable --since is a ValueError
         raise ValueError(str(e)) from None
-    if since_ts >= time.time():
+    if since_ts >= now:
         raise ValueError(f"--since {since[:40]!r} is not in the past")
     engine = load_policy(policy_path or DEFAULT_POLICY)
 
@@ -98,7 +102,7 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
     calls: list[dict] = []
     skipped_malformed = 0
     unreadable: list[dict] = []
-    seen: set[str] = set()   # tool use ids: a resumed or forked session's file repeats the calls it copied
+    seen: set[bytes] = set()   # calls by id and content: a resumed or forked session's file repeats those it copied
 
     for path, session in _iter_transcripts(root, unreadable):
         f, err = _safe_open(path)
@@ -121,12 +125,17 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                 for b in blocks:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
-                    if isinstance(b.get("id"), str):
-                        if b["id"] in seen:
-                            continue
-                        seen.add(b["id"])
                     tool = b.get("name") if isinstance(b.get("name"), str) else ""
                     args = b.get("input") if isinstance(b.get("input"), dict) else {}
+                    try:   # the same id and call: a copy (a backend may reuse an id for another call)
+                        key = isinstance(b.get("id"), str) and hashlib.sha256(json.dumps(
+                            [b["id"], tool, args], sort_keys=True, default=str).encode()).digest()
+                    except (RecursionError, ValueError):   # arguments the encoder can't take: counted
+                        key = None
+                    if key in seen:
+                        continue
+                    if key:
+                        seen.add(key)
                     try:
                         decision = engine.decide(tool, args)
                     except Exception:   # the signer denies a call its engine fails on (signer.service._evaluate)

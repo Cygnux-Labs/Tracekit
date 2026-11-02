@@ -442,7 +442,7 @@ def share_rules(counts):
     """--share's rule lines (report's and audit's) of `counts`, {(decision, rule id, why): calls}, `why` as _tally's:
     the denies, then the holds and the flags, most first, the rules that only also matched after the others. A rule id
     that isn't Tracekit's own (tracekit_rules, or the signer's TK-APPROVAL-...), which a policy's author chose, is
-    counted as "custom rule", one count for all of them."""
+    counted as "custom rule", one count for all of them; "no rule" (a decision no rule named, _tally's) stays."""
     ours, shown = tracekit_rules(), collections.Counter()
     for (dec, rid, why), n in counts.items():
         shown[dec, rid if rid in ours or rid in APPROVAL_RULES or rid == "no rule" else "custom rule", why] += n

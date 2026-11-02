@@ -33,7 +33,7 @@ denied and held calls (--all for every call):
 - `ROOT` defaults to `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
-  without a timestamp is kept.
+  without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
 - `--show` includes each call as an approver sees it: its secrets redacted as the signer redacts them (`.env` content
   too), cut to 72 characters.
 - `--all` lists every call; without it, only the calls Tracekit would have denied or held for a person.

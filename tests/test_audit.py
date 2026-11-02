@@ -82,12 +82,25 @@ class TestAudit(unittest.TestCase):
         _write_jsonl(self.root / "proj" / "s1.jsonl", [deny, odd])
         _write_jsonl(self.root / "proj" / "s2.jsonl", [deny])
         self.assertEqual(audit.audit(str(self.root))["counts"]["deny"], 2)
+        other = _call("Bash", {"command": "rm -rf ~"})   # another call under a reused id (a proxy's, a backend's)
+        other["message"]["content"][0]["id"] = "toolu_1"
+        _write_jsonl(self.root / "proj" / "s3.jsonl", [other])
+        self.assertEqual(audit.audit(str(self.root))["counts"]["deny"], 3)
+
+    def test_a_root_inside_a_folder_named_subagents_keeps_its_sessions_apart(self):
+        """Review of #541: the session came from the whole path, so a folder named subagents above the root put every
+        transcript in one session."""
+        root = self.root / "subagents" / "projects"
+        for s in ("s1", "s2"):
+            _write_jsonl(root / "proj" / f"{s}.jsonl", [_call("Bash", {"command": "ls"})])
+        report = audit.audit(str(root))
+        self.assertEqual((report["sessions"], {c["session"] for c in report["calls"]}), (2, {"s1", "s2"}))
 
     def test_a_since_out_of_range_or_not_in_the_past_exits_2(self):
         """1.5.3 review: a --since of 400 digits of days ended in an OverflowError traceback."""
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
         for since, said in (("9" * 400 + "d", "is out of range"), ("3000000d", "is out of range"),
-                            ("2999-01-01", "is not in the past")):
+                            ("2999-01-01", "is not in the past"), ("0d", "is not in the past")):
             with self.subTest(since=since[:12]):
                 code, _, err = _run(str(self.root), "--since", since)
                 self.assertEqual(code, 2, err)
