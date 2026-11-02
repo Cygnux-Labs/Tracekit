@@ -56,12 +56,13 @@ NO_ARGS = "arguments not shown (the record holds only their salted hash)"
 
 def when(value, now=None):
     """--since/--until as seconds since the epoch: `<N>d`, `<N>h` or `<N>m` before now, or an ISO 8601 date or time
-    (UTC unless it names its offset). tracekit audit's --since too."""
-    m = re.fullmatch(r"(\d+)([dhm])", value)
+    (UTC unless it names its offset), in either case. tracekit audit's --since too."""
+    value = value.strip()
+    m = re.fullmatch(r"(\d+)([dhm])", value.lower())
     if m:
         return (time.time() if now is None else now) - int(m[1]) * {"d": 86400, "h": 3600, "m": 60}[m[2]]
     try:
-        t = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        t = datetime.datetime.fromisoformat(re.sub(r"[Zz]$", "+00:00", value))
     except ValueError:
         raise argparse.ArgumentTypeError(f"{value!r} is not 7d, 24h, 30m or an ISO date such as 2026-10-22") from None
     return (t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)).timestamp()

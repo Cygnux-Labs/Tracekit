@@ -145,10 +145,13 @@ def _open_regular(path: str) -> int:
         raise OSError(f"{path}: source is not a regular file")
     flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     fd = os.open(path, flags)
-    opened = os.fstat(fd)
-    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (seen.st_dev, seen.st_ino):
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (seen.st_dev, seen.st_ino):
+            raise OSError(f"{path}: source is not a regular file")
+    except BaseException:
         os.close(fd)
-        raise OSError(f"{path}: source is not a regular file")
+        raise
     return fd
 
 
