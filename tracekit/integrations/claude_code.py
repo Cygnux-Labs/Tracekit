@@ -16,11 +16,12 @@ with its approval's id and the command that approves it (Claude Code: also the d
 systemMessage the person sees); once a person approves it, the agent's retry of the same call (the same tool and
 exactly the same arguments) runs under that approval, which approval_request returns for it. A Claude Code Bash call's
 free-text `description`, which a model rewords on almost every retry, is the exception: a retry that differs from the
-session's latest held call of the same command only there, once a person approved that call, is decided, consumed and
-run with the approved arguments, which the hook prints as `updatedInput` (_reworded); any other key that differs makes
-it another call. With $TRACEKIT_APPROVAL_WAIT the hook first waits that long for the answer (approval_wait_s). An
-approval with a T2 executor runs the arguments the consume returns: the hook prints them as `updatedInput` (Claude Code
-only; the other harnesses run the arguments the signer consumed, which it checked against the approved ones). The
+session's latest held call of the same command only there, once a person approved that call, is decided and consumed
+with the approved arguments (the record is the approved call) and runs as the model sent it (_reworded); any other key
+that differs makes it another call. With $TRACEKIT_APPROVAL_WAIT the hook first waits that long for the answer
+(approval_wait_s). An approval with a T2 executor runs the arguments the consume returns: the hook prints them as
+`updatedInput` (Claude Code only; the other harnesses run the arguments the signer consumed, which it checked against
+the approved ones). The
 signer unreachable: the run's fail mode for the tool's class, from register_run (closed before a run is registered). A
 rate limit (quota_exceeded with retry_after_ms) is waited out within the client's timeout (HookClient). A signer
 refusal, a failure while a call waits for its approval, or any other error: blocked. A call allowed here that gets no
@@ -374,10 +375,10 @@ def _keep_held(sid, run_id, args, aid):
 def _reworded(client, sid, args):
     """The arguments of the session's latest held Bash call that `args` repeats in every key but `description`, with a
     description of its own, when a person has approved that call; None otherwise. A person approves a command, not
-    the caption the model gave it: the retry is decided, consumed and run with the approved arguments (updatedInput),
-    so the record and what runs are what was approved. Any other key that differs (command, run_in_background,
-    dangerouslyDisableSandbox, timeout, ...), or an approval that is not `approved` (still requested, rejected,
-    expired or used), and the retry is decided as the model sent it."""
+    the caption the model gave it: the retry is decided and consumed with the approved arguments, so the record is the
+    approved call, and runs as the model sent it, which differs only in that caption. Any other key that differs
+    (command, run_in_background, dangerouslyDisableSandbox, timeout, ...), or an approval that is not `approved` (still
+    requested, rejected, expired or used), and the retry is decided as the model sent it."""
     st = _load(_state(sid))
     if not st or st.get("ended"):
         return None
@@ -478,8 +479,8 @@ def _pre(client, p, sid, tid):
         why = " ".join(x for x in ("; ".join(c["rule_ids"]), c.get("reason", "")) if x)
         print(f"Held by tracekit policy: {why}", file=sys.stderr)
         return 2
-    if AGENT == "claude-code" and ("args" in c or approved is not None):
-        args = c.get("args", args)   # T2: the signer's copy is what runs; a reworded retry: the approved arguments
+    if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
+        args = c["args"]
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "tool_call_id": tid, "decision_id": d["decision_id"],
                                         "args_digest": event_hash({"tool": tool, "args": args}),

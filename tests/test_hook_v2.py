@@ -1045,8 +1045,9 @@ class HeldCalls(unittest.TestCase):
     def test_an_approved_retry_that_rewords_its_description_runs_the_approved_call(self):
         """#509: Claude Code's Bash input carries a free-text `description`, which the model rewords on a retry, and the
         approval bound it: one approved command was held three times in a row. A retry that differs from the approved
-        call only there is decided, consumed and run with the approved arguments, which the hook hands Claude Code as
-        updatedInput; one that differs in any other key is held again, and so is the next retry once one ran."""
+        call only there is decided and consumed with the approved arguments and runs as sent, with no updatedInput (a
+        hook's updatedInput could change how Claude Code asks the person); one that differs in any other key is held
+        again, and so is the next retry once one ran."""
         asked = {"command": self.UPLOAD, "description": "Upload the build", "timeout": 600000}
         aid = self.held(tid="t1", **asked)
         self.assertEqual(self.approvals("approve", aid), f"approved: {aid} (self-approved: dev mode only)")
@@ -1057,9 +1058,7 @@ class HeldCalls(unittest.TestCase):
                 self.assertEqual(code, 2, err)
                 self.assertTrue(err.startswith("[tracekit] held for approval "), err)
                 self.assertNotEqual(err.split()[4], aid)
-        code, out, err = self.pre(tid="t2", **dict(asked, description="Retry the upload to S3"))
-        self.assertEqual((code, err), (0, ""))
-        self.assertEqual(json.loads(out), {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": asked}})
+        self.assertEqual(self.pre(tid="t2", **dict(asked, description="Retry the upload to S3")), (0, "", ""))
         self.assertEqual(self.post(self.UPLOAD, "t2"), (0, ""))
         # the signer consumed the approval (for t2, the only call that ran): it does only for a decision of the
         # approved arguments

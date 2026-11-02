@@ -110,8 +110,9 @@ In Claude Code a Bash call's arguments include a free-text `description`, which 
 retry. A person approves a command, not its caption, so the Claude Code hook keeps the session's held Bash calls (the
 arguments but the description only as a digest, the description, and the approval). A retry that differs from the
 latest held call of the same command only in its `description`, once that call's approval reads `approved`, is decided
-and consumed with the approved arguments, and the hook hands them to Claude Code as `updatedInput`: the retry runs, and
-is recorded, as the call the person approved, description included. Any other key that differs (`command`,
+and consumed with the approved arguments, so the record is the call the person approved, description included; Claude
+Code runs the retry as the model sent it, the same command with only its caption reworded (the hook returns no
+`updatedInput`, which could change how Claude Code asks you). Any other key that differs (`command`,
 `run_in_background`, `dangerouslyDisableSandbox`, `timeout`, ...) makes it another call, held with a new approval; and
 after a reject, an expiry or a use of that approval, the retry is decided as the model sent it. The signer's rule above
 is unchanged: the hook only chooses which arguments the retry is decided with.
