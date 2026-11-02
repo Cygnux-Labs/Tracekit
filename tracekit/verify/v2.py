@@ -710,6 +710,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
             if key in seen:
                 chain.append(f"run {key[1][:200]!r} of tenant {key[0][:64]!r} again in {name}")
             seen.add(key)
+            if run_name(*key) != name:   # §9: a run's file is named by its tenant and run_id
+                chain.append(f"run {key[1][:200]!r} of tenant {key[0][:64]!r} in {name}: its file is "
+                             f"{run_name(*key)}")
         for i in range(start, len(records)):   # those a Memo kept were checked as they are
             r = records[i]
             check_record(r, keys_at(r["event"]["seq"]), problems)
@@ -1429,6 +1432,8 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
     if 0 < lo < hi and not verify_consistency(lo, hi, roots[lo], roots[hi], [
             base64.b64decode(p, validate=True) for p in rs["consistency"]]):
         problems.append(f"registry checkpoint {lo} is not a prefix of {hi}")
+    elif not 0 < lo < hi and rs["consistency"] != []:   # a range from 0, or empty, has no consistency proof
+        problems.append(f"a consistency proof for registry {lo}..{hi}, which has none")
     leaves, lines, pointed = rs["leaves"], _jsonl(files["registry/records.jsonl"]), []
     if len(leaves) != hi - lo:
         problems.append(f"{hi - lo} leaves in {lo}..{hi}, {len(leaves)} in the bundle: a leaf is missing")

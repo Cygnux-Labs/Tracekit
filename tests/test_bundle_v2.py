@@ -604,6 +604,20 @@ class TestVerifyV2(Case):
         with self.subTest("record alg not pinned by the verifier"):
             self.assert_fails(out, "signatures", self.write_trust(algs=("ed448",), name="t2.json"))
 
+    def test_a_run_under_another_runs_file_name_fails(self):
+        """A run's file is named by its tenant and run_id (format-v2.md §9): under another name it fails run chain, in
+        both verifiers alike."""
+        _, out = self.honest()
+        real, other = run_name("acme", "run-a"), run_name("acme", "run-z")
+        bad = self.mutate(out, edit=lambda f, m: (f.update({other: f.pop(real)}), m["files"].update({other: ""})))
+        rep, code = self.verify(bad)
+        self.assertEqual((code, rep.failures), (1, ["run chain"]), rep.checks)
+        self.assertIn(f"run 'run-a' of tenant 'acme' in {other}: its file is {real}",
+                      next(c for c in rep.checks if c["check"] == "run chain")["problems"])
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            self.assertEqual(tv.ts_verify(bad, self.trust)["checks"], rep.checks)
+
     def test_a_memo_skips_only_the_checks_the_same_record_passed(self):
         """tracekit view checked a growing run in full at each checkpoint (0.5 ms a record each time): with verify's
         memo a record that passed is not checked again for its signature and schema, the report is the same, and an
