@@ -109,14 +109,16 @@ A held or quarantined run follows [its own rules](incidents.md).
 In Claude Code a Bash call's arguments include a free-text `description`, which the model rewords on almost every
 retry. A person approves a command, not its caption, so the Claude Code hook keeps the session's last 32 held Bash
 calls, each as digests of its arguments (with and without the description) and its approval's id: only which
-approvals to try. A retry that differs from a held call of the same command only in its `description` is matched with
-the newest of them whose approval was answered. Approved: the hook reads the approved arguments from the signer
-(`approval_get`), checks them against the retry's but the description, and decides and consumes the retry with them,
-so the record is the call the person approved, description included; Claude Code runs the retry as the model sent it,
-the same command with only its caption reworded (the hook returns no `updatedInput`, which could change how Claude
-Code asks you). Rejected: the signer keeps no copy of a rejected call's arguments, so the retry is decided as the model
-sent it and held, and the first reason after `Why:` in its block (`[tracekit] held for approval …`) is `a person
-rejected this command (with another description) as apr-…`.
+approvals to try. A retry that differs from held calls of the same command only in its `description` is matched with
+the answered ones. Approved, and none of them rejected: the hook reads the newest approved call's arguments from the
+signer (`approval_get`), checks them against the retry's but the description, and decides and consumes the retry with
+them, so the record is the call that was approved, description included; Claude Code runs the retry as the model sent
+it, the same command with only its caption reworded (the hook returns no `updatedInput`, which could change how Claude
+Code asks you). One of them rejected: the signer keeps no copy of a rejected call's arguments and doesn't say which
+answer came last, so the retry is decided as the model sent it and held, and the first reason after `Why:` in its block
+(`[tracekit] held for approval …`) is `a person rejected this command (with another description) as apr-…`, adding
+`, and it was approved (with another description) as apr-…` when one was. One the hook can't read (a signer whose
+`authorize` doesn't grant it `approval_get`, or one restarting) runs nothing in place of the retry either.
 Any other key that differs (`command`, `run_in_background`, `dangerouslyDisableSandbox`, `timeout`, ...), or an
 approval still unanswered, expired or used, and the retry is decided as the model sent it. The signer's rule above is
 unchanged: the hook only chooses which arguments the retry is decided with, and the signer still checks them against
