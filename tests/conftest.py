@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import socketserver
 import sys
 import tempfile
 import time
@@ -35,6 +36,11 @@ SHELL_ENV = ("TRACEKIT_POLICY", "TRACEKIT_SOCKET", "TRACEKIT_CLIENT_HOME", "TRAC
              "CLAUDE_CONFIG_DIR", "GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", "XDG_CONFIG_HOME",
              "CODEX_HOME")
 PROXIES = urllib.request.getproxies()
+
+# A test's servers stop when it ends, and shutdown() returns once serve_forever sees it: after up to a poll interval
+# (the stdlib's 0.5 s, the signer's 0.2 s). Thousands stop in a run; polled every 0.02 s they stop at once.
+_serve_forever = socketserver.BaseServer.serve_forever
+socketserver.BaseServer.serve_forever = lambda self, poll_interval=0.5: _serve_forever(self, min(poll_interval, 0.02))
 
 
 def pytest_configure(config):

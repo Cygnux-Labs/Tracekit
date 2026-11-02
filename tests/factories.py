@@ -4,6 +4,7 @@ Import with `from factories import ...` (tests/ is on sys.path under pytest; see
 """
 import hashlib
 import json
+import multiprocessing
 import os
 import shutil
 import sys
@@ -11,6 +12,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+from concurrent.futures import ProcessPoolExecutor
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -129,6 +131,13 @@ def persisted_queue(signer):
         return signer.log.storage.witness_queue()
 
 
+def process_pool():
+    """Worker processes, one per CPU this process may use (at most 61: Windows takes no more), spawned: a test process
+    has threads, which a fork would copy mid-lock."""
+    cpus = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else os.cpu_count() or 1
+    return ProcessPoolExecutor(min(cpus, 61), mp_context=multiprocessing.get_context("spawn"))
+
+
 def wait_for(cond, timeout=10, interval=0.05):
     """Poll cond() until it returns something truthy or the deadline passes; return its last value."""
     deadline = time.monotonic() + timeout
@@ -137,3 +146,29 @@ def wait_for(cond, timeout=10, interval=0.05):
         if v or time.monotonic() >= deadline:
             return v
         time.sleep(interval)
+
+
+class VersionCheckCases:
+    """The version check a hand-wired integration shares with the others (tracekit.integrations.version_check): a
+    framework outside the versions Tracekit is tested with warns once when the integration is built, one inside the
+    range does not. A test class sets `module` (under tracekit.integrations), `inside` and `message`."""
+
+    def warnings_for(self, version):
+        import importlib
+        import warnings
+        from tracekit.integrations import version_check
+        integration = importlib.import_module("tracekit.integrations." + self.module)
+        with mock.patch.object(version_check, "_WARNED", set()), \
+                mock.patch.object(version_check, "_version", return_value=version), \
+                warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            integration.Tracekit(mock.Mock())
+        return [str(x.message) for x in w if "is wired but untested" in str(x.message)]
+
+    def test_it_warns_for_a_version_outside_the_tested_range(self):
+        msgs = self.warnings_for("0.0.1")
+        self.assertEqual(1, len(msgs))
+        self.assertIn(self.message, msgs[0])
+
+    def test_it_does_not_warn_for_a_version_inside_the_tested_range(self):
+        self.assertEqual([], self.warnings_for(self.inside))

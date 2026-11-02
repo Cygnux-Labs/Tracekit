@@ -55,15 +55,16 @@ NO_ARGS = "arguments not shown (the record holds only their salted hash)"
 
 
 def when(value, now=None):
-    """--since/--until as seconds since the epoch: `<N>d` or `<N>h` before now, or an ISO 8601 date or time (UTC unless
-    it names its offset)."""
-    m = re.fullmatch(r"(\d+)([dh])", value)
+    """--since/--until as seconds since the epoch: `<N>d`, `<N>h` or `<N>m` before now, or an ISO 8601 date or time
+    (UTC unless it names its offset), in either case. tracekit audit's --since too."""
+    value = value.strip()
+    m = re.fullmatch(r"(\d+)([dhm])", value.lower())
     if m:
-        return (time.time() if now is None else now) - int(m[1]) * (86400 if m[2] == "d" else 3600)
+        return (time.time() if now is None else now) - int(m[1]) * {"d": 86400, "h": 3600, "m": 60}[m[2]]
     try:
-        t = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        t = datetime.datetime.fromisoformat(re.sub(r"[Zz]$", "+00:00", value))
     except ValueError:
-        raise argparse.ArgumentTypeError(f"{value!r} is not 7d, 24h or an ISO date such as 2026-10-22") from None
+        raise argparse.ArgumentTypeError(f"{value!r} is not 7d, 24h, 30m or an ISO date such as 2026-10-22") from None
     return (t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)).timestamp()
 
 
@@ -409,7 +410,7 @@ def main(argv=None):
     g.add_argument("--config", help="signer.yaml: report on its store")
     g.add_argument("--data-dir", help="a signer data dir (holds store/ and log.vkey)")
     ap.add_argument("--log-vkey", help="pin this log vkey (`tracekit signer vkey`) instead of the one the store names")
-    ap.add_argument("--since", type=when, default="7d", help="7d, 24h, or an ISO date or time, UTC unless it says "
+    ap.add_argument("--since", type=when, default="7d", help="7d, 24h, 30m, or an ISO date or time, UTC unless it says "
                                                              "(default: 7d)")
     ap.add_argument("--until", type=when, help="an ISO date or time, not included (default: now)")
     ap.add_argument("--tenant", help="this tenant's runs only (default: every tenant's)")

@@ -86,6 +86,12 @@ class WeeklyReport(unittest.TestCase):
     run of another tenant; and a run whose record is edited afterwards."""
 
     def setUp(self):
+        # the tests wait for a closed run's run.final and for a checkpoint of the store: a sweep and a checkpoint every
+        # 0.05 s, not every 1 s (TICK_S, CHECKPOINT_MIN_S) and 10 s (CHECKPOINT_S)
+        for name in ("TICK_S", "CHECKPOINT_S", "CHECKPOINT_MIN_S"):
+            p = mock.patch.object(svc, name, 0.05)
+            p.start()
+            self.addCleanup(p.stop)
         d = tmpdir(self)
         with open(os.path.join(d, "policy.yaml"), "w") as f:
             f.write(POLICY)
@@ -558,6 +564,19 @@ class DevContent(unittest.TestCase):
         # Windows: an endpoint.json without a port and token is no running signer, not an error of the report
         with mock.patch.object(autospawn, "address", side_effect=ValueError("endpoint.json has no port and token yet")):
             self.assertEqual(view.dev_content_source("tracekit report", weekly._running)("r1", recs), {})
+
+
+class When(unittest.TestCase):
+    """--since and --until (and tracekit audit's --since): days, hours or minutes before now, or an ISO time."""
+
+    def test_counts_and_times_in_either_case(self):
+        now = 1_000_000.0
+        self.assertEqual(weekly.when("30m", now), now - 1800)
+        self.assertEqual(weekly.when(" 7D ", now), now - 7 * 86400)
+        self.assertEqual(weekly.when("2026-10-19T00:00:00z"), weekly.when("2026-10-19T00:00:00Z"))
+        self.assertEqual(weekly.when("2026-10-19T00:00:00"), weekly.when("2026-10-19T00:00:00+00:00"))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            weekly.when("last week")
 
 
 if __name__ == "__main__":

@@ -101,8 +101,18 @@ class TestAudit(unittest.TestCase):
                       ten_days_ago.replace(tzinfo=None).isoformat()):   # an offset, and none (UTC)
             report = audit.audit(str(self.root), since=since, show=True)
             self.assertEqual([c["text"] for c in report["calls"]], ["Bash echo new"], since)
+        self.assertEqual(audit.audit(str(self.root), since="30m")["calls"], [])
         with self.assertRaises(ValueError):
             audit.audit(str(self.root), since="last week")
+
+    def test_a_last_line_without_a_newline_is_read(self):
+        """A finished transcript's last line may lack its newline: audit dropped it, 0 calls and 0 malformed."""
+        path = self.root / "s.jsonl"
+        path.write_text(json.dumps(_call("Bash", {"command": "rm -rf /"})), encoding="utf-8")
+        self.assertEqual(audit.audit(str(self.root))["counts"]["deny"], 1)
+        path.write_text(json.dumps(_call("Bash", {"command": "ls"})) + '\n{"type": "assis', encoding="utf-8")
+        report = audit.audit(str(self.root))   # a line still being written is counted, not dropped
+        self.assertEqual((report["counts"]["allow"], report["skipped_malformed"]), (1, 1))
 
     def test_show_redacts_secrets_as_the_signer_does(self):
         key = "sk-ant-" + "a1B2c3D4e5F6g7H8i9J0" * 2

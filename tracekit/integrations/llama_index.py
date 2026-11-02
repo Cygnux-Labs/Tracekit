@@ -42,8 +42,7 @@ class Tracekit:
     too."""
 
     def __init__(self, run):
-        version_check.warn_untested("LlamaIndex", "llama-index-core", (0, 14, 25), (0, 15),
-                                    "llama-index-core>=0.14.25,<0.15")
+        version_check.warn_untested("LlamaIndex", "llama-index-core>=0.14.25,<0.15")
         self.run = run_handle(run, instrument=True)
         # lean: one entry per call this object ran, for its life; prune them at run end if agents run for days
         self._attempts = {}   # tool_id -> the attempt its next execution is (a step LlamaIndex runs again)
