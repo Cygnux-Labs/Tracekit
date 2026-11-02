@@ -1129,7 +1129,10 @@ class CodingPack(unittest.TestCase):
                    "rm -rf ~/.local/share/opencode", 'rm -rf "$XDG_DATA_HOME/opencode"', "rm -rf ${XDG_DATA_HOME}",
                    "rm -rf ~/.local/share/*", "rm -rf ~/.local", "mv ~/.codex /tmp/codex-old", "rm -rf ~/.Gemini",
                    "find ~/.claude -name '*.jsonl' -delete", r"rm -r 'C:\Users\u\.codex'", "rm -rf /home/u/.claude//",
-                   "rm -rf /Users/u/.gemini", "rm -rf /root/.codex", "find -- ~/.claude -delete")
+                   "rm -rf /Users/u/.gemini", "rm -rf /root/.codex", "find -- ~/.claude -delete",
+                   # a home path spelled with `.`, `..` or a doubled separator only got a flag
+                   "rm -rf ~/./.claude", "rm -rf $HOME/./.codex", "rm -rf ~/x/../.claude", "rm -rf /Users/u/./.claude",
+                   "rm -rf ~//./.gemini", r"rm -r 'C:\Users\u\.\.codex'", "mv ~/./.codex /tmp/codex-old")
         kept = ("cp settings.json ~/.gemini", "mv x ~/.claude", "rm -rf ~/.claude/hooks", "rm ~/.codex/config.toml",
                 "rm -rf ~/.claude-old", "rm -rf ~/.local/share/opencode/log", "rm -rf ~/.local/bin",
                 "echo x > ~/.local/share/opencode/storage.txt",
@@ -1137,6 +1140,7 @@ class CodingPack(unittest.TestCase):
                 "rm -rf .claude", "rm -rf repo/.gemini/", "mv .codex .codex.bak", "rm -rf /Users/u/repo/.claude",
                 # or a folder that only looks like a home (a rootfs overlay, dotfiles mirrored in a repo)
                 "rm -rf root/.claude", "rm -rf build/home/x/.claude", "rm -rf /srv/app/root/.codex",
+                "rm -rf ./.claude", "rm -rf repo/./.gemini", "rm -rf ~/x/../repo/.claude",
                 # find that only edits files in place writes them, it doesn't delete the folder
                 "find ~/.codex -maxdepth 1 -name config.toml -exec sed -i s/a/b/ {} +")
         for pack, engine, e in self.every_pack():

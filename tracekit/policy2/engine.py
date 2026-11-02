@@ -511,7 +511,7 @@ def _log_or_history(path):
 
 def _effects(parsed):
     """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
-    path casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
+    path resolved (_normal) and casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
     sed -i and perl -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i), awk's
     print > "file", zip -m's sources, and one of those that git, docker, podman, kubectl or parallel runs from its words
     (git rm). When a command writes files the line names only at run time or inside code it runs (_opaque), or the
@@ -527,7 +527,17 @@ def _effects(parsed):
         # #421); follow the names into the writer if that holds real reads
         tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:] + c["stdin"]]
         tags += ["MAY_WRITE:" + line for line in parsed[1] if unread]
+    tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
+             if k != "MAY_WRITE" and (n := _normal(path)) != path]
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
+
+
+def _normal(path):
+    """A target with `.`, `..` and repeated separators resolved, a `\\` read as `/`: `~/./.claude` is `~/.claude`. A
+    `..` after a symlink may lead elsewhere, so this is only a second reading: it adds matches, and the target as
+    written is still read."""
+    p = posixpath.normpath(path.replace("\\", "/")) if path else path
+    return path if p == "." else p
 
 
 _WRITER = re.compile(r"\b(?:rm|unlink|truncate|shred|mv|tee|dd|ln|perl)\b")
