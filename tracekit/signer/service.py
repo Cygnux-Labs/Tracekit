@@ -5268,7 +5268,7 @@ def main(argv=None):
     print(f"tracekit signer {__version__} serving{where}", flush=True)
     try:
         while not stop:
-            time.sleep(1)
+            time.sleep(0.1)   # a sleep goes on after the handler runs: it is how late a SIGTERM stops serving
     except KeyboardInterrupt:
         pass
     for s in servers:

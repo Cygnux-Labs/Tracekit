@@ -16,10 +16,12 @@ tailer_heartbeat and status.
 The transcript is opened once, with O_NOFOLLOW, and must be a regular file of the agent's uid (the root-owned system
 config names the agent; dev mode: our own uid); the fd is kept. On every wake (inotify on the transcript's directory on
 Linux, else a poll) its size may not go backwards, the path must still be that same file, of that uid, and each new
-complete line must be a JSON object; the bytes already read may not have changed (rehashed once the file's ctime has
-moved: at most every CHECK_S while it keeps changing, once it has been still for a second, and on the last wake, so an
-edit is caught up to CHECK_S late, after the lines written meanwhile). Otherwise the tailer sends `tailer_lost` (the
-signer writes the signed gap, the tailer never writes one) and exits; so does any other failure, naming its type.
+complete line must be a JSON object; the bytes already read may not have changed (hashed again once the file's ctime
+has moved: on every wake while that takes under CHEAP_S, else once a hundred rehashes' time has passed, at most
+CHECK_S, so an edit to a transcript of hundreds of MB is caught that late, after the lines written meanwhile; and once
+the file has been still for a second, on the last wake, before any line is reported, and once more when the signer
+says the run ended). Otherwise the tailer sends `tailer_lost` (the signer writes the signed gap, the tailer never
+writes one) and exits; so does any other failure, naming its type.
 Every assistant line (Claude Code writes one per content block: thinking, text,
 tool use) becomes a model_event response (exchange id: the message id; a tool_use line's tool uses with the digest of
 their arguments as reconciliation compares them, reconcile.compared, and the tool results sent since the last one); a
@@ -56,7 +58,8 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import HEARTBEAT_S, IDLE_S
 
 POLL_S = 1.0
-CHECK_S = 30   # while a transcript keeps changing, how often the bytes already read are hashed again
+CHECK_S = 30   # the longest a changing transcript's bytes already read go without being hashed again
+CHEAP_S = 0.01   # a rehash that took less is done on every wake that sees the file changed
 # lean: twice the signer's default run idle timeout, so a quiet run has closed before the tailer gives up on it; ask the
 # signer for the run's state instead if signers run with a longer idle_s
 IDLE_TAILER_S = 2 * IDLE_S
@@ -187,8 +190,8 @@ class _Transcript:
 
     def __init__(self, path, name="main", off=0):
         self.path, self.name, self.f, self.off, self.sent = path, name, None, off, []
-        # the bytes before `off`; the ctime they were last checked at, and when (monotonic)
-        self.read, self.checked, self.at = hashlib.sha256(), None, None
+        # the bytes before `off`; the ctime they were last checked at, when (monotonic), and how long that took
+        self.read, self.checked, self.at, self.cost = hashlib.sha256(), None, None, 0.0
 
 
 def _listed(*dirs):
@@ -215,26 +218,39 @@ def _subagents(path):
     return [p for p in found if os.path.basename(p).startswith("agent-") and p.endswith(".jsonl")]
 
 
-def _follow(send, t, uid, last=False):
-    """Report transcript t's new complete lines (`send`, a _Sender); `last`: the tailer's last wake, which checks the
-    bytes already read whenever they changed. -> whether it grew."""
+def _verify(t, uid, last=False):
+    """Open transcript t once it exists, and check it (_check) and the bytes it already read: hashed again once its
+    ctime moved, on every wake while that is cheap (under CHEAP_S), else once a hundred rehashes' time has passed (at
+    most CHECK_S), once it has been still for a second, and on the tailer's last wake (`last`). -> whether it is open."""
     if t.f is None:
         t.f = _open(t.path, uid)
         if t.f is None:
             return False
+        began = time.monotonic()
         _sha256(t.f, t.off, t.read)   # an earlier run's lines, from here on checked as the ones it reads
         t.at = time.monotonic()
+        t.cost = t.at - began
     _check(t.f, t.path, uid, t.off)
     ctime = os.fstat(t.f.fileno()).st_ctime_ns   # any write moves it, and no user can set it back
     # a ctime under a second old may not move for a change in the same clock tick: checked again once it is older
     still = time.time_ns() - ctime > 1_000_000_000
-    if ctime != t.checked and (still or last or time.monotonic() - t.at >= CHECK_S):
-        # lean: rehashes all it has read (0.3 s for an 816 MB transcript) at most every CHECK_S while it changes, so an
-        # edit is caught that late, after the lines written meanwhile, and one undone before then not at all; lower
-        # CHECK_S if edits must be caught sooner
+    if ctime != t.checked and (still or last or t.cost < CHEAP_S or time.monotonic() - t.at >= min(CHECK_S,
+                                                                                                    100 * t.cost)):
+        # lean: a transcript of hundreds of MB (0.3 s to hash 816 MB) is hashed again at most every hundred rehashes'
+        # time while it changes, so an edit is caught that late, after the lines written meanwhile, and one undone
+        # before then not at all (docs/limits.md); keep per-block hashes if such edits must be caught at once
+        began = time.monotonic()
         if _sha256(t.f, t.off).digest() != t.read.digest():
             raise Lost("a line already read changed in place")
         t.checked, t.at = ctime if still else None, time.monotonic()
+        t.cost = t.at - began
+    return True
+
+
+def _follow(send, t, uid):
+    """Report transcript t's new complete lines (`send`, a _Sender), once _verify has checked it. -> whether it grew."""
+    if not _verify(t, uid):
+        return False
     t.f.seek(t.off)
     data, start = t.f.read(), t.off
     try:
@@ -273,6 +289,13 @@ def _heartbeat(run):
     return time.monotonic()
 
 
+def _tell(run, main, t, e):
+    """tailer_lost for transcript t: Lost's reason, or the type of another failure (its message may name a path)."""
+    name = "" if t is main else f"subagent transcript {os.path.basename(t.path)}: "
+    why = str(e) if isinstance(e, Lost) else f"the tailer failed ({type(e).__name__})"
+    run.call("tailer_lost", reason=name + why, offset=t.off)
+
+
 def tail(run, path, uid, until=None, wait=None, status=None, offsets=None):
     """Follow `path`, and its subagents' transcripts, for `run` until the run ends, `until` is gone, or a transcript is
     lost (reported). `status()`: the signer's status answer, which says whether it keeps content (VaultBody);
@@ -290,8 +313,10 @@ def tail(run, path, uid, until=None, wait=None, status=None, offsets=None):
             cur = main
             for p in _subagents(path) if main.f is not None else ():
                 ts.setdefault(p, _Transcript(p, os.path.basename(p), start.get(p, 0)))
+            for cur in ts.values() if gone else ():   # the last wake checks every transcript before a line can be
+                _verify(cur, uid, True)                # refused for the run's end (SessionEnd closes it first)
             for cur in ts.values():
-                if _follow(send, cur, uid, gone):
+                if _follow(send, cur, uid):
                     grew = time.monotonic()
             cur = main
             if main.f is None and (gone or idle):
@@ -306,12 +331,19 @@ def tail(run, path, uid, until=None, wait=None, status=None, offsets=None):
     except RPCError as e:
         if e.code not in ENDED:
             raise
+        try:   # the run ended: a line already read that changed is still told, while the signer takes late records
+            for cur in ts.values():
+                if cur.f is not None:
+                    _verify(cur, uid, True)
+        except Exception as x:
+            try:
+                _tell(run, main, cur, x)
+            except (RPCError, SignerUnavailable):   # final by now: nothing takes it
+                pass
     except SignerUnavailable:
         raise
     except Exception as e:   # Lost, or a failure of the tailer's own (a bug, a read error): never a silent stop
-        name = "" if cur is main else f"subagent transcript {os.path.basename(cur.path)}: "
-        why = str(e) if isinstance(e, Lost) else f"the tailer failed ({type(e).__name__})"
-        run.call("tailer_lost", reason=name + why, offset=cur.off)
+        _tell(run, main, cur, e)
     finally:
         for t in ts.values():
             if t.f is not None:

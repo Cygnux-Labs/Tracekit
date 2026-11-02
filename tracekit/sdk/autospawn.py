@@ -331,7 +331,7 @@ def down(timeout=10, d=None, show_log=True):
             log = os.path.join(d, LOG)
             # where it is stuck: every thread's stack, which it writes to its stderr; not to a pid its endpoint no
             # longer names, which may be another process's by now
-            if show_log and stacks and _pid(d) == pid:
+            if show_log and stacks and _pid(d) in (pid, None):   # None: a stop that hangs after unpublishing
                 try:
                     os.kill(pid, signal.SIGUSR1)
                 except ProcessLookupError:   # it has just exited

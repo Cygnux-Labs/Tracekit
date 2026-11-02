@@ -482,6 +482,7 @@ class Client:
             if client and client._conn is conn:
                 client._conn = None
             conn.out.put(None)   # the writer stops
+            conn.drop()   # and one blocked in sendall wakes before the fd closes
             conn.sock.close()
             conn.rfile.close()   # the socket's fd closes only once its reader has too
             conn.fin.detach()
