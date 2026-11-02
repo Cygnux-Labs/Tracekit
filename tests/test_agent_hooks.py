@@ -814,29 +814,46 @@ class Installer(unittest.TestCase):
             self.assertFalse(os.path.exists(path))
 
     def test_droid_creation_keeps_settings_hooks_and_uninstall_restores_them(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = agent_hooks.config_path("droid", d)
-            os.makedirs(os.path.dirname(path))
+        """#499: init copies settings.json's hooks into the hooks.json it creates (Droid reads them only while it is
+        absent); uninstall removes that copy again, so Droid reads settings.json's hooks, edits included, once more.
+        A hooks.json whose hooks a person changed since, or one whose settings.json hooks changed, stays, named."""
+        def group(command):
+            return [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]
 
-            def group(command):
-                return [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]
-
-            fallback = {"PreToolUse": group("echo settings pre"), "PostToolUse": group("echo settings post")}
-            settings = {"theme": "dark", "hooks": fallback}
-            settings_path = os.path.join(d, ".factory", "settings.json")
-            with open(settings_path, "w") as f:
-                json.dump(settings, f)
-            for _ in range(2):
-                agent_hooks.install("droid", d, v2=True)
-            with open(path) as f:
-                hooks = json.load(f)
-            for ev, groups in fallback.items():
-                self.assertEqual(hooks[ev][:len(groups)], groups)
-            agent_hooks.install("droid", d, uninstall=True)
-            with open(path) as f:
-                self.assertEqual(json.load(f), fallback)
-            with open(settings_path) as f:
-                self.assertEqual(json.load(f), settings)
+        fallback = {"PreToolUse": group("echo settings pre"), "PostToolUse": group("echo settings post")}
+        settings = {"theme": "dark", "hooks": fallback}
+        for changed in (None, "hooks.json", "settings.json"):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as d:
+                path = agent_hooks.config_path("droid", d)
+                os.makedirs(os.path.dirname(path))
+                settings_path = os.path.join(d, ".factory", "settings.json")
+                with open(settings_path, "w") as f:
+                    json.dump(settings, f)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    for _ in range(2):
+                        agent_hooks.install("droid", d, v2=True)
+                with open(path) as f:
+                    hooks = json.load(f)
+                for ev, groups in fallback.items():
+                    self.assertEqual(hooks[ev][:len(groups)], groups)
+                if changed:
+                    edited = os.path.join(d, ".factory", changed)
+                    with open(edited) as f:
+                        config = json.load(f)
+                    (config if changed == "hooks.json" else config["hooks"])["SessionStart"] = group("echo mine")
+                    with open(edited, "w") as f:
+                        json.dump(config, f)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    agent_hooks.install("droid", d, uninstall=True)
+                self.assertEqual(os.path.exists(path), bool(changed))
+                self.assertEqual(f"{path} kept: what is left" in out.getvalue(), bool(changed))
+                if changed == "hooks.json":
+                    with open(path) as f:
+                        self.assertEqual(json.load(f), {**fallback, "SessionStart": group("echo mine")})
+                with open(settings_path) as f:
+                    self.assertEqual(json.load(f)["hooks"], {**fallback, **(
+                        {"SessionStart": group("echo mine")} if changed == "settings.json" else {})})
 
     def test_droid_does_not_migrate_inactive_settings_hooks_into_existing_file(self):
         with tempfile.TemporaryDirectory() as d:

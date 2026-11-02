@@ -1083,8 +1083,11 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             s.pop(key)
     if not hooks and harness != "droid":
         s.pop(key, None)
+    # what is left of a Droid hooks.json once Tracekit's hooks are out can be the copy of settings.json's hooks init
+    # made it with: gone, Droid reads those again. One a person changed since (either file) stays, and is named
+    fallback = uninstall and harness == "droid" and s and removed and _droid_settings_hooks(path)
     changed = _backup_changed(path, txt, s)
-    if uninstall and harness == "droid" and not s:
+    if uninstall and harness == "droid" and (not s or fallback == s):
         os.unlink(path)
     elif changed:
         _atomic_write_json(path, s)
@@ -1094,6 +1097,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         except SettingsError:   # a config.toml init can't have written to
             pass
     _said(path, removed, uninstall, v2)
+    if fallback and fallback != s:
+        print(f"{path} kept: what is left in it differs from the hooks in "
+              f"{os.path.join(os.path.dirname(path), 'settings.json')}, which Droid reads only while {path} is absent; "
+              "delete it to use those")
     return path
 
 
