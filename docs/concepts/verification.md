@@ -88,8 +88,12 @@ log, but only a witness stops the operator.
 The TypeScript verifier was written from [format v2](../format-v2.md), not from the Python code. It has its own
 canonical JSON, zip reader, schema checks and Merkle and checkpoint code, uses only Web Crypto, and runs in Node and in
 browsers. Tests require both verifiers to give the same verdict, assurance, exit code and check lines on every golden
-bundle, on 58 deliberately broken ones, and on tampered copies of bundles from a real signer. A bug in one verifier
-therefore can't decide an audit on its own.
+bundle, on 58 deliberately broken ones, on every structural mutation of a closed run, a run-set and a run in parts
+(each entry dropped, repeated or added, each line deleted, repeated, swapped or cut, each inclusion proof one edit
+away), and on tampered copies of bundles from a real signer. That catches a bug in one verifier; it can't catch a
+check both leave out, which then passes in both alike. A third verifier, in Go
+([contrib](../../contrib/independent-go-verifier/README.md), experimental), must give the reference's verdict on every
+golden bundle in CI; it implements fewer checks, and reports a bundle that needs the others `UNVERIFIABLE`.
 
 The TypeScript verifier doesn't check SLH-DSA lines, Rekor anchors, record-key certificates or `tracekit why` findings
 and their replay runs; a bundle that relies on them is `UNVERIFIABLE` there, never `VERIFIED`. It checks signed
