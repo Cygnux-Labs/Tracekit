@@ -259,7 +259,8 @@ class Unusable(ValueError):
 
 
 class Damaged(Unusable):
-    """The file isn't a zip, or has no manifest: the report says the bundle file is damaged."""
+    """The file isn't a zip, has no manifest, or an entry whose bytes don't inflate or don't match its CRC-32: the report
+    says the bundle file is damaged."""
 
 
 def _layout(f):
@@ -316,8 +317,9 @@ def _layout(f):
 
 
 def read_zip(path):
-    """{name: bytes} of a zip in the layout of §9 (`_layout`), read entry by entry under count and size caps. Refuses
-    names that could escape a directory, symlinks and duplicate entries. `path`: a path or a binary file."""
+    """{name: bytes} of a zip in the layout of §9 (`_layout`), read entry by entry under count and size caps: each entry
+    inflated up to one byte past its stated size, so one whose stream holds more doesn't match it. Refuses names that
+    could escape a directory, symlinks and duplicate entries. `path`: a path or a binary file."""
     files, total = {}, 0
     with open(path, "rb") if isinstance(path, (str, bytes, os.PathLike)) else contextlib.nullcontext(path) as f:
         entries = _layout(f)
@@ -326,7 +328,7 @@ def read_zip(path):
             if [(i.filename.encode("cp437"), i.header_offset, i.compress_size, i.file_size, i.CRC, i.compress_type)
                     for i in infos] != entries:
                 raise Unusable("not the canonical zip layout: central directory")
-            for i in infos:
+            for i, (raw, off, csize, usize, crc, method) in zip(infos, entries):
                 n = i.filename
                 if not _NAME.fullmatch(n) or any(set(p) == {"."} for p in n.split("/")):
                     raise Unusable(f"bad entry name {n[:80]!r}")
@@ -335,12 +337,25 @@ def read_zip(path):
                 if (i.external_attr >> 16) & 0o170000 == 0o120000:
                     raise Unusable(f"symlink entry {n}")
                 cap = min(MAX_ENTRY, MAX_TOTAL - total)
-                with z.open(i) as e:
-                    data = e.read(cap + 1)
+                limit = min(usize, cap) + 1
+                f.seek(off + 30 + len(raw))
+                if method == 0:
+                    data = f.read(min(csize, limit))
+                else:   # read in pieces, as zipfile did: a long stream that inflates to little costs no memory
+                    inflate, data, left = zlib.decompressobj(-15), bytearray(), csize
+                    while left and len(data) < limit and not inflate.eof:
+                        piece = f.read(min(left, 1 << 20))
+                        left -= len(piece)
+                        data += inflate.decompress(piece, limit - len(data))
+                    if len(data) < limit and not inflate.eof:
+                        raise Damaged(f"{n} does not inflate")
+                    data = bytes(data)
                 if len(data) > cap:
                     raise Unusable(f"{n} is larger than the bundle limits")
-                if len(data) != i.file_size:
-                    raise Unusable(f"{n}: {len(data)} bytes, not the {i.file_size} its entry says")
+                if zlib.crc32(data) != crc:   # first, as zipfile reported it
+                    raise Damaged(f"Bad CRC-32 for file {n!r}")
+                if len(data) != usize:
+                    raise Unusable(f"{n}: {len(data)} bytes, not the {usize} its entry says")
                 files[n], total = data, total + len(data)
     return files
 

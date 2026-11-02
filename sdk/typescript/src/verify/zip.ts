@@ -112,7 +112,7 @@ export async function readZip(data: Uint8Array): Promise<Map<string, Uint8Array>
     need(start, e.csize);
     const body = data.subarray(start, start + e.csize);
     const cap = Math.min(MAX_ENTRY, MAX_TOTAL - total);
-    const limit = Math.min(e.usize, cap + 1);
+    const limit = Math.min(e.usize + 1, cap + 1);   // a byte past the stated size: a stream that holds more doesn't match
     let out: Uint8Array;
     if (e.method === 0) out = body.subarray(0, limit);
     else {

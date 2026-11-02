@@ -18,7 +18,7 @@ import zipfile
 from unittest import mock
 
 
-from factories import damage_crc, rewrite_bundle, unverified_bundles
+from factories import damage_crc, overinflate, rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, bundle, export, needs, run_name
 from tracekit.format import checkpoint
@@ -541,6 +541,23 @@ class TestVerifyV2(Case):
         rep, code = self.verify(bad)
         self.assertEqual((code, rep.integrity, rep.checks[0]["detail"]), (2, "UNUSABLE BUNDLE", "cannot read bundle: "
                          f"the bundle file is damaged: Bad CRC-32 for file {name!r}"))
+
+    def test_an_entry_that_inflates_past_its_size_is_damaged(self):
+        """A deflate stream holding bytes past its entry's stated size, which, with its CRC-32, is that of the bytes
+        before them: each verifier inflates a byte past the size, so the entry is damaged (UNUSABLE BUNDLE, exit 2), not
+        read as its first bytes."""
+        _, out = self.honest()
+        bad = os.path.join(self.d, "overinflated.tkb")
+        overinflate(out, bad)
+        name = next(n for n in v2.read_zip(out) if n.startswith("runs/"))
+        rep, code = self.verify(bad)
+        self.assertEqual((code, rep.integrity, rep.checks), (2, "UNUSABLE BUNDLE", [{
+            "check": "bundle readable", "status": "fail", "problems": [],
+            "detail": f"cannot read bundle: the bundle file is damaged: Bad CRC-32 for file {name!r}"}]))
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            ts = tv.ts_verify(bad, self.trust)
+            self.assertEqual((ts["exit_code"], ts["integrity"], ts["checks"]), (code, rep.integrity, rep.checks))
 
     def test_a_failed_line_says_what_failed_and_a_failed_bundle_is_not_rated(self):
         """The failed line's headline counts its problems, never repeating the pass text; a failed bundle's printed
