@@ -9,7 +9,7 @@ It is experimental ([support](support.md)): it works and is tested, but may chan
 ## Usage
 
 ```
-tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--all] [--json]
+tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--all] [--json | --share]
 ```
 
 ```
@@ -38,6 +38,9 @@ denied and held calls (--all for every call):
   too), cut to 72 characters.
 - `--all` lists every call; without it, only the calls Tracekit would have denied or held for a person.
 - `--json` emits a machine-readable report, with every call.
+- `--share` prints the counts alone, to post as a [field report](field-reports.md): the window's length, the number
+  of sessions, the calls by decision, and each rule by the decision of the calls it matched. No session, path, time,
+  call or rule description.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 
