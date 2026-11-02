@@ -1461,6 +1461,9 @@ class TimedAndBraced(unittest.TestCase):
                             ("$X git push -f", ["git", "push", "-f"]), ("sudo $X `true` rm -rf /", ["rm", "-rf", "/"]),
                             ('git "$@" push -f', ["git", "push", "-f"]), ('git "${arr[@]}" push -f', ["git", "push", "-f"]),
                             ('git "${!arr[@]}" push -f', ["git", "push", "-f"]),
+                            # read to the } that ends it, whatever is in it
+                            ('alpha "${@/#/$p}" beta', ["alpha", "beta"]), ('alpha "${a[@]:+$y}" beta', ["alpha", "beta"]),
+                            ('alpha "${a[@]/x/$y}" beta', ["alpha", "beta"]), ('alpha "${a[@]/x/`y`}" beta', ["alpha", "beta"]),
                             ("git $X push -f a[0]=b", ["git", "push", "-f", "a[0]=b"]),   # the pattern stays here
                             ("rm $X -rf $HOME", ["rm", "-rf", "$HOME"]), ("rm *.none -rf ${HOME}", ["rm", "-rf", "${HOME}"]),
                             ("HOME=; rm $HOME -rf /", ["rm", "-rf", "/"]),   # a line can empty HOME too
@@ -1468,7 +1471,8 @@ class TimedAndBraced(unittest.TestCase):
                             ("sh $X <<< 'alpha x'", ["alpha", "x"]), ("sh $X <<EOF\nalpha x\nEOF", ["alpha", "x"])):
             self.assertIn(empty, argvs(line), line)
         for line in ('git "$X" push', 'git "$*" push', "git $'' push", "git -$X push", "git $((0)) push",
-                     "git <(true) push"):   # a word that stays a word, maybe empty
+                     "git <(true) push", 'git "${a[*]:+$y}" push', 'git "${@}x" push', 'git "$@"\'\' push',
+                     'git $"$@" push'):   # a word that stays a word, maybe empty
             self.assertEqual({len(a) for a in argvs(line) if a[0] == "git"}, {3}, line)
         for line in ("beta | sh $X", "beta | python3 $X"):   # what runs comes from the pipe once $X is gone
             self.assertTrue(any(c["opaque"] for c in shell.parse(line)), line)

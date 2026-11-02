@@ -134,8 +134,8 @@ _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 _GLOB = re.compile(r"[*?]|\[[^][]+\]")   # a pathname pattern in a word's unquoted text
 _HOME_WORD = re.compile(r"\$(?:HOME|\{HOME\})")   # the one bare variable the packs name as a word
-# "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
-_ALL_ITEMS = re.compile(r'"\$(?:@|\{!?@[^"`$]*\}|\{!?[A-Za-z_][A-Za-z0-9_]*(?:\[@\]|@)[^"`$]*\})"')
+# the start of "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
+_ALL_ITEMS = re.compile(r"\$(?:@|\{!?(?:@|[A-Za-z_][A-Za-z0-9_]*(?:\[@\]|@)))")
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
 # lean: interpreter code is scanned for string or list literals passed to a process-spawning call (with or without
 # parentheses: perl's and ruby's `system "x"`), plus backticks in perl/ruby/php, and sed's `e` command; code that builds
@@ -1267,9 +1267,12 @@ class _Parser:
                 buf.append(s[self.i + 1:j])
                 self.i = j + 1
             elif c == '"' or self.at('$"'):   # $"...": "..." translated
-                alone = alone and c == '"' and bool(_ALL_ITEMS.match(s, self.i))
+                n = len(buf)
                 self.i += 1 + (c == "$")
                 self.dquote('"', buf=buf)
+                inner = [p for p in buf[n:] if p]   # one expansion, read to where bash ends it, is all of "$@"
+                alone = alone and c == '"' and len(inner) == 1 and isinstance(inner[0], _Expansion) and \
+                    bool(_ALL_ITEMS.match(inner[0]))
             elif c == "$":
                 buf.append(self.dollar(False))
                 alone = alone and isinstance(buf[-1], _Expansion)
