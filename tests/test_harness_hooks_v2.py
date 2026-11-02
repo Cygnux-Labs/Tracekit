@@ -1503,6 +1503,13 @@ class VersionNotice(HarnessCase):
         for theirs in ("1.5.2", "1.5.2rc1", "1.5.2+deb1", "1!1.5.2.post1-x_y"):
             self.assertTrue(claude_code.VERSION.fullmatch(theirs), theirs)
 
+    def test_a_session_with_no_state_gets_no_lock_file(self):
+        """1.5.3 review: _skew opened the session's lock file, which makes it, before it found the session had no
+        state: every SessionEnd under a version skew left one behind, kept until a later SessionStart pruned it."""
+        lock = claude_code._state("cc-gone")[:-len(".json")] + ".lock"
+        self.assertIsNone(claude_code._skew(mock.Mock(hello={"version": "1.4.0"}, signer=None), "cc-gone"))
+        self.assertFalse(os.path.exists(lock))
+
     def test_once_said_no_event_takes_the_session_lock_for_it(self):
         """Review of #512: while the versions differed, every event took the session lock to find it said already."""
         with open(claude_code._state("cc-l"), "w") as f:

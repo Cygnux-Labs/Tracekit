@@ -1430,6 +1430,16 @@ class Versions(unittest.TestCase):
         self.assertEqual((hook["status"], signer["status"]), ("ok", "warn"))
         self.assertTrue(signer["fix"].startswith("`tracekit down`: the next call"), signer["fix"])
 
+    def test_a_signer_still_starting_is_not_called_old(self):
+        """1.5.3 review: while the dev signer hadn't written endpoint.json yet, doctor read its version as older than
+        its own and told every hook's fix to run `tracekit down` too."""
+        self.signer(__version__)
+        os.remove(os.path.join(self.run_dir, "endpoint.json"))
+        self.hooks(self.command(self.tree("1.5.0")))
+        hook = self.rows()[0]
+        self.assertEqual(hook["status"], "warn")
+        self.assertNotIn("tracekit down", hook["fix"])
+
     def test_a_current_signer_is_ok(self):
         self.signer(__version__)
         self.hooks()

@@ -357,7 +357,8 @@ def _versions(add, settings, harnesses):
     signer = _dev_signer()
     if signer and not VERSION.fullmatch(str(signer.get("version"))):
         signer = {"pid": signer.get("pid")}   # an endpoint.json that names no version doctor prints
-    old_signer = signer is not None and (release(signer.get("version")) or ()) < release(mine)
+    # a signer whose version isn't known yet (still starting) is not called old
+    old_signer = bool(signer and signer.get("version")) and release(signer["version"]) < release(mine)
     pythons, old_hooks = {}, False   # (python, the -c hook's tree) -> the hook files that run it
     mine_files, relative = _user_hook_files()
     set_to = ", ".join(f"{k}={os.environ[k][:128]!r}" for k in relative)
