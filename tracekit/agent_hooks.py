@@ -1,10 +1,11 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid, Antigravity CLI and Crush, on the
-Claude Code pipeline.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI and
+Crush, on the Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
     tracekit init --dev --agent gemini       # ~/.gemini/settings.json
     tracekit init --dev --agent opencode     # ~/.config/opencode/plugin/tracekit.js
+    tracekit init --dev --agent kilo         # ~/.config/kilo/plugin/tracekit.js (project: .kilo/plugin/tracekit.js)
     tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
     tracekit init --dev --agent qwen         # ~/.qwen/settings.json
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
@@ -38,6 +39,8 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
             WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
+    Kilo    OpenCode's tools, names and arguments, and OpenCode's plugin; its own background_process, notebook_read,
+            notebook_edit, send_file, generate_image -> Bash, Read, NotebookEdit, Read, Write (decided on their `path`)
     Crush   bash, view, write, edit, multiedit, lsp_replace_symbol, lsp_rename, ls, grep, glob, fetch, download,
             mcp_<server>_<tool>
             -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
@@ -65,8 +68,8 @@ from .locking import lock_file, unlock_file
 from .policy2.classes import PATH_KEYS, first
 
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
-AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
-               "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush"}
+AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
+               "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -124,6 +127,14 @@ PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to)
 OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path"}
 # OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
 OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
+# Kilo Code is built on OpenCode and loads the same plugin. Its tools are OpenCode's, with the same names and arguments,
+# plus its own; those that run a command or read or write a file are mapped here (packages/opencode/src/kilocode/tool)
+KILO_TOOLS = {**OPENCODE_TOOLS, "background_process": "Bash", "notebook_read": "Read", "notebook_edit": "NotebookEdit",
+              "send_file": "Read", "generate_image": "Write"}
+KILO_PATH_ARG = {**OPENCODE_PATH_ARG, **dict.fromkeys(("notebook_read", "notebook_edit", "send_file", "generate_image"),
+                                                      "path")}
+# the harnesses that load Tracekit's OpenCode plugin: their tool names and the argument each file tool reads
+PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_TOOLS, KILO_PATH_ARG)}
 JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
 
 
@@ -214,11 +225,12 @@ def tool(harness, name, ti):
                 if urls != [ti["url"]]:
                     ti["urls"] = urls
         return mapped, ti
-    if harness == "opencode":
+    if harness in PLUGIN_TOOLS:
+        tools, path_arg = PLUGIN_TOOLS[harness]
         # the path the tool itself reads decides, never another path key the model sent beside it (OpenCode drops
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
-        if name in OPENCODE_PATH_ARG:
-            ti["file_path"] = ti.get(OPENCODE_PATH_ARG[name])
+        if name in path_arg:
+            ti["file_path"] = ti.get(path_arg[name])
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
@@ -226,7 +238,7 @@ def tool(harness, name, ti):
                      for g in dict.fromkeys((f, f.split(":")[0]))]
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
-        return OPENCODE_TOOLS.get(name, name), ti
+        return tools.get(name, name), ti
     if harness == "goose":
         if name == "read_image":
             # decided by scheme, as goose's url::Url::parse reads the source: tabs and newlines dropped, outer spaces and
@@ -377,7 +389,7 @@ def normalise(harness, p):
         if ev == "SessionEnd":
             return dict(out, hook_event_name="SessionEnd", reason=p.get("reason") or "session end")
         return None
-    if harness == "opencode":
+    if harness in PLUGIN_TOOLS:
         out["session_id"] = p.get("session_id")
         if ev in ("tool.execute.before", "tool.execute.after"):
             out["hook_event_name"] = "PreToolUse" if ev == "tool.execute.before" else "PostToolUse"
@@ -633,6 +645,7 @@ def config_path(harness, project=None, home=None):
     base = project or home or os.path.expanduser("~")
     codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
         else os.path.join(base, ".codex")
+    xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
     return {"codex": os.path.join(codex, "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
@@ -641,14 +654,16 @@ def config_path(harness, project=None, home=None):
             "antigravity": os.path.join(base, ".agents", "hooks.json") if project else
                            os.path.join(base, ".gemini", "config", "hooks.json"),
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
-                        os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
-                                     os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js"),
+                        os.path.join(xdg, "opencode", "plugin", "tracekit.js"),
+            # Kilo reads the plugin/ folder of each of its config directories: a project's .kilo (or .kilocode), and
+            # $XDG_CONFIG_HOME (else ~/.config)/kilo; not OpenCode's (packages/opencode/src/config/paths.ts)
+            "kilo": os.path.join(base, ".kilo", "plugin", "tracekit.js") if project else
+                    os.path.join(xdg, "kilo", "plugin", "tracekit.js"),
             # Crush reads ./crush.json in a project, else its GlobalConfig(): $CRUSH_GLOBAL_CONFIG/crush.json, or
             # $XDG_CONFIG_HOME (else ~/.config; Windows %USERPROFILE%\.config)/crush/crush.json
             "crush": os.path.join(base, "crush.json") if project else
                      os.path.join((None if home else os.environ.get("CRUSH_GLOBAL_CONFIG")) or
-                                  os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
-                                               os.path.join(base, ".config"), "crush"), "crush.json")}[harness]
+                                  os.path.join(xdg, "crush"), "crush.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -767,19 +782,24 @@ def _version(cmd):
     return "v2" if V2_MODULE in cmd else "v1" if "tracekit.agent_hooks" in cmd else None
 
 
-OPENCODE_MARKER = "// Installed by Tracekit; tracekit uninstall --agent opencode removes this file."
+def _plugin_marker(harness):
+    return f"// Installed by Tracekit; tracekit uninstall --agent {harness} removes this file."
 
 
-def _opencode_plugin(python, v2):
-    """The local OpenCode plugin. OpenCode runs plugins with Bun and awaits a before hook, so the hook's process,
-    spawned without blocking OpenCode's event loop (parallel calls are decided at once), holds the call until Tracekit
-    allows or denies it (or a person approves it); one that doesn't answer in time is killed and its call blocked. Each
-    event's command names the event, and runs the hook as install._hook_command does (python, or this interpreter)."""
+OPENCODE_MARKER = _plugin_marker("opencode")
+
+
+def _opencode_plugin(python, v2, harness="opencode"):
+    """The local OpenCode plugin (Kilo's too: harness). OpenCode runs plugins with Bun and awaits a before hook, so the
+    hook's process, spawned without blocking OpenCode's event loop (parallel calls are decided at once), holds the call
+    until Tracekit allows or denies it (or a person approves it); one that doesn't answer in time is killed and its call
+    blocked. Each event's command names the event, and runs the hook as install._hook_command does (python, or this
+    interpreter)."""
     from .install import _dev_hook_argv
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
-    commands = {ev: [python, "-I", "-m", module, "opencode", ev] if python else
-                _dev_hook_argv(module, "entry", ("opencode", ev)) for ev in ("tool.execute.before", "tool.execute.after")}
-    return f'''{OPENCODE_MARKER}
+    commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
+                _dev_hook_argv(module, "entry", (harness, ev)) for ev in ("tool.execute.before", "tool.execute.after")}
+    return f'''{_plugin_marker(harness)}
 const commands = {json.dumps(commands)};
 // above the most a hook takes to answer, a held call's approval wait included (Tracekit's APPROVAL_WAIT_S), as the
 // other coding agents' pre-tool timeout: a hook still running then hung, so it is killed and its call blocked
@@ -834,8 +854,8 @@ export const TracekitPlugin = async ({{ directory }}) => ({{
 '''
 
 
-def _install_opencode(path, uninstall=False, v2=False, python=None):
-    """Install one owned local plugin without overwriting an OpenCode plugin that is not Tracekit's."""
+def _install_opencode(path, uninstall=False, v2=False, python=None, harness="opencode"):
+    """Install one owned local plugin without overwriting an OpenCode (or Kilo) plugin that is not Tracekit's."""
     from .deploy import files
     from .install import SettingsError
     path = os.path.abspath(path)
@@ -851,10 +871,10 @@ def _install_opencode(path, uninstall=False, v2=False, python=None):
                 text = raw.decode("utf-8") if raw is not None else ""
             except UnicodeDecodeError as e:
                 raise SettingsError(f"{path} is not UTF-8; Tracekit did not change it.") from e
-            if raw is not None and OPENCODE_MARKER not in text:
+            if raw is not None and _plugin_marker(harness) not in text:
                 raise SettingsError(f"{path} is not Tracekit's plugin; Tracekit did not change it.")
             old = _version(text)
-            plugin = None if uninstall else _opencode_plugin(python, v2).encode("utf-8")
+            plugin = None if uninstall else _opencode_plugin(python, v2, harness).encode("utf-8")
             if raw not in (None, plugin):
                 files.backup(d, name, raw)
             if uninstall:
@@ -1035,8 +1055,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
     from .install import SettingsError, _atomic_write_json, _backup_changed
     path = path or config_path(harness, project)
-    if harness == "opencode":
-        return _install_opencode(path, uninstall, v2, python)
+    if harness in PLUGIN_TOOLS:
+        return _install_opencode(path, uninstall, v2, python, harness)
     if harness == "goose":
         return _install_goose(path, uninstall, v2, python)
     if harness == "crush":

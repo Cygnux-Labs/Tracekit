@@ -170,7 +170,7 @@ class HarnessFileWrites(unittest.TestCase):
                 path = os.path.join(home, ".claude", "settings.json") if harness == "claude" else \
                     agent_hooks.config_path(harness, home=home)
                 os.makedirs(os.path.dirname(path))
-                theirs = harness not in ("goose", "opencode")   # those two files are Tracekit's own plugin
+                theirs = harness not in ("goose", *agent_hooks.PLUGIN_TOOLS)   # those files are Tracekit's own plugin
                 if theirs:
                     with open(path, "w", encoding="utf-8") as f:
                         json.dump({"theme": theme}, f, ensure_ascii=False)
@@ -191,7 +191,7 @@ class HarnessFileWrites(unittest.TestCase):
         from tracekit import agent_hooks
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("goose", "opencode"))):
+        for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("goose", *agent_hooks.PLUGIN_TOOLS))):
             with self.subTest(harness):
                 home = os.path.join(d, harness)
                 path = os.path.join(home, ".claude", "settings.json") if harness == "claude" else \

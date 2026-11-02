@@ -9,6 +9,7 @@ tracekit init --dev --v2 --agent gemini     # ~/.gemini/settings.json
 tracekit init --dev --v2 --agent qwen       # ~/.qwen/settings.json
 tracekit init --dev --v2 --agent droid      # ~/.factory/hooks.json
 tracekit init --dev --v2 --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
+tracekit init --dev --v2 --agent kilo       # $XDG_CONFIG_HOME (or ~/.config)/kilo/plugin/tracekit.js; --project: .kilo/plugin/tracekit.js
 tracekit init --dev --v2 --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.json (plus plugin.json beside it)
 tracekit init --dev --v2 --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
 tracekit init --dev --v2 --agent crush      # $CRUSH_GLOBAL_CONFIG, else $XDG_CONFIG_HOME (or ~/.config)/crush: crush.json; --project: ./crush.json
@@ -26,7 +27,7 @@ edit or turn off) is for Claude Code only, and init refuses it with these agents
 `--v2` and write the same files:
 
 ```bash
-tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, goose, antigravity, crush
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
@@ -47,7 +48,11 @@ backup is written first, and running it twice changes nothing. For Droid it writ
 the legacy `.factory/hooks/hooks.json` exists, init refuses to proceed until you save once in Droid's `/hooks` UI to migrate
 it. For OpenCode it writes its own `tracekit.js` local
 plugin and refuses to overwrite a file it did not install (in `plugin/`, which every OpenCode 1.x loads; 1.0 doesn't
-read `plugins/`). For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
+read `plugins/`). Kilo Code is built on OpenCode and loads the same plugin, in its CLI and its VS Code extension, so
+for Kilo init writes that plugin to Kilo's own `plugin/` folder (Kilo doesn't read OpenCode's). Kilo's built-in tools
+are OpenCode's, with the same names and arguments; of its own tools, `background_process` (it runs its `command`) is
+decided as `Bash`, `notebook_read` and `send_file` as `Read`, `notebook_edit` as `NotebookEdit` and `generate_image` as
+`Write`, each on the `path` it reads; everything below about OpenCode's plugin holds for Kilo. For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
 to install into a plugin whose `plugin.json` is not Tracekit's. A goose rule carries no matcher (goose silently skips
 a rule whose matcher is a bare `*`, which is an invalid regex); the PreToolUse action carries `timeout: 600` and
 `on_failure: block`, the post-tool actions `timeout: 30`. For Antigravity CLI it adds a hook named `tracekit` to agy's `hooks.json` ([below](#antigravity-cli)). Every v1 hook calls `python -I -m tracekit.agent_hooks <agent>` (OpenCode's plugin and Antigravity CLI's commands add the event),

@@ -550,7 +550,7 @@ class Installer(unittest.TestCase):
                     code, out = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")
                     self.assertEqual(code, 0)
                     self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {path}", out)
-                    if harness == "opencode":
+                    if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
                             plugin = f.read()
                         self.assertEqual(agent_hooks._version(plugin), "v2")
@@ -704,7 +704,8 @@ class Installer(unittest.TestCase):
         gone, old = os.path.join(d, "gone", "python"), install._blocking
         for python in (None, gone):   # dev mode (this interpreter, moved), system mode (OPT_PYTHON)
             # OpenCode: no shell; agy answers at exit 0 in JSON (test_antigravity_installed_commands_answer_in_json_…)
-            for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("opencode", "antigravity"))):
+            for harness in ("claude", *(h for h in agent_hooks.HARNESSES
+                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity"))):
                 path = os.path.join(d, str(bool(python)), harness, "hooks.json")
 
                 def init():

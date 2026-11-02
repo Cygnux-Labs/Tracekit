@@ -195,7 +195,7 @@ def _dev_harnesses():
     out = {}
     for harness in agent_hooks.HARNESSES:
         for path in (agent_hooks.config_path(harness), agent_hooks.config_path(harness, os.getcwd())):
-            if harness == "opencode":   # a JavaScript plugin, not a JSON hook config
+            if harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin, not a JSON hook config
                 try:
                     if agent_hooks._version(install.agent_file(path).decode("utf-8", "replace")) == "v2":
                         out.setdefault(harness, path)
@@ -214,7 +214,7 @@ def _hook_commands(harness, path):
     """The command of each of Tracekit's v2 hooks in a coding agent's hook config at `path`; OpenCode's plugin: each
     event's argv."""
     from . import agent_hooks
-    if harness == "opencode":
+    if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
         return list(json.loads(m.group(1)).values()) if m else []
     hooks = _harness_hooks(harness, _json(path) or {})
@@ -579,7 +579,7 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
     from . import agent_hooks
     from .integrations.claude_code import APPROVAL_WAIT_S
     for harness, path in sorted((harnesses or {}).items()):
-        if harness not in agent_hooks.HARNESSES or harness == "opencode":   # OpenCode's is a JavaScript plugin
+        if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
         fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
         if harness == "antigravity":
