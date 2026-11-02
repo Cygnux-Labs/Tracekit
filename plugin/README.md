@@ -38,7 +38,8 @@ plugin's hooks (`D-HOOKS-PRESENT`) and warns when both run. In system mode, run 
 
 Each hook runs Tracekit's v2 Claude Code hook (`tracekit.integrations.claude_code`) for its event. The signer
 decides: deny blocks the call, and ask blocks it with the approval's id and the command that approves it; once someone
-has approved it from another terminal, Claude's retry of the same call runs.
+has approved it (in the session with `! tracekit approvals approve <id>`, or from another terminal without the `!`),
+Claude's retry of the same call runs.
 
 - A tool call whose hook starts but can't finish is blocked.
 - Any other event (a prompt, Stop, a tool's result, a session or subagent event) is never blocked. Its error shows in

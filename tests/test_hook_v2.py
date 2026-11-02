@@ -1019,10 +1019,12 @@ class HeldCalls(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 30, "the hook waited")
         self.assertEqual(code, 2, err)
         aid = err.split()[4]
-        self.assertTrue(err.startswith(f"[tracekit] held for approval {aid} (TK-A032): to let it run, approve it with "
-                                       f"`tracekit approvals approve {aid}`, then ask the agent to try the same call "
-                                       "again, with exactly the same arguments (to refuse it: `tracekit approvals "
-                                       f"reject {aid}`). Why: uploading to cloud storage. "), err)
+        # #519: who runs what, ready to paste in Claude Code (`!` runs it as the person), and what the agent does
+        self.assertTrue(err.startswith(f"[tracekit] held for approval {aid} (TK-A032): a person lets it run with "
+                                       f"`! tracekit approvals approve {aid}`, then asks the agent to try the same "
+                                       f"call again, unchanged (to refuse it: `! tracekit approvals reject {aid}`). "
+                                       "Agent: wait "
+                                       "for the person's answer. Why: uploading to cloud storage. "), err)
         self.assertEqual(err.count("\n"), 1, err)
         reply = json.loads(out)   # Claude Code shows the person the systemMessage and the model the deny's reason
         self.assertEqual((reply["systemMessage"], reply["hookSpecificOutput"]["permissionDecisionReason"],
@@ -1113,7 +1115,8 @@ class HeldCalls(unittest.TestCase):
         new = err.split()[4]
         self.assertEqual(code, 2)
         self.assertNotEqual(new, aid)
-        self.assertIn(f"`tracekit approvals reject {new}`). Why: a person rejected this command (with another "
+        self.assertIn(f"`! tracekit approvals reject {new}`). Agent: wait for the person's answer. Why: a person "
+                      "rejected this command (with another "
                       f"description) as {aid}; ask them before trying again; uploading to cloud storage. ", err)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
         self.assertEqual(Client().approval_get({"approval_id": new})["args"],
@@ -1184,9 +1187,9 @@ class HeldCalls(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertNotEqual(again, aid)
         self.assertTrue(err.startswith(
-            f"[tracekit] held for approval {again} (TK-A032): to let it run, approve it with `tracekit approvals "
-            f"approve {again}`, then ask the agent to try the same call again, with exactly the same arguments (to "
-            f"refuse it: `tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by "
+            f"[tracekit] held for approval {again} (TK-A032): a person lets it run with `! tracekit approvals "
+            f"approve {again}`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals "
+            f"reject {again}`). Agent: wait for the person's answer. Why: a person rejected this exact call ({aid}, by "
             f"uid:{os.getuid()}); ask them before trying again; uploading to cloud storage. "), err)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
 
@@ -1218,10 +1221,11 @@ class HeldCalls(unittest.TestCase):
         self.assertEqual((len(msg), msg), (500, err[:499] + "…"))
         self.assertTrue(msg.startswith(f"[tracekit] held for approval {aid} (TK-A043): "), msg)
         self.assertIn(f"`tracekit approvals approve {aid}`", msg)
-        self.assertIn(f"`tracekit approvals reject {aid}`). Why: moving money", msg)
+        self.assertIn(f"`tracekit approvals reject {aid}`). Agent: wait for the person's answer. Why: moving money", msg)
         self.approvals("reject", aid)
         msg, _, again = pre("m2")
-        self.assertIn(f"`tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by "
+        self.assertIn(f"`tracekit approvals reject {again}`). Agent: wait for the person's answer. Why: a person "
+                      f"rejected this exact call ({aid}, by "
                       f"uid:{os.getuid()}); ask them before trying again; moving money", msg)
         self.assertTrue(msg.endswith("…"), msg)
         msg, err, waited = pre("m3", wait="1")   # nobody answers within the wait
@@ -1230,9 +1234,10 @@ class HeldCalls(unittest.TestCase):
                                        f"it with `tracekit approvals reject {waited}`. Why: a person rejected this "
                                        f"exact call ({aid}, "), err)
         with self.subTest("unanswered: the held line first"):
-            self.assertTrue(msg.startswith(f"[tracekit] held for approval {waited} (TK-A043): to let it run, approve "
-                                           f"it with `tracekit approvals approve {waited}`"), msg)
-            self.assertIn(f"`tracekit approvals reject {waited}`). Why: a person rejected", msg)
+            self.assertTrue(msg.startswith(f"[tracekit] held for approval {waited} (TK-A043): a person lets it run "
+                                           f"with `tracekit approvals approve {waited}`"), msg)
+            self.assertIn(f"`tracekit approvals reject {waited}`). Agent: wait for the person's answer. Why: a person "
+                          "rejected", msg)
             self.assertTrue(msg.endswith("…"), msg)
         p = subprocess.Popen(cursor, shell=True, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, env=dict(os.environ, **{claude_code.WAIT_ENV: "30"}))
@@ -1248,6 +1253,33 @@ class HeldCalls(unittest.TestCase):
             self.assertTrue(msg.startswith(f"[tracekit] not approved: rejected by uid:{os.getuid()} (TK-A043). Why: "
                                            f"a person rejected this exact call ({aid}, "), msg)
             self.assertTrue(msg.endswith("…"), msg)
+
+    def test_a_command_the_policy_cant_read_says_why_and_the_readable_way(self):
+        """#519: a hold for a command the parser can't read (a program named by a variable) gave no why, and its agent
+        didn't know naming the program itself, so the policy can read it, was its way through."""
+        code, out, err = self.pre("g=git; $g status", "t1")
+        self.assertEqual(code, 2, err)
+        self.assertIn("(TK-SHELL-PARSE): a person lets it run with `! tracekit approvals approve ", err)
+        self.assertIn("Why: the policy can't read what this shell command runs. Name the program itself (`git push …`, "
+                      "not `$g push …`) so the policy can read it", err)
+        # Cursor (as Gemini CLI, Antigravity CLI, Codex and Droid) shows 500 characters: the remedy is in them
+        cursor = install._hook_command("tracekit.integrations.harness_hooks", "entry", ("cursor", "preToolUse"))
+        p = subprocess.run(cursor, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
+                           input=json.dumps({"hook_event_name": "preToolUse", "conversation_id": "c1",
+                                             "tool_name": "Shell", "tool_use_id": "c1",
+                                             "tool_input": {"command": "g=git; $g status"}}))
+        msg = json.loads(p.stdout)["agent_message"]
+        self.assertLessEqual(len(msg), 500)
+        self.assertIn("so the policy can read it", msg)
+        self.assertEqual(self.pre("git status", "t2")[0], 0)   # that way: read, checked by every rule, run
+
+    def test_a_packs_own_reason_comes_before_the_engines(self):
+        """Review of #520: with TK-SHELL-PARSE and a pack rule, the engine's reason came first, and a harness that cuts
+        the message at 500 characters could drop the call's own risk (moving money)."""
+        pol = service.load_policy(os.path.join(ROOT, "tracekit", "policy2", "packs", "coding.yaml"))
+        why = service.SignerService._reasons(types.SimpleNamespace(policy=pol), ["TK-SHELL-PARSE", "TK-A043"])
+        self.assertTrue(why.startswith("moving money"), why)
+        self.assertIn("; the policy can't read what this shell command runs. ", why)
 
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
@@ -1570,7 +1602,8 @@ class HoldLine(unittest.TestCase):
 
         err, out = io.StringIO(), io.StringIO()
         with mock.patch.object(claude_code, "_run", decide), contextlib.redirect_stderr(err), \
-                contextlib.redirect_stdout(out), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: wait}):
+                contextlib.redirect_stdout(out), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: wait}), \
+                mock.patch.object(claude_code, "AGENT", "claude-code"):   # an in-process harness hook sets another
             code = claude_code._pre(client, {"tool_name": "Bash", "tool_input": {"command": "x"}}, "s1", "t1")
         return code, err.getvalue().splitlines(), out.getvalue()
 
@@ -1590,9 +1623,10 @@ class HoldLine(unittest.TestCase):
             with self.subTest(wait=wait):
                 code, lines, out = self.pre("force push. Push without --force.", wait=wait, answer="approved")
                 self.assertEqual(code, 2)
-                held = ("[tracekit] held for approval apr-1 (TK-A003): to let it run, approve it with `tracekit "
-                        "approvals approve apr-1`, then ask the agent to try the same call again, with exactly the "
-                        "same arguments (to refuse it: `tracekit approvals reject apr-1`). Why: force push. Push "
+                held = ("[tracekit] held for approval apr-1 (TK-A003): a person lets it run with `! tracekit "
+                        "approvals approve apr-1`, then asks the agent to try the same call again, unchanged (to "
+                        "refuse it: `! "
+                        "tracekit approvals reject apr-1`). Agent: wait for the person's answer. Why: force push. Push "
                         "without --force")
                 self.assertEqual(lines, [held])   # no waiting line: nothing waited
                 self.assertEqual(self.waits, [0])   # one look, to see whether an agent approved it already
@@ -1611,12 +1645,22 @@ class HoldLine(unittest.TestCase):
         code, lines, _ = self.pre("x", wait="0.2", veto=veto)   # a wait that ended inside the delay
         self.assertEqual((code, lines[-1]), (2, held))
 
+    def test_a_named_signers_commands_are_for_the_persons_own_terminal(self):
+        """Review of #520: Claude Code runs a `!` line as the session's OS user; with a named signer (system mode, a
+        remote one) that is the agent's, whom the signer refuses as an approver: no `!` there."""
+        sock = "/run/tracekit-signer/signer.sock"
+        named = shlex.quote(sock) if os.name != "nt" else f'"{sock}"'
+        code, lines, _ = self.pre("x", signer=sock, wait="")
+        self.assertEqual(code, 2)
+        self.assertIn(f"a person lets it run with `tracekit approvals --signer {named} approve apr-1`", lines[-1])
+        self.assertNotIn("`! ", lines[-1])
+
     def test_an_unanswered_wait_ends_with_how_to_approve_and_retry(self):
         code, lines, _ = self.pre("x", wait="0.2", answer="requested")
         self.assertEqual(code, 2)
         self.assertIn("waiting for approval apr-1", lines[0])
-        self.assertTrue(lines[-1].startswith("[tracekit] held for approval apr-1 (TK-A003): to let it run, approve it "
-                                             "with "), lines)
+        self.assertTrue(lines[-1].startswith("[tracekit] held for approval apr-1 (TK-A003): a person lets it run with "
+                                             "`! tracekit approvals approve apr-1`"), lines)
 
     def test_the_wait_is_capped_below_the_hooks_timeout(self):
         for wait, s in (("30", 30.0), ("1e9", claude_code.APPROVAL_WAIT_S), ("inf", claude_code.APPROVAL_WAIT_S)):

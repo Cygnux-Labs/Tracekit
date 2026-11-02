@@ -1942,9 +1942,10 @@ class SignerService:
     def _reasons(self, ids):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then their
         remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed
-        ENGINE_REASONS. A flag rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
+        ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520). A flag
+        rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
         by = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
-        rules = [by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by]
+        rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]
 
