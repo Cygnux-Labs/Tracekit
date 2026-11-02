@@ -19,6 +19,7 @@ import shlex
 import stat
 import subprocess
 import sys
+import threading
 import time
 
 try:
@@ -244,20 +245,51 @@ def _hook_argv(cmd):
     return cmd if ok else None
 
 
-def _hook_tree(argv):
-    """The directory a -c hook puts first on sys.path (install._dev_hook_argv's `r`: a working tree), else None."""
+def _probe_target(argv):
+    """(interpreter, the directory a -c hook puts first on sys.path (install._dev_hook_argv's `r`: a working tree) or
+    None) of the hook `argv`; ValueError for a path that isn't absolute, which would resolve against doctor's working
+    directory, or one the hook's code can't decode."""
     m = argv[2] == "-c" and re.search(r"b64decode\('([A-Za-z0-9+/=]*)'\)", argv[3])
-    return base64.b64decode(m.group(1)).decode("utf-8") if m else None
+    tree = base64.b64decode(m.group(1)).decode("utf-8") if m else None
+    for what, p in (("an interpreter", argv[0]), ("a path", tree)):
+        if p is not None and not (p.isprintable() and os.path.isabs(p)):
+            raise ValueError(f"{what} that isn't an absolute path ({p[:128]!r})")
+    return argv[0], tree
+
+
+PROBE_S, PROBE_BYTES = 10, 4096   # what doctor gives a hook's Python: time, and output read
+VERSION = re.compile(r"[\w.+!-]{1,64}")   # a version doctor prints: no terminal control characters
 
 
 def _hook_tracekit(python, tree):
     """[version, module file, user site-packages] of the Tracekit that `python` imports (with `tree` first on its path),
-    asked in a subprocess; ValueError, OSError or SubprocessError (a timeout) when it can't tell."""
-    r = subprocess.run([python, "-I", "-c", PROBE, *([tree] if tree else [])], capture_output=True, text=True,
-                       timeout=10, stdin=subprocess.DEVNULL)
-    lines = r.stdout.splitlines()
-    if r.returncode or len(lines) != 3:
-        raise ValueError((r.stderr.strip().splitlines() or [f"it exited {r.returncode}"])[-1][:256])
+    asked in a subprocess given PROBE_S and read up to PROBE_BYTES; ValueError or OSError when it can't tell. Its
+    output goes into doctor's report: only printable lines and a version VERSION matches are taken."""
+    end = time.monotonic() + PROBE_S
+    p = subprocess.Popen([python, "-I", "-c", PROBE, *([tree] if tree else [])], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    got = []
+    reader = threading.Thread(target=lambda: got.append(p.stdout.read(PROBE_BYTES + 1)), daemon=True)
+    reader.start()
+    reader.join(PROBE_S)
+    out, hung = got[0] if got else b"", reader.is_alive()
+    if hung or len(out) > PROBE_BYTES:
+        p.kill()
+    try:
+        code = p.wait(max(end - time.monotonic(), 0.1))
+    except subprocess.TimeoutExpired:   # closed its output, then hung
+        p.kill()
+        code, hung = p.wait(), True
+    reader.join(1)
+    if not reader.is_alive():   # else a child it left holds the pipe: the reader ends with doctor
+        p.stdout.close()
+    lines = out.decode("utf-8", "replace").splitlines()[-3:]   # stderr comes first, unbuffered
+    if len(out) > PROBE_BYTES or hung or code or len(lines) != 3 or not VERSION.fullmatch(lines[0]) \
+            or not all(x.isprintable() for x in lines):
+        why = (f"it wrote more than {PROBE_BYTES} bytes" if len(out) > PROBE_BYTES else
+               f"no answer within {PROBE_S} s" if hung else (lines or [f"it exited {code}"])[-1] if code else
+               "its answer is unreadable")
+        raise ValueError(re.sub(r"[^ -~]", "?", why)[:256])
     return lines
 
 
@@ -278,13 +310,20 @@ def _dev_signer():
     return hello if isinstance(hello, dict) else {}
 
 
+def _pid(hello):
+    return hello.get("pid") if type(hello.get("pid")) is int else "?"
+
+
 def _versions(add, settings, harnesses):
     """D-VERSIONS (dev profile): the Tracekit that each hook's Python imports (Claude Code's in `settings`, the other
     coding agents' in `harnesses`), and the running dev signer's, against this doctor's. An older one is a warning that
-    says what to run on this machine; doctor upgrades and stops nothing.
+    says what to run on this machine; doctor upgrades and stops nothing. It runs only what the user's own hook files
+    name (install.user_settings_all, agent_hooks.config_path), with absolute paths: a project's hook files are the
+    project's word, which its harness asks a person to trust first, so doctor never runs them.
     lean: the Claude Code plugin's hook isn't asked: it picks its Python as it runs (plugin/scripts/tracekit-hook), in
     Claude Code's environment, and says itself when it and the signer differ; repeat its search here if that's short"""
     from . import __version__ as mine
+    from . import agent_hooks
     from .integrations.claude_code import release, upgrade
 
     def vs(v):
@@ -296,28 +335,41 @@ def _versions(add, settings, harnesses):
             "run tracekit doctor as the user whose hooks these are", bad=WARN)
         return
     signer = _dev_signer()
+    if signer and not VERSION.fullmatch(str(signer.get("version"))):
+        signer = {"pid": signer.get("pid")}   # an endpoint.json that names no version doctor prints
     old_signer = signer is not None and (release(signer.get("version")) or ()) < release(mine)
     pythons, old_hooks = {}, False   # (python, the -c hook's tree) -> the hook files that run it
+    mine_files = {os.path.realpath(p) for p in (*install.user_settings_all(),
+                                                *map(agent_hooks.config_path, agent_hooks.HARNESSES))}
     sources = [("Claude Code", settings, lambda: [h.get("command") for hs in _hooks(settings).values() for h in hs])]
     for name, path, cmds in sources + [(h, p, lambda h=h, p=p: _hook_commands(h, p))
                                        for h, p in sorted((harnesses or {}).items())]:
+        fix = f"tracekit init --dev --v2{'' if name == 'Claude Code' else f' --agent {name}'}"
         try:
             argvs = [_hook_argv(c) for c in cmds()] if path else []
         except (OSError, ValueError, AttributeError, TypeError):   # D-HOOKS-PRESENT and D-HOOKS-EVENT say why
             continue
+        if argvs and os.path.realpath(path) not in mine_files:
+            add("D-VERSIONS", False, f"the {name} hooks in {path} not probed: a project hook file, whose commands "
+                "doctor doesn't run (its harness asks a person to trust them first)", "check the Tracekit version the "
+                "Python they name imports once you trust them, or install the hooks for your user: " + fix, bad=WARN)
+            continue
         if None in argvs:
             add("D-VERSIONS", False, f"can't tell which Python runs the {name} hooks in {path}: a command init doesn't "
-                "write", f"tracekit init --dev --v2{'' if name == 'Claude Code' else f' --agent {name}'} writes one",
-                bad=WARN)
+                "write", f"{fix} writes one", bad=WARN)
         for a in filter(None, argvs):
-            pythons.setdefault((a[0], _hook_tree(a)), {})[f"{name} ({path})"] = None
+            try:
+                pythons.setdefault(_probe_target(a), {})[f"{name} ({path})"] = None
+            except ValueError as e:
+                add("D-VERSIONS", False, f"a {name} hook in {path} not probed: it names {e}, which would resolve against "
+                    "doctor's working directory", f"{fix} writes absolute paths", bad=WARN)
     for (python, tree), who in pythons.items():
         who = "the hooks of " + ", ".join(who)
         try:
             version, module, user_site = _hook_tracekit(python, tree)
             if not release(version):
-                raise ValueError(f"its tracekit says version {version[:64]!r}")
-        except (OSError, ValueError, subprocess.SubprocessError) as e:
+                raise ValueError(f"its tracekit says version {version!r}")
+        except (OSError, ValueError) as e:
             add("D-VERSIONS", False, f"can't read the Tracekit version {who} run: {python} -I -c 'import tracekit' "
                 f"fails ({str(e) or type(e).__name__})", f"install it there ({python} -m pip install tracekit-ai), or "
                 "re-run tracekit init --dev --v2 [--agent NAME] from the Tracekit you use", bad=WARN)
@@ -331,11 +383,11 @@ def _versions(add, settings, harnesses):
     if signer is None:
         add("D-VERSIONS", True, "no dev signer is running (the first call starts one)", "")
     elif not release(signer.get("version")):
-        add("D-VERSIONS", False, f"the running dev signer (pid {signer.get('pid', '?')}) doesn't say its version",
+        add("D-VERSIONS", False, f"the running dev signer (pid {_pid(signer)}) doesn't say its version",
             "`tracekit down`: the next call starts a new one", bad=WARN)
     else:
-        add("D-VERSIONS", not old_signer, f"the running dev signer (pid {signer.get('pid', '?')}) runs Tracekit "
-            f"{str(signer['version'])[:64]}, {vs(signer['version'])}" + (
+        add("D-VERSIONS", not old_signer, f"the running dev signer (pid {_pid(signer)}) runs Tracekit "
+            f"{signer['version']}, {vs(signer['version'])}" + (
                 ": it keeps that version until it stops, after 15 minutes with no client connected" if old_signer
                 else ""), "`tracekit down`" + (" once the hooks above are upgraded" if old_hooks else "")
             + ": the next call starts a signer of the calling hook's version, and open sessions go on in it (it keeps "

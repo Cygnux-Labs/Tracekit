@@ -12,11 +12,12 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import types
 import unittest
 from unittest import mock
 
-from tracekit import __version__, cli, client, doctor, install
+from tracekit import __version__, agent_hooks, cli, client, doctor, install
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
 
@@ -1331,7 +1332,6 @@ class CodingAgentReasoning(unittest.TestCase):
             self.assertEqual(doctor._dev_harnesses()["qwen"], agent_hooks.config_path("qwen"))
 
 
-@unittest.skipIf(os.name == "nt", "POSIX modes")
 @unittest.skipIf(os.name == "nt", "the POSIX hook command init writes")
 class Versions(unittest.TestCase):
     """#510 D-VERSIONS: an upgrade left the hook's Python and the running dev signer on an older Tracekit, without its
@@ -1346,7 +1346,7 @@ class Versions(unittest.TestCase):
                                            "XDG_DATA_HOME": os.path.join(self.d, "data")})
         env.start()
         self.addCleanup(env.stop)
-        self.settings = os.path.join(self.d, "settings.json")
+        self.settings = install.user_settings()   # the user's own: doctor runs no project hook file's command
         self.python = sys.executable
 
     def tree(self, version):
@@ -1364,8 +1364,9 @@ class Versions(unittest.TestCase):
                 f"from {module} import {call.split('(')[0]}; raise SystemExit({call})")
         return install._blocking(f"{shlex.quote(python or self.python)} -I -c {shlex.quote(code)}")
 
-    def hooks(self, *commands):
-        with open(self.settings, "w") as f:
+    def hooks(self, *commands, path=None):
+        os.makedirs(os.path.dirname(path or self.settings), exist_ok=True)
+        with open(path or self.settings, "w") as f:
             json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": c}
                                                                             for c in commands]}]}}, f)
 
@@ -1437,7 +1438,8 @@ class Versions(unittest.TestCase):
 
     def test_each_python_is_asked_once_and_names_every_agent_that_runs_it(self):
         tree = self.tree("1.5.0")
-        codex = os.path.join(self.d, "codex.json")
+        codex = agent_hooks.config_path("codex")   # the user's
+        os.makedirs(os.path.dirname(codex))
         with open(codex, "w") as f:
             json.dump({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": self.command(
                 tree, "tracekit.integrations.harness_hooks", "entry('codex', 'PreToolUse')")}]}]}}, f)
@@ -1454,6 +1456,88 @@ class Versions(unittest.TestCase):
             [row] = self.rows()
         self.assertEqual(row["status"], "warn")
         self.assertIn("not checked as root", row["detail"])
+
+    def planted(self, where):
+        """A directory `where` holding evil/tracekit, which writes `where`/RAN when anything imports it, and an
+        executable evil/python that writes it when anything runs it (the review's repro, #512). -> RAN's path."""
+        ran = os.path.join(where, "RAN")
+        os.makedirs(os.path.join(where, "evil", "tracekit"))
+        with open(os.path.join(where, "evil", "tracekit", "__init__.py"), "w") as f:
+            f.write(f"open({ran!r}, 'w').close()\n__version__ = '1.5.2'\n")
+        self.script(os.path.join(where, "evil", "python"), f"touch {shlex.quote(ran)}")
+        return ran
+
+    def script(self, path, body):
+        with open(path, "w") as f:
+            f.write(f"#!/bin/sh\n{body}\n")
+        os.chmod(path, 0o755)
+        return path
+
+    def chdir(self, d):
+        here = os.getcwd()
+        os.chdir(d)
+        self.addCleanup(os.chdir, here)
+
+    def test_a_project_hook_file_is_never_run(self):
+        """Review of #512: doctor ran the command a project's .cursor/hooks.json named, its working tree resolved against
+        the directory doctor ran in, so running doctor in a cloned repository ran the repository's code. Each harness
+        asks a person before it trusts a project's hooks; doctor runs only the user's own hook files' commands."""
+        project = os.path.join(os.path.realpath(self.d), "repo")   # as doctor's working directory names it
+        ran = self.planted(project)
+        evil = os.path.join(project, "evil")
+        cursor, codex = (os.path.join(project, p) for p in (".cursor/hooks.json", ".codex/hooks.json"))
+        os.makedirs(os.path.dirname(cursor))
+        with open(cursor, "w") as f:   # the review's: a relative path, which doctor's working directory resolves
+            json.dump({"version": 1, "hooks": {"preToolUse": [{"failClosed": True, "command": self.command(
+                "evil", "tracekit.integrations.harness_hooks", "entry('cursor', 'preToolUse')")}]}}, f)
+        os.makedirs(os.path.dirname(codex))
+        with open(codex, "w") as f:   # an absolute one: a project's file all the same
+            json.dump({"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": self.command(
+                evil, "tracekit.integrations.harness_hooks", "entry('codex', 'PreToolUse')")}]}]}}, f)
+        claude = os.path.join(project, ".claude", "settings.json")
+        self.hooks(self.command(evil), self.command(self.tree("1.5.0"), python=os.path.join(evil, "python")),
+                   path=claude)
+        self.chdir(project)
+        with mock.patch.object(doctor.client, "system_config", return_value=None):
+            rows = [r for r in doctor.collect() if r["id"] == "D-VERSIONS"]
+        self.assertFalse(os.path.exists(ran), "doctor ran a project hook file's command")
+        self.assertEqual([r["detail"].split(":")[0] for r in rows[:3]], [
+            f"the {n} hooks in {p} not probed" for n, p in (("Claude Code", claude), ("codex", codex),
+                                                           ("cursor", cursor))])
+        self.assertEqual({r["status"] for r in rows[:3]}, {"warn"})
+
+    def test_a_relative_interpreter_or_path_is_never_run(self):
+        """Review of #512: a relative interpreter, or a relative working tree a -c hook puts on sys.path, resolves against
+        doctor's working directory, not the hook's: doctor runs neither, from the user's own hook file either."""
+        here = os.path.join(self.d, "cwd")
+        ran = self.planted(here)
+        self.hooks(self.command("evil"), self.command(self.tree("1.5.0"), python="evil/python"))
+        self.chdir(here)
+        rows = self.rows()
+        self.assertFalse(os.path.exists(ran), "doctor ran a relative path")
+        self.assertIn("not probed: it names a path that isn't an absolute path ('evil')", rows[0]["detail"])
+        self.assertIn("not probed: it names an interpreter that isn't an absolute path ('evil/python')",
+                      rows[1]["detail"])
+
+    def test_a_hook_python_cannot_write_to_the_terminal_or_flood_doctor(self):
+        """Review of #512: what the hook's Python printed went into doctor's report unchecked (terminal escapes) and
+        unbounded. A version is printed only as [\\w.+!-]{1,64}, and doctor reads PROBE_BYTES at most."""
+        bin_ = os.path.join(self.d, "bin")
+        os.makedirs(bin_)
+        tree = self.tree("1.5.0")
+        escapes = self.script(os.path.join(bin_, "escapes"),
+                              r"printf '1.5.0\033]0;owned\007\033[2J\n/x/tracekit/__init__.py\n/u\n'")
+        flood = self.script(os.path.join(bin_, "flood"), "exec yes 1.5.0")
+        self.signer("\x1b[2J1.5.0")
+        self.hooks(self.command(tree, python=escapes), self.command(tree, python=flood))
+        start = time.monotonic()
+        rows = self.rows()
+        self.assertLess(time.monotonic() - start, doctor.PROBE_S)
+        self.assertEqual([r["status"] for r in rows], ["warn"] * 3, rows)
+        self.assertIn("(its answer is unreadable)", rows[0]["detail"])
+        self.assertIn(f"(it wrote more than {doctor.PROBE_BYTES} bytes)", rows[1]["detail"])
+        self.assertEqual(rows[2]["detail"], "the running dev signer (pid 4242) doesn't say its version")
+        self.assertFalse(any("\x1b" in r["detail"] + r["fix"] for r in rows), rows)
 
     def test_the_upgrade_fits_how_tracekit_was_installed(self):
         from tracekit.integrations.claude_code import upgrade
@@ -1478,6 +1562,7 @@ class Versions(unittest.TestCase):
                          f"git -C {tree} pull")
 
 
+@unittest.skipIf(os.name == "nt", "POSIX modes")
 class DevProfile(unittest.TestCase):
     def test_dev_signer_warns_instead_of_failing(self):
         d = tempfile.mkdtemp()
