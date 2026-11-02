@@ -125,26 +125,48 @@ def invoke(command, cwd, env):
         "warning_checks": names["warn"], "failed_checks": names["fail"]}
 
 
-# Names are scoped to the reference format; verdicts are never exempted.
+# The checks the Python verifier reports that the Go verifier doesn't, by format and by the status Python gives them:
+# on these the gate compares verdicts only. Verdicts are never exempted. Each is a check Go doesn't perform on evidence
+# it accepts, so it can't name it:
 KNOWN_GAPS = {
-    "v1": {"run completeness", "run boundaries", "run tail witnessed", "head matches a witness checkpoint",
-           "trust root", "signing key", "policy unchanged during run", "capture sources", "harness attribution",
-           "approvals", "coverage", "opt-in content capture", "chain intact"},
-    "v2": {"gateway amendments", "openshell policy", "revocations", "coverage", "tiers", "fail-open classes",
-           "break-glass approvals", "approvals by agents", "incident policies", "findings counted", "replay runs",
-           "reviews counted", "reviews", "keys", "log tail", "monitor", "not interpreted",
-           "policy snapshot", "manifest", "inclusion", "witness quorum", "run chain", "bundle structure",
-           "checkpoint", "signatures", "bundle readable", "run-set", "run parts"},
+    "v1": {
+        "warning_checks": {
+            "head matches a witness checkpoint",   # when the selected records run past the last checkpoint; Go names
+                                                   # this check's failures, which are compared
+            "signing key",   # where the signing key lives, as the checkpoints state it
+            "policy unchanged during run", "capture sources", "harness attribution", "approvals", "coverage",
+            "opt-in content capture",   # what the run recorded about itself
+        },
+        "failed_checks": {
+            "counter has no gaps",   # Go's chain check reports a missing record under `chain intact`, not on its own
+        },
+    },
+    "v2": {
+        "warning_checks": {
+            "coverage", "tiers", "fail-open classes", "break-glass approvals",   # what the run recorded
+            "log tail",   # whether a run-set's registry range ends in log.closed
+        },
+        "failed_checks": set(),
+    },
 }
+# Evidence Go doesn't support fails closed, so its verdict differs whatever the names (README.md, "Known differences"):
+# the checks of v1 signed findings, record-key issuers and revocations, monitors, the v1-to-v2 format bridge, agent
+# approvals, incidents, signed findings, reviews and replays, and ext fields are not compared here.
 
 
 def compare(python, go, section):
+    """(match, known gaps, unexpected names): the same verdict, and the same warning and failed check names outside the
+    known gaps. Go's v2 verifier stops at its first failure, so on a v2 bundle that fails it names that one failed
+    check, which must be one Python names, and no check Python doesn't."""
     known = KNOWN_GAPS["v1" if section == "v1" else "v2"]
+    stops = section != "v1" and python["exit_code"] != 0
     gaps, unexpected = {}, {}
     for field in ("warning_checks", "failed_checks"):
-        differences = set(python[field]) ^ set(go[field])
-        gaps[field] = sorted(differences & known)
-        unexpected[field] = sorted(differences - known)
+        differences = set(go[field]) - set(python[field]) if stops else set(python[field]) ^ set(go[field])
+        gaps[field] = sorted(differences & known[field])
+        unexpected[field] = sorted(differences - known[field])
+    if stops and not go["failed_checks"]:   # a failure Go gives no name
+        unexpected["failed_checks"] = sorted(set(python["failed_checks"]) - known["failed_checks"])
     verdict = all(python[k] == go[k] for k in ("exit_code", "integrity", "assurance"))
     return verdict and not any(unexpected.values()), gaps, unexpected
 
@@ -180,13 +202,16 @@ def main():
             rows.append(row)
             print(("PASS" if row["match"] else "FAIL") + " " + row["bundle"] + " — " + name)
     failures = [r for r in rows if not r["match"]]
-    report = {"definition": "exact verdict tuple and warning/fail check names outside version-scoped known gaps (no fixtures excluded)",
+    report = {"definition": "exact verdict tuple, and warning/fail check names outside the version-scoped verdict-only "
+                            "checks; on a v2 bundle that fails, Go's one failed check is one of Python's (no fixtures "
+                            "excluded)",
               "cases": len(rows), "matches": len(rows) - len(failures), "mismatches": len(failures),
               "results": rows}
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(f"{len(rows)-len(failures)}/{len(rows)} golden case verdicts matched")
+    print(f"{len(rows)-len(failures)}/{len(rows)} golden cases matched: verdicts, and check names outside the "
+          "verdict-only checks")
     return 1 if failures else 0
 
 

@@ -1,4 +1,5 @@
 """Policy v2: compiler and lint, engine conformance (RE2 vs regex) and the structural shell parser."""
+import functools
 import glob
 import importlib.util
 import io
@@ -13,6 +14,7 @@ import tempfile
 import time
 import tracemalloc
 import unittest
+import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
@@ -20,7 +22,7 @@ import regex
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from factories import SLOWER  # noqa: E402
+from factories import SLOWER, process_pool  # noqa: E402
 from tracekit import cli  # noqa: E402
 from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
 from tracekit.policy2 import classes, compile as pc, engine, shell  # noqa: E402
@@ -73,6 +75,17 @@ class Compile(unittest.TestCase):
                 self.assertIn("rule A: can never fire: unless matches every subject",
                               "\n".join(self.errors(f"deny:\n  - {{id: A, pattern: rm, unless: '{unless}'}}\n")))
         self.assertEqual(self.errors("deny:\n  - {id: A, pattern: rm, unless: '^$'}\n"), [])
+
+    def test_a_pattern_is_checked_once_and_one_outside_the_subset_raises_each_time(self):
+        """Every build checks each pattern of the pack and of the packs it extends again: a viewer, a report and a
+        signer start each build them, and that was most of their start (#496). check_pattern keeps a pattern's answer."""
+        ok, bad = rf"^cached-{uuid.uuid4().hex}\s", rf"(?=cached-{uuid.uuid4().hex})"
+        with mock.patch.object(pc, "translate", wraps=pc.translate) as translate:
+            for _ in range(2):
+                pc.check_pattern(ok)
+                with self.assertRaises(PolicyError):
+                    pc.check_pattern(bad)
+        self.assertEqual([c.args[0] for c in translate.call_args_list], [ok, bad, bad])
 
     def test_accepts_ordinary_patterns(self):
         for pattern in (r"^(sudo|doas)\b", r"\bgit\s+push\b.*--force", r"[^a-z]\.env$", r"\x41{2,5}", r"(?:-[a-z]*\s+)*x",
@@ -210,19 +223,25 @@ class Spellings(unittest.TestCase):
         # #483: frameworks rewrite tool names (CrewAI: `bash` for `Bash`, `multi_edit` for `MultiEdit`)
         e = Engine({"tools": {"Bash": "shell", "MultiEdit": "fs", "run_cmd": "shell", "Run-Cmd": "fs", "mcp:*/*": "mcp"}})
         self.assertEqual([e.listed(t) for t in ("bash", "BASH", "multi_edit", "Multi Edit")],
-                         ["Bash", "Bash", "MultiEdit", "MultiEdit"])
-        for t in ("Bash", "run_cmd", "RunCmd", "mcp:x/bash", "bsh", ""):   # listed; two names spell it; a glob's; none
-            self.assertIsNone(e.listed(t), t)
+                         [["Bash"], ["Bash"], ["MultiEdit"], ["MultiEdit"]])
+        # 1.5.3 review (#484): a spelling two listed names share names both (server.yaml's `bash`, coding.yaml's `Bash`)
+        self.assertEqual(e.listed("RunCmd"), ["run_cmd", "Run-Cmd"])
+        for t in ("Bash", "run_cmd", "mcp:x/bash", "bsh", ""):   # listed; listed; a glob's; none; none
+            self.assertEqual(e.listed(t), [], t)
         # CrewAI keeps an accented letter's ASCII base (`CaféTool` -> `cafe_tool`); a name with no ASCII letter or
         # digit spells nothing, so it takes no other such name
         e = Engine({"tools": {"CaféTool": "app", "検索": "app"}})
-        self.assertEqual([e.listed(t) for t in ("cafe_tool", "翻訳", "-", "é")], ["CaféTool", None, None, None])
+        self.assertEqual([e.listed(t) for t in ("cafe_tool", "翻訳", "-", "é")], [["CaféTool"], [], [], []])
 
     def test_a_renamed_tools_results_are_untrusted_when_the_listed_ones_are(self):
         for untrusted in (["http"], ["WebFetch"]):   # by class, by name
             e = Engine({"tools": {"WebFetch": "http"}, "untrusted": untrusted})
             self.assertEqual([e.untrusted_results(t) for t in ("web_fetch", "WebFetch", "web_search")],
                              [True, True, False], untrusted)
+        # 1.5.3 review (#484): the server pack lists both web_fetch (server-net) and WebFetch (coding), so their
+        # shared spelling named neither and its results weren't marked untrusted
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
+        self.assertEqual([e.untrusted_results(t) for t in ("webfetch", "Web-Fetch", "web_fetch")], [True, True, True])
 
 
 class Handoffs(unittest.TestCase):
@@ -566,12 +585,13 @@ class Speed(unittest.TestCase):
     # (nondeterministic). RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade:
     # structural pipeline and argv rules
     RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D011", "TK-DB003", "TK-C010", "TK-A032"}
-    # TK-A040 reads up to eight options after each redis-cli on a line, so 64 KiB repeating `a/redis-cli -` reads eight
-    # tokens from each: linear, ~75 ms on an M-series Mac and 152-188 ms on CI's Linux runners. Reading on to the end
-    # of the line from each redis-cli runs into the search's 0.6 s timeout. TK-M003 reads a recipient list forward to a
-    # whole-company address: ~12 ms on an M-series Mac. Read greedily and backed off over, 64 KiB of a list took 78 ms
-    # there and 152-221 ms on CI's macOS runners (#481)
-    RULE_BUDGET_S = {"TK-A040": 0.25, "TK-M003": 0.06}
+    # TK-M003 reads a recipient list forward to a whole-company address: ~12 ms on an M-series Mac. Read greedily and
+    # backed off over, 64 KiB of a list took 78 ms there and 152-221 ms on CI's macOS runners (#481)
+    RULE_BUDGET_S = {"TK-M003": 0.06}
+    # every budget is for the M-series Mac it was set on, where machine_scale's reference search takes REF_S; another
+    # machine's budgets are scaled by how much slower it runs that search (#517: TK-A040, ~75 ms there, reads eight
+    # options after each redis-cli and took 152-261 ms on CI's Linux runners, over a fixed budget)
+    REF_S = 0.055
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4
@@ -637,12 +657,17 @@ class Speed(unittest.TestCase):
         return list(dict.fromkeys(found + [o for m in more for o in m]))
 
     def test_every_pack_pattern_searches_64_kib_within_budget(self):
+        # the first search of every filler (~57,000 of 64 KiB) in worker processes; a filler over the budget there,
+        # maybe only under the others' load, is searched again here, alone: its best of three is held to the budget
+        patterns, scale = pack_patterns(), machine_scale()
+        with process_pool() as pool:
+            over = list(pool.map(functools.partial(_over_budget, scale=scale), patterns))
         slow = []
-        for rid, key, pattern in pack_patterns():
-            budget = self.RULE_BUDGET_S.get(rid, self.BUDGET_S)
+        for (rid, key, pattern), fillers in zip(patterns, over):
+            budget = self.RULE_BUDGET_S.get(rid, self.BUDGET_S) * scale
             rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
-            for s in self.fillers(rid, pattern):
-                took = min(self.search(rx, s) for _ in range(3)) if self.search(rx, s) > budget else 0
+            for s in fillers:
+                took = min(self.search(rx, s, budget) for _ in range(3))
                 if took > budget:
                     slow.append(f"{rid} {key} {took * 1e3:.0f} ms on {s[:24]!r}")
         self.assertEqual(slow, [])
@@ -697,6 +722,11 @@ class Speed(unittest.TestCase):
                   ("Bash", {"command": "psql -c 'SELECT 1' -c" + "x" * (n - 24)})]
         calls += [("mcp__db__run", {"rows": [{key: text}] * (n // 16)}) for key in ("sql", "query")
                   for text in ("/*", "-- ", "/* x")]
+        # #500 review: a `declare -x` read with a cluster repeat took the fallback engine past its 1 s on 64 KiB of x
+        # (it denied where RE2 allowed); and the base URL's name without its last letter, over and over
+        calls += [("Bash", {"command": "declare -" + "x" * n + ";echo ANTHROPIC_BASE_URL"}),
+                  ("Bash", {"command": "ANTHROPIC_BASE_UR" * (n // 17)}),
+                  ("Write", {"file_path": "a.env", "content": "ANTHROPIC_BASE_UR" * (n // 17)})]
         for tool, args in calls:
             with self.subTest(tool=tool, start=str(args)[:40]):
                 out = []
@@ -721,10 +751,11 @@ class Speed(unittest.TestCase):
         self.assertEqual((d["verdict"], d.get("nondeterministic")), ("allow", None), d)
         self.assertLess(took, 0.5 * SLOWER)   # ~80 ms on an M-series laptop
 
-    def search(self, rx, s):
+    def search(self, rx, s, budget):
+        """Seconds `rx` takes to search `s`, cut off at four times `budget` (a runaway search then shows as one)."""
         start = time.perf_counter()
         try:
-            rx.search(s, timeout=self.BUDGET_S * 4)
+            rx.search(s, timeout=budget * 4)
         except TimeoutError:
             pass
         return time.perf_counter() - start
@@ -739,7 +770,8 @@ class Speed(unittest.TestCase):
             rx = regex.compile(pc.translate(patterns[rid]), regex.ASCII | regex.V0)
             for f in fillers:
                 with self.subTest(rule=rid, filler=f):
-                    self.assertLess(self.search(rx, f * ((MAX_SUBJECT - 4) // len(f)) + "://"), self.BUDGET_S)
+                    budget = self.BUDGET_S * machine_scale()
+                    self.assertLess(self.search(rx, f * ((MAX_SUBJECT - 4) // len(f)) + "://", budget), budget)
 
     def test_adversarial_calls_decide_before_the_fallback_deadline(self):
         """TK-S002's URL scheme rescanned to the end from each word: 64 KiB of `--x` spent the 1 s and denied. TK-D006
@@ -780,6 +812,25 @@ class Speed(unittest.TestCase):
         took.sort()
         self.assertLess(took[len(took) // 2], 0.002)        # 45 us on an M-series laptop
         self.assertLess(took[len(took) * 99 // 100], 0.01)  # 100 us
+
+
+def _over_budget(item, scale):
+    """(in a worker process) The fillers of pack pattern `item` whose first search took longer than its budget."""
+    rid, _, pattern = item
+    speed = Speed()
+    budget = speed.RULE_BUDGET_S.get(rid, speed.BUDGET_S) * scale
+    rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
+    return [s for s in speed.fillers(rid, pattern) if speed.search(rx, s, budget) > budget]
+
+
+@functools.lru_cache(maxsize=None)
+def machine_scale():
+    """How many times slower than Speed.REF_S's Mac this machine runs a fixed linear search of 64 KiB on the fallback
+    engine, best of three: at least 1, and at most 4 (CI's runners are 2-3.5x slower), so a busy moment while it is
+    timed can't stretch the budgets past what a slow runner needs. A pattern slow everywhere still fails."""
+    rx = regex.compile(r"(^|\s)(\S{0,256}/)?redis-cli(\s+-\S*(\s+[^-\s]\S*)?){0,8}\s*<<<", regex.ASCII | regex.V0)
+    s = "a/redis-cli -" * ((MAX_SUBJECT - 4) // 13)
+    return min(4.0, max(1.0, min(Speed().search(rx, s, 2.5) for _ in range(3)) / Speed.REF_S))
 
 
 def argvs(command):

@@ -112,7 +112,10 @@ A call on several files (a patch's `paths`, the files of a Gemini CLI or Qwen Co
 
 Droid's [hooks reference](https://docs.factory.com/harness/hooks) documents Claude Code's event names and stdin fields.
 Its standalone `hooks.json` is keyed directly by event name, with no `hooks` wrapper (that wrapper is for declarations
-inside `settings.json`). When creating it, the installer copies the effective hooks from `settings.json`. If the legacy
+inside `settings.json`). When creating it, the installer copies the effective hooks from `settings.json`, since Droid
+reads those only while `hooks.json` is absent. `tracekit uninstall --agent droid` deletes `hooks.json` again when what is
+left in it is that copy. Otherwise (you changed the hooks in either file, or `settings.json` is gone or can't be read) it
+takes Tracekit's hooks out, keeps `hooks.json` and names it. If the legacy
 `.factory/hooks/hooks.json` exists, init refuses to proceed until you save once in Droid's `/hooks` UI to migrate it.
 On Windows Droid
 is assumed to run hooks under `cmd.exe`; the interpreter path stays quoted when it contains spaces.
@@ -155,17 +158,23 @@ the command that approves it, as the harness's block message (in Claude Code als
 you, and the deny reason, which the model reads):
 
 ```text
-[tracekit] held for approval apr-… (TK-A032): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: uploading to cloud storage. Have a person approve the held call, or write the files locally and let a person upload them.
+[tracekit] held for approval apr-… (TK-A032): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: uploading to cloud storage. Have a person approve the held call, or write the files locally and let a person upload them.
 ```
 
-Run the command from another terminal, then tell the agent to make the same call again, with exactly the same
-arguments: the signer lets that call run under your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
+In Claude Code, paste the `! …` line into the same session: `!` runs it as you, the session's user, not as the agent.
+In another harness, or from another terminal, run the same command without the `!` (a shell reads a leading `!` as
+"not", and an approval that worked would report failure). With a named signer (system mode, a remote one) the line
+has no `!`: the session's user is the agent's, whom the signer refuses as an approver, so the approver runs it from
+their own account. Then tell the agent to make the same call again, unchanged: the signer lets that call run under
+your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
 The same call a third time, or one with other arguments, is held again, with a new approval. A call you rejected is
 held again if the agent tries it again, and the block says so first among its reasons (`Why: a person rejected this
 exact call (apr-…, by uid:501); ask them before trying again; …`), so the agent asks you. In Claude Code a Bash
-call's arguments include its free-text `description`: a retry that rewords it is another call, held with a new
-approval. The agent can't approve its own call: the policy denies the command when the agent runs it (`TK-D012`), and in
-system mode the signer refuses its user.
+call's arguments include its free-text `description`, which the model rewords on a retry: a retry of a call you
+approved that differs only there runs under your approval, recorded with the approved arguments, description included
+([approve, then retry](approvals.md#approve-then-retry)); one that differs in any other key is held again.
+The agent can't approve its own call: the policy denies the command when the agent runs it (`TK-D012`), and in system
+mode the signer refuses its user.
 
 Until 1.5.1 the hook waited 8 minutes for an answer before it blocked the call. No harness shows a hook's output
 while the hook runs, so you saw the approval id only once the wait was over, and the call was blocked anyway. Where
@@ -185,7 +194,7 @@ so why none waits by default:
 | Cursor | not documented (closed source; a Hooks output channel for debugging) | `user_message` to you, `agent_message` to the model |
 | Gemini CLI | "Executing Hook: <name>" (stderr is collected and read on exit) | "Tool execution blocked: …" to both |
 | Qwen Code | a fixed `statusMessage`, if configured (stderr is read on exit) | to the model, and shown to you |
-| OpenCode 1.x | nothing: the plugin runs the hook synchronously | the error the plugin throws |
+| OpenCode 1.x | nothing (the plugin reads stderr once the hook exits, and kills one still running at 600 s) | the error the plugin throws |
 | goose | nothing (stdout and stderr are read on exit) | to the model |
 | Factory Droid | not documented | to Droid (the model) |
 | Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |
@@ -208,7 +217,7 @@ The v2 coding pack holds these calls for a person whatever the key:
 The hold says what to check:
 
 ```text
-[tracekit] held for approval apr-… (TK-A043): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
+[tracekit] held for approval apr-… (TK-A043): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
 ```
 
 Read the command before you approve it, and the file it sends (`-d @body.json`): the approval covers that exact
@@ -266,10 +275,11 @@ in a sentence is live, though the text from that name on is recorded as untruste
 held for your approval ([held calls](#held-calls-approve-then-retry)), and you and the agent read why:
 
 ```text
-[tracekit] held for approval apr-… (TK-CONSTRAINT): to let it run, approve it with `tracekit approvals approve apr-…`, then ask the agent to try the same call again, with exactly the same arguments (to refuse it: `tracekit approvals reject apr-…`). Why: the person's request in this run said not to modify billing.py; ask the person
+[tracekit] held for approval apr-… (TK-CONSTRAINT): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: the person's request in this run said not to modify billing.py; ask the person
 ```
 
-Answer it from another terminal with the command the line names (`tracekit approvals list` shows every held call), then
+Answer it with the command the line names: in Claude Code, its `! …` form in the session; elsewhere, from another
+terminal without the `!`, which a shell would read as "not" (`tracekit approvals list` shows every held call). Then
 ask the agent to make the call again; the agent's own `approve` or `reject` is denied (`TK-D012`). When the hook's signer is a named one (system mode,
 `tracekit init --remote --v2` or `TRACEKIT_SIGNER`), the command includes `--signer ADDR`. In system mode, run it from
 the approver's account as `/opt/tracekit/bin/python -I -m tracekit approvals …` (init puts no `tracekit` command on the
@@ -323,7 +333,9 @@ Without anything else installed, the signer turns what it saw and then never hea
   started, from the moment the hook took its token (`tailer_lost`), and a second tailer token for the same run
   (`tailer_redelegated`);
 - writes after the run ended (`late_activity`, in a run-set), apart from each client's first one, from which it learns
-  that the run ended (an idle close) and moves to a new run.
+  that the run ended (an idle close) and moves to a new run. A hook moves to a new run too when the signer was reset
+  (its data dir or run token key made anew) and refuses the session's run token: the earlier run, if the store still
+  holds it, is left for the signer's idle close, its tail unproven.
 
 The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can't be used with the Claude Code hooks: they record a digest of each tool's raw output, not what the model is sent, so every result would mismatch ([gateway](gateway.md#verified-tool-results)).
 

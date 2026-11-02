@@ -1,6 +1,9 @@
+import glob
 import io
 import json
 import os
+import shutil
+import socketserver
 import sys
 import tempfile
 import time
@@ -36,6 +39,11 @@ SHELL_ENV = ("TRACEKIT_POLICY", "TRACEKIT_SOCKET", "TRACEKIT_CLIENT_HOME", "TRAC
              "CODEX_HOME")
 PROXIES = urllib.request.getproxies()
 
+# A test's servers stop when it ends, and shutdown() returns once serve_forever sees it: after up to a poll interval
+# (the stdlib's 0.5 s, the signer's 0.2 s). Thousands stop in a run; polled every 0.02 s they stop at once.
+_serve_forever = socketserver.BaseServer.serve_forever
+socketserver.BaseServer.serve_forever = lambda self, poll_interval=0.5: _serve_forever(self, min(poll_interval, 0.02))
+
 
 def pytest_configure(config):
     for name, doc in MARKERS.items():
@@ -53,10 +61,27 @@ def pytest_collection_modifyitems(config, items):
 
 @pytest.fixture(autouse=True, scope="session")
 def _no_shell_env():
+    # and a runtime dir of the session's own: the per-user one is a developer's own dev signer's (a test that set none
+    # recorded into its store) and, on Windows, inside the dev data dir (#516's CI)
+    run = tempfile.mkdtemp(prefix="tk-run-", dir="/tmp" if os.name == "posix" else None)   # short: socket paths
     with pytest.MonkeyPatch.context() as mp:
         for k in SHELL_ENV:
             mp.delenv(k, raising=False)
+        mp.setenv("TRACEKIT_RUNTIME_DIR", run)
         yield
+    for d in [run, *glob.glob(run + "-*")]:   # and the side dirs (autospawn._side) of other HOMEs' signers
+        try:   # a dev signer a test started there and left running
+            from tracekit.sdk import autospawn
+            autospawn.down(d=d)
+        except ImportError:   # no v2 extra: no dev signer
+            pass
+        except (OSError, autospawn.Hung) as e:   # fails the session at its end, not the test that ran last
+            _LEFT_RUNNING.append(f"{d}: {e}")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+_LEFT_RUNNING = []
 
 
 @pytest.fixture(autouse=True)
@@ -71,6 +96,54 @@ def _isolated_env():
         urllib.request.install_opener(None)
         pytest.fail(f"urlopen ran under this test's proxy settings {leaked}: give it an opener of its own "
                     "(urllib.request.build_opener) or run it in a child process")
+
+
+# The real home's Tracekit folders, each with what places it, as the session starts. A test that makes one wrote outside
+# its temp dirs, and the dev data dir also turns the plugin's hook from warning to blocking (#515). Silent where they
+# already exist; a folder made outside any test (setUpClass, a module fixture) fails the session at its end.
+# `~` comes from USERPROFILE on Windows, and the dev data dir follows the platform's own data directory: name what
+# places each folder on the OS the tests run on (autospawn.data_dir).
+_CLIENT_HOME_HINT = "TRACEKIT_CLIENT_HOME, or USERPROFILE" if os.name == "nt" else "TRACEKIT_CLIENT_HOME, or HOME"
+HOME_DIRS = {os.path.join(os.path.expanduser("~"), ".tracekit-client"): _CLIENT_HOME_HINT}
+try:   # the signer needs the v2 extra (the release dry run installs none); without it no dev data dir is made
+    from tracekit.sdk import autospawn
+    if os.name == "nt":
+        _DATA_DIR_HINT = "LOCALAPPDATA"
+    elif sys.platform == "darwin":
+        _DATA_DIR_HINT = "HOME"
+    else:
+        _DATA_DIR_HINT = "XDG_DATA_HOME or HOME"
+    HOME_DIRS[autospawn.data_dir()] = _DATA_DIR_HINT
+except ImportError:
+    pass
+_HOME_DIRS_BEFORE = {p for p in HOME_DIRS if os.path.exists(p)}
+
+
+def _made(before):
+    """The folders made since `before`, each as the error names it; counted as known from now on."""
+    made = [p for p in HOME_DIRS if p not in before and os.path.exists(p)]
+    _HOME_DIRS_BEFORE.update(made)
+    return [f"{p} (set {HOME_DIRS[p]} to a temp dir)" for p in made]
+
+
+@pytest.fixture(autouse=True)
+def _no_real_home_dirs(request):
+    before = {p for p in HOME_DIRS if os.path.exists(p)}
+    yield
+    made = _made(before)
+    if made:
+        pytest.fail(f"{request.node.nodeid} made {made} in the real home folder", pytrace=False)
+
+
+def pytest_sessionfinish(session):
+    made = _made(set(_HOME_DIRS_BEFORE))
+    if made:
+        print(f"\nthis session made {made} in the real home folder, outside any test", file=sys.stderr)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+    if _LEFT_RUNNING:
+        print(f"\na dev signer a test left running in the session's runtime dir didn't stop: {_LEFT_RUNNING}",
+              file=sys.stderr)
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
 # Every v2 bundle a test exports in this process is verified against the log key that signed its checkpoint: an honest

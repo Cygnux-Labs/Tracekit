@@ -254,6 +254,9 @@ observed inputs, or that the records don't say.
 the outside world. A shield marks a restricted place, a jet a call out to a host, and a click on a place lists who went
 there and how we know (signed, observed by a sensor, or unverified). More: [Event Horizon](horizon.md).
 
+Egress observer records appear as network effects, including totals with no call link. Open their records for the
+byte counts, connection count and activity interval. A total does not prove which call caused the traffic.
+
 ### GRAPH: click a node
 
 ![GRAPH with the planner's model call clicked: NODE shows its model, time, tokens, what it saw and what it produced](viewer/1.5/graph-node.png)
@@ -273,6 +276,12 @@ policy decision and a **WHY DID THIS HAPPEN?** button; for an input or a message
 and **Led to** link the neighbours; **Record** gives its time, hash, previous hash and the signed Tracekit record it
 cites. Click the node again, or **CLEAR HIGHLIGHT**, to see the whole graph. The checkboxes add inferred links and ruled-out
 tests.
+
+Egress totals get a dashed cyan link only when the observer named their run by its token and their full activity
+interval fits one completed call in that run, with no other eligible call overlapping that interval. Denied calls and
+holds without consumed approval are excluded. The link and legend say **time/run match: not proof of causation**, and
+the tape's Happened column reads TIME MATCH. Unmatched totals remain on the tape (RUN TOTAL) and in HORIZON. Kernel
+effects keep their existing analysis and links.
 
 ### A signed run's graph
 
@@ -407,14 +416,16 @@ the same way and prints one page you can read in two minutes, in a terminal or p
 
 ```bash
 tracekit report                                         # the dev signer's store, the last 7 days
-tracekit report --since 24h                             # 7d, 24h, or an ISO date or time (UTC unless it says)
+tracekit report --since 24h                             # 7d, 24h, 30m, or an ISO date or time (UTC unless it says)
 tracekit report --since 2026-10-19 --until 2026-10-26   # --until is not included
 tracekit report --config signer.yaml --tenant acme      # a configured signer's store, one tenant
 tracekit report --json > week.json                      # the same report as one JSON object, for scripts
+tracekit report --share                                 # its counts alone, to post as a field report
 ```
 
 It takes the viewer's store options (`--dev`, the default; `--config`; `--data-dir`; `--log-vkey`) and needs the same
-access to the store. The HORIZON demo's four agents (a planner and the coder, researcher and reviewer it starts), every
+access to the store. A `--since` that isn't before `--until` (by default, now), or a time no date can
+name, exits 2 before any run is read. The HORIZON demo's four agents (a planner and the coder, researcher and reviewer it starts), every
 call decided by a real dev signer (the store's path shortened):
 
 ```text
@@ -513,6 +524,12 @@ can't be checked, as `tracekit verify` does.
   or `--data-dir` and `--tenant`) and write a trust file that pins the signer's log key (`tracekit signer trust`), then
   the one that verifies the run against it. Every run id in the report is whole, as `--run` needs it. The trust file
   is the operator's word for the key: whoever verifies checks the key in it against their own copy.
+- **`--share`** prints the report's counts alone, to post as a [field report](field-reports.md): the window's length
+  in days, the version, whether the store and how many runs verify, the runs that verify by agent, the calls by
+  decision, the holds by outcome (and how many retries it counted with their held calls), the number of gaps, and
+  each denied or flagged rule with its count. An agent name or rule id that isn't Tracekit's own is counted as
+  `other` or `custom rule` ([field reports](field-reports.md#what-is-shared-and-what-isnt)). No source, tenant, run
+  id, identity, time, call or rule description; it reads no content, so it adds no `content.accessed` record.
 
 It reads the store without the signer's lock, as the viewer does, and never starts, stops or replaces a signer. The
 report is the operator's view of the operator's own store, so its verdicts are operator-side (`dev` assurance on a

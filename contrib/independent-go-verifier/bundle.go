@@ -423,35 +423,38 @@ func InspectBundle(bundle, trustBytes []byte) (Inspection, error) {
 
 func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum int) (Inspection, error) {
 	result := Inspection{Files: len(files)}
+	// the checks of the reference verifier these errors fail
+	structure := func(err error) error { return failed("bundle structure", err) }
+	keyRecord := func(err error) error { return failed("keys", err) }
 	if err := checkManifest(files); err != nil {
-		return result, err
+		return result, failed("manifest", err)
 	}
 	proofs, err := parseFileObject(files, "proofs/records.json")
 	if err != nil {
-		return result, err
+		return result, structure(err)
 	}
 	noteName, err := fieldString(proofs, "checkpoint")
 	if err != nil {
-		return result, err
+		return result, structure(err)
 	}
 	if !regexp.MustCompile(`^checkpoints/[0-9]+\.note$`).MatchString(noteName) {
-		return result, errors.New("invalid checkpoint path")
+		return result, structure(errors.New("invalid checkpoint path"))
 	}
 	cp, err := VerifyCheckpoint(files[noteName], log, witnesses, quorum)
 	if errors.Is(err, errQuorum) {
-		return result, err
+		return result, failed("witness quorum", err)
 	} else if err != nil {
-		return result, fmt.Errorf("checkpoint: %w", err)
+		return result, failed("checkpoint", fmt.Errorf("checkpoint: %w", err))
 	}
 	n, err := fieldInt(proofs, "tree_size")
 	if err != nil || n != cp.Size {
-		return result, errors.New("checkpoint tree size mismatch")
+		return result, failed("checkpoint", errors.New("checkpoint tree size mismatch"))
 	}
 	result.TreeSize = n
 	result.Witnesses = cp.Witnesses
 	incl, err := object(proofs["inclusion"])
 	if err != nil {
-		return result, err
+		return result, structure(err)
 	}
 	inclusion := func(r validatedRecord) error {
 		arr, err := array(incl[strconv.FormatUint(r.seq, 10)])
@@ -468,9 +471,12 @@ func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 		}
 		return VerifyInclusion(r.hash, r.seq, n, path, cp.Root)
 	}
+	if raw, ok := files["keys/records.jsonl"]; ok && len(raw) == 0 {
+		return result, keyRecord(errors.New("no key record declares a record key"))
+	}
 	keyLines, err := readLines(files["keys/records.jsonl"])
 	if err != nil {
-		return result, fmt.Errorf("keys: %w", err)
+		return result, structure(fmt.Errorf("keys: %w", err))
 	}
 	keys := make(map[string]recordedKey)
 	var firstLog string
@@ -478,89 +484,89 @@ func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 	for i, line := range keyLines {
 		r, err := decodeRecord(line)
 		if err != nil {
-			return result, err
+			return result, structure(err)
 		}
 		if i > 0 && r.seq <= prevSeq {
-			return result, errors.New("key seq not increasing")
+			return result, keyRecord(errors.New("key seq not increasing"))
 		}
 		prevSeq = r.seq
 		logID, err := fieldString(r.ev, "log_id")
 		if err != nil {
-			return result, err
+			return result, structure(err)
 		}
 		if i == 0 {
 			firstLog = logID
 		} else if firstLog != logID {
-			return result, errors.New("key log_id mismatch")
+			return result, keyRecord(errors.New("key log_id mismatch"))
 		}
 		typ, err := fieldString(r.ev, "type")
 		if err != nil {
-			return result, err
+			return result, structure(err)
 		}
 		data, err := object(r.ev["data"])
 		if err != nil {
-			return result, err
+			return result, structure(err)
 		}
 		switch typ {
 		case "signer.epoch":
 			declared, err := array(data["keys"])
 			if err != nil {
-				return result, err
+				return result, structure(err)
 			}
 			if len(declared) == 0 {
-				return result, errors.New("empty signer epoch")
+				return result, keyRecord(errors.New("empty signer epoch"))
 			}
 			for _, v := range declared {
 				k, err := object(v)
 				if err != nil {
-					return result, err
+					return result, structure(err)
 				}
 				kid, err := fieldString(k, "kid")
 				if err != nil {
-					return result, err
+					return result, structure(err)
 				}
 				if k["alg"] != "ed25519" {
-					return result, errors.New("unsupported epoch key algorithm")
+					return result, keyRecord(errors.New("unsupported epoch key algorithm"))
 				}
 				s, err := fieldString(k, "spki")
 				if err != nil {
-					return result, err
+					return result, structure(err)
 				}
 				der, err := b64(s)
 				if err != nil || SHA256Hex(der) != kid {
-					return result, errors.New("invalid epoch SPKI")
+					return result, keyRecord(errors.New("invalid epoch SPKI"))
 				}
 				if _, ok := k["cert"]; ok {
-					return result, errors.New("issuer certificates unsupported")
+					return result, keyRecord(errors.New("issuer certificates unsupported"))
 				}
 				if _, exists := keys[kid]; exists {
-					return result, errors.New("key redeclared")
+					return result, keyRecord(errors.New("key redeclared"))
 				}
 				keys[kid] = recordedKey{spki: der, from: r.seq}
 			}
 		case "key.retire":
 			kid, err := fieldString(data, "kid")
 			if err != nil {
-				return result, err
+				return result, structure(err)
 			}
 			last, err := fieldInt(data, "last_seq")
 			if err != nil {
-				return result, err
+				return result, structure(err)
 			}
 			key, exists := keys[kid]
 			if !exists || key.retire != nil || last < key.from {
-				return result, errors.New("invalid retirement")
+				return result, keyRecord(errors.New("invalid retirement"))
 			}
 			key.retire = &last
 			keys[kid] = key
 		default:
-			return result, errors.New("non-key record in keys/records.jsonl")
+			return result, keyRecord(errors.New("non-key record in keys/records.jsonl"))
 		}
 		if err := checkRecord(r, line, keys); err != nil {
-			return result, fmt.Errorf("key record seq %d: %w", r.seq, err)
+			return result, keyRecord(fmt.Errorf("key record seq %d: %w", r.seq, err))
 		}
 		if err := inclusion(r); err != nil {
-			return result, fmt.Errorf("key inclusion: %w", err)
+			return result, keyRecord(fmt.Errorf("key inclusion: %w", err))
 		}
 		result.KeyRecords++
 	}
@@ -571,10 +577,10 @@ func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 	result.Runs, result.RunRecords = len(runs), count
 	if _, present := files["registry/run-set.json"]; present {
 		if err := verifyRunSet(files, log, witnesses, quorum, inclusion, keys, runs, firstLog, n); err != nil {
-			return result, fmt.Errorf("run-set: %w", err)
+			return result, failed("run-set", fmt.Errorf("run-set: %w", err))
 		}
 	} else if len(runs) != 1 {
-		return result, errors.New("multiple runs without run-set")
+		return result, structure(errors.New("multiple runs without run-set"))
 	}
 	return result, nil
 }

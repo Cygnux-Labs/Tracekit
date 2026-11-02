@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEEDS = {"custom": (), "langchain": ("langchain", "langgraph"), "openai_agents": ("agents",),
          "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",),
          "pydantic_ai": ("pydantic_ai",), "agent_framework": ("agent_framework",), "google_adk": ("google.adk",),
-         "haystack": ("haystack",), "strands": ("strands",), "llama_index": ("llama_index",)}
+         "haystack": ("haystack",), "strands": ("strands",), "llama_index": ("llama_index",), "crewai": ("crewai",)}
 
 
 def python(*argv, env, cwd):
@@ -26,9 +26,14 @@ class Examples(unittest.TestCase):
         cls.dir = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # macOS caps socket paths
         cls.addClassCleanup(shutil.rmtree, cls.dir, True)
         home = os.path.join(cls.dir, "home")
+        # importing crewai on Windows asks for these folders (#391)
+        for sub in (("AppData", "Local"), ("AppData", "Roaming"), ("local",), ("data",)):
+            os.makedirs(os.path.join(home, *sub), exist_ok=True)
+        # TRACEKIT_DEV_GRACE: the dev signer makes a closed run final 0.2 s after, not 5 s; each example exports its
+        # run once it is
         cls.env = dict(os.environ, HOME=home, USERPROFILE=home, LOCALAPPDATA=os.path.join(home, "local"),
                        XDG_DATA_HOME=os.path.join(home, "data"), TRACEKIT_RUNTIME_DIR=os.path.join(cls.dir, "run"),
-                       PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
+                       TRACEKIT_DEV_GRACE="0.2", PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
         for k in ("TRACEKIT_SIGNER", "TRACEKIT_SIGNER_TOKEN"):
             cls.env.pop(k, None)
         cls.addClassCleanup(python, "-m", "tracekit", "down", env=cls.env, cwd=cls.dir)
@@ -86,6 +91,9 @@ class Examples(unittest.TestCase):
 
     def test_llama_index(self):
         self.run_example("llama_index")
+
+    def test_crewai(self):
+        self.run_example("crewai")
 
 
 class DemoServer(unittest.TestCase):

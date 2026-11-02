@@ -44,7 +44,7 @@ approve with: tracekit approvals approve apr-41231b92…
 $ tracekit approvals list
 apr-41231b92…  requested  run=a7ca7a32…  tool="Bash"  rules=TK-SHELL-PARSE
 $ tracekit approvals approve apr-41231b92…
-approved: apr-41231b92… (self-approved: dev mode only)
+approved: apr-41231b92…, by you. It counts: the dev signer runs as your own user and can't tell you from your agent, so it records this as self-approved, and the run's assurance stays dev. A signer started from signer.yaml refuses an approval from the call's own requester unless that file sets approvals: {self_approval: allow}.
 ```
 
 The held call waits until a person answers; the signer records the request, the answer and the call it allowed.

@@ -6,7 +6,7 @@ import os
 import re
 import sys
 
-from . import __version__
+from . import __version__, agent_hooks, demo
 from .wiki import wiki_url
 
 NUDGE_WAIT_S = 5.0
@@ -43,7 +43,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
               "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli",
-              "report": "report"}  # subcommands with their own parsers
+              "report": "report", "audit": "audit"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
@@ -55,7 +55,7 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
                  "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm",
-                 "report": "tracekit report"}
+                 "report": "tracekit report", "audit": "tracekit audit"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -136,8 +136,7 @@ def main(argv=None):
                    f"file, claude --bare may skip it; {wiki_url('docs/limits.md', 'dev-mode-vs-system-mode')})")
     p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly, which "
                    "stops every user's own Claude Code hooks on this machine (user, project, local and plugin ones)")
-    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
-                                       "antigravity", "crush"), default="claude",
+    p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
                    help="which coding agent's hooks to install (default: Claude Code)")
     p.add_argument("--harness", action="append", default=[], metavar="[NAME=]PATH",
                    help="system mode (0.3): the agent program whose processes may send events, e.g. /usr/local/bin/claude "
@@ -169,8 +168,7 @@ def main(argv=None):
     p.add_argument("--project", action="store_true")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
-    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini", "opencode", "goose", "qwen", "droid",
-                                       "antigravity", "crush"), default="claude")
+    p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -243,7 +241,11 @@ def main(argv=None):
     p = sub.add_parser("graph", help="what agents did across verified bundles: `graph build|query|verify`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("report", help="what the agents did this week, on one page, from the v2 signer's store: runs, "
-                       "calls, holds, denies and flags by rule, gaps, integrity (--since, --json)", add_help=False)
+                       "calls, holds, denies and flags by rule, gaps, integrity (--since, --json, --share)",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
+                       "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)
@@ -340,7 +342,7 @@ def main(argv=None):
                    help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
     p.add_argument("--why", action="store_true",
                    help="`tracekit why` on the signer: a 3-agent desk, a held email, its cause found and cited")
-    p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini", "opencode", "goose"],
+    p.add_argument("--agent", default="claude", choices=demo.AGENTS,
                    help="send the scripted run as this coding agent's own hook payloads (default: claude)")
 
     a = ap.parse_args(argv)
@@ -488,11 +490,9 @@ def _run(a):
             if settings and a.agent == "codex":
                 import pwd
 
-                from .agent_hooks import codex_trust_line
-                print(codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
+                print(agent_hooks.codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
             return 0
         if a.dev and a.v2 and a.agent != "claude":
-            from . import agent_hooks
             if not _signer_extra():
                 return 2
             try:
@@ -508,7 +508,6 @@ def _run(a):
                 print(agent_hooks.codex_trust_line())
             return 0
         if a.dev and a.agent != "claude":
-            from . import agent_hooks
             home = a.home or os.path.expanduser("~/.tracekit-signer")
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, None, fail_mode="closed" if a.fail_closed else None, signer=signer)
@@ -631,7 +630,6 @@ def _run(a):
         print("v2 system mode removed" + (f"; kept {' and user '.join(kept)} (--purge deletes them)" if kept else ""))
         return 0
     if a.cmd == "uninstall" and a.agent != "claude":
-        from . import agent_hooks
         agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # it says what it removed
         return 0
     if a.cmd == "uninstall":
@@ -794,7 +792,6 @@ def _run(a):
         from . import demo_server
         return demo_server.main(keep=a.keep)
     if a.cmd == "demo":
-        from . import demo
         return demo.main(real=a.real, keep=a.keep, agent=a.agent)
     return 2
 
@@ -942,10 +939,11 @@ def _last(a):
     from .storage.base import StorageCorrupt, StorageUnavailable
     from .verify import v2
     from .view import write_trust
+    from .sdk.autospawn import data_dir
     deadline = time.monotonic() + LAST_WAIT_S
+    store = os.path.join(data_dir(), "store")   # named when there is none yet
     try:
         cfg = signer_config(None)
-        store = os.path.join(cfg["data_dir"], "store")
         while True:
             r = open_reader(cfg)
             try:   # newest first, by their last record; each with the type of that record and its agent's name
@@ -1023,6 +1021,20 @@ def _otel_v2(a, bundle):
     return path
 
 
+def _self_approved(state, dev):
+    """What `approvals approve|reject` adds to an answer the signer recorded `self_approved`, one from the call's own
+    requester (docs/approvals.md#who-may-answer): an approval counts, and why it is labelled; either answer keeps the
+    run's assurance at dev (the verifier counts both). `dev`: the same-user dev signer answered (no named signer)."""
+    if state != "approved":
+        return ", by you, recorded as self-approved (an answer from the call's own requester): the run's assurance stays dev"
+    why = ("the dev signer runs as your own user and can't tell you from your agent" if dev else
+           "this signer lets the call's own requester answer (a dev signer, or approvals: {self_approval: allow} in its "
+           "signer.yaml)")
+    return (f", by you. It counts: {why}, so it records this as self-approved, and the run's assurance stays dev."
+            + (" A signer started from signer.yaml refuses an approval from the call's own requester unless that file "
+               "sets approvals: {self_approval: allow}." if dev else ""))
+
+
 def _approvals(a):
     """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
     import pydoc
@@ -1077,7 +1089,8 @@ def _approvals(a):
         else:
             req = {"approval_id": a.approval_id, "decision": a.action, **({"reason": a.reason} if a.reason else {})}
             r = c.approval_decide(req)
-            print(f"{r['state']}: {r['approval_id']}" + (" (self-approved: dev mode only)" if r["self_approved"] else ""))
+            print(f"{r['state']}: {r['approval_id']}"
+                  + (_self_approved(r["state"], c.signer is None) if r["self_approved"] else ""))
     except (SignerUnavailable, Incompatible) as e:
         print(f"signer unavailable: {e}", file=sys.stderr)
         return 2

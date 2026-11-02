@@ -503,17 +503,20 @@ class Harnesses(DaemonCase):
         self.assertEqual(code, 2)
         self.assertIn("Blocked by tracekit policy: TK-D004", err)
 
-    @unittest.skipUnless(shutil.which("node"), "runs the OpenCode plugin under Node, with Bun's spawnSync stood in")
+    @unittest.skipUnless(shutil.which("node"), "runs the OpenCode plugin under Node, with Bun's spawn stood in")
     def test_the_opencode_plugin_decides_each_call_and_blocks_a_batch(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         with open(os.path.join(d, "tracekit.mjs"), "w") as f:
             f.write(agent_hooks._opencode_plugin(None, False))
         with open(os.path.join(d, "drive.mjs"), "w") as f:
-            f.write('import { spawnSync } from "node:child_process";\n'
-                    'globalThis.Bun = { spawnSync: ({ cmd, cwd, stdin }) => {\n'
-                    '  const r = spawnSync(cmd[0], cmd.slice(1), { cwd, input: stdin });\n'
-                    '  return { exitCode: r.status, stderr: r.stderr };\n} };\n'
+            f.write('import { spawn } from "node:child_process";\n'
+                    'import { Readable } from "node:stream";\n'
+                    'globalThis.Bun = { spawn: ({ cmd, cwd, stdin }) => {\n'
+                    '  const p = spawn(cmd[0], cmd.slice(1), { cwd, stdio: ["pipe", "ignore", "pipe"] });\n'
+                    '  p.stdin.end(stdin);\n'
+                    '  return { stderr: Readable.toWeb(p.stderr), exited: new Promise((done) => p.on("close", done)),\n'
+                    '           get exitCode() { return p.exitCode; }, kill: (signal) => p.kill(signal) };\n} };\n'
                     'const { TracekitPlugin } = await import("./tracekit.mjs");\n'
                     'const hooks = await TracekitPlugin({ directory: process.argv[2] });\n'
                     'const out = [];\n'
@@ -759,6 +762,35 @@ class ReasoningCaptureOn(DaemonCase):
         self.assertEqual(decision["data"]["policy_hash"], start[0]["data"]["policy"]["hash"])
 
 
+class HarnessList(unittest.TestCase):
+    def test_every_harness_is_taken_by_init_and_uninstall_and_checked_by_doctor(self):
+        """#499: one harness list, agent_hooks.HARNESSES. Each harness in it is an --agent init and uninstall take,
+        has a config path and a payload mapping, and is found and checked by doctor (OpenCode's plugin is JavaScript,
+        whose hook events doctor doesn't read): a harness left out of any of them fails here."""
+        from tracekit import cli, doctor
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        patch_env(self, HOME=d, USERPROFILE=d, XDG_CONFIG_HOME=None, CODEX_HOME=None, CRUSH_GLOBAL_CONFIG=None)
+        with mock.patch("os.getcwd", return_value=d):
+            for harness in agent_hooks.HARNESSES:
+                with self.subTest(harness=harness):
+                    for command in ("init", "uninstall"):
+                        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()), \
+                                self.assertRaises(SystemExit) as e:
+                            cli.main([command, "--agent", harness, "--help"])
+                        self.assertEqual(e.exception.code, 0, f"tracekit {command} --agent {harness}")
+                    self.assertIn(harness, agent_hooks.AGENT_NAMES)
+                    agent_hooks.normalise(harness, {})   # raises for a harness it doesn't map
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        agent_hooks.install(harness, d, v2=True)
+            found = doctor._dev_harnesses()
+            rows = []
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append(detail), found, False, d)
+        self.assertEqual(sorted(found), sorted(agent_hooks.HARNESSES))
+        self.assertEqual({h for h in agent_hooks.HARNESSES if any(r.startswith(f"{h} pre-tool timeout") for r in rows)},
+                         set(agent_hooks.HARNESSES) - {"opencode"})
+
+
 class Installer(unittest.TestCase):
     def test_droid_uninstall_without_standalone_file_preserves_legacy_and_settings(self):
         for with_settings in (False, True):
@@ -814,29 +846,102 @@ class Installer(unittest.TestCase):
             self.assertFalse(os.path.exists(path))
 
     def test_droid_creation_keeps_settings_hooks_and_uninstall_restores_them(self):
-        with tempfile.TemporaryDirectory() as d:
-            path = agent_hooks.config_path("droid", d)
-            os.makedirs(os.path.dirname(path))
+        """#499: init copies settings.json's hooks into the hooks.json it creates (Droid reads them only while it is
+        absent); uninstall removes that copy again, so Droid reads settings.json's hooks, edits included, once more.
+        A hooks.json whose hooks a person changed since, or one whose settings.json hooks changed, stays, named."""
+        def group(command):
+            return [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]
 
-            def group(command):
-                return [{"matcher": "*", "hooks": [{"type": "command", "command": command}]}]
+        fallback = {"PreToolUse": group("echo settings pre"), "PostToolUse": group("echo settings post")}
+        settings = {"theme": "dark", "hooks": fallback}
+        for changed in (None, "hooks.json", "settings.json"):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as d:
+                path = agent_hooks.config_path("droid", d)
+                os.makedirs(os.path.dirname(path))
+                settings_path = os.path.join(d, ".factory", "settings.json")
+                with open(settings_path, "w") as f:
+                    json.dump(settings, f)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    for _ in range(2):
+                        agent_hooks.install("droid", d, v2=True)
+                with open(path) as f:
+                    hooks = json.load(f)
+                for ev, groups in fallback.items():
+                    self.assertEqual(hooks[ev][:len(groups)], groups)
+                if changed:
+                    edited = os.path.join(d, ".factory", changed)
+                    with open(edited) as f:
+                        config = json.load(f)
+                    (config if changed == "hooks.json" else config["hooks"])["SessionStart"] = group("echo mine")
+                    with open(edited, "w") as f:
+                        json.dump(config, f)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    agent_hooks.install("droid", d, uninstall=True)
+                self.assertEqual(os.path.exists(path), bool(changed))
+                self.assertEqual(f"{path} kept: the hooks left in it aren't those in" in out.getvalue(), bool(changed))
+                if changed == "hooks.json":
+                    with open(path) as f:
+                        self.assertEqual(json.load(f), {**fallback, "SessionStart": group("echo mine")})
+                with open(settings_path) as f:
+                    self.assertEqual(json.load(f)["hooks"], {**fallback, **(
+                        {"SessionStart": group("echo mine")} if changed == "settings.json" else {})})
 
-            fallback = {"PreToolUse": group("echo settings pre"), "PostToolUse": group("echo settings post")}
-            settings = {"theme": "dark", "hooks": fallback}
-            settings_path = os.path.join(d, ".factory", "settings.json")
-            with open(settings_path, "w") as f:
-                json.dump(settings, f)
-            for _ in range(2):
-                agent_hooks.install("droid", d, v2=True)
-            with open(path) as f:
-                hooks = json.load(f)
-            for ev, groups in fallback.items():
-                self.assertEqual(hooks[ev][:len(groups)], groups)
-            agent_hooks.install("droid", d, uninstall=True)
-            with open(path) as f:
-                self.assertEqual(json.load(f), fallback)
-            with open(settings_path) as f:
-                self.assertEqual(json.load(f), settings)
+    def test_droid_uninstall_names_a_kept_copy_whatever_settings_json_holds(self):
+        """#499: a copy whose hooks settings.json no longer has (removed, or the file deleted), or whose settings.json
+        can't be read, keeps the person's hooks and loses Tracekit's, and uninstall names it: never silent, never a
+        traceback."""
+        copied = {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "echo mine"}]}]}
+        for name, settings in (("hooks removed", '{"theme": "dark"}'), ("deleted", None), ("not JSON", "{"),
+                               ("hooks not an object", '{"hooks": []}')):
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                path = agent_hooks.config_path("droid", d)
+                settings_path = os.path.join(d, ".factory", "settings.json")
+                os.makedirs(os.path.dirname(path))
+                with open(settings_path, "w") as f:
+                    json.dump({"hooks": copied}, f)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    agent_hooks.install("droid", d, v2=True)
+                if settings is None:
+                    os.remove(settings_path)
+                else:
+                    with open(settings_path, "w") as f:
+                        f.write(settings)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    agent_hooks.install("droid", d, uninstall=True)
+                with open(path) as f:
+                    self.assertEqual(json.load(f), copied)
+                self.assertIn(f"Tracekit v2 hooks removed from {path}", out.getvalue())
+                self.assertIn(f"{path} kept: ", out.getvalue())
+
+    def test_a_null_hook_group_is_kept_and_a_null_event_list_refused(self):
+        """#499: one installer reads malformed configs one way. A group whose `hooks` is null is a person's, kept
+        (install() raised a TypeError); an event list that is null is refused, Tracekit changing nothing (goose and
+        Crush read it as empty)."""
+        from tracekit.install import SettingsError
+        group = {"matcher": "x", "hooks": None}
+        for harness in ("codex", "goose"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as d:
+                path = agent_hooks.config_path(harness, d)
+                os.makedirs(os.path.dirname(path))
+                with open(path, "w") as f:
+                    json.dump({"hooks": {"PreToolUse": [group]}}, f)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    agent_hooks.install(harness, d, v2=True)
+                    agent_hooks.install(harness, d, uninstall=True)
+                with open(path) as f:
+                    self.assertEqual(json.load(f), {"hooks": {"PreToolUse": [group]}})
+        for harness in ("goose", "crush", "codex"):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as d:
+                path = agent_hooks.config_path(harness, d)
+                os.makedirs(os.path.dirname(path), exist_ok=True)   # Crush's is crush.json in the project
+                with open(path, "w") as f:
+                    json.dump({"hooks": {"PreToolUse": None}}, f)
+                with self.assertRaisesRegex(SettingsError, "hooks.PreToolUse in .* must be a list"):
+                    agent_hooks.install(harness, d, v2=True)
+                with open(path) as f:
+                    self.assertEqual(json.load(f), {"hooks": {"PreToolUse": None}})
 
     def test_droid_does_not_migrate_inactive_settings_hooks_into_existing_file(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1223,6 +1328,23 @@ class DemoPerAgent(unittest.TestCase):
             self.assertEqual(code, 0, agent + "\n" + out.getvalue())
             self.assertIn("BLOCKED  Bash: curl", out.getvalue())
             self.assertIn("original bundle exit 0, tampered bundle exit 1", out.getvalue())
+            # #499: the run-boundaries gap of a harness that sends no session end is said to be expected
+            self.assertEqual("[WARN] run boundaries" in out.getvalue(), agent in demo.NO_SESSION_EVENTS)
+            self.assertEqual(f"gap is expected: {agent} sends no session end" in out.getvalue(),
+                             agent in demo.NO_SESSION_EVENTS)
+
+    def test_the_expected_gap_note_claims_no_verification_that_failed(self):
+        import contextlib
+        import io
+        from tracekit import demo
+        patch_env(self)
+        verify = demo.bundle.verify
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(demo.bundle, "verify",
+                                                                lambda *a: (verify(*a)[0], 1)):
+            self.assertEqual(demo.main(agent="goose"), 1)
+        self.assertIn("the run-boundaries gap is expected: goose sends no session end", out.getvalue())
+        self.assertNotIn("every record in it verified", out.getvalue())
 
     def test_native_payloads_are_recorded_under_the_agent(self):
         import contextlib
@@ -1242,12 +1364,16 @@ class DemoPerAgent(unittest.TestCase):
                 inst.init_dev(home, [], start=True)
                 try:
                     proj = demo._project(d)
-                    with contextlib.redirect_stdout(io.StringIO()):
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
                         demo.scripted(env, proj, agent)
                     evs = [r["event"] for r in ledger_records(home)]
                     start = next(e for e in evs if e["type"] == "run.start")
                     self.assertEqual((start["run_id"], start["data"]["agent"]["name"]), (f"demo-{agent}-1", agent))
                     self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], tools)
+                    # #499: each step is labelled by the tool recorded (goose's cat is a Bash call, not a Read)
+                    self.assertEqual([line.split()[1].rstrip(":") for line in out.getvalue().splitlines()
+                                      if line.startswith(("  ran ", "  BLOCKED "))], tools)
                     self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
                     self.assertEqual(any(e["type"] in ("user.prompt", "run.end") for e in evs), sessions)
                 finally:

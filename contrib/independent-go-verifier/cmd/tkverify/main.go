@@ -3,6 +3,8 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -31,14 +33,19 @@ const (
 func main() { os.Exit(run()) }
 
 // writeReport prints the report in the reference CLI's order: the check lines and the reason, then the verdict. A
-// failed bundle's assurance is not rated: a level rates only evidence that verified.
+// reason the failed check lines already give is not repeated: a failed bundle's (exit 1) are its failed checks, any
+// other's is printed unless a failed check line says it. A failed bundle's assurance is not rated: a level rates only
+// evidence that verified.
 func writeReport(w io.Writer, r report) {
+	given := false
 	for _, check := range r.Checks {
 		fmt.Fprintf(w, "[%s] %s — %s\n", strings.ToUpper(check.Status), check.Check, check.Detail)
+		given = given || check.Status == "fail" && (r.ExitCode == 1 || check.Detail == r.Detail)
 	}
-	if r.Detail != "" && r.ExitCode == 1 {
-		fmt.Fprintln(w, "[FAIL]", r.Detail)
-	} else if r.Detail != "" {
+	if r.Detail != "" && !given {
+		if r.ExitCode == 1 {
+			fmt.Fprint(w, "[FAIL] ")
+		}
 		fmt.Fprintln(w, r.Detail)
 	}
 	assurance := r.Assurance
@@ -46,6 +53,25 @@ func writeReport(w io.Writer, r report) {
 		assurance = "not rated (the bundle failed verification)"
 	}
 	fmt.Fprintf(w, "\nIntegrity: %s.\nAssurance: %s.\n", r.Integrity, assurance)
+}
+
+// namesV2 says whether bundle is a ZIP whose manifest names format v2. The reference CLI picks its verifier the same
+// way: from the bundle, not from the flags given.
+func namesV2(bundle []byte) bool {
+	z, err := zip.NewReader(bytes.NewReader(bundle), int64(len(bundle)))
+	if err != nil {
+		return false
+	}
+	f, err := z.Open("manifest.json")
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, 1<<20))
+	var manifest struct {
+		Format any `json:"format"`
+	}
+	return err == nil && json.Unmarshal(raw, &manifest) == nil && manifest.Format == "tracekit.bundle.v2"
 }
 
 func readLimited(path string, limit int64) ([]byte, error) {
@@ -104,9 +130,18 @@ func run() int {
 		}
 		config, err := readLimited(*trust, trustReadLimit)
 		if err != nil {
-			return fail(verifier.TrustUnusable, "trust config: "+err.Error())
+			detail := "trust config: " + err.Error()
+			return finish(report{ExitCode: 2, Integrity: verifier.TrustUnusable, Assurance: "none", Detail: detail,
+				Checks: []verifier.VerificationCheck{{Check: "trust config", Status: "fail", Detail: detail}}})
 		}
 		result = verifier.VerifyBundle(data, config)
+	} else if namesV2(data) {
+		if *key != "" || *witness != "" {
+			return fail("UNVERIFIABLE", "-key and -witness are for v1 bundles; a v2 bundle is checked against -trust")
+		}
+		return fail("UNVERIFIABLE", "a v2 bundle needs -trust: the trust file of the signer that made it, a small "+
+			".json that pins its log key. For your own run, tracekit last writes <run>.trust.json next to the "+
+			"bundle; for someone else's, get theirs from the sender directly, not from beside or inside the bundle")
 	} else {
 		var pin, copy []byte
 		if *key != "" {

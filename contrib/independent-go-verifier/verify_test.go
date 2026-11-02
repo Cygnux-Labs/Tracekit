@@ -647,6 +647,81 @@ func TestFailuresNameRecordsByLogSeq(t *testing.T) {
 	}
 }
 
+// A failure names the reference verifier's check it fails, so the two reports can be compared check by check.
+func TestFailuresNameTheReferenceCheck(t *testing.T) {
+	for name, check := range map[string]string{
+		"negative/zip-traversal.tkb":           "bundle readable",
+		"negative/manifest-newer-verifier.tkb": "bundle readable",
+		"negative/json-record-too-deep.tkb":    "bundle structure",
+		"negative/run-second-run.tkb":          "bundle structure",
+		"negative/manifest-wrong-hash.tkb":     "manifest",
+		"negative/checkpoint-body-edited.tkb":  "checkpoint",
+		"negative/witness-none.tkb":            "witness quorum",
+		"negative/keys-dropped.tkb":            "keys",
+		"negative/record-bad-signature.tkb":    "signatures",
+		"negative/record-deleted.tkb":          "run chain",
+		"negative/record-truncated.tkb":        "inclusion",
+		"negative/policy-misnamed.tkb":         "policy snapshot",
+		"negative/run-set-float-bound.tkb":     "run-set",
+		"parts/parts-gap.tkb":                  "run parts",
+	} {
+		trust := readGolden(t, filepath.Dir(name)+"/trust.json")
+		r := VerifyBundle(readGolden(t, name), trust)
+		if len(r.Checks) != 1 || r.Checks[0].Check != check || r.Checks[0].Status != "fail" || r.ExitCode == 0 {
+			t.Errorf("%s: %+v, want one failed %q check", name, r, check)
+		}
+	}
+	r := VerifyV1(readGolden(t, "v1/demo-run-tampered.tkb"), readGolden(t, "v1/signer.pub"), nil)
+	if r.ExitCode != 1 || len(r.Checks) != 1 || r.Checks[0] != (VerificationCheck{"chain intact", "fail", "record seq 6: event hash mismatch"}) {
+		t.Errorf("v1 tampered: %+v", r)
+	}
+	r = VerifyV1(readGolden(t, "v1/demo-run.tkb"), nil, nil)
+	if r.ExitCode != 0 || len(r.Checks) != 1 || r.Checks[0].Check != "trust root" || r.Checks[0].Status != "warn" {
+		t.Errorf("v1 without a key: %+v", r)
+	}
+}
+
+// A log that rotates record keys and has no run-set from registry size 0 can't show a key.retire withheld from the
+// bundle: a keys warning says so, as the reference's does. A log of one key has nothing to retire.
+func TestUnprovenKeyRetirementsWarn(t *testing.T) {
+	seed := sha256.Sum256([]byte("second record key"))
+	spki, err := x509.MarshalPKIXPublicKey(ed25519.NewKeyFromSeed(seed[:]).Public())
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := map[string]any{"kid": SHA256Hex(spki), "alg": "ed25519", "spki": base64.StdEncoding.EncodeToString(spki)}
+	for _, tc := range []struct {
+		extra []any
+		warns bool
+	}{{nil, false}, {[]any{second}, true}} {
+		files, trust := bundleFixture(t, tc.extra...)
+		r := VerifyBundle(fixtureZip(files), trust)
+		warned := false
+		for _, c := range r.Checks {
+			warned = warned || c.Check == "keys" && c.Status == "warn"
+		}
+		if r.ExitCode != 0 || warned != tc.warns || !strings.HasSuffix(r.Assurance, "; key retirements not proven complete") {
+			t.Errorf("%d key(s): %+v, want a keys warning %v", 1+len(tc.extra), r, tc.warns)
+		}
+	}
+}
+
+// The event schemas embedded here are the repository's, so a format change can't leave this verifier on the old one.
+func TestEmbeddedSchemasAreTheRepositorys(t *testing.T) {
+	for file, embedded := range map[string][]byte{"tracekit.event.v2.json": eventSchemaBytes, "tracekit.event.v1.json": v1SchemaBytes} {
+		want, err := os.ReadFile(filepath.Join("..", "..", "tracekit", "schema", file))
+		if os.IsNotExist(err) {
+			t.Skip("upstream schemas not accessible in this workspace")
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(embedded, want) {
+			t.Errorf("the embedded copy of tracekit/schema/%s differs from it: copy the file again", file)
+		}
+	}
+}
+
 // A trust config that can't be used is said to be the trust file's problem (exit 2); a log key pinned as a witness
 // is no trust config error: the checkpoint fails it (exit 1), as in the reference and the TypeScript verifier.
 func TestTrustProblemsReadAsTheReferences(t *testing.T) {

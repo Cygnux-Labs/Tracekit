@@ -22,8 +22,13 @@ class ReplyLost(SignerUnavailable):
     """The request went out whole but no answer came back (a timeout, a reset): the signer may have written it."""
 
 
+def client_home():
+    """Where the client keeps its config and run state; client_dir() also creates it."""
+    return os.environ.get("TRACEKIT_CLIENT_HOME") or os.path.join(os.path.expanduser("~"), ".tracekit-client")
+
+
 def client_dir():
-    d = os.environ.get("TRACEKIT_CLIENT_HOME") or os.path.join(os.path.expanduser("~"), ".tracekit-client")
+    d = client_home()
     os.makedirs(os.path.join(d, "runs"), exist_ok=True)
     return d
 
@@ -99,7 +104,7 @@ def client_config():
     sc = system_config()
     if sc is not None:
         return sc
-    p = os.path.join(client_dir(), "config.json")
+    p = os.path.join(client_home(), "config.json")
     if os.path.exists(p):
         try:
             with open(p, encoding="utf-8") as f:

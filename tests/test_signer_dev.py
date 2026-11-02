@@ -8,13 +8,16 @@ import shutil
 import signal
 import socket
 import stat
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
 
 from factories import wait_for
+from test_signer_service import SIGTERM_IN_WAIT
 from tracekit import __version__, cli
 from tracekit.format.canon import event_hash
 from tracekit.locking import lock_file
@@ -35,8 +38,10 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.dir = tempfile.mkdtemp(dir="/tmp")   # short path: macOS caps socket paths at 104 bytes
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.run_dir = os.path.join(self.dir, "run")
+        # TRACEKIT_DEV_GRACE: a closed run is final 0.2 s after, not 5 s; tests wait for run.final before exporting
         env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.run_dir, "TRACEKIT_DEV_IDLE": "60",
-                                           "PYTHONPATH": ROOT, "HOME": os.path.join(self.dir, "home"),
+                                           "TRACEKIT_DEV_GRACE": "0.2", "PYTHONPATH": ROOT,
+                                           "HOME": os.path.join(self.dir, "home"),
                                            "XDG_DATA_HOME": os.path.join(self.dir, "data")})
         env.start()
         self.addCleanup(env.stop)
@@ -185,6 +190,89 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.assertIn("dev signer stopped (pid ", self.cli("down"))
         self.assertFalse(self.held())
 
+    def serving(self, child):
+        """`python -c child` with self.run_dir as its argument, once it serves as the dev signer there. Its process."""
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        with open(os.path.join(self.run_dir, autospawn.LOG), "ab") as log:
+            p = subprocess.Popen([sys.executable, "-c", child, self.run_dir], stdout=log, stderr=log)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        wait_for(lambda: autospawn._pid(self.run_dir) == p.pid, 30)
+        return p
+
+    def deaf_signer(self, stacks):
+        """A dev signer of self.run_dir whose main loop never sees SIGTERM (as CI's on #514 never left it), registering
+        SIGUSR1 for its stacks when `stacks`. Its process."""
+        return self.serving(
+            "import faulthandler, signal, sys; from tracekit.signer import service; "
+            + ("faulthandler.register(signal.SIGUSR1); " if stacks else "")
+            + "signal.signal(signal.SIGTERM, signal.SIG_IGN); signal.signal = lambda *a: None; "
+            f"sys.exit(service.serve_dev(sys.argv[1], lambda: (lambda *a: None, lambda: None), stacks={stacks!r}))")
+
+    def test_a_sigterm_landing_while_the_main_loop_waits_stops_the_signer(self):
+        """Review of 1.5.3: the main loop waited on the Event its SIGTERM handler set, and a signal landing while wait()
+        held the Event's lock left the handler waiting for that lock for good: down said Hung."""
+        p = self.serving(SIGTERM_IN_WAIT + "sys.exit(service.serve_dev(sys.argv[1], "
+                                           "lambda: (lambda *a: None, lambda: None)))")
+        self.assertEqual(autospawn.down(timeout=10, d=self.run_dir), p.pid)
+        self.assertEqual(p.wait(10), 0)
+
+    def test_a_client_that_finds_the_signer_stopping_starts_the_next_once_it_exits(self):
+        """Review of 1.5.3: a client that found signer.lock held and nothing answering (a `tracekit down` while an agent
+        runs, an idle exit racing a hook) waited out its 10 s for that signer, which was exiting, and started none."""
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        lock = open(self.path(autospawn.LOCK), "a")
+        self.addCleanup(lock.close)
+        lock_file(lock, blocking=False)
+        threading.Timer(0.5, lock.close).start()   # it exits
+        c = Client()
+        self.addCleanup(c.close)
+        self.assertEqual(c.status()["rpc_version"], RPC_VERSION)
+
+    def test_a_stop_that_hangs_says_where_it_is_stuck(self):
+        """#517: a dev signer that didn't stop said only its pid, and a test's log went with its temp dir. down now asks
+        it (SIGUSR1, as its endpoint.json offers) for every thread's stack, which faulthandler writes to its log even
+        with the main thread stuck, and its error ends with them."""
+        p = self.deaf_signer("SIGUSR1")
+        with self.assertRaises(autospawn.Hung) as got:
+            autospawn.down(timeout=1, d=self.run_dir)
+        self.assertIn(f"the dev signer (pid {p.pid}) did not stop within 1s; the end of ", str(got.exception))
+        self.assertIn("in serve_dev", str(got.exception))
+        # a hook replacing an older signer leaves the stacks out of what the agent reads; so does a log whose last
+        # signer is another (this one runs in the foreground)
+        short = f"the dev signer (pid {p.pid}) did not stop within 0.5s; see {os.path.join(self.run_dir, autospawn.LOG)}"
+        with self.assertRaises(autospawn.Hung) as got:
+            autospawn.down(timeout=0.5, d=self.run_dir, show_log=False)
+        self.assertEqual(str(got.exception), short)
+        with open(os.path.join(self.run_dir, autospawn.LOG), "a") as log:
+            log.write(f"SERVING pid {p.pid}0\n")
+        with self.assertRaises(autospawn.Hung) as got:
+            autospawn.down(timeout=0.5, d=self.run_dir)
+        self.assertEqual(str(got.exception), short)
+
+    def test_a_signer_that_offers_no_stacks_is_not_sent_sigusr1(self):
+        """#517: SIGUSR1 ends a process that doesn't handle it, so down sends it only to a signer whose endpoint.json
+        offers it: an older one, still running, isn't killed by being asked."""
+        p = self.deaf_signer(None)
+        with self.assertRaises(autospawn.Hung):
+            autospawn.down(timeout=0.5, d=self.run_dir)
+        time.sleep(0.3)
+        self.assertIsNone(p.poll())
+
+    def test_a_dev_signer_with_no_stderr_starts_and_stops(self):
+        """Review of #518: faulthandler.register raises with no stderr (`2>&-`, pythonw); the dev signer starts without
+        offering its stacks, and stops cleanly."""
+        os.makedirs(self.run_dir, 0o700, exist_ok=True)
+        p = subprocess.Popen([sys.executable, "-c", "import sys; sys.stderr = None; from tracekit.signer import service; "
+                              "sys.exit(service._serve_dev())"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.addCleanup(p.wait)
+        self.addCleanup(p.kill)
+        wait_for(lambda: autospawn._pid(self.run_dir) == p.pid, 60)
+        self.assertNotIn("stacks", autospawn._published(self.run_dir))
+        self.assertEqual(autospawn.down(timeout=30, d=self.run_dir), p.pid)
+        self.assertEqual(p.wait(30), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, autospawn.ENDPOINT)))
+
     def test_a_previous_version_client_is_served(self):
         """RPC 16 adds only optional fields: the signer serves 15..16, and a 15 client keeps working unchanged."""
         with mock.patch("tracekit.sdk.client.RPC_VERSION", RPC_MIN):
@@ -317,8 +405,8 @@ class DevSignerEndToEnd(unittest.TestCase):
         hello = json.loads(self.cli("up", "--wait", "--json"))
         self.assertEqual(hello["proto"], [RPC_MIN, RPC_VERSION])
         self.assertEqual(hello["version"], __version__)
-        with open(self.path(autospawn.ENDPOINT)) as f:
-            self.assertEqual(json.load(f), hello)
+        with open(self.path(autospawn.ENDPOINT)) as f:   # and the signal for its stacks (#517), which hello doesn't name
+            self.assertEqual(json.load(f), {**hello, "stacks": "SIGUSR1"})
 
     def test_hello_over_tcp(self):
         os.makedirs(self.run_dir, 0o700)
@@ -352,6 +440,56 @@ class SpawnAndStatus(unittest.TestCase):
         (argv,), kw = popen.call_args
         self.assertEqual(kw["cwd"], self.run_dir)
         self.assertEqual(argv[argv.index("-m") - 1] == "-P", sys.version_info >= (3, 11))
+
+    @unittest.skipUnless(hasattr(signal, "SIGUSR1"), "no SIGUSR1")
+    def test_a_signer_that_exits_as_it_is_asked_for_its_stacks_is_still_hung_not_lost(self):
+        """Review of #518: a signer gone between down's lock check and its SIGUSR1 raised ProcessLookupError out of
+        down; and an empty log read "the end of …:" with nothing after it."""
+        os.makedirs(self.run_dir, 0o700)
+        with open(os.path.join(self.run_dir, autospawn.ENDPOINT), "w") as f:
+            json.dump({"pid": 123456, "stacks": "SIGUSR1"}, f)
+        def kill(pid, sig):
+            if sig == signal.SIGUSR1:
+                raise ProcessLookupError
+        with mock.patch.object(autospawn, "_held", return_value=True), \
+                mock.patch.object(autospawn.os, "kill", side_effect=kill), self.assertRaises(autospawn.Hung) as got:
+            autospawn.down(timeout=0.1, d=self.run_dir)
+        self.assertTrue(str(got.exception).endswith(f"{autospawn.LOG}:\nnothing"), str(got.exception))
+
+    def test_down_signals_only_a_pid_of_one_process(self):
+        """Review of 1.5.3: down sent SIGTERM to whatever endpoint.json named: 0 or a negative pid signals a process
+        group or every process of the user, true is pid 1, and a string raised TypeError."""
+        os.makedirs(self.run_dir, 0o700)
+        for pid in (0, -1, 1, True, "123"):
+            with open(os.path.join(self.run_dir, autospawn.ENDPOINT), "w") as f:
+                json.dump({"pid": pid}, f)
+            with mock.patch.object(autospawn, "_held", return_value=True), \
+                    mock.patch.object(autospawn.os, "kill") as kill, self.assertRaises(autospawn.Hung):
+                autospawn.down(timeout=0.1, d=self.run_dir)
+            kill.assert_not_called()
+
+    @unittest.skipUnless(hasattr(signal, "SIGUSR1"), "no SIGUSR1")
+    def test_down_never_signals_a_pid_that_may_be_another_process_by_now(self):
+        """Review of 1.5.3: once the signer had exited, down waited on the next holder of signer.lock and then sent its
+        pid SIGUSR1 (which ends a process that doesn't handle it), though by then that pid may be another process's."""
+        os.makedirs(self.run_dir, 0o700)
+        endpoint = os.path.join(self.run_dir, autospawn.ENDPOINT)
+        with open(endpoint, "w") as f:
+            json.dump({"pid": 123456, "stacks": "SIGUSR1"}, f)
+        with mock.patch.object(autospawn, "_held", return_value=True), \
+                mock.patch.object(autospawn.os, "kill", side_effect=[None, ProcessLookupError]) as kill:
+            self.assertEqual(autospawn.down(timeout=5, d=self.run_dir), 123456)   # exited: the lock is another's
+        self.assertEqual(kill.call_args_list, [mock.call(123456, signal.SIGTERM), mock.call(123456, 0)])
+
+        def replaced(pid, sig):   # a signer started since publishes its own pid
+            if sig == signal.SIGTERM:
+                with open(endpoint, "w") as f:
+                    json.dump({"pid": 654321}, f)
+        with mock.patch.object(autospawn, "_held", return_value=True), \
+                mock.patch.object(autospawn.os, "kill", side_effect=replaced) as kill, \
+                self.assertRaises(autospawn.Hung):
+            autospawn.down(timeout=0.1, d=self.run_dir)
+        self.assertNotIn(signal.SIGUSR1, [c.args[1] for c in kill.call_args_list])
 
     def test_status_creates_nothing(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:

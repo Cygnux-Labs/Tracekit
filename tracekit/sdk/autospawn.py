@@ -179,12 +179,21 @@ def _try(d):
     return conn
 
 
-def _pid(d):
+def _published(d):
+    """endpoint.json's fields, {} while there is none."""
     try:
         with open(os.path.join(d, ENDPOINT)) as f:
-            return json.load(f)["pid"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return None
+            ep = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return ep if isinstance(ep, dict) else {}
+
+
+def _pid(d):
+    """endpoint.json's pid; None while it names none, or one no signal may go to: 0 and a negative pid signal a
+    process group or every process of the user, and 1 is init."""
+    pid = _published(d).get("pid")
+    return pid if type(pid) is int and pid > 1 else None
 
 
 def _env(d):
@@ -248,23 +257,22 @@ def _ensure(d, wait, timeout):
             if not _starts_ours(d):
                 raise Incompatible(f"{e}. `{sys.executable} -m tracekit` runs an older Tracekit than this process "
                                    "imports: install this version") from None
-            warnings.warn(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout, d)}) to "
+            warnings.warn(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout, d, show_log=False)}) to "
                           f"start this one's ({__version__})", stacklevel=3)
             conn = None
         if conn:
             return conn
-        p = None
-        if not _held(lock):   # nothing alive: whatever is left belongs to a dead signer
-            for f in (os.path.join(d, SOCK), os.path.join(d, ENDPOINT)):
-                pathlib.Path(f).unlink(missing_ok=True)
-            p = spawn(d)
-            if not wait:   # once it holds signer.lock, so a `tracekit down` straight after finds it starting
-                deadline = time.monotonic() + timeout
-                while not _held(lock) and p.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                return None
-        deadline = time.monotonic() + timeout
+        p, deadline = None, time.monotonic() + timeout
         while True:
+            # nothing alive (or the signer that was stopping has exited): whatever is left belongs to a dead signer
+            if p is None and not _held(lock):
+                for f in (os.path.join(d, SOCK), os.path.join(d, ENDPOINT)):
+                    pathlib.Path(f).unlink(missing_ok=True)
+                p, deadline = spawn(d), time.monotonic() + timeout
+                if not wait:   # once it holds signer.lock, so a `tracekit down` straight after finds it starting
+                    while not _held(lock) and p.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    return None
             conn = _try(d)
             if conn:
                 return conn
@@ -278,19 +286,26 @@ def _ensure(d, wait, timeout):
                             f"{os.path.join(d, LOG)}")
 
 
-def _last_line(path):
-    """The last line of a signer's log: the reason it gave for exiting."""
+def _tail(path, size=4096):
+    """The last `size` bytes of a signer's log, as text; None when it can't be read."""
     try:
         with open(path, "rb") as f:
-            f.seek(max(0, os.fstat(f.fileno()).st_size - 4096))
-            return (f.read().decode("utf-8", "replace").strip().splitlines() or ["no output"])[-1][:512]
+            f.seek(max(0, os.fstat(f.fileno()).st_size - size))
+            return f.read().decode("utf-8", "replace").strip()
     except OSError:
-        return "no log"
+        return None
 
 
-def down(timeout=10, d=None):
+def _last_line(path):
+    """The last line of a signer's log: the reason it gave for exiting."""
+    tail = _tail(path)
+    return "no log" if tail is None else (tail.splitlines() or ["no output"])[-1][:512]
+
+
+def down(timeout=10, d=None, show_log=True):
     """Stop this HOME's dev signer, or the one of runtime dir `d` (SIGTERM to the pid in endpoint.json while it holds
-    signer.lock). Its pid, or None."""
+    signer.lock). Its pid, or None. One that doesn't stop is Hung, ending with the end of its log when `show_log` (the
+    stacks it wrote there; a hook replacing it leaves them out of what the agent reads)."""
     d = d or signer_dir()
     lock = os.path.join(d, LOCK)
     deadline = time.monotonic() + timeout
@@ -302,11 +317,32 @@ def down(timeout=10, d=None):
         time.sleep(0.05)
     if not _held(lock):   # the endpoint of a signer that has exited
         return None
+    # read before it unpublishes on stopping
+    stacks = _published(d).get("stacks") == "SIGUSR1" and hasattr(signal, "SIGUSR1")
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while _held(lock):
+        if os.name == "posix":   # on Windows, signal 0 is CTRL_C_EVENT
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, PermissionError):   # it has exited: the lock is a signer's started since
+                return pid
         if time.monotonic() > deadline:
-            raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s")
+            log = os.path.join(d, LOG)
+            # where it is stuck: every thread's stack, which it writes to its stderr; not to a pid its endpoint no
+            # longer names, which may be another process's by now
+            if show_log and stacks and _pid(d) in (pid, None):   # None: a stop that hangs after unpublishing
+                try:
+                    os.kill(pid, signal.SIGUSR1)
+                except ProcessLookupError:   # it has just exited
+                    pass
+                time.sleep(0.5)
+            tail = _tail(log, 16384) or ""
+            start = tail.rfind("SERVING pid ")   # a foreground signer logs elsewhere: this log is another's
+            if not show_log or start >= 0 and tail[start:].split("\n", 1)[0].strip() != f"SERVING pid {pid}":
+                raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; see {log}")
+            raise Hung(f"the dev signer (pid {pid}) did not stop within {timeout}s; the end of {log}:\n"
+                       f"{tail or 'nothing'}")
         time.sleep(0.05)
     return pid
 

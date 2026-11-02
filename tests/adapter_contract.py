@@ -78,9 +78,10 @@ def tmpdir(case):
     return d
 
 
-def _serve(case, handle_frame):
-    """The signer's address: a Unix socket, or tcp://127.0.0.1:port with its token in $TRACEKIT_SIGNER_TOKEN."""
-    d, handle = tmpdir(case), answering_hello(handle_frame, hello())
+def _serve(case, handle_frame, version=None):
+    """The signer's address: a Unix socket, or tcp://127.0.0.1:port with its token in $TRACEKIT_SIGNER_TOKEN.
+    `version`: the Tracekit version its hello says, in place of this one's."""
+    d, handle = tmpdir(case), answering_hello(handle_frame, hello(**({"version": version} if version else {})))
     if hasattr(socket, "AF_UNIX"):
         from tracekit.transport.unix import UnixServer
         path = os.path.join(d, "s.sock")

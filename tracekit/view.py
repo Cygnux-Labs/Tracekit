@@ -694,6 +694,18 @@ class Translator(observe.Translator):
         if t == "ext" and d.get("name") == "pcm.grant":
             return note("PCM · GRANT ISSUED", f"to {d.get('subject')} · intent {d.get('intent')}"
                         + (f" · approval {d['approval_id']}" if d.get("approval_id") else ""), "STATE")
+        if t == "effect.observed" and d.get("kind") == "net" and not d.get("sensor"):
+            target = f"{d['host']}:{d['port']}"
+            run = {"token": "run named by its token", "identity": "run: the caller's latest open run"}
+            by = {"call": "a call of the run was allowed to this host", "explains": "the policy's explains list covers it"}
+            return alert("info", f"EFFECT · net {target}",
+                         f"{d['bytes_out']} bytes out, {d['bytes_in']} bytes in, {d['connections']} connection(s)"
+                         + f" · egress observer {d['observer']} · {d['first_ts']} to {d['last_ts']}"
+                         + f" · {run.get(d.get('attribution'), 'run: unattributed')}"
+                         + (f" · explained: {by.get(d['explained_by'], d['explained_by'])}" if d.get("explained_by")
+                            else ""), "EFFECT",
+                         effect={"kind": "net", "target": target, "claim": None}, attribution=d.get("attribution"),
+                         **{k: d[k] for k in ("bytes_out", "bytes_in", "connections", "first_ts", "last_ts")})
         if t == "effect.observed" and d.get("sensor"):   # what a kernel sensor saw; the run's analysis joins it to a call
             k = d.get("kind")
             target = (f"{d.get('host')}:{d.get('port')}" if k == "connect" else d.get("path") if k == "file" else
@@ -1829,7 +1841,7 @@ def main(argv=None):
             tls.load_cert_chain(a.tls_cert, a.tls_key)
         v1 = a.ledger is not None or a.bundle
         alone = a.why and not (v1 or a.dev or a.config or a.data_dir)   # why logs alone, as `tracekit why serve`
-        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir()}
+        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
         view = cfg.get("view") or {}
         login = view.get("oidc") and OidcLogin(view["oidc"], (cfg.get("http") or {}).get("oidc"))
         desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),

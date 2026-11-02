@@ -286,6 +286,7 @@ import argparse
 import base64
 import collections
 import datetime
+import faulthandler
 import functools
 import hashlib
 import hmac
@@ -1001,6 +1002,12 @@ class SignerService:
         self._exporter = otel_out and signer_otel.Exporter(
             otel_out["endpoint"], otel_out.get("headers", {}), lambda key: list(self.log.storage.iter_run(*key)),
             self.metrics.otel_dropped)
+        try:   # a run idle past idle_s while the signer was down closes before a call can go on with it: the call that
+            self.sweep()   # wakes a dev signer (which exits with no client connected) lands before the ticker's first sweep
+        except RPCError:   # storage down: the ticker retries
+            pass
+        except Exception:   # as the ticker: the signer still starts
+            self._loop_error("ticker")
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
@@ -1912,16 +1919,18 @@ class SignerService:
         unrecorded; a RecursionError is the request's nesting, which call() refuses."""
         try:
             d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
-            listed = self.policy.listed(tool)
-            if listed:   # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool
+            # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
+            # one when two listed names share it
+            for listed in self.policy.listed(tool):
                 d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
             if tool.startswith("mcp:") and "/" in tool:
-                # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class
-                # if the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an
-                # MCP one
+                # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
+                # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
+                # be dodged by naming the call an MCP one
                 bare = tool.split("/", 1)[1]
-                d = _stricter(d, self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls,
-                                                    untrusted))
+                for name in [bare] + self.policy.listed(bare):
+                    d = _stricter(d, self.policy.decide(
+                        name, args, None if self.policy.tool_class(name) != "unknown" else cls, untrusted))
             if hint is None or hint == cls:
                 return d, False, d["rule_ids"]
             h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
@@ -1941,9 +1950,10 @@ class SignerService:
     def _reasons(self, ids):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then their
         remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed
-        ENGINE_REASONS. A flag rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
+        ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520). A flag
+        rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
         by = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
-        rules = [by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by]
+        rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]
 
@@ -4713,7 +4723,7 @@ def signer_config(path=None, data_dir=None):
     if data_dir:
         return {"data_dir": data_dir_at(data_dir)}
     from tracekit.sdk.autospawn import SOCK, signer_dir
-    return {"data_dir": dev_data_dir(), "socket": os.path.join(signer_dir(), SOCK)}
+    return {"data_dir": dev_data_dir(create=False), "socket": os.path.join(signer_dir(), SOCK)}
 
 
 def data_dir_at(path):
@@ -4842,22 +4852,29 @@ def _dev_token():
     return DevToken("dev", [*REQUESTS, "hello"], ttl_s=365 * 86400)
 
 
-def dev_data_dir():
-    """The dev signer's per-user data dir (keys and store), created 0700."""
+def dev_data_dir(create=True):
+    """The dev signer's per-user data dir (keys and store), created 0700. A reader passes create=False: the plugin's
+    hook blocks the calls it can't record once this dir exists (#515), so reading makes nothing, and a dir no dev
+    signer has made yet is a FileNotFoundError that names `tracekit up`."""
     from tracekit.sdk.autospawn import data_dir
     d = data_dir()
+    if not create:
+        if not os.path.isdir(d):
+            raise FileNotFoundError(f"no dev signer data dir at {d} yet: start the dev signer once (tracekit up)")
+        return d
     os.makedirs(d, 0o700, exist_ok=True)
     os.chmod(d, 0o700)
     return d
 
 
 def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.RPC_VERSION), version=__version__,
-              idle_s=900, data_dir=None):
+              idle_s=900, data_dir=None, stacks=None):
     """Serve as the dev signer of `runtime_dir` (decision S3) until SIGTERM, or until `idle_s` seconds (0: never) pass
     with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life; then
     `open_handler()` -> (handle_frame, close); then binds the socket (loopback TCP without Unix sockets) and publishes
-    endpoint.json, which names `data_dir` as hello does (autospawn takes only its own HOME's); before returning,
-    unpublishes both, then calls close(). Call it from the main thread; returns an exit code."""
+    endpoint.json, which names `data_dir` as hello does (autospawn takes only its own HOME's), and `stacks`, the signal
+    on which this process writes every thread's stack to its log (autospawn.down sends it to a stop that hangs); before
+    returning, unpublishes both, then calls close(). Call it from the main thread; returns an exit code."""
     from tracekit.deploy import files
     from tracekit.sdk import autospawn
 
@@ -4872,8 +4889,8 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
                 print("LOST: another dev signer holds signer.lock", file=sys.stderr)
                 return 1
             time.sleep(0.05)
-    stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    stop = []   # not an Event: its set() in the handler waits forever on the lock a wait() it interrupts holds
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)
     for p in (sock, endpoint):
         pathlib.Path(p).unlink(missing_ok=True)
@@ -4883,7 +4900,7 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
     if hasattr(socket, "AF_UNIX"):
         from tracekit.transport.unix import UnixServer
         server = UnixServer(sock, handle)
-        files.write_json(endpoint, info)
+        files.write_json(endpoint, {**info, **({"stacks": stacks} if stacks else {})})
     else:
         from tracekit.transport.tcp_dev import TcpDevServer
         server = TcpDevServer(endpoint, _dev_token(), handle, publish=info)
@@ -4902,7 +4919,8 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
     threading.Thread(target=server.serve_forever, args=(0.2,), daemon=True).start()
     print(f"SERVING pid {os.getpid()}", file=sys.stderr, flush=True)
     try:
-        while not stop.wait(0.1):
+        while not stop:
+            time.sleep(0.1)
             with mutex:
                 if idle_s and not active[0] and time.monotonic() - last[0] > idle_s:
                     break
@@ -4940,9 +4958,16 @@ def _serve_dev():
         service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
                                 grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
         return service.handle_frame, service.close
+    stacks = None
+    if hasattr(signal, "SIGUSR1"):
+        try:   # faulthandler writes them from C, so it does even with the main thread stuck (#517)
+            faulthandler.register(signal.SIGUSR1)
+            stacks = "SIGUSR1"
+        except (RuntimeError, OSError, ValueError):   # no stderr, or one with no file under it
+            pass
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)),
-                         data_dir=dev_data_dir())
+                         data_dir=dev_data_dir(), stacks=stacks)
     except BlockingIOError:
         print(f"tracekit signer: another signer holds {dev_data_dir()}", file=sys.stderr)
     except Exception as e:
@@ -5235,8 +5260,8 @@ def main(argv=None):
         print("tracekit signer: the log is closed (log.closed) and takes no more records: give this signer a new log",
               file=sys.stderr)
         return 1
-    stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    stop = []   # not an Event, as in serve_dev
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     try:
         servers = serve(cfg, service)
     except Exception as e:
@@ -5250,8 +5275,8 @@ def main(argv=None):
         where = f" on {host}:{port}"
     print(f"tracekit signer {__version__} serving{where}", flush=True)
     try:
-        while not stop.wait(1):
-            pass
+        while not stop:
+            time.sleep(0.1)   # a sleep goes on after the handler runs: it is how late a SIGTERM stops serving
     except KeyboardInterrupt:
         pass
     for s in servers:

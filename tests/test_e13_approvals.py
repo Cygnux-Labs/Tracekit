@@ -596,7 +596,10 @@ class TestCliDev(Signer):
 
     def test_self_approval_is_labelled_under_dev(self):
         out, aid = cli_approve(self)
-        self.assertEqual((out.returncode, out.stdout.strip()), (0, f"approved: {aid} (self-approved: dev mode only)"))
+        # #510: a named signer may be a dev signer or one whose signer.yaml allows it; either way it counts
+        self.assertEqual((out.returncode, out.stdout.strip()), (0, f"approved: {aid}, by you. It counts: this signer "
+                         "lets the call's own requester answer (a dev signer, or approvals: {self_approval: allow} in its "
+                         "signer.yaml), so it records this as self-approved, and the run's assurance stays dev."))
 
 
 if __name__ == "__main__":

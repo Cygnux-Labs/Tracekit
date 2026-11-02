@@ -71,15 +71,16 @@ def run_start_event(p, pol, cwd, reasoning=True):
         "signer_isolation": cfg.get("signer_isolation", "same-user")}}
 
 
-def transcript_entries(f):
+def transcript_entries(f, final=False):
     """(bytes, entry) for each complete line of a Claude Code transcript (JSONL) from f's position: entry is the line's
-    JSON object, None when the line is not one. Stops before a line still being written."""
+    JSON object, None when the line is not one. Stops before a line still being written, unless `final`: a finished
+    file's last line may lack its newline."""
     for line in f:
-        if not line.endswith(b"\n"):
+        if not line.endswith(b"\n") and not final:
             return
         try:
             e = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):   # RecursionError: nested past what json.loads takes
             e = None
         yield len(line), e if isinstance(e, dict) else None
 
