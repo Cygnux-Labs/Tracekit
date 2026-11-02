@@ -101,10 +101,19 @@ def _isolated_env():
 # The real home's Tracekit folders, each with what places it, as the session starts. A test that makes one wrote outside
 # its temp dirs, and the dev data dir also turns the plugin's hook from warning to blocking (#515). Silent where they
 # already exist; a folder made outside any test (setUpClass, a module fixture) fails the session at its end.
-HOME_DIRS = {os.path.join(os.path.expanduser("~"), ".tracekit-client"): "TRACEKIT_CLIENT_HOME, or HOME"}
+# `~` comes from USERPROFILE on Windows, and the dev data dir follows the platform's own data directory: name what
+# places each folder on the OS the tests run on (autospawn.data_dir).
+_CLIENT_HOME_HINT = "TRACEKIT_CLIENT_HOME, or USERPROFILE" if os.name == "nt" else "TRACEKIT_CLIENT_HOME, or HOME"
+HOME_DIRS = {os.path.join(os.path.expanduser("~"), ".tracekit-client"): _CLIENT_HOME_HINT}
 try:   # the signer needs the v2 extra (the release dry run installs none); without it no dev data dir is made
     from tracekit.sdk import autospawn
-    HOME_DIRS[autospawn.data_dir()] = "LOCALAPPDATA on Windows, else XDG_DATA_HOME and HOME"
+    if os.name == "nt":
+        _DATA_DIR_HINT = "LOCALAPPDATA"
+    elif sys.platform == "darwin":
+        _DATA_DIR_HINT = "HOME"
+    else:
+        _DATA_DIR_HINT = "XDG_DATA_HOME or HOME"
+    HOME_DIRS[autospawn.data_dir()] = _DATA_DIR_HINT
 except ImportError:
     pass
 _HOME_DIRS_BEFORE = {p for p in HOME_DIRS if os.path.exists(p)}
