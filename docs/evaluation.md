@@ -511,7 +511,8 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   calls (#357, published 2026-10-24), and `amandeavor.jsonl`, 45 harmful and 45 benign (#401, 2026-10-25). A pool's
   blind score is the one at its publication: the code and packs of the commit that merged it, the numbers its pull
   request reported. Its misses were then read and turned into rule issues (#359 to #361 from the first pool, all
-  merged; #402 to #405 from the second, #402 merged), so the rules written since were informed by the pools and
+  closed by the rules they asked for; #402 to #405 from the second, #402 closed by #468 and the rest open), so the
+  rules written since were informed by the pools and
   today's score is not a blind score: it shows what those rules added, and guards them, not how the packs do on calls
   nobody has seen.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
@@ -564,7 +565,7 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.13% default; 10.9%, 10.0%, 4.6%
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.9%
 strict; the blind pools', recorded when they joined: 8.4% default, 13.7% strict); `p99_ref` stays within 25% of its on the same machine (re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
