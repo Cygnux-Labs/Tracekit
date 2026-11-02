@@ -6,7 +6,7 @@ import os
 import re
 import sys
 
-from . import __version__
+from . import __version__, agent_hooks, demo
 from .wiki import wiki_url
 
 NUDGE_WAIT_S = 5.0
@@ -93,7 +93,6 @@ def main(argv=None):
             return run(args[1:])
         finally:
             experimental(_EXPERIMENTAL[args[0]], help=True)
-    from . import agent_hooks, demo
     ap = argparse.ArgumentParser(prog="tracekit", description="Tamper-evident records of what AI agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
@@ -490,11 +489,9 @@ def _run(a):
             if settings and a.agent == "codex":
                 import pwd
 
-                from .agent_hooks import codex_trust_line
-                print(codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
+                print(agent_hooks.codex_trust_line(a.user, pwd.getpwnam(a.user).pw_dir))
             return 0
         if a.dev and a.v2 and a.agent != "claude":
-            from . import agent_hooks
             if not _signer_extra():
                 return 2
             try:
@@ -510,7 +507,6 @@ def _run(a):
                 print(agent_hooks.codex_trust_line())
             return 0
         if a.dev and a.agent != "claude":
-            from . import agent_hooks
             home = a.home or os.path.expanduser("~/.tracekit-signer")
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, None, fail_mode="closed" if a.fail_closed else None, signer=signer)
@@ -633,7 +629,6 @@ def _run(a):
         print("v2 system mode removed" + (f"; kept {' and user '.join(kept)} (--purge deletes them)" if kept else ""))
         return 0
     if a.cmd == "uninstall" and a.agent != "claude":
-        from . import agent_hooks
         agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # it says what it removed
         return 0
     if a.cmd == "uninstall":
@@ -796,7 +791,6 @@ def _run(a):
         from . import demo_server
         return demo_server.main(keep=a.keep)
     if a.cmd == "demo":
-        from . import demo
         return demo.main(real=a.real, keep=a.keep, agent=a.agent)
     return 2
 
