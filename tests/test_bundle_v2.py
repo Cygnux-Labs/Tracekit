@@ -604,6 +604,25 @@ class TestVerifyV2(Case):
         with self.subTest("record alg not pinned by the verifier"):
             self.assert_fails(out, "signatures", self.write_trust(algs=("ed448",), name="t2.json"))
 
+    def test_a_run_past_its_twentieth_problem_is_not_checked_further(self):
+        """Forged records cost a verifier little: past 20 problems in a run (here a signed record repeated 500 times
+        after run.final), its later records are not checked, as its run chain line says; the signatures line counts
+        the records checked. Both verifiers alike."""
+        _, out = self.honest()
+        bad = self.mutate(out, lambda rs: rs.extend([rs[1]] * 500))
+        with mock.patch.object(v2, "verify_record", wraps=v2.verify_record) as verified:
+            rep, code = self.verify(bad)
+        self.assertEqual((code, rep.failures), (1, ["run chain", "inclusion"]), rep.checks)
+        self.assertEqual(verified.call_count, 1 + 25)   # the key record, and run-a's 5 records and 20 copies
+        chain = next(c for c in rep.checks if c["check"] == "run chain")["problems"]
+        self.assertEqual((len(chain), chain[-1]), (21, "run 'run-a': 480 record(s) from run_seq 25 on not checked, after "
+                                                       "20 problems in the run"))
+        self.assertIn({"check": "signatures", "status": "pass", "problems": [],
+                       "detail": "25 record(s), keys valid at their position"}, rep.checks)
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            self.assertEqual(tv.ts_verify(bad, self.trust)["checks"], rep.checks)
+
     def test_a_run_under_another_runs_file_name_fails(self):
         """A run's file is named by its tenant and run_id (format-v2.md §9): under another name it fails run chain, in
         both verifiers alike."""

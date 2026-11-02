@@ -433,7 +433,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const runSet = files.has("registry/run-set.json");
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
   const layout: string[] = [], seen = new Set<string>();
+  let unchecked = 0;
   for (const [name, parts] of names) {
+    const marks = problems.length + chain.length;
     const pieces = parts.map(jsonl), records = pieces.flat(), whole = parts.length === 1 && parts[0] === name;
     runs.set(name, records);
     extend(layout, parted(name, parts, pieces));
@@ -448,13 +450,19 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
         chain.push(`run ${repr(cut(runId, 200))} of tenant ${repr(cut(tenant, 64))} in ${name}: its file is ${named}`);
     }
     for (const [i, r] of records.entries()) {
-      await checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), problems);
-      const e = r.event, prev = i ? records[i - 1] : null;
+      if (problems.length + chain.length - marks >= RUN_PROBLEMS) {
+        unchecked += records.length - i;
+        chain.push(`run ${repr(cut(str(get(head, "run_id")), 200))}: ${records.length - i} record(s) from run_seq ${i} on `
+          + `not checked, after ${RUN_PROBLEMS} problems in the run`);
+        break;
+      }
+      const e = at(r, "event"), prev = i ? records[i - 1] : null;   // its link to the record before it first: it costs nothing
       if (!same(get(e, "run_seq"), i) || !same(get(e, "run_prev_hash"), prev ? at(prev, "hash") : ZERO_HASH)
           || !same([get(e, "tenant"), get(e, "run_id")], [get(head, "tenant"), get(head, "run_id")])
           || prev && (num(at(e, "seq")) <= num(at(at(prev, "event"), "seq")) || get(prev.event, "type") === "run.final"))
         chain.push(`run ${repr(cut(str(get(head, "run_id")), 200))} run_seq ${i} (seq ${repr(get(e, "seq"))}) does not `
           + "continue the run");
+      await checkRecord(r, keysAt(num(at(e, "seq"))), problems);
     }
     if (!(await included(records[0]) && await included(records.at(-1))))
       outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}` + (!whole && await included(records[0])
@@ -491,8 +499,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (inParts.length)
     rep.check("run parts", !layout.length, found(layout, `${inParts.length} run(s) in ${inParts.reduce((a, b) => a + b, 0)} `
       + "parts, each part continuing the one before it", `the parts of ${inParts.length} run(s)`), layout);
-  rep.check("signatures", !problems.length, found(problems, `${every.length} record(s), keys valid at their position`,
-    `${every.length} record(s)`), problems);
+  rep.check("signatures", !problems.length, found(problems, `${every.length - unchecked} record(s), keys valid at their `
+    + "position", `${every.length - unchecked} record(s)`), problems);
   const only = runs.size === 1 ? [...runs.values()][0][0].event : null;
   rep.check("run chain", !chain.length, found(chain, only ? `run ${repr(cut(str(get(only, "run_id")), 200))} of tenant `
     + `${repr(get(only, "tenant"))}, contiguous from run_seq 0` : `${runs.size} run(s), each contiguous from run_seq 0`,
@@ -705,6 +713,8 @@ function checkOpenshellPolicy(rep: Report, events: J[]) {
 const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended],
   ["openshell.policy", checkOpenshellPolicy]]);
 const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
+/** A run's problems past which its later records go unchecked: forged records cost a verifier little. */
+const RUN_PROBLEMS = 20;
 
 /** The ext names an event carries: its `ext` field's keys, and an `ext` record's name. */
 const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {}),
