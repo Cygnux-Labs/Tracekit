@@ -1019,6 +1019,17 @@ def _otel_v2(a, bundle):
     return path
 
 
+def _self_approved(dev):
+    """What `approvals approve` says of an approval the signer recorded `self_approved` (docs/approvals.md#who-may-answer):
+    that it counts, and why it is labelled. `dev`: the same-user dev signer answered (no named signer)."""
+    why = ("the dev signer runs as your own user and can't tell you from your agent" if dev else
+           "this signer lets the call's own requester answer (a dev signer, or approvals: {self_approval: allow} in its "
+           "signer.yaml)")
+    return (f"It counts: {why}, so it records this as self-approved, and the run's assurance stays dev."
+            + (" A signer started from signer.yaml refuses an approval from the call's own requester unless that file "
+               "sets approvals: {self_approval: allow}." if dev else ""))
+
+
 def _approvals(a):
     """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
     import pydoc
@@ -1073,7 +1084,8 @@ def _approvals(a):
         else:
             req = {"approval_id": a.approval_id, "decision": a.action, **({"reason": a.reason} if a.reason else {})}
             r = c.approval_decide(req)
-            print(f"{r['state']}: {r['approval_id']}" + (" (self-approved: dev mode only)" if r["self_approved"] else ""))
+            print(f"{r['state']}: {r['approval_id']}" + (f", by you. {_self_approved(c.signer is None)}"
+                                                         if r["self_approved"] and r["state"] == "approved" else ""))
     except (SignerUnavailable, Incompatible) as e:
         print(f"signer unavailable: {e}", file=sys.stderr)
         return 2
