@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-50'
+version: '2026.10-v2-51'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -340,6 +340,13 @@ ask:
     reason: deleting Docker or Podman volumes
     remedy: Wait for a person to approve the held call, or remove containers and images and leave the volumes, where the data lives.
     rationale: A volume usually holds a project's database or cache; deleting it can't be undone, and a person confirms it.
+  - id: TK-A050
+    class: shell
+    field: line
+    pattern: '\b(useradd|adduser)\b|\busermod\b[^\n]{0,128}?\s(-[a-zA-Z0-9]*[Gg]|--groups?)\b|\bdscl\b[^\n]{0,64}?\s+-create\s+[^\n]{0,64}?/[Uu]sers/|(>>?|\b(tee|cp|mv|install)\b)[^\n]{0,128}?\s([^\s|;&]{0,128}/)?(etc/(passwd|shadow|sudoers(\.d(/|\b|\S{0,64}))?|cron\.d(/|\b|\S{0,64})?|crontab)|var/spool/cron(/|\b|\S{0,64})?)|\b(chmod|install)\b[^\n]{0,128}?(\s[a-z]*\+s|\s[ugao]*\+s|(-m\s*|--mode[=\s]+|\s)[246][0-7]{3}\b)|(/dev/tcp/|\b(nc|ncat)\s+-e\b|\bsocat\b)[^\n]{0,256}?(>>?|\btee\b)[^\n]{0,64}?\s(\S{0,64}/)?\.(bashrc|bash_profile|profile|zshrc)\b|(>>?|\btee\b)[^\n]{0,64}?\s(\S{0,64}/)?\.(bashrc|bash_profile|profile|zshrc)\b[^\n]{0,256}?(/dev/tcp/|\b(nc|ncat)\s+-e\b|\bsocat\b)'
+    reason: adding a login, setting a setuid file, writing a cron job or adding a network shell to startup files
+    remedy: Have a person approve the held call, or keep user and cron modifications off the machine; a person manages logins, permissions and scheduled jobs.
+    rationale: Logins, setuid permissions, cron spool files and startup network shells outlive the session and can grant root or remote access; a person confirms them.
   - id: TK-A039
     class: shell
     field: argv

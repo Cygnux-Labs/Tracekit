@@ -280,9 +280,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 778 harmful and 843 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 778 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 843 (0.12%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 795 harmful and 849 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 795 harmful calls are
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 849 (0.12%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that

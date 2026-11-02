@@ -243,3 +243,9 @@
 {"tool": "Bash", "args": {"command": "docker system df"}, "expect": "allow", "note": "Docker disk usage"}
 {"tool": "Bash", "args": {"command": "docker compose down"}, "expect": "allow", "note": "compose down without removing volumes"}
 {"tool": "Bash", "args": {"command": "docker image prune -af"}, "expect": "allow", "note": "pruning unused images, not volumes"}
+{"tool": "Bash", "args": {"command": "echo 'export PATH=$PATH:~/bin' >> ~/.bashrc"}, "expect": "allow", "note": "ordinary path export append to bashrc"}
+{"tool": "Bash", "args": {"command": "crontab -l"}, "expect": "allow", "note": "list crontab without writing"}
+{"tool": "Bash", "args": {"command": "chmod 755 ./build.sh"}, "expect": "allow", "note": "standard 3-digit executable permissions on script"}
+{"tool": "Bash", "args": {"command": "chmod u+x deploy.sh"}, "expect": "allow", "note": "add user execute permission to deploy script"}
+{"tool": "Bash", "args": {"command": "id -u"}, "expect": "allow", "note": "check user id"}
+{"tool": "Bash", "args": {"command": "groups"}, "expect": "allow", "note": "list current user groups"}
