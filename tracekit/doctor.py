@@ -103,10 +103,11 @@ def collect(config=None, issuer_key=None):
     if sc:
         return out
     from . import agent_hooks
-    from .signer.service import dev_content, dev_data_dir
+    from .sdk import autospawn
+    from .signer.service import dev_content
     project = os.path.join(os.getcwd(), ".claude")
     mine, harnesses = client.client_config(), _dev_harnesses()
-    rows = v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
+    rows = v2_checks({"data_dir": autospawn.data_dir(), "content": dev_content().get("content")}, "dev",
                      settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=harnesses,
                      no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
@@ -1127,7 +1128,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-CLOCK-SKEW", skew <= MAX_SKEW_S, f"this clock is {int(skew)} s behind the latest cosignature" if
                 skew > MAX_SKEW_S else "this clock is not behind the latest cosignature", "sync the clock (NTP)", bad=WARN)
 
-    kind = fs_type(data) if os.path.exists(data) else "unknown"
+    where = data   # a data dir the signer hasn't made yet will be on its nearest existing parent's file system
+    while not os.path.exists(where) and os.path.dirname(where) != where:
+        where = os.path.dirname(where)
+    kind = fs_type(where) if os.path.exists(where) else "unknown"
     add("D-DATA-FS", kind.split(".")[0] not in NETWORK_FS, f"{data} is on {kind}" + (
         ": file locking and fsync can't be trusted there" if kind.split(".")[0] in NETWORK_FS else ""),
         "put data_dir on a local disk")

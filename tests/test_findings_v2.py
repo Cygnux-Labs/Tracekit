@@ -1003,6 +1003,18 @@ class Docs(unittest.TestCase):
                 self.assertEqual(e.exception.code, 2)
                 self.assertIn("is no number of seconds", err.getvalue())
 
+    def test_the_dev_store_is_read_without_making_it(self):
+        """#515: `tracekit analyze --v2` made the dev signer's data dir, which the plugin's hook reads as "Tracekit is
+        set up"; it now names `tracekit up` and makes nothing."""
+        nope = os.path.join(tempfile.mkdtemp(), "nope")
+        self.addCleanup(shutil.rmtree, os.path.dirname(nope), True)
+        with mock.patch("tracekit.sdk.autospawn.data_dir", return_value=nope), \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            code = findings_v2.main([])
+        self.assertEqual((code, err.getvalue().strip()), (2, f"tracekit analyze: no dev signer data dir at {nope} yet: "
+                                                             "start the dev signer once (tracekit up)"))
+        self.assertFalse(os.path.exists(nope))
+
     def test_the_help_explains_every_flag(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):

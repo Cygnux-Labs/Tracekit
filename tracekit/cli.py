@@ -938,10 +938,11 @@ def _last(a):
     from .storage.base import StorageCorrupt, StorageUnavailable
     from .verify import v2
     from .view import write_trust
+    from .sdk.autospawn import data_dir
     deadline = time.monotonic() + LAST_WAIT_S
+    store = os.path.join(data_dir(), "store")   # named when there is none yet
     try:
         cfg = signer_config(None)
-        store = os.path.join(cfg["data_dir"], "store")
         while True:
             r = open_reader(cfg)
             try:   # newest first, by their last record; each with the type of that record and its agent's name

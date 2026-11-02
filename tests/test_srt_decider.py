@@ -277,7 +277,8 @@ class Command(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, True)
         home = os.path.join(self.dir, "home")
         self.env = {k: v for k, v in os.environ.items() if not k.startswith("TRACEKIT_")}
-        self.env.update(HOME=home, XDG_DATA_HOME=os.path.join(home, "data"), PYTHONPATH=ROOT,
+        self.env.update(HOME=home, XDG_DATA_HOME=os.path.join(home, "data"), LOCALAPPDATA=os.path.join(home, "data"),
+                        PYTHONPATH=ROOT,
                         TRACEKIT_RUNTIME_DIR=os.path.join(self.dir, "run"), TRACEKIT_DEV_IDLE="60",
                         TRACEKIT_DEV_GRACE="0.2")
         self.addCleanup(self.tracekit, "down")

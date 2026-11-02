@@ -510,6 +510,17 @@ class WeeklyReport(unittest.TestCase):
                 self.assertEqual((code, err.getvalue().splitlines()[-1]),
                                  (1, f"tracekit report: no signer data dir at {nope}"))
 
+    def test_the_dev_report_creates_no_data_dir(self):
+        """#515: a dev report made the dev signer's data dir, which the plugin's hook reads as "Tracekit is set up"."""
+        nope = os.path.join(self.cfg["data_dir"], "nope")
+        with mock.patch.object(weekly.autospawn, "data_dir", return_value=nope), \
+                contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main(["report"])
+        self.assertEqual((code, err.getvalue().splitlines()[-1]),
+                         (1, f"tracekit report: no dev signer data dir at {nope} yet: start the dev signer once "
+                             "(tracekit up)"))
+        self.assertFalse(os.path.exists(nope))
+
 
 class Window(unittest.TestCase):
     def test_since_and_until_read_days_hours_and_iso_dates(self):

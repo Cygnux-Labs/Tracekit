@@ -417,7 +417,7 @@ def main(argv=None):
     ap.add_argument("--json", action="store_true", help="print the report as one JSON object")
     a = ap.parse_args(argv)
     try:
-        cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir()}
+        cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
         dev, notes = not (a.config or a.data_dir), []
         rep = build(cfg, a.since, time.time() if a.until is None else a.until, a.tenant, a.log_vkey,
                     view.dev_content_source("tracekit report", _running, notes.append) if dev else None,
