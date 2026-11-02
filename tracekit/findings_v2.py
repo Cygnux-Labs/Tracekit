@@ -1196,8 +1196,8 @@ def main(argv=None):
             return 2
         records = runs.get(run_id)
     else:
-        store = a.store or dev_data_dir()
         try:
+            store = a.store or dev_data_dir(create=False)
             run_id = a.run or _latest(store)
             records = run_id and import_v2.store_records(store, run_id).get(run_id)
         except FileNotFoundError as e:
