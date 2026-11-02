@@ -140,7 +140,8 @@ and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offlin
   keep the run's `runId` and `runToken` with the framework's saved state and re-attach:
   `new RunHandle(new Client(), { run_id, run_token })`; close that client when you are done with it
   (`run.client.close()`), or re-attach every run through one shared client. `process.exit()` skips all of this: close
-  first.
+  first. The [offline Vercel AI resume example](examples/v2_vercel_ai_resume.mjs) saves the run and messages, prints
+  the approval command, and resumes in a second process.
 - **The LLM gateway.** Point the provider at it with the run in a header, e.g. OpenAI Agents
   `setDefaultOpenAIClient(new OpenAI({ baseURL, apiKey: <gateway token>, defaultHeaders: { "X-Tracekit-Run":
   `${run.runId}.${run.runToken}` } }))`, Vercel AI `createOpenAI({ baseURL, apiKey, headers })`. Register the run as

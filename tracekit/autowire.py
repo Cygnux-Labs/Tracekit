@@ -353,6 +353,12 @@ def _release(version):
     return tuple(out)
 
 
+def _tested(dist, req):
+    """The [lo, hi) release tuples the pip requirement `req` (or several, space-separated) gives `dist`."""
+    lo, hi = next(r for r in req.split() if r.startswith(dist + ">="))[len(dist) + 2:].split(",<")
+    return _release(lo), _release(hi)
+
+
 def _untested_warning(label, version, req):
     """The warning a framework outside the version Tracekit is tested with gets. The wording is shared, so the
     integrations built by hand and instrument() say the same thing about the same fact."""

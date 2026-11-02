@@ -3,6 +3,7 @@ summarises a window of a signer's store on one page."""
 import argparse
 import collections
 import contextlib
+import datetime
 import io
 import json
 import os
@@ -21,7 +22,7 @@ sys.path.insert(0, ROOT)
 from factories import patch_env, wait_for  # noqa: E402
 from report import tables  # noqa: E402
 from test_signer_service import tmpdir  # noqa: E402
-from tracekit import cli, report as weekly, view  # noqa: E402
+from tracekit import __version__, cli, report as weekly, view  # noqa: E402
 from tracekit.format import canon  # noqa: E402
 from tracekit.identity.base import CallerIdentity  # noqa: E402
 from tracekit.sdk import autospawn  # noqa: E402
@@ -67,6 +68,7 @@ ask:
 flag:
   - {id: T-NET, tool: Bash, pattern: curl, reason: reaching the network}
   - {id: T-PATH, tool: rm, pattern: path, reason: a path}
+  - {id: LEAKMARK-rule.acme-prod-db.internal, tool: Bash, pattern: LEAKMARK-host, reason: a host of our own}
 """
 SECRET = "ghp_" + "Zx9" * 12   # a GitHub token: redaction changes the call's arguments, so they are never shown
 BETA = CallerIdentity("uid", "999003", True)
@@ -220,6 +222,69 @@ class WeeklyReport(unittest.TestCase):
             self.assertIn(line + "\n", page + "\n")
         self.assertNotIn(SECRET, page + json.dumps(rep))   # nor any part of it the redaction left
         self.assertNotIn(SECRET[4:20], page + json.dumps(rep))
+
+    def test_share_is_counts_only(self):
+        """#521: --share, a field report a person posts where anyone reads it, holds the report's counts and the
+        window's length, never a run id, path, identity, tenant, time, call, rule description or what a run said, though
+        the report it comes from holds them. It reads no content: each read is a signed record. An agent name or rule
+        id that isn't Tracekit's own (a script's file name, a customer, a host, or whatever an agent registers its run
+        as) is counted as "other" or "custom rule": they were printed as they were."""
+        mark = "LEAKMARK"
+        hostile = f"acme_payroll_sync @octocat [x](https://e.example) {mark}-agent"
+        self.finished(hostile, ("Read", {"file_path": "a.py"}))
+        b = self.client.run(agent="claude-code")
+        b.observe(f"{mark}-prompt: tidy /srv/{mark}-repo", "user", trust="trusted")
+        b.decide("m1", "Bash", {"command": f"curl -s https://{mark}-host.example/{mark}-path"})   # flagged: it runs
+        b.complete("m1", result=f"{mark}-result")
+        self.assertEqual(b.decide("m2", "rm", {"path": f"/home/{mark}-user/{mark}-file"})["decision"], "deny")
+        self.assertEqual(b.decide("m3", "pay", {"cents": 9, "memo": f"{mark}-memo"})["decision"], "ask")
+        aid = b.call("approval_request", tool_call_id="m3")["approval_id"]
+        self.client.call("approval_decide", {"approval_id": aid, "decision": "reject"})
+        b.call("tailer_lost", reason=f"{mark}-gap", offset=1)
+        b.close(reason=f"{mark}-close")
+        storage = self.service.log.storage
+        self.assertTrue(wait_for(lambda: list(storage.iter_run("default", b.run_id))[-1]["event"]["type"] ==
+                                 "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+        rep = self.build(content=view.dev_content_source("tracekit report", lambda: Client(self.cfg["socket"])))
+        self.assertIn(f"/home/{mark}-user/", json.dumps(rep))   # an example call
+        self.assertIn(hostile, rep["by_agent"])
+        self.assertIn(f"{mark}-rule.acme-prod-db.internal", {g["rule"] for g in rep["rules"]})
+        page = weekly.share(rep)
+        self.assertEqual(page.splitlines(), [
+            f"Tracekit {__version__} field report (tracekit report --share): 0 hours",   # a minute
+            "Integrity: the store verified, 5 of 5 runs verify",
+            "Runs that verify, by agent: claude-code 2, codex 1, cursor 1, other 1",
+            "Tool calls: 13   allow 3, flag 3, ask 5, deny 2",
+            # an ask that is no hold of its own: the agent's retry, under its approval, of a call held at once
+            "Holds: 4   rejected 2, approved · ran 1, expired 1   (1 of the agent's retries of a held call, counted "
+            "with it)",
+            "Gaps (signed records that something may be missing): 2   tailer_lost 2",
+            "Denied and flagged calls, by rule (one call can match several rules):",
+            # T-RM; T-PATH; T-NET 3 and the marker's rule 1: the test policy's ids are custom
+            "  deny custom rule 2", "  deny custom rule 2 (also matched, not why)", "  flag custom rule 4"])
+        # a gap kind that isn't one this Tracekit names (another signer's, or any string) is counted as "other"
+        odd = weekly.share(dict(rep, gaps={"total": 3, "by_kind": {"tailer_lost": 2, f"{mark}-kind": 1}}))
+        self.assertIn("Gaps (signed records that something may be missing): 3   tailer_lost 2, other 1\n", odd)
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(weekly.autospawn, "data_dir", return_value=self.cfg["data_dir"]), \
+                mock.patch.object(weekly, "_running", lambda: Client(self.cfg["socket"])), \
+                mock.patch.object(view, "dev_content_source", wraps=view.dev_content_source) as content, \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):   # the dev signer's store
+            code = cli.main(["report", "--share", "--since",
+                             datetime.datetime.fromtimestamp(self.cut, datetime.timezone.utc).isoformat()])
+        self.assertEqual((code, out.getvalue()), (0, page + "\n"))
+        content.assert_not_called()
+        self.assertIn(f"tracekit report: {weekly.SHARE_NOTE}\n", err.getvalue())
+        for text in (page, out.getvalue(), odd):
+            self.assertNotIn(mark, text)
+            for x in rep["runs"]:
+                self.assertNotIn(x["run_id"][:8], text)
+            for g in rep["rules"]:
+                self.assertNotIn(g["reason"], text)
+                self.assertNotIn(g["rule"], text)
+            for word in (os.path.dirname(self.cfg["data_dir"]), "uid:", "beta", "acme", "@octocat", "e.example"):
+                self.assertNotIn(word, text)   # the store's folder, identities, the tenant, the agent's chosen name
+            self.assertNotRegex(text, r"\d{4}-\d\d-\d\d|\d\d:\d\d")   # no date or time
 
     def test_rules_read_the_policy_the_signer_kept(self):
         """On a store decided under a policy this Tracekit doesn't ship (an older pack, the signer's own file), every
@@ -510,6 +575,17 @@ class WeeklyReport(unittest.TestCase):
                 self.assertEqual((code, err.getvalue().splitlines()[-1]),
                                  (1, f"tracekit report: no signer data dir at {nope}"))
 
+    def test_the_dev_report_creates_no_data_dir(self):
+        """#515: a dev report made the dev signer's data dir, which the plugin's hook reads as "Tracekit is set up"."""
+        nope = os.path.join(self.cfg["data_dir"], "nope")
+        with mock.patch.object(weekly.autospawn, "data_dir", return_value=nope), \
+                contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            code = cli.main(["report"])
+        self.assertEqual((code, err.getvalue().splitlines()[-1]),
+                         (1, f"tracekit report: no dev signer data dir at {nope} yet: start the dev signer once "
+                             "(tracekit up)"))
+        self.assertFalse(os.path.exists(nope))
+
 
 class Window(unittest.TestCase):
     def test_since_and_until_read_days_hours_and_iso_dates(self):
@@ -536,6 +612,17 @@ class Rules(unittest.TestCase):
                          {("TK-D002", True, "running a downloaded script"),
                           ("TK-SHELL-PARSE", None, "a shell command that does not parse")})
         self.assertEqual(unread["deny"], 0)
+
+    def test_share_prints_tracekit_rule_ids_and_counts_the_others_as_one(self):
+        """#521: --share printed every rule id as the policy named it, and a custom policy's id is any string."""
+        self.assertEqual(weekly.share_rules({
+            ("flag", "TK-F011", True): 5, ("flag", "TK-UNKNOWN-TOOL", None): 4, ("deny", "TK-F011", False): 2,
+            ("deny", "TK-APPROVAL-EXPIRED", True): 1, ("ask", "TK-A001", True): 6, ("ask", "TK-L001", True): 1,
+            ("flag", "acme-prod-db.internal", True): 3, ("flag", "[x](https://e.example)", True): 1,
+            ("deny", "TK-APPROVAL-x @octocat", True): 1, ("deny", "TK-APPROVAL-ACMEPAYROLL", True): 1}), [
+            "  deny custom rule 2", "  deny TK-APPROVAL-EXPIRED 1", "  deny TK-F011 2 (also matched, not why)",
+            "  ask TK-A001 6", "  ask TK-L001 1",   # a shipped pack's limit
+            "  flag TK-F011 5", "  flag TK-UNKNOWN-TOOL 4 (not placed)", "  flag custom rule 4"])
 
     def test_self_approved_and_break_glass_answers_are_marked(self):
         a = {"decision": "approve", "approver": "uid:501 (attested)", "self_approved": False, "break_glass": True}
@@ -564,6 +651,44 @@ class DevContent(unittest.TestCase):
         # Windows: an endpoint.json without a port and token is no running signer, not an error of the report
         with mock.patch.object(autospawn, "address", side_effect=ValueError("endpoint.json has no port and token yet")):
             self.assertEqual(view.dev_content_source("tracekit report", weekly._running)("r1", recs), {})
+
+
+class When(unittest.TestCase):
+    """--since and --until (and tracekit audit's --since): days, hours or minutes before now, or an ISO time."""
+
+    def test_counts_and_times_in_either_case(self):
+        now = 1_000_000.0
+        self.assertEqual(weekly.when("30m", now), now - 1800)
+        self.assertEqual(weekly.when(" 7D ", now), now - 7 * 86400)
+        self.assertEqual(weekly.when("2026-10-19T00:00:00z"), weekly.when("2026-10-19T00:00:00Z"))
+        self.assertEqual(weekly.when("2026-10-19T00:00:00"), weekly.when("2026-10-19T00:00:00+00:00"))
+        with self.assertRaises(argparse.ArgumentTypeError):
+            weekly.when("last week")
+
+    def test_a_time_no_date_can_name_is_refused_at_once(self):
+        """1.5.3 review: 400 digits of days raised OverflowError (a traceback, exit 1); 3000000d and times past year 1
+        or 9999 in UTC passed, and the report failed once it was built, minutes later."""
+        for value in ("9" * 400 + "d", "3000000d", "0001-01-01T00:00+05:00", "9999-12-31T23:59-05:00"):
+            with self.subTest(value=value[:24]), self.assertRaises(argparse.ArgumentTypeError):
+                weekly.when(value)
+        self.assertEqual(weekly._iso(-86400), "1969-12-31T00:00:00Z")
+
+    def test_a_window_that_ends_before_it_starts_is_refused_before_any_run_is_read(self):
+        """1.5.3 review: --since after --until, or in the future, printed a negative window (-1155.4 days)."""
+        for argv in (["--since", "2026-11-02", "--until", "2026-11-01"], ["--since", "2999-01-01"]):
+            with self.subTest(argv=argv), mock.patch.object(weekly, "build", side_effect=AssertionError("read")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err, self.assertRaises(SystemExit) as code:
+                weekly.main(["--data-dir", "nowhere", *argv])
+            self.assertEqual(code.exception.code, 2)
+            self.assertIn("--since must be before --until", err.getvalue())
+
+    def test_a_window_under_a_day_is_in_hours(self):
+        self.assertEqual([weekly._days(s) for s in (1800, 3600, 86400, 7 * 86400)],
+                         ["0.5 hours", "1 hour", "1 day", "7 days"])
+
+    def test_a_decision_with_no_rule_is_not_called_a_custom_rule(self):
+        """1.5.3 review: --share counted a deny or flag with no rule id as "custom rule", a policy of the user's own."""
+        self.assertEqual(weekly.share_rules({("deny", "no rule", True): 2}), ["  deny no rule 2"])
 
 
 if __name__ == "__main__":

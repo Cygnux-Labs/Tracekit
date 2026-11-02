@@ -162,7 +162,8 @@ def model_names(tool):
 # signer's decides: none of them changes what a call runs or reaches, and any other difference is an args_mismatch.
 # lean: the changes seen on the maintainer's runs; another key a model makes up is an args_mismatch (a false gap, never
 # a hidden one) until it is added here
-DROPPED = {"Agent": ("run_in_background",), "Monitor": ("persistent", "timeout"), "Write": ("description",)}
+DROPPED = {"Agent": ("run_in_background",), "Bash": ("description",), "Monitor": ("persistent", "timeout"),
+           "Write": ("description",)}
 FILLED = {"Monitor": lambda args: {"timeout_ms": 300000}, "SendMessage": lambda args: {"summary": _label(args)}}
 
 

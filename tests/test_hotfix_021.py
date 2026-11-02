@@ -47,6 +47,13 @@ class SystemConfigTrust(_SystemConfig):
         self.assertIsNone(client.system_config())
         self.assertFalse(client.system_fail_closed())
 
+    def test_reading_the_config_creates_nothing(self):
+        """#515: a read made the client folder, failing where the home folder is read-only."""
+        home = os.path.join(self.d, "client")
+        patch_env(self, TRACEKIT_CLIENT_HOME=home)
+        self.assertEqual(client.client_config(), {})
+        self.assertFalse(os.path.exists(home))
+
     @pytest.mark.root
     @unittest.skipUnless(IS_ROOT, "needs root to create a root-owned file")
     def test_root_owned_is_trusted(self):

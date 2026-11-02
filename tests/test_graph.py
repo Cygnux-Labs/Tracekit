@@ -804,7 +804,7 @@ class EndToEnd(unittest.TestCase):
         cls.dir = tempfile.mkdtemp(prefix="tk-graph-", dir="/tmp")   # short: macOS caps socket paths at 104 bytes
         cls.addClassCleanup(shutil.rmtree, cls.dir, True)
         patch_env(cls, TRACEKIT_RUNTIME_DIR=os.path.join(cls.dir, "run"), HOME=os.path.join(cls.dir, "home"),
-                  XDG_DATA_HOME=os.path.join(cls.dir, "xdg"), PYTHONPATH=ROOT, TRACEKIT_POLICY=None,
+                  XDG_DATA_HOME=os.path.join(cls.dir, "xdg"), LOCALAPPDATA=os.path.join(cls.dir, "xdg"), PYTHONPATH=ROOT, TRACEKIT_POLICY=None,
                   TRACEKIT_FAIL_CLOSED=None)
         cls.witness = Witness()
         cfg = service.dev_content()

@@ -8,14 +8,18 @@ Run it as root for system mode: it then probes the files as the agent's user, in
 
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
+import base64
 import errno
 import hashlib
+import itertools
 import json
 import os
 import re
+import shlex
 import stat
 import subprocess
 import sys
+import threading
 import time
 
 try:
@@ -99,10 +103,11 @@ def collect(config=None, issuer_key=None):
     if sc:
         return out
     from . import agent_hooks
-    from .signer.service import dev_content, dev_data_dir
+    from .sdk import autospawn
+    from .signer.service import dev_content
     project = os.path.join(os.getcwd(), ".claude")
     mine, harnesses = client.client_config(), _dev_harnesses()
-    rows = v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
+    rows = v2_checks({"data_dir": autospawn.data_dir(), "content": dev_content().get("content")}, "dev",
                      settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=harnesses,
                      no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
@@ -198,14 +203,218 @@ def _dev_harnesses():
                     pass
                 continue
             try:
-                hooks = _harness_hooks(harness, _json(path) or {})
-                cmds = [h.get("command") for lst in hooks.values() for g in lst
-                        for h in (g.get("hooks") or () if "hooks" in g else [g]) if isinstance(h, dict)]
+                if _hook_commands(harness, path):
+                    out.setdefault(harness, path)
             except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
                 continue
-            if any(agent_hooks._version(c) == "v2" for c in cmds):
-                out.setdefault(harness, path)
     return out
+
+
+def _hook_commands(harness, path):
+    """The command of each of Tracekit's v2 hooks in a coding agent's hook config at `path`; OpenCode's plugin: each
+    event's argv."""
+    from . import agent_hooks
+    if harness == "opencode":
+        m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
+        return list(json.loads(m.group(1)).values()) if m else []
+    hooks = _harness_hooks(harness, _json(path) or {})
+    return [h["command"] for lst in hooks.values() for g in lst
+            for h in (g.get("hooks") or () if "hooks" in g else [g])
+            if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
+
+
+# what a hook's Python imports as tracekit: its version, its tracekit/__init__.py and that Python's user site-packages
+# (claude_code.upgrade); a -c hook's directory (install._dev_hook_argv's `r`) goes first on sys.path, as the hook puts it
+PROBE = ("import site, sys; sys.path[:0] = sys.argv[1:]; import tracekit; "
+         "print(tracekit.__version__, tracekit.__file__, site.getusersitepackages(), sep='\\n')")
+
+
+def _hook_argv(cmd):
+    """The argv of the Python a v2 hook command runs, as install._hook_command writes it (bare, or in _blocking's
+    /bin/sh -c wrapper; on Windows quoted, or after PowerShell's &), or OpenCode's argv; None for any other command."""
+    if not isinstance(cmd, list):
+        try:
+            cmd = shlex.split(cmd, posix=os.name != "nt")
+            if len(cmd) == 3 and os.path.basename(cmd[0]) == "sh" and cmd[1] == "-c":
+                lex = shlex.shlex(cmd[2], posix=True, punctuation_chars=True)
+                lex.whitespace_split = True
+                cmd = list(itertools.takewhile(lambda w: w != ";", lex))
+        except (ValueError, AttributeError):
+            return None
+        cmd = [w.strip('"') for w in cmd if w != "&"]
+    ok = len(cmd) > 3 and all(isinstance(w, str) for w in cmd) and cmd[1:3] in (["-I", "-m"], ["-I", "-c"])
+    return cmd if ok else None
+
+
+def _probe_target(argv):
+    """(interpreter, the directory a -c hook puts first on sys.path (install._dev_hook_argv's `r`: a working tree) or
+    None) of the hook `argv`; ValueError for a path that isn't absolute, which would resolve against doctor's working
+    directory, or one the hook's code can't decode."""
+    m = argv[2] == "-c" and re.search(r"b64decode\('([A-Za-z0-9+/=]*)'\)", argv[3])
+    tree = base64.b64decode(m.group(1)).decode("utf-8") if m else None
+    for what, p in (("an interpreter", argv[0]), ("a path", tree)):
+        if p is not None and not (p.isprintable() and os.path.isabs(p)):
+            raise ValueError(f"{what} that isn't an absolute path ({p[:128]!r})")
+    return argv[0], tree
+
+
+PROBE_S, PROBE_BYTES = 10, 4096   # what doctor gives a hook's Python: time, and output read
+
+
+def _hook_tracekit(python, tree):
+    """[version, module file, user site-packages] of the Tracekit that `python` imports (with `tree` first on its path),
+    asked in a subprocess given PROBE_S and read up to PROBE_BYTES; ValueError or OSError when it can't tell. Its
+    output goes into doctor's report: only printable lines and a version claude_code.VERSION matches are taken."""
+    from .integrations.claude_code import VERSION
+    end = time.monotonic() + PROBE_S
+    p = subprocess.Popen([python, "-I", "-c", PROBE, *([tree] if tree else [])], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    got = []
+    reader = threading.Thread(target=lambda: got.append(p.stdout.read(PROBE_BYTES + 1)), daemon=True)
+    reader.start()
+    reader.join(PROBE_S)
+    out, hung = got[0] if got else b"", reader.is_alive()
+    if hung or len(out) > PROBE_BYTES:
+        p.kill()
+    try:
+        code = p.wait(max(end - time.monotonic(), 0.1))
+    except subprocess.TimeoutExpired:   # closed its output, then hung
+        p.kill()
+        code, hung = p.wait(), True
+    reader.join(1)
+    if not reader.is_alive():   # else a child it left holds the pipe: the reader ends with doctor
+        p.stdout.close()
+    lines = out.decode("utf-8", "replace").splitlines()[-3:]   # stderr comes first, unbuffered
+    if len(out) > PROBE_BYTES or hung or code or len(lines) != 3 or not VERSION.fullmatch(lines[0]) \
+            or not all(x.isprintable() for x in lines):
+        why = (f"it wrote more than {PROBE_BYTES} bytes" if len(out) > PROBE_BYTES else
+               f"no answer within {PROBE_S} s" if hung else (lines or [f"it exited {code}"])[-1] if code else
+               "its answer is unreadable")
+        raise ValueError(re.sub(r"[^ -~]", "?", why)[:256])
+    return lines
+
+
+def _dev_signer():
+    """The hello that this HOME's running dev signer publishes as endpoint.json (its version and pid; {} while it hasn't
+    yet), or None when none runs. Starts, creates and connects to nothing."""
+    from .sdk import autospawn
+    try:
+        d = autospawn.signer_dir(create=False)
+        if not autospawn._held(os.path.join(d, autospawn.LOCK)):
+            return None
+    except (OSError, autospawn.SignerUnavailable):   # no runtime dir yet, or one no client uses (not private)
+        return None
+    try:
+        hello = read_json(os.path.join(d, autospawn.ENDPOINT))
+    except (OSError, ValueError):   # still starting, or not readable
+        return {}
+    return hello if isinstance(hello, dict) else {}
+
+
+# the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path); `~`
+# is USERPROFILE on Windows
+USER_ENV = ("USERPROFILE" if os.name == "nt" else "HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME",
+            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG")
+
+
+def _user_hook_files():
+    """(the realpaths of the user's own hook files, the USER_ENV variables set to a relative path). A file such a
+    variable places resolves against doctor's working directory, so it isn't counted as the user's (the XDG spec says
+    to ignore a relative XDG_CONFIG_HOME, and Codex resolves a relative CODEX_HOME against its own directory)."""
+    from . import agent_hooks
+    relative = [k for k in USER_ENV if os.environ.get(k) and not os.path.isabs(os.environ[k])]
+    record = os.environ.get("TRACEKIT_CLIENT_HOME") or os.path.expanduser("~")   # init's record is under it
+    paths = [install.user_settings(), os.path.join(os.path.expanduser("~"), ".claude", "settings.json"),
+             *(install.user_settings_all() if os.path.isabs(record) else ()),   # + the absolute paths it records
+             *(agent_hooks.config_path(h) for h in agent_hooks.HARNESSES   # it resolves CODEX_HOME itself
+               if not (h == "codex" and "CODEX_HOME" in relative))]
+    return {os.path.realpath(p) for p in paths if os.path.isabs(p)}, relative
+
+
+def _pid(hello):
+    return hello.get("pid") if type(hello.get("pid")) is int else "?"
+
+
+def _versions(add, settings, harnesses):
+    """D-VERSIONS (dev profile): the Tracekit that each hook's Python imports (Claude Code's in `settings`, the other
+    coding agents' in `harnesses`), and the running dev signer's, against this doctor's. An older one is a warning that
+    says what to run on this machine; doctor upgrades and stops nothing. It runs only what the user's own hook files
+    name (install.user_settings_all, agent_hooks.config_path), with absolute paths: doctor never runs a project's
+    commands, so running it in a cloned repository runs none of its code.
+    lean: the Claude Code plugin's hook isn't asked: it picks its Python as it runs (plugin/scripts/tracekit-hook), in
+    Claude Code's environment, and says itself when it and the signer differ; repeat its search here if that's short"""
+    from . import __version__ as mine
+    from .integrations.claude_code import VERSION, quote, release, upgrade
+
+    def vs(v):
+        r, m = release(v), release(mine)
+        return f"older than this doctor's {mine}" if r < m else "as this doctor does" if r == m else \
+            f"newer than this doctor's {mine}"
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        add("D-VERSIONS", False, "not checked as root: doctor won't run the Python your hooks name as root",
+            "run tracekit doctor as the user whose hooks these are", bad=WARN)
+        return
+    signer = _dev_signer()
+    if signer and not VERSION.fullmatch(str(signer.get("version"))):
+        signer = {"pid": signer.get("pid")}   # an endpoint.json that names no version doctor prints
+    old_signer = signer is not None and (release(signer.get("version")) or ()) < release(mine)
+    pythons, old_hooks = {}, False   # (python, the -c hook's tree) -> the hook files that run it
+    mine_files, relative = _user_hook_files()
+    set_to = ", ".join(f"{k}={os.environ[k][:128]!r}" for k in relative)
+    sources = [("Claude Code", settings, lambda: [h.get("command") for hs in _hooks(settings).values() for h in hs])]
+    for name, path, cmds in sources + [(h, p, lambda h=h, p=p: _hook_commands(h, p))
+                                       for h, p in sorted((harnesses or {}).items())]:
+        fix = f"tracekit init --dev --v2{'' if name == 'Claude Code' else f' --agent {name}'}"
+        try:
+            argvs = [_hook_argv(c) for c in cmds()] if path else []
+        except (OSError, ValueError, AttributeError, TypeError):   # D-HOOKS-PRESENT and D-HOOKS-EVENT say why
+            continue
+        if argvs and os.path.realpath(path) not in mine_files:
+            add("D-VERSIONS", False, f"the {name} hooks in {path} not probed: a project hook file"
+                + (f", or one that {set_to}, a relative path, places" if relative else "")
+                + ". Doctor never runs a project's commands: running it in a cloned repository runs none of its code",
+                (f"set {', '.join(relative)} to an absolute path, or unset it; " if relative else "")
+                + "check the Tracekit version the Python they name imports once you trust them, or install the hooks "
+                "for your user: " + fix, bad=WARN)
+            continue
+        if None in argvs:
+            add("D-VERSIONS", False, f"can't tell which Python runs the {name} hooks in {path}: a command init doesn't "
+                "write", f"{fix} writes one", bad=WARN)
+        for a in filter(None, argvs):
+            try:
+                pythons.setdefault(_probe_target(a), {})[f"{name} ({path})"] = None
+            except ValueError as e:
+                add("D-VERSIONS", False, f"a {name} hook in {path} not probed: it names {e}, which would resolve against "
+                    "doctor's working directory", f"{fix} writes absolute paths", bad=WARN)
+    for (python, tree), who in pythons.items():
+        who = "the hooks of " + ", ".join(who)
+        try:
+            version, module, user_site = _hook_tracekit(python, tree)
+            if not release(version):
+                raise ValueError(f"its tracekit says version {version!r}")
+        except (OSError, ValueError) as e:
+            add("D-VERSIONS", False, f"can't read the Tracekit version {who} run: {python} -I -c 'import tracekit' "
+                f"fails ({str(e) or type(e).__name__})", f"install it there ({quote(python)} -m pip install tracekit-ai), or "
+                "re-run tracekit init --dev --v2 [--agent NAME] from the Tracekit you use", bad=WARN)
+            continue
+        old = release(version) < release(mine)
+        old_hooks |= old
+        add("D-VERSIONS", not old, f"{who} run Tracekit {version} ({python}), {vs(version)}"
+            + (": they lack the fixes since" if old else ""), f"`{upgrade(python, module, user_site)}`"
+            + (", then `tracekit down`, so the next call starts a signer of the new version (open sessions go on in it: "
+               "it keeps their runs and run tokens)" if old_signer else ""), bad=WARN)
+    if signer is None:
+        add("D-VERSIONS", True, "no dev signer is running (the first call starts one)", "")
+    elif not release(signer.get("version")):
+        add("D-VERSIONS", False, f"the running dev signer (pid {_pid(signer)}) doesn't say its version",
+            "`tracekit down`: the next call starts a new one", bad=WARN)
+    else:
+        add("D-VERSIONS", not old_signer, f"the running dev signer (pid {_pid(signer)}) runs Tracekit "
+            f"{signer['version']}, {vs(signer['version'])}" + (
+                ": it keeps that version until it stops, after 15 minutes with no client connected" if old_signer
+                else ""), "`tracekit down`" + (" once the hooks above are upgraded" if old_hooks else "")
+            + ": the next call starts a signer of the calling hook's version, and open sessions go on in it (it keeps "
+            "their runs and run tokens)", bad=WARN)
 
 
 def _includes_thoughts_off(v):
@@ -846,6 +1055,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     _harness_hook_checks(add, harnesses, prod, agent and agent.pw_dir)
     _reasoning_checks(add, harnesses, isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True,
                       REINIT if prod else "tracekit init --dev --v2")
+    # lean: dev only; system mode's hooks run the root-owned venv doctor runs from (D-HOOKS-VENV), but its running
+    # signer isn't compared with it; read its hello too if /opt/tracekit gets upgraded in place under a running signer
+    if not prod:
+        _versions(add, settings, harnesses)
 
     if prod:
         bad = trusted_file(policy)
@@ -915,10 +1128,18 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-CLOCK-SKEW", skew <= MAX_SKEW_S, f"this clock is {int(skew)} s behind the latest cosignature" if
                 skew > MAX_SKEW_S else "this clock is not behind the latest cosignature", "sync the clock (NTP)", bad=WARN)
 
-    kind = fs_type(data) if os.path.exists(data) else "unknown"
-    add("D-DATA-FS", kind.split(".")[0] not in NETWORK_FS, f"{data} is on {kind}" + (
-        ": file locking and fsync can't be trusted there" if kind.split(".")[0] in NETWORK_FS else ""),
-        "put data_dir on a local disk")
+    where = data   # a data dir the signer hasn't made yet will be on its nearest existing parent's file system
+    while not os.path.exists(where) and os.path.dirname(where) != where:
+        where = os.path.dirname(where)
+    kind = fs_type(where) if os.path.exists(where) else "unknown"
+    network = kind.split(".")[0] in NETWORK_FS
+    if os.path.exists(data):
+        detail = f"{data} is on {kind}"
+    else:
+        detail = f"{data} (not made yet) will be on {kind}"
+    if network:
+        detail += ": file locking and fsync can't be trusted there"
+    add("D-DATA-FS", not network, detail, "put data_dir on a local disk")
     return out
 
 

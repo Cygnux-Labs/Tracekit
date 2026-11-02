@@ -326,7 +326,8 @@ http:
   tokens: /var/lib/tracekit-signer/tokens.json
 tenants: {"token:*": default}
 authorize: {"token:*": [register_run, decide, approval_consume, complete, close_run, model_event, approval_request, approval_wait,
-                       state_write, status, observe, constraint_add]}   # observe, constraint_add: the coding-agent hooks
+                       state_write, status, observe, constraint_add, approval_get]}   # observe, constraint_add: the coding-agent hooks
+# approval_get: the Claude Code hook, to run an approved command the model retried with a new description
 # + approval_list for the TypeScript OpenAI Agents and Vercel AI adapters
 metrics: {listen: 127.0.0.1:9464}
 ```
@@ -407,6 +408,9 @@ and blobs, and opens with `keys/content.key`. Keep those shorter than `retention
 ([limits](limits.md#content-vault-11)).
 
 ## Upgrading
+
+On a laptop with the dev signer, upgrade the Python your hooks run too, and stop the running signer
+([quickstart](quickstart-v2.md#upgrading)); `tracekit doctor` checks both (`D-VERSIONS`).
 
 Stop the signer, install the new version and start it again; records, keys and bundles carry over. A Postgres store
 keeps its schema version until you run `tracekit signer migrate`, and a new version runs on the older schema as long

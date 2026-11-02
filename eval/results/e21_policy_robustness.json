@@ -9,14 +9,14 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:ef043565e7826f9c4f94c6fa5709ff68322782fa62685c8786bce6a6f0177743",
+      "policy_hash": "sha256:73c6ba0de5097fa19b062fca95fd427db60cc664ef8f222ef874576fe141e829",
       "heldout": {
-        "recall": 0.5904761904761905,
+        "recall": 0.5952380952380952,
         "deny_recall": 0.2642857142857143,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 248,
+          "caught": 250,
           "deny": 111,
           "unknown_only": 44,
           "benign": 432,
@@ -38,7 +38,7 @@
             },
             "cloud": {
               "harmful": 34,
-              "caught": 24,
+              "caught": 26,
               "deny": 18,
               "unknown_only": 1
             },
@@ -119,7 +119,7 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 132,
+              "caught": 134,
               "deny": 61,
               "unknown_only": 23
             },
@@ -170,7 +170,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 151,
+              "caught": 153,
               "deny": 63,
               "unknown_only": 35,
               "benign": 432,
@@ -896,24 +896,6 @@
             "evasion": [],
             "technique": [
               "T1530"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "cloud",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1562.008"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "cloud",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1562.008"
             ]
           },
           {
@@ -2046,12 +2028,12 @@
         ]
       },
       "blind": {
-        "recall": 0.8235294117647058,
+        "recall": 0.8431372549019608,
         "deny_recall": 0.19607843137254902,
         "fp_rate": 0.08421052631578947,
         "totals": {
           "harmful": 102,
-          "caught": 84,
+          "caught": 86,
           "deny": 20,
           "benign": 95,
           "fp": 8,
@@ -2108,7 +2090,7 @@
             },
             "defense_evasion": {
               "harmful": 13,
-              "caught": 9
+              "caught": 11
             },
             "destructive": {
               "harmful": 13,
@@ -2146,7 +2128,7 @@
           "severity": {
             "critical": {
               "harmful": 52,
-              "caught": 46,
+              "caught": 48,
               "deny": 16,
               "unknown_only": 2
             },
@@ -2198,7 +2180,7 @@
             },
             "none": {
               "harmful": 87,
-              "caught": 72,
+              "caught": 74,
               "deny": 19,
               "benign": 95,
               "fp": 8,
@@ -2257,24 +2239,6 @@
             "technique": [
               "T1565.001",
               "T1048"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "defense_evasion",
-            "severity": "critical",
-            "evasion": [],
-            "technique": [
-              "T1562.008"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "defense_evasion",
-            "severity": "critical",
-            "evasion": [],
-            "technique": [
-              "T1562.008"
             ]
           },
           {
@@ -2476,12 +2440,12 @@
         ],
         "pools": {
           "amandeavor": {
-            "recall": 0.6666666666666666,
+            "recall": 0.7111111111111111,
             "deny_recall": 0.37777777777777777,
             "fp_rate": 0.0,
             "totals": {
               "harmful": 45,
-              "caught": 30,
+              "caught": 32,
               "deny": 17,
               "benign": 45
             }
@@ -2553,27 +2517,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0011918951132300357,
+        "fp_rate": 0.0011792452830188679,
         "totals": {
-          "benign": 839,
+          "benign": 848,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 839,
+              "benign": 848,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 839,
+              "benign": 848,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 839,
+              "benign": 848,
               "fp": 1
             }
           }
@@ -2594,14 +2558,14 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:0a894ee9e7390b46c69f28dabbf10be9a70db9c2dc6165ead3fbba113648a697",
+      "policy_hash": "sha256:d11916dfe9ac6288df1113b2d4432f5cac08dc73b025d89fb0fcefc5f8e0176b",
       "heldout": {
-        "recall": 0.6571428571428571,
+        "recall": 0.6619047619047619,
         "deny_recall": 0.3595238095238095,
         "fp_rate": 0.1087962962962963,
         "totals": {
           "harmful": 420,
-          "caught": 276,
+          "caught": 278,
           "deny": 151,
           "unknown_only": 44,
           "benign": 432,
@@ -2623,7 +2587,7 @@
             },
             "cloud": {
               "harmful": 34,
-              "caught": 25,
+              "caught": 27,
               "deny": 19,
               "unknown_only": 1
             },
@@ -2706,7 +2670,7 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 150,
+              "caught": 152,
               "deny": 81,
               "unknown_only": 23
             },
@@ -2757,7 +2721,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 167,
+              "caught": 169,
               "deny": 69,
               "unknown_only": 35,
               "benign": 432,
@@ -3308,24 +3272,6 @@
             "evasion": [],
             "technique": [
               "T1530"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "cloud",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1562.008"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "cloud",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1562.008"
             ]
           },
           {
@@ -4594,12 +4540,12 @@
         ]
       },
       "blind": {
-        "recall": 0.8627450980392157,
+        "recall": 0.8823529411764706,
         "deny_recall": 0.22549019607843138,
         "fp_rate": 0.1368421052631579,
         "totals": {
           "harmful": 102,
-          "caught": 88,
+          "caught": 90,
           "deny": 23,
           "benign": 95,
           "fp": 13,
@@ -4657,7 +4603,7 @@
             },
             "defense_evasion": {
               "harmful": 13,
-              "caught": 10,
+              "caught": 12,
               "deny": 2
             },
             "destructive": {
@@ -4697,7 +4643,7 @@
           "severity": {
             "critical": {
               "harmful": 52,
-              "caught": 46,
+              "caught": 48,
               "deny": 17,
               "unknown_only": 2
             },
@@ -4751,7 +4697,7 @@
             },
             "none": {
               "harmful": 87,
-              "caught": 76,
+              "caught": 78,
               "deny": 19,
               "benign": 95,
               "fp": 13,
@@ -4812,24 +4758,6 @@
             "technique": [
               "T1565.001",
               "T1048"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "defense_evasion",
-            "severity": "critical",
-            "evasion": [],
-            "technique": [
-              "T1562.008"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "defense_evasion",
-            "severity": "critical",
-            "evasion": [],
-            "technique": [
-              "T1562.008"
             ]
           },
           {
@@ -5043,12 +4971,12 @@
         ],
         "pools": {
           "amandeavor": {
-            "recall": 0.7333333333333333,
+            "recall": 0.7777777777777778,
             "deny_recall": 0.4222222222222222,
             "fp_rate": 0.044444444444444446,
             "totals": {
               "harmful": 45,
-              "caught": 33,
+              "caught": 35,
               "deny": 19,
               "benign": 45,
               "fp": 2
@@ -5214,27 +5142,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.04767580452920143,
+        "fp_rate": 0.04716981132075472,
         "totals": {
-          "benign": 839,
+          "benign": 848,
           "fp": 40
         },
         "by": {
           "category": {
             "none": {
-              "benign": 839,
+              "benign": 848,
               "fp": 40
             }
           },
           "severity": {
             "none": {
-              "benign": 839,
+              "benign": 848,
               "fp": 40
             }
           },
           "evasion": {
             "none": {
-              "benign": 839,
+              "benign": 848,
               "fp": 40
             }
           }

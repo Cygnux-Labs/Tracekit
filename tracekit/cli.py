@@ -241,7 +241,8 @@ def main(argv=None):
     p = sub.add_parser("graph", help="what agents did across verified bundles: `graph build|query|verify`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("report", help="what the agents did this week, on one page, from the v2 signer's store: runs, "
-                       "calls, holds, denies and flags by rule, gaps, integrity (--since, --json)", add_help=False)
+                       "calls, holds, denies and flags by rule, gaps, integrity (--since, --json, --share)",
+                       add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
                        "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
@@ -938,10 +939,11 @@ def _last(a):
     from .storage.base import StorageCorrupt, StorageUnavailable
     from .verify import v2
     from .view import write_trust
+    from .sdk.autospawn import data_dir
     deadline = time.monotonic() + LAST_WAIT_S
+    store = os.path.join(data_dir(), "store")   # named when there is none yet
     try:
         cfg = signer_config(None)
-        store = os.path.join(cfg["data_dir"], "store")
         while True:
             r = open_reader(cfg)
             try:   # newest first, by their last record; each with the type of that record and its agent's name
@@ -1019,6 +1021,20 @@ def _otel_v2(a, bundle):
     return path
 
 
+def _self_approved(state, dev):
+    """What `approvals approve|reject` adds to an answer the signer recorded `self_approved`, one from the call's own
+    requester (docs/approvals.md#who-may-answer): an approval counts, and why it is labelled; either answer keeps the
+    run's assurance at dev (the verifier counts both). `dev`: the same-user dev signer answered (no named signer)."""
+    if state != "approved":
+        return ", by you, recorded as self-approved (an answer from the call's own requester): the run's assurance stays dev"
+    why = ("the dev signer runs as your own user and can't tell you from your agent" if dev else
+           "this signer lets the call's own requester answer (a dev signer, or approvals: {self_approval: allow} in its "
+           "signer.yaml)")
+    return (f", by you. It counts: {why}, so it records this as self-approved, and the run's assurance stays dev."
+            + (" A signer started from signer.yaml refuses an approval from the call's own requester unless that file "
+               "sets approvals: {self_approval: allow}." if dev else ""))
+
+
 def _approvals(a):
     """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
     import pydoc
@@ -1073,7 +1089,8 @@ def _approvals(a):
         else:
             req = {"approval_id": a.approval_id, "decision": a.action, **({"reason": a.reason} if a.reason else {})}
             r = c.approval_decide(req)
-            print(f"{r['state']}: {r['approval_id']}" + (" (self-approved: dev mode only)" if r["self_approved"] else ""))
+            print(f"{r['state']}: {r['approval_id']}"
+                  + (_self_approved(r["state"], c.signer is None) if r["self_approved"] else ""))
     except (SignerUnavailable, Incompatible) as e:
         print(f"signer unavailable: {e}", file=sys.stderr)
         return 2

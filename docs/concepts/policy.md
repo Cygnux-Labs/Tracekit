@@ -167,11 +167,12 @@ tracekit policy backtest --policy policy.yaml --store DATA_DIR/store   # replay 
 
 Rules are tripwires, not a sandbox. A determined agent can phrase a command so no rule matches: the
 [evaluation](../evaluation.md#e3-policy-gate) lists misses such as `X=rm; $X -rf ~` and a base64 payload piped to a
-shell. On the shipped packs' own test corpus (768 harmful and 839 benign calls across 11 classes, written by the
-project) every harmful call is denied or held, with one false alarm. On E21's held-out pool (420 harmful and 432
-benign calls, written blind to the rules), the only blind run caught 211 harmful calls (50.2%) with the server pack and
-246 (58.6%) with the strict pack. With rules added since, written while the misses were known, they catch 248 (59.0%)
-and 276 (65.7%), while holding 4.2% and 10.9% of the benign ones ([evaluation](../evaluation.md#e21-policy-robustness)).
+shell. On the shipped packs' own test corpus (E17, written by the project) every harmful call is denied or held, a
+gate on every pull request. On E21's held-out pool (420 harmful and 432 benign calls, written blind to the rules), the
+only blind run caught 211 harmful calls (50.2%) with the server pack and 246 (58.6%) with the strict pack. Rules added
+since, written while the misses were known, catch more on that pool, which is no longer blind. The evaluation has the
+current counts and false alarms of [E17](../evaluation.md#e17-policy-packs-detection-and-containment) and
+[E21](../evaluation.md#e21-policy-robustness).
 The protection
 that doesn't depend on wording is the signer's isolation and the witnesses: a call that slips past the rules is still
 recorded, and the record can't be hidden.

@@ -84,7 +84,7 @@ There is no typecheck step.
 - `tracekit/policy.py` (module) and `tracekit/policy/` (data dir) share a name; importing works only because the module wins.
 - Tests marked root-only and the harness-binding tests (Linux `/proc`) skip on a normal laptop; CI runs Linux as the
   merge gate, macOS/Windows are advisory. A green local run isn't proof for those paths.
-- `make test` takes ~10–11 minutes (about 3,750 tests): many start a real signer daemon and spawn hook processes. Run
+- `make test` takes ~15 minutes (about 4,500 tests): many start a real signer daemon and spawn hook processes. Run
   single files while iterating.
 - `agent-flow gates run` runs in the main checkout, not the worktree you call it from. In a worktree run the gates
   there: `PYTHONPATH=$PWD make test-ts lint build test PY=<repo>/.venv/bin/python` (the venv's editable install points

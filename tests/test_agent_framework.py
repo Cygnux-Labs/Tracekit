@@ -58,6 +58,7 @@ from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import AsyncRunHandle, Client
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService
+from factories import VersionCheckCases
 
 FIRST = {"args_source": "coerced", "attempt": 0}   # how a call's first decide and consume are sent
 MCP1 = importlib.util.find_spec("mcp") is not None and importlib.metadata.version("mcp").startswith("1.")
@@ -576,32 +577,9 @@ class RealSigner(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE, "agent_framework not installed")
-class VersionCheck(unittest.TestCase):
-    """The version check the integration shares with the other hand-wired ones: a framework outside the version
-    Tracekit is tested with warns once when the integration is built, one inside the range does not warn."""
-
-    def test_it_warns_for_a_version_outside_the_tested_range(self):
-        from tracekit.integrations import version_check
-        from tracekit.integrations.agent_framework import Tracekit
-        with mock.patch.object(version_check, "_WARNED", set()), \
-                mock.patch.object(version_check, "_version", return_value="0.0.1"), \
-                warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            Tracekit(mock.Mock())
-        msgs = [str(x.message) for x in w if "is wired but untested" in str(x.message)]
-        self.assertEqual(1, len(msgs))
-        self.assertIn("Agent Framework 0.0.1 is wired but untested; Tracekit is tested with "
-                      "agent-framework-core>=1.22,<1.23", msgs[0])
-
-    def test_it_does_not_warn_for_a_version_inside_the_tested_range(self):
-        from tracekit.integrations import version_check
-        from tracekit.integrations.agent_framework import Tracekit
-        with mock.patch.object(version_check, "_WARNED", set()), \
-                mock.patch.object(version_check, "_version", return_value="1.22.0"), \
-                warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            Tracekit(mock.Mock())
-        self.assertEqual([], [str(x.message) for x in w if "is wired but untested" in str(x.message)])
+class VersionCheck(VersionCheckCases, unittest.TestCase):
+    module, inside = "agent_framework", "1.22.0"
+    message = "Agent Framework 0.0.1 is wired but untested; Tracekit is tested with agent-framework-core>=1.22,<1.23"
 
 
 if __name__ == "__main__":

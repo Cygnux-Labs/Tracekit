@@ -13,6 +13,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import types
 import unittest
@@ -51,6 +52,7 @@ class HookV2(unittest.TestCase):
                                            "TRACEKIT_DEV_IDLE": "60", "PYTHONPATH": ROOT,
                                            "HOME": os.path.join(self.dir, "home"),
                                            "XDG_DATA_HOME": os.path.join(self.dir, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.dir, "data"),
                                            claude_code.WAIT_ENV: str(claude_code.APPROVAL_WAIT_S)})
         env.start()
         self.addCleanup(env.stop)
@@ -713,8 +715,8 @@ class HookV2(unittest.TestCase):
             cmd = dict(zip(("approve", "reject"), re.findall(r"`tracekit ([^`]+)`", line)))[decision]
             out = subprocess.run(f"{shlex.quote(sys.executable)} -m tracekit {cmd}", shell=True, capture_output=True,
                                  text=True, timeout=60, env=person)
-            self.assertEqual((out.returncode, out.stdout.strip()), (0, f"{state}: {aid} (self-approved: dev mode only)"),
-                             out.stderr)
+            said = cli._self_approved(state, not named)   # named: not autospawn's
+            self.assertEqual((out.returncode, out.stdout.strip()), (0, f"{state}: {aid}{said}"), out.stderr)
             err = proc.stderr.read()
             proc.wait(60)
             proc.stdout.close()
@@ -1003,24 +1005,26 @@ class HeldCalls(unittest.TestCase):
         HookV2.setUp(self)
         os.environ.pop(claude_code.WAIT_ENV)
 
-    def pre(self, command, tid):
-        """(exit code, stdout, stderr) of the PreToolUse hook for Bash `command`."""
+    def pre(self, command, tid, **more):
+        """(exit code, stdout, stderr) of the PreToolUse hook for Bash `command`, with the tool_input keys `more`."""
         p = subprocess.run(HOOK, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60, input=json.dumps(
             {"hook_event_name": "PreToolUse", "session_id": "s1", "tool_name": "Bash", "tool_use_id": tid,
-             "tool_input": {"command": command}}))
+             "tool_input": {"command": command, **more}}))
         return p.returncode, p.stdout, p.stderr
 
-    def held(self, command, tid):
+    def held(self, command, tid, **more):
         """The approval id a held call's hook names, after checking what it says to whom."""
         start = time.monotonic()
-        code, out, err = self.pre(command, tid)
+        code, out, err = self.pre(command, tid, **more)
         self.assertLess(time.monotonic() - start, 30, "the hook waited")
         self.assertEqual(code, 2, err)
         aid = err.split()[4]
-        self.assertTrue(err.startswith(f"[tracekit] held for approval {aid} (TK-A032): to let it run, approve it with "
-                                       f"`tracekit approvals approve {aid}`, then ask the agent to try the same call "
-                                       "again, with exactly the same arguments (to refuse it: `tracekit approvals "
-                                       f"reject {aid}`). Why: uploading to cloud storage. "), err)
+        # #519: who runs what, ready to paste in Claude Code (`!` runs it as the person), and what the agent does
+        self.assertTrue(err.startswith(f"[tracekit] held for approval {aid} (TK-A032): a person lets it run with "
+                                       f"`! tracekit approvals approve {aid}`, then asks the agent to try the same "
+                                       f"call again, unchanged (to refuse it: `! tracekit approvals reject {aid}`). "
+                                       "Agent: wait "
+                                       "for the person's answer. Why: uploading to cloud storage. "), err)
         self.assertEqual(err.count("\n"), 1, err)
         reply = json.loads(out)   # Claude Code shows the person the systemMessage and the model the deny's reason
         self.assertEqual((reply["systemMessage"], reply["hookSpecificOutput"]["permissionDecisionReason"],
@@ -1040,7 +1044,11 @@ class HeldCalls(unittest.TestCase):
         aid = self.held(self.UPLOAD, "t1")
         early = self.held(self.UPLOAD, "t2")   # the agent retries before the person answered: held again
         self.assertNotEqual(early, aid)
-        self.assertEqual(self.approvals("approve", aid), f"approved: {aid} (self-approved: dev mode only)")
+        # #510: the dev signer's self-approval counts, and the line says so (an agent read "dev mode only" as "may not")
+        self.assertEqual(self.approvals("approve", aid), f"approved: {aid}, by you. It counts: the dev signer runs as "
+                         "your own user and can't tell you from your agent, so it records this as self-approved, and "
+                         "the run's assurance stays dev. A signer started from signer.yaml refuses an approval from "
+                         "the call's own requester unless that file sets approvals: {self_approval: allow}.")
         self.assertEqual(self.pre(self.UPLOAD, "t3"), (0, "", ""))   # the same call again: it runs
         self.assertEqual(self.post(self.UPLOAD, "t3"), (0, ""))
         self.assertNotIn(self.held(self.UPLOAD, "t4"), (aid, early))   # once: the next one is held again
@@ -1067,19 +1075,121 @@ class HeldCalls(unittest.TestCase):
         rep, code = v2.verify(out, trust)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
 
+    def test_an_approved_retry_that_rewords_its_description_runs_the_approved_call(self):
+        """#509: Claude Code's Bash input carries a free-text `description`, which the model rewords on a retry, and the
+        approval bound it: one approved command was held three times in a row. A retry that differs from the approved
+        call only there is decided and consumed with the approved arguments and runs as sent, with no updatedInput (a
+        hook's updatedInput could change how Claude Code asks the person); one that differs in any other key is held
+        again, and so is the next retry once one ran."""
+        asked = {"command": self.UPLOAD, "description": "Upload the build", "timeout": 600000}
+        aid = self.held(tid="t1", **asked)
+        self.assertTrue(self.approvals("approve", aid).startswith(f"approved: {aid}, by you. It counts: "))
+        for i, other in enumerate(({"command": self.UPLOAD.replace("releases", "backups")}, {"timeout": 5000},
+                                   {"run_in_background": True}, {"dangerouslyDisableSandbox": True})):
+            with self.subTest(other):
+                code, out, err = self.pre(tid=f"o{i}", **dict(asked, description="Retry the upload", **other))
+                self.assertEqual(code, 2, err)
+                self.assertTrue(err.startswith("[tracekit] held for approval "), err)
+                self.assertNotEqual(err.split()[4], aid)
+        self.assertEqual(self.pre(tid="t2", **dict(asked, description="Retry the upload to S3")), (0, "", ""))
+        self.assertEqual(self.post(self.UPLOAD, "t2"), (0, ""))
+        # the signer consumed the approval (for t2, the only call that ran): it does only for a decision of the
+        # approved arguments
+        self.assertEqual(self.consumed(), [aid])
+        again = self.held(tid="t3", **dict(asked, description="Upload once more"))   # once: held again, a new approval
+        self.assertNotEqual(again, aid)
+        self.approvals("approve", again)
+        # exactly the same arguments: the signer matches them itself, as before; nothing to hand back
+        self.assertEqual(self.pre(tid="t4", **dict(asked, description="Upload once more")), (0, "", ""))
+
+    def consumed(self):
+        return [e["data"]["approval_id"] for e in self.events() if e["type"] == "approval.consumed"]
+
+    def test_a_reworded_retry_after_a_reject_says_a_person_rejected_it(self):
+        """#509: a reworded retry of a command the person rejected is decided as the model sent it and held, as before,
+        and its block says first that a person rejected the command, so the agent asks before trying again. (The signer
+        keeps no copy of a rejected call's arguments to decide it with.)"""
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.approvals("reject", aid)
+        code, out, err = self.pre(self.UPLOAD, "t2", description="Retry the upload")
+        new = err.split()[4]
+        self.assertEqual(code, 2)
+        self.assertNotEqual(new, aid)
+        self.assertIn(f"`! tracekit approvals reject {new}`). Agent: wait for the person's answer. Why: a person "
+                      "rejected this command (with another "
+                      f"description) as {aid}; ask them before trying again; uploading to cloud storage. ", err)
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
+        self.assertEqual(Client().approval_get({"approval_id": new})["args"],
+                         {"command": self.UPLOAD, "description": "Retry the upload"})
+        self.assertEqual(self.consumed(), [])
+
+    def test_a_reworded_retry_after_an_expired_approval_is_held_as_before(self):
+        """#509: an approval that expired lets nothing run in place of a reworded retry: the retry is decided as the
+        model sent it and held with a new approval of its own arguments."""
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.approvals("approve", aid)
+        self.run_handle().call("approval_abandon", approval_id=aid)
+        new = self.held(self.UPLOAD, "t2", description="Retry the upload")
+        self.assertNotEqual(new, aid)
+        self.assertEqual(Client().approval_get({"approval_id": new})["args"],
+                         {"command": self.UPLOAD, "description": "Retry the upload"})
+
+    def test_a_reworded_retry_runs_under_an_earlier_approval_when_a_later_hold_is_unanswered(self):
+        """#509: the agent retried before the person answered (a second hold), then the person approved the first
+        approval: a reworded retry runs under it, the newest held call of the command that a person answered."""
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.assertNotEqual(self.held(self.UPLOAD, "t2", description="Upload it again"), aid)
+        self.approvals("approve", aid)
+        self.assertEqual(self.pre(self.UPLOAD, "t3", description="Retry the upload"), (0, "", ""))
+        self.assertEqual(self.consumed(), [aid])
+
+    def test_a_planted_state_entry_lets_no_other_command_use_an_approval(self):
+        """#509: the session state is the agent's to write. An entry that points another command at an approved
+        approval runs nothing: the arguments come from the signer, checked against the call's but the description."""
+        other = self.UPLOAD.replace("releases", "backups")
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.approvals("approve", aid)
+        with open(claude_code._state("s1")) as f:
+            st = json.load(f)
+        st["held"].append({"rest": claude_code._rest({"command": other}), "approval_id": aid})
+        with open(claude_code._state("s1"), "w") as f:
+            json.dump(st, f)
+        self.assertNotEqual(self.held(other, "t2", description="Back it up"), aid)
+        self.assertEqual(self.consumed(), [])
+        self.assertEqual(self.pre(self.UPLOAD, "t3", description="Retry the upload"), (0, "", ""))
+        self.assertEqual(self.consumed(), [aid])
+
+    def test_parallel_reworded_retries_run_once(self):
+        """#509: four reworded retries of one approved call at once: exactly one runs, under the one approval."""
+        aid = self.held(self.UPLOAD, "t1", description="Upload the build")
+        self.approvals("approve", aid)
+        codes = {}
+
+        def retry(i):
+            codes[i] = self.pre(self.UPLOAD, f"r{i}", description=f"Retry {i}")[0]
+        threads = [threading.Thread(target=retry, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(sorted(codes.values()), [0, 2, 2, 2])
+        self.assertEqual(self.consumed(), [aid])
+
     def test_a_retry_of_a_rejected_call_says_who_rejected_it(self):
         """The person rejects a held call and the agent tries it again: the block said only to approve a new approval,
         so the agent kept retrying. It says a person rejected it, first in its reasons, and still how to approve it."""
         aid = self.held(self.UPLOAD, "t1")
-        self.assertEqual(self.approvals("reject", aid), f"rejected: {aid} (self-approved: dev mode only)")
+        # #510: a self-rejection keeps the run's assurance at dev too (the verifier counts any self_approved answer)
+        self.assertEqual(self.approvals("reject", aid), f"rejected: {aid}, by you, recorded as self-approved (an answer "
+                         "from the call's own requester): the run's assurance stays dev")
         code, out, err = self.pre(self.UPLOAD, "t2")
         again = err.split()[4]
         self.assertEqual(code, 2)
         self.assertNotEqual(again, aid)
         self.assertTrue(err.startswith(
-            f"[tracekit] held for approval {again} (TK-A032): to let it run, approve it with `tracekit approvals "
-            f"approve {again}`, then ask the agent to try the same call again, with exactly the same arguments (to "
-            f"refuse it: `tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by "
+            f"[tracekit] held for approval {again} (TK-A032): a person lets it run with `! tracekit approvals "
+            f"approve {again}`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals "
+            f"reject {again}`). Agent: wait for the person's answer. Why: a person rejected this exact call ({aid}, by "
             f"uid:{os.getuid()}); ask them before trying again; uploading to cloud storage. "), err)
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], err.strip())
 
@@ -1111,10 +1221,11 @@ class HeldCalls(unittest.TestCase):
         self.assertEqual((len(msg), msg), (500, err[:499] + "…"))
         self.assertTrue(msg.startswith(f"[tracekit] held for approval {aid} (TK-A043): "), msg)
         self.assertIn(f"`tracekit approvals approve {aid}`", msg)
-        self.assertIn(f"`tracekit approvals reject {aid}`). Why: moving money", msg)
+        self.assertIn(f"`tracekit approvals reject {aid}`). Agent: wait for the person's answer. Why: moving money", msg)
         self.approvals("reject", aid)
         msg, _, again = pre("m2")
-        self.assertIn(f"`tracekit approvals reject {again}`). Why: a person rejected this exact call ({aid}, by "
+        self.assertIn(f"`tracekit approvals reject {again}`). Agent: wait for the person's answer. Why: a person "
+                      f"rejected this exact call ({aid}, by "
                       f"uid:{os.getuid()}); ask them before trying again; moving money", msg)
         self.assertTrue(msg.endswith("…"), msg)
         msg, err, waited = pre("m3", wait="1")   # nobody answers within the wait
@@ -1123,9 +1234,10 @@ class HeldCalls(unittest.TestCase):
                                        f"it with `tracekit approvals reject {waited}`. Why: a person rejected this "
                                        f"exact call ({aid}, "), err)
         with self.subTest("unanswered: the held line first"):
-            self.assertTrue(msg.startswith(f"[tracekit] held for approval {waited} (TK-A043): to let it run, approve "
-                                           f"it with `tracekit approvals approve {waited}`"), msg)
-            self.assertIn(f"`tracekit approvals reject {waited}`). Why: a person rejected", msg)
+            self.assertTrue(msg.startswith(f"[tracekit] held for approval {waited} (TK-A043): a person lets it run "
+                                           f"with `tracekit approvals approve {waited}`"), msg)
+            self.assertIn(f"`tracekit approvals reject {waited}`). Agent: wait for the person's answer. Why: a person "
+                          "rejected", msg)
             self.assertTrue(msg.endswith("…"), msg)
         p = subprocess.Popen(cursor, shell=True, cwd=self.cwd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                              stderr=subprocess.PIPE, text=True, env=dict(os.environ, **{claude_code.WAIT_ENV: "30"}))
@@ -1141,6 +1253,33 @@ class HeldCalls(unittest.TestCase):
             self.assertTrue(msg.startswith(f"[tracekit] not approved: rejected by uid:{os.getuid()} (TK-A043). Why: "
                                            f"a person rejected this exact call ({aid}, "), msg)
             self.assertTrue(msg.endswith("…"), msg)
+
+    def test_a_command_the_policy_cant_read_says_why_and_the_readable_way(self):
+        """#519: a hold for a command the parser can't read (a program named by a variable) gave no why, and its agent
+        didn't know naming the program itself, so the policy can read it, was its way through."""
+        code, out, err = self.pre("g=git; $g status", "t1")
+        self.assertEqual(code, 2, err)
+        self.assertIn("(TK-SHELL-PARSE): a person lets it run with `! tracekit approvals approve ", err)
+        self.assertIn("Why: the policy can't read what this shell command runs. Name the program itself (`git push …`, "
+                      "not `$g push …`) so the policy can read it", err)
+        # Cursor (as Gemini CLI, Antigravity CLI, Codex and Droid) shows 500 characters: the remedy is in them
+        cursor = install._hook_command("tracekit.integrations.harness_hooks", "entry", ("cursor", "preToolUse"))
+        p = subprocess.run(cursor, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
+                           input=json.dumps({"hook_event_name": "preToolUse", "conversation_id": "c1",
+                                             "tool_name": "Shell", "tool_use_id": "c1",
+                                             "tool_input": {"command": "g=git; $g status"}}))
+        msg = json.loads(p.stdout)["agent_message"]
+        self.assertLessEqual(len(msg), 500)
+        self.assertIn("so the policy can read it", msg)
+        self.assertEqual(self.pre("git status", "t2")[0], 0)   # that way: read, checked by every rule, run
+
+    def test_a_packs_own_reason_comes_before_the_engines(self):
+        """Review of #520: with TK-SHELL-PARSE and a pack rule, the engine's reason came first, and a harness that cuts
+        the message at 500 characters could drop the call's own risk (moving money)."""
+        pol = service.load_policy(os.path.join(ROOT, "tracekit", "policy2", "packs", "coding.yaml"))
+        why = service.SignerService._reasons(types.SimpleNamespace(policy=pol), ["TK-SHELL-PARSE", "TK-A043"])
+        self.assertTrue(why.startswith("moving money"), why)
+        self.assertIn("; the policy can't read what this shell command runs. ", why)
 
     def test_the_agent_cannot_approve_its_own_held_call(self):
         """The agent runs the approve command the notice names: the policy denies it (TK-D012), so its retry stays
@@ -1158,7 +1297,8 @@ class InitV2(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.home, True)
         env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,   # USERPROFILE: Windows' ~
                                            "CLAUDE_CONFIG_DIR": "",
-                                           "XDG_DATA_HOME": os.path.join(self.home, "data")})
+                                           "XDG_DATA_HOME": os.path.join(self.home, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.home, "data")})
         env.start()
         self.addCleanup(env.stop)
 
@@ -1462,7 +1602,8 @@ class HoldLine(unittest.TestCase):
 
         err, out = io.StringIO(), io.StringIO()
         with mock.patch.object(claude_code, "_run", decide), contextlib.redirect_stderr(err), \
-                contextlib.redirect_stdout(out), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: wait}):
+                contextlib.redirect_stdout(out), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: wait}), \
+                mock.patch.object(claude_code, "AGENT", "claude-code"):   # an in-process harness hook sets another
             code = claude_code._pre(client, {"tool_name": "Bash", "tool_input": {"command": "x"}}, "s1", "t1")
         return code, err.getvalue().splitlines(), out.getvalue()
 
@@ -1482,9 +1623,10 @@ class HoldLine(unittest.TestCase):
             with self.subTest(wait=wait):
                 code, lines, out = self.pre("force push. Push without --force.", wait=wait, answer="approved")
                 self.assertEqual(code, 2)
-                held = ("[tracekit] held for approval apr-1 (TK-A003): to let it run, approve it with `tracekit "
-                        "approvals approve apr-1`, then ask the agent to try the same call again, with exactly the "
-                        "same arguments (to refuse it: `tracekit approvals reject apr-1`). Why: force push. Push "
+                held = ("[tracekit] held for approval apr-1 (TK-A003): a person lets it run with `! tracekit "
+                        "approvals approve apr-1`, then asks the agent to try the same call again, unchanged (to "
+                        "refuse it: `! "
+                        "tracekit approvals reject apr-1`). Agent: wait for the person's answer. Why: force push. Push "
                         "without --force")
                 self.assertEqual(lines, [held])   # no waiting line: nothing waited
                 self.assertEqual(self.waits, [0])   # one look, to see whether an agent approved it already
@@ -1503,12 +1645,22 @@ class HoldLine(unittest.TestCase):
         code, lines, _ = self.pre("x", wait="0.2", veto=veto)   # a wait that ended inside the delay
         self.assertEqual((code, lines[-1]), (2, held))
 
+    def test_a_named_signers_commands_are_for_the_persons_own_terminal(self):
+        """Review of #520: Claude Code runs a `!` line as the session's OS user; with a named signer (system mode, a
+        remote one) that is the agent's, whom the signer refuses as an approver: no `!` there."""
+        sock = "/run/tracekit-signer/signer.sock"
+        named = shlex.quote(sock) if os.name != "nt" else f'"{sock}"'
+        code, lines, _ = self.pre("x", signer=sock, wait="")
+        self.assertEqual(code, 2)
+        self.assertIn(f"a person lets it run with `tracekit approvals --signer {named} approve apr-1`", lines[-1])
+        self.assertNotIn("`! ", lines[-1])
+
     def test_an_unanswered_wait_ends_with_how_to_approve_and_retry(self):
         code, lines, _ = self.pre("x", wait="0.2", answer="requested")
         self.assertEqual(code, 2)
         self.assertIn("waiting for approval apr-1", lines[0])
-        self.assertTrue(lines[-1].startswith("[tracekit] held for approval apr-1 (TK-A003): to let it run, approve it "
-                                             "with "), lines)
+        self.assertTrue(lines[-1].startswith("[tracekit] held for approval apr-1 (TK-A003): a person lets it run with "
+                                             "`! tracekit approvals approve apr-1`"), lines)
 
     def test_the_wait_is_capped_below_the_hooks_timeout(self):
         for wait, s in (("30", 30.0), ("1e9", claude_code.APPROVAL_WAIT_S), ("inf", claude_code.APPROVAL_WAIT_S)):

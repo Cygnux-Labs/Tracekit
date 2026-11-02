@@ -1,6 +1,7 @@
 """Policy decisions inside the v2 signer (tracekit/signer/service.py with tracekit/policy2): the coding packs, the
 v2 counterparts of the v1 policy known gaps, the benign corpus, engine conformance on the packs, class hints,
 memoisation, fresh decision ids and `complete`."""
+import functools
 import importlib.util
 import json
 import os
@@ -110,10 +111,14 @@ class CodingPack(unittest.TestCase):
                 self.assertEqual((d["verdict"], want in d["rule_ids"]), ("deny" if want.startswith("TK-D") else "ask", True),
                                  d)
 
-    def every_pack(self):
-        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
-            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
-                yield pack, engine, Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+    @staticmethod
+    @functools.lru_cache(maxsize=None)
+    def every_pack():
+        """(pack, engine name, engine) for each shipped pack on each engine, built once per run: a decision doesn't
+        change an engine, and building the eight took about a second a time (#500)."""
+        return tuple((pack, engine, Engine(pc.build(os.path.join(PACKS, pack))[0], engine))
+                     for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml")
+                     for engine in (("re2", "regex") if HAVE_RE2 else ("regex",)))
 
     def test_deleting_ci_pipeline_files_asks(self):
         deletes = ["rm -rf .github/workflows/security-scan.yml .github/workflows/codeql.yml",
@@ -1850,16 +1855,130 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
-    def test_harness_base_url_keeps_its_existing_raw_subjects(self):
-        calls = (("Bash", {"command": "export ANTHROPIC_BASE_URL=https://example.com"}),
-                 ("Write", {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"}),
-                 ("Edit", {"file_path": "config.env", "old_string": "ANTHROPIC_BASE_URL", "new_string": "x"}),
-                 ("MultiEdit", {"file_path": "config.env", "edits": [{"old_string": "ANTHROPIC_BASE_URL",
-                                                                     "new_string": "x"}]}))
+    def test_harness_flags_skip_source_files_in_claude_code_worktrees_in_every_pack(self):
+        # #500: edits under .claude/worktrees/<name>/, Claude Code's own worktrees, were 3,084 of 3,097 TK-F009 flags
+        # and 36 of 39 TK-F015 flags on maintainers' sessions; a file there is judged as it is in the worktree
+        paths = ("/repo/.claude/worktrees/issue-1/tracekit/cli.py", ".claude/worktrees/agent-a1/internal/a.go",
+                 "/repo/.claude/worktrees/x/.github/workflows/ci.yml", "/repo/.claude/worktrees/x/.gitignore",
+                 "/repo/.claude/worktrees/x/CLAUDE.md", "/repo/.claude/worktrees/x/a/../b.py",
+                 r"C:\repo\.claude\worktrees\x\src\a.py", "/REPO/.Claude/Worktrees/X/src/a.py")
+        commands = ("cp /tmp/a.py /repo/.claude/worktrees/issue-1/tracekit/cli.py",
+                    "sed -i s/a/b/ .claude/worktrees/x/src/a.py", "rm .claude/worktrees/x/.v3check.sh",
+                    "echo x > .claude/worktrees/x/bin/t.sh", "cp x .claude/worktrees/x/./a.py",
+                    "mkdir -p .claude/worktrees/x/d && cp a .claude/worktrees/x/d/", r"cp x 'C:\repo\.claude\worktrees\x\a.py'")
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertNotIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+
+    def test_a_worktrees_own_harness_config_and_paths_out_of_it_stay_flagged_in_every_pack(self):
+        # #500: what TK-F009 and TK-F015 skip in a worktree is its ordinary files: its own harness config, a path that
+        # leaves it (`..`, also with doubled or Windows separators), the worktree itself, a name that is a dot folder,
+        # and a path that is not in one are still flagged, also casefolded
+        paths = ("/repo/.claude/worktrees/x/.claude/settings.json", "/repo/.claude/worktrees/x/.claude/hooks/h.sh",
+                 ".claude/worktrees/x/.claude/settings.local.json", "/repo/.claude/worktrees/x/.codex/config.toml",
+                 "/repo/.claude/worktrees/x/.agents/hooks.json", "/repo/.claude/worktrees/x/.mcp.json",
+                 "/repo/.claude/worktrees/x/opencode.json", "/repo/.claude/worktrees/x/sub/.gemini/settings.json",
+                 "/repo/.claude/worktrees/x/.claude/worktrees/y/.claude/settings.json",
+                 "/repo/.claude/worktrees/x/../../settings.json", ".claude/worktrees/x/../../settings.json",
+                 "/repo/.claude/worktrees/x/a/../../../settings.json", "/repo/.claude//worktrees/x/../../settings.json",
+                 "/repo/.claude/worktrees", "/repo/.claude/worktrees/x", "/repo/.claude/worktrees/settings.json",
+                 "/repo/.claude/worktree/x/a.py", "/repo/.claude/worktreesx/a.py", "/repo/.claude/settings.json",
+                 "/repo/.claude/worktrees/.x/a.py", "/repo/.claude/worktrees/.claude/settings.json",
+                 "/repo/.claude/worktrees/../settings.json", "/repo/.CLAUDE/WORKTREES/X/.Claude/Settings.json",
+                 r"C:\repo\.claude\worktrees\x\.claude\settings.json", r"C:\repo\.claude\worktrees\x\..\..\settings.json")
+        commands = ("echo '{}' > .claude/worktrees/x/.claude/settings.json", "rm -rf .claude/worktrees/x/.claude",
+                    "cp x /repo/.claude/worktrees/x/.codex/config.toml", "tee .claude/worktrees/x/.agents/hooks.json",
+                    "cp x .claude/worktrees/x/../../settings.json", "cp x .claude/worktrees/x/..//../settings.json",
+                    "cp x .claude/worktrees/x//../../settings.json", "cp x .claude//worktrees/x/../../settings.json",
+                    "cp x .claude/worktrees/x/./../../settings.json", "cp x .claude/worktrees/x/a/b/../../../../s.json",
+                    "cp x .claude/worktrees/x/" + "a/" * 40 + "../" * 42 + "settings.json",
+                    r"cp x 'C:\repo\.claude\worktrees\x\..\..\settings.json'",
+                    r"cp x 'C:\repo\.claude\worktrees\x\.claude\settings.json'", r"cp x '.claude\worktrees\x\..\..\s.json'",
+                    "cp x .claude/worktrees/.x/a.py", "cp x .claude/worktrees/.claude/settings.json",
+                    "cp x .claude/worktrees/../settings.json", "cp x .claude/worktrees//x/a.py",
+                    "rm -rf .claude/worktrees/x", "rm -rf .claude/worktrees/x/", "rm -rf .claude/worktrees/x/.",
+                    "rm -rf .claude/worktrees/x//", "rm -rf .claude/worktrees", "rm -rf .claude/worktrees/",
+                    "cp x .CLAUDE/Worktrees/X/.Claude/settings.json", "cp x .claude/WORKTREES/x/../../settings.json",
+                    "cp x .claude/worktree/x/a.py", "echo '{}' > .claude/settings.json",
+                    # an expansion or glob after the worktree that can hold a `..` (#500 review)
+                    "cp x .claude/worktrees/$X/settings.json", "cp x .claude/worktrees/x/$D/settings.json",
+                    "cp x .claude/worktrees/x/${D}/settings.json", "cp x .claude/worktrees/x/$(printf ../..)/settings.json",
+                    "cp x .claude/worktrees/x/`printf ../..`/settings.json",
+                    "cp x .claude/worktrees/x/.{.,}/.{.,}/settings.json", "cp x .claude/worktrees/x/{..,a}/../settings.json",
+                    "cp x .claude/worktrees/x/.*/.*/settings.json", "cp x .claude/worktrees/x/.?/.?/settings.json",
+                    "cp x .claude/worktrees/x/.[.]/.[.]/settings.json", "cp x .claude/worktrees/x/.$E./.$E./settings.json",
+                    r"cp x '.claude\worktrees\x\$D\settings.json'")
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command[:80]):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+
+    # #500: ANTHROPIC_BASE_URL (where the agent's model calls go) is flagged wherever a call names it: on a shell line
+    # (TK-F017, from every shell tool: the line holds an assignment prefix the argv never held, and the text a heredoc
+    # or echo writes) and in a file tool's arguments (TK-F016). The ways to set or remove it are too many to list, so a
+    # mention is flagged with them: noisy, and only a flag
+    BASE_URL_SHELL = (
+        "ANTHROPIC_BASE_URL=http://x claude -p hi", "ANTHROPIC_BASE_URL=http://x", "ANTHROPIC_BASE_URL='http://x' claude",
+        "cd /tmp && ANTHROPIC_BASE_URL=http://x claude", "export ANTHROPIC_BASE_URL=http://x", "export ANTHROPIC_BASE_URL",
+        "declare -x ANTHROPIC_BASE_URL=http://x", "typeset -x ANTHROPIC_BASE_URL", "env ANTHROPIC_BASE_URL=http://x claude",
+        "env -u ANTHROPIC_BASE_URL claude", "env --unset=ANTHROPIC_BASE_URL claude", "unset ANTHROPIC_BASE_URL",
+        "bash -c 'ANTHROPIC_BASE_URL=http://x claude'", "fish -c 'set -gx ANTHROPIC_BASE_URL http://x'",
+        "fish -c 'set -e ANTHROPIC_BASE_URL'", "csh -c 'setenv ANTHROPIC_BASE_URL http://x'",
+        "launchctl setenv ANTHROPIC_BASE_URL http://x", ": ${ANTHROPIC_BASE_URL:=http://x}",
+        "echo 'export ANTHROPIC_BASE_URL=http://x' >> ~/.zshrc", "cat >> ~/.bashrc <<'EOF'\nexport ANTHROPIC_BASE_URL=http://x\nEOF",
+        "echo '{\"env\": {\"ANTHROPIC_BASE_URL\": \"http://x\"}}' > .claude/settings.local.json",
+        "python3 -c 'import os; os.environ[\"ANTHROPIC_BASE_URL\"] = \"http://x\"'", "docker run -e ANTHROPIC_BASE_URL=http://x img",
+        "setx ANTHROPIC_BASE_URL http://x", "read -p 'url: ' ANTHROPIC_BASE_URL", "printf -v ANTHROPIC_BASE_URL %s http://x",
+        "declare -n r=ANTHROPIC_BASE_URL; r=http://x; claude", "for ANTHROPIC_BASE_URL in http://x; do claude; done",
+        "tmux set-environment -g ANTHROPIC_BASE_URL http://x", r"reg add HKCU\Environment /v ANTHROPIC_BASE_URL /d http://x /f",
+        "pwsh -c '${env:ANTHROPIC_BASE_URL} = \"http://x\"'", "pwsh -c 'New-Item -Path Env:ANTHROPIC_BASE_URL -Value http://x'",
+        "pwsh -c 'Remove-Item Env:ANTHROPIC_BASE_URL'", "sed -i '/ANTHROPIC_BASE_URL/d' ~/.zshrc",
+        "kubectl set env deploy/a ANTHROPIC_BASE_URL-", "gh secret set ANTHROPIC_BASE_URL --body http://x",
+        "grep -rn ANTHROPIC_BASE_URL .", "echo $ANTHROPIC_BASE_URL", "ls # check ANTHROPIC_BASE_URL first",
+        "git commit -m 'TK-F017 reads ANTHROPIC_BASE_URL'")
+    BASE_URL_FILES = (
+        {"file_path": "config.env", "content": "ANTHROPIC_BASE_URL=https://example.com"},
+        {"file_path": ".claude/settings.json", "content": '{"env": {"ANTHROPIC_BASE_URL": "http://x"}}'},
+        {"file_path": "c.yaml", "content": "env:\n  ANTHROPIC_BASE_URL:\n    http://x\n"},
+        {"file_path": "d.yaml", "content": "env:\n  - name: ANTHROPIC_BASE_URL\n    value: http://x\n"},
+        {"file_path": "main.go", "content": "os.Setenv(\"ANTHROPIC_BASE_URL\", u)\n"},
+        {"file_path": "main.rs", "content": "std::env::set_var(\"ANTHROPIC_BASE_URL\", u);\n"},
+        {"file_path": "a.ps1", "content": "${env:ANTHROPIC_BASE_URL} = 'http://x'\n"},
+        {"file_path": "a.sh", "content": "declare -n r=ANTHROPIC_BASE_URL\nr=http://x\n"},
+        {"file_path": "a.sh", "content": "unset ANTHROPIC_BASE_URL\n"},
+        {"file_path": "notes.md", "content": "Keep `ANTHROPIC_BASE_URL`, which isn't a path, where it is."},
+        {"file_path": "config.env", "old_string": "ANTHROPIC_BASE_URL", "new_string": "x"},
+        {"file_path": "config.env", "old_string": "X_URL", "new_string": "ANTHROPIC_BASE_URL"},
+        {"file_path": "config.env", "edits": [{"old_string": "ANTHROPIC_BASE_URL", "new_string": "x"}]})
+
+    def test_the_model_base_url_is_flagged_wherever_a_call_names_it_in_every_pack(self):
+        calls = [(tool, {"command": c}) for c in self.BASE_URL_SHELL for tool in ("Bash", "run_shell_command", "shell")]
+        calls += [("shell", {"command": ["bash", "-lc", "ANTHROPIC_BASE_URL=http://x codex"]})]
+        files = [(tool, args) for args in self.BASE_URL_FILES for tool in (
+            ("MultiEdit",) if "edits" in args else ("Edit", "MultiEdit") if "old_string" in args else ("Write",))]
         for pack, engine, e in self.every_pack():
             for tool, args in calls:
-                with self.subTest(pack=pack, engine=engine, tool=tool):
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertIn("TK-F017", e.decide(tool, args)["rule_ids"])
+            for tool, args in files:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertIn("TK-F016", e.decide(tool, args)["rule_ids"])
+            for tool, args in (("Bash", {"command": "ANTHROPIC_BASE_UR=x claude"}), ("Read", {"file_path": "ANTHROPIC_BASE_URL"}),
+                               ("Write", {"file_path": "a.env", "content": "ANTHROPIC_API_URL=x"})):
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F016", "TK-F017"} & set(e.decide(tool, args)["rule_ids"]))
+        e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex")
+        self.assertEqual({r["id"]: r.get("label") for r in e.policy["flag"] if r["id"] in ("TK-F016", "TK-F017")},
+                         {"TK-F016": "harness_config", "TK-F017": "harness_config"})
 
     def test_other_harnesses_shell_tools_and_the_server_pack(self):
         for tool in ("run_shell_command", "shell", "local_shell", "run_terminal_cmd", "container.exec"):
@@ -2013,6 +2132,59 @@ class CodingPack(unittest.TestCase):
                     self.assertEqual("TK-A038" in d["rule_ids"], (tool, args) in held, d)
                     if (tool, args) in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
+
+    def test_turning_off_aws_audit_logging_or_detection_asks_in_the_server_and_strict_packs(self):
+        """TK-C010 held Google's and Azure's audit-log deletes (`gcloud logging sinks delete`, `az monitor log-profiles
+        delete`) and let AWS's through (#403): stopping or deleting a CloudTrail trail, narrowing what it records,
+        deleting a GuardDuty detector, a Config recorder or an Access Analyzer analyzer, disabling Security Hub. The CLI
+        calls those services configservice and accessanalyzer; the spellings `config` and `access-analyzer` are held
+        too, and so is GuardDuty's older master-account command. Describing, listing and starting them is not."""
+        held = [
+            "aws cloudtrail stop-logging --name production-org-trail", "aws cloudtrail delete-trail --name audit-logs",
+            "aws cloudtrail put-event-selectors --trail-name t --event-selectors '[]'",
+            "aws cloudtrail put-event-selectors --trail-name t --advanced-event-selectors file://none.json",
+            "aws guardduty delete-detector --detector-id 12abc34d567e8fa901bc2d34e56789f0",
+            "aws guardduty disassociate-from-master-account --detector-id d",
+            "aws guardduty disassociate-from-administrator-account --detector-id d",
+            "aws configservice stop-configuration-recorder --configuration-recorder-name default",
+            "aws configservice delete-configuration-recorder --configuration-recorder-name default",
+            "aws config stop-configuration-recorder --configuration-recorder-name default",
+            "aws config delete-configuration-recorder --configuration-recorder-name default",
+            "aws securityhub disable-security-hub", "aws securityhub disable-security-hub --region eu-west-1",
+            "aws accessanalyzer delete-analyzer --analyzer-name org-analyzer",
+            "aws access-analyzer delete-analyzer --analyzer-name org-analyzer",
+            # a global option before the service or after the command, a wrapper, a path and a command among others
+            "aws --profile prod --region us-east-1 cloudtrail stop-logging --name t",
+            "aws cloudtrail stop-logging --name t --region us-east-1 --profile prod",
+            "AWS_PROFILE=prod aws cloudtrail delete-trail --name t", "/usr/local/bin/aws cloudtrail stop-logging --name t",
+            "bash -c 'aws guardduty delete-detector --detector-id d'", "cd infra && aws securityhub disable-security-hub"]
+        routine = [
+            "aws cloudtrail describe-trails", "aws cloudtrail get-trail-status --name production-org-trail",
+            "aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=ConsoleLogin",
+            "aws cloudtrail get-event-selectors --trail-name t", "aws cloudtrail list-trails",
+            "aws cloudtrail start-logging --name t", "aws cloudtrail create-trail --name t --s3-bucket-name b",
+            "aws guardduty list-detectors", "aws guardduty get-detector --detector-id d",
+            "aws guardduty create-detector --enable", "aws guardduty list-findings --detector-id d",
+            "aws configservice describe-configuration-recorders",
+            "aws configservice describe-configuration-recorder-status",
+            "aws configservice start-configuration-recorder --configuration-recorder-name default",
+            "aws securityhub describe-hub", "aws securityhub enable-security-hub", "aws securityhub get-findings",
+            "aws accessanalyzer list-analyzers", "aws accessanalyzer create-analyzer --analyzer-name a --type ACCOUNT",
+            "echo aws cloudtrail stop-logging", "git commit -m 'aws cloudtrail stop-logging'",
+            "grep -rn 'securityhub disable-security-hub' docs"]
+        for pack, engine, e in self.every_pack():
+            if pack not in ("server.yaml", "strict.yaml"):
+                continue
+            for cmd in held + routine:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual("TK-C010" in d["rule_ids"], cmd in held, d)
+                    if cmd in held:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+                    # over MCP a CLI line counts only when it starts with the program
+                    for tool in ("mcp:aws/call_aws", "mcp__aws-api__call_aws") if cmd.startswith("aws ") else ():
+                        d = e.decide(tool, {"cli_command": cmd})
+                        self.assertEqual("TK-C010" in d["rule_ids"], cmd in held, (tool, d))
 
     def test_a_call_over_64_kib_is_not_held_by_the_secret_rules(self):
         # a rule on every MCP call would make each of these ask (TK-OVERSIZE); only a tool the rule is for may
