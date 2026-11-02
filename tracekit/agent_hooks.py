@@ -782,8 +782,8 @@ def _opencode_plugin(python, v2):
                 _dev_hook_argv(module, "entry", ("opencode", ev)) for ev in ("tool.execute.before", "tool.execute.after")}
     return f'''{OPENCODE_MARKER}
 const commands = {json.dumps(commands)};
-// a hook answers within {APPROVAL_WAIT_S} s, a held call's approval wait included: one still running at 600 s (the other
-// coding agents' pre-tool timeout) hung, so it is killed and its call blocked
+// a hook answers within {APPROVAL_WAIT_S} s, a held call's approval wait included: one still running at 600 s (the
+// other coding agents' pre-tool timeout) hung, so it is killed and its call blocked
 const KILL_MS = 600000;
 
 async function tracekit(event, input, toolInput, toolResponse) {{
@@ -807,7 +807,7 @@ async function tracekit(event, input, toolInput, toolResponse) {{
     }});
     timer = setTimeout(() => {{ killed = true; hook.kill("SIGKILL"); }}, KILL_MS);
     const [message] = await Promise.all([new Response(hook.stderr).text(), hook.exited]);
-    return killed ? {{ code: 1, message: `[tracekit] the OpenCode hook did not answer in ${{KILL_MS / 1000}} s and was stopped` }}
+    return killed ? {{ code: 1, message: `[tracekit] the hook did not answer in ${{KILL_MS / 1000}} s: stopped` }}
       : {{ code: hook.exitCode, message: message.trim() }};
   }} catch (error) {{
     return {{ code: 1, message: `[tracekit] OpenCode hook error (${{error}})` }};
@@ -936,7 +936,8 @@ def _merge(hooks, path, events, entry, uninstall, flat=False):
 
 
 def _said(path, removed, uninstall, v2):
-    """Say which of Tracekit's hooks in `path` (`removed`: the versions taken out) init replaced or uninstall removed."""
+    """Say which of Tracekit's hooks in `path` (`removed`: the versions taken out) init replaced or uninstall
+    removed."""
     new = "v2" if v2 else "v1"
     old = " and ".join(sorted(removed if uninstall else removed - {new}))
     if old:
