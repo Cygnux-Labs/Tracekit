@@ -424,7 +424,8 @@ tracekit report --share                                 # its counts alone, to p
 ```
 
 It takes the viewer's store options (`--dev`, the default; `--config`; `--data-dir`; `--log-vkey`) and needs the same
-access to the store. The HORIZON demo's four agents (a planner and the coder, researcher and reviewer it starts), every
+access to the store. A `--since` that isn't before `--until` (by default, now), or a time no date can
+name, exits 2 before any run is read. The HORIZON demo's four agents (a planner and the coder, researcher and reviewer it starts), every
 call decided by a real dev signer (the store's path shortened):
 
 ```text

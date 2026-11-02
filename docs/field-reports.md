@@ -68,7 +68,7 @@ of the calls it matched, marked as `report --share` marks it.
 | Tool calls by decision: allow, flag, ask, deny | An example call, a rule's description, a hold's reason or who answered it |
 | Holds by outcome: approved · ran, rejected, expired, ... (`report`) | What the model or the person said, a tool's result, a gap's reason |
 | The gaps by kind: the signer's own kinds, any other as `other` (`report`) | An agent name that isn't Tracekit's own |
-| Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` | A rule id that isn't Tracekit's own; any record, hash or signature |
+| Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` (`no rule` for a decision no rule named, `report`) | A rule id that isn't Tracekit's own; any record, hash or signature |
 
 An agent name is printed only when it is one Tracekit's own hooks and tools give a run (`claude-code`, `codex`,
 `cursor`, `gemini-cli`, `opencode`, `goose`, `qwen-code`, `droid`, `antigravity`, `crush`, `agentsh`,
