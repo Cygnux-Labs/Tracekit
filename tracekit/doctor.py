@@ -310,8 +310,10 @@ def _dev_signer():
     return hello if isinstance(hello, dict) else {}
 
 
-# the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path)
-USER_ENV = ("HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME", "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG")
+# the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path); `~`
+# is USERPROFILE on Windows
+USER_ENV = ("USERPROFILE" if os.name == "nt" else "HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME",
+            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG")
 
 
 def _user_hook_files():
@@ -320,8 +322,9 @@ def _user_hook_files():
     to ignore a relative XDG_CONFIG_HOME, and Codex resolves a relative CODEX_HOME against its own directory)."""
     from . import agent_hooks
     relative = [k for k in USER_ENV if os.environ.get(k) and not os.path.isabs(os.environ[k])]
+    record = os.environ.get("TRACEKIT_CLIENT_HOME") or os.path.expanduser("~")   # init's record is under it
     paths = [install.user_settings(), os.path.join(os.path.expanduser("~"), ".claude", "settings.json"),
-             *(install.user_settings_all() if "TRACEKIT_CLIENT_HOME" not in relative else ()),   # + init's record
+             *(install.user_settings_all() if os.path.isabs(record) else ()),   # + the absolute paths it records
              *(agent_hooks.config_path(h) for h in agent_hooks.HARNESSES   # it resolves CODEX_HOME itself
                if not (h == "codex" and "CODEX_HOME" in relative))]
     return {os.path.realpath(p) for p in paths if os.path.isabs(p)}, relative

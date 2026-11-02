@@ -1540,6 +1540,18 @@ class Versions(unittest.TestCase):
                           "path, places", r["detail"])
             self.assertTrue(r["fix"].startswith("set CLAUDE_CONFIG_DIR, CODEX_HOME, XDG_CONFIG_HOME to an absolute path"))
 
+    def test_a_relative_home_makes_no_record_yours(self):
+        """Final review of #512: with HOME (USERPROFILE on Windows) relative and TRACEKIT_CLIENT_HOME unset, init's record
+        was read from the working directory, and the absolute settings path a planted one names counted as the user's."""
+        planted = os.path.join(os.path.realpath(self.d), "planted", "settings.json")
+        home = "USERPROFILE" if os.name == "nt" else "HOME"
+        with mock.patch.dict(os.environ, {home: "rel-home"}), \
+                mock.patch.object(install, "user_settings_all", return_value=[planted]):
+            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+            mine, relative = doctor._user_hook_files()
+        self.assertNotIn(planted, mine)
+        self.assertIn(home, relative)
+
     def test_a_relative_interpreter_or_path_is_never_run(self):
         """Review of #512: a relative interpreter, or a relative working tree a -c hook puts on sys.path, resolves against
         doctor's working directory, not the hook's: doctor runs neither, from the user's own hook file either."""
