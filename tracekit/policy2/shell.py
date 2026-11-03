@@ -145,11 +145,18 @@ def _sets_with_v(argv):
     return argv[0] == "printf" and any(a.startswith("-v") for a in argv[1:])
 
 
+def _sets_keyword(argv):
+    """set -k (or -o keyword): every later NAME=value word, anywhere in a command, is an assignment, so a command may
+    set any variable and lose that word from its argv."""
+    return argv[0] == "set" and any(re.fullmatch(r"-[A-Za-z]*k[A-Za-z]*", a) or a == "keyword" and argv[i] == "-o"
+                                    for i, a in enumerate(argv[1:]))
+
+
 def _read_names(argv, splits):
     """The variables bash's `read` sets with these words: its names, -a's array, REPLY with neither; None when an option
     or a name can't be told, or a word may split or expand into more (`splits`: per word, a `$` or backquote as
-    written, quoted or not, as bash nests quotes inside a substitution, or an unquoted glob): `read -p $P X` may name
-    what $P holds, `read -p "Continue? " ans` can't."""
+    written, quoted or not, as bash nests quotes inside a substitution, or an unquoted `*`, `?`, `[` or brace list):
+    `read -p $P X` may name what $P holds, and `read -p ["CD"] X` the files C and D; `read -p "Continue? " ans` can't."""
     if any(splits[1:]):
         return None
     names, args = [], list(argv[1:])
@@ -1117,7 +1124,7 @@ class _Parser:
                 if pieces is not None:
                     self.out.append(text)
                 words.append(text)
-                splits.append(bool(re.search(r"[$`]", raw)) or bool(g))
+                splits.append(bool(re.search(r"[$`]", raw) or g or re.search(r"[*?[]", self.bare)))
                 dynamic |= bool(re.search(r"[$`]", raw))
                 idx.append(len(self.out) - 1)
                 spans.append(None if expanded or pieces is not None else (len(self.out) - 1, start, self.i))
@@ -1283,7 +1290,8 @@ class _Parser:
                 (read_names := _read_names(words, splits)) is not None:
             for name in read_names:   # read sets only the names it reads into
                 self.known.pop(name, None)
-        elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) for c in cmds):
+        elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) or _sets_keyword(c["argv"])
+                 for c in cmds):
             self.ctx["any_set"] = True
         then = self.peek() in ("", "\n", ";", ")") or self.at("&&")
         for name, value, plus in assigns:
