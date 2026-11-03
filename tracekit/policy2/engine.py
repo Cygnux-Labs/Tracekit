@@ -516,7 +516,7 @@ def _container_host_access(commands):
     the command it runs) give it host privileges or every capability, the host's process space, or a _HOST_PATH."""
     for command in commands:
         argv = command["argv"]
-        if argv[0].rsplit("/", 1)[-1] not in ("docker", "podman"):
+        if not argv or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman"):
             continue
         words, i = argv[1:], 0
         while i < len(words) and words[i].startswith("-"):   # a global option, and its value unless a verb follows
