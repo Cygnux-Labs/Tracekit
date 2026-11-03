@@ -9,13 +9,15 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-51'
+version: '2026.10-v2-52'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
 
 tools:
   Bash: shell
+  Monitor: shell             # Claude Code: a background command, run in the shell Bash uses
+  PowerShell: shell          # Claude Code on Windows (Codex's shell runs PowerShell there too)
   run_shell_command: shell   # Gemini CLI
   shell: shell               # Codex, OpenAI Agents ShellTool
   local_shell: shell         # OpenAI Agents LocalShellTool
