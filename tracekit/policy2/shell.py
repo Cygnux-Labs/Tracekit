@@ -160,6 +160,7 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 # a pathname pattern in a word's unquoted text; a ] first in a bracket is one of its characters ([]x], [!]x])
 _GLOB = re.compile(r"[*?]|\[[!^]?(?:\][^][]*|[^][]+)\]")
 _HOME_WORD = re.compile(r"\$(?:HOME|\{HOME\})")   # the one bare variable the packs name as a word
+_HOME_DEFAULT = re.compile(r"\$\{HOME:?[-=?][^{}]*\}")   # $HOME with a default, an assignment or a check
 # the start of "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
 _ALL_ITEMS = re.compile(r"\$(?:@|\{!?(?:@|[A-Za-z_][A-Za-z0-9_]*(?:\[@\]|@)))")
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v",
@@ -1750,6 +1751,9 @@ class _Parser:
             m = _NAME.match(s, self.i + 1)
             self.i = m.end() if m else self.i + 1
         text = s[start:self.i]
+        # HOME is set: its default, assignment or check is $HOME itself (${HOME:-x}, ${HOME:?}), as the packs name it
+        if _HOME_DEFAULT.fullmatch(text):
+            return _Expansion("$HOME")
         # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
         if text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text):
             return text

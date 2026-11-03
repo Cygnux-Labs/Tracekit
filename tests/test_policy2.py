@@ -1588,7 +1588,11 @@ class TimedAndBraced(unittest.TestCase):
             for cmd, rule in (("${X:+} sudo id", "TK-D001"), ("${X:0:0} sudo id", "TK-D001"),
                               ("${X%%*} rm -rf ~", "TK-D004"), ("${X:+} tracekit approvals approve apr-1", "TK-D012"),
                               ("echo ok && ${X##*} sudo id", "TK-D001"), ("${X:-sudo id:0}", "TK-D001"),
-                              ("bash -c '${X:-sudo id:0}'", "TK-D001"), ("${ true; }; echo a\\ #b; sudo id", "TK-D001")):
+                              ("bash -c '${X:-sudo id:0}'", "TK-D001"), ("${ true; }; echo a\\ #b; sudo id", "TK-D001"),
+                              ("${ true; }; echo a\\;#b; sudo id", "TK-D001"), ("${ true; }; echo a\\|#b; sudo id", "TK-D001"),
+                              # HOME is set: its default or check is $HOME (1.5.2 only flagged these)
+                              ("rm -rf ${HOME:-x}/", "TK-D004"), ("rm -rf ${HOME:?}/", "TK-D004"),
+                              ("rm -rf ${HOME=/tmp}/", "TK-D004")):
                 d = e.decide("Bash", {"command": cmd})
                 self.assertIn(rule, d["rule_ids"], (pack, backend, cmd, d))
                 self.assertIn(d["verdict"], ("ask", "deny"), (pack, backend, cmd))
