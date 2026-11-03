@@ -9,8 +9,9 @@ make check          # lint + tests + build
 
 ## Picking an issue
 
-Claim one good first issue at a time: comment on it and wait to be assigned before you start. That leaves the others
-for other first-time contributors.
+Comment on a good first issue to claim it, then start right away; if someone claimed it already, pick another. Take
+one at a time: claim the next once your pull request for the first is merged or closed, so the others stay open for
+other first-time contributors. A claim with no pull request after 7 days is open again.
 
 ## Tests and evals
 
