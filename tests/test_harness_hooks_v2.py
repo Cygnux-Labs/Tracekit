@@ -463,7 +463,7 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
         aid = err.split()[4]
         self.assertRegex(json.loads(out)["reason"],   # what Gemini CLI shows the person and the model
-                         rf"\(TK-A004\): a person lets it run with `tracekit approvals( --signer \S+)? approve {aid}`"
+                         rf"\(TK-A004(; TK-F\d+)*\): a person lets it run with `tracekit approvals( --signer \S+)? approve {aid}`"
                          ", then asks the agent to try the same call again")
         pre["tool_input"]["additional_permissions"] = {"network": False}
         self.assertEqual(self.hook("gemini", pre)[0], 0)
