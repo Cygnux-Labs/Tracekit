@@ -333,7 +333,7 @@ def extract(cls, tool, args):
                 args.get(k) is not None for k in BODY_KEYS)
             if sends or query:
                 out["sends_to"] = info.get("host")
-            if query and not sends:
+            if query and not sends and not args.get("urls"):
                 out["link"] = url
     elif cls == "sql":
         stmt = first(args, "sql", "query", "statement")

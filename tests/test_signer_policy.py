@@ -3518,7 +3518,12 @@ class PackReading(unittest.TestCase):
             ("mcp:ssh/run", {"host": "h", "message": "cat /root/.aws/credentials"}),
             ("mcp:filesystem/write_file", {"path": "/repo/docs/aws.md", "content": "Configure ~/.aws/credentials"}),
             ("mcp:github/create_issue", {"title": "x", "body": {"path": "/root/.aws/credentials"}}),
-            ("mcp:files/search_and_read", {"query": "/root/.aws/credentials"})])
+            ("mcp:files/search_and_read", {"query": "/root/.aws/credentials"}),
+            # the final review: `create` posts only what it names (an issue, a comment, a pull request); a file, a
+            # file update or a job it creates is acted on
+            ("mcp:fs/create_file", {"path": "/repo/x.sh", "content": "cat /root/.aws/credentials"}),
+            ("mcp:github/create_or_update_file", {"path": "x.yml", "content": "run: cat /root/.aws/credentials"}),
+            ("mcp:k8s/createCronJob", {"name": "x", "content": "cat /root/.aws/credentials"})])
         self.rule_on_server("TK-S001", [
             ("mcp:computer/computer", {"action": "type",
                                        "text": "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/"}),

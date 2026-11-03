@@ -1579,6 +1579,20 @@ class TimedAndBraced(unittest.TestCase):
                 d = e.decide("Bash", {"command": cmd})
                 self.assertEqual((d["verdict"], "TK-D002" in d["rule_ids"]), ("deny", True), (pack, backend, cmd))
 
+    def test_an_always_empty_word_or_a_default_ending_in_zero_hides_no_command(self):
+        """The last review of 1.5.3: a word that is always nothing (${X:+}, ${X:0:0}, ${X%%*}) stayed a word of its
+        own, so the command after it was never read as one, and ${X:-word:0} was read as a substring of length 0, not a
+        default: each ran unheld where 1.5.2 held it. A # after an escaped blank isn't a comment either."""
+        for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd, rule in (("${X:+} sudo id", "TK-D001"), ("${X:0:0} sudo id", "TK-D001"),
+                              ("${X%%*} rm -rf ~", "TK-D004"), ("${X:+} tracekit approvals approve apr-1", "TK-D012"),
+                              ("echo ok && ${X##*} sudo id", "TK-D001"), ("${X:-sudo id:0}", "TK-D001"),
+                              ("bash -c '${X:-sudo id:0}'", "TK-D001"), ("${ true; }; echo a\\ #b; sudo id", "TK-D001")):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertIn(rule, d["rule_ids"], (pack, backend, cmd, d))
+                self.assertIn(d["verdict"], ("ask", "deny"), (pack, backend, cmd))
+
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
         """Sweep before 1.5.3: an unreadable line was split at ;, & and | inside quotes too, so text a command only
         prints was denied as the command it names, where 1.5.2 held the line. A quote left open runs to the end."""

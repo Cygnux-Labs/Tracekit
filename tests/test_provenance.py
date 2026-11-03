@@ -274,7 +274,10 @@ class Signer(unittest.TestCase):
                 ({"url": links[0] + ")"}, "the link with something after it"),
                 ({"url": links[0], "params": {"d": "secret"}}, "a params argument"),
                 ({"url": links[0], "method": "POST", "body": "x"}, "a body"),
-                ({"url": links[0], "method": "PUT"}, "a method that sends"))):
+                ({"url": links[0], "method": "PUT"}, "a method that sends"),
+                # the last review: a web_fetch's `urls` (every URL its prompt names) were decided under the first one's
+                # exemption, so a collector URL named after the verbatim link went out unheld
+                ({"url": links[0], "urls": [links[0], "https://forum.vendor.example/c?d=secret"]}, "another URL beside it"))):
             with self.subTest(why=why):
                 self.assertIn("TK-P003", self.decide("http_request", args, f"tc-send{i}")["rule_ids"])
 
