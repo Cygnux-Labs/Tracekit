@@ -260,8 +260,8 @@ class Engine:
         try:
             return _shell(args, target, readings), False
         except shell.ParseError as e:
-            return (_plain(command, getattr(e, "at", 0), readings) if isinstance(command, str) else
-                    _plain(canonical(command), 0, readings)), True
+            return (_plain(command, getattr(e, "at", 0), readings, target) if isinstance(command, str) else
+                    _plain(canonical(command), 0, readings, target)), True
 
     @staticmethod
     def _subjects(cls, field, args, fields, parsed, split=False):
@@ -374,17 +374,18 @@ def _shell(args, persistent_target=None, readings=True):
 _PIECE = re.compile(r"""(?:[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
 
 
-def _plain(raw, at=0, readings=True):
+def _plain(raw, at=0, readings=True, persistent_target=None):
     """What a command the parser can't read is decided on: its text as its target and code; the line before the word
     it stopped in (`at`: where), parsed; and each piece of the rest (_PIECE), from the one it stopped in, split on
     blanks as a command (shell.analyse_argv), so a rule that reads plain words still holds what it held (`sudo id
-    {1..3..1}`). A part that can't be read so is left out; the parts share one parse budget (shell.MAX_WORK)."""
+    {1..3..1}`). A part that can't be read so is left out; the parts share one parse budget (shell.MAX_WORK).
+    `persistent_target`: as for shell.analyse, so text echoed into ~/.bashrc stays code in the head too."""
     out, start, work = ([], [], [raw], [], [raw]), 0, [0]
     head = raw[:max(0, *(raw.rfind(c, 0, at) for c in " \t\n"))]
     found = []
     if head.strip():
         try:
-            found.append(shell.analyse(head, readings=readings, work=work))
+            found.append(shell.analyse(head, persistent_target, readings, work))
             last = ([m.span() for m in _PIECE.finditer(head)] or [(0, 0)])[-1]
             start = last[0] if last[1] == len(head) else last[1] + 1   # after a separator that ends the head
         except shell.ParseError:
