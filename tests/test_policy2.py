@@ -1315,6 +1315,23 @@ class Shell(unittest.TestCase):
         cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
         self.assertEqual(Engine(pol).decide("Bash", {"command": cmd})["verdict"], "allow")
 
+    def test_redirections_to_bracket_patterns_decide_within_the_budget(self):
+        """63 KiB of `>>a[bc][de][fg][hi]N` took 5 s to decide (1.5.2: 0.1 s): each pattern's 16 names were made
+        uncharged, and the shell targets were deduplicated against a list. The names count toward the parse budget,
+        past which the line is held, and the targets are deduplicated with a set."""
+        units, i = [], 0
+        while sum(map(len, units)) + len(units) < 63 * 1024 - 40:
+            units.append(f">>a[bc][de][fg][hi]{i}")
+            i += 1
+        cmd = "echo x " + " ".join(units)
+        for pack in ("dev.yaml", "strict.yaml"):
+            pol = pc.build(os.path.join(PACKS, pack))[0]
+            for e in (Engine(pol), Engine(pol, "regex")):
+                start = time.perf_counter()
+                d = e.decide("Bash", {"command": cmd})
+                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER, (pack, e.engine))   # ~0.25 s on a laptop
+                self.assertIn(d["verdict"], ("ask", "deny"), (pack, e.engine))
+
     def test_an_assignment_is_read_within_its_word(self):
         """`_ASSIGN` read past the word to the next `]` on the line: `a[ x]=1` made `a[` an assignment, as bash
         doesn't, and 64 KiB of `a[;` took 0.6 s to parse."""

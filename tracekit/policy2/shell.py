@@ -1001,8 +1001,9 @@ class _Parser:
                     # the name, and again with its expansions empty (self.cut)
                     named = [target[0]] + [t for t in dict.fromkeys(self.cut) if t and t != target[0]] * \
                         self.ctx["readings"] + [t for texts in self.fill([self.slots]) for t in texts]
-                    named = list(dict.fromkeys(named + [c for t in named for c in _unglob(t)] * (
-                        self.ctx["readings"] and target[2])))   # a name its pattern may make
+                    made = [c for t in named for c in _unglob(t)] if self.ctx["readings"] and target[2] else []
+                    self.charge(sum(map(len, made)))   # each name its pattern may make
+                    named = list(dict.fromkeys(named + made))
                     self.ctx["refs"] += named
                     stdin_redirect |= m.group(2) in ("<", "<&", "<>")
                     writes = m.group(2) not in ("<", "<&") and not (

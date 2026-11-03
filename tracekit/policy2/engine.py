@@ -331,8 +331,9 @@ class Engine:
                     if t and _BARE_TARGET.fullmatch(t)]
             targets = [" ".join(w) for w in words] + parsed[2] + stdin
             # a path also as plainly written: /etc/./x, /etc//x and /etc/y/../x name /etc/x
+            have = set(targets)
             targets += [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
-                                    for t in targets) if n not in targets]
+                                    for t in targets) if n not in have]
             have = set(targets)
             return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
         if cls == "fs":
