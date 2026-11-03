@@ -818,6 +818,9 @@ class CodingPack(unittest.TestCase):
             "dotnet ef database drop", "dotnet ef database drop --force", "dotnet-ef database drop",
             # help for a command with more words than the exemption allows, and a name before the flag
             "bundle exec rails db:drop --help", "dotnet ef database drop --help", "npx prisma migrate reset -h",
+            # Phoenix's ecto.reset alias passes its arguments to ecto.setup only: ecto.drop runs without --help
+            "mix ecto.reset --help", "mix ecto.reset -h",
+            "bundle exec bin/rails db:drop", "bundle exec ./bin/rake db:reset",
             # a wrapper, a nested shell and a command among others
             "sudo bundle exec rails db:reset", "bash -c 'npx prisma migrate reset --force'", "cd app && python3 manage.py flush"]
         routine = [
@@ -835,7 +838,7 @@ class CodingPack(unittest.TestCase):
             "dotnet ef migrations add Init", "dotnet ef database update", "dotnet ef migrations list", "dotnet build",
             # asking for help runs nothing
             "prisma migrate reset --help", "prisma migrate reset -h", "rails db:drop --help", "supabase db reset --help",
-            "php artisan db:wipe --help", "mix ecto.reset --help",
+            "php artisan db:wipe --help",
             "echo rails db:drop", "grep -rn 'db:reset' config", "git commit -m 'npx prisma migrate reset in CI'"]
         for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
             for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
