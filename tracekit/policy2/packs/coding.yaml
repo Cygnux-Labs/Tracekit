@@ -89,14 +89,16 @@ deny:
     # or a redirection into one (a read redirected from one, `< .env`, too: the target doesn't say which way it goes).
     # Every .env variant, templates included: a whole command can name several files, so no `unless` here. A suffix
     # after `.env` (`.env.local`) only on a file named so: after any prefix too (`a.env.env…`), it would rescan
-    pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$'
+    pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/(credentials|config))$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/(credentials|config))( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/(credentials|config))$'
     reason: writing to a credentials file from the shell
     remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011
     class: shell
     field: line
-    pattern: '\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
+    # a cluster, Docker, gcloud or Git credential file only as a source sent to a remote (scp or rsync with a host:
+    # word after it) or a curl/wget upload or body (`@`, -T), so fetching a kubeconfig into place isn't one
+    pattern: '\b(cat|tar|zip|base64|gzip|xxd)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd|\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))|\b(scp|rsync)\s[^\n]*?(\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)\b[^\n]*?\s\S*:|\b(curl|wget)\s[^\n]*?(@|-T ?|--upload-file[ =]|--(post|body)-file[ =])\S*?(\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)'
     reason: sending credential files off the machine
     remedy: Keep keys and cloud credentials on the machine; a person shares access through the deployment's secret store.
     rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
