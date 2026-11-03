@@ -1607,7 +1607,10 @@ class TimedAndBraced(unittest.TestCase):
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
         for cmd, rule in (("unset HOME; cat ${HOME:-/root/.aws/credentials}", "TK-S004"),
                           ("HOME=; cat ${HOME:-/root/.aws/credentials}", "TK-S004"),
-                          ("unset HOME; echo x > ${HOME:-/etc/tracekit}/policy.yaml", "TK-D007")):
+                          ("unset HOME; echo x > ${HOME:-/etc/tracekit}/policy.yaml", "TK-D007"),
+                          # and where the line gave HOME a literal, its default or check is that literal, as $HOME is
+                          ("HOME=/; rm -rf ${HOME:-x}/", "TK-D004"), ("HOME=/; rm -rf ${HOME:?}/", "TK-D004"),
+                          ("HOME=/; rm -rf ${HOME=x}/", "TK-D004"), ("HOME=sudo; ${HOME:-x} id", "TK-D001")):
             d = e.decide("Bash", {"command": cmd})
             self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (cmd, d))
 

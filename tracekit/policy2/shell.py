@@ -1751,9 +1751,10 @@ class _Parser:
             m = _NAME.match(s, self.i + 1)
             self.i = m.end() if m else self.i + 1
         text = s[start:self.i]
-        # HOME is set unless this line set it: its default, assignment or check is $HOME (${HOME:-x}, ${HOME:?}), as the
-        # packs name it; the default stays what it is when HOME is empty
-        home = _HOME_DEFAULT.fullmatch(text) and "HOME" not in self.known
+        # HOME is set unless this line may have emptied it: its default, assignment or check is $HOME (${HOME:-x},
+        # ${HOME:?}), as the packs name it, or the literal the line gave it; the default stays what it is when HOME may
+        # be empty
+        home = _HOME_DEFAULT.fullmatch(text) and "" not in self.known.get("HOME", ())
         # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
         if not home and (text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text)):
             return text
