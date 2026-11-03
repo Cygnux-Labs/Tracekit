@@ -117,7 +117,7 @@ agent sees.
 
 | Rule | Decision | Matches |
 |---|---|---|
-| TK-B001 | deny | navigating to a `file:` URL (also behind `view-source:` or `blob:`, or with controls in the scheme) |
+| TK-B001 | deny | navigating to a `file:` URL (also behind `view-source:` or `blob:`, or with controls in the scheme), or to a `javascript:` URL, which runs code in the page as `evaluate` does |
 | TK-B002 | deny | navigating to a loopback, private, link-local (cloud metadata) or other non-global address, in any notation |
 | TK-B003 | deny | navigating to localhost, a name without a dot, or `.internal`/`.local`/`.svc` hosts |
 | TK-B010 | ask | `upload_file` |

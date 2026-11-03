@@ -41,14 +41,25 @@ def fs_path(raw):
 
 def fs_forms(raw):
     """What a path rule matches: fs_path(raw) and, when a `..` cut it short, also the lexically normalised path (the
-    target unless a symlink redirects it); each also casefolded, because the agent's file system may ignore case
-    (macOS, Windows) whatever the signer's does."""
+    target unless a symlink redirects it); each also as Windows opens it (_windows) and casefolded, because the
+    agent's file system may ignore case (macOS, Windows) whatever the signer's does."""
     if not isinstance(raw, str):
         return []
     forms = [fs_path(raw)]
     if ".." in raw.replace("\\", "/").split("/"):
         forms.append(posixpath.normpath(raw.replace("\\", "/")))
+    forms += [_windows(f) for f in forms]
     return list(dict.fromkeys(forms + [f.casefold() for f in forms]))
+
+
+def _windows(path):
+    """`path` (with `/`) as Windows opens it: each part without an NTFS stream (`:…`, the drive's `C:` aside) and
+    without trailing dots and spaces, so `C:/p/.env.`, `.env ` and `.env::$DATA` are `C:/p/.env`. A part that is all
+    dots or spaces is kept."""
+    parts = path.split("/")
+    return "/".join(p if p in ("", ".", "..") else (
+        p if i == 0 and re.fullmatch(r"[A-Za-z]:", p) else p.split(":")[0].rstrip(". ") or p)
+        for i, p in enumerate(parts))
 
 
 SPECIAL = ("http", "https", "ws", "wss", "ftp")   # the schemes a URL host is read for
@@ -303,18 +314,20 @@ def extract(cls, tool, args):
         url = first(args, "url")
         info = url_info(url) if isinstance(url, str) else {}
         out = {"url": url, "host": info.get("host"), "internal": info.get("internal")}
+        # the query as a browser reads it: tabs and newlines dropped, up to the fragment
+        query = re.sub(r"[\t\n\r]", "", url).partition("#")[0].partition("?")[2] if isinstance(url, str) else ""
         if cls == "browser":
             out.update(action=args.get("action"), scheme=info.get("scheme"))
             page, action = args.get("page_url"), tool.rpartition(":")[2]
-            # the query as a browser reads it: tabs and newlines dropped, up to the fragment
-            query = re.sub(r"[\t\n\r]", "", url).partition("#")[0].partition("?")[2] if isinstance(url, str) else ""
             if action in TYPING and isinstance(page, str):
                 out["sends_to"] = url_info(page).get("host")
             elif action in NAVIGATE and query:
                 out["sends_to"] = info.get("host")
         else:
             out["method"] = str(args.get("method") or "GET").upper()
-            if out["method"] not in ("GET", "HEAD") or any(args.get(k) is not None for k in BODY_KEYS):
+            # a GET carries data in its query, the URL's or a `params` argument's (requests' and LangChain's)
+            if out["method"] not in ("GET", "HEAD") or query or args.get("params") or any(
+                    args.get(k) is not None for k in BODY_KEYS):
                 out["sends_to"] = info.get("host")
     elif cls == "sql":
         stmt = first(args, "sql", "query", "statement")

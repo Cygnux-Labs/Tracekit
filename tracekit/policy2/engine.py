@@ -297,8 +297,10 @@ class Engine:
         """shell: each command's argv without its data words (shell.data_words), the redirection targets, assignments
         and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
         writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
-        mcp, app and unknown tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
-        decimal, hex, octal or IPv6 form reads as the address it is."""
+        mcp: the whole call without the text it only carries (_acted_on), each string in it with a `/` or `\\` also
+        read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call. Each
+        URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal, hex, octal or IPv6
+        form reads as the address it is."""
         if cls == "shell":
             commands = parsed[0]
             words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in commands
@@ -329,7 +331,11 @@ class Engine:
             to = fields.get("receiver")
             receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
             return receiver + [canonical(args.get("params"))]
-        return [canonical(args)] if cls in ("mcp", "app", "unknown") else []
+        if cls == "mcp":
+            call = _acted_on(args, "search" in fields.get("tool", "").casefold())
+            return list(dict.fromkeys([canonical(call)] + [f for s in _flat_strings(call) if "/" in s or "\\" in s
+                                                           for f in classes.fs_forms(s)]))
+        return [canonical(args)] if cls in ("app", "unknown") else []
 
 
 def _shell(args, persistent_target=None):
@@ -765,11 +771,49 @@ def _command_effects(commands):
             out.extend("DELETE_TARGET:" + path for path in operands[1:])
         elif exe in ("awk", "gawk", "mawk", "nawk"):   # print or printf > "file" in its program
             out.extend("WRITE_TARGET:" + path for path in re.findall(r'>>?\s*"([^"\n]+)"', shell._awk_program(args) or ""))
+        elif exe in ("sqlite3", "sqlite"):
+            # every operand (the database among them), when its SQL (the operands and a heredoc or herestring) writes
+            # outside literals and comments, or can't be read
+            # lean: SQL read from a file (`sqlite3 db < x.sql`, `.read x.sql`) isn't seen; read it if one is held wrongly
+            operands = [a for a in args if not a.startswith("-")]
+            code = classes.sql_code("\n".join(operands + list(command.get("stdin", ()))),
+                                    *classes.SQL_DIALECTS["sqlite"])
+            if code is None or _SQL_WRITE.search(code):
+                out.extend("WRITE_TARGET:" + a for a in operands)
     return out
+
+
+_SQL_WRITE = re.compile(r"(?im)\b(?:insert|update|delete|drop|create|alter|replace\s+into|vacuum|reindex)\b"
+                        r"|^\s*\.(?:restore|import)\b")
 
 
 def _flat(values):
     return [x for v in values for x in (_flat(v) if isinstance(v, list) else [v])]
+
+
+# arguments whose text an MCP tool only carries (an issue's title and body, a message, a file's content): a path or an
+# address named there is mentioned, not read or fetched
+_CARRIED = frozenset(("title", "body", "text", "description", "comment", "message", "subject", "content"))
+
+
+def _acted_on(value, search):
+    """An MCP call's arguments without those it only carries (_CARRIED, at any depth; and `query` or `q` when `search`,
+    the tool's name saying it searches)."""
+    if isinstance(value, dict):
+        return {k: _acted_on(v, search) for k, v in value.items()
+                if k.casefold() not in _CARRIED and not (search and k.casefold() in ("query", "q"))}
+    if isinstance(value, list):
+        return [_acted_on(v, search) for v in value]
+    return value
+
+
+def _flat_strings(value):
+    """The strings in a JSON value, dict keys aside."""
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, list):
+        return [s for v in value for s in _flat_strings(v)]
+    return [value] if isinstance(value, str) else []
 
 
 def _prepare(subjects):
