@@ -229,8 +229,10 @@ FORMATTERS = {"prettier": ("--write", "-w"), "gofmt": ("-w",), "eslint": ("--fix
               "autopep8": ("-i", "--in-place")}   # rewrite their files in place with one of these flags
 UNREAD = frozenset("$`*?[{")   # a word with one of these (a variable, a glob, a substitution) is no path
 FIND_NAMES = ("-name", "-iname", "-path", "-ipath", "-wholename")   # what find -delete or -exec acts on
-# flags that put a command's paths in another directory (git/tar/make/env -C, cp/mv -t, env --chdir, ...)
-ELSEWHERE = ("-C", "-t", "--directory", "--target-directory", "--chdir")
+# the short flag (in a cluster too: cp -vt) by which these commands put their paths in another directory, as do the
+# long ones below
+ELSEWHERE = {"cp": "t", "mv": "t", "install": "t", "ln": "t", "git": "C", "env": "C", "make": "C", "tar": "C"}
+ELSEWHERE_LONG = ("--target-directory", "--directory", "--chdir")
 NET_COMMANDS = frozenset(("curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
                           "http", "https"))
 NET_GIT = frozenset(("push", "pull", "fetch", "clone", "ls-remote"))
@@ -760,11 +762,12 @@ def lifts(kind, mention, is_object):
 
 def shell(cmd):
     """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs": those
-    of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory, "elsewhere": a command
-    names a directory its paths are in or go to (ELSEWHERE, also as -Cdir or --directory=dir), "push": a git push,
-    "network": a command that reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell
-    call's arguments (`command` or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine
-    reads them (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included).
+    of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory (cd, pushd, popd, git
+    --work-tree), "elsewhere": a command names a directory its paths are in or go to (ELSEWHERE, ELSEWHERE_LONG),
+    "push": a git push, "network": a command that reaches the network, "writes": it writes or commits}. `cmd`: a
+    command line, or a shell call's arguments (`command` or `cmd` a line or an argv list, `commands` a list of lines),
+    read as the policy engine reads them (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines
+    included).
     lean: redirections, the arguments of tee/touch/mkdir/rm/rmdir/truncate/shred/unlink and of formatters that write
     in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
     ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
@@ -780,9 +783,10 @@ def shell(cmd):
     for c in cmds:
         name, rest = c["argv"][0], c["argv"][1:]
         args = [w for w in rest if not w.startswith("-")]
-        out["cd"] = out["cd"] or name in ("cd", "pushd")
-        out["elsewhere"] = out["elsewhere"] or any(
-            w.split("=", 1)[0] in ELSEWHERE or w[:2] in ("-C", "-t") and len(w) > 2 for w in rest)
+        out["cd"] = out["cd"] or name in ("cd", "pushd", "popd") or name == "git" and any(
+            w.split("=", 1)[0] == "--work-tree" for w in rest)
+        out["elsewhere"] = out["elsewhere"] or name in ELSEWHERE and any(w.split("=", 1)[0] in ELSEWHERE_LONG or (
+            w[:1] == "-" and w[1:2] != "-" and ELSEWHERE[name] in w) for w in rest)
         mode = WRITERS.get(name)
         if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
                                            for w in rest):

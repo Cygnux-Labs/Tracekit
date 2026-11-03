@@ -52,10 +52,9 @@ def receipts(tool, args, cwd):
     """The receipts of the weights files (WEIGHTS) call (`tool`, `args`) wrote, as constraints.facts reads what a call
     writes: a write tool's path, or a shell command's write targets (constraints.shell), relative ones against `cwd`.
     Each is marked `reported_by: hook`, its path and reason JSON-safe (a lone surrogate escaped) and cut to MAX_TEXT.
-    Refused rather than guessed: a path starting with `~`, every path of a command that names another directory for
-    them (constraints.shell's `elsewhere`: -C, -t, ...), and a relative one when the command changes directory or
-    there is no `cwd`. At most MAX_FILES receipts, then one entry counting the files past them, all hashed within
-    BUDGET_S. Never raises: any other error is a refusal too, so the call's result is still sent."""
+    Refused rather than guessed: what _named refuses, and a relative path when there is no `cwd`. At most MAX_FILES
+    receipts, then one entry counting the files past them, all hashed within BUDGET_S. Never raises: any other error
+    is a refusal too, so the call's result is still sent."""
     try:
         out = _receipts(tool, args, cwd)
     except Exception as e:   # the receipts ride on the call's result, which goes to the signer whatever happens here
@@ -64,8 +63,11 @@ def receipts(tool, args, cwd):
 
 
 def _named(tool, args):
-    """(the weights files call (`tool`, `args`) writes, as it names them; constraints.shell's reading of its command,
-    or {}): a write tool's path, or a shell command's write targets, as constraints.facts reads what a call writes."""
+    """[(path, why the hook can't place it, or None)] of the weights files call (`tool`, `args`) writes, as it names
+    them: a write tool's path, or a shell command's write targets, as constraints.facts reads what a call writes.
+    Refused rather than guessed: a path starting with `~`, every path of a command that names another directory for
+    them (constraints.shell's `elsewhere`: cp -t, git -C, ...), and a relative one when the command changes directory
+    (`cd`: cd, pushd, popd, git --work-tree)."""
     args = args if isinstance(args, dict) else {}
     if tool in WRITE_TOOLS:
         paths, s = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")], {}
@@ -73,22 +75,23 @@ def _named(tool, args):
         s = constraints.shell(args)
         paths = s["paths"]
     else:
-        return [], {}
-    return list(dict.fromkeys(p for p in paths if p.lower().endswith(WEIGHTS))), s
+        return []
+    return [(p, "a path starting with ~, which the hook doesn't expand" if p.startswith("~") else
+             "the command names another directory for its paths (-t, -C, --target-directory, --directory or --chdir)"
+             if s.get("elsewhere") else "a path relative to a directory the command changed to"
+             if s.get("cd") and not os.path.isabs(p) else None)
+            for p in dict.fromkeys(p for p in paths if p.lower().endswith(WEIGHTS))]
 
 
 def _receipts(tool, args, cwd):
-    paths, s = _named(tool, args)
+    named = _named(tool, args)
     cwd, deadline, out = cwd if isinstance(cwd, str) else "", time.monotonic() + BUDGET_S, []
-    for p in paths[:MAX_FILES]:
-        why = ("a path starting with ~, which the hook doesn't expand" if p.startswith("~") else
-               "the command names another directory for its paths (-C, -t, --directory, --target-directory or "
-               "--chdir)" if s.get("elsewhere") else None if os.path.isabs(p) else
-               "a path relative to a directory the command changed to" if s.get("cd") else
-               None if cwd else "a relative path, and the hook was given no working directory")
+    for p, why in named[:MAX_FILES]:
+        why = why or (None if os.path.isabs(p) or cwd else
+                      "a relative path, and the hook was given no working directory")
         out.append({"path": p, "refused": why} if why else receipt(os.path.join(cwd, p), deadline))
-    if len(paths) > MAX_FILES:
-        out.append({"refused": f"{len(paths) - MAX_FILES} more weights file(s): a call's result holds at most "
+    if len(named) > MAX_FILES:
+        out.append({"refused": f"{len(named) - MAX_FILES} more weights file(s): a call's result holds at most "
                                f"{MAX_FILES} receipts"})
     return out
 
@@ -254,7 +257,8 @@ def main(argv=None):
         result = content.get("result") if isinstance(content, dict) else None
         found = result.get("model_receipts") if isinstance(result, dict) else None
         d = decisions.get(results[seq]["event"]["data"].get("decision_id"))
-        named = _named(d["event"]["data"].get("tool"), args.get(d["event"]["run_seq"]))[0] if d else []
+        named = [n for n, why in _named(d["event"]["data"].get("tool"), args.get(d["event"]["run_seq"])) if not why] \
+            if d else []   # only the paths the hook hashes
         for r in found if isinstance(found, list) else ():
             path = r.get("path") if isinstance(r, dict) else None
             if isinstance(path, str) and r.get("reported_by") == "hook" and any(

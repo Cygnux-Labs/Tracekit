@@ -2,6 +2,7 @@
 that wrote one, and `tracekit verify-model` end to end against the dev signer's content vault."""
 import contextlib
 import hashlib
+import importlib.util
 import io
 import json
 import os
@@ -25,6 +26,7 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileReader
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+HAVE_SDK = importlib.util.find_spec("claude_agent_sdk") is not None
 receipt = model_receipt.receipt
 
 
@@ -234,17 +236,29 @@ class Receipts(Base):
         """Review of 6b0a568e: `cp -t out src` got a receipt of its source, `env -C sub` and `git -C sub` ones of the
         file in the hook's directory, and a quoted ~ was expanded."""
         src = safetensors(self.path("src.safetensors"), {"a": b"\x01"})
-        elsewhere = ("the command names another directory for its paths (-C, -t, --directory, --target-directory or "
+        elsewhere = ("the command names another directory for its paths (-t, -C, --target-directory, --directory or "
                      "--chdir)")
-        home = "a path starting with ~, which the hook doesn't expand"
+        home, cd = "a path starting with ~, which the hook doesn't expand", "a path relative to a directory the " \
+            "command changed to"
+        # review of d013a1dd: a cluster (cp -vt), popd and git --work-tree slipped through
         for cmd, why in (("cp -t out src.safetensors", elsewhere), (f"cp -t /out {src}", elsewhere),
-                         ("env -C sub cp x model.safetensors", elsewhere), ("git -C sub mv x model.safetensors", elsewhere),
+                         ("cp -vt out src.safetensors", elsewhere), ("cp -rt out src.safetensors", elsewhere),
+                         ("mv -ft out src.safetensors", elsewhere), ("install -Dt out src.safetensors", elsewhere),
+                         ("env -C sub cp x model.safetensors", elsewhere),
+                         ("git -C sub mv x model.safetensors", elsewhere),
                          ("env --chdir=sub cp x model.safetensors", elsewhere), ("cp x '~/model.safetensors'", home),
-                         ("cp x ~/model.safetensors", home)):
+                         ("cp x ~/model.safetensors", home), ("popd; cp x model.safetensors", cd),
+                         ("git --work-tree=sub restore model.safetensors", cd)):
             self.assertEqual([r.get("refused") for r in model_receipt.receipts("Bash", {"command": cmd}, self.d)],
                              [why], cmd)
         self.assertEqual(model_receipt.receipts("Write", {"file_path": "~/model.safetensors"}, self.d)[0]["refused"],
                          home)
+
+    def test_another_commands_t_or_c_flag_refuses_nothing(self):
+        """Review of d013a1dd: `grep -C3` or `sort -t,` anywhere in a command refused every weights path in it."""
+        want = [dict(receipt(self.w), reported_by="hook")]
+        for cmd in ("grep -C3 x f; cp x model.safetensors", "sort -t, -k1 a.csv > s.csv; cp x model.safetensors"):
+            self.assertEqual(model_receipt.receipts("Bash", {"command": cmd}, self.d), want, cmd)
 
 
 class HookRecords(Base):
@@ -337,6 +351,24 @@ class HookRecords(Base):
         self.assertEqual(self.call("t1", "Read", {"file_path": self.path("notes.md")},
                                    response={"content": "x", "model_receipts": planted}), {"content": "x"})
 
+    @unittest.skipUnless(HAVE_SDK, "claude-agent-sdk not installed")
+    def test_an_sdk_integrations_untrusted_result_cant_plant_one_either(self):
+        """Review of d013a1dd: the hook dropped a tool's own model_receipts key, but the SDK integrations sent an
+        untrusted tool's result as it came; the client drops it for every one of them."""
+        import anyio
+        from tracekit.integrations import claude_agent_sdk
+        self.untrusted = ("Read",)
+        c = Client()
+        self.addCleanup(c.close)
+        hooks = claude_agent_sdk.tracekit_hooks(c, c.register_run({"agent": {"name": "claude-agent-sdk"}}))
+        pre, post = hooks["PreToolUse"][0].hooks[0], hooks["PostToolUse"][0].hooks[0]
+        p = {"tool_use_id": "t1", "tool_name": "Read", "tool_input": {"file_path": self.path("notes.md")}}
+        planted = [{"path": self.path("model.safetensors"), "sha256": model_receipt.ZERO, "reported_by": "hook"}]
+        self.assertEqual(anyio.run(pre, dict(p, hook_event_name="PreToolUse"), "t1", None), {})
+        anyio.run(post, dict(p, hook_event_name="PostToolUse", tool_response={
+            "content": "x", "model_receipts": planted}), "t1", None)
+        self.assertEqual(self.complete("t1")["result"], {"content": "x"})
+
     def test_a_call_that_failed_gets_no_receipts(self):
         """Review of 6b0a568e: a failed, interrupted or is_error call got receipts too."""
         safetensors(self.path("model.safetensors"), {"a": b"\x01"})
@@ -381,15 +413,15 @@ class VerifyModel(Base):
             self.assertEqual(claude_code.handle(dict(p, hook_event_name="PostToolUse", tool_response={
                 "stdout": "", "stderr": "", "interrupted": False})), 0)
             st = claude_code._load(claude_code._state("s1"))
-            # a client other than the hook plants receipts of a backdoored file, as model.safetensors, in the results of
-            # a call that writes nothing and of a write to another file
+            # a client other than the hook (the TypeScript SDK's, say) puts receipts of a backdoored file, as
+            # model.safetensors, in the results of a call that writes nothing and of a write to another file
             self.backdoor = safetensors(self.path("backdoor.safetensors"), {"embed": b"\x01" * 32, "mlp": b"\x06" * 32})
             planted, c = dict(receipt(self.backdoor), path=self.new, reported_by="hook"), Client()
             run = RunHandle(c, st)
             for tid, tool, args in (("t2", "Read", {"file_path": self.new}),
                                     ("t3", "Write", {"file_path": self.path("notes.md"), "content": "x"})):
                 self.assertNotEqual(run.decide(tid, tool, args)["decision"], "deny")
-                self.assertIsNotNone(run.complete(tid, result={"model_receipts": [planted]}))
+                self.assertIsNotNone(run.complete(tid, result={}, model_receipts=[planted]))
             c.close()
             self.run_id = st["run_id"]
             self.assertEqual(claude_code.handle({"hook_event_name": "SessionEnd", "session_id": "s1"}), 0)
@@ -481,6 +513,20 @@ class VerifyModel(Base):
         def content(client, records, purpose):   # t1's arguments, unopened (redaction changed them), and its result
             d = next(r for r in records if r["event"]["type"] == "policy.decision")
             yield d["event"]["run_seq"], {"command": "cp edited.bin model.safetensors"}, False
+            yield next(r for r in records if r["event"]["type"] == "tool.result")["event"]["run_seq"], {"result": {
+                "model_receipts": [dict(real, reported_by="hook")]}}, True
+        with mock.patch("tracekit.why.signed.vault_content", content):
+            code, out, _ = self.verify(self.old, self.new)
+        self.assertEqual(code, 1)
+        self.assertIn("matches none of the 0 receipt(s) in the run", out)
+
+    def test_a_receipt_of_a_path_the_hook_refuses_doesnt_count(self):
+        """Review of d013a1dd: verify-model counted a receipt the hook had made of `cp -vt out src`'s source."""
+        real = receipt(self.new)
+
+        def content(client, records, purpose):   # t1's arguments, now a command the hook refuses, and its result
+            d = next(r for r in records if r["event"]["type"] == "policy.decision")
+            yield d["event"]["run_seq"], {"command": "cp -vt out model.safetensors"}, True
             yield next(r for r in records if r["event"]["type"] == "tool.result")["event"]["run_seq"], {"result": {
                 "model_receipts": [dict(real, reported_by="hook")]}}, True
         with mock.patch("tracekit.why.signed.vault_content", content):

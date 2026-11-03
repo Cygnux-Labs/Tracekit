@@ -349,13 +349,17 @@ When a call that succeeds writes a model weights file (`.safetensors`, `.gguf`, 
 result's digest: the file's sha256 and size and, for `.safetensors`, a sha256 of each tensor (its dtype and shape, then
 its bytes) and one of the header's metadata. A call writes what the policy reads it writing: a write tool's path, or a
 shell command's write targets (a redirection, a `cp` or `mv` destination, ...). A path the hook would have to guess is
-refused: one starting with `~`, every path of a command with `-C`, `-t`, `--directory`, `--target-directory` or
-`--chdir`, and a relative one after a `cd`. The hook hashes for at most 10 seconds per call; a receipt it can't finish,
-or any it can't read, is recorded with its reason, and the call's result is recorded either way.
+refused: one starting with `~`; every path of a command line in which `cp`, `mv`, `install` or `ln` has `-t` (in a
+cluster too, `-vt`) or `--target-directory`, or `git`, `env`, `make` or `tar` has `-C`, `--directory` or `--chdir`; and
+a relative one in a command that changes directory (`cd`, `pushd`, `popd`, `git --work-tree`). The hook hashes for at
+most 10 seconds per call; a receipt it can't finish, or any it can't read, is recorded with its reason, and the call's
+result is recorded either way.
 
 The hook runs as the agent's user, so each receipt (`reported_by: hook`) is the agent side's record, not something the
-signer saw. A `model_receipts` key in a tool's own result is dropped, and `verify-model` counts a receipt only in the
-result of a write or shell call whose recorded arguments name its file, so a tool's output can't plant one.
+signer saw. The Python client, which every hook and Python integration sends through, drops a `model_receipts` key a
+tool's own result carries, and `verify-model` counts a receipt only in the result of a write or shell call whose
+recorded arguments name a file the hook hashes: a tool's output can't plant one through them. The TypeScript SDK sends
+a result as the tool returned it ([limits](limits.md#model-receipts-tracekit-verify-model)).
 
 The signer commits to the result as to any other, so a bundle holds only that commitment. `tracekit verify-model`
 verifies the bundle, reads the run's results back from the signer's content vault (the dev signer keeps them for 7

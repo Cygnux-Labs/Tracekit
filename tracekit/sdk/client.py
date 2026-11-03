@@ -322,8 +322,14 @@ class Client:
             {"parent": {"run_id": parent.run_id, "run_token": parent.run_token}} if parent else {})})
 
     def call(self, method, req=None, **fields):
-        """`req` as a dict, or its fields as keywords (as RunHandle.call takes them)."""
+        """`req` as a dict, or its fields as keywords (as RunHandle.call takes them). A `complete`'s result holds only
+        the `model_receipts` passed apart, as the coding-agent hook passes its own (claude_code._post): one a tool's
+        result carries is dropped, so no tool's output plants a receipt (tracekit.model_receipt)."""
         req = {**(req or {}), **fields}
+        own = req.pop("model_receipts", None) if method == "complete" else None
+        if method == "complete" and isinstance(req.get("result"), dict):
+            req["result"] = {**{k: v for k, v in req["result"].items() if k != "model_receipts"},
+                             **({"model_receipts": own} if own else {})}
         if "request_id" in rpc_schema.REQUESTS[method]["properties"]:
             req.setdefault("request_id", _new_id())
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
