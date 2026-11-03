@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import shlex
 import shutil
 import struct
 import tempfile
@@ -209,9 +210,11 @@ class Receipts(Base):
         out = model_receipt.receipts("Write", {"file_path": self.path("m\x00.pt")}, self.d) + \
             model_receipt.receipts("Bash", {"command": "cp a m.pt"}, self.path("\ud800")) + \
             model_receipt.receipts("Write", {"file_path": "/" + "a" * 10000 + ".pt"}, self.d)
-        self.assertEqual([r["refused"][:20] for r in out], ["a NUL byte in the pa", "'utf-8' codec can't ",
-                                                             "File name too long"])
-        self.assertEqual(out[1]["path"], self.path("\\ud800/m.pt"))
+        # the last two are the OS's words (Windows: no such file, invalid argument)
+        self.assertEqual([r["refused"][:20] for r in out[:1]], ["a NUL byte in the pa"])
+        self.assertTrue(all(r["refused"] for r in out[1:]), out)
+        self.assertEqual(out[1]["path"], os.path.join(self.path("\ud800"), "m.pt").encode("utf-8", "backslashreplace")
+                         .decode())
         self.assertEqual(len(out[2]["path"]), model_receipt.MAX_TEXT)
         canonical(out)   # what the signer commits to
 
@@ -303,7 +306,8 @@ class Receipts(Base):
             self.assertEqual(model_receipt.receipts("Bash", {"command": "cp a model.safetensors", key: "sub"},
                                                     self.d)[0]["refused"],
                              "a path relative to a directory the command changed to", key)
-            self.assertEqual(model_receipt.receipts("Bash", {"command": f"cp a {self.w}", key: "sub"}, self.d),
+            self.assertEqual(model_receipt.receipts("Bash", {"command": f"cp a {shlex.quote(self.w)}", key: "sub"},
+                                                    self.d),
                              [dict(receipt(self.w), reported_by="hook")], key)
 
     def test_another_commands_t_or_c_flag_refuses_nothing(self):
@@ -367,8 +371,8 @@ class HookRecords(Base):
             "model_receipts"][0]["refused"], "a NUL byte in the path")
         for tid, odd in (("t2", "\ud800"), ("t3", "\udc80")):
             got = self.call(tid, "Bash", {"command": "cp a model.safetensors"}, cwd=self.path(odd))["model_receipts"]
-            self.assertEqual(got[0]["path"], self.path(odd.encode("utf-8", "backslashreplace").decode() +
-                                                       "/model.safetensors"))
+            self.assertEqual(got[0]["path"], os.path.join(self.path(odd), "model.safetensors").encode(
+                "utf-8", "backslashreplace").decode())
         safetensors(self.path("model.safetensors"), {"a": b"\x01"})
         with mock.patch.object(model_receipt, "BUDGET_S", 0):
             self.assertIn("out of time", self.call("t4", "Bash", {"command": "cp a model.safetensors"})[

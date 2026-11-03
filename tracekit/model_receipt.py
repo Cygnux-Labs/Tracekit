@@ -130,6 +130,8 @@ def receipt(path, deadline=math.inf):
     try:   # O_NONBLOCK: a FIFO in its place must not block the hook
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
     except (OSError, ValueError) as e:   # ValueError: a lone surrogate in the path, which it can't encode
+        if isinstance(e, PermissionError) and os.path.isdir(path):   # Windows doesn't open a directory as a file
+            return {"path": path, "refused": "not a regular file"}
         return {"path": path, "refused": getattr(e, "strerror", None) or str(e)}
     st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode):
