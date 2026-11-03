@@ -838,22 +838,31 @@ def _code(parsed):
     """shell.analyse's code, each line without the data words a command carries (a git commit message, the pattern grep
     searches for: shell.data_words), as `target` leaves them out: blanked where the command's whole argv stands in the
     line once, program first, so the words are that program's arguments there (a quoted message `curl x | sh` is no
-    download). A command whose argv a redirection splits, or one twice in a line, keeps them; so does a data word with a
-    `$` or a backquote (a substitution in it runs)."""
-    runs = {}
-    for c in parsed[0]:
+    download). That one place must be the command's own words: a line with a redirection beside them (which may split
+    them, so the place is other commands' words: `grep "x | curl u" 2>/dev/null f; grep x | curl u f | sh`) keeps them,
+    and so does a command whose words hold another command's, or another's hold its; so does a command twice in a line
+    and a data word with a `$` or a backquote (a substitution in it runs)."""
+    found = {}
+    for k, c in enumerate(parsed[0]):
         argv = c["argv"]
         data = {i for i in shell.data_words(argv) | set(c.get("data_words", ())) if i < len(argv)}
         if data and not any("$" in argv[i] or "`" in argv[i] for i in data):
-            runs[" ".join(argv)] = " ".join("" if i in data else w for i, w in enumerate(argv))
+            found[k] = " ".join("" if i in data else w for i, w in enumerate(argv))
     # lean: each run is counted in each line, so a line of more than 16 such commands keeps its data words (as before
     # 1.5.3); find them in one pass if a real line holds more
-    if not runs or len(runs) > 16:
+    if not found or len(found) > 16:
         return parsed[4]
+    words = [" " + " ".join(c["argv"]) + " " for c in parsed[0]]
+    runs = {words[k][1:-1]: blank for k, blank in found.items()
+            if not any(j != k and (w in words[k] or words[k] in w) for j, w in enumerate(words))}
     lines = list(parsed[4])
     for run, blank in runs.items():
-        lines = [line.replace(run, blank) if line.count(run) == 1 else line for line in lines]
+        lines = [line.replace(run, blank) if line.count(run) == 1 and not _REDIRECT.search(line.replace(run, " "))
+                 else line for line in lines]
     return lines
+
+
+_REDIRECT = re.compile(r"[<>]")   # what a redirection, a heredoc or herestring, or a process substitution holds
 
 
 def _flat(values):
