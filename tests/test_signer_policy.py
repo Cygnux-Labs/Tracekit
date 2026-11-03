@@ -3394,6 +3394,22 @@ class PackReading(unittest.TestCase):
     def server_engines():
         return [(engine, e) for pack, engine, e in CodingPack.every_pack() if pack == "server.yaml"]
 
+    def test_more_aws_deletes_wait_for_a_person_on_the_server_pack(self):
+        # the 1.5.3 sweep: Redshift, DocumentDB, Neptune, OpenSearch, Cognito user pools, a global RDS cluster and
+        # closing an organization's account were only flagged
+        aws = ("aws redshift delete-cluster --cluster-identifier c --skip-final-cluster-snapshot",
+               "aws docdb delete-db-cluster --db-cluster-identifier c", "aws neptune delete-db-cluster --db-cluster-identifier c",
+               "aws opensearch delete-domain --domain-name d", "aws es delete-elasticsearch-domain --domain-name d",
+               "aws cognito-idp delete-user-pool --user-pool-id p", "aws rds delete-global-cluster --global-cluster-identifier g",
+               "aws organizations close-account --account-id 1")
+        self.rule_on_server("TK-C010", [("Bash", {"command": c}) for c in aws] + [
+            ("mcp:aws/call_aws", {"cli_command": c}) for c in aws] + [
+            ("mcp:aws/call_aws", {"cli_command": c.replace(" ", "\n", 2)}) for c in aws])
+        self.rule_on_server("TK-C010", [("Bash", {"command": c}) for c in (
+            "aws redshift describe-clusters", "aws opensearch describe-domain --domain-name d",
+            "aws cognito-idp list-user-pools --max-results 5", "aws organizations describe-account --account-id 1")],
+            want=False)
+
     def rule_on_server(self, rule, cases, want=True):
         for engine, e in self.server_engines():
             for tool, args in cases:
