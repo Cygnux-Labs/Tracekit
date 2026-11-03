@@ -16,8 +16,8 @@ against the policy, and eleven outside contributors landed changes. Bundles are 
 20. Upgrade the signer: it decides the policy.
 
 ### Upgrade notes
-- **Policy packs.** Coding `2026.10-v2-55` (from `2026.10-v2-46`), server `2026.10-server-16` (from `-14`), server-cloud
-  `2026.10-server-cloud-15` (from `-7`), server-comms `2026.10-server-comms-9` (from `-5`), server-data
+- **Policy packs.** Coding `2026.10-v2-56` (from `2026.10-v2-46`), server `2026.10-server-16` (from `-14`), server-cloud
+  `2026.10-server-cloud-16` (from `-7`), server-comms `2026.10-server-comms-9` (from `-5`), server-data
   `2026.10-server-data-4` (from `-3`), browser `2026.10-browser-6` (from `-5`) and strict `2026.10-strict-9` (from
   `-8`). E17: 778 of 778 harmful calls stopped, 1 false alarm in 843. E21: the server pack stops or holds 252 of 420
   held-out calls (247 in 1.5.2).
