@@ -70,9 +70,13 @@ ask:
     # as `mcp:<server>/<tool>`, `mcp__<server>__<tool>` or Crush's joined `mcp__<server>_<tool>`: a tool that posts,
     # sends or adds a message or replies to a thread (slack_post_message, conversations_add_message, chat_postMessage),
     # in snake_case or camelCase; a channel, workspace or user-group mention (<!channel>, <!here>, <!everyone>,
-    # <!subteam^ID>) or a plain @channel, @here or @everyone, which Slack turns into one with link_names
+    # <!subteam^ID>), or a plain @channel, @here or @everyone in a string argument after link_names set true, with
+    # which Slack turns it into one (`@channel-ops`, a group's handle, isn't one). The call is read as sorted-key JSON:
+    # the arguments between link_names and the text are read one by one, so the fallback engine stays linear.
+    # lean: a mention in an argument that sorts before link_names (blocks, content) or after a nested object isn't
+    # read; read the parsed arguments if a server sends one so
     tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])(([Pp]ost|[Ss]end|[Aa]dd)_?[Mm]essage|[Rr]eply_?[Tt]o_?[Tt]hread|send_slack_message)|mcp(:[^/]+/|__.*[_-])[^_/-]*[a-z0-9]((Post|Send|Add)_?[Mm]essage|Reply_?[Tt]o_?[Tt]hread)'
-    pattern: '<!(channel|everyone|here)(\|[^<>]*)?>|<!subteam\^[^<>]*>|(^|[^A-Za-z0-9_.@-])@(channel|everyone|here)\b'
+    pattern: '<!(channel|everyone|here)(\|[^<>]*)?>|<!subteam\^[^<>]*>|"link_names":(true|1|"(true|1)")(,"[^"\\]*":("([^"\\]|\\.)*"|[^,{}\[\]"]*))*?,"[^"\\]*":"(([^"\\]|\\.)*?[^A-Za-z0-9_.@\\-])?@(channel|everyone|here)[^A-Za-z0-9_-]'
     reason: notifying a whole channel or workspace
     rationale: '@channel, @here and @everyone page everyone in the channel or workspace.'
   - id: TK-P001
