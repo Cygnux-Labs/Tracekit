@@ -2851,6 +2851,19 @@ class PackReading(unittest.TestCase):
         self.check(self.server, [("http_get", {"url": u}) for u in (
             "https://example.com./docs", "https://[2606:4700:4700::1111]/dns-query", "http:/example.com/")], "flag")
 
+    def test_a_url_in_an_mcp_or_app_tools_arguments_reads_as_the_address_it_is(self):
+        # the 1.5.3 sweep: an MCP, app or unknown tool's target was only its arguments as JSON, so TK-S001 read a
+        # metadata address written out and nothing else, though docs/policy-v2.md says any notation on any tool
+        urls = ("http://169.254.43518/latest/meta-data/", "http://0xa9.0xfe.0xa9.0xfe/", "http://[::ffff:a9fe:a9fe]/",
+                "http://%31%36%39.254.169.254/", "http://１６９.254.169.254/")
+        for url in urls:
+            for tool, args in (("mcp:web/open_page", {"url": url}), ("mcp:x/run", {"steps": [{"goto": "x " + url}]}),
+                               ("lookup_order", {url: 1})):
+                with self.subTest(tool=tool, url=url):
+                    d = self.server.decide(tool, args)
+                    self.assertEqual((d["verdict"], "TK-S001" in d["rule_ids"]), ("deny", True), d)
+        self.assertNotIn("TK-S001", self.server.decide("mcp:web/open_page", {"url": "https://example.com/"})["rule_ids"])
+
     def test_credential_and_metadata_rules_match_what_a_call_acts_on(self):
         self.check(self.server, [
             ("Write", {"file_path": "/repo/compose.yaml", "content": "POSTGRES_PASSWORD_FILE: /run/secrets/pg"}),
@@ -3140,6 +3153,14 @@ class SignerPolicy(unittest.TestCase):
             self.assertEqual((d["decision"], rule in d["rule_ids"]), ("deny", True), d)
         self.assertIn(self.decide("mcp__postgres__query", {"sql": "SELECT 1"}, tcid="tc-ok")["decision"],
                       ("allow", "flag"))
+        # browser MCP servers' navigation tools are the browser pack's by their bare names
+        for i, (tool, url, rule) in enumerate((("mcp__playwright__browser_navigate", "file:///etc/passwd", "TK-B001"),
+                                               ("mcp:playwright/browser_tab_new", "http://10.0.0.1/admin", "TK-B002"),
+                                               ("mcp:puppeteer/puppeteer_navigate", "http://wiki/", "TK-B003"))):
+            d = self.decide(tool, {"url": url}, tcid=f"tc-b{i}")
+            self.assertEqual((d["decision"], rule in d["rule_ids"]), ("deny", True), d)
+        self.assertIn(self.decide("mcp__playwright__browser_navigate", {"url": "https://example.com/"},
+                                  tcid="tc-b")["decision"], ("allow", "flag"))
         self.open()
         self.assertEqual(self.decide("mcp__demo__tracekit_demo_denied", {})["decision"], "deny")
 
