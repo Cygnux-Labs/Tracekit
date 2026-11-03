@@ -1715,8 +1715,16 @@ class TimedAndBraced(unittest.TestCase):
         for line, empty in (('rm -rf "${D:-build}/"', ["rm", "-rf", "build/"]), ("rm -rf ${D:=build}", ["rm", "-rf", "build"]),
                             ("rm ${Z:--rf} ~/", ["rm", "-rf", "~/"]), ("rm -rf ${Z:-$HOME}", ["rm", "-rf", "$HOME"]),
                             ("rm -rf ${Z-~}", ["rm", "-rf", "~"]), ("rm -rf ${Z=/}", ["rm", "-rf", "/"]),
-                            ("rm ${Z:-'-rf'} \"${Y:-\"/\"}\"", ["rm", "-rf", "/"]), ("rm -rf ${Z:+/}", ["rm", "-rf"])):
-            self.assertEqual(argvs(line)[1:], [empty], line)
+                            ("rm ${Z:-'-rf'} \"${Y:-\"/\"}\"", ["rm", "-rf", "/"]), ("rm -rf ${Z:+/}", ["rm", "-rf"]),
+                            # a word with an expansion may be empty itself (1.5.3's review: read only as written)
+                            ("rm -rf ~/${X:-$Y}", ["rm", "-rf", "~/"]), ('rm -rf ~/"${X:-$Y}"', ["rm", "-rf", "~/"]),
+                            ("rm -rf ~/${X:=$Y}", ["rm", "-rf", "~/"]), ("rm -rf ~/${X:-$(true)}", ["rm", "-rf", "~/"]),
+                            ("rm -rf ~/${X:-${Y:-}}", ["rm", "-rf", "~/"]), ("rm -rf ${Z:-$HOME}", ["rm", "-rf"]),
+                            ("rm -rf ${X:--rf$Y} ~/", ["rm", "-rf", "-rf", "~/"])):
+            self.assertIn(empty, argvs(line)[1:], line)
+        for line in ("rm -rf ~/${X:-$Y}", "rm -rf ~/${X:-$(true)}", "rm -rf ~/${X:-${Y:-}}"):
+            d = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0]).decide("Bash", {"command": line})
+            self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), line)
         for pack, backend in itertools.product(("dev.yaml", "strict.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
             for cmd, rule in (("rm ${Z:--rf} ~/", "TK-D004"), ("rm -rf ${Z:-$HOME}", "TK-D004"),
