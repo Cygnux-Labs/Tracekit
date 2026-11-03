@@ -16,9 +16,9 @@ with its approval's id and the command that approves it (Claude Code: also the d
 systemMessage the person sees); once a person approves it, the agent's retry of the same call (the same tool and
 exactly the same arguments) runs under that approval, which approval_request returns for it. A Claude Code Bash call's
 free-text `description`, which a model rewords on almost every retry, is the exception: a retry that differs only there
-from a held call of the same command a person approved (the session's newest one answered) is decided and consumed with
+from a held call of the same command a person approved (none of them rejected) is decided and consumed with
 the approved arguments, the signer's copy (the record is the approved call), and runs as the model sent it; after a
-reject it is decided as sent and held, its block first saying a person rejected the command (_reworded). Any other key
+reject it is decided as sent and held, its first reason saying a person rejected the command (_reworded). Any other key
 that differs makes it another call. With $TRACEKIT_APPROVAL_WAIT the hook first waits that long for the answer
 (approval_wait_s). An approval with a T2 executor runs the arguments the consume returns: the hook prints them as
 `updatedInput` (Claude Code only; the other harnesses run the arguments the signer consumed, which it checked against
@@ -104,8 +104,9 @@ WAIT_ENV = "TRACEKIT_APPROVAL_WAIT"   # seconds a held call's hook waits for its
 # which it deletes the transcript); a session continued later starts without its constraints; keep the state while
 # its transcript exists if sessions are continued later than that
 SESSION_KEEP_S = 30 * 86400
-# lean: a retry is matched against the session's last 32 held Bash calls (_keep_held); a retry of an older one that
-# rewords its description is held again; raise it if sessions hold more calls than that before they are answered
+# lean: a retry is matched against the session's last 32 held Bash calls (_keep_held); once an older one is dropped,
+# every retry that rewords its description is held again, since the dropped call may be a rejected wording of it; raise
+# it if sessions hold more calls than that
 HELD = 32
 # the signer no longer takes the session's stored run: closed (idle), unknown, or its token not one this signer issued
 # (a signer reset makes a new run token key). The session's next event that registers starts a new run; the old one is
@@ -181,7 +182,8 @@ def _skew(client, sid):
     if not notice:
         return None
     path, pair = _state(sid), [theirs, __version__]
-    if (_load(path) or {}).get("skew") == pair:   # said already: no lock taken for that
+    st = _load(path)
+    if not st or st.get("skew") == pair:   # ended, or said already: no lock taken (it would make a file of its own)
         return None
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # as _run: parallel hooks must not lose its other keys
         lock_file(lk)
@@ -453,42 +455,54 @@ def _keep_held(sid, run_id, args, aid):
         lock_file(lk)
         st = _load(path)
         if st and st["run_id"] == run_id:   # a new run (_register) starts with none: the old run's approvals expired
-            st["held"] = [*(st.get("held") or ())[-(HELD - 1):],
-                          {"rest": _rest(args), "digest": event_hash(args), "approval_id": aid}]
+            held = [*(st.get("held") or ()), {"rest": _rest(args), "digest": event_hash(args), "approval_id": aid}]
+            st["held"], st["dropped"] = held[-HELD:], st.get("dropped") or len(held) > HELD
             files.write_json(path, st)
 
 
 def _reworded(client, sid, args, cap):
-    """(arguments, note) for Bash call `args` from the session's newest held call that it repeats in every key but
-    `description`, with a description of its own, whose approval was answered. Approved: that call's arguments, the
-    signer's copy (approval_get) checked against `args` but the description, so a state file the agent wrote only names
-    which approvals to try. A person approves a command, not the caption the model gave it: the retry is decided and
-    consumed with them, so the record is the approved call, and runs as the model sent it, which differs only in that
-    caption. Rejected: the signer keeps no copy of a rejected call's arguments, so the retry is decided as the model
-    sent it (held, as before), and the note its block starts with says a person rejected the command. (None, None)
-    otherwise: any other key differs (command, run_in_background, dangerouslyDisableSandbox, timeout, ...), or the
-    held calls' approvals are unanswered, expired or used."""
+    """(arguments, note) for Bash call `args` from the session's held calls that it repeats in every key but
+    `description`, whose approvals were answered. Approved, and none of them rejected: the newest approved call's
+    arguments, the signer's copy (approval_get) checked against `args` but the description, so a state file the agent
+    wrote only names which approvals to try. A person approves a command, not the caption the model gave it: the retry
+    is decided and consumed with them, so the record is the approved call, and runs as the model sent it, which differs
+    only in that caption. One of them rejected: the retry is decided as the model sent it (held, as before; the signer
+    keeps no copy of a rejected call's arguments), and the note, its first reason, says a person rejected the command,
+    and that it was approved too if it was (by a person or an agent approver): the signer doesn't say which answer came
+    last, so neither is taken as the last word. (None, None) otherwise: any other key differs (command,
+    run_in_background, dangerouslyDisableSandbox, timeout, ...), the held calls' approvals are unanswered, expired or
+    used, one of them couldn't be read, or a held call was dropped (_keep_held): either may be the rejected one."""
     st = _load(_state(sid))
-    if not st or st.get("ended"):
+    if not st or st.get("ended") or st.get("dropped"):
         return None, None
-    rest = _rest(args)
+    rest, approved, rejected, unread = _rest(args), None, None, False
     for h in reversed(st.get("held") or ()):
         if h["rest"] != rest:
             continue
+        if approved and rejected:
+            break
         try:
             cap()
             a = client.approval_get({"approval_id": h["approval_id"]})
-        except RPCError:   # gone, or not this identity's to read (a remote signer's `authorize`): the next one
+        except RPCError:   # gone, refused, or not this identity's to read (a remote signer's `authorize`)
+            unread = True
             continue
         if a["run_id"] != st["run_id"] or a["tool"] != "Bash":
             continue
         shown = a.get("args")   # redacted for the approver: a command with a secret in it no longer matches
         if a["state"] == "approved" and isinstance(shown, dict) and _rest(shown) == rest:
-            return None if shown == args else shown, None   # the same arguments: the signer matches them itself
-        if a["state"] == "rejected":   # the same arguments: the signer's reason says so itself
-            return None, None if h.get("digest") == event_hash(args) else (
-                f"a person rejected this command (with another description) as {h['approval_id']}; ask them before "
-                "trying again")
+            approved = approved or (h["approval_id"], shown)
+        if a["state"] == "rejected":
+            rejected = rejected or (h["approval_id"], h.get("digest") == event_hash(args))
+    if rejected:
+        aid, same = rejected
+        if same and not approved:   # the same arguments: the signer's reason says so itself
+            return None, None
+        return None, (f"a person rejected this command{'' if same else ' (with another description)'} as {aid}" +
+                      (f", and it was approved{'' if approved[1] == args else ' (with another description)'} as "
+                       f"{approved[0]}" if approved else "") + "; ask them before trying again")
+    if approved and not unread:
+        return None if approved[1] == args else approved[1], None   # the same arguments: the signer matches them
     return None, None
 
 
@@ -550,18 +564,18 @@ def _pre(client, p, sid, tid):
             c = run.approval_consume(tid, tool, args, approval_id_hint=aid) if state == "approved" else None
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
+        if state in ("requested", "rejected") and _bash(tool, args):   # a wording rejected while the hook waited too
+            _keep_held(sid, run.run_id, args, aid)
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
             # Claude Code runs a `!` line in the session as its OS user: the person, with the dev signer; with a named
             # signer (system mode, a remote one) that user is the agent's, whom the signer refuses: another terminal
             bang = "! " if AGENT == "claude-code" and not named else ""
             held = (f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is {waited['reason']}, then try the same "
-                    "call again, with exactly the same arguments" if waited.get("reason") else
+                    "call again, unchanged" if waited.get("reason") else
                     f"[tracekit] held for approval {aid} ({'; '.join(d['rule_ids'])}): a person lets it run with "
                     f"`{bang}{cmd} approve {aid}`, then asks the agent to try the same call again, unchanged (to "
                     f"refuse it: `{bang}{cmd} reject {aid}`). Agent: wait for the person's answer") + (
                         f". Why{why}" if why else "")
-            if _bash(tool, args):
-                _keep_held(sid, run.run_id, args, aid)
             print(held, file=sys.stderr)
             if AGENT == "claude-code":   # the reason goes to the model, the system message to the person
                 print(json.dumps({"systemMessage": held, "hookSpecificOutput": {

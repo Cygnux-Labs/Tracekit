@@ -1143,6 +1143,30 @@ class HeldCalls(unittest.TestCase):
         self.assertEqual(self.pre(self.UPLOAD, "t3", description="Retry the upload"), (0, "", ""))
         self.assertEqual(self.consumed(), [aid])
 
+    def test_a_reworded_retry_after_a_yes_and_a_no_runs_under_neither_and_says_both(self):
+        """1.5.3 review: the newest held call decided a reworded retry, not the newest answer. Approve the first hold
+        and reject the agent's early retry (a duplicate), and a third wording was told "a person rejected this command"
+        while the exact first call ran; answer the other way round and the third wording ran under the later yes. The
+        signer doesn't say which answer came last: a reworded retry runs under neither and its reason names both. A
+        retry exactly as approved runs under its approval, as the signer matches it."""
+        for first, second in (("approve", "reject"), ("reject", "approve")):
+            with self.subTest(first=first):
+                upload = self.UPLOAD.replace("releases", f"releases-{first}")   # a command of its own
+                a = self.held(upload, f"{first}-1", description="Upload the build")
+                used = self.consumed()
+                b = self.held(upload, f"{first}-2", description="Upload it again")
+                self.approvals(first, a)
+                self.approvals(second, b)
+                yes, no = (a, b) if first == "approve" else (b, a)
+                code, out, err = self.pre(upload, f"{first}-3", description="Retry the upload")
+                self.assertEqual(code, 2, err)
+                self.assertIn(f"Why: a person rejected this command (with another description) as {no}, and it was "
+                              f"approved (with another description) as {yes}; ask them before trying again; ", err)
+                self.assertEqual(self.consumed(), used)
+                exact = "Upload the build" if first == "approve" else "Upload it again"
+                self.assertEqual(self.pre(upload, f"{first}-4", description=exact), (0, "", ""))
+                self.assertEqual(self.consumed(), used + [yes])
+
     def test_a_planted_state_entry_lets_no_other_command_use_an_approval(self):
         """#509: the session state is the agent's to write. An entry that points another command at an approved
         approval runs nothing: the arguments come from the signer, checked against the call's but the description."""
@@ -1615,6 +1639,15 @@ class HoldLine(unittest.TestCase):
         not_approved = next(l for l in lines if "not approved" in l)
         return waiting, not_approved
 
+    def test_a_wording_rejected_while_its_hook_waits_is_kept_for_reworded_retries(self):
+        """Final review of the 1.5.3 sweep: only a hold left unanswered was kept in the session's held calls, so a
+        wording a person rejected while the hook waited didn't count, and a reworded retry could run under another
+        wording's approval."""
+        for answer, kept in (("rejected", ["apr-1"]), ("requested", ["apr-1"])):
+            with self.subTest(answer=answer), mock.patch.object(claude_code, "_keep_held") as keep:
+                self.pre("force push.", answer=answer, wait="1")
+                self.assertEqual([c.args[3] for c in keep.call_args_list], kept)
+
     def test_by_default_a_held_call_is_blocked_at_once_with_how_to_approve_and_retry(self):
         """No harness shows a running hook's output, so a hook that waited for an answer waited for a person who could
         not know: it blocks at once, telling the person (systemMessage) and the model (the deny reason) the command
@@ -1638,7 +1671,7 @@ class HoldLine(unittest.TestCase):
         approve it with `tracekit approvals approve`, an approval already approved. It says so, and to wait."""
         veto = "approved by an agent approver; people may still revoke it, so wait 42 s"
         held = ("[tracekit] approval apr-1 (TK-A003) is approved by an agent approver; people may still revoke it, so "
-                "wait 42 s, then try the same call again, with exactly the same arguments. Why: x")
+                "wait 42 s, then try the same call again, unchanged. Why: x")
         code, lines, out = self.pre("x", wait="", veto=veto)
         self.assertEqual((code, lines, json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"]),
                          (2, [held], held))

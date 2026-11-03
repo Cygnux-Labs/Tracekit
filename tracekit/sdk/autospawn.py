@@ -190,7 +190,10 @@ def _published(d):
 
 
 def _pid(d):
-    return _published(d).get("pid")
+    """endpoint.json's pid; None while it names none, or one no signal may go to: 0 and a negative pid signal a
+    process group or every process of the user, and 1 is init."""
+    pid = _published(d).get("pid")
+    return pid if type(pid) is int and pid > 1 else None
 
 
 def _env(d):
@@ -259,18 +262,17 @@ def _ensure(d, wait, timeout):
             conn = None
         if conn:
             return conn
-        p = None
-        if not _held(lock):   # nothing alive: whatever is left belongs to a dead signer
-            for f in (os.path.join(d, SOCK), os.path.join(d, ENDPOINT)):
-                pathlib.Path(f).unlink(missing_ok=True)
-            p = spawn(d)
-            if not wait:   # once it holds signer.lock, so a `tracekit down` straight after finds it starting
-                deadline = time.monotonic() + timeout
-                while not _held(lock) and p.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                return None
-        deadline = time.monotonic() + timeout
+        p, deadline = None, time.monotonic() + timeout
         while True:
+            # nothing alive (or the signer that was stopping has exited): whatever is left belongs to a dead signer
+            if p is None and not _held(lock):
+                for f in (os.path.join(d, SOCK), os.path.join(d, ENDPOINT)):
+                    pathlib.Path(f).unlink(missing_ok=True)
+                p, deadline = spawn(d), time.monotonic() + timeout
+                if not wait:   # once it holds signer.lock, so a `tracekit down` straight after finds it starting
+                    while not _held(lock) and p.poll() is None and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    return None
             conn = _try(d)
             if conn:
                 return conn
@@ -315,13 +317,21 @@ def down(timeout=10, d=None, show_log=True):
         time.sleep(0.05)
     if not _held(lock):   # the endpoint of a signer that has exited
         return None
-    stacks = _published(d).get("stacks") == "SIGUSR1"   # read before it unpublishes on stopping
+    # read before it unpublishes on stopping
+    stacks = _published(d).get("stacks") == "SIGUSR1" and hasattr(signal, "SIGUSR1")
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while _held(lock):
+        if os.name == "posix":   # on Windows, signal 0 is CTRL_C_EVENT
+            try:
+                os.kill(pid, 0)
+            except (ProcessLookupError, PermissionError):   # it has exited: the lock is a signer's started since
+                return pid
         if time.monotonic() > deadline:
             log = os.path.join(d, LOG)
-            if show_log and stacks:   # where it is stuck: every thread's stack, which it writes to its stderr
+            # where it is stuck: every thread's stack, which it writes to its stderr; not to a pid its endpoint no
+            # longer names, which may be another process's by now
+            if show_log and stacks and _pid(d) in (pid, None):   # None: a stop that hangs after unpublishing
                 try:
                     os.kill(pid, signal.SIGUSR1)
                 except ProcessLookupError:   # it has just exited

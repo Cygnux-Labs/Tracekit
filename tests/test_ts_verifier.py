@@ -79,6 +79,33 @@ def ts_verify(bundle, trust):
     return out
 
 
+# the TypeScript verifier on many bundles in one process: a JSON list of [bundle, trust] paths in, a JSON report (the
+# CLI's --json) per line out
+MANY = r"""
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [dist, list] = process.argv.slice(1);
+const { verify } = await import(pathToFileURL(dist + "/verify/index.js"));
+const { asJson } = await import(pathToFileURL(dist + "/verify/explain.js"));
+for (const [bundle, trust] of JSON.parse(readFileSync(list, "utf8")))
+  process.stdout.write(JSON.stringify(await verify(readFileSync(bundle), readFileSync(trust), { bundle, trust })
+    .then(({ report, code }) => asJson(report, code))) + "\n");
+"""
+
+
+def ts_verify_many(pairs):
+    """ts_verify of each (bundle, trust) in `pairs`, in one Node process."""
+    _build()
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+        json.dump(pairs, f)
+    try:
+        p = subprocess.run(["node", "--input-type=module", "-e", MANY, os.path.join(TS, "dist"), f.name],
+                           capture_output=True, text=True, check=True)
+    finally:
+        os.unlink(f.name)
+    return [json.loads(line) for line in p.stdout.splitlines()]
+
+
 def ts_cli(bundle, trust, *flags):
     """(exit code, report text) of the TypeScript CLI."""
     _build()

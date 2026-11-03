@@ -23,7 +23,7 @@ class Case(unittest.TestCase):
         self.dir, self.n = tmpdir(self), 0
 
     def open(self, **kw):
-        s = svc.SignerService(self.dir, grace_s=0, **kw)
+        s = svc.SignerService(self.dir, **{"grace_s": 0, **kw})
         self.addCleanup(s.close)
         return s
 
@@ -68,23 +68,24 @@ def comparable(state):
 
 class TestSnapshots(Case):
     def test_open_reads_only_the_records_after_the_snapshot(self):
-        s = self.open()
+        # closed runs stay in their grace window: an open writes nothing of its own (its sweep finishes none)
+        s = self.open(grace_s=60)
         runs = [self.register(s) for _ in range(30)]
         for run in runs[:10]:
             self.call(s, "close_run", run)
         s.close()   # a clean close snapshots
         snap = s.log.storage.tree.size
-        s = self.open()
+        s = self.open(grace_s=60)
         self.call(s, "close_run", runs[10])
         self.crash(s)
         total = s.log.storage.tree.size
-        s, indexed, replayed = self.read_on_open()
+        s, indexed, replayed = self.read_on_open(grace_s=60)
         self.assertEqual(indexed, list(range(snap, total)))
         self.assertEqual(replayed, [snap - 1] + list(range(snap, total)))   # its last record, then the tail
         state = comparable(s.log._state())
         self.crash(s)
         shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
-        s, indexed, _ = self.read_on_open()
+        s, indexed, _ = self.read_on_open(grace_s=60)
         self.assertEqual(indexed, list(range(total)))
         self.assertEqual(comparable(s.log._state()), state)   # the same state as a full replay
         self.call(s, "close_run", runs[11])   # a run from before the snapshot, and its token, still known

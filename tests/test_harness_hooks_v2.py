@@ -479,7 +479,7 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
         aid = err.split()[4]
         self.assertRegex(json.loads(out)["reason"],   # what Gemini CLI shows the person and the model
-                         rf"\(TK-A004\): a person lets it run with `tracekit approvals( --signer \S+)? approve {aid}`"
+                         rf"\(TK-A004(; TK-F\d+)*\): a person lets it run with `tracekit approvals( --signer \S+)? approve {aid}`"
                          ", then asks the agent to try the same call again")
         pre["tool_input"]["additional_permissions"] = {"network": False}
         self.assertEqual(self.hook("gemini", pre)[0], 0)
@@ -1517,6 +1517,43 @@ class VersionNotice(HarnessCase):
             self.assertIsNone(claude_code.VERSION.fullmatch(theirs), theirs)
         for theirs in ("1.5.2", "1.5.2rc1", "1.5.2+deb1", "1!1.5.2.post1-x_y"):
             self.assertTrue(claude_code.VERSION.fullmatch(theirs), theirs)
+
+    def test_a_session_with_no_state_gets_no_lock_file(self):
+        """1.5.3 review: _skew opened the session's lock file, which makes it, before it found the session had no
+        state: every SessionEnd under a version skew left one behind, kept until a later SessionStart pruned it."""
+        lock = claude_code._state("cc-gone")[:-len(".json")] + ".lock"
+        self.assertIsNone(claude_code._skew(mock.Mock(hello={"version": "1.4.0"}, signer=None), "cc-gone"))
+        self.assertFalse(os.path.exists(lock))
+
+    def test_a_reworded_retry_runs_under_no_approval_while_a_held_wording_cant_be_read(self):
+        """Review of #536: an approval_get that failed (a timeout, a signer restarting) on what may be the rejected
+        wording let a reworded retry run under the approved one."""
+        args = {"command": "make deploy", "description": "Deploy again"}
+        held = [{"rest": claude_code._rest(args), "digest": f"sha256:{n}", "approval_id": f"apr-{n}"} for n in "12"]
+        with open(claude_code._state("cc-u"), "w") as f:
+            json.dump({"run_id": "r", "held": held}, f)
+
+        def get(req):
+            if req["approval_id"] == "apr-2":   # the newest, read first
+                raise RPCError("forbidden", "not yours to read")
+            return {"run_id": "r", "tool": "Bash", "state": "approved", "args": dict(args, description="Deploy")}
+        self.assertEqual(claude_code._reworded(mock.Mock(approval_get=get), "cc-u", args, lambda: None), (None, None))
+
+    def test_a_reworded_retry_is_held_again_once_a_held_call_was_dropped(self):
+        """Sweep before 1.5.3: HELD further holds pushed a rejected wording out of the session's held calls, and a
+        reworded retry then ran under the approved one."""
+        args = {"command": "make deploy", "description": "Deploy again"}
+        with open(claude_code._state("cc-w"), "w") as f:
+            json.dump({"run_id": "r"}, f)
+        claude_code._keep_held("cc-w", "r", dict(args, description="Ship it"), "apr-no")
+        claude_code._keep_held("cc-w", "r", dict(args, description="Deploy"), "apr-ok")
+        for n in range(claude_code.HELD - 1):
+            claude_code._keep_held("cc-w", "r", {"command": f"make job{n}", "description": "x"}, f"apr-{n}")
+
+        def get(req):
+            self.assertEqual(req["approval_id"], "apr-ok")
+            return {"run_id": "r", "tool": "Bash", "state": "approved", "args": dict(args, description="Deploy")}
+        self.assertEqual(claude_code._reworded(mock.Mock(approval_get=get), "cc-w", args, lambda: None), (None, None))
 
     def test_once_said_no_event_takes_the_session_lock_for_it(self):
         """Review of #512: while the versions differed, every event took the session lock to find it said already."""

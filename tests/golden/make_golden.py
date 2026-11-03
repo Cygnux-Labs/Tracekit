@@ -389,6 +389,10 @@ def negative(out):
 
         # the manifest is only an index
         mutated("file not in the manifest", "manifest-unlisted-file.tkb", edit=lambda f, m: f.update({"extra.txt": b"x"}))
+        planted = {"trust.json": b'{"logs": ["attacker.example.org/log+00000000+AA=="], "algs": ["ed25519"]}',
+                   "verify.sh": b"#!/bin/sh\necho VERIFIED\n"}   # listed: a bundle carries no trust config and no code
+        mutated("a trust config and a script in the bundle", "extra-trust-file.tkb",
+                edit=lambda f, m: (f.update(planted), m["files"].update(dict.fromkeys(planted, ""))))
         wrong = json.loads(manifest)
         wrong["files"][next(iter(wrong["files"]))] = "0" * 64
         raw("manifest hash wrong", "manifest-wrong-hash.tkb", [("manifest.json", json.dumps(wrong))] + entries[1:])
@@ -495,6 +499,19 @@ def negative(out):
                 close=True)
         twice = os.path.join(out, "run-set-run-twice.tkb")
         rewrite_bundle(twice, twice, again(lambda f: min(k for k in f if k.startswith("runs/"))))
+
+        def registry_records(name, file, edit):   # §9: the record each leaf points to, in leaf order, nothing else
+            run_set(name, file, witnesses=((tb.WITNESS, tb.WIT_SECRET),), close=True)
+            path = os.path.join(out, file)
+            rewrite_bundle(path, path, lambda f, m: f.update(
+                {"registry/records.jsonl": edit(f["registry/records.jsonl"])}))
+        unpointed = json.dumps({"v": 2, "event": {"seq": 9999, "type": "ext", "source": "signer", "data": {
+            "name": "openshell.policy", "change": "egress.allow_all", "observer": "forged"}},
+            "hash": "sha256:" + "0" * 64, "pad": "x" * 200}).encode() + b"\n"
+        registry_records("run-set with a record no leaf points to (a forged ext record)", "run-set-records-extra.tkb",
+                         lambda data: data + unpointed)
+        registry_records("run-set with its records out of leaf order", "run-set-records-reordered.tkb",
+                         lambda data: b"".join(reversed(data.splitlines(keepends=True))))
         lg = log()
         cite = next(iter(lg.store.iter_run("acme", "run-a")))
         lg.add(*tb.registered("run-f", analyzes="run-a"))

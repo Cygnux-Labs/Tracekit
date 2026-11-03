@@ -103,9 +103,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.5.2 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.5.2 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.5.2
-cd /usr/local/src/tracekit-1.5.2
+# v1.5.3 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.5.3 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.5.3
+cd /usr/local/src/tracekit-1.5.3
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -135,7 +135,8 @@ What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos
   signer, which lets that uid make only `model_event`, `state_write`, `tailer_lost`, `tailer_heartbeat` and `status`
   calls. The Claude Code hook (init's or the plugin's) starts it for each session through a sudo rule
   (`/etc/sudoers.d/tracekit-tailer`). An edited, truncated or replaced transcript, or a tailer that stops its
-  heartbeats while the run is open (killed), becomes a signed `tailer_lost` gap. When the ACL or the sudo rule can't
+  heartbeats while the run is open (killed), becomes a signed `tailer_lost` gap (an edit to a transcript over about
+  25 MB can be caught up to 30 s late, or not at all: [limits](limits.md#signer-and-capture)). When the ACL or the sudo rule can't
   be set up, init says so and each Claude Code session's run records a `tailer_lost` gap instead.
 
 An agent that runs through the SDK, such as a daemon that calls `tracekit.instrument()`, needs no hook: add

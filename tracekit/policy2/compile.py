@@ -65,7 +65,7 @@ MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent 
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access"},
            "fs": {"path", "op", "content_digest"},
-           "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
+           "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
            "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
            "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},

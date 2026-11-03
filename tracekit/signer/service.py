@@ -1002,6 +1002,12 @@ class SignerService:
         self._exporter = otel_out and signer_otel.Exporter(
             otel_out["endpoint"], otel_out.get("headers", {}), lambda key: list(self.log.storage.iter_run(*key)),
             self.metrics.otel_dropped)
+        try:   # a run idle past idle_s while the signer was down closes before a call can go on with it: the call that
+            self.sweep()   # wakes a dev signer (which exits with no client connected) lands before the ticker's first sweep
+        except RPCError:   # storage down: the ticker retries
+            pass
+        except Exception:   # as the ticker: the signer still starts
+            self._loop_error("ticker")
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
@@ -1913,16 +1919,42 @@ class SignerService:
         unrecorded; a RecursionError is the request's nesting, which call() refuses."""
         try:
             d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
-            listed = self.policy.listed(tool)
-            if listed:   # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool
+            # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
+            # one when two listed names share it
+            for listed in self.policy.listed(tool):
                 d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
-            if tool.startswith("mcp:") and "/" in tool:
-                # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class
-                # if the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an
-                # MCP one
-                bare = tool.split("/", 1)[1]
-                d = _stricter(d, self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls,
-                                                    untrusted))
+            mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
+            if tool.startswith("mcp__") and "__" in tool[5:]:
+                # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
+                # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
+                # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
+                server, _, name = tool[5:].partition("__")
+                mcps = [f"mcp:{server}/{name}"]
+            elif tool.startswith("mcp__"):
+                # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
+                # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
+                # tool, as before it was named an MCP one (the server packs hold it)
+                # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
+                rest = tool[5:]
+                mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
+                d = _stricter(d, self.policy.decide(tool, args, "unknown", untrusted))
+            elif tool == "PowerShell":
+                # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
+                # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
+                # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
+                b = self.policy.decide("Bash", args, untrusted=untrusted)
+                if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in self.policy.rules):
+                    d = _stricter(d, b)
+            for mcp in mcps:
+                if mcp != tool:
+                    d = _stricter(d, self.policy.decide(mcp, args, untrusted=untrusted))
+                # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
+                # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
+                # be dodged by naming the call an MCP one
+                bare, of = mcp.split("/", 1)[1], self.policy.tool_class(mcp)
+                for name in [bare] + self.policy.listed(bare):
+                    d = _stricter(d, self.policy.decide(
+                        name, args, None if self.policy.tool_class(name) != "unknown" else of, untrusted))
             if hint is None or hint == cls:
                 return d, False, d["rule_ids"]
             h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
@@ -2097,6 +2129,9 @@ class SignerService:
             timeout()
 
         def untrusted(subject, field=None):
+            if field == "link":   # a URL exactly as untrusted content gave it (provenance's `url`), from a complete index
+                s = idx.get(self._key("url", provenance.norm(subject))) if st["state"] == "complete" and idx else None
+                return [("url", s)] if s and s["trust"] == "untrusted" else []
             if st["state"] != "complete":
                 return [st["state"]]
             if not idx:
@@ -4881,8 +4916,8 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
                 print("LOST: another dev signer holds signer.lock", file=sys.stderr)
                 return 1
             time.sleep(0.05)
-    stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    stop = []   # not an Event: its set() in the handler waits forever on the lock a wait() it interrupts holds
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)
     for p in (sock, endpoint):
         pathlib.Path(p).unlink(missing_ok=True)
@@ -4911,7 +4946,8 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
     threading.Thread(target=server.serve_forever, args=(0.2,), daemon=True).start()
     print(f"SERVING pid {os.getpid()}", file=sys.stderr, flush=True)
     try:
-        while not stop.wait(0.1):
+        while not stop:
+            time.sleep(0.1)
             with mutex:
                 if idle_s and not active[0] and time.monotonic() - last[0] > idle_s:
                     break
@@ -5251,8 +5287,8 @@ def main(argv=None):
         print("tracekit signer: the log is closed (log.closed) and takes no more records: give this signer a new log",
               file=sys.stderr)
         return 1
-    stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    stop = []   # not an Event, as in serve_dev
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(True))
     try:
         servers = serve(cfg, service)
     except Exception as e:
@@ -5266,8 +5302,8 @@ def main(argv=None):
         where = f" on {host}:{port}"
     print(f"tracekit signer {__version__} serving{where}", flush=True)
     try:
-        while not stop.wait(1):
-            pass
+        while not stop:
+            time.sleep(0.1)   # a sleep goes on after the handler runs: it is how late a SIGTERM stops serving
     except KeyboardInterrupt:
         pass
     for s in servers:

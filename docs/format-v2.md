@@ -508,7 +508,8 @@ policies/<sha256>.json    the compiled policies a verifier checks the records ag
 A run-set bundle adds:
 
 ```text
-registry/run-set.json     {"tenant_salt": base64, "from": a, "to": b (integer tokens), "consistency": [base64 hash, ...],
+registry/run-set.json     {"tenant_salt": base64, "from": a, "to": b (integer tokens),
+                           "consistency": [base64 hash, ...] (empty when a = 0),
                            "leaves": [{"leaf": base64, "inclusion": [base64 hash, ...]}, ...]}
 registry/records.jsonl    the record each leaf points to, in leaf order
 checkpoints/registry-<n>.note   the registry notes at a (none when a = 0) and b
@@ -518,7 +519,9 @@ runs/                     every run whose run.final is in the range, and the sel
 JSON lines files end in a newline, one strict JSON text (§1) per line, each line at most 1 MiB and at least 256 bytes (no signed record is shorter: its hash, signature, ids and timestamp alone are longer), so a bundle's lines are counted and measured before any is parsed and can't outnumber 512 MiB / 256. Hashes and keys in
 bundle files are standard base64 with padding (checkpoint notes and vkeys: canonical base64, §6). Zip limits: at most
 10,000 entries, 64 MiB per entry, 512 MiB in total; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*`
-with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries no code and no trust configuration.
+with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries no code and no trust configuration:
+a file named other than above fails `manifest` (a run part or policy snapshot misnamed fails `run parts` or
+`policy snapshot`).
 
 A bundle has one zip layout, so every reader sees the same entries; anything else is `UNUSABLE BUNDLE`:
 
@@ -665,8 +668,9 @@ line and verdict is in [verdicts](verdicts.md).
    share the first key record's `log_id`. A key with `cert` is declared only if its certificate verifies under a
    pinned issuer, for that key and `log_id`, in the issuer's cosigned issuance log ([issuer.md](issuer.md)).
 6. **Runs.** A bundle holds exactly one run, one run with its findings and replay runs (`--with-findings`), or any
-   number with a run-set; a run is its `runs/<id>.jsonl` file or its parts read in order (§9), whose layout the `run
-   parts` line checks when there are parts, and no two runs share a tenant and run_id (`run chain` fails otherwise:
+   number with a run-set; a run is its `runs/<id>.jsonl` file or its parts read in order (§9), named by its records'
+   tenant and run_id, whose layout the `run parts` line checks when there are parts, and no two runs share a tenant
+   and run_id (`run chain` fails otherwise:
    a run's records under a second name would count twice). For each run, every record must: verify under the keys
    valid at its seq (§4); be a schema-valid `tracekit.event.v2` event of this `log_id`; have `run_seq` = its index,
    `run_prev_hash` = the previous record's `hash` (zeros first), the first record's tenant and run_id, a seq above the
@@ -674,9 +678,11 @@ line and verdict is in [verdicts](verdicts.md).
    checkpointed tree.
 7. **Run-set** (with `registry/run-set.json`). Open the registry notes at `a` and `b` with the pinned log key renamed
    to the registry origin of §7 and the pinned witnesses; each needs `witnesses_required` cosignatures, and caps the
-   assurance level by the same rule as the checkpoint; check consistency `a → b`; require `b > 0` and exactly `b − a`
-   leaves, each included in the registry tree at `b`, each pointing to a record in `registry/records.jsonl` with that hash, seq, type,
-   log_id and run hash, included in the record tree. One `run.final` per run; every run final in the range present in
+   assurance level by the same rule as the checkpoint; check consistency `a → b` (no proof when `a` = 0); require
+   `b > 0` and exactly `b − a`
+   leaves, each included in the registry tree at `b`, each pointing to the record on its line of `registry/records.jsonl`
+   (one line per leaf, in leaf order, and no other line) with that hash, seq, type, log_id and run hash, included in
+   the record tree. One `run.final` per run; every run final in the range present in
    the bundle from its `run.registered` (when in the range) to that `run.final`; every bundled run but one the target
    of a leaf; every bundled run of the tenant the range's run leaves name (the run-set line names it). Every
    `key.retire` leaf in the range must be among the key records. A `log.closed` in the range must be
