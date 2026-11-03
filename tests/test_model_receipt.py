@@ -284,6 +284,26 @@ class Receipts(Base):
         for cmd in ("cp a model.safetensors && ls", "cp a model.safetensors 2>&1", "cp a model.safetensors &> log"):
             self.assertEqual(model_receipt.receipts("Bash", {"command": cmd}, self.d), want, cmd)
 
+    def test_setsid_that_forks_is_refused_and_plain_setsid_is_not(self):
+        """Review of 277705e6: `setsid -f cp a /w/m.pt` returns at once, and its receipt was of the file before the
+        copy. Plain setsid runs its command in the foreground in a hook's non-interactive shell."""
+        for cmd in ("setsid -f cp new.pt model.safetensors", "setsid --fork cp new.pt model.safetensors",
+                    "setsid --fo cp new.pt model.safetensors", "setsid -cf cp new.pt model.safetensors"):
+            self.assertEqual([r["refused"] for r in model_receipt.receipts("Bash", {"command": cmd}, self.d)], [LATER],
+                             cmd)
+        want = [dict(receipt(self.w), reported_by="hook")]
+        for cmd in ("setsid cp new.pt model.safetensors", "setsid cp -f new.pt model.safetensors"):
+            self.assertEqual(model_receipt.receipts("Bash", {"command": cmd}, self.d), want, cmd)
+
+    def test_a_relative_path_of_a_shell_with_its_own_dir_path_is_refused(self):
+        """Gemini CLI's and Qwen Code's shell runs in its dir_path, so a relative path there is no file of the hook's
+        cwd; an absolute one still is."""
+        self.assertEqual(model_receipt.receipts("Bash", {"command": "cp a model.safetensors", "dir_path": "sub"},
+                                                self.d)[0]["refused"],
+                         "a path relative to a directory the command changed to")
+        self.assertEqual(model_receipt.receipts("Bash", {"command": f"cp a {self.w}", "dir_path": "sub"}, self.d),
+                         [dict(receipt(self.w), reported_by="hook")])
+
     def test_another_commands_t_or_c_flag_refuses_nothing(self):
         """Review of d013a1dd: `grep -C3` or `sort -t,` anywhere in a command refused every weights path in it."""
         want = [dict(receipt(self.w), reported_by="hook")]

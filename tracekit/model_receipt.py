@@ -78,13 +78,15 @@ def _named(tool, args, later=False):
     after the hook reads (`later`, run_in_background or Qwen Code's is_background, a BACKGROUND & or coproc,
     constraints.shell's `later`: systemd-run, at), or of a command line whose paths are elsewhere (constraints.shell's
     `elsewhere`: cp -t, git -C, env --chdir, chroot, ssh, ...); and a relative one when the command changes directory
-    (`cd`: cd, pushd, popd, git --work-tree)."""
+    (`cd`: cd, pushd, popd, git --work-tree, a shell's dir_path)."""
     args = args if isinstance(args, dict) else {}
     if tool in WRITERS:
         paths, s = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")], {}
     elif tool == "Bash":
         s = constraints.shell(args)
         paths = s["paths"]
+        # Gemini CLI's and Qwen Code's shell runs in its dir_path (agent_hooks.tool), not in the hook's cwd
+        s["cd"] = s["cd"] or isinstance(args.get("dir_path"), str)
         later = later or any(BACKGROUND.search(v) for k in SHELL_KEYS for v in (
             args[k] if isinstance(args.get(k), list) else [args.get(k)]) if isinstance(v, str))
     else:

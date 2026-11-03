@@ -778,14 +778,25 @@ def _elsewhere(name, rest):
     return False
 
 
+def _forks(rest):
+    """Whether setsid's options (`rest` up to its command) hold -f (alone or in a cluster: -cf), --fork or a prefix of
+    it: setsid then returns at once, its command still running."""
+    for w in rest:
+        if w[:1] != "-":
+            return False
+        if w[1:2] != "-" and "f" in w or len(w) > 2 and "--fork".startswith(w):
+            return True
+    return False
+
+
 def shell(cmd):
     """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs": those
     of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory (cd, pushd, popd, git
     --work-tree), "elsewhere": a command's paths are in another directory, root or host (_elsewhere), "later": a
-    command runs its own after the line returns (LATER_RUNS), "push": a git push, "network": a command that reaches
-    the network, "writes": it writes or commits}. `cmd`: a command line, or a shell call's arguments (`command` or
-    `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine reads them (policy2/shell.py:
-    wrappers, `bash -c`, `eval`, substitutions and pipelines included).
+    command runs its own after the line returns (LATER_RUNS, setsid -f), "push": a git push, "network": a command that
+    reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell call's arguments (`command`
+    or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine reads them
+    (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included).
     lean: redirections, the arguments of tee/touch/mkdir/rm/rmdir/truncate/shred/unlink and of formatters that write
     in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
     ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
@@ -805,7 +816,7 @@ def shell(cmd):
         out["cd"] = out["cd"] or name in ("cd", "pushd", "popd") or name == "git" and any(
             w.split("=", 1)[0] == "--work-tree" for w in rest)
         out["elsewhere"] = out["elsewhere"] or _elsewhere(name, rest)
-        out["later"] = out["later"] or name in LATER_RUNS
+        out["later"] = out["later"] or name in LATER_RUNS or name == "setsid" and _forks(rest)
         mode = WRITERS.get(name)
         if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
                                            for w in rest):
