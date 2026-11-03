@@ -1315,6 +1315,23 @@ class Shell(unittest.TestCase):
         cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
         self.assertEqual(Engine(pol).decide("Bash", {"command": cmd})["verdict"], "allow")
 
+    def test_redirections_to_bracket_patterns_decide_within_the_budget(self):
+        """63 KiB of `>>a[bc][de][fg][hi]N` took 5 s to decide (1.5.2: 0.1 s): each pattern's 16 names were made
+        uncharged, and the shell targets were deduplicated against a list. The names count toward the parse budget,
+        past which the line is held, and the targets are deduplicated with a set."""
+        units, i = [], 0
+        while sum(map(len, units)) + len(units) < 63 * 1024 - 40:
+            units.append(f">>a[bc][de][fg][hi]{i}")
+            i += 1
+        cmd = "echo x " + " ".join(units)
+        for pack in ("dev.yaml", "strict.yaml"):
+            pol = pc.build(os.path.join(PACKS, pack))[0]
+            for e in (Engine(pol), Engine(pol, "regex")):
+                start = time.perf_counter()
+                d = e.decide("Bash", {"command": cmd})
+                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER, (pack, e.engine))   # ~0.25 s on a laptop
+                self.assertIn(d["verdict"], ("ask", "deny"), (pack, e.engine))
+
     def test_an_assignment_is_read_within_its_word(self):
         """`_ASSIGN` read past the word to the next `]` on the line: `a[ x]=1` made `a[` an assignment, as bash
         doesn't, and 64 KiB of `a[;` took 0.6 s to parse."""
@@ -1575,6 +1592,13 @@ class TimedAndBraced(unittest.TestCase):
                 self.assertNotEqual(d["verdict"], "deny", (pack, backend, cmd, d))
             d = e.decide("Bash", {"command": 'echo "x" {1..3..1}; sudo id'})   # outside the quotes it is a command
             self.assertEqual((d["verdict"], "TK-D001" in d["rule_ids"]), ("deny", True), (pack, backend))
+            # a quote in a comment quotes nothing: the next line is a command (1.5.3's review: only asked)
+            for cmd in ("case x in esac # it's\nrm -rf ~/ #'", "f() { :; } # don't\nrm -rf ~/ #'",
+                        'case x in esac # say "hi\nrm -rf ~/ #"'):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("deny", True), (pack, backend, cmd))
+            d = e.decide("Bash", {"command": "case x in esac; echo a#'b; sudo id' #'"})   # a # inside a word is no comment
+            self.assertNotEqual(d["verdict"], "deny", (pack, backend))
 
     def test_a_parameter_expansion_ends_where_bash_ends_it(self):
         """Quotes pair up and a backslash escapes in ${...}: a } there doesn't end it. With X unset, bash runs
@@ -1596,20 +1620,23 @@ class TimedAndBraced(unittest.TestCase):
 
     def test_a_backslash_newline_is_gone_before_bash_reads_the_words(self):
         """bash deletes an unquoted backslash-newline first, so it can't hide a keyword, an assignment, a heredoc's
-        unquoted delimiter or a variable's name; between $ and ( { or a quote, or inside a redirection, the line is
-        unreadable."""
+        unquoted delimiter, a variable's name or a $'...' quote (1.5.2 read `$\\<nl>'x'` too); between $ and ( or {, or
+        inside a redirection, the line is unreadable."""
         c = "\\\n"
         for line, want in (("ti" + c + "me { alpha x; }", [["alpha", "x"]]), ("time" + c + " { alpha x; }", [["alpha", "x"]]),
                            ("{" + c + " alpha x; }", [["alpha", "x"]]), ("!" + c + " alpha x", [["alpha", "x"]]),
                            ("for i in 1; d" + c + "o alpha x; done", [["alpha", "x"]]),
                            ("Y" + c + "=1 alpha x", [["alpha", "x"]]), ("al" + c + "pha -r" + c + "f x", [["alpha", "-rf", "x"]]),
                            ("alpha 'a" + c + "b'", [["alpha", "a" + c + "b"]]), ("alpha $" + c + "HOME", [["alpha", "$HOME"], ["alpha"]]),
-                           ("alpha $" + c + " x", [["alpha", "$", "x"]])):
+                           ("alpha $" + c + " x", [["alpha", "$", "x"]]), ("alpha $" + c + "'\\x2drf' x", [["alpha", "-rf", "x"]]),
+                           ("alpha $" + c + '"x" y', [["alpha", "x", "y"]]), ('alpha "$' + c + '\'x"', [["alpha", "$'x"]])):
             self.assertEqual(argvs(line), want, line)
         self.assertIn(["alpha"], argvs("alpha $" + c + "X"))   # an expansion, empty too
+        d = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0]).decide("Bash", {"command": "echo $" + c + "'x' ; bash -c 'sudo id'"})
+        self.assertEqual((d["verdict"], "TK-D001" in d["rule_ids"]), ("deny", True))   # as 1.5.2 decided it
         self.assertIn(["alpha", "x"], argvs("cat <<E" + c + "OF\n$(alpha x)\nEOF"))
         self.assertIn(["alpha", "x"], argvs("cat <<EOF\nx\nEO" + c + "F\nalpha x\nEOF"))   # the body ends at EO\<nl>F
-        for line in ('alpha "$' + c + '(beta x)"', "alpha $" + c + "'\\x2drf' x", "alpha $" + c + '{X+"}"}{-r,-f} x',
+        for line in ('alpha "$' + c + '(beta x)"', "alpha $" + c + '{X+"}"}{-r,-f} x',
                      "f" + c + "unction g { alpha x; }; g", "alpha x 2" + c + "> out", "alpha x {fd}" + c + "> out",
                      "true $(( $" + c + "(alpha x) ))", "y='$(alpha x)'; (" + c + "( z = a[$y] ))",
                      "y='$(alpha x)'; $(" + c + "( a[$y] ))", "y='$(alpha x)'; le" + c + "t z=a[$y]"):
@@ -1715,8 +1742,16 @@ class TimedAndBraced(unittest.TestCase):
         for line, empty in (('rm -rf "${D:-build}/"', ["rm", "-rf", "build/"]), ("rm -rf ${D:=build}", ["rm", "-rf", "build"]),
                             ("rm ${Z:--rf} ~/", ["rm", "-rf", "~/"]), ("rm -rf ${Z:-$HOME}", ["rm", "-rf", "$HOME"]),
                             ("rm -rf ${Z-~}", ["rm", "-rf", "~"]), ("rm -rf ${Z=/}", ["rm", "-rf", "/"]),
-                            ("rm ${Z:-'-rf'} \"${Y:-\"/\"}\"", ["rm", "-rf", "/"]), ("rm -rf ${Z:+/}", ["rm", "-rf"])):
-            self.assertEqual(argvs(line)[1:], [empty], line)
+                            ("rm ${Z:-'-rf'} \"${Y:-\"/\"}\"", ["rm", "-rf", "/"]), ("rm -rf ${Z:+/}", ["rm", "-rf"]),
+                            # a word with an expansion may be empty itself (1.5.3's review: read only as written)
+                            ("rm -rf ~/${X:-$Y}", ["rm", "-rf", "~/"]), ('rm -rf ~/"${X:-$Y}"', ["rm", "-rf", "~/"]),
+                            ("rm -rf ~/${X:=$Y}", ["rm", "-rf", "~/"]), ("rm -rf ~/${X:-$(true)}", ["rm", "-rf", "~/"]),
+                            ("rm -rf ~/${X:-${Y:-}}", ["rm", "-rf", "~/"]), ("rm -rf ${Z:-$HOME}", ["rm", "-rf"]),
+                            ("rm -rf ${X:--rf$Y} ~/", ["rm", "-rf", "-rf", "~/"])):
+            self.assertIn(empty, argvs(line)[1:], line)
+        for line in ("rm -rf ~/${X:-$Y}", "rm -rf ~/${X:-$(true)}", "rm -rf ~/${X:-${Y:-}}"):
+            d = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0]).decide("Bash", {"command": line})
+            self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), line)
         for pack, backend in itertools.product(("dev.yaml", "strict.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
             for cmd, rule in (("rm ${Z:--rf} ~/", "TK-D004"), ("rm -rf ${Z:-$HOME}", "TK-D004"),
@@ -1746,6 +1781,52 @@ class TimedAndBraced(unittest.TestCase):
                 # the command as written denies nothing: a deny only its empty reading makes is on_parse_error's
                 self.assertEqual(d["verdict"], e.policy.get("on_parse_error", "ask") if rule.startswith("TK-D") else "ask",
                                  (pack, backend, cmd))
+
+    def test_what_sets_a_variable_in_ways_the_parser_does_not_read_forgets_what_it_knew(self):
+        """printf -v with the name attached (-vD, -v'D', through command) and compgen -V set a variable, so a literal
+        the line gave it before is no longer known: 1.5.3's review found `D=build; printf -vD ''; rm -rf ~/"$D"` read
+        as `rm -rf ~/build` and only flagged. bash 5.3's ${ cmd; } runs commands in this shell: unreadable."""
+        for pack, backend in itertools.product(("dev.yaml",), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd in ("D=build; printf -vD ''; rm -rf ~/\"$D\"", "D=build; printf -v'D' ''; rm -rf ~/\"$D\"",
+                        "D=build; command printf -vD ''; rm -rf ~/\"$D\"", "D=build; compgen -V D -W ''; rm -rf ~/$D"):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), (backend, cmd))
+        for cmd in ("D=build; : ${ D=; }; rm -rf ~/$D", "echo ${ rm -rf ~/; }", "echo ${| REPLY=x; }"):
+            with self.assertRaises(shell.ParseError, msg=cmd):
+                shell.parse(cmd)
+
+    def test_what_is_certainly_empty_denies_and_an_append_to_the_unknown_is_unknown(self):
+        """`X=`, `X=''`, `unset X`, a for loop over "" and ${X:+}, ${X:0:0}, ${X%%*} are empty for certain, so a deny
+        they make is the command's, not a guess's: rc/1.5.3 denied these, 1.5.3's review found them asked. And
+        `D+=/` of a D the line doesn't know may be `/` alone: it was known as never empty, read only as written."""
+        for pack, backend in itertools.product(("dev.yaml",), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd in ("X=; rm -rf ~/$X", "X=''; rm -rf ~/\"$X\"", "unset X; rm -rf ~/$X", "D=build D=; rm -rf ~/$D",
+                        'for f in ""; do rm -rf ~/$f; done', "rm -rf ~/${X:+}", "rm -rf ~/${X:0:0}", "rm -rf ~/${X%%*}",
+                        "X=build; rm -rf ~/${X%%*}", "X=; $X rm -rf ~/", 'unset PWD; rm -rf "$PWD"/*'):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("deny", True), (backend, cmd))
+            for cmd in ("D+=/; rm -rf ~$D", "false && X=; rm -rf ~/$X", "unset IFS; rm -rf ~/$IFS"):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), (backend, cmd))
+            for cmd in ('X=; rm -rf "$X"', "echo ${X:+} done", "D=build; rm -rf ~/$D"):
+                self.assertNotIn(e.decide("Bash", {"command": cmd})["verdict"], ("ask", "deny"), (backend, cmd))
+
+    def test_pwd_is_where_a_literal_cd_goes(self):
+        """$PWD stayed bash's start directory after `cd /`, so `cd / && rm -rf "$PWD"/*` was read as removing that
+        directory's files and only flagged (rc/1.5.3 denied it from the empty reading). After cd or pushd to a literal
+        (cd alone: ~) $PWD is that; after any other (a variable, a pattern, -, popd) it is unknown: maybe empty."""
+        e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
+        for cmd in ('cd / && rm -rf "$PWD"/*', 'cd ~ && rm -rf "$PWD"/*', 'pushd / && rm -rf ${PWD}/*',
+                    'cd && rm -rf "$PWD"/*', 'cd -P -- / && rm -rf "$PWD"/*'):
+            self.assertEqual(e.decide("Bash", {"command": cmd})["verdict"], "deny", cmd)
+        for cmd in ('cd "$D" && rm -rf "$PWD"/*', 'cd - && rm -rf "$PWD"/*', 'popd && rm -rf "$PWD"/*',
+                    'cd /tm* && rm -rf "$PWD"/*'):
+            d = e.decide("Bash", {"command": cmd})
+            self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), cmd)
+        for cmd in ('cd build && rm -rf "$PWD"/*', 'rm -rf "$PWD"/*', '(cd /) && rm -rf "$PWD"/*'):
+            self.assertNotIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
 
     def test_a_variable_the_line_sets_is_never_read_as_empty(self):
         """bash sets $PWD, and a literal the line gives a variable (`D=dist; rm -rf "$D"/*`, a for loop's over literal

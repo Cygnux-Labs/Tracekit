@@ -260,14 +260,17 @@ also `git push --force`. An empty expansion inside a word joins the rest of it, 
 every expansion empty (`rm $X-rf ~/$X` is `rm -rf ~/`), and with only those empty that touch a character other than
 `/ = : , @` (`gh ${X}api -X PUT "repos/$R/x"` keeps `$R`, which rules read as built at run time); `${X:?}` and
 arithmetic never expand to nothing, and a default (`${X:-word}`, `${X-word}`, `${X:=word}`, `${X=word}`) is read as its
-word (`rm ${Z:--rf} ~/` is also `rm -rf ~/`). Neither do `$PWD`, a variable the line gave a literal before
-(`D=dist; rm -rf "$D"/*`, `export D=dist`) and a `for` loop's variable over literal words in its body, unless
-something on the line may have emptied it first (an assignment that may not run: after `&&` or `||`, in a pipeline,
-a subshell, an `if` or a loop, or in a `{ }` group once it ends; `unset`, `read`, `declare`, `eval`, `trap`, an
-unreadable command name; in a loop, a later command of its body). A deny that
+word with the word's own expansions empty (`rm ${Z:--rf} ~/` is also `rm -rf ~/`, `~/${X:-$Y}` also `~/`). Neither do
+`$PWD` (after `cd` or `pushd` to a literal, that literal: `cd / && rm -rf "$PWD"/*` is `rm -rf //*`; after any other
+target, unknown), a variable the line gave a literal before (`D=dist; rm -rf "$D"/*`, `export D=dist`) and a `for`
+loop's variable over literal words in its body, unless something on the line may have emptied it first (an assignment
+that may not run: after `&&` or `||`, in a pipeline, a subshell, an `if` or a loop, or in a `{ }` group once it ends;
+`X+=y` of an X the line doesn't know; `read`, `declare`, `printf -v` (also `-vNAME`), `compgen`, `eval`, `trap`, an
+unreadable command name; in a loop, a later command of its body). `X=`, `unset X`, a loop over `""`, `${X:+}`,
+`${X:0:0}` and `${X%%*}` are empty for certain, so a deny they make stays one. A deny that
 only such an empty reading makes (`rm -rf "$VENV"/`) takes `on_parse_error`'s section with the rule's id: it asks by
-default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one between `$` and `(`, `{` or a
-quote, or between the characters of an operator (`(\⏎(` is `((`, `<<\⏎-EOF` is `<<-EOF`), is unreadable. A command it cannot parse is still decided on the line before the word it
+default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one between `$` and `(` or `{`, or between the characters of an operator (`(\⏎(` is `((`, `<<\⏎-EOF` is `<<-EOF`), makes the line unreadable,
+as does bash 5.3's `${ cmd; }`. A command it cannot parse is still decided on the line before the word it
 stopped in, parsed, and on its text split at `;`, `&`, `|` and newlines into blank-separated words, so a deny before
 an unreadable word or on plain words stands. A command it cannot parse, or one that
 is opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a
