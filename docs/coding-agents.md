@@ -356,8 +356,9 @@ cluster too, `-vt`), `git`, `env`, `make` or `tar` has `-C`, `sudo` has `-D`, or
 `ssh`, `chroot`, `nsenter`, `unshare` or `firejail`; every path of a call whose write may land after the hook reads (a
 Bash call `run_in_background` or with a lone `&`, input typed into another session, Qwen Code's `monitor`,
 `systemd-run`, `setsid -f`, `at`); and a relative one in a command that changes directory (`cd`, `pushd`, `popd`, `git
---work-tree`, or a shell call's own `dir_path`). The hook hashes for at most 10 seconds per call; a receipt it can't
-finish, or any it can't read, is recorded with its reason, and the call's result is recorded either way.
+--work-tree`, or a shell call's own working directory: `dir_path`, `directory`, `working_directory`, `workdir`). The
+hook hashes for at most 10 seconds per call; a receipt it can't finish, or any it can't read, is recorded with its
+reason, and the call's result is recorded either way.
 
 The hook runs as the agent's user, so each receipt (`reported_by: hook`) is the agent side's record, not something the
 signer saw. The `model_receipts` key is the hook's on those five tools' results: it removes one it didn't set. Every
