@@ -28,6 +28,10 @@ type VerificationCheck struct {
 
 var versionPattern = regexp.MustCompile(`^[0-9]{1,9}(\.[0-9]{1,9}){0,2}$`)
 
+// formatVersion is the newest row of the format's version table (VERSIONS in tracekit/bundle_v2.py) this verifier
+// implements. A bundle that declares a newer verifier_min_version may use entries it doesn't know: UNVERIFIABLE.
+const formatVersion = "1.4.0"
+
 // TrustUnusable is the integrity of a trust config that can't be used: nothing in the bundle was checked (exit 2).
 const TrustUnusable = "UNVERIFIABLE (the trust file can't be used)"
 
@@ -85,13 +89,14 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 		return fail(failed("bundle readable", err))
 	}
 	version, ok := manifest["verifier_min_version"].(string)
-	newer, versionErr := newerVersion(version, "1.4.2")
+	newer, versionErr := newerVersion(version, formatVersion)
 	if manifest["format"] != "tracekit.bundle.v2" || !ok || versionErr != nil {
 		return fail(failure{"bundle readable", errors.New("invalid manifest format or version")})
 	}
 	if newer {
 		rep.Integrity = "UNVERIFIABLE (needs tracekit >= " + version + ")"
-		rep.Checks = []VerificationCheck{{"bundle readable", "fail", rep.Integrity}}
+		rep.Checks = []VerificationCheck{{"bundle readable", "fail", rep.Integrity + ": this verifier reads the format " +
+			"up to " + formatVersion + "; verify it with tracekit >= " + version}}
 		return rep
 	}
 	rep.ExitCode, rep.Integrity = 1, "FAILED"

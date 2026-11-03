@@ -816,6 +816,15 @@ class PolicyYAML(unittest.TestCase):
             with self.assertRaises(yamlmini.YAMLError, msg=bad):
                 yamlmini.loads(bad)
 
+    def test_a_rule_written_for_monitor_or_powershell_still_matches_them(self):
+        # final review of the 1.5.3 sweep: deciding Monitor and PowerShell as Bash hid an operator's rule written for the
+        # tool itself, and a rule without a tool read only the command, not the whole input
+        pol = {"deny": [{"id": "X-1", "tool": "PowerShell", "pattern": "Remove-Item"},
+                        {"id": "X-2", "pattern": "secret-token"}]}
+        self.assertEqual(policy.evaluate(pol, "PowerShell", {"command": "Remove-Item x"})["rule_ids"], ["X-1"])
+        self.assertEqual(policy.evaluate(pol, "Monitor", {"command": "ls", "description": "secret-token"})["rule_ids"],
+                         ["X-2"])
+
     def test_rules(self):
         pol = policy.load()[0]
         cases = {
@@ -825,7 +834,8 @@ class PolicyYAML(unittest.TestCase):
             "systemctl stop tracekitd": "deny", "pkill -f tracekit.daemon": "deny",
         }
         for cmd, want in cases.items():
-            self.assertEqual(policy.evaluate(pol, "Bash", {"command": cmd})["decision"], want, cmd)
+            for tool in ("Bash", "Monitor", "PowerShell"):   # Claude Code's Monitor and PowerShell run commands too
+                self.assertEqual(policy.evaluate(pol, tool, {"command": cmd})["decision"], want, (tool, cmd))
         self.assertEqual(policy.evaluate(pol, "Write", {"file_path": "/home/u/.claude/projects/x/a.jsonl"})["decision"], "deny")
         for cmd, label in {"ls() { echo; }": "shell_shadowing", "alias git='echo'": "shell_shadowing",
                            "export PATH=/tmp/evil:$PATH": "env_tamper", "unset ANTHROPIC_BASE_URL": "env_tamper",

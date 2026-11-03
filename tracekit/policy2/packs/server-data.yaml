@@ -6,7 +6,7 @@
 # matches outside a literal or comment in every dialect (SELECT 'DROP TABLE x' is allowed). A statement no dialect can
 # read (an unclosed literal or comment) asks (TK-SQL-PARSE). Keywords are matched in any case.
 
-version: '2026.10-server-data-3'
+version: '2026.10-server-data-4'
 description: server-hosted agents, SQL tools
 unknown_tools: ask
 
@@ -38,20 +38,29 @@ deny:
   - id: TK-DB003
     class: sql
     field: code
-    # DELETE FROM <table> [alias] [RETURNING ...] with nothing else, or with a WHERE that is always true
-    pattern: '\b[Dd][Ee][Ll][Ee][Tt][Ee]\s+[Ff][Rr][Oo][Mm]\s+([^\s;]+(\s+([Aa][Ss]\s+)?[A-Za-z_][A-Za-z0-9_]*)?(\s+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg]\s[^;]*)?|[^;]*\s[Ww][Hh][Ee][Rr][Ee]\s+(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))\s*(;|$)'
+    # DELETE [modifiers or MySQL's table names] FROM <table> [alias] [RETURNING ...] with nothing else, or with a
+    # WHERE that is constant (1, TRUE, NOT FALSE, two numbers or two literals compared, also in parentheses), or
+    # that starts with one followed by OR or ends in OR and one, outside parentheses (in a subquery's WHERE it
+    # isn't the DELETE's)
+    pattern: '\b[Dd][Ee][Ll][Ee][Tt][Ee]\s+([A-Za-z_][A-Za-z0-9_.,]*\s+){0,4}[Ff][Rr][Oo][Mm]\s+(([^\s;]+(\s+([Aa][Ss]\s+)?[A-Za-z_][A-Za-z0-9_]*)?(\s+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg]\s[^;]*)?|[^;]*\s[Ww][Hh][Ee][Rr][Ee]\s+(([1-9][0-9]*|[Tt][Rr][Uu][Ee]|[Nn][Oo][Tt]\s+([Ff][Aa][Ll][Ss][Ee]|0)|[0-9]+\s*(=|<>|!=|[<>]=?)\s*[0-9]+|(''''|"")\s*=\s*(''''|""))|\(\s*([1-9][0-9]*|[Tt][Rr][Uu][Ee]|[Nn][Oo][Tt]\s+([Ff][Aa][Ll][Ss][Ee]|0)|[0-9]+\s*(=|<>|!=|[<>]=?)\s*[0-9]+|(''''|"")\s*=\s*(''''|""))\s*\))|[^;()]*\s[Ww][Hh][Ee][Rr][Ee]\s[^;()]*\s[Oo][Rr]\s+(([1-9][0-9]*|[Tt][Rr][Uu][Ee]|[Nn][Oo][Tt]\s+([Ff][Aa][Ll][Ss][Ee]|0)|[0-9]+\s*(=|<>|!=|[<>]=?)\s*[0-9]+|(''''|"")\s*=\s*(''''|""))|\(\s*([1-9][0-9]*|[Tt][Rr][Uu][Ee]|[Nn][Oo][Tt]\s+([Ff][Aa][Ll][Ss][Ee]|0)|[0-9]+\s*(=|<>|!=|[<>]=?)\s*[0-9]+|(''''|"")\s*=\s*(''''|""))\s*\)))\s*(;|$)|[^;()]*\s[Ww][Hh][Ee][Rr][Ee]\s+([1-9][0-9]*|[Tt][Rr][Uu][Ee]|[Nn][Oo][Tt]\s+([Ff][Aa][Ll][Ss][Ee]|0)|[0-9]+\s*(=|<>|!=|[<>]=?)\s*[0-9]+|(''''|"")\s*=\s*(''''|""))\s+[Oo][Rr]\b)'
     reason: deleting every row of a table
     rationale: A DELETE without a WHERE clause (or with one that is always true) wipes the table.
   - id: TK-DB004
     class: sql
     field: code
-    pattern: '\b([Gg][Rr][Aa][Nn][Tt]|[Rr][Ee][Vv][Oo][Kk][Ee])\s|\b([Aa][Ll][Tt][Ee][Rr]|[Cc][Rr][Ee][Aa][Tt][Ee])\s+([Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ll][Oo][Gg][Ii][Nn])\b'
+    pattern: '\b([Gg][Rr][Aa][Nn][Tt]|[Rr][Ee][Vv][Oo][Kk][Ee])\s|\b([Aa][Ll][Tt][Ee][Rr]|[Cc][Rr][Ee][Aa][Tt][Ee])\s+([Ss][Ee][Rr][Vv][Ee][Rr]\s+)?([Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ll][Oo][Gg][Ii][Nn])\b|\b[Ss][Pp]_[Aa][Dd][Dd]([Ss][Rr][Vv])?[Rr][Oo][Ll][Ee][Mm][Ee][Mm][Bb][Ee][Rr]\b'
     reason: changing database privileges or accounts
     rationale: GRANT, REVOKE and ALTER or CREATE USER/ROLE change who can do what; an agent must not widen its own access.
   - id: TK-DB005
     class: sql
     field: code
-    # COPY's FROM or TO PROGRAM with its command (a literal), so the text between COPY and PROGRAM is never rescanned
-    pattern: '\b(([Ff][Rr][Oo][Mm]|[Tt][Oo])\s+[Pp][Rr][Oo][Gg][Rr][Aa][Mm]\s*(''''|"")|[Xx][Pp]_[Cc][Mm][Dd][Ss][Hh][Ee][Ll][Ll]|[Ss][Pp]_[Oo][Aa][Cc][Rr][Ee][Aa][Tt][Ee]|[Pp][Gg]_[Rr][Ee][Aa][Dd]_([Bb][Ii][Nn][Aa][Rr][Yy]_)?[Ff][Ii][Ll][Ee]|[Pp][Gg]_[Ll][Ss]_[Dd][Ii][Rr]|[Ll][Oo]_([Ii][Mm][Pp][Oo][Rr][Tt]|[Ee][Xx][Pp][Oo][Rr][Tt])|[Ll][Oo][Aa][Dd]_([Ff][Ii][Ll][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn])|[Ii][Nn][Tt][Oo]\s+([Oo][Uu][Tt]|[Dd][Uu][Mm][Pp])[Ff][Ii][Ll][Ee]|[Ll][Oo][Aa][Dd]\s+[Dd][Aa][Tt][Aa]\s+([Ll][Oo][Cc][Aa][Ll]\s+)?[Ii][Nn][Ff][Ii][Ll][Ee]|[Aa][Tt][Tt][Aa][Cc][Hh]\s+([Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]\s+)?(''|"))'
+    # COPY's FROM or TO PROGRAM with its command (a literal), so the text between COPY and PROGRAM is never rescanned;
+    # an untrusted procedural language (plpython3u, plperlu, pltclu); SQL Server's bulk file reads and file-system
+    # procedures; a COPY that starts a statement reading or writing a server file (a literal: not STDIN or STDOUT,
+    # and psql's \copy, a client file, starts with a backslash) after its table and columns, or a query's `) TO`
+    # a literal
+    # lean: a table name over 256 characters or a column list over 1000 isn't read, so the fallback engine stays
+    # linear; read further if one shows up
+    pattern: '\b(([Ff][Rr][Oo][Mm]|[Tt][Oo])\s+[Pp][Rr][Oo][Gg][Rr][Aa][Mm]\s*(''''|"")|[Xx][Pp]_([Cc][Mm][Dd][Ss][Hh][Ee][Ll][Ll]|[Dd][Ii][Rr][Tt][Rr][Ee][Ee]|[Ss][Uu][Bb][Dd][Ii][Rr][Ss]|[Ff][Ii][Ll][Ee][Ee][Xx][Ii][Ss][Tt])|[Ss][Pp]_[Oo][Aa][Cc][Rr][Ee][Aa][Tt][Ee]|[Pp][Gg]_[Rr][Ee][Aa][Dd]_([Bb][Ii][Nn][Aa][Rr][Yy]_)?[Ff][Ii][Ll][Ee]|[Pp][Gg]_[Ll][Ss]_[Dd][Ii][Rr]|[Ll][Oo]_([Ii][Mm][Pp][Oo][Rr][Tt]|[Ee][Xx][Pp][Oo][Rr][Tt])|[Ll][Oo][Aa][Dd]_([Ff][Ii][Ll][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn])|[Ii][Nn][Tt][Oo]\s+([Oo][Uu][Tt]|[Dd][Uu][Mm][Pp])[Ff][Ii][Ll][Ee]|[Ll][Oo][Aa][Dd]\s+[Dd][Aa][Tt][Aa]\s+([Ll][Oo][Cc][Aa][Ll]\s+)?[Ii][Nn][Ff][Ii][Ll][Ee]|[Aa][Tt][Tt][Aa][Cc][Hh]\s+([Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]\s+)?(''|")|([Ll][Aa][Nn][Gg][Uu][Aa][Gg][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn](\s+[Ii][Ff]\s+[Nn][Oo][Tt]\s+[Ee][Xx][Ii][Ss][Tt][Ss])?)\s+[Pp][Ll]([Pp][Yy][Tt][Hh][Oo][Nn][23]?|[Pp][Ee][Rr][Ll]|[Tt][Cc][Ll])[Uu]\b|[Oo][Pp][Ee][Nn][Rr][Oo][Ww][Ss][Ee][Tt]\s*\(\s*[Bb][Uu][Ll][Kk]\b|[Bb][Uu][Ll][Kk]\s+[Ii][Nn][Ss][Ee][Rr][Tt]\b)|(^|;)\s*[Cc][Oo][Pp][Yy]\s+[^\s;(]{1,256}(\s*\([^;)]{0,1000}\))?\s*([Ff][Rr][Oo][Mm]|[Tt][Oo])\s+[Ee]?''''|\)\s*[Tt][Oo]\s+[Ee]?'''''
     reason: reaching the server's shell or files through SQL
     rationale: COPY ... PROGRAM, xp_cmdshell, server-side file functions and ATTACH run commands or read and write files as the database server, outside what the tool is for.

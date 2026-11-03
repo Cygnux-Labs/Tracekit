@@ -72,8 +72,8 @@ V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
 GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_files": "Read", "write_file": "Write", "replace": "Edit",
-                "glob": "Glob", "search_file_content": "Grep", "list_directory": "LS", "web_fetch": "WebFetch",
-                "google_web_search": "WebSearch", "save_memory": "Memory"}
+                "glob": "Glob", "search_file_content": "Grep", "grep_search": "Grep", "list_directory": "LS",
+                "web_fetch": "WebFetch", "google_web_search": "WebSearch", "save_memory": "Memory"}
 # Qwen Code keeps Gemini CLI's names, except where it renamed a tool (its docs: tools/file-system, tools/introduction)
 # (monitor runs its `command` in a shell, as run_shell_command does; notebook_edit writes `notebook_path`)
 QWEN_TOOLS = {**GEMINI_TOOLS, "edit": "Edit", "grep_search": "Grep", "web_search": "WebSearch", "todo_write": "TodoWrite",
@@ -189,6 +189,8 @@ def tool(harness, name, ti):
         if any(f not in [ti["file_path"], *paths] for f in files):
             ti["paths"] = list(dict.fromkeys(files + paths))
         return CURSOR_TOOLS.get(name, name), ti
+    if harness == "gemini" and name.startswith("mcp_"):   # mcp_<server>_<tool> (packages/core/src/tools/mcp-tool.ts)
+        return "mcp__" + name[4:], ti
     if harness in ("gemini", "qwen"):
         mapped = (QWEN_TOOLS if harness == "qwen" else GEMINI_TOOLS).get(name, name)
         if mapped != "Bash":   # a shell command's dir_path is where it runs, not a file it reads
@@ -244,7 +246,10 @@ def tool(harness, name, ti):
             return "mcp__" + name, ti
         return GOOSE_TOOLS.get(name, name), ti
     if harness == "antigravity":
-        if name == "manage_task" and ti.get("Action") == "send_input":   # input typed into a background run_command
+        # agy is a Go binary that may match a tool's name, as its arguments, ignoring case: a known name is read so.
+        # manage_task's send_input is input typed into a background run_command
+        name = name.casefold() if name.casefold() in (*AGY_TOOLS, "manage_task") else name
+        if name == "manage_task" and str(ti.get("Action")).casefold() == "send_input":
             ti["command"] = ti.get("Input")
             return "Bash", ti
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
@@ -488,7 +493,7 @@ def _blocked_tool(harness, tool_name, raw=""):
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
     if harness != "crush":
         return None
-    if tool_name in CRUSH_SUBAGENTS:
+    if tool_name.casefold() in CRUSH_SUBAGENTS:   # as its argument names, Crush may match a tool's name ignoring case
         return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
                 "can't decide them; make each call itself instead. To stop Crush offering it, set "
                 '"options": {"disabled_tools": ["agent", "agentic_fetch"]} in crush.json.')
@@ -523,8 +528,8 @@ def _blocked_agy_args(name, args):
             args = json.loads(args, object_pairs_hook=_Pairs)
         except ValueError:
             return None
-    read = {f.casefold(): f for f in (*AGY_ARGS.get(name, {}).values(),
-                                      *(("Action", "Input") if name == "manage_task" else ()))}
+    read = {f.casefold(): f for f in (*AGY_ARGS.get(name.casefold(), {}).values(),
+                                      *(("Action", "Input") if name.casefold() == "manage_task" else ()))}
     seen = set()
     for k, _ in args if isinstance(args, _Pairs) else ():
         f = k.casefold()
