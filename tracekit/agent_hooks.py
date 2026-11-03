@@ -41,7 +41,7 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
     Kilo    OpenCode's tools, names and arguments, and OpenCode's plugin; its own background_process, notebook_read,
             notebook_edit, send_file, generate_image -> Bash, Read, NotebookEdit, Read, Write (decided on their `path`;
-            generate_image's `image` too); notebook_execute is blocked in the hook
+            generate_image with an `image` as a Read of it and the `path`); notebook_execute is blocked in the hook
     Crush   bash, view, write, edit, multiedit, lsp_replace_symbol, lsp_rename, ls, grep, glob, fetch, download,
             mcp_<server>_<tool>
             -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
@@ -235,9 +235,15 @@ def tool(harness, name, ti):
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
         if name in path_arg:
             ti["file_path"] = ti.get(path_arg[name])
-        if harness == "kilo" and name == "generate_image":   # its `image`, an existing file, is read and sent to the
-            # image provider: decided with the `path` it writes
-            ti["paths"] = [ti["image"]] if isinstance(ti.get("image"), str) else []
+        if harness == "kilo" and name == "notebook_edit":   # v1 decides a NotebookEdit on its notebook_path
+            ti["notebook_path"] = ti["file_path"]
+        if harness == "kilo" and name == "generate_image":
+            ti["paths"] = []   # a `paths` sent beside it is dropped, as Kilo drops it
+            if isinstance(ti.get("image"), str):   # its `image`, an existing file, is read and sent to the image
+                # provider: decided as a Read of it, with the `path` it writes (Kilo gives that an image extension)
+                ti["file_path"] = ti["image"]
+                ti["paths"] = [ti["image"]] + [ti["path"]] * isinstance(ti.get("path"), str)
+                return "Read", ti
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided

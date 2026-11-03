@@ -1177,18 +1177,32 @@ class Installer(unittest.TestCase):
             with self.subTest(name=name):
                 mapped, ti = agent_hooks.tool("kilo", name, args)
                 self.assertEqual((mapped, ti.get("file_path")), (tool, args.get("path")))
+                if name == "notebook_edit":   # v1 decides a NotebookEdit on notebook_path: the tool's own path
+                    self.assertEqual(ti["notebook_path"], args["path"])
                 self.assertNotEqual(pol.decide(mapped, ti)["verdict"], "allow")   # a key read is flagged
                 # OpenCode has no such tool: under its own name the policy doesn't know it
                 self.assertEqual(agent_hooks.tool("opencode", name, args)[0], name)
 
     def test_kilo_generate_image_decides_the_image_it_reads(self):
-        # generate_image reads its `image` (an existing file) and sends it to the image provider: it is decided with
-        # the `path` it writes, so a key file named there is not decided as a write of out.png (generate-image.ts)
+        # generate_image reads its `image` (an existing file) and sends it to the image provider: it is decided as a
+        # Read of it, with the `path` it writes, so the read rules see the file (generate-image.ts)
         pol = load_policy()
         mapped, ti = agent_hooks.tool("kilo", "generate_image",
                                       {"prompt": "x", "path": "/w/out.png", "image": "/home/u/.ssh/id_rsa"})
-        self.assertEqual((mapped, ti["file_path"], ti["paths"]), ("Write", "/w/out.png", ["/home/u/.ssh/id_rsa"]))
+        self.assertEqual((mapped, ti["file_path"], ti["paths"]),
+                         ("Read", "/home/u/.ssh/id_rsa", ["/home/u/.ssh/id_rsa", "/w/out.png"]))
         self.assertNotEqual(pol.decide(mapped, ti)["verdict"], "allow")
+        # the review: a credential store no write rule names is held as the read it is (TK-A020), as through `read`
+        from tracekit.policy2 import compile as pc
+        from tracekit.policy2.engine import Engine
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0])
+        for image in ("/Users/u/Library/Keychains/login.keychain-db", "/home/u/.password-store/bank.gpg",
+                      "/home/u/.gnupg/private-keys-v1.d/a.key"):
+            with self.subTest(image=image):
+                mapped, ti = agent_hooks.tool("kilo", "generate_image",
+                                              {"prompt": "x", "path": "/w/o.png", "image": image})
+                d = e.decide(mapped, ti)
+                self.assertEqual((d["verdict"], "TK-A020" in d["rule_ids"]), ("ask", True), d)
         self.assertEqual(pol.decide(mapped, {"file_path": "/w/out.png"})["verdict"], "allow")
         # with no image, only the path it writes: a `paths` the model sent beside it is dropped, as Kilo drops it
         _, ti = agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "path": "/w/out.png", "paths": ["/w/b"]})

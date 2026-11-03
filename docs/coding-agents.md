@@ -52,8 +52,9 @@ read `plugins/`). Kilo Code is built on OpenCode and loads the same plugin, so f
 Kilo's own `plugin/` folder (Kilo doesn't read OpenCode's). This was run with the Kilo CLI 7.8.18 on Linux; Kilo's docs
 say its VS Code extension loads the same plugins, but that hasn't been tried. Kilo's built-in tools are OpenCode's, with
 the same names and arguments; of its own tools, `background_process` (it runs its `command`) is decided as `Bash`,
-`notebook_read` and `send_file` as `Read`, `notebook_edit` as `NotebookEdit` and `generate_image` as `Write`, each on
-the `path` it reads (`generate_image` also on the `image` it reads and sends to the image provider). The hook blocks
+`notebook_read` and `send_file` as `Read` and `notebook_edit` as `NotebookEdit`, each on its `path`, and
+`generate_image` as `Write` on the `path` it writes, or, given an `image` it reads and sends to the image provider, as
+a `Read` of that file and the `path`. The hook blocks
 `notebook_execute`, which runs a notebook cell whose code no rule has read (VS Code only, with
 `experimental.native_notebook_tools`). Kilo's other tools pass through under their own names
 ([limits](limits.md#signer-and-capture)); everything below about OpenCode's plugin holds for Kilo. For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
