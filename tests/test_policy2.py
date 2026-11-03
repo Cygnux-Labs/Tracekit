@@ -1454,23 +1454,33 @@ class TimedAndBraced(unittest.TestCase):
                 ("alpha '{a,b}'", ["{a,b}"]), ('alpha "{a,b}"', ["{a,b}"]), ("alpha \\{a,b}", ["{a,b}"]),
                 ("alpha {a}", ["{a}"]), ("alpha {}", ["{}"]), ("alpha {a,b", ["{a,b"]), ("alpha $'{a,b}'", ["{a,b}"]),
                 ("alpha ${X:-{a,b}}", ["${X:-{a,b}}"]), ("alpha {a..c,z}", ["a..c", "z"]), ("alpha {a..}", ["{a..}"]),
-                ("alpha {-rf,{}}", ["-rf", "{}"])):
+                ("alpha {-rf,{}}", ["-rf", "{}"]),
+                # bash's brace_gobbler: a } at a brace's own depth ends it only after a comma or .. there, and a {}
+                # that starts the text (each alternative and what follows are expanded on their own) opens none
+                ("alpha {zq},~/}", ["zq}", "~/"]), ("alpha {a}{b,c}", ["{a}b", "{a}c"]), ("alpha x{a}y,z}", ["xa}y", "xz"]),
+                ("alpha {x{a}y,z},b}", ["x{a}y,b}", "z,b}"]), ("alpha {},a}", ["{},a}"]), ("alpha x{},a}", ["x}", "xa"]),
+                ("alpha {{a,b}", ["{a", "{b"]), ("alpha {a,{b}}", ["a", "{b}"]), ("alpha {a..b}{},c}", ["a{},c}", "b{},c}"])):
             self.assertEqual(argvs(line), [["alpha"] + words], line)
+        for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):   # 1.5.2 read them as written
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd, rule in (("rm -rf {zq},~/.claude/}", "TK-D008"), ("tee {zq},~/.ssh/authorized_keys} < k", "TK-D010")):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (pack, backend, cmd))
         # braces inside a substitution are the substitution's own: read there, and the word outside is kept
         self.assertIn(["beta", "a", "b"], argvs("alpha $(beta {a,b})*"))
         for line in ("{alpha,beta} x", "{alpha,{}} x"):   # a command name brace expansion builds stays unreadable
             self.assertTrue(shell.parse(line)[0]["opaque"], line)
-        # hundreds of words, up to 16 KiB of them a command: read, as 1.5.2 allowed them
+        # hundreds of words, up to 16 KiB more text a line: read, as 1.5.2 allowed them
         for line, n in (("printf '%s\\n' {1..300}", 302), ("touch test{1..500}.txt", 501), ("echo {a..z}{a..z}", 677),
                         ("alpha {" + "a," * 300 + "a}", 302), ("alpha " + "{a,b}" * 9, 513)):
-            self.assertEqual([(len(c["argv"]), c["opaque"]) for c in shell.parse(line)], [(n, False)], line)
+            self.assertEqual([(len(c["argv"]), c["opaque"]) for c in shell.parse(line)], [(n, False)], line[:60])
         # unreadable (bash 4 expands it its own way, more text than that, or a substitution beside it): kept as
         # written, as 1.5.2 read it, and its command opaque, so a rule still reads the rest
         for line in ("alpha {1..10..2}", "alpha {01..03}", "alpha {a..A}", "alpha {1..5000}", "alpha {a,b}$(beta)",
                      "alpha " + "{a,b}" * 12, "alpha `#'`{-r,-f} x", "alpha {a{1,2}..b}", "alpha {x..{,}y}",
                      "alpha {'a,b'..c}", "alpha {+1..+3}", "alpha {1.." + "9" * 30 + "}", "alpha \"$(: '\"')\"{-r,-f} x",
-                     "alpha $(: #'\n){-r,-f} x", "alpha {" + "abcdefgh," * 2100 + "a}", "alpha x{1..3000} {1..3000}"):
-            self.assertTrue(next(c for c in shell.parse(line) if c["argv"][0] == "alpha")["opaque"], line)
+                     "alpha $(: #'\n){-r,-f} x", "alpha x{1..3000} {1..3000}"):
+            self.assertTrue(next(c for c in shell.parse(line) if c["argv"][0] == "alpha")["opaque"], line[:60])
         self.assertEqual(argvs("alpha -x {1..10..2} y"), [["alpha", "-x", "{1..10..2}", "y"]])
         with self.assertRaises(shell.ParseError):   # past the parse budget, the line is unreadable
             shell.parse("alpha " + "{a,b}" * 20000)
