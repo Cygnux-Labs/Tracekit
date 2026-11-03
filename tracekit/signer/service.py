@@ -2129,6 +2129,9 @@ class SignerService:
             timeout()
 
         def untrusted(subject, field=None):
+            if field == "link":   # a URL exactly as untrusted content gave it (provenance's `url`), from a complete index
+                s = idx.get(self._key("url", provenance.norm(subject))) if st["state"] == "complete" and idx else None
+                return [("url", s)] if s and s["trust"] == "untrusted" else []
             if st["state"] != "complete":
                 return [st["state"]]
             if not idx:

@@ -214,7 +214,8 @@ class Engine:
                     if (lits is None or len(texts) == 1 or any(s in low for s in lits)) and self._match(
                             pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
-                            "from" not in rule or untrusted is not None and untrusted(subject, rule.get("field"))):
+                            "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
+                                                                                     fields)):
                         return rule["id"]
             if big:   # the rule's own verdict: a flag rule cannot block a large call
                 field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
@@ -352,7 +353,8 @@ class Engine:
             return receiver + [canonical(args.get("params"))]
         if cls not in ("mcp", "app", "unknown"):
             return []
-        call = _acted_on(args, "search" in fields.get("tool", "").casefold()) if cls == "mcp" else args
+        tool = fields.get("tool")
+        call = _acted_on(args, _carried(tool if isinstance(tool, str) else "")) if cls == "mcp" else args
         strings = _strings(call)
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
@@ -530,6 +532,15 @@ _RUN_FLAGS = {"--detach", "--interactive", "--tty", "--rm", "--init", "--privile
 # /etc/localtime, isn't one)
 _HOST_PATH = re.compile(r"/|/proc(/.*)?|/etc|/root(/.*)?")
 _CONTAINER_VERBS = {"run", "create", "exec", "container"}
+# docker's and podman's global options that always take the next word, a verb's name too (`docker --context run run`),
+# and those that never do; another reads one unless an option or a verb follows
+_GLOBAL_VALUED = {"-H", "--host", "-c", "--context", "--connection", "--config", "-l", "--log-level", "--url",
+                  "--tlscacert", "--tlscert", "--tlskey", "--identity", "--root", "--runroot", "--storage-driver",
+                  "--storage-opt", "--cgroup-manager", "--events-backend", "--hooks-dir", "--module", "--tmpdir",
+                  "--runtime", "--runtime-flag", "--conmon", "--network-cmd-path", "--network-config-dir",
+                  "--volumepath", "--imagestore", "--db-backend", "--ssh"}
+_GLOBAL_FLAGS = {"-D", "--debug", "--tls", "--tlsverify", "-r", "--remote", "--syslog", "--noout", "-v", "--version",
+                 "-h", "--help"}
 
 
 def _host_path(source):
@@ -540,15 +551,17 @@ def _host_path(source):
 
 def _container_host_access(commands):
     """A docker/podman run, create or exec (also as `container run`, and after the CLI's global options: docker -H
-    host, --context prod, podman --remote) whose own options (those before the image or container: later words are
+    host, --context prod, podman --remote; one that takes a value takes it whatever it is named, _GLOBAL_VALUED) whose
+    own options (those before the image or container: later words are
     the command it runs) give it host privileges or every capability, the host's process space, or a _HOST_PATH."""
     for command in commands:
         argv = command["argv"]
         if not argv or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman"):
             continue
         words, i = argv[1:], 0
-        while i < len(words) and words[i].startswith("-"):   # a global option, and its value unless a verb follows
-            i += 1 if "=" in words[i] or i + 1 < len(words) and (
+        while i < len(words) and words[i].startswith("-"):   # a global option, and its value (_GLOBAL_VALUED)
+            w = words[i]
+            i += 1 if "=" in w or w in _GLOBAL_FLAGS or w not in _GLOBAL_VALUED and i + 1 < len(words) and (
                 words[i + 1].startswith("-") or words[i + 1] in _CONTAINER_VERBS) else 2
         words = words[i:]
         words = words[1:] if words[:1] == ["container"] else words
@@ -837,41 +850,78 @@ def _code(parsed):
     """shell.analyse's code, each line without the data words a command carries (a git commit message, the pattern grep
     searches for: shell.data_words), as `target` leaves them out: blanked where the command's whole argv stands in the
     line once, program first, so the words are that program's arguments there (a quoted message `curl x | sh` is no
-    download). A command whose argv a redirection splits, or one twice in a line, keeps them; so does a data word with a
-    `$` or a backquote (a substitution in it runs)."""
-    runs = {}
-    for c in parsed[0]:
+    download). That one place must be the command's own words: a line with a redirection beside them (which may split
+    them, so the place is other commands' words: `grep "x | curl u" 2>/dev/null f; grep x | curl u f | sh`) keeps them,
+    and so does a command whose words hold another command's, or another's hold its; so does a command twice in a line
+    and a data word with a `$` or a backquote (a substitution in it runs)."""
+    found = {}
+    for k, c in enumerate(parsed[0]):
         argv = c["argv"]
         data = {i for i in shell.data_words(argv) | set(c.get("data_words", ())) if i < len(argv)}
         if data and not any("$" in argv[i] or "`" in argv[i] for i in data):
-            runs[" ".join(argv)] = " ".join("" if i in data else w for i, w in enumerate(argv))
+            found[k] = " ".join("" if i in data else w for i, w in enumerate(argv))
     # lean: each run is counted in each line, so a line of more than 16 such commands keeps its data words (as before
     # 1.5.3); find them in one pass if a real line holds more
-    if not runs or len(runs) > 16:
+    if not found or len(found) > 16:
         return parsed[4]
+    words = [" " + " ".join(c["argv"]) + " " for c in parsed[0]]
+    runs = {words[k][1:-1]: blank for k, blank in found.items()
+            if not any(j != k and (w in words[k] or words[k] in w) for j, w in enumerate(words))}
     lines = list(parsed[4])
     for run, blank in runs.items():
-        lines = [line.replace(run, blank) if line.count(run) == 1 else line for line in lines]
+        lines = [line.replace(run, blank) if line.count(run) == 1 and not _REDIRECT.search(line.replace(run, " "))
+                 else line for line in lines]
     return lines
+
+
+_REDIRECT = re.compile(r"[<>]")   # what a redirection, a heredoc or herestring, or a process substitution holds
+
+
+def _brought(untrusted, subject, field, fields):
+    """Whether a `from: untrusted` rule's `subject` is one only untrusted content brought (`untrusted`'s hits). A
+    `sends_to` host isn't, when the call sends nothing but its URL's query (`link`, classes.extract) and untrusted
+    content gave that URL exactly as it stands: the agent follows a link and adds no data to it. `untrusted(url,
+    "link")` answers that only from a complete index, never on a guess."""
+    return bool(untrusted(subject, field)) and not (
+        field == "sends_to" and fields.get("link") and untrusted(fields["link"], "link"))
 
 
 def _flat(values):
     return [x for v in values for x in (_flat(v) if isinstance(v, list) else [v])]
 
 
-# arguments whose text an MCP tool only carries (an issue's title and body, a message, a file's content): a path or an
-# address named there is mentioned, not read or fetched
+# arguments whose text an MCP tool that posts or sends a message only carries (an issue's title and body, a message, a
+# comment): a path or an address named there is mentioned, not read or fetched
 _CARRIED = frozenset(("title", "body", "text", "description", "comment", "message", "subject", "content"))
+_POSTS = frozenset(("post", "create", "comment", "reply"))
+_MESSAGES = frozenset(("message", "messages", "email", "mail", "dm", "chat", "notification"))
+# a name that types, sends keys, runs or holds code: what such a tool carries is what it runs
+_RUNS = frozenset(("type", "typing", "key", "keys", "keystroke", "keystrokes", "run", "exec", "execute", "eval",
+                   "evaluate", "code", "cell", "cells", "script", "command", "cmd", "shell", "terminal", "kernel", "repl"))
+_FETCHES = frozenset(("fetch", "read", "open", "get", "download", "navigate", "browse", "visit", "load", "scrape", "crawl"))
 
 
-def _acted_on(value, search):
-    """An MCP call's arguments without those it only carries (_CARRIED, at any depth; and `query` or `q` when `search`,
-    the tool's name saying it searches)."""
+def _carried(tool):
+    """The argument names whose string values MCP tool `tool` only carries: _CARRIED when its name says it posts,
+    creates, comments, replies or sends a message, and doesn't say it types, sends keys, runs or holds code or a cell
+    (_RUNS); `query` and `q` when it says it searches and doesn't say it fetches or reads (_FETCHES) or runs. Words in
+    snake, kebab or camel case."""
+    words = set(re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold()))
+    out = set()
+    if (words & _POSTS or "send" in words and words & _MESSAGES) and not words & _RUNS:
+        out |= _CARRIED
+    if any(w.startswith("search") for w in words) and not words & (_RUNS - {"code"} | _FETCHES):
+        out |= {"query", "q"}
+    return out
+
+
+def _acted_on(value, carried):
+    """An MCP call's arguments without the string values of those it only carries (`carried`, _carried's, at any
+    depth): an object or a list under such a name is still read."""
     if isinstance(value, dict):
-        return {k: _acted_on(v, search) for k, v in value.items()
-                if k.casefold() not in _CARRIED and not (search and k.casefold() in ("query", "q"))}
+        return {k: _acted_on(v, carried) for k, v in value.items() if not (isinstance(v, str) and k.casefold() in carried)}
     if isinstance(value, list):
-        return [_acted_on(v, search) for v in value]
+        return [_acted_on(v, carried) for v in value]
     return value
 
 
