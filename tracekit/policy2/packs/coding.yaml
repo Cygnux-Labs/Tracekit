@@ -197,15 +197,20 @@ deny:
   - id: TK-D020
     class: shell
     field: argv
-    # security's global options (-q, -v, -p prompt …) may come before its command; `pass grep` decrypts every entry
-    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* dump-keychain\b|^secret-tool\s+search\b[^\n]*?--all\b|^pass\s+grep\b'
+    # security's global options (-q, -v, -p prompt …) may come before its command; `security export` exports every
+    # item but with -t certs or pubKeys (unless), which hold no secret; `pass grep` and `gopass grep` decrypt every
+    # entry
+    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* (dump-keychain|export)\b|^secret-tool\s+search\b[^\n]*?--all\b|^(pass|gopass)\s+grep\b'
+    unless: '^security( -[hilqv]+| -p [^-\s]\S*)* export( [^\n]*)? -t ?(certs|pubKeys)( |$)'
     reason: dumping an entire operating-system credential store
     remedy: Look up only the one credential the task needs; a person exports a whole credential store themselves.
     rationale: A whole-store export exposes credentials unrelated to the task; a person must authorize it.
   - id: TK-D021
     class: shell
     field: argv
-    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*https?://'
+    # a URL in any case, also as a PEP 508 direct reference (`name @ https://…`), or npm's github:, gitlab:,
+    # bitbucket: or gist: shorthand
+    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*([^\s@]+\s?@\s?)?([Hh][Tt][Tt][Pp][Ss]?://|(github|gitlab|bitbucket|gist):)'
     reason: installing a package directly from a URL
     remedy: Install the package by name from the configured index; a person adds a URL source after reviewing it.
     rationale: A URL bypasses the configured package source and can install unreviewed code.
