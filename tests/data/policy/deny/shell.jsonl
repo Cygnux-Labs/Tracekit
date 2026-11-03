@@ -41,12 +41,12 @@
 {"tool": "Bash", "args": {"command": "curl http://169.254.43518/"}, "expect": "deny", "note": "metadata address in three-part form"}
 {"tool": "Bash", "args": {"command": "curl http://0xa9.0xfe.0xa9.0xfe/"}, "expect": "deny", "note": "metadata address in hex parts"}
 {"tool": "Bash", "args": {"command": "curl http://metadata/computeMetadata/v1/"}, "expect": "deny", "note": "metadata short name"}
-{"tool": "Bash", "args": {"command": "sudo${IFS}id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "sudo${IFS}id"}, "expect": "deny", "note": "words split at an unquoted $IFS, as bash splits them"}
 {"tool": "Bash", "args": {"command": "$(echo sudo) id"}, "expect": "ask", "note": "command name built by an expansion"}
 {"tool": "Bash", "args": {"command": "\"$(printf sudo)\" id"}, "expect": "ask", "note": "command name built by an expansion"}
 {"tool": "Bash", "args": {"command": "x=sudo; $x id"}, "expect": "ask", "note": "command name built by an expansion"}
 {"tool": "Bash", "args": {"command": "${X:-sudo} id"}, "expect": "ask", "note": "command name built by an expansion"}
-{"tool": "Bash", "args": {"command": "rm${IFS}-rf${IFS}/"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "rm${IFS}-rf${IFS}/"}, "expect": "deny", "note": "words split at an unquoted $IFS, as bash splits them"}
 {"tool": "Bash", "args": {"command": "bash --rcfile /dev/null -c 'sudo id'"}, "expect": "deny", "note": "shell option with a value"}
 {"tool": "Bash", "args": {"command": "bash --init-file /dev/null -c 'sudo id'"}, "expect": "deny", "note": "shell option with a value"}
 {"tool": "Bash", "args": {"command": "env - sudo id"}, "expect": "deny", "note": "env with an empty environment"}

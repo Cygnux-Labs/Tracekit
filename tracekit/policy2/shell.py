@@ -786,7 +786,7 @@ class _Parser:
         # one the line gave a literal (`D=build; rm -rf "$D"/`) and a for loop's over literal words, in its body;
         # self.blocks: the compound commands (if, while, until, for, select, { }) the parser is in, each with the loop
         # variable it read as known (or None), where an assignment may not run
-        self.known, self.blocks = {"PWD"}, []
+        self.known, self.blocks = {"PWD", "IFS"}, []   # IFS: bash's default, which no assignment gives back
         self.charge(len(src))
 
     def charge(self, n):
@@ -809,7 +809,7 @@ class _Parser:
         self.ctx["depth"] -= 1
 
     def nested(self, text, via):
-        known = set() if via[-1:] == ["trap"] else self.known & {"PWD"}   # a new shell sets $PWD; a trap runs later
+        known = set() if via[-1:] == ["trap"] else self.known & {"PWD", "IFS"}   # a new shell sets them; a trap runs later
         key = (text, tuple(via), frozenset(known))
         if key in self.ctx["nested"]:   # the same text read the same way again (each reading's eval): the same commands
             return
@@ -1005,7 +1005,7 @@ class _Parser:
                 continue
             if timed == len(words) and raw == text and (text == "time" or words and text in ("-p", "--")):
                 timed += 1
-            pieces = None
+            pieces, ifs = None, self.ifs
             if "{" in self.bare:   # an unquoted { outside substitutions: maybe a brace expansion
                 # one _brace can't read, or beside a substitution (each word it makes runs it), is kept as written and
                 # its command is unreadable (opaque), so the rules still read the rest; past the parse budget, the line
@@ -1013,6 +1013,9 @@ class _Parser:
                     if re.search(r"\$\(|`|[<>]\(", raw):
                         raise ParseError("a substitution in a word with a brace is not supported")
                     pieces = _brace(raw, self.charge, self.ctx["brace"] + len(raw))
+                    if pieces is not None and ifs:   # lean: each word it makes would split again; held instead
+                        pieces = None
+                        raise ParseError("a brace beside an unquoted $IFS is not supported")
                     self.ctx["brace"] -= sum(len(p) + 1 for p in pieces or [raw]) - 1 - len(raw)
                 except ParseError:
                     if self.ctx["work"][0] > MAX_WORK:
@@ -1021,6 +1024,9 @@ class _Parser:
                 # an argument bash brace-expands is the words it makes; a command name it builds is unreadable
                 if pieces is not None and not words:
                     g, pieces = True, None
+            if ifs and pieces is None and not brace_unread:   # bash splits the word at each (IFS is the default)
+                at = [start] + [i for span in ifs for i in span] + [self.i]
+                pieces = [self.s[a:b] for a, b in zip(at[::2], at[1::2])]
             if pieces is not None:
                 self.out.pop()
             for text, raw, g, expanded in [(text, raw, g, expanded)] if pieces is None else \
@@ -1125,7 +1131,7 @@ class _Parser:
             kind, (name, *rest) = loop[0], loop[1] or [None]
             literal = kind == "for" and rest[:1] == ["in"] and len(rest) > 1 and all(rest[1:])
             self.known.discard(name)
-            if literal and not self.ctx["any_set"]:
+            if literal and not self.ctx["any_set"] and name != "IFS":
                 self.known.add(name)   # select sets it to nothing on a reply that picks no item
             self.blocks.append(name if literal else None)
             return
@@ -1138,7 +1144,7 @@ class _Parser:
         then = self.peek() in ("", "\n", ";", ")") or self.at("&&")
         for name, literal in assigns:
             self.known.discard(name)
-            if literal and sure and then and not words and not self.ctx["any_set"]:
+            if literal and sure and then and not words and not self.ctx["any_set"] and name != "IFS":
                 self.known.add(name)
 
     def track_redefinitions(self, cmds):
@@ -1361,7 +1367,7 @@ class _Parser:
         into the rest of the word; and with only those empty that touch a character other than / = : , @ (`${X}push`,
         not `repos/$R/x`, which rules read as built at run time); each again keeping a bare $HOME. A word that is only
         those is empty in each."""
-        s, start, buf, bare, exp, joins, alone = self.s, self.i, [], [], self.ctx["exp"], [], True
+        s, start, buf, bare, exp, joins, alone, ifs = self.s, self.i, [], [], self.ctx["exp"], [], True, []
         while self.i < len(s):
             c = s[self.i]
             if c in "<>" and self.peek(1) == "(":
@@ -1396,8 +1402,11 @@ class _Parser:
                 alone = alone and c == '"' and len(inner) == 1 and isinstance(inner[0], _Expansion) and \
                     bool(_ALL_ITEMS.match(inner[0]))
             elif c == "$":
+                at = self.i
                 buf.append(self.dollar(False))
                 alone = alone and isinstance(buf[-1], _Expansion)
+                if buf[-1] in ("$IFS", "${IFS}") and "IFS" in self.known and not self.ctx["any_set"]:
+                    ifs.append((at, self.i))
             elif c == "`":
                 buf.append(self.backtick())
             else:
@@ -1408,7 +1417,7 @@ class _Parser:
         if self.i == start:
             return None
         text = "".join(buf)
-        self.vanish, self.cut = False, (text,) * 6
+        self.vanish, self.cut, self.ifs = False, (text,) * 6, ifs
         if self.ctx["exp"] != exp:
             known = set() if self.ctx["any_set"] else self.known   # a known variable reads as written, never empty
             pieces, glued, j = [str(p) if (m := _PLAIN_VARIABLE.fullmatch(p)) and m.group(1) in known else p

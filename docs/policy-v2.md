@@ -245,7 +245,9 @@ comma or `..` at its depth, so `{zq},~/}` is `zq}` and `~/`), as long as they ad
 it within 64 KiB (`touch test{1..500}.txt` is 500 words); past that, a brace with `..` that isn't a plain sequence of
 two numbers or two letters, or a substitution in such a word, is kept as written and its command is opaque. `time` before a group or another
 compound command times what follows, which is read as the command. Variables are not expanded and encodings are
-not decoded: those stay tripwire territory. A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
+not decoded: those stay tripwire territory. One exception: bash sets IFS to space, tab and newline, so where the line
+hasn't changed it, a word is split at each unquoted `$IFS` (`terraform destroy${IFS}-auto-approve` is three words; a
+brace beside one holds its command). A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
 read twice, as written and as gone, because bash drops it when they expand to nothing: `git $X push --force` is
 also `git push --force`. An empty expansion inside a word joins the rest of it, so each command is also read with
 every expansion empty (`rm $X-rf ~/$X` is `rm -rf ~/`), and with only those empty that touch a character other than
