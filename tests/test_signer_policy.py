@@ -2489,7 +2489,10 @@ class CodingPack(unittest.TestCase):
                                 # the review after: escaped tabs at each place the value is read
                                 rds + "\t" * 30000 + "x", ec2 + " {" + "\t" * 30000 + "x",
                                 ec2 + " Add=" + "\t" * 30000 + "x", ec2 + " Add=[{Group=" + "\t" * 30000 + "x",
-                                ec2 + " Add=" + "\\" * 30000 + "x", ec2 + " Add=" + " x" * 32000, ec2 + " Add=" + "a-" * 32000):
+                                ec2 + " Add=" + "\\" * 30000 + "x", ec2 + " Add=" + " x" * 32000, ec2 + " Add=" + "a-" * 32000,
+                                # the value starting again at each repeat: read a word at a time, never past an option
+                                "aws" + "  ec2  modify-snapshot-attribute  --cr=Add=" * 1454,
+                                "aws" + "\t\trds\t\tmodify-db-snapshot-attribute\t\t--values-to-a=x" * 1150):
                     for tool, args in (("Bash", {"command": command}), ("mcp:aws/call_aws", {"cli_command": command})):
                         self.assertIsNone(e.decide(tool, args).get("nondeterministic"), (tool, command[:60]))
 
@@ -3359,7 +3362,8 @@ class PackReading(unittest.TestCase):
                    ec2 + "'Add=[{UserId=111122223333}]'",
                    # through call_aws an escaped tab or newline ends the value as a space does
                    rds + "111122223333\n--values-to-remove all", rds + "111122223333\t--profile all",
-                   ec2 + "Add=[{UserId=1}]\t--profile Group=all")
+                   ec2 + "Add=[{UserId=1}]\t--profile Group=all",
+                   rds + "111122223333  --profile all", rds + "111122223333\t\t--profile all")
         for want, commands in ((True, shared), (False, private)):
             self.rule_on_server("TK-C001", [("Bash", {"command": c}) for c in commands] + [
                 ("mcp:aws/call_aws", {"cli_command": c}) for c in commands], want=want)
@@ -3586,7 +3590,9 @@ class PackReading(unittest.TestCase):
                 "mcp:x/create_symlink_for_issue", "mcp:aws/create_lambda_for_issue",
                 # and a linking word right after create, with its word, says where: these make a sandbox, a branch
                 "mcp:ci/create_from_pr_sandbox", "mcp:git/create_from_issue_branch",
-                "mcp:ci/create_for_issue_deployment")])
+                "mcp:ci/create_for_issue_deployment",
+                # and alone a source isn't what is made: these make something from an issue or a PR
+                "mcp:git/create_from_issue", "mcp:ci/create_from_pr", "mcp:x/create_via_pr")])
         # what create posts, the word after it: a merge request's or a PR's text is carried, as an issue's is
         self.rule_on_server("TK-S004", [(t, {"title": "x", "body": "see /root/.aws/credentials"}) for t in (
             "mcp:gitlab/create_merge_request", "mcp:github/create_pr", "mcp:github/createPullRequest",
@@ -3598,7 +3604,7 @@ class PackReading(unittest.TestCase):
             "mcp:x/create_to_do_issue", "mcp:x/create_on_call_note", "mcp:x/create_in_app_note",
             "mcp:jira/create_worklog_for_issue",
             # a leading linking word with nothing after its word: what it names is what is created
-            "mcp:github/create_on_issue", "mcp:x/create_for_pr")], want=False)
+            "mcp:github/create_on_issue", "mcp:x/create_to_issue")], want=False)
         self.rule_on_server("TK-S001", [
             ("mcp:computer/computer", {"action": "type",
                                        "text": "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/"}),
