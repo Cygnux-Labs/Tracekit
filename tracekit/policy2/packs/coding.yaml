@@ -550,8 +550,8 @@ ask:
     class: mcp
     # Stripe's MCP tools that move money (docs.stripe.com/mcp: send_money, transfer_money and convert_currency on a
     # Treasury balance) and its agent toolkit's create_refund, from any server, as `mcp__<server>__<tool>`,
-    # `mcp:<server>/<tool>` or Crush's joined `mcp__<server>_<tool>`
-    tool: 'mcp(:[^/]+/|__.*[_-])(send_money|transfer_money|convert_currency|create_refund)'
+    # `mcp:<server>/<tool>` or Crush's joined `mcp__<server>_<tool>`, in snake_case or camelCase (createRefund)
+    tool: 'mcp(:[^/]+/|__.*[_-])([Ss]end_?[Mm]oney|[Tt]ransfer_?[Mm]oney|[Cc]onvert_?[Cc]urrency|[Cc]reate_?[Rr]efund)'
     pattern: '^'
     reason: moving money through an MCP tool (sending, transferring or converting money, or a refund)
     remedy: Check the amount, currency and recipient in the call's arguments before approving it; a refund with no amount refunds in full.
