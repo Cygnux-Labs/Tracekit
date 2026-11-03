@@ -4,7 +4,7 @@
 # To allow a host TK-B002 or TK-B003 denies, or to set the domains typing is allowed on (TK-B011), extend this pack and redefine
 # the rule with the same id: a rule in the extending file replaces the parent's.
 
-version: '2026.10-browser-5'
+version: '2026.10-browser-6'
 description: browser agents (Browser Use)
 unknown_tools: ask
 
@@ -24,10 +24,11 @@ deny:
   - id: TK-B001
     class: browser
     field: scheme
-    # the scheme as the browser reads it (controls, tabs and newlines dropped, view-source: and blob: peeled)
-    pattern: '^file$'
-    reason: local file navigation
-    rationale: A file:// page shows the agent's own disk to the model, and from there to any site it visits.
+    # the scheme as the browser reads it (controls, tabs and newlines dropped, view-source: and blob: peeled): a local
+    # file, or a javascript: URL, which runs the agent's own code in the page it is on, as evaluate does
+    pattern: '^(file|javascript)$'
+    reason: local file or javascript navigation
+    rationale: A file:// page shows the agent's own disk to the model, and from there to any site it visits; a javascript: URL runs code in the page the agent is on (its cookies, its forms) past TK-B012, which holds evaluate for a person.
   - id: TK-B002
     class: browser
     field: internal
