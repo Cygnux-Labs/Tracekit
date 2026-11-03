@@ -17,7 +17,7 @@ unknown_tools: flag
 tools:
   Bash: shell
   Monitor: shell             # Claude Code: a background command, run in the shell Bash uses
-  PowerShell: shell          # Claude Code on Windows (Codex's shell runs PowerShell there too)
+  # Claude Code's PowerShell tool stays unmapped: the signer also reads it as a shell line where bash reads it whole
   run_shell_command: shell   # Gemini CLI
   shell: shell               # Codex, OpenAI Agents ShellTool
   local_shell: shell         # OpenAI Agents LocalShellTool

@@ -1923,15 +1923,31 @@ class SignerService:
             # one when two listed names share it
             for listed in self.policy.listed(tool):
                 d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
-            mcp = tool
+            mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
             if tool.startswith("mcp__") and "__" in tool[5:]:
                 # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
                 # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
                 # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
                 server, _, name = tool[5:].partition("__")
-                mcp = f"mcp:{server}/{name}"
-                d = _stricter(d, self.policy.decide(mcp, args, untrusted=untrusted))
-            if mcp.startswith("mcp:") and "/" in mcp:
+                mcps = [f"mcp:{server}/{name}"]
+            elif tool.startswith("mcp__"):
+                # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
+                # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
+                # tool, as before it was named an MCP one (the server packs hold it)
+                # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
+                rest = tool[5:]
+                mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
+                d = _stricter(d, self.policy.decide(tool, args, "unknown", untrusted))
+            elif tool == "PowerShell":
+                # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
+                # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
+                # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
+                b = self.policy.decide("Bash", args, untrusted=untrusted)
+                if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in self.policy.rules):
+                    d = _stricter(d, b)
+            for mcp in mcps:
+                if mcp != tool:
+                    d = _stricter(d, self.policy.decide(mcp, args, untrusted=untrusted))
                 # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
                 # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
                 # be dodged by naming the call an MCP one
