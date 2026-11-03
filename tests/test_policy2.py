@@ -1671,7 +1671,8 @@ class TimedAndBraced(unittest.TestCase):
         # a deny that only the empty reading makes being on_parse_error's (ask; strict's deny)
         for pack, backend in itertools.product(("dev.yaml", "server.yaml", "strict.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
-            self.assertEqual(e.decide("Bash", {"command": "rm $X -rf $HOME"})["verdict"],
+            # `rm $X -rf $HOME` is TK-D004's as written (rm reads -rf anywhere): only the empty reading makes this one
+            self.assertEqual(e.decide("Bash", {"command": "rm -rf $X/"})["verdict"],
                              "deny" if pack == "strict.yaml" else "ask", pack)
             for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
                 with open(path) as f:
