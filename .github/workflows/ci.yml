@@ -151,6 +151,7 @@ jobs:
       - name: Run the v2 Vercel AI SDK resume example (held call approved, resumed in a second process)
         run: |
           set -euo pipefail
+          python -m tracekit down || true  # the previous step's dev signer still holds the default signer folder
           export TRACEKIT_RUNTIME_DIR="$(mktemp -d)"
           state="$RUNNER_TEMP/vercel-resume.json"
           cd sdk/typescript
