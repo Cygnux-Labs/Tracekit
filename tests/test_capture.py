@@ -816,6 +816,15 @@ class PolicyYAML(unittest.TestCase):
             with self.assertRaises(yamlmini.YAMLError, msg=bad):
                 yamlmini.loads(bad)
 
+    def test_a_rule_written_for_monitor_or_powershell_still_matches_them(self):
+        # final review of the 1.5.3 sweep: deciding Monitor and PowerShell as Bash hid an operator's rule written for the
+        # tool itself, and a rule without a tool read only the command, not the whole input
+        pol = {"deny": [{"id": "X-1", "tool": "PowerShell", "pattern": "Remove-Item"},
+                        {"id": "X-2", "pattern": "secret-token"}]}
+        self.assertEqual(policy.evaluate(pol, "PowerShell", {"command": "Remove-Item x"})["rule_ids"], ["X-1"])
+        self.assertEqual(policy.evaluate(pol, "Monitor", {"command": "ls", "description": "secret-token"})["rule_ids"],
+                         ["X-2"])
+
     def test_rules(self):
         pol = policy.load()[0]
         cases = {
