@@ -379,8 +379,9 @@ def _shell(args, persistent_target=None, readings=True):
 
 
 # a piece of a line between ;, &, | and newlines outside quotes, as bash separates commands; a quote left open runs to
-# the end of the line, as bash reads no command after it
-_PIECE = re.compile(r"""(?:[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
+# the end of the line, as bash reads no command after it; a # that starts a word comments out the rest of its line, a
+# quote in it too
+_PIECE = re.compile(r"""(?:(?<![^\s;&|()])#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
 
 
 def _plain(raw, at=0, readings=True, persistent_target=None):

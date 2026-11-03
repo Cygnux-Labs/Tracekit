@@ -1592,6 +1592,13 @@ class TimedAndBraced(unittest.TestCase):
                 self.assertNotEqual(d["verdict"], "deny", (pack, backend, cmd, d))
             d = e.decide("Bash", {"command": 'echo "x" {1..3..1}; sudo id'})   # outside the quotes it is a command
             self.assertEqual((d["verdict"], "TK-D001" in d["rule_ids"]), ("deny", True), (pack, backend))
+            # a quote in a comment quotes nothing: the next line is a command (1.5.3's review: only asked)
+            for cmd in ("case x in esac # it's\nrm -rf ~/ #'", "f() { :; } # don't\nrm -rf ~/ #'",
+                        'case x in esac # say "hi\nrm -rf ~/ #"'):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("deny", True), (pack, backend, cmd))
+            d = e.decide("Bash", {"command": "case x in esac; echo a#'b; sudo id' #'"})   # a # inside a word is no comment
+            self.assertNotEqual(d["verdict"], "deny", (pack, backend))
 
     def test_a_parameter_expansion_ends_where_bash_ends_it(self):
         """Quotes pair up and a backslash escapes in ${...}: a } there doesn't end it. With X unset, bash runs
