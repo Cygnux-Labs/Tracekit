@@ -790,7 +790,7 @@ class Speed(unittest.TestCase):
         TK-A047 split a word at each `$` or backquote, and a branch name at each `/protection`, then read on to the end
         from each split (PR #468's review: each spent the 1 s and denied)."""
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
-        n = MAX_SUBJECT - 200
+        n, scale = MAX_SUBJECT - 200, machine_scale()
         for tool, args in [("Bash", {"command": "git push " + f * (n // len(f))}) for f in self.FILLERS] + [
                 ("Bash", {"command": "gh api '" + "$" * n + "' rulesets"}),
                 ("Bash", {"command": "hub api '" + "`" * n + "' secret x"}),
@@ -806,8 +806,9 @@ class Speed(unittest.TestCase):
                 start = time.perf_counter()
                 d = e.decide(tool, args)
                 self.assertNotIn("nondeterministic", d)
-                # 64 KiB of one-word lines is ~0.4 s on a laptop under Python 3.9, nearly all the parse
-                self.assertLess(time.perf_counter() - start, 2 * SLOWER)
+                # 64 KiB of one-word lines is ~0.4 s on a laptop under Python 3.9, nearly all the parse; the budget
+                # follows the machine, as the pattern budgets do (#518): CI's Linux runner took 2.03 s under 3.9
+                self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
 
     def test_the_corpus_decides_within_budget(self):
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
