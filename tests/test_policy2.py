@@ -1453,7 +1453,7 @@ class TimedAndBraced(unittest.TestCase):
                 # kept as written: quoted, escaped, no comma or sequence, unclosed, ANSI-C quoted
                 ("alpha '{a,b}'", ["{a,b}"]), ('alpha "{a,b}"', ["{a,b}"]), ("alpha \\{a,b}", ["{a,b}"]),
                 ("alpha {a}", ["{a}"]), ("alpha {}", ["{}"]), ("alpha {a,b", ["{a,b"]), ("alpha $'{a,b}'", ["{a,b}"]),
-                ("alpha ${X:-{a,b}}", ["${X:-{a,b}}"]), ("alpha {a..c,z}", ["a..c", "z"]), ("alpha {a..}", ["{a..}"]),
+("alpha {a..c,z}", ["a..c", "z"]), ("alpha {a..}", ["{a..}"]),
                 ("alpha {-rf,{}}", ["-rf", "{}"]),
                 # bash's brace_gobbler: a } at a brace's own depth ends it only after a comma or .. there, and a {}
                 # that starts the text (each alternative and what follows are expanded on their own) opens none
@@ -1466,6 +1466,8 @@ class TimedAndBraced(unittest.TestCase):
             for cmd, rule in (("rm -rf {zq},~/.claude/}", "TK-D008"), ("tee {zq},~/.ssh/authorized_keys} < k", "TK-D010")):
                 d = e.decide("Bash", {"command": cmd})
                 self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (pack, backend, cmd))
+        # a default's braces aren't expanded, before or after (bash expands braces first, and ${...} is quoted to it)
+        self.assertEqual(argvs("alpha ${X:-{a,b}}"), [["alpha", "${X:-{a,b}}"], ["alpha", "{a,b}"]])
         # braces inside a substitution are the substitution's own: read there, and the word outside is kept
         self.assertIn(["beta", "a", "b"], argvs("alpha $(beta {a,b})*"))
         for line in ("{alpha,beta} x", "{alpha,{}} x"):   # a command name brace expansion builds stays unreadable
@@ -1665,9 +1667,22 @@ class TimedAndBraced(unittest.TestCase):
                             ('gh a${X}pi -X PUT "repos/$R/branches/main"', ["gh", "api", "-X", "PUT", "repos/$R/branches/main"])):
             self.assertIn(empty, argvs(line), line)
         self.assertFalse(shell.parse("${X}git push -f")[-1]["opaque"])   # its name is read once it is empty
-        # never nothing: bash stops the command at ${X:?}, ${X:-w} is w, and arithmetic is a number
-        for line in ('rm -rf "${D:?}/"', 'rm -rf "${D:-build}/"', 'rm -rf "${D:=build}/"', "rm -rf $((0))/"):
+        # never nothing: bash stops the command at ${X:?}, and arithmetic is a number
+        for line in ('rm -rf "${D:?}/"', "rm -rf $((0))/"):
             self.assertEqual(len(argvs(line)), 1, line)
+        # a default's word is what bash runs when its variable is empty (with `:`) or unset: 1.5.2 read none of these
+        for line, empty in (('rm -rf "${D:-build}/"', ["rm", "-rf", "build/"]), ("rm -rf ${D:=build}", ["rm", "-rf", "build"]),
+                            ("rm ${Z:--rf} ~/", ["rm", "-rf", "~/"]), ("rm -rf ${Z:-$HOME}", ["rm", "-rf", "$HOME"]),
+                            ("rm -rf ${Z-~}", ["rm", "-rf", "~"]), ("rm -rf ${Z=/}", ["rm", "-rf", "/"]),
+                            ("rm ${Z:-'-rf'} \"${Y:-\"/\"}\"", ["rm", "-rf", "/"]), ("rm -rf ${Z:+/}", ["rm", "-rf"])):
+            self.assertEqual(argvs(line)[1:], [empty], line)
+        for pack, backend in itertools.product(("dev.yaml", "strict.yaml"), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd, rule in (("rm ${Z:--rf} ~/", "TK-D004"), ("rm -rf ${Z:-$HOME}", "TK-D004"),
+                              ("git push ${Z:---force} origin main", "TK-D003")):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], rule in d["rule_ids"]), (e.policy.get("on_parse_error", "ask"), True),
+                                 (pack, backend, cmd))
         self.assertIn("~/.bashrc", shell.analyse("echo x > ~/.ba${X}shrc")[3])   # a file it writes
         # a command that only copies text into a file runs nothing more; its line is read so too
         self.assertEqual(argvs("echo A${X}KIA > notes.txt"), [["echo", "A${X}KIA"]])

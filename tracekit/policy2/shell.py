@@ -29,7 +29,9 @@ class ParseError(ValueError):
 
 
 class _Expansion(str):
-    """A parameter expansion or command substitution as written, which bash may expand to nothing."""
+    """A parameter expansion or command substitution as written, which bash may expand to nothing; `empty`: what it
+    expands to when its variable is empty or unset (a default's word: ${X:-w} is w), else nothing."""
+    empty = ""
 
 
 MAX_DEPTH = 32
@@ -132,6 +134,8 @@ _VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typese
                              "let", "eval", "unset"}
 # what may set any variable of the shell, now or later (a DEBUG trap, an alias with expand_aliases on, a sourced file)
 _SETS_ANY = _VARIABLE_SETTING_BUILTINS | {"source", ".", "trap", "getopts", "wait", "alias", "shopt", "enable"}
+# a quote or backslash pair of a word as written, its text in group 1, 2 or 3 (a default's word read without them)
+_UNQUOTE = re.compile(r"""\\(.)|'([^']*)'|"((?:\\.|[^"\\])*)\"""", re.S)
 _PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")   # $NAME or ${NAME}, fully matched
 # the operators bash reads across a deleted backslash-newline
 _JOINED = {"&&", "||", ";;", ";&", ";;&", "|&", "<<", "<<-", "<<<", ">>", "<&", ">&", "<>", ">|", "&>", "&>>", "((",
@@ -1409,7 +1413,7 @@ class _Parser:
             known = set() if self.ctx["any_set"] else self.known   # a known variable reads as written, never empty
             pieces, glued, j = [str(p) if (m := _PLAIN_VARIABLE.fullmatch(p)) and m.group(1) in known else p
                                 for p in buf if p], set(), 0
-            self.vanish = alone and all(isinstance(p, _Expansion) for p in pieces)
+            self.vanish = alone and all(isinstance(p, _Expansion) and not p.empty for p in pieces)
             while j < len(pieces):   # each run of expansions, and whether it touches such a character
                 k = j
                 while k < len(pieces) and isinstance(pieces[k], _Expansion):
@@ -1419,7 +1423,7 @@ class _Parser:
                 j = k + 1
 
             def cut(keep):
-                return "".join(p for i, p in enumerate(pieces) if not isinstance(p, _Expansion) or keep(i, p))
+                return "".join(p if not isinstance(p, _Expansion) or keep(i, p) else p.empty for i, p in enumerate(pieces))
             empty = cut(lambda i, p: False), cut(lambda i, p: _HOME_WORD.fullmatch(p))
             self.cut = empty * 3 if self.vanish else (text, text) + empty + (
                 cut(lambda i, p: i not in glued), cut(lambda i, p: i not in glued or _HOME_WORD.fullmatch(p)))
@@ -1613,11 +1617,13 @@ class _Parser:
             m = _NAME.match(s, self.i + 1)
             self.i = m.end() if m else self.i + 1
         text = s[start:self.i]
-        # never nothing: arithmetic, a lone $, ${X:?...}, which stops the command instead, and ${X:-w} or ${X:=w} with a
-        # plain w (${DIR:-build})
-        if text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:(?:\?.*|[-=][^$`\"'\\]+\})", text):
+        # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
+        if text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text):
             return text
-        return _Expansion(text)
+        expansion = _Expansion(text)
+        if m := re.fullmatch(r"(?s)\$\{\w+:?[-=](.*)\}", text):   # bash runs the word when X is empty (unset, no colon)
+            expansion.empty = _UNQUOTE.sub(lambda q: next(g for g in q.groups() if g is not None), m.group(1))
+        return expansion
 
     def backtick(self):
         m = re.compile(r"((?:\\.|[^`\\])*)`", re.S).match(self.s, self.i + 1)
