@@ -3077,6 +3077,21 @@ class PackReading(unittest.TestCase):
         self.check(self.dev, [("Write", {"file_path": p}) for p in ("/Users/u/proj/.ENV.example", "C:\\proj\\app.py")],
                    "allow")
 
+    def test_a_windows_path_is_also_read_as_windows_opens_it(self):
+        # the 1.5.3 sweep: Windows drops a part's trailing dots and spaces and opens a file's default stream for
+        # `::$DATA`, so each of these writes the file the rule names
+        for pack, engine, e in CodingPack.every_pack():
+            for path, rule in (("C:\\proj\\.env.", "TK-D005"), ("C:\\proj\\.env ", "TK-D005"),
+                               ("C:\\proj\\.env::$DATA", "TK-D005"), ("C:\\Users\\u\\.ssh.\\authorized_keys", "TK-D005"),
+                               ("C:\\Users\\u\\.claude\\projects.\\p\\s.jsonl", "TK-D009"),
+                               ("C:\\Users\\u\\AppData\\Local\\tracekit.\\x", "TK-D013"),
+                               ("C:\\proj\\app.py", None), ("C:\\proj\\.env.example", None), ("C:\\proj\\notes.", None)):
+                with self.subTest(pack=pack, engine=engine, path=path):
+                    d = e.decide("Write", {"file_path": path, "content": "x"})
+                    self.assertEqual(d["verdict"] == "deny", rule is not None, d)
+                    if rule:
+                        self.assertIn(rule, d["rule_ids"])
+
     def test_terraform_and_pulumi_destroy_are_one_rule_on_any_tool(self):
         # TK-A001 reads a shell tool's argv, TK-C010 a CLI line in any other tool's argument; neither reports the other's
         for tool, args, cls, rule in (("Bash", {"command": "terraform destroy -auto-approve"}, None, "TK-A001"),
