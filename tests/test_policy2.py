@@ -1637,9 +1637,14 @@ class TimedAndBraced(unittest.TestCase):
                     'D=build; read -p {["CD"],x} X < a; rm -rf "$D"/',
                     'D=build; set -k; read -p Q=1 -p D X < a; rm -rf "$D"/',
                     'D=build; set -o keyword; read X < a; rm -rf "$D"/',
-                    'D=build; set -euo keyword; read -p Q=1 -p D X <<< "/ y"; rm -rf "$D"/'):
+                    'D=build; set -euo keyword; read -p Q=1 -p D X <<< "/ y"; rm -rf "$D"/',
+                    # set -k with no read: in POSIX mode an assignment before a special builtin stays (the review)
+                    'set -o posix; set -k; D=build; : D=/; rm -rf "$D"/', 'D=build; set $O; : D=/; rm -rf "$D"/'):
             d = e.decide("Bash", {"command": cmd})
             self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), (cmd, d))
+        # HOME after eval may be set again: its check is $HOME, as on a line that never set it
+        d = e.decide("Bash", {"command": 'HOME=; eval true; rm -rf "${HOME:?}"/'})
+        self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("deny", True), d)
 
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
         """Sweep before 1.5.3: an unreadable line was split at ;, & and | inside quotes too, so text a command only
