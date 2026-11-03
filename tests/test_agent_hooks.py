@@ -638,8 +638,12 @@ class QwenTools(unittest.TestCase):
                 self.assertEqual(tool, want)
                 self.assertEqual(args.get("file_path"), ti.get("file_path") or ti.get("absolute_path") or ti.get("notebook_path"))
         self.assertEqual(agent_hooks.tool("qwen", "web_fetch", {"prompt": "see https://x.example/a"})[1]["url"], "https://x.example/a")
-        # Gemini CLI has no edit or grep_search tool: its names are not changed
+        # Gemini CLI has no edit tool: its name is not changed. Its grep is grep_search now (search_file_content before),
+        # and it names an MCP tool mcp_<server>_<tool>, which the packs' MCP rules read as mcp__<server>_<tool>
         self.assertEqual(agent_hooks.tool("gemini", "edit", {})[0], "edit")
+        for name in ("grep_search", "search_file_content"):
+            self.assertEqual(agent_hooks.tool("gemini", name, {"pattern": "x", "dir_path": "/w"})[:1], ("Grep",))
+        self.assertEqual(agent_hooks.tool("gemini", "mcp_db_execute_sql", {"sql": "x"}), ("mcp__db_execute_sql", {"sql": "x"}))
 
 
 class CrushTools(unittest.TestCase):

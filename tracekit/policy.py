@@ -249,6 +249,8 @@ def evaluate(pol, tool, ti, cwd=None):
     one as its file_path: a rule that matches any of them applies."""
     if not isinstance(ti, dict):
         ti = {} if ti is None else {"value": ti}
+    # Claude Code's Monitor runs its command in the shell Bash uses, and PowerShell is its shell on Windows
+    tool = "Bash" if tool in ("Monitor", "PowerShell") else tool
     paths = ti.get("paths") if FIELD_FOR_TOOL.get(tool) == "file_path" else None
     calls = [ti] + [dict(ti, file_path=p) for p in paths] if isinstance(paths, list) else [ti]
     rule_ids, reasons, flags = [], [], []

@@ -825,7 +825,8 @@ class PolicyYAML(unittest.TestCase):
             "systemctl stop tracekitd": "deny", "pkill -f tracekit.daemon": "deny",
         }
         for cmd, want in cases.items():
-            self.assertEqual(policy.evaluate(pol, "Bash", {"command": cmd})["decision"], want, cmd)
+            for tool in ("Bash", "Monitor", "PowerShell"):   # Claude Code's Monitor and PowerShell run commands too
+                self.assertEqual(policy.evaluate(pol, tool, {"command": cmd})["decision"], want, (tool, cmd))
         self.assertEqual(policy.evaluate(pol, "Write", {"file_path": "/home/u/.claude/projects/x/a.jsonl"})["decision"], "deny")
         for cmd, label in {"ls() { echo; }": "shell_shadowing", "alias git='echo'": "shell_shadowing",
                            "export PATH=/tmp/evil:$PATH": "env_tamper", "unset ANTHROPIC_BASE_URL": "env_tamper",
