@@ -24,11 +24,14 @@ import sys
 import time
 
 from . import constraints
-from .findings import WRITE_TOOLS
 from .format.canon import canonical, loads_strict
-from .policy2.classes import PATH_KEYS, SHELL_KEYS
+from .policy2.classes import PATH_KEYS
 
 WEIGHTS = (".safetensors", ".gguf", ".pt", ".pth", ".ckpt")
+# the tools the hook receipts, by the names every harness's hook gives them (agent_hooks.tool): only their results
+# carry the hook's model_receipts, and verify-model counts a receipt only in one of theirs
+WRITERS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+TOOLS = (*WRITERS, "Bash")
 CHUNK = 1 << 20
 # lean: a file past 8 GiB gets no receipt (the Hugging Face Hub shards a model at 5 GB by default); raise it once the
 # hook hashes off the call's path
@@ -49,8 +52,8 @@ TOO_LARGE = {"refused": "the receipts would take the call's result past the half
 
 
 def receipts(tool, args, cwd):
-    """The receipts of the weights files (WEIGHTS) call (`tool`, `args`) wrote, as constraints.facts reads what a call
-    writes: a write tool's path, or a shell command's write targets (constraints.shell), relative ones against `cwd`.
+    """The receipts of the weights files (WEIGHTS) call (`tool`, `args`) of one of TOOLS wrote: a write tool's path, or
+    a Bash command's write targets (constraints.shell), relative ones against `cwd`.
     Each is marked `reported_by: hook`, its path and reason JSON-safe (a lone surrogate escaped) and cut to MAX_TEXT.
     Refused rather than guessed: what _named refuses, and a relative path when there is no `cwd`. At most MAX_FILES
     receipts, then one entry counting the files past them, all hashed within BUDGET_S. Never raises: any other error
@@ -63,22 +66,22 @@ def receipts(tool, args, cwd):
 
 
 def _named(tool, args):
-    """[(path, why the hook can't place it, or None)] of the weights files call (`tool`, `args`) writes, as it names
-    them: a write tool's path, or a shell command's write targets, as constraints.facts reads what a call writes.
-    Refused rather than guessed: a path starting with `~`, every path of a command that names another directory for
-    them (constraints.shell's `elsewhere`: cp -t, git -C, ...), and a relative one when the command changes directory
-    (`cd`: cd, pushd, popd, git --work-tree)."""
+    """[(path, why the hook can't place it, or None)] of the weights files call (`tool`, `args`) of one of TOOLS
+    writes, as it names them: a write tool's path, or a Bash command's write targets (constraints.shell); none for
+    another tool. Refused rather than guessed: a path starting with `~`, every path of a command line whose paths are
+    elsewhere (constraints.shell's `elsewhere`: cp -t, git -C, env --chdir, chroot, ssh, ...), and a relative one when
+    the command changes directory (`cd`: cd, pushd, popd, git --work-tree)."""
     args = args if isinstance(args, dict) else {}
-    if tool in WRITE_TOOLS:
+    if tool in WRITERS:
         paths, s = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")], {}
-    elif any(args.get(k) is not None for k in SHELL_KEYS):
+    elif tool == "Bash":
         s = constraints.shell(args)
         paths = s["paths"]
     else:
         return []
     return [(p, "a path starting with ~, which the hook doesn't expand" if p.startswith("~") else
-             "the command names another directory for its paths (-t, -C, --target-directory, --directory or --chdir)"
-             if s.get("elsewhere") else "a path relative to a directory the command changed to"
+             "the command line's paths are in another directory, root or host (cp -t, git -C, env --chdir, chroot, "
+             "ssh, ...)" if s.get("elsewhere") else "a path relative to a directory the command changed to"
              if s.get("cd") and not os.path.isabs(p) else None)
             for p in dict.fromkeys(p for p in paths if p.lower().endswith(WEIGHTS))]
 
@@ -252,7 +255,7 @@ def main(argv=None):
                     "(content.retain off, past its retention, or erased)")
     if len(kept) < len(results):
         print(f"content: {len(results) - len(kept)} of the run's {len(results)} tool results not kept by the signer")
-    recorded, ignored = [], 0   # a receipt counts only in the result of a call whose arguments name its file
+    recorded, ignored = [], 0   # a receipt counts only in the result of a call of TOOLS whose arguments name its file
     for seq, content in sorted(kept.items()):
         result = content.get("result") if isinstance(content, dict) else None
         found = result.get("model_receipts") if isinstance(result, dict) else None
@@ -267,8 +270,8 @@ def main(argv=None):
             else:
                 ignored += 1
     if ignored:
-        print(f"content: {ignored} receipt(s) ignored: not in the result of a write or shell call whose recorded "
-              "arguments name the file")
+        print(f"content: {ignored} receipt(s) ignored: not in the result of a {', '.join(TOOLS)} call whose "
+              "recorded arguments name the file")
     seq, rec = next(((s, r) for s, r in recorded if r.get("sha256") == new["sha256"]), (None, None))
     same = rec is not None and all(rec.get(k) == new.get(k) for k in ("size", "sha256", "tensors", "metadata"))
     if rec is None:

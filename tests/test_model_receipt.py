@@ -236,8 +236,8 @@ class Receipts(Base):
         """Review of 6b0a568e: `cp -t out src` got a receipt of its source, `env -C sub` and `git -C sub` ones of the
         file in the hook's directory, and a quoted ~ was expanded."""
         src = safetensors(self.path("src.safetensors"), {"a": b"\x01"})
-        elsewhere = ("the command names another directory for its paths (-t, -C, --target-directory, --directory or "
-                     "--chdir)")
+        elsewhere = ("the command line's paths are in another directory, root or host (cp -t, git -C, env --chdir, "
+                     "chroot, ssh, ...)")
         home, cd = "a path starting with ~, which the hook doesn't expand", "a path relative to a directory the " \
             "command changed to"
         # review of d013a1dd: a cluster (cp -vt), popd and git --work-tree slipped through
@@ -248,7 +248,13 @@ class Receipts(Base):
                          ("git -C sub mv x model.safetensors", elsewhere),
                          ("env --chdir=sub cp x model.safetensors", elsewhere), ("cp x '~/model.safetensors'", home),
                          ("cp x ~/model.safetensors", home), ("popd; cp x model.safetensors", cd),
-                         ("git --work-tree=sub restore model.safetensors", cd)):
+                         ("git --work-tree=sub restore model.safetensors", cd),
+                         # review of c15728a3: a prefix of a long option, sudo -D, and a command run on another root or
+                         # host hashed the file here
+                         ("env --ch=sub cp x model.safetensors", elsewhere),
+                         ("sudo -D sub cp x model.safetensors", elsewhere),
+                         (f"chroot /jail cp x {self.w}", elsewhere), (f"ssh host cp x {self.w}", elsewhere),
+                         (f"unshare -m cp x {self.w}", elsewhere)):
             self.assertEqual([r.get("refused") for r in model_receipt.receipts("Bash", {"command": cmd}, self.d)],
                              [why], cmd)
         self.assertEqual(model_receipt.receipts("Write", {"file_path": "~/model.safetensors"}, self.d)[0]["refused"],
@@ -343,31 +349,35 @@ class HookRecords(Base):
         self.assertNotIn("model_receipts", self.call("t2", "Bash", {"command": "cp a model.safetensors"},
                                                      response={"stdout": stdout}))
 
-    def test_a_tools_own_model_receipts_key_is_dropped(self):
-        """Review of 6b0a568e: an untrusted tool's result (an MCP server's, a web page's) went to the signer as it
-        came, so a model_receipts key in it planted a receipt."""
-        self.untrusted = ("Read",)
+    def test_another_tools_result_goes_as_it_came_and_a_receipt_tools_key_is_the_hooks(self):
+        """Review of c15728a3: the clients dropped a model_receipts key from every result, so the record committed to
+        a result the tool didn't return and provenance never read what the key held. An MCP or web tool's result now
+        goes as it came; only a tool the hook receipts (Bash, untrusted here) has a key it didn't set removed."""
+        self.untrusted = ("mcp__sh__run", "WebFetch", "Bash")
         planted = [{"path": self.path("model.safetensors"), "sha256": model_receipt.ZERO, "reported_by": "hook"}]
-        self.assertEqual(self.call("t1", "Read", {"file_path": self.path("notes.md")},
-                                   response={"content": "x", "model_receipts": planted}), {"content": "x"})
+        for tid, tool, args in (("t1", "mcp__sh__run", {"command": "cp a model.safetensors"}),
+                                ("t2", "WebFetch", {"url": "https://example.com/model.safetensors"})):
+            self.assertEqual(self.call(tid, tool, args, response={"content": "x", "model_receipts": planted}),
+                             {"content": "x", "model_receipts": planted}, tool)
+        self.assertEqual(self.call("t3", "Bash", {"command": "ls"},
+                                   response={"stdout": "x", "model_receipts": planted}), {"stdout": "x"})
 
     @unittest.skipUnless(HAVE_SDK, "claude-agent-sdk not installed")
-    def test_an_sdk_integrations_untrusted_result_cant_plant_one_either(self):
-        """Review of d013a1dd: the hook dropped a tool's own model_receipts key, but the SDK integrations sent an
-        untrusted tool's result as it came; the client drops it for every one of them."""
+    def test_an_sdk_integration_sends_a_tools_result_as_it_came(self):
+        """Review of c15728a3: the Python client dropped a model_receipts key from an SDK integration's result."""
         import anyio
         from tracekit.integrations import claude_agent_sdk
-        self.untrusted = ("Read",)
+        self.untrusted = ("mcp__sh__run",)
         c = Client()
         self.addCleanup(c.close)
         hooks = claude_agent_sdk.tracekit_hooks(c, c.register_run({"agent": {"name": "claude-agent-sdk"}}))
         pre, post = hooks["PreToolUse"][0].hooks[0], hooks["PostToolUse"][0].hooks[0]
-        p = {"tool_use_id": "t1", "tool_name": "Read", "tool_input": {"file_path": self.path("notes.md")}}
+        p = {"tool_use_id": "t1", "tool_name": "mcp__sh__run", "tool_input": {"command": "cp a model.safetensors"}}
         planted = [{"path": self.path("model.safetensors"), "sha256": model_receipt.ZERO, "reported_by": "hook"}]
         self.assertEqual(anyio.run(pre, dict(p, hook_event_name="PreToolUse"), "t1", None), {})
         anyio.run(post, dict(p, hook_event_name="PostToolUse", tool_response={
             "content": "x", "model_receipts": planted}), "t1", None)
-        self.assertEqual(self.complete("t1")["result"], {"content": "x"})
+        self.assertEqual(self.complete("t1")["result"], {"content": "x", "model_receipts": planted})
 
     def test_a_call_that_failed_gets_no_receipts(self):
         """Review of 6b0a568e: a failed, interrupted or is_error call got receipts too."""
@@ -413,15 +423,16 @@ class VerifyModel(Base):
             self.assertEqual(claude_code.handle(dict(p, hook_event_name="PostToolUse", tool_response={
                 "stdout": "", "stderr": "", "interrupted": False})), 0)
             st = claude_code._load(claude_code._state("s1"))
-            # a client other than the hook passes receipts apart, as the hook does, of a backdoored file, as
-            # model.safetensors, with the results of a call that writes nothing and of a write to another file
+            # receipts of a backdoored file, as model.safetensors, in the results of an MCP shell tool and a web fetch
+            # (as their outputs could plant them) and of a write to another file
             self.backdoor = safetensors(self.path("backdoor.safetensors"), {"embed": b"\x01" * 32, "mlp": b"\x06" * 32})
             planted, c = dict(receipt(self.backdoor), path=self.new, reported_by="hook"), Client()
             run = RunHandle(c, st)
-            for tid, tool, args in (("t2", "Read", {"file_path": self.new}),
-                                    ("t3", "Write", {"file_path": self.path("notes.md"), "content": "x"})):
-                self.assertNotEqual(run.decide(tid, tool, args)["decision"], "deny")
-                self.assertIsNotNone(run.complete(tid, result={}, model_receipts=[planted]))
+            for tid, tool, args in (("t2", "mcp__sh__run", {"command": "cp x model.safetensors"}),
+                                    ("t3", "WebFetch", {"url": "https://example.com/model.safetensors"}),
+                                    ("t4", "Write", {"file_path": self.path("notes.md"), "content": "x"})):
+                run.decide(tid, tool, args)
+                self.assertIsNotNone(run.complete(tid, result={"model_receipts": [planted]}))
             c.close()
             self.run_id = st["run_id"]
             self.assertEqual(claude_code.handle({"hook_event_name": "SessionEnd", "session_id": "s1"}), 0)
@@ -446,8 +457,8 @@ class VerifyModel(Base):
         self.assertEqual(code, 0, err)
         self.assertEqual(out.splitlines(), [
             f"bundle: verified, run {self.run_id}",
-            "content: 2 receipt(s) ignored: not in the result of a write or shell call whose recorded arguments name "
-            "the file",
+            "content: 3 receipt(s) ignored: not in the result of a Write, Edit, MultiEdit, NotebookEdit, Bash call "
+            "whose recorded arguments name the file",
             f"receipt: {self.new}, hashed after tool call t1 (run_seq 2, ok: true), recorded by the agent-side hook",
             f"NEW {self.new}: matches the recorded receipt ({receipt(self.new)['sha256']})",
             "OLD -> NEW: the file differs; 1 of 2 tensors differ (dtype, shape or bytes); the metadata is the same",
@@ -460,9 +471,11 @@ class VerifyModel(Base):
 
     def test_a_receipt_planted_in_a_call_that_doesnt_name_its_file_doesnt_count(self):
         """Review of 6b0a568e: any tool result's model_receipts counted, so a planted receipt passed a backdoored
-        file as recorded by the hook."""
+        file as recorded by the hook. Review of c15728a3: so did one in an MCP shell tool's result, whose command
+        names the file; a receipt counts only in a call of a tool the hook receipts."""
         code, out, _ = self.verify(self.old, self.backdoor)
         self.assertEqual(code, 1)
+        self.assertIn("content: 3 receipt(s) ignored", out)
         self.assertIn(f"NEW {self.backdoor}: {receipt(self.backdoor)['sha256']} matches none of the 1 receipt(s) in "
                       "the run", out)
 
@@ -536,7 +549,7 @@ class VerifyModel(Base):
 
     def test_content_not_kept_or_not_granted_is_said_plainly(self):
         for answer, why in ((lambda c, req: {"items": [{"seq": s, "state": "not_retained"} for s in req["seqs"]]},
-                             "the signer returned none of the run's 3 tool results: their content isn't kept"),
+                             "the signer returned none of the run's 4 tool results: their content isn't kept"),
                             (mock.Mock(side_effect=RPCError("forbidden", "content_get needs the content_read grant")),
                              "the signer gave no content: forbidden: content_get needs the content_read grant")):
             with mock.patch.object(Client, "content_get", answer):

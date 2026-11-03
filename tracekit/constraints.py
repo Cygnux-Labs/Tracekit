@@ -230,9 +230,12 @@ FORMATTERS = {"prettier": ("--write", "-w"), "gofmt": ("-w",), "eslint": ("--fix
 UNREAD = frozenset("$`*?[{")   # a word with one of these (a variable, a glob, a substitution) is no path
 FIND_NAMES = ("-name", "-iname", "-path", "-ipath", "-wholename")   # what find -delete or -exec acts on
 # the short flag (in a cluster too: cp -vt) by which these commands put their paths in another directory, as do the
-# long ones below
-ELSEWHERE = {"cp": "t", "mv": "t", "install": "t", "ln": "t", "git": "C", "env": "C", "make": "C", "tar": "C"}
+# long ones below and their prefixes (env --ch)
+ELSEWHERE = {"cp": "t", "mv": "t", "install": "t", "ln": "t", "git": "C", "env": "C", "make": "C", "tar": "C",
+             "sudo": "D"}
 ELSEWHERE_LONG = ("--target-directory", "--directory", "--chdir")
+# commands that run theirs on another host, in another root, or in another mount namespace or sandbox
+ELSEWHERE_RUNS = frozenset(("ssh", "chroot", "nsenter", "unshare", "firejail"))
 NET_COMMANDS = frozenset(("curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
                           "http", "https"))
 NET_GIT = frozenset(("push", "pull", "fetch", "clone", "ls-remote"))
@@ -760,10 +763,24 @@ def lifts(kind, mention, is_object):
     return bool(words & LIFT[kind] or kind == "read_only" and names)
 
 
+def _elsewhere(name, rest):
+    """Whether command `name` with arguments `rest` runs its own elsewhere (ELSEWHERE_RUNS), or names a directory its
+    paths are in or go to: its ELSEWHERE short flag, in a cluster too (cp -vt), or a long option of ELSEWHERE_LONG or
+    any prefix of one, as GNU takes them (env --ch=sub)."""
+    if name in ELSEWHERE_RUNS:
+        return True
+    for w in rest if name in ELSEWHERE else ():
+        opt = w.split("=", 1)[0]
+        if w[:1] == "-" and w[1:2] != "-" and ELSEWHERE[name] in w or len(opt) > 2 and opt[:2] == "--" and any(
+                long.startswith(opt) for long in ELSEWHERE_LONG):
+            return True
+    return False
+
+
 def shell(cmd):
     """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs": those
     of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory (cd, pushd, popd, git
-    --work-tree), "elsewhere": a command names a directory its paths are in or go to (ELSEWHERE, ELSEWHERE_LONG),
+    --work-tree), "elsewhere": a command's paths are in another directory, root or host (_elsewhere),
     "push": a git push, "network": a command that reaches the network, "writes": it writes or commits}. `cmd`: a
     command line, or a shell call's arguments (`command` or `cmd` a line or an argv list, `commands` a list of lines),
     read as the policy engine reads them (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines
@@ -785,8 +802,7 @@ def shell(cmd):
         args = [w for w in rest if not w.startswith("-")]
         out["cd"] = out["cd"] or name in ("cd", "pushd", "popd") or name == "git" and any(
             w.split("=", 1)[0] == "--work-tree" for w in rest)
-        out["elsewhere"] = out["elsewhere"] or name in ELSEWHERE and any(w.split("=", 1)[0] in ELSEWHERE_LONG or (
-            w[:1] == "-" and w[1:2] != "-" and ELSEWHERE[name] in w) for w in rest)
+        out["elsewhere"] = out["elsewhere"] or _elsewhere(name, rest)
         mode = WRITERS.get(name)
         if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
                                            for w in rest):

@@ -233,13 +233,16 @@ test("fake: decide, complete, deny and continue; requests are validated before t
   assert.equal(frames.filter((f) => f.method === "decide").length, 3);
 });
 
-test("fake: a model_receipts key in a tool's result is dropped, so its output plants no receipt", async (t) => {
+test("fake: a complete's result goes as the tool returned it, a model_receipts key and a URL included", async (t) => {
   const { client, frames } = await fake(t);
   const run = await client.registerRun("a");
-  await run.decide("t1", "mcp__fs__write", { path: "model.safetensors" });
   const planted = [{ path: "/w/model.safetensors", sha256: `sha256:${"0".repeat(64)}`, reported_by: "hook" }];
-  await run.complete("t1", "ok", { result: { content: "x", model_receipts: planted } });
-  assert.deepEqual(frames.find((f) => f.method === "complete").result, { content: "x" });
+  for (const [id, result] of [["t1", { content: "x", model_receipts: planted }], ["t2", new URL("https://example.com/a")]]) {
+    await run.decide(id, "mcp__fs__write", { path: "model.safetensors" });
+    await run.complete(id, "ok", { result });
+  }
+  assert.deepEqual(frames.filter((f) => f.method === "complete").map((f) => f.result),
+    [{ content: "x", model_receipts: planted }, "https://example.com/a"]);
 });
 
 test("fake: with TRACEKIT_EGRESS_PROXY, a run's id and token become its commands' proxy credentials, not the process's", async (t) => {
