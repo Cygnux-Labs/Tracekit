@@ -3536,13 +3536,20 @@ class PackReading(unittest.TestCase):
             ("mcp:github/create_or_update_file", {"path": "x.yml", "content": "run: cat /root/.aws/credentials"}),
             ("mcp:k8s/createCronJob", {"name": "x", "content": "cat /root/.aws/credentials"}),
             ("mcp:notes/create_note_file", {"content": "cat /root/.aws/credentials"}),
-            ("mcp:ecr/create_pull_through_cache_rule", {"description": "/root/.aws/credentials"})])
+            ("mcp:ecr/create_pull_through_cache_rule", {"description": "/root/.aws/credentials"})] + [
+            # the review after: what create makes comes before a for, on or to; a commit, a hook or a task for a PR,
+            # an issue or a ticket is acted on
+            (t, {"body": "cat /root/.aws/credentials"}) for t in (
+                "mcp:github/create_commit_for_pr", "mcp:github/create_hook_for_pr", "mcp:ci/create_runner_for_pr",
+                "mcp:jira/create_scheduled_task_for_ticket", "mcp:x/create_secret_for_review",
+                "mcp:x/create_symlink_for_issue", "mcp:aws/create_lambda_for_issue")])
         # what create posts, the word after it: a merge request's or a PR's text is carried, as an issue's is
         self.rule_on_server("TK-S004", [(t, {"title": "x", "body": "see /root/.aws/credentials"}) for t in (
             "mcp:gitlab/create_merge_request", "mcp:github/create_pr", "mcp:github/createPullRequest",
             # what create posts may come last too (the last review)
             "mcp__atlassian__createJiraIssue", "mcp:github/create_github_issue", "mcp:github/create_draft_pull_request",
-            "mcp:x/create_new_issue")], want=False)
+            "mcp:x/create_new_issue", "mcp:github/create_comment_on_issue", "mcp:github/create_review_comment_on_pr",
+            "mcp:github/create_or_update_issue_comment")], want=False)
         self.rule_on_server("TK-S001", [
             ("mcp:computer/computer", {"action": "type",
                                        "text": "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/"}),
