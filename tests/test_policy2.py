@@ -1618,7 +1618,10 @@ class TimedAndBraced(unittest.TestCase):
                           ('D=/; rm -rf "${D:?}"/', "TK-D004"), ("D=/; rm -rf ${D:-x}/", "TK-D004"),
                           ("D=/root/.aws; cat ${D:?}/credentials", "TK-S004"),
                           # read sets only the names it reads into, so D keeps its literal after `read X`
-                          ('D=/; read X; rm -rf "${D:?}"/', "TK-D004"), ('D=/; read -r -p "x: " X Y; rm -rf "$D"/', "TK-D004")):
+                          ('D=/; read X; rm -rf "${D:?}"/', "TK-D004"), ('D=/; read -r -p "x: " X Y; rm -rf "$D"/', "TK-D004"),
+                          # a quoted prompt can't split, whatever it holds (the last review: `? ` made D unknown)
+                          ('D=/; read -r -p "Continue? " ans; rm -rf "$D"/', "TK-D004"),
+                          ('C=sudo; read -p "go?" a; $C id', "TK-D001")):
             d = e.decide("Bash", {"command": cmd})
             self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (cmd, d))
         for cmd in ('D=build; rm -rf "${D:?}"/', "D=x; rm -rf ${D:-/}", 'rm -rf "${D:?}"/',   # no false deny or hold

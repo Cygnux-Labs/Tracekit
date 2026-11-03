@@ -2492,7 +2492,8 @@ class CodingPack(unittest.TestCase):
                                 ec2 + " Add=" + "\\" * 30000 + "x", ec2 + " Add=" + " x" * 32000, ec2 + " Add=" + "a-" * 32000,
                                 # the value starting again at each repeat: read a word at a time, never past an option
                                 "aws" + "  ec2  modify-snapshot-attribute  --cr=Add=" * 1454,
-                                "aws" + "\t\trds\t\tmodify-db-snapshot-attribute\t\t--values-to-a=x" * 1150):
+                                "aws" + "\t\trds\t\tmodify-db-snapshot-attribute\t\t--values-to-a=x" * 1150,
+                                "aws" + " ec2 modify-snapshot-attribute --cr=Remove=[" * 1390):
                     for tool, args in (("Bash", {"command": command}), ("mcp:aws/call_aws", {"cli_command": command})):
                         self.assertIsNone(e.decide(tool, args).get("nondeterministic"), (tool, command[:60]))
 
@@ -3356,14 +3357,20 @@ class PackReading(unittest.TestCase):
                   ec2.replace("--create-volume-permission", "--create-volume-perm") + "'Add=[{Group=all}]'",
                   rds + "ALL", ec2.replace("--create-volume-permission ", "--operation-type Add --group-names all"),
                   # and spaces or a tab before a shorthand Group
-                  ec2 + "'Add=[{ Group=all }]'", ec2 + "'Add=[{UserId=1, Group=all}]'", ec2 + "'Add=[{\tGroup=all}]'")
+                  ec2 + "'Add=[{ Group=all }]'", ec2 + "'Add=[{UserId=1, Group=all}]'", ec2 + "'Add=[{\tGroup=all}]'",
+                  # a long value: 40 user ids pretty-printed are 160 words before Group
+                  ec2 + "'" + json.dumps({"Add": [{"UserId": str(111122223333 + i)} for i in range(40)] +
+                                         [{"Group": "all"}]}, indent=2) + "'")
         private = (rds.replace("add", "remove") + "all", rds + "111122223333 --profile all", rds + "allison",
                    ec2 + "'Remove=[{Group=all}]'", ec2 + "'{\"Remove\": [{\"Group\": \"all\"}]}'",
                    ec2 + "'Add=[{UserId=111122223333}]'",
                    # through call_aws an escaped tab or newline ends the value as a space does
                    rds + "111122223333\n--values-to-remove all", rds + "111122223333\t--profile all",
                    ec2 + "Add=[{UserId=1}]\t--profile Group=all",
-                   rds + "111122223333  --profile all", rds + "111122223333\t\t--profile all")
+                   rds + "111122223333  --profile all", rds + "111122223333\t\t--profile all",
+                   # the last word read is never the next option itself
+                   rds + "111122223333 --values-to-remove=all", rds + "111122223333 --db-snapshot-identifier=all-nightly",
+                   ec2 + "'Add=[{UserId=1}]' --profile=Group=all")
         for want, commands in ((True, shared), (False, private)):
             self.rule_on_server("TK-C001", [("Bash", {"command": c}) for c in commands] + [
                 ("mcp:aws/call_aws", {"cli_command": c}) for c in commands], want=want)
