@@ -1616,25 +1616,19 @@ class TimedAndBraced(unittest.TestCase):
                           ("HOME=/; rm -rf ${HOME=x}/", "TK-D004"), ("HOME=sudo; ${HOME:-x} id", "TK-D001"),
                           # and any variable's whose literals aren't empty: ${D:?} is the form shellcheck asks for
                           ('D=/; rm -rf "${D:?}"/', "TK-D004"), ("D=/; rm -rf ${D:-x}/", "TK-D004"),
-                          ("D=/root/.aws; cat ${D:?}/credentials", "TK-S004"),
-                          # read sets only the names it reads into, so D keeps its literal after `read X`
-                          ('D=/; read X; rm -rf "${D:?}"/', "TK-D004"), ('D=/; read -r -p "x: " X Y; rm -rf "$D"/', "TK-D004"),
-                          # a quoted prompt can't split, whatever it holds (the last review: `? ` made D unknown)
-                          ('D=/; read -r -p "Continue? " ans; rm -rf "$D"/', "TK-D004"),
-                          ('C=sudo; read -p "go?" a; $C id', "TK-D001")):
+                          ("D=/root/.aws; cat ${D:?}/credentials", "TK-S004")):
             d = e.decide("Bash", {"command": cmd})
             self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (cmd, d))
         for cmd in ('D=build; rm -rf "${D:?}"/', "D=x; rm -rf ${D:-/}", 'rm -rf "${D:?}"/',   # no false deny or hold
-                    'D=build; read X; rm -rf "${D:?}"/', 'D=build; eval true; rm -rf "${D:?}"/',
-                    'D=/; read D; rm -rf "${D:?}"/',
-                    'D=build; read -r -p "Continue? [y/N] " ans; rm -rf "$D"/',
                     'set -euo pipefail; D=build; rm -rf "$D"/'):
             self.assertNotIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
-        # a read word that may split or expand may name D too (`read -p $P` with P="x D"): D is unknown after it
-        for cmd in ('P="x D"; D=build; read -p $P <<< /; rm -rf "$D"/', 'D=build; read -t $T X <<< /; rm -rf "$D"/',
+        # a read, in any form, may set D (`read -p $P` with P="x D" names it; so may a glob, a substitution, set -k):
+        # D is unknown after it, and a delete through it, ${D:?} too, is held (the reviews of 1.5.3 found bypasses in
+        # every reading of read's names, so none is made)
+        for cmd in ('D=/; read X; rm -rf "${D:?}"/', 'D=/; read -r -p "Continue? " ans; rm -rf "$D"/',
+                    'D=build; read X; rm -rf "${D:?}"/', 'D=/; read D; rm -rf "${D:?}"/',
+                    'P="x D"; D=build; read -p $P <<< /; rm -rf "$D"/', 'D=build; read -t $T X <<< /; rm -rf "$D"/',
                     'D=build; read -p * X; rm -rf "$D"/',
-                    # the review after: quotes nested in a substitution hid the unquoted $P from a quote-stripped
-                    # reading, so read's D stayed known (bash ran rm -rf //)
                     'P=$(echo x D); D=build; read -p "$(: "\'")"$P"$(: "\'")" X <<< "/ y"; rm -rf "$D"/',
                     'D=build; read -p "${Q:+"\'"}"$P"${Q:+"\'"}" X; rm -rf "$D"/',
                     # and a bracket glob whose contents are quoted (bash globs it), and set -k, under which any
@@ -1642,8 +1636,10 @@ class TimedAndBraced(unittest.TestCase):
                     'D=build; read -p ["CD"] X < answers.txt; rm -rf "$D"/',
                     'D=build; read -p {["CD"],x} X < a; rm -rf "$D"/',
                     'D=build; set -k; read -p Q=1 -p D X < a; rm -rf "$D"/',
-                    'D=build; set -o keyword; read X < a; rm -rf "$D"/'):
-            self.assertIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
+                    'D=build; set -o keyword; read X < a; rm -rf "$D"/',
+                    'D=build; set -euo keyword; read -p Q=1 -p D X <<< "/ y"; rm -rf "$D"/'):
+            d = e.decide("Bash", {"command": cmd})
+            self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), (cmd, d))
 
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
         """Sweep before 1.5.3: an unreadable line was split at ;, & and | inside quotes too, so text a command only
