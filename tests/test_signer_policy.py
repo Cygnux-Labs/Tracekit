@@ -2860,6 +2860,36 @@ class PackReading(unittest.TestCase):
         d = self.server.decide("run_sql", {"sql": "SELECT 'unclosed; DROP TABLE users"})
         self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SQL-PARSE"]))
 
+    def test_a_vertical_tab_or_an_executable_comment_in_sql_is_read_as_the_database_reads_it(self):
+        # the 1.5.3 sweep: \v is whitespace to PostgreSQL, MySQL and SQLite but not to a pattern's \s, and MariaDB runs
+        # what /*M! … */ holds as MySQL runs /*! … */
+        self.check(self.server, [("run_sql", {"sql": s}) for s in (
+            "DROP\x0bTABLE users", "TRUNCATE\x0busers", "DELETE\x0bFROM users", "GRANT\x0bALL ON x TO agent",
+            "/*M! DROP TABLE users */", "/*M!100500 DROP TABLE users */")], "deny")
+        self.check(self.server, [("run_sql", {"sql": "SELECT 1 /*M note: drop it later */"})], "allow")
+
+    def test_sql_through_a_client_or_an_mcp_tool_reads_comments_as_the_database_does(self):
+        # the 1.5.3 sweep: TK-A039 and TK-A041 read only whitespace between keywords, so DROP/**/TABLE, DELETE/**/FROM
+        # and DROP\vTABLE weren't held, and they skipped MySQL's and MariaDB's executable comments, whose text runs
+        held = [("Bash", {"command": c}) for c in (
+            'psql -c "DROP/**/TABLE users"', 'psql -c "DELETE/**/FROM users"', 'psql -c "TRUNCATE/**/users"',
+            'mysql -e "DROP/**/DATABASE prod"', 'sqlite3 app.db "DROP/**/TABLE users"', "psql -c 'DROP--x\nTABLE users'",
+            'psql -c "DROP\x0bTABLE users"', 'psql -c "DELETE\x0bFROM users"', 'mysql -e "/*! DROP TABLE users */"',
+            'mysql -e "/*!50000 DROP DATABASE prod */"', 'mariadb -e "/*M! DROP TABLE users */"',
+            'mysql -e "/*! DELETE FROM users */"')] + [("mcp__db__run_sql", {"sql": s}) for s in (
+                "DROP/**/TABLE users", "DELETE/**/FROM users", "TRUNCATE/**/users", "DROP\tTABLE users",
+                "DROP\x0bTABLE users", "/*! DROP TABLE users */", "/*!50000 DROP TABLE users */",
+                "/*M! DROP TABLE users */", "DELETE FROM users /* all of them */")]
+        allowed = [("Bash", {"command": c}) for c in (
+            'psql -c "SELECT 1 /* DROP TABLE x */"', 'mysql -e "/* note */ SELECT 1"', 'mysql -e "/*!40101 SET x=1 */"',
+            "psql -c 'DELETE/**/FROM sessions WHERE expires < now()'")] + [("mcp__db__run_sql", {"sql": s}) for s in (
+                "/* DROP TABLE x */ SELECT 1", "/*M note */ SELECT 1", "DELETE/**/FROM sessions WHERE id = 5")]
+        for pack, engine, e in CodingPack.every_pack():
+            for tool, args in held + allowed:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    ids = e.decide(tool, args)["rule_ids"]
+                    self.assertEqual(bool({"TK-A039", "TK-A041"} & set(ids)), (tool, args) in held, ids)
+
     def test_hosts_are_normalised_before_matching(self):
         urls = ("http://127.0.0.1\\@evil.com/", "http://169.16689662/latest/meta-data/", "http://[0:0:0:0:0:ffff:a9fe:a9fe]/",
                 "http://[0:0::1]/", "http://2130706433/", "http://0177.0.0.1/", "http://metadata/computeMetadata/v1/",

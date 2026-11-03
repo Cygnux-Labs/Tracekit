@@ -188,12 +188,13 @@ SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False),
                 "sqlite": (False, False, False, False, True, True, False),
                 "mssql": (False, False, True, False, True, False, False)}
 _DOLLAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
-_MYSQL_RUN = re.compile(r"/\*!\d*")
+_MYSQL_RUN = re.compile(r"/\*M?!\d*")
 
 
 def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space):
-    """`stmt` with every comment a space and every literal or quoted identifier '' or "", as one dialect lexes it:
-    what a keyword rule should see. None when a literal or comment is not closed (the database rejects it)."""
+    """`stmt` with every comment a space, every literal or quoted identifier '' or "" and a vertical tab (whitespace to
+    each dialect, not to a pattern's \\s) a space, as one dialect lexes it: what a keyword rule should see. None when a
+    literal or comment is not closed (the database rejects it)."""
     out, i, n = [], 0, len(stmt)
     while i < n:
         c, two = stmt[i], stmt[i:i + 2]
@@ -202,7 +203,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
             j = stmt.find("\n", i)
             i = n if j < 0 else j
             out.append(" ")
-        elif hash_comment and stmt.startswith("/*!", i):   # MySQL runs what /*! ... */ holds
+        elif hash_comment and stmt.startswith(("/*!", "/*M!"), i):   # MySQL runs what /*! ... */ holds, MariaDB /*M! too
             i = _MYSQL_RUN.match(stmt, i).end()
         elif two == "/*":
             depth, j = 1, i + 2
@@ -240,7 +241,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
             out.append("''")
             i = end + len(tag)
         else:
-            out.append(c)
+            out.append(" " if c == "\x0b" else c)
             i += 1
     return "".join(out)
 
