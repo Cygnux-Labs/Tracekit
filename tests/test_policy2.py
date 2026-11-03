@@ -1769,6 +1769,21 @@ class TimedAndBraced(unittest.TestCase):
             with self.assertRaises(shell.ParseError, msg=cmd):
                 shell.parse(cmd)
 
+    def test_pwd_is_where_a_literal_cd_goes(self):
+        """$PWD stayed bash's start directory after `cd /`, so `cd / && rm -rf "$PWD"/*` was read as removing that
+        directory's files and only flagged (rc/1.5.3 denied it from the empty reading). After cd or pushd to a literal
+        (cd alone: ~) $PWD is that; after any other (a variable, a pattern, -, popd) it is unknown: maybe empty."""
+        e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
+        for cmd in ('cd / && rm -rf "$PWD"/*', 'cd ~ && rm -rf "$PWD"/*', 'pushd / && rm -rf ${PWD}/*',
+                    'cd && rm -rf "$PWD"/*', 'cd -P -- / && rm -rf "$PWD"/*'):
+            self.assertEqual(e.decide("Bash", {"command": cmd})["verdict"], "deny", cmd)
+        for cmd in ('cd "$D" && rm -rf "$PWD"/*', 'cd - && rm -rf "$PWD"/*', 'popd && rm -rf "$PWD"/*',
+                    'cd /tm* && rm -rf "$PWD"/*'):
+            d = e.decide("Bash", {"command": cmd})
+            self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), cmd)
+        for cmd in ('cd build && rm -rf "$PWD"/*', 'rm -rf "$PWD"/*', '(cd /) && rm -rf "$PWD"/*'):
+            self.assertNotIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
+
     def test_a_variable_the_line_sets_is_never_read_as_empty(self):
         """bash sets $PWD, and a literal the line gives a variable (`D=dist; rm -rf "$D"/*`, a for loop's over literal
         words) is set before what follows: none of them is read as empty, so these aren't `rm -rf /*` (1.5.3's empty
