@@ -240,9 +240,10 @@ heredoc or herestring), `awk` programs and sed's `e` command. The POSIX shells i
 `dash`, `ksh`, `ash`, `rbash`, `mksh`, `ksh93`, `yash`, `posh`, `lksh` and `oksh`; `fish`, `csh`, `tcsh`, `pwsh`,
 `powershell`, `nu`, `xonsh` and `elvish` speak another language, so a command they run from their line (`-c`,
 `--command`, PowerShell's `-Command` or `-EncodedCommand`, any prefix and case) or from stdin is opaque. An argument
-with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`), up to 16 KiB of them a command
-(`touch test{1..500}.txt` is 500 words); past that, a brace with `..` that isn't a plain sequence of two numbers or two
-letters, or a substitution in such a word, is kept as written and its command is opaque. `time` before a group or another
+with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`; a `}` ends a brace only after a
+comma or `..` at its depth, so `{zq},~/}` is `zq}` and `~/`), as long as they add at most 16 KiB to the line and keep
+it within 64 KiB (`touch test{1..500}.txt` is 500 words); past that, a brace with `..` that isn't a plain sequence of
+two numbers or two letters, or a substitution in such a word, is kept as written and its command is opaque. `time` before a group or another
 compound command times what follows, which is read as the command. Variables are not expanded and encodings are
 not decoded: those stay tripwire territory. A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
 read twice, as written and as gone, because bash drops it when they expand to nothing: `git $X push --force` is

@@ -179,6 +179,7 @@ def analyse(command, persistent_target=None, readings=True, work=None):
            "command_names_mutable": False,
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
+           "brace": min(MAX_BRACE, (64 << 10) - len(command)),   # what brace expansions may still add
            "readings": readings, "nested": set()}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
@@ -260,7 +261,7 @@ def analyse_argv(argv, readings=True, work=None):
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(),
            "command_names_mutable": False,
-           "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False,
+           "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False, "brace": MAX_BRACE,
            "readings": readings, "nested": set()}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
@@ -371,8 +372,8 @@ def _name_unreadable(text):
     return bool(re.search(r"[$`]", re.sub(r"^(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/", "", text)))
 
 
-# characters the brace expansions of one command may make: past it a word is kept as written and its command is
-# unreadable (a subject over 64 KiB would deny as TK-OVERSIZE)
+# characters the brace expansions of a line may add to it, and no more than keeps it within 64 KiB (the engine's
+# MAX_SUBJECT, past which a subject denies as TK-OVERSIZE): past it a word is kept as written, its command unreadable
 MAX_BRACE = 16 * 1024
 # a sequence bash 3.2 and bash 5 read alike: two plain integers of at most 18 digits, or two letters
 _SEQ = re.compile(r"(-?[0-9]{1,18})\.\.(-?[0-9]{1,18})|([A-Za-z])\.\.([A-Za-z])")
@@ -407,75 +408,104 @@ def _skip(w, i):
     return i
 
 
-def _brace_at(w, charge, frm=0, room=MAX_BRACE):
-    """The first brace expression bash expands in the word w as written, opening at or after `frm` (bash doesn't read
-    the text before an expanded brace again): (its start, the index after its `}`, the texts it puts there), or None.
-    A brace expression is an unquoted `{` (not `${`, and outside substitutions) with its matching `}` and a comma at
-    its own depth, or a plain sequence (_SEQ). Unreadable (ParseError): a brace with `..` at its own depth, no comma
-    there and no plain sequence (bash 4 and later expand those in ways bash 3.2 doesn't: a step, padding, a sign, both
-    letter cases, braces or commas inside), or a sequence of more than `room` words."""
-    charge(len(w))
-    stack, pairs, i = [], [], 0   # one pass: each unquoted { with its matching }, and its own depth's commas and ..
+def _gobble(w, i):
+    """bash's brace_gobbler (braces.c) for the `}` that ends a brace opened just before index i: (its index, the commas
+    at the brace's own depth, whether `..` is there), or None. A `}` at that depth ends it only after a comma or `..`
+    there, so bash runs `{zq},~/}` as `zq} ~/`; one deeper ends a deeper brace."""
+    level, commas, dots = 0, [], False
     while i < len(w):
         j = _skip(w, i)
         if j != i:
             i = j
             continue
         c = w[i]
+        if c == "}" and not level and (commas or dots):
+            return i, commas, dots
         if c == "{":
-            stack.append((i, [], [False]))
-        elif c == "}" and stack:
-            pairs.append((*stack.pop(), i))
-        elif c == "," and stack:
-            stack[-1][1].append(i)
-        elif c == "." and stack and w.startswith("..", i) and w[i + 2:i + 3] != "}":
-            stack[-1][2][0] = True
+            level += 1
+        elif c == "}" and level:
+            level -= 1
+        elif c == "," and not level:
+            commas.append(i)
+        elif c == "." and not level and w.startswith("..", i) and w[i + 2:i + 3] != "}":
+            dots = True
         i += 1
-    for start, commas, dots, end in sorted(pairs):   # bash expands the first, by its opening brace
-        if start < frm:
-            continue
-        m = None if commas else _SEQ.fullmatch(w, start + 1, end)
-        if dots[0] and not commas and not m:
-            raise ParseError("a brace expression with .. that isn't a plain sequence is not supported")
-        if commas:
-            cuts = [start] + commas + [end]
-            return start, end + 1, [w[a + 1:b] for a, b in zip(cuts, cuts[1:])]
-        if m:
-            if m.group(3) and m.group(3).isupper() != m.group(4).isupper() or \
-                    m.group(1) and any(re.match(r"-?0[0-9]", x) for x in m.group(1, 2)):
-                raise ParseError("a zero-padded or mixed-case brace sequence is not supported")
-            lo, hi = (int(m.group(1)), int(m.group(2))) if m.group(1) else (ord(m.group(3)), ord(m.group(4)))
-            if abs(hi - lo) >= room:
-                raise ParseError("a brace expansion that makes too much text")
-            seq = range(lo, hi + 1) if lo <= hi else range(lo, hi - 1, -1)
-            return start, end + 1, [str(x) if m.group(1) else chr(x) for x in seq]
     return None
 
 
-def _brace(word, charge, room=MAX_BRACE):
+def _brace_at(w, charge, room=MAX_BRACE):
+    """The first brace expression bash expands in the text w (braces.c brace_expand): (its start, the index after its
+    `}`, the texts it puts there, whether bash expands those again: a comma's alternatives), or None. It starts at the
+    first unquoted `{` (not `${`, and not one that begins w with a `}` after it) that _gobble ends. Unreadable
+    (ParseError): one with `..` at its own depth, no comma there and no plain sequence (_SEQ; bash 4 and later expand
+    those in ways bash 3.2 doesn't: a step, padding, a sign, both letter cases, braces or commas inside), or a
+    sequence of more than `room` words."""
+    charge(len(w))
+    opens, marks, closes, i = [], [], [], 0   # unquoted: each { that may start one; commas and ..; each }
+    while i < len(w):
+        j = _skip(w, i)
+        if j != i:
+            i = j
+            continue
+        if w[i] == "{" and (i or w[1:2] != "}"):
+            opens.append(i)
+        elif w[i] == "}":
+            closes.append(i)
+        elif w[i] == "," or w.startswith("..", i):
+            marks.append(i)
+        i += 1
+    # a `{` opens a brace only with a comma or .. after it and a } after that: past the last such, none does
+    last = max((m for m in marks if closes and m < closes[-1]), default=-1)
+    for i in opens:
+        if i >= last:
+            break
+        found = _gobble(w, i + 1)
+        charge((found[0] if found else len(w)) - i)   # each `{` that ends no brace is read to the end again
+        if not found:
+            continue
+        end, commas, dots = found
+        if commas:
+            cuts = [i] + commas + [end]
+            return i, end + 1, [w[a + 1:b] for a, b in zip(cuts, cuts[1:])], True
+        m = _SEQ.fullmatch(w, i + 1, end)
+        if not m:
+            raise ParseError("a brace expression with .. that isn't a plain sequence is not supported")
+        if m.group(3) and m.group(3).isupper() != m.group(4).isupper() or \
+                m.group(1) and any(re.match(r"-?0[0-9]", x) for x in m.group(1, 2)):
+            raise ParseError("a zero-padded or mixed-case brace sequence is not supported")
+        lo, hi = (int(m.group(1)), int(m.group(2))) if m.group(1) else (ord(m.group(3)), ord(m.group(4)))
+        if abs(hi - lo) >= room:
+            raise ParseError("a brace expansion that makes too much text")
+        seq = range(lo, hi + 1) if lo <= hi else range(lo, hi - 1, -1)
+        return i, end + 1, [str(x) if m.group(1) else chr(x) for x in seq], False
+    return None
+
+
+def _brace(word, charge, room=MAX_BRACE, depth=0):
     """bash's brace expansion of one word as written, its quotes and escapes kept for the reader: the words it makes,
-    in bash's order, or None when it has no brace expression. Unreadable (ParseError) past `room` characters, past the
-    parse budget (the strings it builds count), or with a command or process substitution in a word whose braces
-    expand: each copy would run it, and the parser reads it once."""
-    if _brace_at(word, charge, 0, room) is None:
+    in bash's order, or None when it has no brace expression. As bash, each comma's alternative is expanded on its own
+    and so is the text after the brace. Unreadable (ParseError) past `room` characters, past the parse budget (the
+    strings it builds count), braces nested past MAX_DEPTH, or a command or process substitution in a word whose
+    braces expand: each copy would run it, and the parser reads it once."""
+    words, rest, found = [""], word, _brace_at(word, charge, room)
+    if found is None:
         return None
     if re.search(r"\$\(|`|[<>]\(", word):
         raise ParseError("a substitution in a word with a brace expansion is not supported")
-    done, todo, size = [], [(word, 0)], len(word)   # size: the characters of the words in done and todo
-    while todo:
-        w, frm = todo.pop()
-        found = _brace_at(w, charge, frm, room)
-        if found is None:
-            done.append(w)
-            continue
-        a, b, texts = found
-        made = sum(len(t) for t in texts) + (len(w) - b + a) * len(texts)   # the characters of the words it makes
-        size += made - len(w)
-        if size > room:
+    if depth > MAX_DEPTH:
+        raise ParseError("braces nested too deeply")
+    while found is not None:
+        a, b, texts, again = found
+        alts = [x for t in texts for x in ((_brace(t, charge, room, depth + 1) or [t]) if again else [t])]
+        made = len(alts) * sum(map(len, words)) + len(words) * sum(len(rest[:a]) + len(x) for x in alts)
+        if made > room:
             raise ParseError("a brace expansion that makes too much text")
         charge(made)
-        todo += [(w[:a] + t + w[b:], a) for t in reversed(texts)]
-    return done
+        words, rest = [w + rest[:a] + x for w in words for x in alts], rest[b:]
+        found = _brace_at(rest, charge, room)
+    if sum(map(len, words)) + len(words) * len(rest) > room:
+        raise ParseError("a brace expansion that makes too much text")
+    return [w + rest for w in words]
 
 
 def _kind(name):
@@ -876,7 +906,6 @@ class _Parser:
         vanish, patterns, cuts = [], [], []   # per word: only expansions; a pathname pattern; self.cut
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
         dynamic = brace_unread = False
-        braced = 0   # the characters the command's brace expansions made
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
         # an assignment here runs whenever what follows it on the line does: outside compound commands, first in its
         # list (not after && or ||, nor a pipeline stage), and no keyword before it
@@ -979,8 +1008,8 @@ class _Parser:
                 try:
                     if re.search(r"\$\(|`|[<>]\(", raw):
                         raise ParseError("a substitution in a word with a brace is not supported")
-                    pieces = _brace(raw, self.charge, MAX_BRACE - braced)
-                    braced += sum(map(len, pieces or ()))
+                    pieces = _brace(raw, self.charge, self.ctx["brace"] + len(raw))
+                    self.ctx["brace"] -= sum(len(p) + 1 for p in pieces or [raw]) - 1 - len(raw)
                 except ParseError:
                     if self.ctx["work"][0] > MAX_WORK:
                         raise
