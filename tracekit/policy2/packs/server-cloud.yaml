@@ -6,7 +6,7 @@
 # `cli_command`, `command` or `cmd` argument (the AWS API MCP server's call_aws takes `cli_command`). A web search for
 # the same words is not a command.
 
-version: '2026.10-server-cloud-9'
+version: '2026.10-server-cloud-10'
 description: server-hosted agents, cloud CLIs and cloud MCP tools
 unknown_tools: ask
 
@@ -23,8 +23,10 @@ deny:
     # over MCP as TK-C011 names it; in the `__` forms the word follows a `_` or `-`, so one `.*` per branch keeps the
     # fallback engine linear on a name of underscores. The words in any case, in snake_case, kebab-case, camelCase or
     # PascalCase (AttachUserPolicy, setIamPolicy, attach-user-policy, create_cluster_role_binding): a word between
-    # them starts after a `_` or `-` or with a capital, so attachment_policy isn't attach…policy
-    tool: 'mcp(:[^/]+/.*|__.*[_-])([Aa][Tt][Tt][Aa][Cc][Hh](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Pp][Uu][Tt](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Ss][Ee][Tt][_-]?[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Ss][Ee][Rr][Vv][Ii][Cc][Ee][_-]?[Aa][Cc][Cc][Oo][Uu][Nn][Tt][_-]?[Kk][Ee][Yy]|[Rr][Oo][Ll][Ee][_-]?[Aa][Ss][Ss][Ii][Gg][Nn][Mm][Ee][Nn][Tt]|[Cc][Rr][Ee][Aa][Tt][Ee](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Rr][Oo][Ll][Ee][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Gg][Rr][Aa][Nn][Tt]([_-][A-Za-z_-]*|[A-Z][A-Za-z]*)?)'
+    # them starts after a `_` or `-` or with a capital, so attachment_policy isn't attach…policy. A grant names what
+    # it grants (role, permission, access, privilege, iam, admin, owner), so grant_reviewers_list isn't one; a version
+    # suffix may follow (create_access_key_v2)
+    tool: 'mcp(:[^/]+/.*|__.*[_-])([Aa][Tt][Tt][Aa][Cc][Hh](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Pp][Uu][Tt](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Ss][Ee][Tt][_-]?[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Ss][Ee][Rr][Vv][Ii][Cc][Ee][_-]?[Aa][Cc][Cc][Oo][Uu][Nn][Tt][_-]?[Kk][Ee][Yy]|[Rr][Oo][Ll][Ee][_-]?[Aa][Ss][Ss][Ii][Gg][Nn][Mm][Ee][Nn][Tt]|[Cc][Rr][Ee][Aa][Tt][Ee](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Rr][Oo][Ll][Ee][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Gg][Rr][Aa][Nn][Tt]((([_-]|[A-Z])[A-Za-z_-]*)?[_-]?([Rr][Oo][Ll][Ee]|[Pp][Ee][Rr][Mm][Ii][Ss][Ss][Ii][Oo][Nn]|[Aa][Cc][Cc][Ee][Ss][Ss]|[Pp][Rr][Ii][Vv][Ii][Ll][Ee][Gg][Ee]|[Ii][Aa][Mm]|[Aa][Dd][Mm][Ii][Nn]|[Oo][Ww][Nn][Ee][Rr])[A-Za-z_-]*)?)([_-][Vv][0-9]+)?'
     pattern: '^'
     reason: changing cloud identity or access through an MCP tool
     rationale: The MCP twin of TK-C001.
