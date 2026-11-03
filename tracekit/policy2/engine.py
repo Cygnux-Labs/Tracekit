@@ -896,9 +896,11 @@ def _flat(values):
 # comment): a path or an address named there is mentioned, not read or fetched
 _CARRIED = frozenset(("title", "body", "text", "description", "comment", "message", "subject", "content"))
 _POSTS = frozenset(("post", "comment", "reply"))
-# what `create` posts, the word right after it (create_issue, createPullRequest, create_merge_request); a name that
-# also says file, cache, rule, job or workflow (create_note_file) creates something that is acted on
+# what `create` posts: the thing it names, the first word after it or the last one or two before a for, on, to and
+# the like (create_issue, createPullRequest, create_github_issue, create_comment_on_issue; create_commit_for_pr creates
+# a commit); a name that also says file, cache, rule, job or workflow (create_note_file) creates something acted on
 _CREATED = frozenset(("issue", "issues", "comment", "comments", "discussion", "review", "ticket", "note", "notes", "pr"))
+_LINKS = frozenset(("for", "on", "in", "to", "from", "with", "at", "of", "by", "into", "under", "via"))
 _ACTED = frozenset(("file", "files", "cache", "rule", "rules", "job", "jobs", "cron", "workflow", "function"))
 _MESSAGES = frozenset(("message", "messages", "email", "mail", "dm", "chat", "notification"))
 # a name that types, sends keys, runs or holds code: what such a tool carries is what it runs
@@ -915,8 +917,9 @@ def _carried(tool):
     seq = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold())
     words, out = set(seq), set()
     after = seq[seq.index("create") + 1:] if "create" in seq else []
+    thing = after[:next((i for i, w in enumerate(after) if w in _LINKS), len(after))]
     creates = any(t[:1] and t[0] in _CREATED or t[:2] in (["pull", "request"], ["merge", "request"])
-                  for t in (after, after[-1:], after[-2:])) and not words & _ACTED
+                  for t in (thing, thing[-1:], thing[-2:])) and not words & _ACTED
     posts = words & _POSTS or creates or "send" in words and words & _MESSAGES
     if posts and not words & _RUNS:
         out |= _CARRIED
