@@ -239,9 +239,9 @@ heredoc or herestring), `awk` programs and sed's `e` command. The POSIX shells i
 `dash`, `ksh`, `ash`, `rbash`, `mksh`, `ksh93`, `yash`, `posh`, `lksh` and `oksh`; `fish`, `csh`, `tcsh`, `pwsh`,
 `powershell`, `nu`, `xonsh` and `elvish` speak another language, so a command they run from their line (`-c`,
 `--command`, PowerShell's `-Command` or `-EncodedCommand`, any prefix and case) or from stdin is opaque. An argument
-with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`), up to 256; past that, a brace
-with `..` that isn't a plain sequence of two numbers or two letters, or a substitution in such a word, is kept as
-written and its command is opaque. `time` before a group or another
+with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`), up to 16 KiB of them a command
+(`touch test{1..500}.txt` is 500 words); past that, a brace with `..` that isn't a plain sequence of two numbers or two
+letters, or a substitution in such a word, is kept as written and its command is opaque. `time` before a group or another
 compound command times what follows, which is read as the command. Variables are not expanded and encodings are
 not decoded: those stay tripwire territory. A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
 read twice, as written and as gone, because bash drops it when they expand to nothing: `git $X push --force` is
@@ -253,8 +253,8 @@ every expansion empty (`rm $X-rf ~/$X` is `rm -rf ~/`), and with only those empt
 something on the line may have emptied it first (an assignment that may not run: after `&&` or `||`, in a pipeline,
 a subshell, an `if` or a loop; `unset`, `read`, `declare`, `eval`, `trap`, an unreadable command name). A deny that
 only such an empty reading makes (`rm -rf "$VENV"/`) takes `on_parse_error`'s section with the rule's id: it asks by
-default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one after `$` or between
-two operator characters is unreadable. A command it cannot parse is still decided on the line before the word it
+default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one between `$` and `(`, `{` or a
+quote, or between the characters of an operator (`(\⏎(` is `((`, `<<\⏎-EOF` is `<<-EOF`), is unreadable. A command it cannot parse is still decided on the line before the word it
 stopped in, parsed, and on its text split at `;`, `&`, `|` and newlines into blank-separated words, so a deny before
 an unreadable word or on plain words stands. A command it cannot parse, or one that
 is opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a
