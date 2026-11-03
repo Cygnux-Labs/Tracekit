@@ -314,18 +314,20 @@ def extract(cls, tool, args):
         url = first(args, "url")
         info = url_info(url) if isinstance(url, str) else {}
         out = {"url": url, "host": info.get("host"), "internal": info.get("internal")}
+        # the query as a browser reads it: tabs and newlines dropped, up to the fragment
+        query = re.sub(r"[\t\n\r]", "", url).partition("#")[0].partition("?")[2] if isinstance(url, str) else ""
         if cls == "browser":
             out.update(action=args.get("action"), scheme=info.get("scheme"))
             page, action = args.get("page_url"), tool.rpartition(":")[2]
-            # the query as a browser reads it: tabs and newlines dropped, up to the fragment
-            query = re.sub(r"[\t\n\r]", "", url).partition("#")[0].partition("?")[2] if isinstance(url, str) else ""
             if action in TYPING and isinstance(page, str):
                 out["sends_to"] = url_info(page).get("host")
             elif action in NAVIGATE and query:
                 out["sends_to"] = info.get("host")
         else:
             out["method"] = str(args.get("method") or "GET").upper()
-            if out["method"] not in ("GET", "HEAD") or any(args.get(k) is not None for k in BODY_KEYS):
+            # a GET carries data in its query, the URL's or a `params` argument's (requests' and LangChain's)
+            if out["method"] not in ("GET", "HEAD") or query or args.get("params") or any(
+                    args.get(k) is not None for k in BODY_KEYS):
                 out["sends_to"] = info.get("host")
     elif cls == "sql":
         stmt = first(args, "sql", "query", "statement")
