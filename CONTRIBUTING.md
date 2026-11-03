@@ -7,6 +7,8 @@ make install        # editable install with dev extras
 make check          # lint + tests + build
 ```
 
+Or open the repository in a Codespace (or VS Code's Dev Containers), which runs `make install` for you.
+
 ## Picking an issue
 
 Comment on a good first issue to claim it, then start right away; if someone claimed it already, pick another. Take
