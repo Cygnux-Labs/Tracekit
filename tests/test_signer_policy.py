@@ -2900,6 +2900,43 @@ class PackReading(unittest.TestCase):
             ("send_email", {"to": "a@example.com", "attachments": ["/home/app/.netrc"]}),
             ("mcp:filesystem/read_file", {"path": "/home/app/.kube/config"})], "deny")
 
+    @staticmethod
+    def server_engines():
+        return [(engine, e) for pack, engine, e in CodingPack.every_pack() if pack == "server.yaml"]
+
+    def rule_on_server(self, rule, cases, want=True):
+        for engine, e in self.server_engines():
+            for tool, args in cases:
+                with self.subTest(engine=engine, tool=tool, args=str(args)[:80]):
+                    self.assertEqual(rule in e.decide(tool, args)["rule_ids"], want, e.decide(tool, args))
+
+    def test_an_mcp_path_is_read_as_a_path_and_text_an_mcp_tool_only_carries_is_not_its_target(self):
+        """The 1.5.3 sweep: an MCP tool's path wasn't normalised or casefolded, `/proc/thread-self` and a task's environ
+        weren't credential files, and an issue's body or a search's query naming a credentials path or the metadata
+        address was denied as if the call read or fetched it."""
+        read = "mcp:filesystem/read_text_file"
+        self.rule_on_server("TK-S004", [(read, {"path": p}) for p in (
+            "/root/.aws/x/../credentials", "/root/.aws/./credentials", "/root/.aws//credentials", "/root/.AWS/credentials",
+            "/var/run//secrets/kubernetes.io/serviceaccount/token", "/proc/self/../self/environ",
+            "C:\\Users\\u\\.aws\\credentials")] + [
+            ("mcp__filesystem__read_file", {"path": "/root/.aws//credentials"}),
+            ("Read", {"file_path": "/proc/thread-self/environ"}), ("Read", {"file_path": "/proc/self/task/1/environ"}),
+            ("Bash", {"command": "cat /proc/1/task/12/environ"}),
+            # what the call acts on still counts beside carried text, and a query that isn't a search's
+            ("mcp:files/search_files", {"path": "/root/.aws/credentials", "query": "key"}),
+            ("mcp:db/run_query", {"query": "SELECT pg_read_file('/root/.aws/credentials')"})])
+        self.rule_on_server("TK-S001", [("mcp:web/get", {"url": "http://169.254.169.254/latest/", "title": "x"})])
+        self.rule_on_server("TK-S004", [
+            ("mcp:github/create_issue", {"title": "docs", "body": "Credentials live in ~/.aws/credentials"}),
+            ("mcp:filesystem/write_file", {"path": "/repo/docs/aws.md", "content": "Configure ~/.aws/credentials"}),
+            ("mcp:github/search_code", {"q": "/var/run/secrets/kubernetes.io"}),
+            ("Read", {"file_path": "/proc/self/task/1/status"})], want=False)
+        self.rule_on_server("TK-S001", [
+            ("mcp:brave/brave_web_search", {"query": "what does 169.254.169.254 return on EC2"}),
+            ("mcp:github/create_issue", {"title": "block IMDS",
+                                         "body": "Our egress filter must drop 169.254.169.254 and metadata.google.internal"})],
+            want=False)
+
     def test_options_that_make_a_command_run_a_program(self):
         self.check(self.server, [("Bash", {"command": c}) for c in (
             "git -c core.Pager='sudo id' log", "git -c alias.x='!sudo id' x", "git -c alias.p='push -f' p",
