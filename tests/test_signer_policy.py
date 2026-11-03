@@ -2690,6 +2690,31 @@ class CodingPack(unittest.TestCase):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-A025", "TK-A027"} & set(d["rule_ids"]), d)
 
+    def test_a_remote_ref_organization_or_group_deleted_through_the_api_asks(self):
+        """TK-A002 and TK-A042 (1.5.3 sweep): a branch or tag deleted through GitHub's or GitLab's API, and a whole
+        organization or group, were allowed; a GET, another method or a sub-resource (a member) still isn't held."""
+        self.every_pack_verdicts([(c, "TK-A002") for c in (
+            "gh api -X DELETE repos/acme/app/git/refs/heads/main",
+            "gh api --method DELETE /repos/{owner}/{repo}/git/refs/tags/v1.0",
+            "gh api repos/acme/app/git/refs/heads/feature/x -X DELETE",
+            "curl -X DELETE -H 'Authorization: Bearer t' https://api.github.com/repos/acme/app/git/refs/heads/main",
+            "glab api -X DELETE projects/42/repository/branches/main", "glab api -X DELETE projects/42/repository/tags/v1",
+            "glab api --method DELETE projects/acme%2Fapp/repository/merged_branches",
+            "curl -X DELETE https://gitlab.com/api/v4/projects/42/repository/branches/feature%2Fx",
+            "http DELETE api.github.com/repos/acme/app/git/refs/heads/main",
+            "gh api graphql -f query='mutation { deleteRef(input: {refId: \"x\"}) { clientMutationId } }'")])
+        self.every_pack_verdicts([(c, "TK-A042") for c in (
+            "gh api -X DELETE orgs/acme", "gh api -X DELETE /orgs/acme/",
+            "curl -X DELETE -H 'Authorization: Bearer t' https://api.github.com/orgs/acme",
+            "glab api -X DELETE groups/acme", "curl -X DELETE --header 'PRIVATE-TOKEN: t' https://gitlab.com/api/v4/groups/acme")])
+        for pack, engine, e in self.every_pack():
+            for command in ("gh api repos/acme/app/git/refs/heads/main", "gh api -X PATCH repos/acme/app/git/refs/heads/main",
+                            "gh api -X POST repos/acme/app/git/refs -f ref=refs/heads/x", "gh api -X DELETE repos/acme/app/git/refs",
+                            "glab api projects/42/repository/branches", "glab api -X DELETE projects/42/repository/files/x",
+                            "gh api orgs/acme", "gh api -X DELETE orgs/acme/members/bob", "glab api -X DELETE groups/acme/members/5"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertFalse({"TK-A002", "TK-A042"} & set(e.decide("Bash", {"command": command})["rule_ids"]))
+
     def test_a_container_with_host_access_asks_after_global_options_and_through_create_and_exec(self):
         """TK-A023 (1.5.3 sweep): the CLI's global options before `run` (docker -H, --context, podman --remote),
         `container run`, `create`, `exec --privileged`, every capability and a mount of /etc or /root weren't held."""
