@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-52'
+version: '2026.10-v2-53'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -72,12 +72,14 @@ deny:
     rationale: Rewrites shared history.
   - id: TK-D004
     class: shell
-    # rm -r of root or a home; find with -delete on root, or on a home with nothing but depth and type filters (and
-    # -true or -print, which pick nothing) before -delete, so a find there that picks files by name isn't denied. The
+    # rm -r of root or a home (its every file, `*`, or every dotfile, `.*`, too); find with -delete on root, or on a
+    # home with nothing but depth and type filters (and -true or -print, which pick nothing, and a name, path or regex
+    # that matches every file, `*` or `.*`, or -size +0) before -delete, so a find there that picks files by name
+    # isn't denied. The
     # root or home may be any of up to nine starting points (BSD's -f before one too), after up to eight of GNU's and
     # BSD's options (-H, -L, -P, -E, -X, -d, -s, -x in a cluster, -D with its value, -O3), and spelled with extra
     # slashes, `.` or `..` (`//`, `/.`, `~/.`); a starting point past the home (~/.cache) isn't one
-    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/\.\.?|/)+ .*-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(~|\$HOME|\$\{HOME\}|/+home|/+Users|/+root)(/\.\.?|/)* ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ )*-delete( |$)'
+    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?(\.?\*)?( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/\.\.?|/)+ .*-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(~|\$HOME|\$\{HOME\}|/+home|/+Users|/+root)(/\.\.?|/)* ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ |-i?(name|path|wholename) \* |-i?regex \.\* |-size \+0[bckwMG]? )*-delete( |$)'
     reason: recursive delete of root or home
     remedy: Delete only the project's own paths, named in full; a person deletes anything at / or the home directory themselves.
     rationale: Irrecoverable data loss.
@@ -89,21 +91,25 @@ deny:
     # or a redirection into one (a read redirected from one, `< .env`, too: the target doesn't say which way it goes).
     # Every .env variant, templates included: a whole command can name several files, so no `unless` here. A suffix
     # after `.env` (`.env.local`) only on a file named so: after any prefix too (`a.env.env…`), it would rescan
-    pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$'
+    pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/(credentials|config))$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/(credentials|config))( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/(credentials|config))$'
     reason: writing to a credentials file from the shell
     remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011
     class: shell
     field: line
-    pattern: '\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
+    # a cluster, Docker, gcloud or Git credential file only as a source sent to a remote (scp or rsync with a host:
+    # word after it) or a curl/wget upload or body (`@`, -T), so fetching a kubeconfig into place isn't one
+    pattern: '\b(cat|tar|zip|base64|gzip|xxd)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd|\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))|\b(scp|rsync)\s[^\n]*?(\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)\b[^\n]*?\s\S*:|\b(curl|wget)\s[^\n]*?(@|-T ?|--upload-file[ =]|--(post|body)-file[ =])\S*?(\.kube/config|\.docker/config\.json|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.git-credentials)'
     reason: sending credential files off the machine
     remedy: Keep keys and cloud credentials on the machine; a person shares access through the deployment's secret store.
     rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
   - id: TK-D006
     class: shell
     field: line
-    pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|\b(curl|wget|http|nc|ncat|scp|rsync)(\s[^\n]*)?(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
+    # .env in any case (macOS and Windows ignore it); a read of it piped into an upload or a new gist, sent as a
+    # network command's file or body (`$(cat .env)` too), or a gist of it
+    pattern: '\b(cat|base64|xxd|gzip)\s[^|\n]*?\.[Ee][Nn][Vv]\b[^\n]*\|\s*(curl|wget|nc|ncat|gh\s+gist\s+(create|new))\b|\b(curl|wget|https?|nc|ncat|scp|rsync)(\s[^\n]*)?(@\S*\.[Ee][Nn][Vv]\b|--data[-a-z]*[ =]@?\S*\.[Ee][Nn][Vv]\b|--upload-file\s+\S*\.[Ee][Nn][Vv]\b|--(post|body)-file[ =]\S*\.[Ee][Nn][Vv]\b|\s\S*\.[Ee][Nn][Vv]\s+\S+:|<\s*\S*\.[Ee][Nn][Vv]\b|\$\((cat\s|base64\s|<)[^)\n]*?\.[Ee][Nn][Vv]\b)|\bgh\s+gist\s+(create|new)\b[^\n]*?\s\S*\.[Ee][Nn][Vv]\b'
     reason: uploading a secrets file
     remedy: Send only the values the request needs, never the .env file; a person shares secrets through the deployment's secret store.
     rationale: Sending .env off the machine is exfiltration.
@@ -191,15 +197,20 @@ deny:
   - id: TK-D020
     class: shell
     field: argv
-    # security's global options (-q, -v, -p prompt …) may come before its command; `pass grep` decrypts every entry
-    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* dump-keychain\b|^secret-tool\s+search\b[^\n]*?--all\b|^pass\s+grep\b'
+    # security's global options (-q, -v, -p prompt …) may come before its command; `security export` exports every
+    # item but with -t certs or pubKeys (unless), which hold no secret; `pass grep` and `gopass grep` decrypt every
+    # entry
+    pattern: '^security( -[hilqv]+| -p [^-\s]\S*)* (dump-keychain|export)\b|^secret-tool\s+search\b[^\n]*?--all\b|^(pass|gopass)\s+grep\b'
+    unless: '^security( -[hilqv]+| -p [^-\s]\S*)* export( [^\n]*)? -t ?(certs|pubKeys)( |$)'
     reason: dumping an entire operating-system credential store
     remedy: Look up only the one credential the task needs; a person exports a whole credential store themselves.
     rationale: A whole-store export exposes credentials unrelated to the task; a person must authorize it.
   - id: TK-D021
     class: shell
     field: argv
-    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*https?://'
+    # a URL in any case, also as a PEP 508 direct reference (`name @ https://…`), or npm's github:, gitlab:,
+    # bitbucket: or gist: shorthand
+    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*([^\s@]+\s?@\s?)?([Hh][Tt][Tt][Pp][Ss]?://|(github|gitlab|bitbucket|gist):)'
     reason: installing a package directly from a URL
     remedy: Install the package by name from the configured index; a person adds a URL source after reviewing it.
     rationale: A URL bypasses the configured package source and can install unreviewed code.
