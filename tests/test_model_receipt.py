@@ -168,7 +168,8 @@ class Receipt(Base):
             self.assertEqual(receipt(self.path("fifo.safetensors"))["refused"], "not a regular file")
         # review of d9c6ee7c: os.open raises ValueError for these, which the hook didn't catch
         self.assertEqual(receipt(self.path("m\x00.pt"))["refused"], "a NUL byte in the path")
-        self.assertIn("surrogates not allowed", receipt(self.path("\ud800.pt"))["refused"])
+        # the OS's words: POSIX can't encode a lone surrogate, Windows (UTF-16 paths) finds no such file
+        self.assertTrue(receipt(self.path("\ud800.pt"))["refused"])
 
 
 class Receipts(Base):
