@@ -1858,6 +1858,47 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_powershell_profile_changes_are_harness_config_in_every_pack(self):
+        # #559: PowerShell runs the user's profile before a hook it starts without -NoProfile, so a profile that exits
+        # ends the hook before Tracekit runs; a write to one (5.1's or 7's, OneDrive's Documents, $PSHOME's) or to
+        # $PROFILE is flagged as a harness setting, and a profile.ps1 elsewhere, a module and reads are not
+        paths = (r"C:\Users\u\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1",
+                 r"C:\Users\u\Documents\WindowsPowerShell\profile.ps1",
+                 "C:/Users/u/Documents/PowerShell/Microsoft.PowerShell_profile.ps1",
+                 r"C:\Users\u\OneDrive\Documents\PowerShell\Microsoft.VSCode_profile.ps1",
+                 r"C:\Users\u\OneDrive - Contoso\Documents\WindowsPowerShell\profile.ps1",
+                 r"C:\USERS\U\DOCUMENTS\POWERSHELL\PROFILE.PS1",
+                 r"C:\Windows\System32\WindowsPowerShell\v1.0\profile.ps1",
+                 r"C:\Program Files\PowerShell\7\Microsoft.PowerShell_profile.ps1")
+        commands = ("echo exit >> $PROFILE", 'echo exit >> "$Profile"', "echo exit >> ${PROFILE}",
+                    "echo exit > $PROFILE.CurrentUserAllHosts", "echo exit > $profile.AllUsersCurrentHost",
+                    "tee -a $PROFILE < x", "rm $PROFILE", "cp x ~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1",
+                    'cp x "$HOME/OneDrive/Documents/WindowsPowerShell/profile.ps1"',
+                    r"echo exit >> 'C:\Users\u\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1'")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat $PROFILE", "echo $PROFILE", "echo x > $PROFILE_DIR/a", "echo x > $PROFILES", "echo x > ./profile.ps1",
+            "echo x > ~/Documents/PowerShell/Modules/a/a.psm1",
+            "cp ~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1 ./backup/",
+            "echo x > ~/Documents/PowerShell/profile.ps1.bak")]
+        benign += [("Read", {"file_path": path}) for path in paths]
+        benign += [(tool, args) for tool, args in (
+            ("Write", {"file_path": "/repo/scripts/profile.ps1", "content": "x"}),
+            ("Write", {"file_path": "/repo/tools/WindowsPowerShell/profile.ps1", "content": "x"}),
+            ("Write", {"file_path": r"C:\Users\u\Documents\PowerShell\Modules\x\x.psm1", "content": "x"}),
+            ("Write", {"file_path": r"C:\Users\u\Documents\PowerShell\profile.ps1.bak", "content": "x"}),
+            ("Write", {"file_path": "notes.md", "content": "$PROFILE " + " ".join(paths)}))]
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+
     def test_harness_flags_skip_source_files_in_claude_code_worktrees_in_every_pack(self):
         # #500: edits under .claude/worktrees/<name>/, Claude Code's own worktrees, were 3,084 of 3,097 TK-F009 flags
         # and 36 of 39 TK-F015 flags on maintainers' sessions; a file there is judged as it is in the worktree
