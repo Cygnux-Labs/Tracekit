@@ -1769,6 +1769,23 @@ class TimedAndBraced(unittest.TestCase):
             with self.assertRaises(shell.ParseError, msg=cmd):
                 shell.parse(cmd)
 
+    def test_what_is_certainly_empty_denies_and_an_append_to_the_unknown_is_unknown(self):
+        """`X=`, `X=''`, `unset X`, a for loop over "" and ${X:+}, ${X:0:0}, ${X%%*} are empty for certain, so a deny
+        they make is the command's, not a guess's: rc/1.5.3 denied these, 1.5.3's review found them asked. And
+        `D+=/` of a D the line doesn't know may be `/` alone: it was known as never empty, read only as written."""
+        for pack, backend in itertools.product(("dev.yaml",), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd in ("X=; rm -rf ~/$X", "X=''; rm -rf ~/\"$X\"", "unset X; rm -rf ~/$X", "D=build D=; rm -rf ~/$D",
+                        'for f in ""; do rm -rf ~/$f; done', "rm -rf ~/${X:+}", "rm -rf ~/${X:0:0}", "rm -rf ~/${X%%*}",
+                        "X=build; rm -rf ~/${X%%*}", "X=; $X rm -rf ~/", 'unset PWD; rm -rf "$PWD"/*'):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("deny", True), (backend, cmd))
+            for cmd in ("D+=/; rm -rf ~$D", "false && X=; rm -rf ~/$X", "unset IFS; rm -rf ~/$IFS"):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), (backend, cmd))
+            for cmd in ('X=; rm -rf "$X"', "echo ${X:+} done", "D=build; rm -rf ~/$D"):
+                self.assertNotIn(e.decide("Bash", {"command": cmd})["verdict"], ("ask", "deny"), (backend, cmd))
+
     def test_pwd_is_where_a_literal_cd_goes(self):
         """$PWD stayed bash's start directory after `cd /`, so `cd / && rm -rf "$PWD"/*` was read as removing that
         directory's files and only flagged (rc/1.5.3 denied it from the empty reading). After cd or pushd to a literal
