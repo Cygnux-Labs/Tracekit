@@ -143,7 +143,12 @@ _GLOB = re.compile(r"[*?]|\[[!^]?(?:\][^][]*|[^][]+)\]")
 _HOME_WORD = re.compile(r"\$(?:HOME|\{HOME\})")   # the one bare variable the packs name as a word
 # the start of "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
 _ALL_ITEMS = re.compile(r"\$(?:@|\{!?(?:@|[A-Za-z_][A-Za-z0-9_]*(?:\[@\]|@)))")
-_ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v"}
+_ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v",
+         "\\": "\\", "'": "'", '"': '"', "?": "?"}
+# an escape in $'…' as bash 5 reads one (lib/sh/strtrans.c): \x{…} (any hex digits) or 1-2 hex digits, \u 1-4 and \U 1-8,
+# 1-3 octal digits, \cX a control character (\c\\ is \c with one backslash), or any one character
+_ANSI_ESCAPE = re.compile(r"\\(x\{[0-9A-Fa-f]*\}?|x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|U[0-9A-Fa-f]{1,8}|[0-7]{1,3}|"
+                          r"c\\\\|c.|.)", re.S)
 # lean: interpreter code is scanned for string or list literals passed to a process-spawning call (with or without
 # parentheses: perl's and ruby's `system "x"`), plus backticks in perl/ruby/php, and sed's `e` command; code that builds
 # the command at run time, and awk's `print | "cmd"` and `"cmd" | getline`, are not followed (tripwire territory)
@@ -686,14 +691,19 @@ def _reads_stdin(kind, args):
 
 
 def _ansi_c(text):
+    """The text of $'text' as bash makes it: escapes decoded, an unknown one (\\z, a \\x or \\u without digits) kept
+    with its backslash, and cut at its first NUL, which ends bash's C string (`r$'\\x00zz'm` is rm)."""
     def one(m):
         e = m.group(1)
-        if e[0] in "xu" and len(e) > 1:
-            return chr(int(e[1:], 16))
+        if e[0] in "xuU" and len(e) > 1:
+            v = int(e[1:].strip("{}") or "0", 16) & (0xFF if e[0] == "x" else -1)   # \x makes a byte
+            return chr(v) if v < 0x110000 else m.group()
         if e[0] in "01234567":
-            return chr(int(e, 8))
-        return _ANSI.get(e, e)
-    return re.sub(r"\\(x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{1,4}|[0-7]{1,3}|.)", one, text, flags=re.S)
+            return chr(int(e, 8) & 0xFF)
+        if e[0] == "c" and len(e) > 1:   # a control character: ? is DEL
+            return "\x7f" if e[1] == "?" else chr(ord(e[1].upper()) & 0x1F)
+        return _ANSI.get(e, "\\" + e)
+    return _ANSI_ESCAPE.sub(one, text).split("\0", 1)[0]
 
 
 _SUBSCRIPT = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z0-9_]+\[|\]|\$\(|`")
