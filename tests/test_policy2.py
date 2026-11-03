@@ -415,6 +415,16 @@ class Engines(unittest.TestCase):
             d = e.decide("Bash", {"command": "rm x"})
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("flag", ["S"], None))
 
+    def test_a_redirection_to_a_lone_surrogate_is_decided_on_both_engines(self):
+        """An ASCII command whose $'…' makes a lone surrogate, as a redirection's target, reached the persistent-target
+        check unconverted: re2 raised UnicodeEncodeError (a crash, TK-ENGINE-ERROR in the signer) where the fallback
+        decided it."""
+        for pack in ("dev.yaml", "strict.yaml"):
+            pol = pc.build(os.path.join(PACKS, pack))[0]
+            for cmd in ("echo hi > $'\\ud800'", "echo hi >> ~/$'\\udfff'.bashrc", "cat <<< x > $'\\ud800'"):
+                self.assertEqual(len({Engine(pol, b).decide("Bash", {"command": cmd})["verdict"] for b in BACKENDS}), 1,
+                                 (pack, cmd))
+
     def test_target_rules_read_a_commands_data_words_once(self):
         """data_words ran once per word of a command, for each target rule: a 16 KB grep took 24 s to decide."""
         e = Engine({"tools": {"Bash": "shell"},
