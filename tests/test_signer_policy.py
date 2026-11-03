@@ -3631,6 +3631,7 @@ class PackReading(unittest.TestCase):
 
     def test_a_pgp_private_key_block_is_a_secret(self):
         # the 1.5.3 sweep: OpenPGP armour ends its header in KEY BLOCK
+        # agent-flow:allow-secret: the armour's header line alone, no key
         armour = "-----BEGIN PGP PRIVATE KEY BLOCK-----"
         self.rule_on_server("TK-S003", [("Bash", {"command": f"echo '{armour}' > k"})])
         self.rule_on_server("TK-S002", [("mcp:notes/save", {"text": armour})])
