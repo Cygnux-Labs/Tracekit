@@ -32,8 +32,9 @@ class ParseError(ValueError):
 
 class _Expansion(str):
     """A parameter expansion or command substitution as written, which bash may expand to nothing; `empty`: what it
-    expands to when its variable is empty or unset (a default's word: ${X:-w} is w), else nothing."""
-    empty = ""
+    expands to when its variable is empty or unset (a default's word: ${X:-w} is w, with w's own expansions empty),
+    else nothing; `word`: a default's word as written, read where a $HOME is kept (${X:-$HOME} may be $HOME)."""
+    empty = word = ""
 
 
 MAX_DEPTH = 32
@@ -143,6 +144,8 @@ def _sets_with_v(argv):
     """printf -v NAME, also attached (-vNAME, -v'NAME'): it sets NAME."""
     return argv[0] == "printf" and any(a.startswith("-v") for a in argv[1:])
 # a quote or backslash pair of a word as written, its text in group 1, 2 or 3 (a default's word read without them)
+# an expansion with none inside it: emptied innermost first (_emptied)
+_INNERMOST = re.compile(r"\$\{[^${}]*\}|\$\([^$()`]*\)|`[^`$]*`|\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])")
 _UNQUOTE = re.compile(r"""\\(.)|'([^']*)'|"((?:\\.|[^"\\])*)\"""", re.S)
 # a bracket expression of a pathname pattern: whether it is negated, and its set (a ] first is one of its characters)
 _BRACKET = re.compile(r"\[([!^]?)(\]?[^]]*)\]")
@@ -1518,11 +1521,12 @@ class _Parser:
                     glued.update(range(j, k))
                 j = k + 1
 
-            def cut(keep):
-                return "".join(p if not isinstance(p, _Expansion) or keep(i, p) else p.empty for i, p in enumerate(pieces))
-            empty = cut(lambda i, p: False), cut(lambda i, p: _HOME_WORD.fullmatch(p))
+            def cut(keep, home=False):   # home: a $HOME and a default's word as written are kept
+                return "".join(p if not isinstance(p, _Expansion) or keep(i, p) else p.word if home else p.empty
+                               for i, p in enumerate(pieces))
+            empty = cut(lambda i, p: False), cut(lambda i, p: _HOME_WORD.fullmatch(p), True)
             self.cut = empty * 3 if self.vanish else (text, text) + empty + (
-                cut(lambda i, p: i not in glued), cut(lambda i, p: i not in glued or _HOME_WORD.fullmatch(p)))
+                cut(lambda i, p: i not in glued), cut(lambda i, p: i not in glued or _HOME_WORD.fullmatch(p), True))
         bare = self.bare = "".join(bare)   # neither pattern backtracks: each scan from a `[` or `{` stops at the next bracket
         glob = _GLOB.search(bare) or any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
         raw = "".join(s[a + 2:b] for a, b in zip([start - 2] + joins, joins + [self.i]))
@@ -1720,7 +1724,10 @@ class _Parser:
             return text
         expansion = _Expansion(text)
         if m := re.fullmatch(r"(?s)\$\{\w+:?[-=](.*)\}", text):   # bash runs the word when X is empty (unset, no colon)
-            expansion.empty = _UNQUOTE.sub(lambda q: next(g for g in q.groups() if g is not None), m.group(1))
+            expansion.word = _UNQUOTE.sub(lambda q: next(g for g in q.groups() if g is not None), m.group(1))
+            expansion.empty = expansion.word
+            while (emptied := _INNERMOST.sub("", expansion.empty)) != expansion.empty:   # ${X:-$Y} may be nothing
+                expansion.empty = emptied
         return expansion
 
     def backtick(self):
