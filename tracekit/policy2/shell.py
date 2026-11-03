@@ -1755,7 +1755,7 @@ class _Parser:
         # empty: its default, assignment or check is the variable ($HOME as the packs name it, ${HOME:-x}, ${HOME:?}; or
         # the literal the line gave it, D=/; rm -rf "${D:?}"/); the default stays what it is when it may be empty
         named = _DEFAULT.fullmatch(text)
-        values = self.known.get(named.group(1)) if named else None
+        values = self.known.get(named.group(1)) if named and not self.ctx["any_set"] else None
         plain = named and ("" not in (values or ()) if named.group(1) == "HOME" else bool(values) and "" not in values)
         # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
         if not plain and (text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text)):
