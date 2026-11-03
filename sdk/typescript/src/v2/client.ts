@@ -364,9 +364,14 @@ export class Client {
     }));
   }
 
-  /** `request_id`, `stream` and `client_seq` are filled in when missing. */
+  /** `request_id`, `stream` and `client_seq` are filled in when missing. A `complete`'s result keeps no
+   * `model_receipts` key: only the Python coding-agent hook records receipts (tracekit/model_receipt.py), so no tool's
+   * output plants one. */
   call(method: string, req: Frame = {}): Promise<Frame> {
-    return this.waitUntil(this.send(method, { ...req }));
+    req = { ...req };
+    if (method === "complete" && req.result && typeof req.result === "object" && !Array.isArray(req.result))
+      req.result = Object.fromEntries(Object.entries(req.result).filter(([k]) => k !== "model_receipts"));
+    return this.waitUntil(this.send(method, req));
   }
 
   /** Resolves once every call made so far, and every promise given to waitUntil, has settled. */

@@ -413,8 +413,8 @@ class VerifyModel(Base):
             self.assertEqual(claude_code.handle(dict(p, hook_event_name="PostToolUse", tool_response={
                 "stdout": "", "stderr": "", "interrupted": False})), 0)
             st = claude_code._load(claude_code._state("s1"))
-            # a client other than the hook (the TypeScript SDK's, say) puts receipts of a backdoored file, as
-            # model.safetensors, in the results of a call that writes nothing and of a write to another file
+            # a client other than the hook passes receipts apart, as the hook does, of a backdoored file, as
+            # model.safetensors, with the results of a call that writes nothing and of a write to another file
             self.backdoor = safetensors(self.path("backdoor.safetensors"), {"embed": b"\x01" * 32, "mlp": b"\x06" * 32})
             planted, c = dict(receipt(self.backdoor), path=self.new, reported_by="hook"), Client()
             run = RunHandle(c, st)

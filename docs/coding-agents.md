@@ -356,10 +356,9 @@ most 10 seconds per call; a receipt it can't finish, or any it can't read, is re
 result is recorded either way.
 
 The hook runs as the agent's user, so each receipt (`reported_by: hook`) is the agent side's record, not something the
-signer saw. The Python client, which every hook and Python integration sends through, drops a `model_receipts` key a
-tool's own result carries, and `verify-model` counts a receipt only in the result of a write or shell call whose
-recorded arguments name a file the hook hashes: a tool's output can't plant one through them. The TypeScript SDK sends
-a result as the tool returned it ([limits](limits.md#model-receipts-tracekit-verify-model)).
+signer saw. Tracekit's Python and TypeScript clients, which every hook and integration sends through, drop a
+`model_receipts` key a tool's own result carries, and `verify-model` counts a receipt only in the result of a write or
+shell call whose recorded arguments name a file the hook hashes: a tool's output can't plant one.
 
 The signer commits to the result as to any other, so a bundle holds only that commitment. `tracekit verify-model`
 verifies the bundle, reads the run's results back from the signer's content vault (the dev signer keeps them for 7
