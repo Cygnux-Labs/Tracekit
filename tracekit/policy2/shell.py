@@ -143,9 +143,11 @@ _SETS_ANY = _VARIABLE_SETTING_BUILTINS | {"source", ".", "trap", "getopts", "wai
 def _sets_with_v(argv):
     """printf -v NAME, also attached (-vNAME, -v'NAME'): it sets NAME."""
     return argv[0] == "printf" and any(a.startswith("-v") for a in argv[1:])
-# a quote or backslash pair of a word as written, its text in group 1, 2 or 3 (a default's word read without them)
-# an expansion with none inside it: emptied innermost first (_emptied)
+
+
+# an expansion with none inside it: a default's word is emptied innermost first (_Parser.dollar)
 _INNERMOST = re.compile(r"\$\{[^${}]*\}|\$\([^$()`]*\)|`[^`$]*`|\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])")
+# a quote or backslash pair of a word as written, its text in group 1, 2 or 3 (a default's word read without them)
 _UNQUOTE = re.compile(r"""\\(.)|'([^']*)'|"((?:\\.|[^"\\])*)\"""", re.S)
 # a bracket expression of a pathname pattern: whether it is negated, and its set (a ] first is one of its characters)
 _BRACKET = re.compile(r"\[([!^]?)(\]?[^]]*)\]")
@@ -1080,6 +1082,9 @@ class _Parser:
                 self.out.pop()
             for text, raw, g, expanded in [(text, raw, g, expanded)] if pieces is None else \
                     filter(None, map(self.relex, pieces)):
+                if pieces is None and text == "" and self.alone:
+                    self.out.pop()
+                    continue
                 if pieces is not None:
                     self.out.append(text)
                 words.append(text)
@@ -1750,8 +1755,8 @@ class _Parser:
             return text
         # always nothing, as written too: an empty alternative, a length of 0, all of it removed (${X:+}, ${X:0:0},
         # ${X%%*})
-        if re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?\+|:[^:{}]*:0+|%%\*|##\*)\}", text):
-            return ""
+        if re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?\+|:(?![-=?+])[^:{}]*:0+|%%\*|##\*)\}", text):
+            return _Expansion("")
         expansion = _Expansion(text)
         if m := re.fullmatch(r"(?s)\$\{\w+:?[-=](.*)\}", text):   # bash runs the word when X is empty (unset, no colon)
             expansion.word = _UNQUOTE.sub(lambda q: next(g for g in q.groups() if g is not None), m.group(1))

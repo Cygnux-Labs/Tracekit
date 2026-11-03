@@ -383,7 +383,7 @@ def _shell(args, persistent_target=None, readings=True):
 # a piece of a line between ;, &, | and newlines outside quotes, as bash separates commands; a quote left open runs to
 # the end of the line, as bash reads no command after it; a # that starts a word comments out the rest of its line, a
 # quote in it too
-_PIECE = re.compile(r"""(?:(?<![^\s;&|()])#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
+_PIECE = re.compile(r"""(?:(?<![^\s;&|(])(?<!\\[ \t])#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
 
 
 def _plain(raw, at=0, readings=True, persistent_target=None):
@@ -665,8 +665,7 @@ def _reaches_unread(parsed):
     if not any(c["opaque"] and re.search(r"[$`]", c["word"]) for c in commands):
         return False
     values = [r for r in parsed[2] if shell._ASSIGN.match(r)] + [
-        w for c in commands if c["argv"][0] in _SETS_VARIABLES
-        or c["argv"][0] == "printf" and any(a.startswith("-v") for a in c["argv"][1:])   # -v C, -vC: getopt reads both
+        w for c in commands if c["argv"][0] in _SETS_VARIABLES or shell._sets_with_v(c["argv"])
         for w in c["argv"][1:] + c["stdin"]]
     return any(_WRITER.search(v.lower()) for v in values)
 
@@ -896,7 +895,9 @@ def _flat(values):
 # arguments whose text an MCP tool that posts or sends a message only carries (an issue's title and body, a message, a
 # comment): a path or an address named there is mentioned, not read or fetched
 _CARRIED = frozenset(("title", "body", "text", "description", "comment", "message", "subject", "content"))
-_POSTS = frozenset(("post", "create", "comment", "reply"))
+_POSTS = frozenset(("post", "comment", "reply"))
+# what `create` posts (create_issue, createPullRequest); a file, a job or a workflow it creates is acted on
+_CREATED = frozenset(("issue", "issues", "comment", "pull", "discussion", "review", "ticket", "note"))
 _MESSAGES = frozenset(("message", "messages", "email", "mail", "dm", "chat", "notification"))
 # a name that types, sends keys, runs or holds code: what such a tool carries is what it runs
 _RUNS = frozenset(("type", "typing", "key", "keys", "keystroke", "keystrokes", "run", "exec", "execute", "eval",
@@ -906,12 +907,13 @@ _FETCHES = frozenset(("fetch", "read", "open", "get", "download", "navigate", "b
 
 def _carried(tool):
     """The argument names whose string values MCP tool `tool` only carries: _CARRIED when its name says it posts,
-    creates, comments, replies or sends a message, and doesn't say it types, sends keys, runs or holds code or a cell
-    (_RUNS); `query` and `q` when it says it searches and doesn't say it fetches or reads (_FETCHES) or runs. Words in
-    snake, kebab or camel case."""
+    comments, replies, creates an issue, comment, pull request or the like (_CREATED), or sends a message, and doesn't
+    say it types, sends keys, runs or holds code or a cell (_RUNS); `query` and `q` when it says it searches and doesn't
+    say it fetches or reads (_FETCHES) or runs. Words in snake, kebab or camel case."""
     words = set(re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold()))
     out = set()
-    if (words & _POSTS or "send" in words and words & _MESSAGES) and not words & _RUNS:
+    posts = words & _POSTS or "create" in words and words & _CREATED or "send" in words and words & _MESSAGES
+    if posts and not words & _RUNS:
         out |= _CARRIED
     if any(w.startswith("search") for w in words) and not words & (_RUNS - {"code"} | _FETCHES):
         out |= {"query", "q"}
