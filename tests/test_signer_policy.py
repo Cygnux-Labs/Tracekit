@@ -2874,6 +2874,34 @@ class PackReading(unittest.TestCase):
         self.check(self.server, [("http_get", {"url": u}) for u in (
             "https://example.com./docs", "https://[2606:4700:4700::1111]/dns-query", "http:/example.com/")], "flag")
 
+    def test_an_mcp_cli_command_reads_its_words_however_they_are_separated(self):
+        # the 1.5.3 sweep: TK-C001's and TK-C010's MCP branches read a command that starts with its program and splits
+        # words with one space, so a leading space or newline, or a tab, was only flagged (TK-A036's handling); and aws
+        # takes a long option's unique prefix, so --recur is --recursive (TK-A031 too)
+        for args, rule, want in (
+                ({"cli_command": " aws iam attach-user-policy --user-name me --policy-arn x"}, "TK-C001", "deny"),
+                ({"cli_command": "aws\tiam\ncreate-access-key"}, "TK-C001", "deny"),
+                ({"cliCommand": "\r\ngcloud projects add-iam-policy-binding p --member m"}, "TK-C001", "deny"),
+                ({"cli_command": "\naws ec2 terminate-instances --instance-ids i-1"}, "TK-C010", "ask"),
+                ({"cli_command": "aws  ec2\tterminate-instances"}, "TK-C010", "ask"),
+                ({"cli_command": "aws\nrds delete-db-instance --db-instance-identifier prod"}, "TK-C010", "ask"),
+                ({"cli_command": "aws s3 rm s3://data --rec"}, "TK-C010", "ask"),
+                ({"command": " kubectl delete ns prod"}, "TK-C010", "ask"),
+                ({"command": "helm\t--kube-context prod\tuninstall api"}, "TK-C010", "ask"),
+                ({"cmd": " terraform\tdestroy -auto-approve"}, "TK-C010", "ask"),
+                ({"cmd": "\npulumi --cwd infra destroy\t--yes"}, "TK-C010", "ask")):
+            with self.subTest(args=args):
+                d = self.server.decide("mcp__aws__call_aws", args)
+                self.assertEqual((d["verdict"], rule in d["rule_ids"]), (want, True), d)
+        for command in ("aws s3 rm s3://data --recur", "aws s3 rm s3://data/ --rec --quiet"):
+            with self.subTest(command=command):
+                self.assertTrue({"TK-C010", "TK-A031"} <= set(self.server.decide("Bash", {"command": command})["rule_ids"]))
+        for tool, args in (("mcp__search__web_search", {"query": " aws ec2 terminate-instances"}),
+                           ("mcp__aws__call_aws", {"cli_command": "aws s3 rm s3://data/one.txt --request-payer requester"}),
+                           ("Bash", {"command": "aws s3 rm s3://data/one.txt --re-x"})):
+            with self.subTest(tool=tool, args=args):
+                self.assertFalse({"TK-C010", "TK-A031"} & set(self.server.decide(tool, args)["rule_ids"]))
+
     def test_a_url_in_an_mcp_or_app_tools_arguments_reads_as_the_address_it_is(self):
         # the 1.5.3 sweep: an MCP, app or unknown tool's target was only its arguments as JSON, so TK-S001 read a
         # metadata address written out and nothing else, though docs/policy-v2.md says any notation on any tool
