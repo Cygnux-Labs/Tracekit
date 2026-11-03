@@ -2894,6 +2894,37 @@ class PackReading(unittest.TestCase):
                          "CREATE FUNCTION f() RETURNS int AS $$ SELECT 1 $$ LANGUAGE sql", "CREATE EXTENSION pg_trgm",
                          "SELECT bulk_id FROM orders"), want=False)
 
+    def test_public_snapshots_resource_policies_credentials_and_identity_providers_and_mcp_names_in_any_case(self):
+        """The 1.5.3 sweep: making a snapshot public, a secret's resource policy, SNS and SQS permissions, turning an
+        access key back on, a service-specific credential and SAML or OIDC providers were allowed, and so were the
+        identity tools of TK-C002 named in PascalCase, camelCase, kebab-case or upper case."""
+        aws = ("aws ec2 modify-snapshot-attribute --snapshot-id s --attribute createVolumePermission "
+               "--operation-type add --group-names all",
+               "aws ec2 modify-snapshot-attribute --snapshot-id s --create-volume-permission Add=[{Group=all}]",
+               "aws rds modify-db-snapshot-attribute --db-snapshot-identifier s --attribute-name restore --values-to-add all",
+               "aws secretsmanager put-resource-policy --secret-id s --resource-policy x",
+               "aws sns add-permission --topic-arn t --label l --aws-account-id 1 --action-name Publish",
+               "aws sqs add-permission --queue-url q --label l --aws-account-ids 1 --actions SendMessage",
+               "aws iam update-access-key --access-key-id x --status Active",
+               "aws iam create-service-specific-credential --user-name a --service-name codecommit.amazonaws.com",
+               "aws iam create-saml-provider --name x --saml-metadata-document file://m.xml",
+               "aws iam create-open-id-connect-provider --url https://x")
+        self.rule_on_server("TK-C001", [("Bash", {"command": c}) for c in aws] + [
+            ("mcp:aws/call_aws", {"cli_command": c}) for c in aws])
+        self.rule_on_server("TK-C002", [(t, {"user": "agent"}) for t in (
+            "mcp:iam/AttachUserPolicy", "mcp__aws__AttachRolePolicy", "mcp:gcp/setIamPolicy", "mcp:iam/attach-user-policy",
+            "mcp:iam/ATTACH_USER_POLICY", "mcp:k8s/create_cluster_role_binding", "mcp__k8s__createClusterRoleBinding",
+            "mcp__aws__put_bucket_policy")])
+        self.rule_on_server("TK-C001", [("Bash", {"command": c}) for c in (
+            "aws ec2 modify-snapshot-attribute --snapshot-id s --attribute createVolumePermission --operation-type remove "
+            "--group-names all", "aws rds modify-db-snapshot-attribute --db-snapshot-identifier s --attribute-name restore "
+            "--values-to-remove all", "aws rds modify-db-snapshot-attribute --db-snapshot-identifier s --attribute-name "
+            "restore --values-to-add 111122223333", "aws iam update-access-key --access-key-id x --status Inactive",
+            "aws secretsmanager get-resource-policy --secret-id s", "aws iam list-saml-providers")], want=False)
+        self.rule_on_server("TK-C002", [(t, {}) for t in (
+            "mcp:iam/list_attached_user_policies", "mcp:iam/get_role_policy", "mcp__mail__get_attachment_policy",
+            "mcp:gcp/getIamPolicy", "mcp:k8s/list_cluster_role_bindings", "mcp:db/granted_permissions")], want=False)
+
     def test_hosts_are_normalised_before_matching(self):
         urls = ("http://127.0.0.1\\@evil.com/", "http://169.16689662/latest/meta-data/", "http://[0:0:0:0:0:ffff:a9fe:a9fe]/",
                 "http://[0:0::1]/", "http://2130706433/", "http://0177.0.0.1/", "http://metadata/computeMetadata/v1/",
