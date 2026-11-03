@@ -72,12 +72,14 @@ deny:
     rationale: Rewrites shared history.
   - id: TK-D004
     class: shell
-    # rm -r of root or a home; find with -delete on root, or on a home with nothing but depth and type filters (and
-    # -true or -print, which pick nothing) before -delete, so a find there that picks files by name isn't denied. The
+    # rm -r of root or a home (its every file, `*`, or every dotfile, `.*`, too); find with -delete on root, or on a
+    # home with nothing but depth and type filters (and -true or -print, which pick nothing, and a name, path or regex
+    # that matches every file, `*` or `.*`, or -size +0) before -delete, so a find there that picks files by name
+    # isn't denied. The
     # root or home may be any of up to nine starting points (BSD's -f before one too), after up to eight of GNU's and
     # BSD's options (-H, -L, -P, -E, -X, -d, -s, -x in a cluster, -D with its value, -O3), and spelled with extra
     # slashes, `.` or `..` (`//`, `/.`, `~/.`); a starting point past the home (~/.cache) isn't one
-    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/\.\.?|/)+ .*-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(~|\$HOME|\$\{HOME\}|/+home|/+Users|/+root)(/\.\.?|/)* ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ )*-delete( |$)'
+    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?(\.?\*)?( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(/\.\.?|/)+ .*-delete( |$)|^find (-[EHLPXdsx]+ |-O[0-9]* |-D( [^ ]*|[^ ]+) ){0,8}((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-[EHLPXdsx]*f ?)?(~|\$HOME|\$\{HOME\}|/+home|/+Users|/+root)(/\.\.?|/)* ((-[EHLPXdsx]*f ?)?[^-(! ][^ ]* ){0,8}(-(mindepth|maxdepth) [0-9]+ |-(depth|d|xdev|mount|true|print0?) |-type [a-z,]+ |-i?(name|path|wholename) \* |-i?regex \.\* |-size \+0[bckwMG]? )*-delete( |$)'
     reason: recursive delete of root or home
     remedy: Delete only the project's own paths, named in full; a person deletes anything at / or the home directory themselves.
     rationale: Irrecoverable data loss.
