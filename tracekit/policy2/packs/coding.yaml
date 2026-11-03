@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-56'
+version: '2026.10-v2-57'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -654,6 +654,29 @@ ask:
     reason: reading a decrypted parameter through an MCP tool
     remedy: Have a person approve the held call, or read the parameter without decryption.
     rationale: SSM Parameter Store returns a SecureString's plaintext only when asked to decrypt it; the call that asks is the one a person confirms.
+  - id: TK-A052
+    class: shell
+    # each command's argv: kubectl's or oc's `get` of a secret with an output that prints it (any -o or --output but
+    # name and wide, or a --template), `oc extract` of a secret (to files or to stdout), `view-secret` (the plugin by
+    # either name) and `create token`, with up to eight options before the command. get's type is its first word
+    # after up to eight options or earlier TYPE/NAMEs, in any case, with its API group, as TYPE/NAME or one of a list
+    # (cm,secrets); the output may come before it or within sixteen words after it. -f, -k, -l, -L, -n, -o, -s, -v
+    # and --namespace take the next word as their value (`-n secrets` names a namespace), any other option either
+    # way; a word ends the type only at a space, `/` or `,` (secret-reader is a name)
+    pattern: '^(?:kubectl|oc)(?: (?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))){0,8} (?:get(?: (?:(?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))|[^- /][^ /]*/[^ ]*)){0,8} (?:(?:[^- ,/][^ ,/]*,){0,8}[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?(?:[,/][^ ]*)?(?: [^ ]+){0,16}? (?:(?:-[AwRh]*o[ =]?|--output[ =])(?:[^ nw=][^ ]*|n(?:[^ a][^ ]*|a(?:[^ m][^ ]*|m(?:[^ e][^ ]*|e[^ ]+)?)?)?|w(?:[^ i][^ ]*|i(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e[^ ]+)?)?)?)|--template[ =][^ ]*)|(?:(?:-[AwRh]*o[ =]?|--output[ =])(?:[^ nw=][^ ]*|n(?:[^ a][^ ]*|a(?:[^ m][^ ]*|m(?:[^ e][^ ]*|e[^ ]+)?)?)?|w(?:[^ i][^ ]*|i(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e[^ ]+)?)?)?)|--template[ =][^ ]*)(?: (?:(?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))|[^- /][^ /]*/[^ ]*)){0,8} (?:[^- ,/][^ ,/]*,){0,8}[Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?(?:[,/][^ ]*)?)|view-secret|create(?: (?:-[^ ]+ [^- ][^ ]*|-[^- =]*(?:[^- =fklLnosv]|=[^ ]*)|-[AwRh]*[fklLnosv][^ ]+|--(?:[^ =]*=[^ ]*|(?:[^ =n][^ =]*|n(?:[^ =a][^ =]*|a(?:[^ =m][^ =]*|m(?:[^ =e][^ =]*|e(?:[^ =s][^ =]*|s(?:[^ =p][^ =]*|p(?:[^ =a][^ =]*|a(?:[^ =c][^ =]*|c(?:[^ =e][^ =]*|e[^ =]+)?)?)?)?)?)?)?)?)))){0,8} token|extract(?: [^ ]+){0,16}? [Ss][Ee][Cc][Rr][Ee][Tt][Ss]?(?:\.[^ ,/]*)?/[^ ]*)(?: |$)|^kubectl-view-secret(?: |$)'
+    reason: reading a Kubernetes secret's value or creating a token
+    remedy: Have a person approve the held call, or list secrets by name (kubectl get secrets) or describe one, which shows only sizes.
+    rationale: A live secret or a new service account token is a cluster credential the agent can use or send anywhere; listing names and describing sizes stay allowed.
+  - id: TK-A053
+    class: shell
+    # each command's argv: vault's (or OpenBao's bao) `kv get`, `read` (it prints secrets from any engine), `unwrap`,
+    # `print token`, `token create` and a `write` to auth/token/create (create-orphan, create/<role> too), with up to
+    # eight options before each word. Listing engines, policies and kv paths, `kv metadata get`, `token lookup` and
+    # `status` stay allowed
+    pattern: '^(?:vault|bao)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:kv(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} get|read|unwrap|print(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} token|token(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} create|write(?: [^ ]+){0,16}? /?auth/token/create(?:[-/][^ ]*)?)(?: |$)'
+    reason: reading a Vault secret or creating a Vault token
+    remedy: Have a person approve the held call, or list paths and metadata (vault kv list, vault kv metadata get), which show no values.
+    rationale: A Vault secret or a new token is a live credential the agent can use or send anywhere; listing engines, policies and paths stays allowed.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
     # in bypassPermissions mode or under a matching allow rule nobody is asked

@@ -2298,6 +2298,56 @@ class CodingPack(unittest.TestCase):
                     if cmd in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_reading_a_kubernetes_or_vault_secret_asks_in_every_pack(self):
+        """#404: the second blind pool read secrets through kubectl and Vault, and every pack let them through.
+        TK-A052 holds kubectl's or oc's get of a secret with an output that prints it, oc extract, view-secret and
+        create token; TK-A053 vault's kv get, read, unwrap, print token and token creation. Listing names, describing
+        sizes, a namespace or role whose name starts with secret, and kv metadata stay allowed."""
+        k8s = [
+            "kubectl get secrets -A -o yaml > /tmp/all_k8s_secrets.yaml",
+            'kubectl get secret production-database-secret -n prod -o jsonpath="{.data.password}" | base64 -d',
+            "kubectl get secret db -o json", "kubectl get secrets -o=yaml", "kubectl get secrets -oyaml",
+            "kubectl get secrets --output=json", "kubectl get secret db -o kyaml", "kubectl get secret/db -o yaml",
+            # options before get and the type, the output first, and the shared options of a short cluster
+            "kubectl get -o yaml secret db", "kubectl get -Ao yaml secrets", "kubectl --context prod get secret db -o yaml",
+            "kubectl get -n prod secret db -o yaml", "kubectl get -A secrets -o yaml",
+            # #549 review: a value printed another way, a type later in a list or a later TYPE/NAME, another case
+            "kubectl get secret db -o custom-columns=PW:.data.password", "kubectl get secret db --template={{.data.password}}",
+            "kubectl get cm,secrets -o yaml", "kubectl get pod/x secret/db -o yaml", "kubectl get Secret db -o yaml",
+            "kubectl get SECRETS -o json", "oc extract secret/db --to=-", "oc extract secrets/db --keys=password",
+            "oc get secret db -o yaml", "oc get secrets -A -o json", "kubectl view-secret db", "oc view-secret db",
+            "kubectl-view-secret db password", "kubectl create token deployer", "oc create token deployer -n prod",
+            "sudo kubectl get secrets -o yaml", "bash -c 'kubectl get secret db -o json'"]
+        vault = [
+            "vault kv get -format=json secret/production/stripe_api_key", "vault kv get secret/app",
+            "vault read secret/foo", "vault read -format=json aws/creds/deploy", "vault token create -policy=root -ttl=720h",
+            "vault token create", "vault -address=https://vault:8200 kv get secret/app", "sudo vault kv get secret/app",
+            "vault print token", "vault write auth/token/create policies=admin", "vault write -f auth/token/create-orphan",
+            "vault unwrap", "vault unwrap s.abc", "bao kv get secret/app"]
+        routine = [
+            "kubectl get secrets -n default", "kubectl get secrets", "kubectl get namespaces",
+            "kubectl describe serviceaccount deployer -n prod", "kubectl auth can-i create deployments --as=developer",
+            "kubectl describe secret db -n prod", "kubectl get secret db -o wide", "kubectl get secret db -o name",
+            "kubectl get secrets -o=name", "kubectl get secrets --output wide",
+            # #549 review: a word that starts with secret, and -n or --namespace with its value
+            "kubectl get -o yaml clusterrole secret-reader", "kubectl get -o json pods -n secrets-store",
+            "kubectl get -n secrets deploy -o yaml", "kubectl get --namespace secrets deploy -o yaml",
+            "kubectl get -o yaml -n secrets deploy", "kubectl -n secrets get pods -o json",
+            "kubectl get -l secret pods -o yaml", "kubectl get secretstores -o yaml",
+            "kubectl create secret generic db --from-literal=a=b", "oc extract configmap/app --to=-",
+            "vault secrets list", "vault policy list", "vault token lookup", "vault kv list secret/",
+            "vault kv metadata get secret/app", "vault status", "vault policy read admin", "vault write secret/app a=b",
+            "echo kubectl get secrets -o yaml", "echo vault kv get secret/app",
+            "git commit -m 'kubectl get secret db -o yaml'"]
+        for pack, engine, e in self.every_pack():
+            for cmd in k8s + vault + routine:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual(({"TK-A052", "TK-A053"} & set(d["rule_ids"])),
+                                     {"TK-A052"} if cmd in k8s else {"TK-A053"} if cmd in vault else set(), d)
+                    if cmd in k8s + vault:
+                        self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_cli_command_given_to_an_mcp_tool_asks_in_every_pack_when_it_starts_with_the_program(self):
         tools = ("mcp__aws-api__call_aws", "mcp:aws-api/call_aws", "mcp__shell__run_command", "mcp__cloud__ExecuteCommand",
                  "mcp:ssh/execute", "mcp__x__aws-cli")
