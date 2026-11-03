@@ -383,7 +383,7 @@ def _shell(args, persistent_target=None, readings=True):
 # a piece of a line between ;, &, | and newlines outside quotes, as bash separates commands; a quote left open runs to
 # the end of the line, as bash reads no command after it; a # that starts a word comments out the rest of its line, a
 # quote in it too
-_PIECE = re.compile(r"""(?:(?<![^\s;&|(])(?<!\\.)#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
+_PIECE = re.compile(r"""(?:(?<![^ \t\n;&|(])(?<!\\.)#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
 
 
 def _plain(raw, at=0, readings=True, persistent_target=None):
@@ -914,8 +914,9 @@ def _carried(tool):
     say it fetches or reads (_FETCHES) or runs. Words in snake, kebab or camel case."""
     seq = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold())
     words, out = set(seq), set()
-    creates = any(seq[i + 1] in _CREATED or seq[i + 1:i + 3] in (["pull", "request"], ["merge", "request"])
-                  for i, w in enumerate(seq[:-1]) if w == "create") and not words & _ACTED
+    after = seq[seq.index("create") + 1:] if "create" in seq else []
+    creates = any(t[:1] and t[0] in _CREATED or t[:2] in (["pull", "request"], ["merge", "request"])
+                  for t in (after, after[-1:], after[-2:])) and not words & _ACTED
     posts = words & _POSTS or creates or "send" in words and words & _MESSAGES
     if posts and not words & _RUNS:
         out |= _CARRIED
