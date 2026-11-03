@@ -3053,10 +3053,14 @@ class CodingPack(unittest.TestCase):
         self.every_pack_verdicts([(c, "TK-D004") for c in (
             "rm -rf ~/.*", "rm -rf $HOME/.*", "find ~ -name '*' -delete", "find ~ -iname '*' -delete",
             "find ~ -path '*' -delete", "find ~ -regex '.*' -delete", "find ~ -size +0 -delete",
-            "find ~ -type f -name '*' -delete")])
+            "find ~ -type f -name '*' -delete",
+            # any operand may come before the root or home, and the -r after it (GNU rm reads options anywhere)
+            "rm -rf a.txt ~/", "rm -rf zq} ~/", "rm -f build/x.o -r /", "rm ~/ -rf", "rm --recursive /",
+            "rm --rec -f a.b $HOME")])
         self.not_in_every_pack("TK-D004", (
             "rm -rf ~/.cache", "rm -rf ./.*", "find ~ -name '*.log' -delete", "find ~ -size +100M -delete",
-            "find ~ -regex '.*\\.tmp' -delete", "find ~/proj -name '*' -delete"))
+            "find ~ -regex '.*\\.tmp' -delete", "find ~/proj -name '*' -delete", "rm -rf a.txt ~/project",
+            "rm -f ~/notes.txt a.b", "rm -rf ./build /tmp/x", "rm ~/a.txt -f"))
 
     def test_direct_references_whole_store_exports_and_a_write_to_opencodes_database_are_denied(self):
         # the 1.5.3 sweep: a PEP 508 direct reference, an upper-case scheme, `security export`, `gopass grep` and
