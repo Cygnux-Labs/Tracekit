@@ -249,8 +249,9 @@ not decoded: those stay tripwire territory. A word made only of unquoted expansi
 read twice, as written and as gone, because bash drops it when they expand to nothing: `git $X push --force` is
 also `git push --force`. An empty expansion inside a word joins the rest of it, so each command is also read with
 every expansion empty (`rm $X-rf ~/$X` is `rm -rf ~/`), and with only those empty that touch a character other than
-`/ = : , @` (`gh ${X}api -X PUT "repos/$R/x"` keeps `$R`, which rules read as built at run time); `${X:?}`,
-`${X:-word}` and arithmetic never expand to nothing. Neither do `$PWD`, a variable the line gave a literal before
+`/ = : , @` (`gh ${X}api -X PUT "repos/$R/x"` keeps `$R`, which rules read as built at run time); `${X:?}` and
+arithmetic never expand to nothing, and a default (`${X:-word}`, `${X-word}`, `${X:=word}`, `${X=word}`) is read as its
+word (`rm ${Z:--rf} ~/` is also `rm -rf ~/`). Neither do `$PWD`, a variable the line gave a literal before
 (`D=dist; rm -rf "$D"/*`, `export D=dist`) and a `for` loop's variable over literal words in its body, unless
 something on the line may have emptied it first (an assignment that may not run: after `&&` or `||`, in a pipeline,
 a subshell, an `if` or a loop; `unset`, `read`, `declare`, `eval`, `trap`, an unreadable command name). A deny that
