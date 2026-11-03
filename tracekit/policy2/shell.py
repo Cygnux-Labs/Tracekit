@@ -133,6 +133,9 @@ _VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typese
 # what may set any variable of the shell, now or later (a DEBUG trap, an alias with expand_aliases on, a sourced file)
 _SETS_ANY = _VARIABLE_SETTING_BUILTINS | {"source", ".", "trap", "getopts", "wait", "alias", "shopt", "enable"}
 _PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")   # $NAME or ${NAME}, fully matched
+# the operators bash reads across a deleted backslash-newline
+_JOINED = {"&&", "||", ";;", ";&", ";;&", "|&", "<<", "<<-", "<<<", ">>", "<&", ">&", "<>", ">|", "&>", "&>>", "((",
+           "<(", ">("}
 _REDIR = re.compile(r"(\d*|\{\w+\})(&>>|&>|>>|>&|>\||<<<|<<-|<<|<&|<>|>|<)")
 _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 # a pathname pattern in a word's unquoted text; a ] first in a bracket is one of its characters ([]x], [!]x])
@@ -360,7 +363,9 @@ def _name_unreadable(text):
     return bool(re.search(r"[$`]", re.sub(r"^(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/", "", text)))
 
 
-MAX_BRACE = 256   # words one brace expansion may make; past it the line is unreadable
+# characters the brace expansions of one command may make: past it a word is kept as written and its command is
+# unreadable (a subject over 64 KiB would deny as TK-OVERSIZE)
+MAX_BRACE = 16 * 1024
 # a sequence bash 3.2 and bash 5 read alike: two plain integers of at most 18 digits, or two letters
 _SEQ = re.compile(r"(-?[0-9]{1,18})\.\.(-?[0-9]{1,18})|([A-Za-z])\.\.([A-Za-z])")
 
@@ -394,13 +399,13 @@ def _skip(w, i):
     return i
 
 
-def _brace_at(w, charge, frm=0):
+def _brace_at(w, charge, frm=0, room=MAX_BRACE):
     """The first brace expression bash expands in the word w as written, opening at or after `frm` (bash doesn't read
     the text before an expanded brace again): (its start, the index after its `}`, the texts it puts there), or None.
     A brace expression is an unquoted `{` (not `${`, and outside substitutions) with its matching `}` and a comma at
     its own depth, or a plain sequence (_SEQ). Unreadable (ParseError): a brace with `..` at its own depth, no comma
     there and no plain sequence (bash 4 and later expand those in ways bash 3.2 doesn't: a step, padding, a sign, both
-    letter cases, braces or commas inside), or more than MAX_BRACE alternatives."""
+    letter cases, braces or commas inside), or a sequence of more than `room` words."""
     charge(len(w))
     stack, pairs, i = [], [], 0   # one pass: each unquoted { with its matching }, and its own depth's commas and ..
     while i < len(w):
@@ -425,8 +430,6 @@ def _brace_at(w, charge, frm=0):
         if dots[0] and not commas and not m:
             raise ParseError("a brace expression with .. that isn't a plain sequence is not supported")
         if commas:
-            if len(commas) >= MAX_BRACE:
-                raise ParseError("a brace expansion that makes too many words")
             cuts = [start] + commas + [end]
             return start, end + 1, [w[a + 1:b] for a, b in zip(cuts, cuts[1:])]
         if m:
@@ -434,33 +437,35 @@ def _brace_at(w, charge, frm=0):
                     m.group(1) and any(re.match(r"-?0[0-9]", x) for x in m.group(1, 2)):
                 raise ParseError("a zero-padded or mixed-case brace sequence is not supported")
             lo, hi = (int(m.group(1)), int(m.group(2))) if m.group(1) else (ord(m.group(3)), ord(m.group(4)))
-            if abs(hi - lo) >= MAX_BRACE:
-                raise ParseError("a brace expansion that makes too many words")
+            if abs(hi - lo) >= room:
+                raise ParseError("a brace expansion that makes too much text")
             seq = range(lo, hi + 1) if lo <= hi else range(lo, hi - 1, -1)
             return start, end + 1, [str(x) if m.group(1) else chr(x) for x in seq]
     return None
 
 
-def _brace(word, charge):
+def _brace(word, charge, room=MAX_BRACE):
     """bash's brace expansion of one word as written, its quotes and escapes kept for the reader: the words it makes,
-    in bash's order, or None when it has no brace expression. Unreadable (ParseError) past MAX_BRACE words, past the
+    in bash's order, or None when it has no brace expression. Unreadable (ParseError) past `room` characters, past the
     parse budget (the strings it builds count), or with a command or process substitution in a word whose braces
     expand: each copy would run it, and the parser reads it once."""
-    if _brace_at(word, charge) is None:
+    if _brace_at(word, charge, 0, room) is None:
         return None
     if re.search(r"\$\(|`|[<>]\(", word):
         raise ParseError("a substitution in a word with a brace expansion is not supported")
-    done, todo = [], [(word, 0)]
+    done, todo, size = [], [(word, 0)], len(word)   # size: the characters of the words in done and todo
     while todo:
         w, frm = todo.pop()
-        found = _brace_at(w, charge, frm)
+        found = _brace_at(w, charge, frm, room)
         if found is None:
             done.append(w)
             continue
         a, b, texts = found
-        if len(done) + len(todo) + len(texts) > MAX_BRACE:
-            raise ParseError("a brace expansion that makes too many words")
-        charge(len(w) * len(texts))
+        made = sum(len(t) for t in texts) + (len(w) - b + a) * len(texts)   # the characters of the words it makes
+        size += made - len(w)
+        if size > room:
+            raise ParseError("a brace expansion that makes too much text")
+        charge(made)
         todo += [(w[:a] + t + w[b:], a) for t in reversed(texts)]
     return done
 
@@ -784,8 +789,10 @@ class _Parser:
                 j = self.i
                 while s.startswith("\\\n", j):
                     j += 2
-                if self.i and s[self.i - 1] in ";&|<>()" and s[j:j + 1] and s[j] in ";&|<>()":
-                    raise ParseError("a backslash-newline inside an operator is not supported")   # bash reads (\⏎( as ((
+                # bash deletes it first, so the characters on either side join: (\⏎( is ((, <<\⏎-EOF is <<-EOF
+                left, right = s[max(0, self.i - 2):self.i], s[j:j + 2]
+                if any(left[k:] + right[:n] in _JOINED for k in range(len(left)) for n in range(1, len(right) + 1)):
+                    raise ParseError("a backslash-newline inside an operator is not supported")
                 self.i = j
             elif s[self.i] == "#":
                 j = s.find("\n", self.i)
@@ -850,6 +857,7 @@ class _Parser:
         vanish, patterns, cuts = [], [], []   # per word: only expansions; a pathname pattern; self.cut
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
         dynamic = brace_unread = False
+        braced = 0   # the characters the command's brace expansions made
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
         # an assignment here runs whenever what follows it on the line does: outside compound commands, first in its
         # list (not after && or ||, nor a pipeline stage), and no keyword before it
@@ -952,7 +960,8 @@ class _Parser:
                 try:
                     if re.search(r"\$\(|`|[<>]\(", raw):
                         raise ParseError("a substitution in a word with a brace is not supported")
-                    pieces = _brace(raw, self.charge)
+                    pieces = _brace(raw, self.charge, MAX_BRACE - braced)
+                    braced += sum(map(len, pieces or ()))
                 except ParseError:
                     if self.ctx["work"] > MAX_WORK:
                         raise
@@ -1485,9 +1494,21 @@ class _Parser:
         return "".join(buf)
 
     def dollar(self, in_dq):
-        if self.at("$\\\n"):   # bash deletes the backslash-newline first: what follows decides what the $ starts
-            raise ParseError("a backslash-newline after $ is not supported")
         s, start, nxt = self.s, self.i, self.peek(1)
+        if self.at("$\\\n"):   # bash deletes the backslash-newline first: what follows decides what the $ starts
+            j = start + 1
+            while s.startswith("\\\n", j):
+                j += 2
+            m = _NAME.match(s, j)
+            if s[j:j + 1] in ("(", "{", "'", '"'):
+                # lean: a $( ${ $' or $" across one is held, not read; read it if real commands write one
+                raise ParseError("a backslash-newline between $ and ( { or a quote is not supported")
+            if not m:
+                self.i += 1
+                return "$"
+            self.i = m.end()
+            self.ctx["exp"] += 1
+            return _Expansion("$" + m.group())
         if nxt == "'" and not in_dq:
             m = re.compile(r"((?:\\.|[^'\\])*)'", re.S).match(s, self.i + 2)
             if not m:

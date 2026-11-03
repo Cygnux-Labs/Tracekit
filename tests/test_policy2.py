@@ -1414,13 +1414,16 @@ class TimedAndBraced(unittest.TestCase):
         self.assertIn(["beta", "a", "b"], argvs("alpha $(beta {a,b})*"))
         for line in ("{alpha,beta} x", "{alpha,{}} x"):   # a command name brace expansion builds stays unreadable
             self.assertTrue(shell.parse(line)[0]["opaque"], line)
-        # unreadable (bash 4 expands it its own way, too many words, or a substitution beside it): kept as written,
-        # as 1.5.2 read it, and its command opaque, so a rule still reads the rest
-        for line in ("alpha {1..10..2}", "alpha {01..03}", "alpha {a..A}", "alpha {1..1000}", "alpha {a,b}$(beta)",
-                     "alpha " + "{a,b}" * 9, "alpha `#'`{-r,-f} x", "alpha {a{1,2}..b}", "alpha {x..{,}y}",
+        # hundreds of words, up to 16 KiB of them a command: read, as 1.5.2 allowed them
+        for line, n in (("printf '%s\\n' {1..300}", 302), ("touch test{1..500}.txt", 501), ("echo {a..z}{a..z}", 677),
+                        ("alpha {" + "a," * 300 + "a}", 302), ("alpha " + "{a,b}" * 9, 513)):
+            self.assertEqual([(len(c["argv"]), c["opaque"]) for c in shell.parse(line)], [(n, False)], line)
+        # unreadable (bash 4 expands it its own way, more text than that, or a substitution beside it): kept as
+        # written, as 1.5.2 read it, and its command opaque, so a rule still reads the rest
+        for line in ("alpha {1..10..2}", "alpha {01..03}", "alpha {a..A}", "alpha {1..5000}", "alpha {a,b}$(beta)",
+                     "alpha " + "{a,b}" * 12, "alpha `#'`{-r,-f} x", "alpha {a{1,2}..b}", "alpha {x..{,}y}",
                      "alpha {'a,b'..c}", "alpha {+1..+3}", "alpha {1.." + "9" * 30 + "}", "alpha \"$(: '\"')\"{-r,-f} x",
-                     "alpha $(: #'\n){-r,-f} x",
-                     "alpha {" + "a," * 300 + "a}"):
+                     "alpha $(: #'\n){-r,-f} x", "alpha {" + "abcdefgh," * 2100 + "a}", "alpha x{1..3000} {1..3000}"):
             self.assertTrue(next(c for c in shell.parse(line) if c["argv"][0] == "alpha")["opaque"], line)
         self.assertEqual(argvs("alpha -x {1..10..2} y"), [["alpha", "-x", "{1..10..2}", "y"]])
         with self.assertRaises(shell.ParseError):   # past the parse budget, the line is unreadable
@@ -1441,12 +1444,12 @@ class TimedAndBraced(unittest.TestCase):
                         if not isinstance(cmd, str) or "\n" in cmd or \
                                 e.decide("Bash", {"command": cmd + " {1..2}"})["verdict"] != "deny":
                             continue
-                        for word in ("{1..300}", "{1..3..1}", "{a..A}", "{01..02}", "x$(true){a,b}", "${X:-'$'}",
-                                     "\"${X+'}'}\"", "2\\\n> out.txt", "$\\\nX"):
+                        for word in ("{1..5000}", "{1..3..1}", "{a..A}", "{01..02}", "x$(true){a,b}", "${X:-'$'}",
+                                     "\"${X+'}'}\"", "2\\\n> out.txt", "$\\\n(X)"):
                             d = e.decide("Bash", {"command": f"{cmd} {word}"})
                             self.assertEqual(d["verdict"], "deny", (pack, backend, cmd, word))
             for cmd, rule in (("sudo id", "TK-D001"), ("rm -rf ~/", "TK-D004")):
-                for tail in ("${X:-'$'}", "\"${X+'}'}\"", "2\\\n> out.txt", "$\\\nX"):
+                for tail in ("${X:-'$'}", "\"${X+'}'}\"", "2\\\n> out.txt", "$\\\n(X)"):
                     d = e.decide("Bash", {"command": f"{cmd} {tail}"})
                     self.assertEqual((d["verdict"], rule in d["rule_ids"], "TK-SHELL-PARSE" in d["rule_ids"]),
                                      ("deny", True, True), (pack, backend, cmd, tail))
@@ -1484,15 +1487,18 @@ class TimedAndBraced(unittest.TestCase):
                 shell.parse(line)
 
     def test_a_backslash_newline_is_gone_before_bash_reads_the_words(self):
-        """bash deletes an unquoted backslash-newline first, so it can't hide a keyword, an assignment or a heredoc's
-        unquoted delimiter; after a $ or inside a redirection the line is unreadable."""
+        """bash deletes an unquoted backslash-newline first, so it can't hide a keyword, an assignment, a heredoc's
+        unquoted delimiter or a variable's name; between $ and ( { or a quote, or inside a redirection, the line is
+        unreadable."""
         c = "\\\n"
         for line, want in (("ti" + c + "me { alpha x; }", [["alpha", "x"]]), ("time" + c + " { alpha x; }", [["alpha", "x"]]),
                            ("{" + c + " alpha x; }", [["alpha", "x"]]), ("!" + c + " alpha x", [["alpha", "x"]]),
                            ("for i in 1; d" + c + "o alpha x; done", [["alpha", "x"]]),
                            ("Y" + c + "=1 alpha x", [["alpha", "x"]]), ("al" + c + "pha -r" + c + "f x", [["alpha", "-rf", "x"]]),
-                           ("alpha 'a" + c + "b'", [["alpha", "a" + c + "b"]])):
+                           ("alpha 'a" + c + "b'", [["alpha", "a" + c + "b"]]), ("alpha $" + c + "HOME", [["alpha", "$HOME"], ["alpha"]]),
+                           ("alpha $" + c + " x", [["alpha", "$", "x"]])):
             self.assertEqual(argvs(line), want, line)
+        self.assertIn(["alpha"], argvs("alpha $" + c + "X"))   # an expansion, empty too
         self.assertIn(["alpha", "x"], argvs("cat <<E" + c + "OF\n$(alpha x)\nEOF"))
         self.assertIn(["alpha", "x"], argvs("cat <<EOF\nx\nEO" + c + "F\nalpha x\nEOF"))   # the body ends at EO\<nl>F
         for line in ('alpha "$' + c + '(beta x)"', "alpha $" + c + "'\\x2drf' x", "alpha $" + c + '{X+"}"}{-r,-f} x',
@@ -1507,9 +1513,16 @@ class TimedAndBraced(unittest.TestCase):
         for line in ("echo '(" + c + "('", "cat <<'EOF'\n| a | b |" + c + "| c | d |\nEOF", 'echo "a |' + c + '| b"'):
             shell.parse(line)   # quoted text and a heredoc's body hold no operators
         for line in ("true (" + c + "( x ))", "(" + c + c + "( x ))", "alpha &" + c + "& beta", "alpha |" + c + "| beta",
-                     "alpha >" + c + "> out", "alpha <" + c + "<EOF\nx\nEOF"):
+                     "alpha >" + c + "> out", "alpha <" + c + "<EOF\nx\nEOF", "alpha <<" + c + "-EOF\nEOF\nbeta\n-EOF",
+                     "alpha 2>" + c + "&1", "alpha &" + c + "> out", "alpha |" + c + "& beta", "alpha <" + c + "(beta)"):
             with self.assertRaises(shell.ParseError, msg=line):   # bash reads `(\<newline>(` as `((`
                 shell.parse(line)
+        # characters that make no operator together are read as two (1.5.3 held these)
+        for line, want in (("npm ci &&" + c + "(cd web && npm ci)", [["npm", "ci"], ["cd", "web"], ["npm", "ci"]]),
+                           ("(cd a && make)" + c + "&& echo ok", [["cd", "a"], ["make"], ["echo", "ok"]]),
+                           ("echo a;" + c + "(echo b)", [["echo", "a"], ["echo", "b"]]),
+                           ("alpha >" + c + " out; beta |" + c + "gamma", [["alpha"], ["beta"], ["gamma"]])):
+            self.assertEqual(argvs(line), want, line)
 
     def test_a_shell_whose_script_word_may_be_empty_is_held_only_on_a_pipe_or_file(self):
         """`bash $f` runs a script file; read without $f it is `bash`, which runs its stdin, and only a pipe or a
