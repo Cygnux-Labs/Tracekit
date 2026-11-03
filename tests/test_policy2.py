@@ -1219,15 +1219,18 @@ class Shell(unittest.TestCase):
                     shell.parse(cmd)
                 self.assertLess(time.perf_counter() - start, 0.5)   # ~5 ms on a laptop
                 for e in (Engine(pol), Engine(pol, "regex")):
+                    start = time.perf_counter()
+                    d = e.decide("Bash", {"command": cmd})
+                    took = time.perf_counter() - start
+                    self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
+                    # ~30 ms on a laptop; timed untraced, as tracemalloc made every allocation ~10x dearer (0.2-0.6 s)
+                    self.assertLess(took, 0.5 * SLOWER)
                     tracemalloc.start()
                     try:
-                        start = time.perf_counter()
-                        d = e.decide("Bash", {"command": cmd})
-                        took, peak = time.perf_counter() - start, tracemalloc.get_traced_memory()[1]
+                        e.decide("Bash", {"command": cmd})
+                        peak = tracemalloc.get_traced_memory()[1]
                     finally:
                         tracemalloc.stop()
-                    self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
-                    self.assertLess(took, 0.5 * SLOWER)   # ~15 ms traced on a laptop
                     self.assertLess(peak, 32 << 20)     # ~4 MB
 
     def test_a_bracket_in_a_list_string_does_not_truncate_the_argv(self):
@@ -1610,9 +1613,14 @@ class TimedAndBraced(unittest.TestCase):
                           ("unset HOME; echo x > ${HOME:-/etc/tracekit}/policy.yaml", "TK-D007"),
                           # and where the line gave HOME a literal, its default or check is that literal, as $HOME is
                           ("HOME=/; rm -rf ${HOME:-x}/", "TK-D004"), ("HOME=/; rm -rf ${HOME:?}/", "TK-D004"),
-                          ("HOME=/; rm -rf ${HOME=x}/", "TK-D004"), ("HOME=sudo; ${HOME:-x} id", "TK-D001")):
+                          ("HOME=/; rm -rf ${HOME=x}/", "TK-D004"), ("HOME=sudo; ${HOME:-x} id", "TK-D001"),
+                          # and any variable's whose literals aren't empty: ${D:?} is the form shellcheck asks for
+                          ('D=/; rm -rf "${D:?}"/', "TK-D004"), ("D=/; rm -rf ${D:-x}/", "TK-D004"),
+                          ("D=/root/.aws; cat ${D:?}/credentials", "TK-S004")):
             d = e.decide("Bash", {"command": cmd})
             self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (cmd, d))
+        for cmd in ('D=build; rm -rf "${D:?}"/', "D=x; rm -rf ${D:-/}", 'rm -rf "${D:?}"/'):   # no false deny
+            self.assertNotEqual(e.decide("Bash", {"command": cmd})["verdict"], "deny", cmd)
 
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
         """Sweep before 1.5.3: an unreadable line was split at ;, & and | inside quotes too, so text a command only
