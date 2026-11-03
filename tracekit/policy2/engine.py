@@ -420,6 +420,10 @@ def _package_indexes(commands, refs=()):
         command = next((a for a in args if not a.startswith("-")), None)   # after global options (pip --isolated)
         if command in ("publish", "unpublish"):
             continue   # publishing doesn't change where installs come from
+        if exe == "gem" and command in ("install", "i", "update", "fetch"):
+            options = options | {"-s"}   # --source's short form there (gem cert's -s signs)
+        elif exe == "gem" and command == "sources":
+            options = {"-a", "--add"}   # a source every later install reads
         if command == "config" and "set" in args or exe == "npm" and command == "set":
             # `set key value` or `set key=value ...`, options anywhere
             words = [a for a in args[args.index("set") + 1:] if not a.startswith("-")]
@@ -439,11 +443,14 @@ def _package_indexes(commands, refs=()):
             # pip (optparse) takes a long option's unique prefix: --index-u is --index-url
             if exe == "pip" and len(name) > 2 and name.startswith("--"):
                 name = next((o for o in options if o.startswith(name)), name)
-            if name in options:
+            scoped = exe in ("npm", "pnpm", "yarn", "bun") and name.startswith("--@") and name.endswith(":registry")
+            if name in options or scoped:
                 if value is None and i + 1 < len(args):
                     value = args[i + 1]
                     i += 1
-                if exe in ("npm", "pnpm", "yarn", "bun"):
+                if scoped:   # a scope's own registry (--@acme:registry=…), whatever --registry says
+                    out += [value] if value is not None and _non_default_source(value, default) else []
+                elif exe in ("npm", "pnpm", "yarn", "bun"):
                     selected = [value] if value is not None else []  # npm uses the last --registry
                 elif value is not None:
                     if exe == "uv" and name == "--index" and "=" in value:
@@ -580,8 +587,11 @@ def _normal(path):
     """A target with `.`, `..` and repeated separators resolved, a `\\` read as `/`: `~/./.claude` is `~/.claude`. A
     `..` after a symlink may lead elsewhere, so this is only a second reading: it adds matches, and the target as
     written is still read. One that resolves to a start of ~ or $ it didn't have (`./~/.claude`, `x/../$HOME`) names
-    a folder of that name here, and keeps a ./ in front."""
+    a folder of that name here, and keeps a ./ in front. POSIX keeps two leading slashes, which Linux and macOS read as
+    one: `//var/log` is `/var/log` (a Windows `\\\\host` share keeps its two)."""
     p = posixpath.normpath(path.replace("\\", "/")) if path else path
+    if p.startswith("//") and path.startswith("/"):
+        p = p[1:]
     if p.startswith(("~", "$")) and not path.startswith(("~", "$")):
         p = "./" + p
     return path if p == "." else p

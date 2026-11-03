@@ -217,7 +217,7 @@ ask:
     tool: Read|Grep
     field: path
     # in lower case: the path is also matched casefolded, and macOS and Windows ignore case
-    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(login data|cookies|web data|network/cookies)$'
+    pattern: '(^|/)\.password-store(/|$)|(^|/)library/keychains(/|$)|(^|/)\.local/share/keyrings(/|$)|(^|/)\.gnupg/private-keys-v1\.d/[^/]+\.key$|(^|/)\.mozilla/firefox/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)library/application support/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|^[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/]+/(logins\.json|key4\.db|cookies\.sqlite)$|(^|/)\.config/(google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(login data|cookies|web data|network/cookies)$|(^|/)library/application support/(google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(login data|cookies|web data|network/cookies)$|^[a-z]:/users/[^/]+/appdata/local/(google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(login data|cookies|web data|network/cookies)$'
     reason: reading an operating-system or browser credential store
     remedy: Wait for a person to approve the held read, or ask the person for the one credential the task needs.
     rationale: A targeted read can disclose saved logins or private keys; hold it for a person. Listing and unrelated files remain allowed.
@@ -227,7 +227,7 @@ ask:
     # security's global options may come before its command; `pass NAME` shows NAME as `pass show NAME` does, so every
     # pass command but those that don't decrypt an entry (`unless`; grep is TK-D020's); ssh-add's -L anywhere in a
     # cluster (-qL, -Lq). Paths in lower case: the target is also matched casefolded
-    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
+    pattern: '^(security( -[hilqv]+| -p [^-\s]\S*)* (find-generic-password|find-internet-password)|secret-tool\s+(lookup|search)|kwallet-query|ssh-add(\s+-[^\sL]+(\s+[^-\s]\S*)?){0,8}\s+-[A-KM-Za-z]*L[A-Za-z]*)\b|^pass\s+\S|^(cat|sqlite3)\b.*?(?:\.mozilla/firefox/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|library/application support/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|[a-z]:/users/[^/]+/appdata/roaming/mozilla/firefox/profiles/[^/ ]+/(?:logins\.json|key4\.db|cookies\.sqlite)|\.config/(?:google-chrome|chromium|bravesoftware/brave-browser|microsoft-edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|library/application support/(?:google/chrome|chromium|bravesoftware/brave-browser|microsoft edge)/[^/]+/(?:login data|cookies|web data|network/cookies)|[a-z]:/users/[^/]+/appdata/local/(?:google/chrome|microsoft/edge|bravesoftware/brave-browser)/user data/[^/]+/(?:login data|cookies|web data|network/cookies))'
     unless: '^pass\s+(init|ls|list|find|search|grep|insert|add|generate|rm|remove|delete|mv|rename|cp|copy|git|help|version|--help|--version)(\s|$)'
     reason: reading credentials from an operating-system or browser store, or listing an SSH agent's keys
     remedy: Have a person approve the held call, or ask the person for the one credential or key the task needs.
@@ -275,9 +275,9 @@ ask:
     class: shell
     field: effects
     # TK-A026 for the shell: a file a command writes or deletes (a redirection, rm, mv, cp, ln, tee, truncate, dd, sed
-    # -i, perl -i, find -delete or -exec rm), each also casefolded, so the pattern is in lower case. Anchored and lazy,
-    # so the fallback engine stays linear
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*?/)?(?:\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):(?:/private)?/var/log(?:/|$)'
+    # -i, perl -i, find -delete or -exec rm), each also casefolded, so the pattern is in lower case; and the history
+    # file by its variable, $HISTFILE (`: > "$HISTFILE"`). Anchored and lazy, so the fallback engine stays linear
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*?/)?(?:\.bash_history|\.zsh_history|fish_history|consolehost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):(?:/private)?/var/log(?:/|$)|^(?:WRITE_TARGET|DELETE_TARGET):\$(?:HISTFILE|\{HISTFILE\})$'
     reason: clearing shell history or system logs
     remedy: Have a person approve the held call, or leave shell history and system logs as they are.
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
@@ -303,7 +303,10 @@ ask:
   - id: TK-A028
     class: shell
     field: argv
-    pattern: '^(pip3?|python3?\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get)\s+(?:(--no-deps|--pre|--user|--upgrade|--force-reinstall|--editable|--save|--global|--force)\s+)*git\+(https?|ssh)://'
+    # a version-control source anywhere in an install's words (git+https, git+ssh, git+git, git+file, git://, npm's
+    # github:, gitlab:, bitbucket: and gist: shorthands), after a space or a PEP 508 `name @`; npm's `i`; and cargo
+    # install or add --git. Anchored and lazy, so the fallback engine stays linear
+    pattern: '^(pip[0-9.]*|python[0-9.]*\s+-m\s+pip|uv(\s+pip)?|pipx|poetry|npm|pnpm|yarn|bun|gem|cargo)\s+(install|add|get|i)\s(?:[^\n]*?[\s@])?(git\+(https?|ssh|git|file)://|git://|(github|gitlab|bitbucket|gist):)|^cargo\s+(install|add)\s(?:[^\n]*?\s)?--git(\s|=|$)'
     reason: installing a package directly from a version-control source
     remedy: Have a person approve the held call, or install a released version from the configured index.
     rationale: Version-control installs are common but their source and revision need human review.
@@ -671,12 +674,14 @@ ask:
     remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
 
-  # --- Git hooks: code that runs on every commit, checkout or push in the repository ---
+  # --- Git hooks: code that runs on every commit, checkout or push in the repository (a submodule's under
+  # .git/modules/<name>/hooks/). lean: a submodule's name and nesting of up to eight parts, so the fallback engine
+  # doesn't rescan a long path from each .git/modules/; read more if a real one is deeper ---
   - id: TK-A012
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)\.git/hooks/'
+    pattern: '(^|/)\.git/(modules/([^/]+/){1,8})?hooks/'
     reason: writing a Git hook
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: A hook runs on every developer's commit or push in this clone; a person confirms it.
@@ -686,7 +691,7 @@ ask:
     # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
     # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
     # held
-    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
+    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^[^ =]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
