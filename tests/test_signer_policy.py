@@ -649,6 +649,9 @@ class CodingPack(unittest.TestCase):
                     ("mcp__ui__dropdown_select", {}, "TK-C011"), ("mcp__pay__get_refund_status", {"id": "x"}, "TK-M002"),
                     ("mcp__slack__slack_post_message", {"channel": "C1", "text": "mail bob@here.com"}, "TK-M004"),
                     ("mcp__search__search_messages", {"query": "<!channel>"}, "TK-M004"),
+                    ("mcp__slack__slack_post_message", {"channel": "C1", "text": "@channel deploy"}, "TK-M004"),
+                    ("mcp__slack__slack_post_message", {"channel": "C1", "text": "@channel-ops look", "link_names": True},
+                     "TK-M004"),
                     ("send_email", {"to": "hands@corp.example"}, "TK-M003"),
                     ("send_email", {"to": "u.all@corp.example"}, "TK-M003"))
         for pack, engine, e in self.every_pack():
