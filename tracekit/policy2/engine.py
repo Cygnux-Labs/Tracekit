@@ -771,7 +771,20 @@ def _command_effects(commands):
             out.extend("DELETE_TARGET:" + path for path in operands[1:])
         elif exe in ("awk", "gawk", "mawk", "nawk"):   # print or printf > "file" in its program
             out.extend("WRITE_TARGET:" + path for path in re.findall(r'>>?\s*"([^"\n]+)"', shell._awk_program(args) or ""))
+        elif exe in ("sqlite3", "sqlite"):
+            # every operand (the database among them), when its SQL (the operands and a heredoc or herestring) writes
+            # outside literals and comments, or can't be read
+            # lean: SQL read from a file (`sqlite3 db < x.sql`, `.read x.sql`) isn't seen; read it if one is held wrongly
+            operands = [a for a in args if not a.startswith("-")]
+            code = classes.sql_code("\n".join(operands + list(command.get("stdin", ()))),
+                                    *classes.SQL_DIALECTS["sqlite"])
+            if code is None or _SQL_WRITE.search(code):
+                out.extend("WRITE_TARGET:" + a for a in operands)
     return out
+
+
+_SQL_WRITE = re.compile(r"(?im)\b(?:insert|update|delete|drop|create|alter|replace\s+into|vacuum|reindex)\b"
+                        r"|^\s*\.(?:restore|import)\b")
 
 
 def _flat(values):
