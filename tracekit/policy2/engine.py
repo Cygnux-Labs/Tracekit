@@ -899,8 +899,9 @@ _POSTS = frozenset(("post", "comment", "reply"))
 # what `create` posts: the thing it names, the first word after it or the last one or two before a for, on, to and
 # the like (create_issue, createPullRequest, create_github_issue, create_comment_on_issue; create_commit_for_pr creates
 # a commit; one right after create, with its word, says where or how: create_to_do_issue posts an issue,
-# create_from_pr_sandbox makes a sandbox); a name that also says file, cache, rule, job or workflow (create_note_file)
-# creates something acted on
+# create_from_pr_sandbox makes a sandbox, and alone it is where: create_on_issue posts on the issue, create_from_issue
+# makes something from it); a name that also says file, cache, rule, job or workflow (create_note_file) creates
+# something acted on
 _CREATED = frozenset(("issue", "issues", "comment", "comments", "discussion", "review", "ticket", "note", "notes", "pr",
                       "worklog", "worklogs"))
 _LINKS = frozenset(("for", "on", "in", "to", "from", "with", "at", "of", "by", "into", "under", "via"))
@@ -920,7 +921,8 @@ def _carried(tool):
     seq = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold())
     words, out = set(seq), set()
     after = seq[seq.index("create") + 1:] if "create" in seq else []
-    after = (after[2:] or after[1:2]) if after[:1] and after[0] in _LINKS else after   # create_on_issue: the issue
+    if after[:1] and after[0] in _LINKS:   # create_on_issue posts on the issue; create_from_issue makes something else
+        after = after[2:] or (after[1:2] if after[0] in ("on", "to", "in", "into") else [])
     thing = after[:next((i for i, w in enumerate(after) if w in _LINKS), len(after))]
     creates = any(t[:1] and t[0] in _CREATED or t[:2] in (["pull", "request"], ["merge", "request"])
                   for t in (thing, thing[-1:], thing[-2:])) and not words & _ACTED

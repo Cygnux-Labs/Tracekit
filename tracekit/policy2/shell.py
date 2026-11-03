@@ -147,7 +147,9 @@ def _sets_with_v(argv):
 
 def _read_names(argv):
     """The variables bash's `read` sets with these words: its names, -a's array, REPLY with neither; None when an option
-    or a name can't be told."""
+    or a name can't be told, or a word may split or expand into more (`read -p $P X` may name what $P holds)."""
+    if any(re.search(r"[$`*?[]", a) for a in argv[1:]):
+        return None
     names, args = [], list(argv[1:])
     while args and args[0].startswith("-") and args[0] != "-":
         opt = args.pop(0)
