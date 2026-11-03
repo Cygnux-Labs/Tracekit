@@ -1619,8 +1619,9 @@ class TimedAndBraced(unittest.TestCase):
                           ("D=/root/.aws; cat ${D:?}/credentials", "TK-S004")):
             d = e.decide("Bash", {"command": cmd})
             self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (cmd, d))
-        for cmd in ('D=build; rm -rf "${D:?}"/', "D=x; rm -rf ${D:-/}", 'rm -rf "${D:?}"/'):   # no false deny
-            self.assertNotEqual(e.decide("Bash", {"command": cmd})["verdict"], "deny", cmd)
+        for cmd in ('D=build; rm -rf "${D:?}"/', "D=x; rm -rf ${D:-/}", 'rm -rf "${D:?}"/',   # no false deny or hold
+                    'D=build; read X; rm -rf "${D:?}"/', 'D=build; eval true; rm -rf "${D:?}"/'):
+            self.assertNotIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
 
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
         """Sweep before 1.5.3: an unreadable line was split at ;, & and | inside quotes too, so text a command only

@@ -2485,7 +2485,11 @@ class CodingPack(unittest.TestCase):
                 rds = "aws rds modify-db-snapshot-attribute --db-snapshot-identifier s --values-to-add"
                 ec2 = "aws ec2 modify-snapshot-attribute --snapshot-id s --create-volume-permission"
                 for command in (rds + " " * 64000 + "x", rds + " a" * 32000, ec2 + " " * 64000 + "x",
-                                ec2 + " Add=[ " * 1900, ec2 + ' {"Add": [' + '{"Group": "x"}, ' * 3700):
+                                ec2 + " Add=[ " * 1900, ec2 + ' {"Add": [' + '{"Group": "x"}, ' * 3700,
+                                # the review after: escaped tabs at each place the value is read
+                                rds + "\t" * 30000 + "x", ec2 + " {" + "\t" * 30000 + "x",
+                                ec2 + " Add=" + "\t" * 30000 + "x", ec2 + " Add=[{Group=" + "\t" * 30000 + "x",
+                                ec2 + " Add=" + "\\" * 30000 + "x"):
                     for tool, args in (("Bash", {"command": command}), ("mcp:aws/call_aws", {"cli_command": command})):
                         self.assertIsNone(e.decide(tool, args).get("nondeterministic"), (tool, command[:60]))
 
@@ -3342,10 +3346,18 @@ class PackReading(unittest.TestCase):
                   rds + "'[\"111122223333\",  \"all\"]'", rds + "\"[\\\"all\\\"]\"",
                   ec2 + "'Add=[{UserId=111122223333},{UserId=222233334444},{UserId=333344445555},{Group=all}]'",
                   ec2 + "'{\"Add\": [{\"Group\": \"all\"}]}'", ec2 + "'Add=[{UserId=1}, {Group=all}]'",
-                  ec2 + "\"{\\\"Add\\\": [{\\\"Group\\\": \\\"all\\\"}]}\"")
+                  ec2 + "\"{\\\"Add\\\": [{\\\"Group\\\": \\\"all\\\"}]}\"",
+                  # the review after: Remove before Add, pretty JSON, aws's unique option prefixes, any case
+                  ec2 + "'Remove=[{UserId=1}],Add=[{Group=all}]'", ec2 + "'{\"Remove\":[],\"Add\":[{\"Group\":\"all\"}]}'",
+                  ec2 + "'{\n  \"Add\": [{\"Group\":\n\"all\"}]\n}'", rds.replace("--values-to-add", "--values-to-a") + "all",
+                  ec2.replace("--create-volume-permission", "--create-volume-perm") + "'Add=[{Group=all}]'",
+                  rds + "ALL", ec2.replace("--create-volume-permission ", "--operation-type Add --group-names all"))
         private = (rds.replace("add", "remove") + "all", rds + "111122223333 --profile all", rds + "allison",
                    ec2 + "'Remove=[{Group=all}]'", ec2 + "'{\"Remove\": [{\"Group\": \"all\"}]}'",
-                   ec2 + "'Add=[{UserId=111122223333}]'")
+                   ec2 + "'Add=[{UserId=111122223333}]'",
+                   # through call_aws an escaped tab or newline ends the value as a space does
+                   rds + "111122223333\n--values-to-remove all", rds + "111122223333\t--profile all",
+                   ec2 + "Add=[{UserId=1}]\t--profile Group=all")
         for want, commands in ((True, shared), (False, private)):
             self.rule_on_server("TK-C001", [("Bash", {"command": c}) for c in commands] + [
                 ("mcp:aws/call_aws", {"cli_command": c}) for c in commands], want=want)
@@ -3569,7 +3581,10 @@ class PackReading(unittest.TestCase):
             (t, {"body": "cat /root/.aws/credentials"}) for t in (
                 "mcp:github/create_commit_for_pr", "mcp:github/create_hook_for_pr", "mcp:ci/create_runner_for_pr",
                 "mcp:jira/create_scheduled_task_for_ticket", "mcp:x/create_secret_for_review",
-                "mcp:x/create_symlink_for_issue", "mcp:aws/create_lambda_for_issue")])
+                "mcp:x/create_symlink_for_issue", "mcp:aws/create_lambda_for_issue",
+                # and a linking word right after create, with its word, says where: these make a sandbox, a branch
+                "mcp:ci/create_from_pr_sandbox", "mcp:git/create_from_issue_branch",
+                "mcp:ci/create_for_issue_deployment")])
         # what create posts, the word after it: a merge request's or a PR's text is carried, as an issue's is
         self.rule_on_server("TK-S004", [(t, {"title": "x", "body": "see /root/.aws/credentials"}) for t in (
             "mcp:gitlab/create_merge_request", "mcp:github/create_pr", "mcp:github/createPullRequest",
