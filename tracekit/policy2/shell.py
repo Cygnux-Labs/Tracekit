@@ -135,7 +135,13 @@ _COMMAND_NAME_ASSIGN = re.compile(r"(?:PATH|BASH_ENV|ENV)(?:\[[^]]*\])?\+?=")
 _VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typeset", "local", "export", "readonly",
                              "let", "eval", "unset"}
 # what may set any variable of the shell, now or later (a DEBUG trap, an alias with expand_aliases on, a sourced file)
-_SETS_ANY = _VARIABLE_SETTING_BUILTINS | {"source", ".", "trap", "getopts", "wait", "alias", "shopt", "enable"}
+_SETS_ANY = _VARIABLE_SETTING_BUILTINS | {"source", ".", "trap", "getopts", "wait", "alias", "shopt", "enable",
+                                          "compgen"}   # compgen -V NAME (bash 5.3)
+
+
+def _sets_with_v(argv):
+    """printf -v NAME, also attached (-vNAME, -v'NAME'): it sets NAME."""
+    return argv[0] == "printf" and any(a.startswith("-v") for a in argv[1:])
 # a quote or backslash pair of a word as written, its text in group 1, 2 or 3 (a default's word read without them)
 _UNQUOTE = re.compile(r"""\\(.)|'([^']*)'|"((?:\\.|[^"\\])*)\"""", re.S)
 # a bracket expression of a pathname pattern: whether it is negated, and its set (a ] first is one of its characters)
@@ -1214,8 +1220,7 @@ class _Parser:
                 re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.+", w, re.S) for w in words[1:]):
             assigns = [(n.rstrip("+"), v, n.endswith("+")) for n, v in (w.split("=", 1) for w in words[1:])]
             words = []
-        elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or c["argv"][0] == "printf" and "-v" in c["argv"]
-                 for c in cmds):
+        elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) for c in cmds):
             self.ctx["any_set"] = True
         then = self.peek() in ("", "\n", ";", ")") or self.at("&&")
         for name, value, plus in assigns:
@@ -1232,7 +1237,7 @@ class _Parser:
             argv = cmd["argv"]
             self.ctx["command_names_mutable"] |= (argv[0] in ("alias", "unalias", "shopt", "enable", "source", ".", "hash") or
                                                   argv[0] in _VARIABLE_SETTING_BUILTINS or
-                                                  (argv[0] == "printf" and "-v" in argv[1:]) or
+                                                  _sets_with_v(argv) or
                                                   "command_not_found_handle" in argv or
                                                   any(_COMMAND_NAME_ASSIGN.match(a) for a in argv[1:]))
             if argv[0] == "alias":
@@ -1702,6 +1707,8 @@ class _Parser:
             self.i += 2
             self.sub("$()")
         elif nxt == "{":
+            if s[self.i + 2:self.i + 3] in (" ", "\t", "\n", "|"):   # bash 5.3 runs it in this shell: ${ cmd; }
+                raise ParseError("a ${ command; } substitution is not supported")
             self.i += 2
             self.dquote("}", in_dq)
         else:
