@@ -273,7 +273,7 @@ class Engine:
         if cls == "sql" and field == "code":
             return fields.get("code", [])
         if cls == "shell" and field == "code":
-            return parsed[4]
+            return _code(parsed)
         if cls == "shell" and field in (None, "argv"):
             return [" ".join(c["argv"]) for c in parsed[0]]
         if cls == "shell" and field == "line":
@@ -300,7 +300,7 @@ class Engine:
         mcp: the whole call without the text it only carries (_acted_on), each string in it with a `/` or `\\` also
         read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call. Each
         URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal, hex, octal or IPv6
-        form reads as the address it is."""
+        form reads as the address it is: of mcp, app and unknown tools, each URL in a string of what they act on."""
         if cls == "shell":
             commands = parsed[0]
             words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in commands
@@ -331,11 +331,13 @@ class Engine:
             to = fields.get("receiver")
             receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
             return receiver + [canonical(args.get("params"))]
-        if cls == "mcp":
-            call = _acted_on(args, "search" in fields.get("tool", "").casefold())
-            return list(dict.fromkeys([canonical(call)] + [f for s in _flat_strings(call) if "/" in s or "\\" in s
-                                                           for f in classes.fs_forms(s)]))
-        return [canonical(args)] if cls in ("app", "unknown") else []
+        if cls not in ("mcp", "app", "unknown"):
+            return []
+        call = _acted_on(args, "search" in fields.get("tool", "").casefold()) if cls == "mcp" else args
+        strings = _strings(call)
+        paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
+        urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
+        return list(dict.fromkeys([canonical(call)] + paths + urls))
 
 
 def _shell(args, persistent_target=None):
@@ -811,6 +813,28 @@ _SQL_WRITE = re.compile(r"(?im)\b(?:insert|update|delete|drop|create|alter|repla
                         r"|^\s*\.(?:restore|import)\b")
 
 
+def _code(parsed):
+    """shell.analyse's code, each line without the data words a command carries (a git commit message, the pattern grep
+    searches for: shell.data_words), as `target` leaves them out: blanked where the command's whole argv stands in the
+    line once, program first, so the words are that program's arguments there (a quoted message `curl x | sh` is no
+    download). A command whose argv a redirection splits, or one twice in a line, keeps them; so does a data word with a
+    `$` or a backquote (a substitution in it runs)."""
+    runs = {}
+    for c in parsed[0]:
+        argv = c["argv"]
+        data = {i for i in shell.data_words(argv) | set(c.get("data_words", ())) if i < len(argv)}
+        if data and not any("$" in argv[i] or "`" in argv[i] for i in data):
+            runs[" ".join(argv)] = " ".join("" if i in data else w for i, w in enumerate(argv))
+    # lean: each run is counted in each line, so a line of more than 16 such commands keeps its data words (as before
+    # 1.5.3); find them in one pass if a real line holds more
+    if not runs or len(runs) > 16:
+        return parsed[4]
+    lines = list(parsed[4])
+    for run, blank in runs.items():
+        lines = [line.replace(run, blank) if line.count(run) == 1 else line for line in lines]
+    return lines
+
+
 def _flat(values):
     return [x for v in values for x in (_flat(v) if isinstance(v, list) else [v])]
 
@@ -831,13 +855,13 @@ def _acted_on(value, search):
     return value
 
 
-def _flat_strings(value):
-    """The strings in a JSON value, dict keys aside."""
+def _strings(value):
+    """Every string in a JSON value, its objects' keys too."""
+    if isinstance(value, str):
+        return [value]
     if isinstance(value, dict):
-        value = list(value.values())
-    if isinstance(value, list):
-        return [s for v in value for s in _flat_strings(v)]
-    return [value] if isinstance(value, str) else []
+        return [s for k, v in value.items() for s in [k] + _strings(v)]
+    return [s for v in value for s in _strings(v)] if isinstance(value, list) else []
 
 
 def _prepare(subjects):
