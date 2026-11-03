@@ -352,7 +352,8 @@ class Engine:
             return receiver + [canonical(args.get("params"))]
         if cls not in ("mcp", "app", "unknown"):
             return []
-        call = _acted_on(args, "search" in fields.get("tool", "").casefold()) if cls == "mcp" else args
+        tool = fields.get("tool")
+        call = _acted_on(args, _carried(tool if isinstance(tool, str) else "")) if cls == "mcp" else args
         strings = _strings(call)
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
@@ -859,19 +860,38 @@ def _flat(values):
     return [x for v in values for x in (_flat(v) if isinstance(v, list) else [v])]
 
 
-# arguments whose text an MCP tool only carries (an issue's title and body, a message, a file's content): a path or an
-# address named there is mentioned, not read or fetched
+# arguments whose text an MCP tool that posts or sends a message only carries (an issue's title and body, a message, a
+# comment): a path or an address named there is mentioned, not read or fetched
 _CARRIED = frozenset(("title", "body", "text", "description", "comment", "message", "subject", "content"))
+_POSTS = frozenset(("post", "create", "comment", "reply"))
+_MESSAGES = frozenset(("message", "messages", "email", "mail", "dm", "chat", "notification"))
+# a name that types, sends keys, runs or holds code: what such a tool carries is what it runs
+_RUNS = frozenset(("type", "typing", "key", "keys", "keystroke", "keystrokes", "run", "exec", "execute", "eval",
+                   "evaluate", "code", "cell", "cells", "script", "command", "cmd", "shell", "terminal", "kernel", "repl"))
+_FETCHES = frozenset(("fetch", "read", "open", "get", "download", "navigate", "browse", "visit", "load", "scrape", "crawl"))
 
 
-def _acted_on(value, search):
-    """An MCP call's arguments without those it only carries (_CARRIED, at any depth; and `query` or `q` when `search`,
-    the tool's name saying it searches)."""
+def _carried(tool):
+    """The argument names whose string values MCP tool `tool` only carries: _CARRIED when its name says it posts,
+    creates, comments, replies or sends a message, and doesn't say it types, sends keys, runs or holds code or a cell
+    (_RUNS); `query` and `q` when it says it searches and doesn't say it fetches or reads (_FETCHES) or runs. Words in
+    snake, kebab or camel case."""
+    words = set(re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold()))
+    out = set()
+    if (words & _POSTS or "send" in words and words & _MESSAGES) and not words & _RUNS:
+        out |= _CARRIED
+    if any(w.startswith("search") for w in words) and not words & (_RUNS - {"code"} | _FETCHES):
+        out |= {"query", "q"}
+    return out
+
+
+def _acted_on(value, carried):
+    """An MCP call's arguments without the string values of those it only carries (`carried`, _carried's, at any
+    depth): an object or a list under such a name is still read."""
     if isinstance(value, dict):
-        return {k: _acted_on(v, search) for k, v in value.items()
-                if k.casefold() not in _CARRIED and not (search and k.casefold() in ("query", "q"))}
+        return {k: _acted_on(v, carried) for k, v in value.items() if not (isinstance(v, str) and k.casefold() in carried)}
     if isinstance(value, list):
-        return [_acted_on(v, search) for v in value]
+        return [_acted_on(v, carried) for v in value]
     return value
 
 
