@@ -124,7 +124,7 @@ Any other key that differs (`command`, `run_in_background`, `dangerouslyDisableS
 approval still unanswered, expired or used, and the retry is decided as the model sent it. The signer's rule above is
 unchanged: the hook only chooses which arguments the retry is decided with, and the signer still checks them against
 the approval. So a retry exactly as approved, description included, runs under that approval even when another
-wording of the command was rejected: the person approved that call. Reject the approved one too to stop it.
+wording of the command was rejected: the person approved that call. It runs once; the approval is used up then.
 
 ## Tiers: T1 and T2 executors
 
