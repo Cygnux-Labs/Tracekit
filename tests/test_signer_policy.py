@@ -2480,6 +2480,14 @@ class CodingPack(unittest.TestCase):
                 self.assertEqual(("TK-A035" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
                 d = e.decide("mcp__aws-api__call_aws", {"cli_command": "aws ssm get-parameter " + "x " * 30000})
                 self.assertEqual(("TK-A036" in d["rule_ids"], d.get("nondeterministic")), (False, None), d)
+                # TK-C001's snapshot-sharing values, read up to the next option: spaces after the option or a value
+                # repeated were each rescanned from every start (a second and more)
+                rds = "aws rds modify-db-snapshot-attribute --db-snapshot-identifier s --values-to-add"
+                ec2 = "aws ec2 modify-snapshot-attribute --snapshot-id s --create-volume-permission"
+                for command in (rds + " " * 64000 + "x", rds + " a" * 32000, ec2 + " " * 64000 + "x",
+                                ec2 + " Add=[ " * 1900, ec2 + ' {"Add": [' + '{"Group": "x"}, ' * 3700):
+                    for tool, args in (("Bash", {"command": command}), ("mcp:aws/call_aws", {"cli_command": command})):
+                        self.assertIsNone(e.decide(tool, args).get("nondeterministic"), (tool, command[:60]))
 
     def test_remote_ref_deletion_past_a_newline_in_an_argument_but_not_in_the_next_command(self):
         # `.` stopped at a newline inside an earlier argument; macOS runs git for `Git`; git takes any prefix of
@@ -3092,7 +3100,10 @@ class CodingPack(unittest.TestCase):
         removals = ("tracekit uninstall --agent claude", "tracekit down", "python3 -m tracekit down",
                     "pip uninstall -y tracekit-ai", "uv tool uninstall tracekit-ai", "pipx uninstall tracekit-ai",
                     "claude plugin uninstall tracekit", "claude plugin disable tracekit@cygnux",
-                    "systemctl --user stop tracekit")
+                    "systemctl --user stop tracekit",
+                    # the last review: any number of options before the subcommand (a bound let 17 through)
+                    "pip " + "-v " * 17 + "uninstall -y tracekit-ai", "python3 -m pip " + "-q " * 17 + "uninstall tracekit-ai",
+                    "claude " + "-d " * 17 + "plugin uninstall tracekit", "systemctl " + "--user " * 17 + "stop tracekit")
         installed = ("sed -i s/deny/allow/ .venv/lib/python3.11/site-packages/tracekit/policy2/engine.py",
                      "cp evil.py /usr/lib/python3/dist-packages/tracekit/hook.py")
         for pack, engine, e in self.every_pack():
@@ -3322,6 +3333,22 @@ class PackReading(unittest.TestCase):
                "aws iam create-open-id-connect-provider --url https://x")
         self.rule_on_server("TK-C001", [("Bash", {"command": c}) for c in aws] + [
             ("mcp:aws/call_aws", {"cli_command": c}) for c in aws])
+        # the last review: a sharing value is read up to the next option, in shorthand or JSON (the CLI reference's
+        # own form), spaces too, and through call_aws with its quotes
+        rds = "aws rds modify-db-snapshot-attribute --db-snapshot-identifier s --attribute-name restore --values-to-add "
+        ec2 = "aws ec2 modify-snapshot-attribute --snapshot-id s --create-volume-permission "
+        shared = (rds + "'[\"111122223333\",\"222233334444\",\"333344445555\",\"444455556666\",\"555566667777\",\"all\"]'",
+                  rds + "111122223333,222233334444,333344445555,444455556666,555566667777,all",
+                  rds + "'[\"111122223333\",  \"all\"]'", rds + "\"[\\\"all\\\"]\"",
+                  ec2 + "'Add=[{UserId=111122223333},{UserId=222233334444},{UserId=333344445555},{Group=all}]'",
+                  ec2 + "'{\"Add\": [{\"Group\": \"all\"}]}'", ec2 + "'Add=[{UserId=1}, {Group=all}]'",
+                  ec2 + "\"{\\\"Add\\\": [{\\\"Group\\\": \\\"all\\\"}]}\"")
+        private = (rds.replace("add", "remove") + "all", rds + "111122223333 --profile all", rds + "allison",
+                   ec2 + "'Remove=[{Group=all}]'", ec2 + "'{\"Remove\": [{\"Group\": \"all\"}]}'",
+                   ec2 + "'Add=[{UserId=111122223333}]'")
+        for want, commands in ((True, shared), (False, private)):
+            self.rule_on_server("TK-C001", [("Bash", {"command": c}) for c in commands] + [
+                ("mcp:aws/call_aws", {"cli_command": c}) for c in commands], want=want)
         self.rule_on_server("TK-C002", [(t, {"user": "agent"}) for t in (
             "mcp:iam/AttachUserPolicy", "mcp__aws__AttachRolePolicy", "mcp:gcp/setIamPolicy", "mcp:iam/attach-user-policy",
             "mcp:iam/ATTACH_USER_POLICY", "mcp:k8s/create_cluster_role_binding", "mcp__k8s__createClusterRoleBinding",

@@ -238,10 +238,10 @@ ask:
     class: shell
     # each command's argv: removing or stopping Tracekit as a person would, `tracekit uninstall` or `down` (also as
     # `python -m tracekit`, as TK-D012 reads it), uninstalling its package with pip, uv (pip, tool or a project's
-    # remove), pipx or poetry, its Claude Code plugin's uninstall or disable, and a user service's stop, each after up to
-    # 16 options (so the fallback engine reads a long line of options in time). Held, not denied, so a person who means
-    # it approves it; TK-D007 denies touching the signer's files or process directly
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +){0,16}(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^claude (-[^ ]+ +){0,16}plugins? (-[^ ]+ +){0,16}(uninstall|disable|remove|rm)( [\w\W]*?)? tracekit(@[^ ]*)?( |$)|^systemctl (-[^ ]+ +){0,16}(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
+    # remove), pipx or poetry, its Claude Code plugin's uninstall or disable, and a user service's stop, after any number
+    # of options. Held, not denied, so a person who means it approves it; TK-D007 denies touching the signer's files or
+    # process directly
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +)*(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^claude (-[^ ]+ +)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)( [\w\W]*?)? tracekit(@[^ ]*)?( |$)|^systemctl (-[^ ]+ +)*(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
     reason: removing or stopping Tracekit
     remedy: Have a person approve the held call if they mean to remove or stop Tracekit; the agent's own work has no need to.
     rationale: Uninstalling Tracekit's hooks, package or plugin, or stopping its signer, ends the record of what the agent does next; a person confirms it, where a deny would leave a person working through the agent no way to.
