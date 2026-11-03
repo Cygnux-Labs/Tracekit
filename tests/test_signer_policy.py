@@ -1507,6 +1507,29 @@ class CodingPack(unittest.TestCase):
                     self.assertEqual((d["verdict"], "TK-A046" in d["rule_ids"], "TK-D002" in d["rule_ids"]),
                                      ("ask", True, False), d)
 
+    def test_shell_start_files_ssh_settings_and_key_names_the_sweep_found(self):
+        # the 1.5.3 sweep: TK-A010 knew bash's and zsh's usual start files but not .zshenv, .zlogin, .bash_login, fish's
+        # or /etc's zshenv and bashrc; TK-D010 not authorized_keys2, .ssh/config (ProxyCommand runs) or .ssh/rc (runs
+        # at each login)
+        start = ("/Users/u/.zshenv", "/Users/u/.zlogin", "/home/u/.bash_login", "/home/u/.config/fish/config.fish",
+                 "/home/u/.config/fish/conf.d/x.fish", "/etc/zshenv", "/etc/bashrc", "/etc/zsh/zshrc", "/home/u/.ZSHENV")
+        for pack, engine, e in self.every_pack():
+            for path in start:
+                with self.subTest(pack=pack, engine=engine, path=path):
+                    d = e.decide("Write", {"file_path": path, "content": "x"})
+                    self.assertEqual((d["verdict"], "TK-A010" in d["rule_ids"]), ("ask", True), d)
+            for path in ("/home/u/project/fish/config.fish.example", "/home/u/project/zshenv.md"):
+                with self.subTest(pack=pack, engine=engine, path=path):
+                    self.assertNotIn("TK-A010", e.decide("Write", {"file_path": path, "content": "x"})["rule_ids"])
+            for command in ("echo key >> ~/.ssh/authorized_keys2", "cp x ~/.ssh/config", "tee ~/.ssh/rc < x",
+                            "printf 'Host *\\n ProxyCommand x\\n' > ~/.ssh/config"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D010" in d["rule_ids"]), ("deny", True), d)
+            for command in ("grep Host ~/.ssh/config", "cat ~/.ssh/config", "cp ~/.ssh/config /tmp/ssh_config.bak"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-D010", e.decide("Bash", {"command": command})["rule_ids"])
+
     def test_a_download_into_an_interpreter_is_held_wherever_the_command_starts(self):
         # the 1.5.3 sweep: TK-A046 read curl only at the start of the line, so after cd &&, set -e;, a subshell or
         # time it was only flagged; and json.tool, which only pretty-prints, was held as a script
@@ -2931,6 +2954,15 @@ class PackReading(unittest.TestCase):
                            ("Bash", {"command": "aws s3 rm s3://data/one.txt --re-x"})):
             with self.subTest(tool=tool, args=args):
                 self.assertFalse({"TK-C010", "TK-A031"} & set(self.server.decide(tool, args)["rule_ids"]))
+
+    def test_a_private_key_with_a_suffix_in_its_name_is_a_credentials_file_and_a_certificate_is_not(self):
+        # the 1.5.3 sweep: TK-S004 read an .ssh key name of letters and digits only, so id_rsa_work and id_ed25519_sk
+        # were allowed, and id_rsa-cert.pub (a public certificate) was denied
+        self.check(self.server, [("Read", {"file_path": f"/home/app/.ssh/{n}"}) for n in (
+            "id_rsa", "id_rsa_work", "id_ed25519_sk", "id_ecdsa-backup")], "deny")
+        for n in ("id_rsa.pub", "id_rsa-cert.pub", "id_ed25519_sk.pub", "known_hosts"):
+            with self.subTest(name=n):
+                self.assertNotIn("TK-S004", self.server.decide("Read", {"file_path": f"/home/app/.ssh/{n}"})["rule_ids"])
 
     def test_a_url_in_an_mcp_or_app_tools_arguments_reads_as_the_address_it_is(self):
         # the 1.5.3 sweep: an MCP, app or unknown tool's target was only its arguments as JSON, so TK-S001 read a

@@ -89,7 +89,7 @@ deny:
     # or a redirection into one (a read redirected from one, `< .env`, too: the target doesn't say which way it goes).
     # Every .env variant, templates included: a whole command can name several files, so no `unless` here. A suffix
     # after `.env` (`.env.local`) only on a file named so: after any prefix too (`a.env.env…`), it would rescan
-    pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|authorized_keys)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials)$'
+    pattern: '^(cp|mv|install)( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys2?)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials|\.ssh/(config|rc))$|^tee( [\w\W]*?)?[ /]([^ /]*?(\.env|id_rsa|id_ed25519|authorized_keys2?)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials|\.ssh/(config|rc))( |$)|^([^ =]*?/)?([^ /=]*?(\.env|id_rsa|id_ed25519|authorized_keys2?)|\.env\.[A-Za-z0-9._-]+|\.aws/credentials|\.ssh/(config|rc))$'
     reason: writing to a credentials file from the shell
     remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
@@ -647,7 +647,8 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)library/launch(agents|daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init(\.d)?|rc\.local|xdg/autostart|profile\.d)(/|$)|(^|/)etc/(cron[^/]*|profile|bash\.bashrc|rc[^/]*\.d)(/|$)|(^|/)var/spool/cron(/|$)|(^|/)(\.bashrc|\.bash_profile|\.profile|\.zshrc|\.zprofile)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
+    # shell start and end files: bash's, zsh's (a home's and /etc's, Debian's /etc/zsh/) and fish's
+    pattern: '(^|/)library/launch(agents|daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init(\.d)?|rc\.local|xdg/autostart|profile\.d)(/|$)|(^|/)etc/(cron[^/]*|profile|bash\.bashrc|bashrc|zshenv|zshrc|zprofile|zlogin|zlogout|zsh|rc[^/]*\.d)(/|$)|(^|/)var/spool/cron(/|$)|(^|/)(\.bashrc|\.bash_profile|\.bash_login|\.bash_logout|\.profile|\.zshenv|\.zshrc|\.zprofile|\.zlogin|\.zlogout)(/|$)|(^|/)(\.config|etc)/fish/(config\.fish$|conf\.d/)|(^|/)(usr/)?lib/systemd/(system|user)/'
     reason: adding something that runs at every login or boot
     remedy: Have a person approve the held call, or keep the file in the project and start the program when it is needed.
     rationale: Startup items and service definitions outlive the agent's session; a person confirms each one.
