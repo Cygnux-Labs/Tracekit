@@ -1153,6 +1153,8 @@ def stdin_text():
 def entry(harness=None, event=None):
     """event: the hook event the command names (OpenCode's plugin does), or None."""
     harness = harness or (sys.argv[1] if len(sys.argv) > 1 else "")
+    if harness.endswith(";"):   # Qwen Code before 0.15.0 runs the Windows command under cmd.exe, which hands PowerShell's
+        harness, event = harness[:-1], None   # tail (_command) to the hook as arguments: `qwen;`, then the tail's words
     if harness not in HARNESSES:
         closed = H.fail_closed()
         print(f"usage: python -m tracekit.agent_hooks {{{'|'.join(HARNESSES)}}} [EVENT]; "
