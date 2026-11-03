@@ -4,12 +4,18 @@
 # To allow a host TK-B002 or TK-B003 denies, or to set the domains typing is allowed on (TK-B011), extend this pack and redefine
 # the rule with the same id: a rule in the extending file replaces the parent's.
 
-version: '2026.10-browser-5'
+version: '2026.10-browser-6'
 description: browser agents (Browser Use)
 unknown_tools: ask
 
 tools:
   'browser_use:*': browser
+  # browser MCP servers' tools that load a URL (Playwright's, Puppeteer's), by their bare names: an MCP call is also
+  # decided under its bare name (mcp:<server>/browser_navigate, mcp__<server>__browser_navigate), so TK-B001..B003 read
+  # its URL
+  browser_navigate: browser
+  browser_tab_new: browser
+  puppeteer_navigate: browser
 
 # a page's content is untrusted
 untrusted: [browser]

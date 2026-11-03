@@ -297,8 +297,9 @@ class Engine:
         """shell: each command's argv without its data words (shell.data_words), the redirection targets, assignments
         and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
         writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
-        mcp, app and unknown tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
-        decimal, hex, octal or IPv6 form reads as the address it is."""
+        mcp, app and unknown tools: the whole call. Each URL (of those tools: in any string of the call) is also matched
+        as scheme://canonical-host/ (classes.url_target), so a host in decimal, hex, octal or IPv6 form reads as the
+        address it is."""
         if cls == "shell":
             commands = parsed[0]
             words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in commands
@@ -329,7 +330,10 @@ class Engine:
             to = fields.get("receiver")
             receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
             return receiver + [canonical(args.get("params"))]
-        return [canonical(args)] if cls in ("mcp", "app", "unknown") else []
+        if cls not in ("mcp", "app", "unknown"):
+            return []
+        return [canonical(args)] + [t for t in map(classes.url_target, (u for s in _strings(args) for u in _URL.findall(s)))
+                                    if t]
 
 
 def _shell(args, persistent_target=None):
@@ -770,6 +774,15 @@ def _command_effects(commands):
 
 def _flat(values):
     return [x for v in values for x in (_flat(v) if isinstance(v, list) else [v])]
+
+
+def _strings(value):
+    """Every string in a JSON value, its objects' keys too."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in [k] + _strings(v)]
+    return [s for v in value for s in _strings(v)] if isinstance(value, list) else []
 
 
 def _prepare(subjects):
