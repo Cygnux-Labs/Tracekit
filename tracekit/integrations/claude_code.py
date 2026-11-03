@@ -79,7 +79,7 @@ import uuid
 import warnings
 from collections import deque
 
-from tracekit import __version__, constraints, privacy
+from tracekit import __version__, constraints, model_receipt, privacy
 from tracekit.client import system_config
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
@@ -618,6 +618,9 @@ def _post(client, p, sid, tid):
     value = resp if resp is not None else ""
     if not (call.get("send_result") and sendable(value)):   # an untrusted tool's result goes itself, for provenance
         value = privacy.content(value, cc, dotenv)
+        receipts = model_receipt.receipts(p.get("tool_name"), ti, p.get("cwd"))
+        if receipts:   # the weights files the call wrote, next to the result's digest: the hook's report
+            value["model_receipts"] = receipts
     _run(client, sid, register=False, send="complete", tool_call_id=tid, decision_id=call["decision_id"],
          args_digest=call["args_digest"], status="ok" if ok else "error", result=value)
     os.remove(path)
