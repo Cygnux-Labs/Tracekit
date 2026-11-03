@@ -1620,20 +1620,23 @@ class TimedAndBraced(unittest.TestCase):
 
     def test_a_backslash_newline_is_gone_before_bash_reads_the_words(self):
         """bash deletes an unquoted backslash-newline first, so it can't hide a keyword, an assignment, a heredoc's
-        unquoted delimiter or a variable's name; between $ and ( { or a quote, or inside a redirection, the line is
-        unreadable."""
+        unquoted delimiter, a variable's name or a $'...' quote (1.5.2 read `$\\<nl>'x'` too); between $ and ( or {, or
+        inside a redirection, the line is unreadable."""
         c = "\\\n"
         for line, want in (("ti" + c + "me { alpha x; }", [["alpha", "x"]]), ("time" + c + " { alpha x; }", [["alpha", "x"]]),
                            ("{" + c + " alpha x; }", [["alpha", "x"]]), ("!" + c + " alpha x", [["alpha", "x"]]),
                            ("for i in 1; d" + c + "o alpha x; done", [["alpha", "x"]]),
                            ("Y" + c + "=1 alpha x", [["alpha", "x"]]), ("al" + c + "pha -r" + c + "f x", [["alpha", "-rf", "x"]]),
                            ("alpha 'a" + c + "b'", [["alpha", "a" + c + "b"]]), ("alpha $" + c + "HOME", [["alpha", "$HOME"], ["alpha"]]),
-                           ("alpha $" + c + " x", [["alpha", "$", "x"]])):
+                           ("alpha $" + c + " x", [["alpha", "$", "x"]]), ("alpha $" + c + "'\\x2drf' x", [["alpha", "-rf", "x"]]),
+                           ("alpha $" + c + '"x" y', [["alpha", "x", "y"]]), ('alpha "$' + c + '\'x"', [["alpha", "$'x"]])):
             self.assertEqual(argvs(line), want, line)
         self.assertIn(["alpha"], argvs("alpha $" + c + "X"))   # an expansion, empty too
+        d = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0]).decide("Bash", {"command": "echo $" + c + "'x' ; bash -c 'sudo id'"})
+        self.assertEqual((d["verdict"], "TK-D001" in d["rule_ids"]), ("deny", True))   # as 1.5.2 decided it
         self.assertIn(["alpha", "x"], argvs("cat <<E" + c + "OF\n$(alpha x)\nEOF"))
         self.assertIn(["alpha", "x"], argvs("cat <<EOF\nx\nEO" + c + "F\nalpha x\nEOF"))   # the body ends at EO\<nl>F
-        for line in ('alpha "$' + c + '(beta x)"', "alpha $" + c + "'\\x2drf' x", "alpha $" + c + '{X+"}"}{-r,-f} x',
+        for line in ('alpha "$' + c + '(beta x)"', "alpha $" + c + '{X+"}"}{-r,-f} x',
                      "f" + c + "unction g { alpha x; }; g", "alpha x 2" + c + "> out", "alpha x {fd}" + c + "> out",
                      "true $(( $" + c + "(alpha x) ))", "y='$(alpha x)'; (" + c + "( z = a[$y] ))",
                      "y='$(alpha x)'; $(" + c + "( a[$y] ))", "y='$(alpha x)'; le" + c + "t z=a[$y]"):
