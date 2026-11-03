@@ -7,6 +7,11 @@ make install        # editable install with dev extras
 make check          # lint + tests + build
 ```
 
+## Picking an issue
+
+Claim one good first issue at a time: comment on it and wait to be assigned before you start. That leaves the others
+for other first-time contributors.
+
 ## Tests and evals
 
 - Tests are plain `unittest` classes run by pytest (`make test`, about 15 minutes on a laptop: many start a real
