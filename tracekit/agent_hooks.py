@@ -246,7 +246,10 @@ def tool(harness, name, ti):
             return "mcp__" + name, ti
         return GOOSE_TOOLS.get(name, name), ti
     if harness == "antigravity":
-        if name == "manage_task" and ti.get("Action") == "send_input":   # input typed into a background run_command
+        # agy is a Go binary that may match a tool's name, as its arguments, ignoring case: a known name is read so.
+        # manage_task's send_input is input typed into a background run_command
+        name = name.casefold() if name.casefold() in (*AGY_TOOLS, "manage_task") else name
+        if name == "manage_task" and str(ti.get("Action")).casefold() == "send_input":
             ti["command"] = ti.get("Input")
             return "Bash", ti
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
@@ -490,7 +493,7 @@ def _blocked_tool(harness, tool_name, raw=""):
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
     if harness != "crush":
         return None
-    if tool_name in CRUSH_SUBAGENTS:
+    if tool_name.casefold() in CRUSH_SUBAGENTS:   # as its argument names, Crush may match a tool's name ignoring case
         return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
                 "can't decide them; make each call itself instead. To stop Crush offering it, set "
                 '"options": {"disabled_tools": ["agent", "agentic_fetch"]} in crush.json.')
@@ -525,8 +528,8 @@ def _blocked_agy_args(name, args):
             args = json.loads(args, object_pairs_hook=_Pairs)
         except ValueError:
             return None
-    read = {f.casefold(): f for f in (*AGY_ARGS.get(name, {}).values(),
-                                      *(("Action", "Input") if name == "manage_task" else ()))}
+    read = {f.casefold(): f for f in (*AGY_ARGS.get(name.casefold(), {}).values(),
+                                      *(("Action", "Input") if name.casefold() == "manage_task" else ()))}
     seen = set()
     for k, _ in args if isinstance(args, _Pairs) else ():
         f = k.casefold()
