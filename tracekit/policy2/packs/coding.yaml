@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-52'
+version: '2026.10-v2-53'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -208,7 +208,12 @@ ask:
   - id: TK-A046
     class: shell
     field: code
-    pattern: '^(sudo\s+)?(curl|wget)[^|;&\n]*\|\s*(sudo\s+)?(?:/[A-Za-z0-9._+-]{1,64}){0,8}/?((ba|z|da)?sh|python3?|perl|ruby|node)\b[^\n]*(\s(-c|-e|--eval|--execute)(\s|$)|\s[^-][^\s;&|)]*(\.py|\.js|\.pl|\.rb|\.php|\.lua)?(\s|$))'
+    # curl or wget where a command starts (the line's start or after a separator, as TK-A040 reads its client; after
+    # up to four keywords, assignments or wrappers such as then, time -p, env, nice -n 5, timeout 5, sudo; by a path
+    # too), piped, through up to four more stages (base64 -d, tee), into an interpreter (a path, sudo, env and a
+    # versioned python too) whose own words give it inline code (-c, -e) or a script: a word that is no option.
+    # `python3 -m json.tool` only pretty-prints, so json.tool is no script (the alternatives spell every other word)
+    pattern: '(^|[|;&({!`]\s*)((then|do|else|if|elif|while|until|time|exec|command|builtin|nohup|env|nice|timeout|stdbuf|sudo|doas)(\s(-[^\s]*|[0-9][^\s]*|[A-Za-z_][A-Za-z0-9_]*=[^\s]*))*\s+|[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+){0,4}([^\s|;&(){}`]{0,256}/)?(curl|wget)[^|;&\n]*(\|[^|;&\n]+){0,4}?\|\s*(sudo\s+)?((?:/[A-Za-z0-9._+-]{1,64}){0,8}/?env\s+)?(?:/[A-Za-z0-9._+-]{1,64}){0,8}/?((ba|z|da)?sh|python[0-9.]*|perl|ruby|node)(\s[^\s;&|]*)*?\s((-c|-e|--eval|--execute)(\s|$)|([^-\s;&|)j][^\s;&|)]*|j([^\s;&|)s][^\s;&|)]*|s([^\s;&|)o][^\s;&|)]*|o([^\s;&|)n][^\s;&|)]*|n([^\s;&|).][^\s;&|)]*|\.([^\s;&|)t][^\s;&|)]*|t([^\s;&|)o][^\s;&|)]*|o([^\s;&|)o][^\s;&|)]*|o([^\s;&|)l][^\s;&|)]*|l[^\s;&|)]+)?)?)?)?)?)?)?)?)(\s|$))'
     reason: downloaded data passed to an interpreter
     remedy: Have a person check what the interpreter does with the downloaded input before approving it.
     rationale: Inline code and script paths can execute downloaded input in ways the policy cannot determine from the command.
