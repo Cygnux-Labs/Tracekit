@@ -903,8 +903,11 @@ def _command(harness, ev, v2, python):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
     c = m.group(1) + c[m.end():] if m else f"& {c}"
-    # Windows PowerShell hands a native exit 2 back as 1, and Qwen Code blocks a call only at 2
-    return c + "; exit $LASTEXITCODE" if harness == "qwen" else c
+    # Windows PowerShell hands a native exit 2 back as 1, and Qwen Code blocks a call only at 2; a PreToolUse hook whose
+    # Python didn't run or failed exits 2 ($LASTEXITCODE isn't enough: the profile Qwen Code doesn't skip may set it)
+    if harness != "qwen":
+        return c
+    return c + ("; if ($?) { exit $LASTEXITCODE } else { exit 2 }" if ev in PRE else "; exit $LASTEXITCODE")
 
 
 def _merge(hooks, path, events, entry, uninstall, flat=False):

@@ -139,6 +139,18 @@ class Mapping(HarnessCase):
         self.assertEqual((code, out), (2, ""))   # the name before goose 1.56, prefixed
         self.assertEqual(self.sent, [])
 
+    def test_qwen_under_cmd_exe_decides_the_payloads_event(self):
+        # the review of #547: Qwen Code before 0.15.0 runs the hook under cmd.exe, which hands PowerShell's tail to it
+        # as arguments; `PreToolUse;` replaced the payload's event, no event matched, and the call ran unchecked
+        self.decision = "deny"
+        payload = {"session_id": "qw-9", "cwd": "/w", "transcript_path": None, "hook_event_name": "PreToolUse",
+                   "tool_name": "run_shell_command", "tool_use_id": "toolu_90",
+                   "tool_input": {"command": "rm -rf build"}}
+        code, _, err = self.hook("qwen", payload, "PreToolUse;")
+        self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_90"), err)
+        code, _, err = self.hook("qwen", dict(payload, hook_event_name=None, tool_use_id="toolu_91"), "PreToolUse;")
+        self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_91"), err)   # else the name it starts with
+
     def test_qwen(self):
         self.check("qwen")
 

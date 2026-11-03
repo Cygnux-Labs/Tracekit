@@ -106,7 +106,8 @@ milliseconds (versions since September 2026 in seconds, but 1000 or more still a
 either way, for `PreToolUse`, so a person has time to approve a held call), and
 runs a project's hooks only in a trusted folder. On Windows it runs a hook under cmd.exe or Git Bash, by how it was
 started, unless the hook names its `"shell"`: `init` writes `"shell": "powershell"` and the command in PowerShell's
-form, as for Codex and Gemini CLI, ending in `; exit $LASTEXITCODE` so that a block's exit 2 gets through PowerShell.
+form, as for Codex and Gemini CLI, ending in `; exit $LASTEXITCODE` so that a block's exit 2 gets through PowerShell
+(a `PreToolUse` hook whose Python didn't run or failed exits 2, so the call is blocked).
 
 A call on several files (a patch's `paths`, the files of a Gemini CLI or Qwen Code `read_many_files`) or URLs (a
 `web_fetch`'s `urls`) is decided on each: a rule that matches any of them applies.

@@ -27,6 +27,7 @@ never changes a hook's answer: a failure prints a line and the hook goes on.
 import contextlib
 import json
 import os
+import re
 import stat
 import sys
 import warnings
@@ -51,6 +52,11 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         p = json.loads(raw) if raw.strip() else {}
     except (ValueError, RecursionError):   # nested too deep to read
         p = None
+    if event and not re.fullmatch(r"[A-Za-z][\w.]*", event):
+        # not an event's name: cmd.exe hands a PowerShell tail to the hook as arguments (`PreToolUse;`, under Qwen
+        # Code before 0.15.0, which ignores a hook's "shell"). The payload's own event decides, else the name the
+        # argument starts with
+        event = (p.get("hook_event_name") if isinstance(p, dict) else None) or re.match(r"[A-Za-z]*", event).group()
     if not isinstance(p, dict) and event:
         pre = event in agent_hooks.PRE
         msg = f"[tracekit] the {event} hook payload is not a JSON object; " + (

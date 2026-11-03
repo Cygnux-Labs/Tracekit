@@ -1093,8 +1093,25 @@ class Installer(unittest.TestCase):
                 with open(agent_hooks.config_path(harness, d)) as f:
                     hook = json.load(f)["hooks"][ev][0]["hooks"][0]
                 self.assertTrue(hook["command"].startswith(f'& "{exe}" -I '), hook)
-                self.assertEqual(hook["command"].endswith("; exit $LASTEXITCODE"), harness == "qwen", hook)
+                self.assertEqual("exit $LASTEXITCODE" in hook["command"], harness == "qwen", hook)
                 self.assertEqual(hook.get("shell"), "powershell" if harness == "qwen" else None, hook)
+        # the review: every Qwen Code event runs under PowerShell with the tail, a PreToolUse failing closed; a path
+        # that needs no quotes goes bare, which cmd.exe (Qwen Code before 0.15.0) runs too
+        for exe, start in ((r"C:\Program Files\Python312\python.exe", '& "{}" -I '),
+                           (r"C:\Python312\python.exe", "{} -I ")):
+            with mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", exe), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("qwen", d, v2=True)
+            with open(agent_hooks.config_path("qwen", d)) as f:
+                hooks = json.load(f)["hooks"]
+            self.assertEqual(len(hooks), 6)
+            for ev, groups in hooks.items():
+                with self.subTest(exe=exe, ev=ev):
+                    hook = groups[0]["hooks"][0]
+                    self.assertEqual(hook.get("shell"), "powershell")
+                    self.assertTrue(hook["command"].startswith(start.format(exe)), hook)
+                    self.assertTrue(hook["command"].endswith("; if ($?) { exit $LASTEXITCODE } else { exit 2 }"
+                                                              if ev == "PreToolUse" else "; exit $LASTEXITCODE"), hook)
         with mock.patch("os.name", "posix"), contextlib.redirect_stdout(io.StringIO()):
             agent_hooks.install("qwen", d, v2=True)
         with open(agent_hooks.config_path("qwen", d)) as f:
