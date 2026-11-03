@@ -339,6 +339,16 @@ class Mapping(HarnessCase):
         self.assertEqual((code, out), (2, ""))
         self.assertIn("tool call blocked", err)
 
+    def test_kilo_notebook_execute_is_denied_before_the_signer(self):
+        # Kilo's notebook_execute runs a notebook cell no command rule has read: denied before any decide request
+        code, out, err = self.hook("kilo", {"session_id": "kc-9", "hook_event_name": "tool.execute.before",
+                                            "tool_name": "notebook_execute", "tool_use_id": "kc-9",
+                                            "tool_input": {"path": "a.ipynb", "expected_revision": "r1", "index": 0}},
+                                   "tool.execute.before")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("native_notebook_tools", err)
+        self.assertEqual(self.sent, [])
+
     def test_signer_unreachable_is_fail_closed_by_default(self):
         os.environ["TRACEKIT_SIGNER"] = os.path.join(os.environ["HOME"], "nowhere.sock")
         code, out, err = self.hook("codex", cases("codex")[0]["payload"])

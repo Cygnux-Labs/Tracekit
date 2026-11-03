@@ -254,6 +254,20 @@ class Harnesses(DaemonCase):
         self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], ["Read", "Bash", "Bash"])
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"], ["allow", "deny", "deny"])
 
+    def test_kilo_notebook_execute_is_denied_in_the_hook(self):
+        # Kilo's notebook_execute runs a cell in the live kernel; the cell's code was written by notebook_edit, decided
+        # on its path alone, so no command rule reads it: the hook denies the tool itself, naming the setting
+        base = {"session_id": "kc-2", "cwd": self.d}
+        code, out, err = self.hook("kilo", {**base, "hook_event_name": "tool.execute.before",
+                                            "tool_name": "notebook_execute", "tool_use_id": "k9",
+                                            "tool_input": {"path": "a.ipynb", "expected_revision": "r1", "index": 0}},
+                                   "tool.execute.before")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("notebook_execute", err)
+        self.assertIn("native_notebook_tools", err)
+        self.assertNotIn("Blocked by tracekit policy", err)   # the hook's own block, not a policy decision
+        self.assertEqual(agent_hooks._blocked_tool("opencode", "notebook_execute"), None)   # not OpenCode's tool
+
     def test_goose_maps_tools_records_results_and_blocks_denied_calls(self):
         # goose's payload names its event `event` and its working directory `working_dir`, and carries a stable
         # tool_call_id; it sends no tool result or error text, so a PostToolUse records no output and a
@@ -1167,6 +1181,19 @@ class Installer(unittest.TestCase):
                 # OpenCode has no such tool: under its own name the policy doesn't know it
                 self.assertEqual(agent_hooks.tool("opencode", name, args)[0], name)
 
+    def test_kilo_generate_image_decides_the_image_it_reads(self):
+        # generate_image reads its `image` (an existing file) and sends it to the image provider: it is decided with
+        # the `path` it writes, so a key file named there is not decided as a write of out.png (generate-image.ts)
+        pol = load_policy()
+        mapped, ti = agent_hooks.tool("kilo", "generate_image",
+                                      {"prompt": "x", "path": "/w/out.png", "image": "/home/u/.ssh/id_rsa"})
+        self.assertEqual((mapped, ti["file_path"], ti["paths"]), ("Write", "/w/out.png", ["/home/u/.ssh/id_rsa"]))
+        self.assertNotEqual(pol.decide(mapped, ti)["verdict"], "allow")
+        self.assertEqual(pol.decide(mapped, {"file_path": "/w/out.png"})["verdict"], "allow")
+        # with no image, only the path it writes: a `paths` the model sent beside it is dropped, as Kilo drops it
+        _, ti = agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "path": "/w/out.png", "paths": ["/w/b"]})
+        self.assertEqual(ti["paths"], [])
+
     def test_cursor_decides_every_path_its_input_names(self):
         # Cursor doesn't document which key its tools read a path from: a decoy file_path beside the path, target_file
         # or filePath a tool reads, or the other way round, must not move the decision off the real file
@@ -1226,7 +1253,7 @@ class Installer(unittest.TestCase):
         agent_hooks.install("opencode", d, python="/opt/tracekit/python")
         with open(path) as f:
             plugin = f.read()
-        self.assertIn(agent_hooks.OPENCODE_MARKER, plugin)
+        self.assertIn(agent_hooks._plugin_marker("opencode"), plugin)
         self.assertIn('["/opt/tracekit/python", "-I", "-m", "tracekit.agent_hooks", "opencode", "tool.execute.before"]',
                       plugin)
         # fail closed, v1 as v2: any exit but 0 (blocked, a crash, Python missing) stops the call before it runs
@@ -1271,6 +1298,8 @@ class Installer(unittest.TestCase):
                 # the same plugin, whose hook is told it runs for Kilo
                 self.assertEqual(plugin, agent_hooks._opencode_plugin("/opt/tracekit/python", v2).replace(
                     '"opencode", "tool.execute', '"kilo", "tool.execute').replace("--agent opencode", "--agent kilo"))
+                self.assertIn("`[tracekit] hook error (", plugin)   # a Kilo user isn't told of an OpenCode error
+                self.assertNotIn("OpenCode", plugin.split("const commands", 1)[1].split("export const", 1)[0])
         self.assertFalse(os.path.exists(agent_hooks.config_path("opencode", d)))
         agent_hooks.install("opencode", d)   # OpenCode's own plugin is another file, and stays
         agent_hooks.install("kilo", d, uninstall=True)

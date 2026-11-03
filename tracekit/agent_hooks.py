@@ -40,7 +40,8 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
             WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
     Kilo    OpenCode's tools, names and arguments, and OpenCode's plugin; its own background_process, notebook_read,
-            notebook_edit, send_file, generate_image -> Bash, Read, NotebookEdit, Read, Write (decided on their `path`)
+            notebook_edit, send_file, generate_image -> Bash, Read, NotebookEdit, Read, Write (decided on their `path`;
+            generate_image's `image` too); notebook_execute is blocked in the hook
     Crush   bash, view, write, edit, multiedit, lsp_replace_symbol, lsp_rename, ls, grep, glob, fetch, download,
             mcp_<server>_<tool>
             -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
@@ -133,6 +134,9 @@ KILO_TOOLS = {**OPENCODE_TOOLS, "background_process": "Bash", "notebook_read": "
               "send_file": "Read", "generate_image": "Write"}
 KILO_PATH_ARG = {**OPENCODE_PATH_ARG, **dict.fromkeys(("notebook_read", "notebook_edit", "send_file", "generate_image"),
                                                       "path")}
+# Kilo's notebook_execute (VS Code, experimental.native_notebook_tools) runs a cell in the live kernel: the cell's code
+# is in the notebook, not the call, so no rule reads it, and the hook blocks the tool (kilocode/tool/notebook-host.ts)
+KILO_BLOCKED = ("notebook_execute",)
 # the harnesses that load Tracekit's OpenCode plugin: their tool names and the argument each file tool reads
 PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_TOOLS, KILO_PATH_ARG)}
 JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
@@ -231,6 +235,9 @@ def tool(harness, name, ti):
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
         if name in path_arg:
             ti["file_path"] = ti.get(path_arg[name])
+        if harness == "kilo" and name == "generate_image":   # its `image`, an existing file, is read and sent to the
+            # image provider: decided with the `path` it writes
+            ti["paths"] = [ti["image"]] if isinstance(ti.get("image"), str) else []
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
@@ -498,6 +505,11 @@ def _blocked_tool(harness, tool_name, raw=""):
     if harness == "goose" and name in GOOSE_CODE_MODE:
         return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
+    if harness == "kilo" and tool_name in KILO_BLOCKED:
+        return (f"Blocked by Tracekit: Kilo's {tool_name} runs a notebook cell in the live kernel, and the cell's code "
+                "isn't in the call, so Tracekit can't decide what it runs. It is on only with "
+                '"experimental": {"native_notebook_tools": true} in kilo.json; leave that off and run code through '
+                "bash instead.")
     if harness != "crush":
         return None
     if tool_name in CRUSH_SUBAGENTS:
@@ -786,9 +798,6 @@ def _plugin_marker(harness):
     return f"// Installed by Tracekit; tracekit uninstall --agent {harness} removes this file."
 
 
-OPENCODE_MARKER = _plugin_marker("opencode")
-
-
 def _opencode_plugin(python, v2, harness="opencode"):
     """The local OpenCode plugin (Kilo's too: harness). OpenCode runs plugins with Bun and awaits a before hook, so the
     hook's process, spawned without blocking OpenCode's event loop (parallel calls are decided at once), holds the call
@@ -829,7 +838,7 @@ async function tracekit(event, input, toolInput, toolResponse) {{
     return killed ? {{ code: 1, message: `[tracekit] the hook did not answer in ${{KILL_MS / 1000}} s: stopped` }}
       : {{ code: hook.exitCode, message: message.trim() }};
   }} catch (error) {{
-    return {{ code: 1, message: `[tracekit] OpenCode hook error (${{error}})` }};
+    return {{ code: 1, message: `[tracekit] hook error (${{error}})` }};
   }} finally {{
     clearTimeout(timer);
   }}
