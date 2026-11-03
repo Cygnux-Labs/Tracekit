@@ -1311,7 +1311,8 @@ class Shell(unittest.TestCase):
             for e in (Engine(pol), Engine(pol, "regex")):
                 start = time.perf_counter()
                 e.decide("Bash", {"command": cmd})
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER, (cmd[:30], e.engine))   # ~0.3 s on a laptop
+                # ~0.3 s on a laptop; the budget follows the machine, as the pattern budgets do (#518)
+                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * machine_scale(), (cmd[:30], e.engine))
         cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
         self.assertEqual(Engine(pol).decide("Bash", {"command": cmd})["verdict"], "allow")
 
@@ -1329,7 +1330,8 @@ class Shell(unittest.TestCase):
             for e in (Engine(pol), Engine(pol, "regex")):
                 start = time.perf_counter()
                 d = e.decide("Bash", {"command": cmd})
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER, (pack, e.engine))   # ~0.25 s on a laptop
+                # ~0.25 s on a laptop (1.5.2 took 5 s before its fix); the budget follows the machine (#518)
+                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * machine_scale(), (pack, e.engine))
                 self.assertIn(d["verdict"], ("ask", "deny"), (pack, e.engine))
 
     def test_an_assignment_is_read_within_its_word(self):
