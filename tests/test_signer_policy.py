@@ -2455,7 +2455,9 @@ class CodingPack(unittest.TestCase):
 
     def test_a_tool_name_of_underscores_is_decided_without_the_fallback_timeout(self):
         for pack, engine, e in self.every_pack():
-            for tool in ("mcp__" + "_" * 4000 + "x", "mcp__x__" + "get_secret_" * 5000, "mcp__x__" + "run_" * 12000):
+            # and of TK-C002's own words: each `grant` read on to the end, from every place a role word stood (8 s)
+            for tool in ("mcp__" + "_" * 4000 + "x", "mcp__x__" + "get_secret_" * 5000, "mcp__x__" + "run_" * 12000,
+                         "mcp__x__" + "grant_role_" * 400 + "!", "mcp:x/" + "grantRole" * 450 + "!"):
                 with self.subTest(pack=pack, engine=engine, tool=tool[:20]):
                     self.assertIsNone(e.decide(tool, {"a": 1}).get("nondeterministic"))
 
@@ -3327,7 +3329,10 @@ class PackReading(unittest.TestCase):
             "mcp:s3/grant_access_to_bucket", "mcp__gcp__grant_project_iam_role",
             # a grant of permissions in snake or camel case is one (Wassette's kebab-case sandbox grants aren't)
             "mcp:aws/grant_permissions", "mcp:lakeformation/batch_grant_permissions", "mcp__databricks__grant_permissions",
-            "mcp:s3/grant_bucket_permission", "mcp:x/GRANT_PERMISSIONS", "mcp:x/grantPermission")])
+            "mcp:s3/grant_bucket_permission", "mcp:x/GRANT_PERMISSIONS", "mcp:x/grantPermission",
+            # the last review: what follows the grant's last word was cut at 8 characters
+            "mcp:x/grant_permissions_to_user", "mcp:x/grantPermissionsToServiceAccount",
+            "mcp__aws__grant_permissions_to_principal", "mcp:x/grant_table_permissions_lakeformation")])
         # a grant names what it grants: a reviewers list or a list of grants is a read
         self.rule_on_server("TK-C002", [(t, {}) for t in ("mcp:github/grant_reviewers_list", "mcp:kms/list_grants",
                                                           "mcp:x/grantee_report",
@@ -3901,6 +3906,14 @@ class SignerPolicy(unittest.TestCase):
                                   tcid="tc-b")["decision"], ("allow", "flag"))
         self.open()
         self.assertEqual(self.decide("mcp__demo__tracekit_demo_denied", {})["decision"], "deny")
+
+    def test_a_grant_inside_a_longer_word_is_denied_as_mcp_server_tool(self):
+        # the last review: in the `__` form TK-C002's word follows a separator, but the signer also decides the name
+        # as mcp:<server>/<tool>, where the word may stand anywhere
+        self.open(svc.load_policy(os.path.join(PACKS, "server.yaml")))
+        for i, tool in enumerate(("mcp__lf__BatchGrantPermissions", "mcp:lf/BatchGrantPermissions")):
+            d = self.decide(tool, {"principal": "agent"}, tcid=f"tc-{i}")
+            self.assertEqual((d["decision"], "TK-C002" in d["rule_ids"]), ("deny", True), d)
 
     def test_gemini_clis_mcp_names_reach_the_server_packs_mcp_rules_and_stay_held(self):
         # final review of the 1.5.3 sweep: Gemini CLI's mcp_<server>_<tool>, named mcp__<server>_<tool> by the hook,
