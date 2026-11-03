@@ -44,7 +44,7 @@
 {"tool": "Bash", "args": {"command": "sudo${IFS}id"}, "expect": "deny", "note": "words split at an unquoted $IFS, as bash splits them"}
 {"tool": "Bash", "args": {"command": "$(echo sudo) id"}, "expect": "ask", "note": "command name built by an expansion"}
 {"tool": "Bash", "args": {"command": "\"$(printf sudo)\" id"}, "expect": "ask", "note": "command name built by an expansion"}
-{"tool": "Bash", "args": {"command": "x=sudo; $x id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "x=sudo; $x id"}, "expect": "deny", "note": "a variable the line gives a literal is read as it"}
 {"tool": "Bash", "args": {"command": "${X:-sudo} id"}, "expect": "ask", "note": "command name built by an expansion"}
 {"tool": "Bash", "args": {"command": "rm${IFS}-rf${IFS}/"}, "expect": "deny", "note": "words split at an unquoted $IFS, as bash splits them"}
 {"tool": "Bash", "args": {"command": "bash --rcfile /dev/null -c 'sudo id'"}, "expect": "deny", "note": "shell option with a value"}
