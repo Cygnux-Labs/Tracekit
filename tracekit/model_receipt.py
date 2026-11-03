@@ -19,13 +19,14 @@ import argparse
 import hashlib
 import math
 import os
+import re
 import stat
 import sys
 import time
 
 from . import constraints
 from .format.canon import canonical, loads_strict
-from .policy2.classes import PATH_KEYS
+from .policy2.classes import PATH_KEYS, SHELL_KEYS
 
 WEIGHTS = (".safetensors", ".gguf", ".pt", ".pth", ".ckpt")
 # the tools the hook receipts, by the names every harness's hook gives them (agent_hooks.tool): only their results
@@ -46,6 +47,10 @@ MAX_HEADER = 2 * MAX_TENSORS + (256 << 10)
 MAX_TEXT = 4096   # characters of a path or a reason a receipt records (Linux's PATH_MAX)
 MAX_FILES = 4   # receipts in one call's result: with MAX_TENSORS and MAX_TEXT, under half a frame (sdk sendable)
 ZERO = "sha256:" + "0" * 64
+# a lone & (not &&, 2>&1, &> or |&) or coproc in a command's text: a command the line leaves running. Read off the raw
+# text, as the policy's parser keeps no mark of it, so a & inside quotes counts too (refused, not guessed); that parser
+# reads no path in a coproc line today, so coproc refuses only once it does
+BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])|\bcoproc\b")
 # a call's receipts when they would take its result past the half frame a result may use (claude_code._post)
 TOO_LARGE = {"refused": "the receipts would take the call's result past the half frame a result may use",
              "reported_by": "hook"}
@@ -70,16 +75,18 @@ def _named(tool, args, later=False):
     """[(path, why the hook can't place it, or None)] of the weights files call (`tool`, `args`) of one of TOOLS
     writes, as it names them: a write tool's path, or a Bash command's write targets (constraints.shell); none for
     another tool. Refused rather than guessed: a path starting with `~`; every path of a call whose writes may land
-    after the hook reads (`later`, run_in_background or Qwen Code's is_background, constraints.shell's `later`:
-    systemd-run, at), or of a command line whose paths are elsewhere (constraints.shell's `elsewhere`: cp -t, git -C,
-    env --chdir, chroot, ssh, ...); and a relative one when the command changes directory (`cd`: cd, pushd, popd, git
-    --work-tree)."""
+    after the hook reads (`later`, run_in_background or Qwen Code's is_background, a BACKGROUND & or coproc,
+    constraints.shell's `later`: systemd-run, at), or of a command line whose paths are elsewhere (constraints.shell's
+    `elsewhere`: cp -t, git -C, env --chdir, chroot, ssh, ...); and a relative one when the command changes directory
+    (`cd`: cd, pushd, popd, git --work-tree)."""
     args = args if isinstance(args, dict) else {}
     if tool in WRITERS:
         paths, s = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")], {}
     elif tool == "Bash":
         s = constraints.shell(args)
         paths = s["paths"]
+        later = later or any(BACKGROUND.search(v) for k in SHELL_KEYS for v in (
+            args[k] if isinstance(args.get(k), list) else [args.get(k)]) if isinstance(v, str))
     else:
         return []
     later = later or s.get("later") or any(args.get(k) for k in ("run_in_background", "is_background"))

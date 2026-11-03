@@ -272,6 +272,18 @@ class Receipts(Base):
                             ({"command": "cp new.pt model.safetensors"}, True)):
             self.assertEqual([r["refused"] for r in model_receipt.receipts("Bash", args, self.d, later)], [LATER], args)
 
+    def test_a_command_the_line_leaves_running_is_refused(self):
+        """Review of 76f4444d: `cp new.pt m.pt &` got a receipt of the file before the copy. A lone & refuses the line;
+        &&, 2>&1 and &> are no background. A coproc line gets none either (the policy's parser reads no path in it)."""
+        for cmd in ("cp new.pt model.safetensors &", "nohup cp a model.safetensors &", "( cp a model.safetensors ) &"):
+            self.assertEqual([r["refused"] for r in model_receipt.receipts("Bash", {"command": cmd}, self.d)], [LATER],
+                             cmd)
+        self.assertEqual(model_receipt.receipts("Bash", {"command": "coproc cp new.pt t.pt; mv t.pt model.safetensors"},
+                                                self.d), [])
+        want = [dict(receipt(self.w), reported_by="hook")]
+        for cmd in ("cp a model.safetensors && ls", "cp a model.safetensors 2>&1", "cp a model.safetensors &> log"):
+            self.assertEqual(model_receipt.receipts("Bash", {"command": cmd}, self.d), want, cmd)
+
     def test_another_commands_t_or_c_flag_refuses_nothing(self):
         """Review of d013a1dd: `grep -C3` or `sort -t,` anywhere in a command refused every weights path in it."""
         want = [dict(receipt(self.w), reported_by="hook")]
