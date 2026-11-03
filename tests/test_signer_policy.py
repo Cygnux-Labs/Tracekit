@@ -3534,7 +3534,10 @@ class PackReading(unittest.TestCase):
             ("mcp:ecr/create_pull_through_cache_rule", {"description": "/root/.aws/credentials"})])
         # what create posts, the word after it: a merge request's or a PR's text is carried, as an issue's is
         self.rule_on_server("TK-S004", [(t, {"title": "x", "body": "see /root/.aws/credentials"}) for t in (
-            "mcp:gitlab/create_merge_request", "mcp:github/create_pr", "mcp:github/createPullRequest")], want=False)
+            "mcp:gitlab/create_merge_request", "mcp:github/create_pr", "mcp:github/createPullRequest",
+            # what create posts may come last too (the last review)
+            "mcp__atlassian__createJiraIssue", "mcp:github/create_github_issue", "mcp:github/create_draft_pull_request",
+            "mcp:x/create_new_issue")], want=False)
         self.rule_on_server("TK-S001", [
             ("mcp:computer/computer", {"action": "type",
                                        "text": "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/"}),

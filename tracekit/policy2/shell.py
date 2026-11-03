@@ -1751,17 +1751,17 @@ class _Parser:
             m = _NAME.match(s, self.i + 1)
             self.i = m.end() if m else self.i + 1
         text = s[start:self.i]
-        # HOME is set: its default, assignment or check is $HOME itself (${HOME:-x}, ${HOME:?}), as the packs name it
-        if _HOME_DEFAULT.fullmatch(text):
-            return _Expansion("$HOME")
+        # HOME is set unless this line set it: its default, assignment or check is $HOME (${HOME:-x}, ${HOME:?}), as the
+        # packs name it; the default stays what it is when HOME is empty
+        home = _HOME_DEFAULT.fullmatch(text) and "HOME" not in self.known
         # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
-        if text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text):
+        if not home and (text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text)):
             return text
         # always nothing, as written too: an empty alternative, a length of 0, all of it removed (${X:+}, ${X:0:0},
         # ${X%%*})
         if re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?\+|:(?![-=?+])[^:{}]*:0+|%%\*|##\*)\}", text):
             return _Expansion("")
-        expansion = _Expansion(text)
+        expansion = _Expansion("$HOME" if home else text)
         if m := re.fullmatch(r"(?s)\$\{\w+:?[-=](.*)\}", text):   # bash runs the word when X is empty (unset, no colon)
             expansion.word = _UNQUOTE.sub(lambda q: next(g for g in q.groups() if g is not None), m.group(1))
             expansion.empty = expansion.word

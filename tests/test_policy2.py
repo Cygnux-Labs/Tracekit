@@ -1592,12 +1592,23 @@ class TimedAndBraced(unittest.TestCase):
                               ("echo ok && ${X##*} sudo id", "TK-D001"), ("${X:-sudo id:0}", "TK-D001"),
                               ("bash -c '${X:-sudo id:0}'", "TK-D001"), ("${ true; }; echo a\\ #b; sudo id", "TK-D001"),
                               ("${ true; }; echo a\\;#b; sudo id", "TK-D001"), ("${ true; }; echo a\\|#b; sudo id", "TK-D001"),
+                              ("${ true; }; echo a\r#b; sudo id", "TK-D001"),   # a CR is a word's character to bash
                               # HOME is set: its default or check is $HOME (1.5.2 only flagged these)
                               ("rm -rf ${HOME:-x}/", "TK-D004"), ("rm -rf ${HOME:?}/", "TK-D004"),
                               ("rm -rf ${HOME=/tmp}/", "TK-D004")):
                 d = e.decide("Bash", {"command": cmd})
                 self.assertIn(rule, d["rule_ids"], (pack, backend, cmd, d))
                 self.assertIn(d["verdict"], ("ask", "deny"), (pack, backend, cmd))
+
+    def test_a_line_that_clears_home_keeps_its_default(self):
+        """The last review of 1.5.3: reading ${HOME:-word} as $HOME (HOME is set) dropped the default where the line
+        itself had cleared HOME, so the file it names went unread."""
+        e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
+        for cmd, rule in (("unset HOME; cat ${HOME:-/root/.aws/credentials}", "TK-S004"),
+                          ("HOME=; cat ${HOME:-/root/.aws/credentials}", "TK-S004"),
+                          ("unset HOME; echo x > ${HOME:-/etc/tracekit}/policy.yaml", "TK-D007")):
+            d = e.decide("Bash", {"command": cmd})
+            self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (cmd, d))
 
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
         """Sweep before 1.5.3: an unreadable line was split at ;, & and | inside quotes too, so text a command only

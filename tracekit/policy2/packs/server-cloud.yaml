@@ -8,7 +8,7 @@
 # tabs, newlines or returns separates words (before the program too), and a scan for a later word ends with the value,
 # so many values each rescan only their own text; aws reads a long option's unique prefix (--rec is --recursive).
 
-version: '2026.10-server-cloud-14'
+version: '2026.10-server-cloud-15'
 description: server-hosted agents, cloud CLIs and cloud MCP tools
 unknown_tools: ask
 
@@ -27,8 +27,10 @@ deny:
     # PascalCase (AttachUserPolicy, setIamPolicy, attach-user-policy, create_cluster_role_binding): a word between
     # them starts after a `_` or `-` or with a capital, so attachment_policy isn't attach…policy. A grant names the
     # access it grants (role, access, privilege, iam, admin, owner), so grant_reviewers_list isn't one, nor Wassette's
-    # grant-network-permission (a sandbox's, held by its own rule); a version suffix may follow (create_access_key_v2)
-    tool: 'mcp(:[^/]+/.*|__.*[_-])([Aa][Tt][Tt][Aa][Cc][Hh](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Pp][Uu][Tt](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Ss][Ee][Tt][_-]?[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Ss][Ee][Rr][Vv][Ii][Cc][Ee][_-]?[Aa][Cc][Cc][Oo][Uu][Nn][Tt][_-]?[Kk][Ee][Yy]|[Rr][Oo][Ll][Ee][_-]?[Aa][Ss][Ss][Ii][Gg][Nn][Mm][Ee][Nn][Tt]|[Cc][Rr][Ee][Aa][Tt][Ee](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Rr][Oo][Ll][Ee][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Gg][Rr][Aa][Nn][Tt]((([_-]|[A-Z])[A-Za-z_-]*)?[_-]?([Rr][Oo][Ll][Ee]|[Aa][Cc][Cc][Ee][Ss][Ss]|[Pp][Rr][Ii][Vv][Ii][Ll][Ee][Gg][Ee]|[Ii][Aa][Mm]|[Aa][Dd][Mm][Ii][Nn]|[Oo][Ww][Nn][Ee][Rr])[A-Za-z_-]*)?|[Gg][Rr][Aa][Nn][Tt]([_A-Z][A-Za-z_]*)?[Pp][Ee][Rr][Mm][Ii][Ss][Ss][Ii][Oo][Nn][A-Za-z_]*)([_-][Vv][0-9]+)?'
+    # grant-network-permission (a sandbox's, held by its own rule), but a grant of permissions in snake or camel case
+    # (grant_permissions, grantPermission; up to 40 characters between, so the fallback engine stays linear) is one;
+    # a version suffix may follow (create_access_key_v2)
+    tool: 'mcp(:[^/]+/.*|__.*[_-])([Aa][Tt][Tt][Aa][Cc][Hh](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Pp][Uu][Tt](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Ss][Ee][Tt][_-]?[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Ss][Ee][Rr][Vv][Ii][Cc][Ee][_-]?[Aa][Cc][Cc][Oo][Uu][Nn][Tt][_-]?[Kk][Ee][Yy]|[Rr][Oo][Ll][Ee][_-]?[Aa][Ss][Ss][Ii][Gg][Nn][Mm][Ee][Nn][Tt]|[Cc][Rr][Ee][Aa][Tt][Ee](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Rr][Oo][Ll][Ee][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Gg][Rr][Aa][Nn][Tt]((([_-]|[A-Z])[A-Za-z_-]*)?[_-]?([Rr][Oo][Ll][Ee]|[Aa][Cc][Cc][Ee][Ss][Ss]|[Pp][Rr][Ii][Vv][Ii][Ll][Ee][Gg][Ee]|[Ii][Aa][Mm]|[Aa][Dd][Mm][Ii][Nn]|[Oo][Ww][Nn][Ee][Rr])[A-Za-z_-]*)?|[Gg][Rr][Aa][Nn][Tt]([_A-Z][A-Za-z_]{0,40})?[Pp][Ee][Rr][Mm][Ii][Ss][Ss][Ii][Oo][Nn][A-Za-z_]{0,8})([_-][Vv][0-9]+)?'
     pattern: '^'
     reason: changing cloud identity or access through an MCP tool
     rationale: The MCP twin of TK-C001.
