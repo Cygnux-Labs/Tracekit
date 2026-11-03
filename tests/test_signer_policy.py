@@ -2945,6 +2945,28 @@ class PackReading(unittest.TestCase):
             "git -c gpg.program='sudo id' commit -S -m x", "git -c sequence.editor='sudo id' rebase -i HEAD~2",
             "vim -c ':!sudo id'", "vim +'r !id'")], "deny")
 
+    def test_ssh_keywords_in_any_case_command_keys_of_git_and_more_vim_and_man_forms_run_a_program(self):
+        """The 1.5.3 sweep: ssh reads its keywords in any case; KnownHostsCommand, scp's and sftp's -o and -S, rsync's
+        -e, git's *.cmd and *Command keys and a `!` submodule update, vim's --cmd, silent !, a range's ! filter,
+        python and lua, and man's -P each ran a program unseen."""
+        self.rule_on_server("TK-S006", [("Bash", {"command": c}) for c in (
+            "ssh -o proxycommand='sh -c y' h", "ssh -oPROXYCOMMAND='sh -c y' h", "ssh -o KnownHostsCommand='sh -c y' h",
+            "scp -o ProxyCommand='sh -c y' a h:b", "scp -S'sh' a h:b", "sftp -o ProxyCommand='sh -c y' h",
+            "rsync -e 'sh -c y' a h:b", "rsync --rsh='sh -c y' a h:b", "rsync -e 'ssh -o ProxyCommand=y' a h:b",
+            "git -c difftool.x.cmd='sh -c y' difftool --tool=x", "git -c mergetool.x.cmd='sh -c y' mergetool --tool=x",
+            "git -c browser.x.cmd='sh -c y' -c web.browser=x help -w log",
+            "git -c gpg.format=ssh -c gpg.ssh.defaultKeyCommand='sh -c y' commit -S -m m",
+            "git -c core.alternateRefsCommand='sh -c y' fetch", "git -c submodule.x.update='!sh -c y' submodule update",
+            "vim --cmd '!sh -c y' f", "vim -c 'silent !sh -c y' f", "vim -c '%!sh -c y' f",
+            "vim -c 'py3 import os; os.system(\"y\")' f", "nvim -c 'lua os.execute(\"y\")' f", "man -P 'sh -c y' ls",
+            "man -P 'less; id' ls")])
+        self.rule_on_server("TK-S006", [("Bash", {"command": c}) for c in (
+            "ssh h grep -i proxycommand /etc/ssh/ssh_config", "ssh -o ConnectTimeout=5 h", "rsync -avz -e ssh a h:b",
+            "rsync -e /usr/bin/ssh a h:b", "rsync -e 'ssh -p 2222' a h:b", "sftp -P 2222 h",
+            "git -c submodule.x.update=rebase submodule update", "git config --get difftool.vscode.cmd",
+            "vim +10 f", "vim -c 'set ft=python' f", "vim -c 'set termguicolors' f", "vim -c 'silent! normal G' f",
+            "man -P cat ls", "man -P 'less -R' ls")], want=False)
+
     def test_tar_options_abbreviated_or_in_a_cluster_and_kubectl_and_helm_spellings(self):
         """The 1.5.2 sweep: tar takes a long option's unique prefix (`--to-com=`, `--use-compress=`) and -I in a
         cluster (-xIsh); kubectl reads a resource as TYPE/NAME, with its group, by a short name and in any case, with
