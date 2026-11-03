@@ -125,9 +125,11 @@ def receipt(path, deadline=math.inf):
     canonical JSON, then its bytes}) and "metadata" (sha256 of the header's `__metadata__` as canonical JSON) for a
     .safetensors file; {"path", "refused": why} for one that can't be read as its format says, past MAX_BYTES, or not
     read by `deadline` (time.monotonic())."""
+    if "\0" in path:   # Python's own words for it differ by version
+        return {"path": path, "refused": "a NUL byte in the path"}
     try:   # O_NONBLOCK: a FIFO in its place must not block the hook
         fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_BINARY", 0))
-    except (OSError, ValueError) as e:   # ValueError: a NUL in the path, or a lone surrogate it can't encode
+    except (OSError, ValueError) as e:   # ValueError: a lone surrogate in the path, which it can't encode
         return {"path": path, "refused": getattr(e, "strerror", None) or str(e)}
     st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode):

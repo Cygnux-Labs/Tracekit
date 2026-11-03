@@ -166,7 +166,7 @@ class Receipt(Base):
             os.mkfifo(self.path("fifo.safetensors"))
             self.assertEqual(receipt(self.path("fifo.safetensors"))["refused"], "not a regular file")
         # review of d9c6ee7c: os.open raises ValueError for these, which the hook didn't catch
-        self.assertEqual(receipt(self.path("m\x00.pt"))["refused"], "embedded null byte")
+        self.assertEqual(receipt(self.path("m\x00.pt"))["refused"], "a NUL byte in the path")
         self.assertIn("surrogates not allowed", receipt(self.path("\ud800.pt"))["refused"])
 
 
@@ -209,7 +209,7 @@ class Receipts(Base):
         out = model_receipt.receipts("Write", {"file_path": self.path("m\x00.pt")}, self.d) + \
             model_receipt.receipts("Bash", {"command": "cp a m.pt"}, self.path("\ud800")) + \
             model_receipt.receipts("Write", {"file_path": "/" + "a" * 10000 + ".pt"}, self.d)
-        self.assertEqual([r["refused"][:20] for r in out], ["embedded null byte", "'utf-8' codec can't ",
+        self.assertEqual([r["refused"][:20] for r in out], ["a NUL byte in the pa", "'utf-8' codec can't ",
                                                              "File name too long"])
         self.assertEqual(out[1]["path"], self.path("\\ud800/m.pt"))
         self.assertEqual(len(out[2]["path"]), model_receipt.MAX_TEXT)
@@ -364,7 +364,7 @@ class HookRecords(Base):
         """Review of d9c6ee7c: a NUL in the path, or a lone surrogate in the payload's cwd (which no decision reads),
         made the hook fail, and the call's result was never recorded; so did running out of time."""
         self.assertEqual(self.call("t1", "Write", {"file_path": self.path("m\x00.safetensors"), "content": "x"})[
-            "model_receipts"][0]["refused"], "embedded null byte")
+            "model_receipts"][0]["refused"], "a NUL byte in the path")
         for tid, odd in (("t2", "\ud800"), ("t3", "\udc80")):
             got = self.call(tid, "Bash", {"command": "cp a model.safetensors"}, cwd=self.path(odd))["model_receipts"]
             self.assertEqual(got[0]["path"], self.path(odd.encode("utf-8", "backslashreplace").decode() +
