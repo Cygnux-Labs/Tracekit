@@ -6,7 +6,10 @@
       "version": "22"
     }
   },
-  "postCreateCommand": "make install",
+  "remoteEnv": {
+    "PATH": "${containerWorkspaceFolder}/.venv/bin:${containerEnv:PATH}"
+  },
+  "postCreateCommand": "python3 -m venv .venv && make install PY=.venv/bin/python",
   "customizations": {
     "vscode": {
       "extensions": ["ms-python.python"]
