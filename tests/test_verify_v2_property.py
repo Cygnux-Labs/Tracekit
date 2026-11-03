@@ -29,10 +29,11 @@ FAST = settings(max_examples=100, deadline=None, derandomize=True, database=None
                 suppress_health_check=[HealthCheck.too_slow])
 
 
-def zipped(entries):
-    """Bundle bytes of (name, data) entries, each manifest.json among them refreshed with the others' hashes."""
+def zipped(entries, like=ENTRIES):
+    """Bundle bytes of (name, data) entries, each manifest.json among them `like`'s, refreshed with the others'
+    hashes."""
     files = {n: b for n, b in entries if n != "manifest.json"}
-    manifest = json.loads(dict(ENTRIES)["manifest.json"])
+    manifest = json.loads(dict(like)["manifest.json"])
     manifest["files"] = {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
     with tempfile.SpooledTemporaryFile() as f:
         with warnings.catch_warnings(), zipfile.ZipFile(f, "w") as z:

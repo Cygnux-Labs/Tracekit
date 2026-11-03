@@ -195,6 +195,11 @@ _RULE = re.compile(r"TK-[A-Z][0-9]{3}")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 _MODEL = re.compile(r"[A-Za-z0-9._:/@+-]{1,128}")
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
+# the files a bundle may hold besides its manifest (format-v2.md §9): no code, no trust config; a misnamed run part or
+# policy snapshot fails a line of its own (run parts, policy snapshot)
+_FILES = re.compile(r"runs/[0-9a-f]{32}(\.part-[0-9]+)?\.jsonl|keys/records\.jsonl|proofs/records\.json"
+                    r"|checkpoints/(registry-)?[0-9]+\.note|rekor/[0-9]+\.json|tsa/[0-9]+\.tsr|policies/.+"
+                    r"|registry/(run-set\.json|records\.jsonl)")
 _VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
 # control characters, and the bidirectional and zero-width format characters that would reorder or hide report text
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
@@ -247,6 +252,7 @@ def _openshell_policy(rep, events):
 # whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
 EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy}
 MAX_UNREAD = 20   # `not interpreted` lines, one per ext name; the rest on one line
+RUN_PROBLEMS = 20   # a run's problems past which its later records go unchecked: forged records cost a verifier little
 
 
 class Unusable(ValueError):
@@ -254,7 +260,8 @@ class Unusable(ValueError):
 
 
 class Damaged(Unusable):
-    """The file isn't a zip, or has no manifest: the report says the bundle file is damaged."""
+    """The file isn't a zip, has no manifest, or an entry whose bytes don't inflate or don't match its CRC-32: the report
+    says the bundle file is damaged."""
 
 
 def _layout(f):
@@ -311,8 +318,9 @@ def _layout(f):
 
 
 def read_zip(path):
-    """{name: bytes} of a zip in the layout of §9 (`_layout`), read entry by entry under count and size caps. Refuses
-    names that could escape a directory, symlinks and duplicate entries. `path`: a path or a binary file."""
+    """{name: bytes} of a zip in the layout of §9 (`_layout`), read entry by entry under count and size caps: each entry
+    inflated up to one byte past its stated size, so one whose stream holds more doesn't match it. Refuses names that
+    could escape a directory, symlinks and duplicate entries. `path`: a path or a binary file."""
     files, total = {}, 0
     with open(path, "rb") if isinstance(path, (str, bytes, os.PathLike)) else contextlib.nullcontext(path) as f:
         entries = _layout(f)
@@ -321,7 +329,7 @@ def read_zip(path):
             if [(i.filename.encode("cp437"), i.header_offset, i.compress_size, i.file_size, i.CRC, i.compress_type)
                     for i in infos] != entries:
                 raise Unusable("not the canonical zip layout: central directory")
-            for i in infos:
+            for i, (raw, off, csize, usize, crc, method) in zip(infos, entries):
                 n = i.filename
                 if not _NAME.fullmatch(n) or any(set(p) == {"."} for p in n.split("/")):
                     raise Unusable(f"bad entry name {n[:80]!r}")
@@ -330,12 +338,25 @@ def read_zip(path):
                 if (i.external_attr >> 16) & 0o170000 == 0o120000:
                     raise Unusable(f"symlink entry {n}")
                 cap = min(MAX_ENTRY, MAX_TOTAL - total)
-                with z.open(i) as e:
-                    data = e.read(cap + 1)
+                limit = min(usize, cap) + 1
+                f.seek(off + 30 + len(raw))
+                if method == 0:
+                    data = f.read(min(csize, limit))
+                else:   # read in pieces, as zipfile did: a long stream that inflates to little costs no memory
+                    inflate, data, left = zlib.decompressobj(-15), bytearray(), csize
+                    while left and len(data) < limit and not inflate.eof:
+                        piece = f.read(min(left, 1 << 20))
+                        left -= len(piece)
+                        data += inflate.decompress(piece, limit - len(data))
+                    if len(data) < limit and not inflate.eof:
+                        raise Damaged(f"{n} does not inflate")
+                    data = bytes(data)
                 if len(data) > cap:
                     raise Unusable(f"{n} is larger than the bundle limits")
-                if len(data) != i.file_size:
-                    raise Unusable(f"{n}: {len(data)} bytes, not the {i.file_size} its entry says")
+                if zlib.crc32(data) != crc:   # first, as zipfile reported it
+                    raise Damaged(f"Bad CRC-32 for file {n!r}")
+                if len(data) != usize:
+                    raise Unusable(f"{n}: {len(data)} bytes, not the {usize} its entry says")
                 files[n], total = data, total + len(data)
     return files
 
@@ -521,15 +542,22 @@ def _ts(ts):
     return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
-def _manifest_detail(listed, hashes, bad):
-    """The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how."""
+def _manifest_detail(listed, hashes, bad, other):
+    """The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how, and
+    the files no bundle holds (the first 5)."""
     if not isinstance(listed, dict):
         return "the manifest lists no files"
-    if not bad:
+    if not (bad or other):
         return "every file is listed with its SHA-256 and nothing else is in the bundle"
-    how = [f"{n} ({'changed' if n in listed and n in hashes else 'missing' if n in listed else 'not listed'})"
-           for n in bad[:5]]
-    return "files differ from the manifest: " + ", ".join(how) + (f" and {len(bad) - 5} more" if len(bad) > 5 else "")
+    more = lambda names: f" and {len(names) - 5} more" if len(names) > 5 else ""
+    out = []
+    if bad:
+        out.append("files differ from the manifest: " + ", ".join(
+            f"{n} ({'changed' if n in listed and n in hashes else 'missing' if n in listed else 'not listed'})"
+            for n in bad[:5]) + more(bad))
+    if other:
+        out.append("files no bundle holds: " + ", ".join(other[:5]) + more(other))
+    return "; ".join(out)
 
 
 def _found(problems, passed, scope):
@@ -542,7 +570,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     listed, hashes = manifest.get("files"), {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
     bad = sorted(n for n in set(listed) | set(hashes) if n not in listed or n not in hashes or listed[n] != hashes[n]) \
         if isinstance(listed, dict) else []
-    rep.check("manifest", isinstance(listed, dict) and not bad, _manifest_detail(listed, hashes, bad))
+    other = sorted(n for n in hashes if not _FILES.fullmatch(n))
+    rep.check("manifest", isinstance(listed, dict) and not (bad or other), _manifest_detail(listed, hashes, bad, other))
 
     # checkpoint: the only thing the records' trust hangs on
     proofs = loads_strict(files["proofs/records.json"])
@@ -654,7 +683,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     # the runs: one, or with a run-set any number; each in one file or in parts
     names = run_files(files)
     run_set = "registry/run-set.json" in files
-    runs, problems, chain, outside, layout, seen = {}, [], [], [], [], set()
+    runs, problems, chain, outside, layout, seen, unchecked = {}, [], [], [], [], set(), 0
     reads = [files["keys/records.jsonl"].decode("utf-8"), trust, sorted(revocations.items())]   # besides the records
     keyed = isinstance(memo, Memo) and hashlib.sha256(json.dumps(reads, default=str).encode()).digest()
     for name, parts in names.items():
@@ -682,16 +711,24 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
             if key in seen:
                 chain.append(f"run {key[1][:200]!r} of tenant {key[0][:64]!r} again in {name}")
             seen.add(key)
+            if run_name(*key) != name:   # §9: a run's file is named by its tenant and run_id
+                chain.append(f"run {key[1][:200]!r} of tenant {key[0][:64]!r} in {name}: its file is "
+                             f"{run_name(*key)}")
         for i in range(start, len(records)):   # those a Memo kept were checked as they are
+            if len(problems) - marks[0] + len(chain) - marks[1] >= RUN_PROBLEMS:
+                unchecked += len(records) - i
+                chain.append(f"run {str(head.get('run_id'))[:200]!r}: {len(records) - i} record(s) from run_seq {i} on "
+                             f"not checked, after {RUN_PROBLEMS} problems in the run")
+                break
             r = records[i]
-            check_record(r, keys_at(r["event"]["seq"]), problems)
-            e = r["event"]
+            e = r["event"]   # its link to the record before it first: it costs nothing
             if (e.get("run_seq") != i or e.get("run_prev_hash") != (records[i - 1]["hash"] if i else ZERO_HASH)
                     or (e.get("tenant"), e.get("run_id")) != (head.get("tenant"), head.get("run_id"))
                     or (i and (e["seq"] <= records[i - 1]["event"]["seq"]
                                or records[i - 1]["event"].get("type") == "run.final"))):
                 chain.append(f"run {str(head.get('run_id'))[:200]!r} run_seq {i} (seq {e.get('seq')!r}) does not "
                              "continue the run")
+            check_record(r, keys_at(e["seq"]), problems)
         if not (included(records[0]) and included(records[-1])):
             outside.append(f"run {str(head.get('run_id'))[:200]!r}" + (
                 f": the last record of {parts[-1]} is not in the checkpointed tree, so a later part may be missing"
@@ -707,10 +744,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         out.update(runs)
     if len(runs) != 1 and not run_set and not _about_one(runs):
         raise ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set")
-    retired, proven_to, reg_cosigs = [], -1, []
+    retired, proven_to, reg_cosigs, pointed = [], -1, [], []
     if run_set:
-        retired, proven_to, reg_cosigs = _run_set(rep, files, trust, witnesses, origin, size, runs, included,
-                                                  lambda r, p: check_record(r, keys_at(r["event"]["seq"]), p))
+        retired, proven_to, reg_cosigs, pointed = _run_set(
+            rep, files, trust, witnesses, origin, size, runs, included,
+            lambda r, p: check_record(r, keys_at(r["event"]["seq"]), p))
         listed = {(r["event"]["seq"], r["hash"]) for r in key_records}
         key_problems.extend(f"seq {seq}: key.retire withheld (the registry log has it)"
                             for seq, h in retired if (seq, h) not in listed)
@@ -732,7 +770,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("run parts", not layout, _found(layout, f"{len(parted)} run(s) in {sum(map(len, parted))} parts, "
                                                           "each part continuing the one before it",
                                                   f"the parts of {len(parted)} run(s)"), layout)
-    count = sum(map(len, runs.values()))
+    count = sum(map(len, runs.values())) - unchecked
     rep.check("signatures", not problems, _found(problems, f"{count} record(s), keys valid at their position",
                                                  f"{count} record(s)"), problems)
     only = len(runs) == 1 and next(iter(runs.values()))[0]["event"]
@@ -893,7 +931,6 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
-    pointed = _jsonl(files["registry/records.jsonl"]) if run_set else []   # the records a run-set's leaves name
     _ext(rep, list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values()),
          manifest.get("verifier_version"))
 
@@ -1372,14 +1409,15 @@ def _constraints(rep, runs):
 def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):
     """The run-set line (COMPLETE or INCOMPLETE) and the log tail line. Returns the (seq, hash) of every key.retire
     the registry range points to, the highest seq the range points to when it starts at registry size 0 (else -1):
-    every key.retire up to there is in the range, and the pinned cosignatures of each registry note."""
+    every key.retire up to there is in the range, the pinned cosignatures of each registry note, and the records of
+    registry/records.jsonl it checked, each the one its leaf points to."""
     rs, problems = loads_strict(files["registry/run-set.json"]), []
     tsalt = base64.b64decode(rs["tenant_salt"], validate=True)
     lo, hi, reg_origin = rs["from"], rs["to"], registry.origin(origin, tsalt)
     span = f"registry {lo}..{hi}"
     if type(lo) is not int or type(hi) is not int:
         rep.check("run-set", False, f"INCOMPLETE, {span}", ["the registry range is not two integers"])
-        return [], -1, []
+        return [], -1, [], []
     # the registry notes are signed by the record log's own pinned key, under the registry origin
     vkeys = [checkpoint.vkey(reg_origin, *checkpoint.parse_vkey(k)[2:]) for k in trust["logs"]
              if checkpoint.parse_vkey(k)[0] == origin]
@@ -1397,13 +1435,18 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
             problems.append(f"registry checkpoint at size {n}: {n2}")
     if problems or not 0 <= lo <= hi or hi == 0:
         rep.check("run-set", False, f"INCOMPLETE, {span}", problems or [f"bad registry range {lo}..{hi}"])
-        return [], -1, reg_cosigs
+        return [], -1, reg_cosigs, []
     if 0 < lo < hi and not verify_consistency(lo, hi, roots[lo], roots[hi], [
             base64.b64decode(p, validate=True) for p in rs["consistency"]]):
         problems.append(f"registry checkpoint {lo} is not a prefix of {hi}")
-    leaves, pointed = rs["leaves"], {r["event"]["seq"]: r for r in _jsonl(files["registry/records.jsonl"])}
+    elif not 0 < lo < hi and rs["consistency"] != []:   # a range from 0, or empty, has no consistency proof
+        problems.append(f"a consistency proof for registry {lo}..{hi}, which has none")
+    leaves, lines, pointed = rs["leaves"], _jsonl(files["registry/records.jsonl"]), []
     if len(leaves) != hi - lo:
         problems.append(f"{hi - lo} leaves in {lo}..{hi}, {len(leaves)} in the bundle: a leaf is missing")
+    if len(lines) != len(leaves):   # §9: the record each leaf points to, in leaf order, and nothing else
+        problems.append(f"{len(lines)} record(s) in registry/records.jsonl for {len(leaves)} leaves: one per leaf, "
+                        "in leaf order")
     registered, finals, retired, closed, tenant, targets, top, gaps = {}, {}, [], None, None, set(), -1, {}
     for i, x in enumerate(leaves[:hi - lo], lo):
         leaf = base64.b64decode(x["leaf"], validate=True)
@@ -1412,15 +1455,16 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
             problems.append(f"leaf {i} is not in the registry tree of size {hi}")
             continue
         typ, run_hash, log_id, seq, h = registry.parse(leaf)
-        r = pointed.get(seq)
+        top = max(top, seq)   # the registry note proves the leaf, whatever record the bundle has for it
+        r = lines[i - lo] if i - lo < len(lines) else None
         e = r and r["event"]
-        if (r is None or r["hash"] != h or e["type"] != typ or e["log_id"] != log_id or not included(r)
-                or registry.run_hash(tsalt, e["run_id"]) != run_hash
+        if (r is None or e["seq"] != seq or r["hash"] != h or e["type"] != typ or e["log_id"] != log_id
+                or not included(r) or registry.run_hash(tsalt, e["run_id"]) != run_hash
                 or typ not in registry.SIGNER_LEAVES and tenant not in (None, e["tenant"])):
             problems.append(f"leaf {i} points to a missing or different record (seq {seq})")
             continue
         check_record(r, problems)
-        top = max(top, seq)
+        pointed.append(r)
         if typ in ("run.registered", "run.final"):
             targets.add(run_name(e["tenant"], e["run_id"]))
         if typ == "run.registered":
@@ -1458,7 +1502,7 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
         rep.check("tenant-level gaps", False, f"{sum(gaps.values())} in the range: {counted}", warn=True)
     rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
               f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
-    return retired, top if lo == 0 else -1, reg_cosigs
+    return retired, top if lo == 0 else -1, reg_cosigs, pointed
 
 
 def _bridge(rep, key_records, v1_ledger, v1_key):
