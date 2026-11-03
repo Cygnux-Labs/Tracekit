@@ -6,19 +6,21 @@
 # `cli_command`, `command` or `cmd` argument (the AWS API MCP server's call_aws takes `cli_command`). A web search for
 # the same words is not a command.
 
-version: '2026.10-server-cloud-8'
+version: '2026.10-server-cloud-9'
 description: server-hosted agents, cloud CLIs and cloud MCP tools
 unknown_tools: ask
 
 deny:
   - id: TK-C001
-    pattern: '(^|"(cli_command|command|cmd)":")(aws (.*? )?(iam (attach-(user|role|group)-policy|put-(user|role|group)-policy|create-(user|role|access-key|login-profile|policy-version)|add-user-to-group|update-assume-role-policy|update-login-profile|set-default-policy-version|put-(user|role)-permissions-boundary)|s3api put-bucket-(policy|acl)|s3api put-public-access-block|organizations (attach-policy|create-account|invite-account-to-organization)|sso-admin (create-account-assignment|attach-[a-z-]+)|kms (put-key-policy|create-grant)|lambda add-permission|ec2 modify-image-attribute|ecr set-repository-policy)|gcloud (.*? )?((projects|organizations|folders|iam service-accounts|storage buckets) (add-iam-policy-binding|set-iam-policy)|iam service-accounts keys create|iam roles (create|update))|gsutil (.*? )?(iam (ch|set)|acl (ch|set))|az (.*? )?(role (assignment|definition) create|ad (sp create-for-rbac|sp credential reset|app credential reset|user create|group member add))|kubectl (.*? )?create (clusterrolebinding|rolebinding|clusterrole|token))\b'
+    pattern: '(^|"(cli_command|command|cmd)":")(aws (.*? )?(iam (attach-(user|role|group)-policy|put-(user|role|group)-policy|create-(user|role|access-key|login-profile|policy-version)|add-user-to-group|update-assume-role-policy|update-login-profile|set-default-policy-version|put-(user|role)-permissions-boundary|update-access-key ([^ ]+ ){0,8}?--status[ =]Active|create-service-specific-credential|(create|update)-saml-provider|create-open-id-connect-provider|update-open-id-connect-provider-thumbprint|add-client-id-to-open-id-connect-provider)|s3api put-bucket-(policy|acl)|s3api put-public-access-block|organizations (attach-policy|create-account|invite-account-to-organization)|sso-admin (create-account-assignment|attach-[a-z-]+)|kms (put-key-policy|create-grant)|lambda add-permission|ec2 modify-image-attribute|ecr set-repository-policy|secretsmanager put-resource-policy|(sns|sqs) add-permission|ec2 modify-snapshot-attribute ([^ ]+ ){0,16}?(--operation-type[ =]add ([^ ]+ ){0,16}?--group-names[ =]all|--group-names[ =]all ([^ ]+ ){0,16}?--operation-type[ =]add|--create-volume-permission[ =]Add=[^ ]*Group=all)|rds modify-db(-cluster)?-snapshot-attribute ([^ ]+ ){0,16}?--values-to-add[ =]([^ -][^ ]* ){0,16}?[^ ]*\ball)|gcloud (.*? )?((projects|organizations|folders|iam service-accounts|storage buckets) (add-iam-policy-binding|set-iam-policy)|iam service-accounts keys create|iam roles (create|update))|gsutil (.*? )?(iam (ch|set)|acl (ch|set))|az (.*? )?(role (assignment|definition) create|ad (sp create-for-rbac|sp credential reset|app credential reset|user create|group member add))|kubectl (.*? )?create (clusterrolebinding|rolebinding|clusterrole|token))\b'
     reason: changing cloud identity or access
     rationale: IAM policies, role bindings, access keys and public bucket policies decide who can reach every other resource; an agent must not grant access, least of all to itself.
   - id: TK-C002
     # over MCP as TK-C011 names it; in the `__` forms the word follows a `_` or `-`, so one `.*` per branch keeps the
-    # fallback engine linear on a name of underscores
-    tool: 'mcp(:[^/]+/.*|__.*[_-])(attach_[a-z_]*policy|put_[a-z_]*policy|iam_policy_binding|set_iam_policy|create_access_key|create_service_account_key|role_assignment|create_role_binding|grant_[a-z_]*)'
+    # fallback engine linear on a name of underscores. The words in any case, in snake_case, kebab-case, camelCase or
+    # PascalCase (AttachUserPolicy, setIamPolicy, attach-user-policy, create_cluster_role_binding): a word between
+    # them starts after a `_` or `-` or with a capital, so attachment_policy isn't attach…policy
+    tool: 'mcp(:[^/]+/.*|__.*[_-])([Aa][Tt][Tt][Aa][Cc][Hh](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Pp][Uu][Tt](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Ss][Ee][Tt][_-]?[Ii][Aa][Mm][_-]?[Pp][Oo][Ll][Ii][Cc][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Aa][Cc][Cc][Ee][Ss][Ss][_-]?[Kk][Ee][Yy]|[Cc][Rr][Ee][Aa][Tt][Ee][_-]?[Ss][Ee][Rr][Vv][Ii][Cc][Ee][_-]?[Aa][Cc][Cc][Oo][Uu][Nn][Tt][_-]?[Kk][Ee][Yy]|[Rr][Oo][Ll][Ee][_-]?[Aa][Ss][Ss][Ii][Gg][Nn][Mm][Ee][Nn][Tt]|[Cc][Rr][Ee][Aa][Tt][Ee](([_-]|[A-Z])[A-Za-z_-]*)?[_-]?[Rr][Oo][Ll][Ee][_-]?[Bb][Ii][Nn][Dd][Ii][Nn][Gg]|[Gg][Rr][Aa][Nn][Tt]([_-][A-Za-z_-]*|[A-Z][A-Za-z]*)?)'
     pattern: '^'
     reason: changing cloud identity or access through an MCP tool
     rationale: The MCP twin of TK-C001.
