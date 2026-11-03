@@ -1219,6 +1219,17 @@ class _Parser:
                 self.known[name] = rest[1:]   # select sets it to nothing on a reply that picks no item
             self.blocks.append((kind, [name]))
             return
+        if words[:1] in (["cd"], ["pushd"], ["popd"]):   # $PWD is the literal it surely goes to (cd alone: ~)
+            args = words[1:]
+            while args[:1] and args[0].startswith("-") and args[0] != "-" and args.pop(0) != "--":
+                pass
+            to = args[0] if args else "~" if words[0] == "cd" else "-"
+            self.known.pop("PWD", None)
+            if words[0] != "popd" and to and to[0] not in "-+" and sure and not re.search(r"[*?[]", to) and \
+                    not self.ctx["any_set"]:
+                self.known["PWD"] = [to]
+                if self.blocks:
+                    self.blocks[-1][1].append("PWD")
         if words[:1] == ["export"] and words[1:] and not assigns and sure and all(
                 re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.+", w, re.S) for w in words[1:]):
             assigns = [(n.rstrip("+"), v, n.endswith("+")) for n, v in (w.split("=", 1) for w in words[1:])]
