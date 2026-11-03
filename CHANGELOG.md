@@ -86,8 +86,8 @@ against the policy, and eleven outside contributors landed changes. Bundles are 
 
 ### Documented
 - [Limits](docs/limits.md) gains rows for what stays unread: PowerShell's own syntax, joined MCP names, a browser driven
-  over MCP, `TK-C002`'s batch grants, `TK-D004`'s bound on plain words, `TK-P003`'s reflected URLs, posting tools' text,
-  and the harness-config, log and hook-folder gaps the sweep found.
+  over MCP, `TK-C001`'s snapshot-sharing reads, `TK-C002`'s word lengths, `TK-D004`'s bound on plain words, `TK-P003`'s
+  reflected URLs, posting tools' text, and the harness-config, log and hook-folder gaps the sweep found.
 
 ### Contributors
 @HarshRajSinghania, @egekots, @khushi-git-7, @sunxiuguo, @ritamgh, @WhitePepperLambSoup, @kausthubhk, @gezerui888,
