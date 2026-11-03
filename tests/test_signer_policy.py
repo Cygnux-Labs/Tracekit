@@ -3522,9 +3522,9 @@ class PackReading(unittest.TestCase):
             "chrt 1 sudo id", "unbuffer sudo id", "parallel sudo ::: id", "fakeroot sudo id", "dbus-run-session sudo id",
             "env - sudo id", "bash --rcfile /dev/null -c 'sudo id'", "python3 -c\"import os;os.system('sudo id')\"",
             "perl -e 'system \"sudo id\"'", "awk 'BEGIN{system(\"sudo id\")}'", "sed -n '1e sudo id' f",
-            "python3 - <<'EOF'\nimport os\nos.system('sudo id')\nEOF")], "deny")
+            "python3 - <<'EOF'\nimport os\nos.system('sudo id')\nEOF", "sudo${IFS}id")], "deny")
         self.check(self.dev, [("Bash", {"command": c}) for c in (
-            "sudo${IFS}id", "$(echo sudo) id", "echo \"'sudo id'\" | xargs bash -c")], "ask")
+            "$(echo sudo) id", "echo \"'sudo id'\" | xargs bash -c")], "ask")
         self.check(self.dev, [("Bash", {"command": c}) for c in (
             "git push -u origin main", "git push origin my-feature-branch")], "flag")
 
