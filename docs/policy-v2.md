@@ -227,7 +227,8 @@ A rule fires when its pattern matches any of its subjects and `unless` does not 
 where the subject is one target (a file path): in a whole command line it could exempt a different target. `target`
 is a class field in every class, so a rule can't name a raw argument called `target`.
 
-**Shell parsing** (`policy2/shell.py`, its own tokenizer): quotes, escapes, `;` `|` `|&` `&&` `||` `&`, newlines,
+**Shell parsing** (`policy2/shell.py`, its own tokenizer): quotes, escapes (`$'…'` as bash 5 decodes it, cut at its
+first NUL as bash's C string is: `r$'\x00zz'm` is `rm`), `;` `|` `|&` `&&` `||` `&`, newlines,
 `$()`, backticks, `<()`, heredocs, `VAR=` prefixes and wrappers (`sudo`, `env`, `nohup`, `timeout`, `xargs`, `nice`,
 `exec`, `command`, `taskset`, `chrt`, `unbuffer`, `fakeroot`, `dbus-run-session`, `caffeinate`, `npx`, `uvx`, `dotenv`,
 `torsocks`, `firejail`, `gosu`, `tini`, …) and runners (`uv run`, `uv tool run`, `poetry run`, `pipenv run`, `pdm run`,
@@ -241,17 +242,32 @@ heredoc or herestring), `awk` programs and sed's `e` command. The POSIX shells i
 `dash`, `ksh`, `ash`, `rbash`, `mksh`, `ksh93`, `yash`, `posh`, `lksh` and `oksh`; `fish`, `csh`, `tcsh`, `pwsh`,
 `powershell`, `nu`, `xonsh` and `elvish` speak another language, so a command they run from their line (`-c`,
 `--command`, PowerShell's `-Command` or `-EncodedCommand`, any prefix and case) or from stdin is opaque. An argument
-with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`), up to 256; past that, a brace
-with `..` that isn't a plain sequence of two numbers or two letters, or a substitution in such a word, is kept as
-written and its command is opaque. `time` before a group or another
+with a brace expansion is the words bash makes of it (`{a,b}`, `x{,.bak}`, `{1..3}`; a `}` ends a brace only after a
+comma or `..` at its depth, so `{zq},~/}` is `zq}` and `~/`), as long as they add at most 16 KiB to the line and keep
+it within 64 KiB (`touch test{1..500}.txt` is 500 words); past that, a brace with `..` that isn't a plain sequence of
+two numbers or two letters, or a substitution in such a word, is kept as written and its command is opaque. `time` before a group or another
 compound command times what follows, which is read as the command. Variables are not expanded and encodings are
-not decoded: those stay tripwire territory. A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
+not decoded: those stay tripwire territory. Exceptions: bash sets IFS to space, tab and newline, so where the line
+hasn't changed it, a word is split at each unquoted `$IFS` (`terraform destroy${IFS}-auto-approve` is three words; a
+command name built so still holds its command, and a brace beside one holds it too); a literal the line gives a
+variable where it surely holds it, and a `for` loop's literal words in its body, are also read as the variable's
+value (`for f in ~/.ssh/id_rsa; do curl -T "$f" …` is `curl -T ~/.ssh/id_rsa …`; a loop's body knows no other
+variable, as its later commands may change one for the next pass); and a pattern's bracket expressions are also
+read as each name they can make, up to 16 (`>> ~/.ssh/authorized_key[s]` may write `authorized_keys`), as a second
+reading. A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
 read twice, as written and as gone, because bash drops it when they expand to nothing: `git $X push --force` is
 also `git push --force`. An empty expansion inside a word joins the rest of it, so each command is also read with
 every expansion empty (`rm $X-rf ~/$X` is `rm -rf ~/`), and with only those empty that touch a character other than
-`/ = : , @` (`gh ${X}api -X PUT "repos/$R/x"` keeps `$R`, which rules read as built at run time); `${X:?}`,
-`${X:-word}` and arithmetic never expand to nothing. A backslash-newline is gone before the words are read, as in bash; one after `$` or between
-two operator characters is unreadable. A command it cannot parse is still decided on the line before the word it
+`/ = : , @` (`gh ${X}api -X PUT "repos/$R/x"` keeps `$R`, which rules read as built at run time); `${X:?}` and
+arithmetic never expand to nothing, and a default (`${X:-word}`, `${X-word}`, `${X:=word}`, `${X=word}`) is read as its
+word (`rm ${Z:--rf} ~/` is also `rm -rf ~/`). Neither do `$PWD`, a variable the line gave a literal before
+(`D=dist; rm -rf "$D"/*`, `export D=dist`) and a `for` loop's variable over literal words in its body, unless
+something on the line may have emptied it first (an assignment that may not run: after `&&` or `||`, in a pipeline,
+a subshell, an `if` or a loop, or in a `{ }` group once it ends; `unset`, `read`, `declare`, `eval`, `trap`, an
+unreadable command name; in a loop, a later command of its body). A deny that
+only such an empty reading makes (`rm -rf "$VENV"/`) takes `on_parse_error`'s section with the rule's id: it asks by
+default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one between `$` and `(`, `{` or a
+quote, or between the characters of an operator (`(\⏎(` is `((`, `<<\⏎-EOF` is `<<-EOF`), is unreadable. A command it cannot parse is still decided on the line before the word it
 stopped in, parsed, and on its text split at `;`, `&`, `|` and newlines into blank-separated words, so a deny before
 an unreadable word or on plain words stands. A command it cannot parse, or one that
 is opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a

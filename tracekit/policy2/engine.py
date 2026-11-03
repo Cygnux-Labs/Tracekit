@@ -178,63 +178,71 @@ class Engine:
             hits["ask"].append("TK-SQL-PARSE")   # no dialect reads it: an unclosed literal or comment, or not text
         if cls == "a2a" and fields.get("unreadable"):
             hits["deny"].append("TK-A2A-NAME")   # a name with spellings its rules can't see (classes.a2a_fields)
-        parsed, oversize = ([], [], [], [], []), []
+        parsed, oversize, on_parse_error = ([], [], [], [], []), [], self.policy.get("on_parse_error", "ask")
         if cls == "shell":
             command = fields.get("command", "")
             if len(_text(command if isinstance(command, str) else canonical(command)).encode()) > MAX_SUBJECT:
                 hits["deny"].append("TK-OVERSIZE")
                 oversize.append("the shell command")
             else:
-                unreadable = hits[self.policy.get("on_parse_error", "ask")]   # TK-SHELL-PARSE's section
-                try:
-                    if self._persistent_targets:
-                        parsed = _shell(args, lambda target: any(p.search(target.casefold())
-                                                                  for p in self._persistent_targets))
-                    else:
-                        parsed = _shell(args)
-                except shell.ParseError as e:
-                    unreadable.append("TK-SHELL-PARSE")
-                    parsed = _plain(command, getattr(e, "at", 0)) if isinstance(command, str) else \
-                        _plain(canonical(command))
+                parsed, unread = self._parse(args, command)
                 # what trap, at or batch run later and the parser can't read (trap "$f" EXIT) isn't held, as before
                 # their code was read; with a writer's name in it, it counts for TK-D008 (_effects)
-                if any(c["opaque"] and not _SCHEDULED.intersection(c["via"]) for c in parsed[0]):
-                    unreadable.append("TK-SHELL-PARSE")
+                if unread or any(c["opaque"] and not _SCHEDULED.intersection(c["via"]) for c in parsed[0]):
+                    hits[on_parse_error].append("TK-SHELL-PARSE")
         # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
             self._of[cls] = [x for x in self.rules if x[1].get("class", cls) == cls]
-        for sec, rule, tool_re, pat, unless, lits, tool_lits in self._of[cls]:
+
+        def hit(entry, parsed, memo, oversize):
+            """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
+            over MAX_SUBJECT), else None; TimeoutError past the deadline."""
+            sec, rule, tool_re, pat, unless, lits, tool_lits = entry
+            if not self._named(tool_re, tool_lits, name, low_name, deadline):
+                return None
+            key = (rule.get("field"), "from" in rule)   # rules on the same subjects read them once
+            if key not in memo:
+                memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]))
+            texts, lows, joined, big = memo[key]
+            if lits is None or any(s in joined for s in lits):
+                for subject, low in zip(texts, lows):
+                    # `unless`: an exemption checked against the same subject (use it only where the subject is
+                    # one target, e.g. a file path; in a whole command it could exempt a different target)
+                    if (lits is None or len(texts) == 1 or any(s in low for s in lits)) and self._match(
+                            pat, subject, False, deadline) and not (
+                            unless is not None and self._match(unless, subject, False, deadline)) and (
+                            "from" not in rule or untrusted is not None and untrusted(subject, rule.get("field"))):
+                        return rule["id"]
+            if big:   # the rule's own verdict: a flag rule cannot block a large call
+                field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
+                oversize.append(f"{rule['id']}'s subject ({field})")
+                return "TK-OVERSIZE"
+            return None
+        for entry in self._of[cls]:
             try:
-                if not self._named(tool_re, tool_lits, name, low_name, deadline):
-                    continue
-                key = (rule.get("field"), "from" in rule)   # rules on the same subjects read them once
-                if key not in memo:
-                    memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]))
-                texts, lows, joined, big = memo[key]
-                hit = None
-                if lits is None or any(s in joined for s in lits):
-                    for subject, low in zip(texts, lows):
-                        # `unless`: an exemption checked against the same subject (use it only where the subject is
-                        # one target, e.g. a file path; in a whole command it could exempt a different target)
-                        if (lits is None or len(texts) == 1 or any(s in low for s in lits)) and self._match(
-                                pat, subject, False, deadline) and not (
-                                unless is not None and self._match(unless, subject, False, deadline)) and (
-                                "from" not in rule or untrusted is not None and untrusted(subject, rule.get("field"))):
-                            hit = rule["id"]
-                            break
-                if hit is None and big:   # the rule's own verdict: a flag rule cannot block a large call
-                    hit = "TK-OVERSIZE"
-                    field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
-                    oversize.append(f"{rule['id']}'s subject ({field})")
-                if hit is not None:
-                    hits[sec].append(hit)
+                if (found := hit(entry, parsed, memo, oversize)) is not None:
+                    hits[entry[0]].append(found)
             except TimeoutError:   # the time of the whole decision is spent: deny, and leave the other rules out
                 nondeterministic = True
-                hits["deny"].append(rule["id"])
+                hits["deny"].append(entry[1]["id"])
                 break
+        # a deny that only a second reading of the command makes (an expansion read as empty, a pattern as matching
+        # nothing: `rm -rf "$D"/`), and not the command as written, takes on_parse_error's section: the line can't say
+        # whether $D is empty, so by default a person answers it
+        written = [x for x in self._of[cls] if x[0] == "deny" and x[1]["id"] in hits["deny"]]
+        if cls == "shell" and on_parse_error == "ask" and written and not nondeterministic:
+            parsed, memo = self._parse(args, command, readings=False)[0], {}
+            for entry in written:
+                try:
+                    if hit(entry, parsed, memo, []) is None:
+                        hits["deny"].remove(entry[1]["id"])
+                        hits["ask"].append(entry[1]["id"])
+                except TimeoutError:   # it stays a deny
+                    nondeterministic = True
+                    break
         verdict = next((sec for sec in SECTIONS if hits[sec]), "allow")
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
                "policy_hash": self.policy_hash, "engine": self.engine}
@@ -243,6 +251,17 @@ class Engine:
         if oversize:
             out["oversize"] = oversize
         return out
+
+    def _parse(self, args, command, readings=True):
+        """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; whether it can't).
+        `readings`: False reads the command only as written (shell.analyse)."""
+        target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
+            if self._persistent_targets else None
+        try:
+            return _shell(args, target, readings), False
+        except shell.ParseError as e:
+            return (_plain(command, getattr(e, "at", 0), readings, target) if isinstance(command, str) else
+                    _plain(canonical(command), 0, readings, target)), True
 
     @staticmethod
     def _subjects(cls, field, args, fields, parsed, split=False):
@@ -340,7 +359,7 @@ class Engine:
         return list(dict.fromkeys([canonical(call)] + paths + urls))
 
 
-def _shell(args, persistent_target=None):
+def _shell(args, persistent_target=None, readings=True):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
     a list of command lines. Anything else, or more than one of them, raises ParseError."""
@@ -350,11 +369,11 @@ def _shell(args, persistent_target=None):
     value = args[present[0]] if present else ""
     strings = isinstance(value, list) and value and all(isinstance(a, str) for a in value)
     if isinstance(value, str):
-        return shell.analyse(value, persistent_target)
+        return shell.analyse(value, persistent_target, readings)
     if strings and present == ["commands"]:
-        return shell.analyse("\n".join(value), persistent_target)
+        return shell.analyse("\n".join(value), persistent_target, readings)
     if strings:
-        return shell.analyse_argv(value)
+        return shell.analyse_argv(value, readings)
     raise shell.ParseError("the command is neither a string nor a list of strings")
 
 
@@ -363,28 +382,29 @@ def _shell(args, persistent_target=None):
 _PIECE = re.compile(r"""(?:[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
 
 
-def _plain(raw, at=0):
+def _plain(raw, at=0, readings=True, persistent_target=None):
     """What a command the parser can't read is decided on: its text as its target and code; the line before the word
     it stopped in (`at`: where), parsed; and each piece of the rest (_PIECE), from the one it stopped in, split on
     blanks as a command (shell.analyse_argv), so a rule that reads plain words still holds what it held (`sudo id
-    {1..3..1}`). A part that can't be read so is left out."""
-    out, start = ([], [], [raw], [], [raw]), 0
+    {1..3..1}`). A part that can't be read so is left out; the parts share one parse budget (shell.MAX_WORK).
+    `persistent_target`: as for shell.analyse, so text echoed into ~/.bashrc stays code in the head too."""
+    out, start, work = ([], [], [raw], [], [raw]), 0, [0]
     head = raw[:max(0, *(raw.rfind(c, 0, at) for c in " \t\n"))]
-    readings = []
+    found = []
     if head.strip():
         try:
-            readings.append(shell.analyse(head))
+            found.append(shell.analyse(head, persistent_target, readings, work))
             last = ([m.span() for m in _PIECE.finditer(head)] or [(0, 0)])[-1]
             start = last[0] if last[1] == len(head) else last[1] + 1   # after a separator that ends the head
         except shell.ParseError:
             pass
     for piece in (m.group() for m in _PIECE.finditer(raw, start)):
         try:
-            readings.append(shell.analyse_argv(piece.split()) if piece.split() else ())
+            found.append(shell.analyse_argv(piece.split(), readings, work) if piece.split() else ())
         except shell.ParseError:
             continue
-    for found in readings:
-        for into, more in zip(out, found):
+    for reading in found:
+        for into, more in zip(out, reading):
             into += more
     return out
 
