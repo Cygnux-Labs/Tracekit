@@ -117,12 +117,16 @@ it, the same command with only its caption reworded (the hook returns no `update
 Code asks you). One of them rejected: the signer keeps no copy of a rejected call's arguments and doesn't say which
 answer came last, so the retry is decided as the model sent it and held, and the first reason after `Why:` in its block
 (`[tracekit] held for approval …`) is `a person rejected this command (with another description) as apr-…`, adding
-`, and it was approved (with another description) as apr-…` when one was. One the hook can't read (a signer whose
-`authorize` doesn't grant it `approval_get`, or one restarting) runs nothing in place of the retry either.
+`, and it was approved (with another description) as apr-…` when one was. Each `(with another description)` is left
+out where that wording is the retry's own, and a retry exactly as rejected, never approved, gets the signer's own
+reason (`a person rejected this exact call …`). One the hook can't read (a signer whose `authorize` doesn't grant it
+`approval_get`, or one restarting) runs nothing in place of the retry either, and neither does any retry once the
+session has held more than 32 Bash calls: the oldest one dropped may be a rejected wording.
 Any other key that differs (`command`, `run_in_background`, `dangerouslyDisableSandbox`, `timeout`, ...), or an
 approval still unanswered, expired or used, and the retry is decided as the model sent it. The signer's rule above is
 unchanged: the hook only chooses which arguments the retry is decided with, and the signer still checks them against
-the approval.
+the approval. So a retry exactly as approved, description included, runs under that approval even when another
+wording of the command was rejected: the person approved that call. It runs once; the approval is used up then.
 
 ## Tiers: T1 and T2 executors
 

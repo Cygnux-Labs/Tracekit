@@ -553,6 +553,24 @@ func TestVerifierMinVersionUsesStrictDigitBounds(t *testing.T) {
 	}
 }
 
+// A bundle may declare up to the newest version-table row this verifier implements: above it, it may use entries this
+// verifier doesn't know, so it is UNVERIFIABLE, naming the tracekit that verifies it.
+func TestVerifierMinVersionUpToTheFormatVersion(t *testing.T) {
+	for version, verified := range map[string]bool{"1.0.0": true, formatVersion: true, "1.4.1": false, "1.5.2": false} {
+		files, trust := bundleFixture(t)
+		manifest, err := parseFileObject(files, "manifest.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		manifest["verifier_min_version"] = version
+		files["manifest.json"], _ = json.Marshal(manifest)
+		r := VerifyBundle(fixtureZip(files), trust)
+		if verified && r.ExitCode != 0 || !verified && (r.ExitCode != 2 || r.Integrity != "UNVERIFIABLE (needs tracekit >= "+version+")") {
+			t.Errorf("%s: %+v", version, r)
+		}
+	}
+}
+
 func TestV1SecurityMutations(t *testing.T) {
 	bundle := readGolden(t, "v1/demo-run.tkb")
 	key := readGolden(t, "v1/signer.pub")
@@ -655,6 +673,7 @@ func TestFailuresNameTheReferenceCheck(t *testing.T) {
 		"negative/json-record-too-deep.tkb":    "bundle structure",
 		"negative/run-second-run.tkb":          "bundle structure",
 		"negative/manifest-wrong-hash.tkb":     "manifest",
+		"negative/extra-trust-file.tkb":        "manifest",
 		"negative/checkpoint-body-edited.tkb":  "checkpoint",
 		"negative/witness-none.tkb":            "witness quorum",
 		"negative/keys-dropped.tkb":            "keys",

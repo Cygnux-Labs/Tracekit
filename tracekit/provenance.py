@@ -36,8 +36,9 @@ def norm(s):
 
 
 def host(h):
-    """A canonical host (classes.url_info) as the index keys it."""
-    return norm(h).casefold()
+    """A canonical host (classes.url_info) as the index keys it, without a trailing dot: `evil.example.` is the host
+    `evil.example` resolves as."""
+    return norm(h).casefold().rstrip(".")
 
 
 class _Full(Exception):

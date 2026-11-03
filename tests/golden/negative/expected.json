@@ -2,6 +2,7 @@
   "files": {
     "negative/checkpoint-body-edited.tkb": "5b69e6ef7955d869f2d70fd42021fa68240da372e1a41e825a4e21c0378d98dd",
     "negative/checkpoint-wrong-origin.tkb": "35c02d6c18d66fe28ee03e06bcdcb262da07a6a96f78779d57335109b137def8",
+    "negative/extra-trust-file.tkb": "7f7af1c8a3c359320dd0b3fee365a5edd95ec0f49c09e8d725a854f6b76f476c",
     "negative/findings-run-twice.tkb": "9d86cfd8f70a02f8fa8684e7d136c19d2ffee91b2284137e704f700f2ad6add0",
     "negative/json-manifest-duplicate-key.tkb": "a989a2d11df1d94b865cfef93d18bbe532280c7f873affa93ff55d9a4c5507e5",
     "negative/json-manifest-too-deep.tkb": "88b01509cfc58d6ca3e80695d23ab60310b05bb4c8fc46951d7010b3546c4527",
@@ -32,6 +33,8 @@
     "negative/run-second-run.tkb": "8f7398817444d196ce37918464664aceccf2491ddbe451b62fd9c8a51af7beb5",
     "negative/run-set-float-bound.tkb": "0ed2a956336f93ca554f277c761c45aa1ab6883473bf805306a3323bb1d738fe",
     "negative/run-set-foreign-run.tkb": "26ecca52a68cd63bfeec460ae2e2671cd6fc70bed2ae4ff37278989a743f497a",
+    "negative/run-set-records-extra.tkb": "f3cad2bec2f51fc4ddfddada8d9243305d44ae5d04911906aa53ec1e907f4f98",
+    "negative/run-set-records-reordered.tkb": "819dba346678d4bbdc8f79636fd78b7df783e77bd8afc63a459ca9a2a426a08c",
     "negative/run-set-registry-uncosigned.tkb": "66838d8a2c2bb6e8ee3ad1d70d8cd21d6c415bd6a5310ae14b3a6b2e91c3d1e2",
     "negative/run-set-run-twice.tkb": "0f63beaa30c43717336efba16d3670b2d576754be1c3db7eb893647b142e9527",
     "negative/trust.json": "090951d638b56562abb560215bbf164f4d6cc7630227b97d7cf036050c012883",
@@ -225,6 +228,15 @@
     {
       "name": "file not in the manifest",
       "bundle": "manifest-unlisted-file.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "manifest"
+      }
+    },
+    {
+      "name": "a trust config and a script in the bundle",
+      "bundle": "extra-trust-file.tkb",
       "expected": {
         "exit_code": 1,
         "integrity": "FAILED",
@@ -472,6 +484,24 @@
         "exit_code": 1,
         "integrity": "FAILED",
         "first_failure": "run chain"
+      }
+    },
+    {
+      "name": "run-set with a record no leaf points to (a forged ext record)",
+      "bundle": "run-set-records-extra.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run-set"
+      }
+    },
+    {
+      "name": "run-set with its records out of leaf order",
+      "bundle": "run-set-records-reordered.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run-set"
       }
     },
     {

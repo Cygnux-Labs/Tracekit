@@ -74,6 +74,15 @@ Integrity: FAILED.
 The delete was denied before it ran, the held call ran after an approval, and the run verified. Then the demo rewrote
 the denial as allowed in a copy, and verification failed at the record it changed.
 
+Or try it on what your own coding agent already did. `audit` reads your Claude Code sessions on this machine and shows
+what Tracekit would have denied or held. Nothing is installed in your agent and nothing leaves your machine:
+
+```sh
+uvx --from tracekit-ai tracekit audit --since 7d
+```
+
+Add `--share` for counts alone, which you can post as a [field report](docs/field-reports.md).
+
 ## Add it to your agent
 
 Three lines:
@@ -241,7 +250,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 | **E1** tamper detection | 120-record signed logs, 8 attacks, 60 trials each, re-run on 1.2 | 6 of 8 caught by the log alone, **8 of 8 with a witness** |
 | **E8** insider attacks | Real unprivileged users against a Linux system-mode signer: a decoy signer, a stopped signer, a swapped policy, fabricated runs | **8 of 8 caught**, a merge gate on every pull request |
 | **E17** policy packs | 778 harmful and 843 benign tool calls in 11 classes, decided by both regex engines | **778 of 778 stopped**; 1 false alarm, a draft email held for a person |
-| **E21** policy robustness | 420 harmful and 432 benign calls written blind to the rules; 130 developer-session calls | server pack: 211 of 420 stopped or held on the one blind run, 250 after rules were added that target the pool (read since); 18 of 432 false alarms, 2 of 130 in sessions; p99 185 µs |
+| **E21** policy robustness | 420 harmful and 432 benign calls written blind to the rules; 130 developer-session calls | server pack: 211 of 420 stopped or held on the one blind run, 252 after rules were added that target the pool (read since); 18 of 432 false alarms, 2 of 130 in sessions; p99 326 µs |
 | **E10** reconciliation | 30 runs, 12 with a seeded discrepancy: a missing hook, a fabricated call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **E9** overhead | Signer round trip over a Unix socket, file storage, macOS quick run | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
 | **E3** the v1 regex gate, on a rougher set | 16 harmful and 20 benign calls written after the rules | **11 of 16 caught**, 1 false alarm. Rules are tripwires, not a sandbox |
@@ -386,7 +395,7 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 
 ## License
 
-[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.5.2, and 1.x is the
+[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.5.3, and 1.x is the
 supported line. Report vulnerabilities privately as
 [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
 

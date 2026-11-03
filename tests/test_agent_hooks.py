@@ -340,7 +340,8 @@ class Harnesses(DaemonCase):
         # and web_fetch calls agent and agentic_fetch make are never seen: the hook denies both itself, as goose's Code Mode
         base = {"session_id": "cr-2", "cwd": self.d, "hook_event_name": "PreToolUse"}
         for name, ti in (("agent", {"prompt": "read ~/.ssh/id_rsa"}),
-                         ("agentic_fetch", {"url": "https://x.example", "prompt": "summarise"})):
+                         ("agentic_fetch", {"url": "https://x.example", "prompt": "summarise"}),
+                         ("Agent", {"prompt": "read ~/.ssh/id_rsa"})):   # Crush may match a name ignoring case
             with self.subTest(tool=name):
                 code, out, err = self.hook("crush", {**base, "tool_name": name, "tool_use_id": "c-" + name,
                                                      "tool_input": ti})
@@ -419,6 +420,12 @@ class Harnesses(DaemonCase):
         # input typed into a background run_command is a shell command
         typed = call(4, "manage_task", {"Action": "send_input", "TaskId": "t1", "Input": "rm -rf ~\n"})
         self.assertEqual(json.loads(self.hook("antigravity", typed, "PreToolUse")[1])["decision"], "deny")
+        # agy may match a tool's name, and so the action, ignoring case: they are read so
+        for n, (name, ti) in enumerate((("Manage_Task", {"Action": "SEND_INPUT", "TaskId": "t1", "Input": "rm -rf ~\n"}),
+                                        ("Run_Command", {"CommandLine": "rm -rf ~"}))):
+            with self.subTest(tool=name):
+                self.assertEqual(json.loads(self.hook("antigravity", call(5 + n, name, ti), "PreToolUse")[1])["decision"],
+                                 "deny")
         self.assertEqual((agent_hooks.config_path("antigravity", home=self.d), agent_hooks.config_path("antigravity", self.d)),
                          (os.path.join(self.d, ".gemini", "config", "hooks.json"), os.path.join(self.d, ".agents", "hooks.json")))
 
@@ -638,8 +645,12 @@ class QwenTools(unittest.TestCase):
                 self.assertEqual(tool, want)
                 self.assertEqual(args.get("file_path"), ti.get("file_path") or ti.get("absolute_path") or ti.get("notebook_path"))
         self.assertEqual(agent_hooks.tool("qwen", "web_fetch", {"prompt": "see https://x.example/a"})[1]["url"], "https://x.example/a")
-        # Gemini CLI has no edit or grep_search tool: its names are not changed
+        # Gemini CLI has no edit tool: its name is not changed. Its grep is grep_search now (search_file_content before),
+        # and it names an MCP tool mcp_<server>_<tool>, which the packs' MCP rules read as mcp__<server>_<tool>
         self.assertEqual(agent_hooks.tool("gemini", "edit", {})[0], "edit")
+        for name in ("grep_search", "search_file_content"):
+            self.assertEqual(agent_hooks.tool("gemini", name, {"pattern": "x", "dir_path": "/w"})[:1], ("Grep",))
+        self.assertEqual(agent_hooks.tool("gemini", "mcp_db_execute_sql", {"sql": "x"}), ("mcp__db_execute_sql", {"sql": "x"}))
 
 
 class CrushTools(unittest.TestCase):

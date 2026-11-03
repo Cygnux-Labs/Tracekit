@@ -251,18 +251,21 @@ def evaluate(pol, tool, ti, cwd=None):
         ti = {} if ti is None else {"value": ti}
     paths = ti.get("paths") if FIELD_FOR_TOOL.get(tool) == "file_path" else None
     calls = [ti] + [dict(ti, file_path=p) for p in paths] if isinstance(paths, list) else [ti]
+    # Claude Code's Monitor runs its command in the shell Bash uses, and PowerShell is its shell on Windows: a rule
+    # applies under either name, so one written for Bash and one for the tool itself both match
+    names = [tool] + (["Bash"] if tool in ("Monitor", "PowerShell") else [])
     rule_ids, reasons, flags = [], [], []
     deny = ask = False
     for r in pol.get("deny", []):
-        if any(_matches(r, tool, c) for c in calls):
+        if any(_matches(r, t, c) for c in calls for t in names):
             deny = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("ask", []):
-        if ASKABLE.match(tool or "") and any(_matches(r, tool, c) for c in calls):
+        if any(ASKABLE.match(t or "") and _matches(r, t, c) for c in calls for t in names):
             ask = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("flag", []):
-        if any(_matches(r, tool, c) for c in calls):
+        if any(_matches(r, t, c) for c in calls for t in names):
             if r["id"] not in rule_ids:
                 rule_ids.append(r["id"])
             flags.append(r.get("label", "flag"))

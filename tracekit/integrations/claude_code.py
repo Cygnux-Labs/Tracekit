@@ -104,8 +104,9 @@ WAIT_ENV = "TRACEKIT_APPROVAL_WAIT"   # seconds a held call's hook waits for its
 # which it deletes the transcript); a session continued later starts without its constraints; keep the state while
 # its transcript exists if sessions are continued later than that
 SESSION_KEEP_S = 30 * 86400
-# lean: a retry is matched against the session's last 32 held Bash calls (_keep_held); a retry of an older one that
-# rewords its description is held again; raise it if sessions hold more calls than that before they are answered
+# lean: a retry is matched against the session's last 32 held Bash calls (_keep_held); once an older one is dropped,
+# every retry that rewords its description is held again, since the dropped call may be a rejected wording of it; raise
+# it if sessions hold more calls than that
 HELD = 32
 # the signer no longer takes the session's stored run: closed (idle), unknown, or its token not one this signer issued
 # (a signer reset makes a new run token key). The session's next event that registers starts a new run; the old one is
@@ -454,8 +455,8 @@ def _keep_held(sid, run_id, args, aid):
         lock_file(lk)
         st = _load(path)
         if st and st["run_id"] == run_id:   # a new run (_register) starts with none: the old run's approvals expired
-            st["held"] = [*(st.get("held") or ())[-(HELD - 1):],
-                          {"rest": _rest(args), "digest": event_hash(args), "approval_id": aid}]
+            held = [*(st.get("held") or ()), {"rest": _rest(args), "digest": event_hash(args), "approval_id": aid}]
+            st["held"], st["dropped"] = held[-HELD:], st.get("dropped") or len(held) > HELD
             files.write_json(path, st)
 
 
@@ -470,9 +471,9 @@ def _reworded(client, sid, args, cap):
     and that it was approved too if it was (by a person or an agent approver): the signer doesn't say which answer came
     last, so neither is taken as the last word. (None, None) otherwise: any other key differs (command,
     run_in_background, dangerouslyDisableSandbox, timeout, ...), the held calls' approvals are unanswered, expired or
-    used, or one of them couldn't be read (it may be the rejected one)."""
+    used, one of them couldn't be read, or a held call was dropped (_keep_held): either may be the rejected one."""
     st = _load(_state(sid))
-    if not st or st.get("ended"):
+    if not st or st.get("ended") or st.get("dropped"):
         return None, None
     rest, approved, rejected, unread = _rest(args), None, None, False
     for h in reversed(st.get("held") or ()):
@@ -563,6 +564,8 @@ def _pre(client, p, sid, tid):
             c = run.approval_consume(tid, tool, args, approval_id_hint=aid) if state == "approved" else None
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
+        if state in ("requested", "rejected") and _bash(tool, args):   # a wording rejected while the hook waited too
+            _keep_held(sid, run.run_id, args, aid)
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
             # Claude Code runs a `!` line in the session as its OS user: the person, with the dev signer; with a named
             # signer (system mode, a remote one) that user is the agent's, whom the signer refuses: another terminal
@@ -573,8 +576,6 @@ def _pre(client, p, sid, tid):
                     f"`{bang}{cmd} approve {aid}`, then asks the agent to try the same call again, unchanged (to "
                     f"refuse it: `{bang}{cmd} reject {aid}`). Agent: wait for the person's answer") + (
                         f". Why{why}" if why else "")
-            if _bash(tool, args):
-                _keep_held(sid, run.run_id, args, aid)
             print(held, file=sys.stderr)
             if AGENT == "claude-code":   # the reason goes to the model, the system message to the person
                 print(json.dumps({"systemMessage": held, "hookSpecificOutput": {
