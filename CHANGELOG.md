@@ -2,6 +2,97 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.5.3 (2026-11-03) — commands bash builds at run time, verifiers that read every file, and no false gaps
+
+A security release. In 1.5.2 an agent could get a call past Tracekit in four ways: the shell parser read some lines
+differently from bash (an unset `$X` inserted as a word, `time` before a `{ …; }` group, brace expansion, a `}` inside
+quotes in `${…}`, a backslash-newline), Claude Code's `Monitor` and `PowerShell` tools skipped every shell rule, Gemini
+CLI's `grep_search` and MCP tools went unread, and the Python and TypeScript verifiers passed a bundle with a forged
+line in a file they didn't tie to a signed record. All are fixed. Before tagging, four sweeps attacked every
+coding-agent hook, every hold and deny rule and the parser with adversarial spellings against 1.5.2, and rounds of
+independent review read the fixes; what was found is fixed with a test, or written down in [limits](docs/limits.md). A
+signer that slept no longer reports thousands of fabricated gaps, `tracekit audit` replays your agent's past sessions
+against the policy, and eleven outside contributors landed changes. Bundles are unchanged, and the signer protocol stays
+20. Upgrade the signer: it decides the policy.
+
+### Upgrade notes
+- **Policy packs.** Coding `2026.10-v2-55` (from `2026.10-v2-46`), server `2026.10-server-16` (from `-14`), server-cloud
+  `2026.10-server-cloud-15` (from `-7`), server-comms `2026.10-server-comms-9` (from `-5`), server-data
+  `2026.10-server-data-4` (from `-3`), browser `2026.10-browser-6` (from `-5`) and strict `2026.10-strict-9` (from
+  `-8`). E17: 778 of 778 harmful calls stopped, 1 false alarm in 843. E21: the server pack stops or holds 252 of 420
+  held-out calls (247 in 1.5.2).
+- **A deny that only an empty variable makes is a hold.** The parser now also reads a command with each expansion empty,
+  as bash runs `rm -rf $OUT_DIR/` with `OUT_DIR` unset. Where only that reading meets a deny rule, the call is held with
+  the rule's id, so a person can approve `rm -rf "$OUT_DIR"/*`; strict still denies it.
+- **Removing or stopping Tracekit waits for a person** (`TK-A054`): `tracekit uninstall` or `down`, uninstalling its
+  package or Claude Code plugin, and stopping its user service.
+- **Strict holds what its limits row promised**: every package install, push, `docker run`, network command and
+  `PATH`-style setting. Strict holds 46 of E17's 843 routine calls (40 of 829 in 1.5.2).
+- **A bundle may hold only the files format v2 §9 names.** All three verifiers now fail `manifest` for any other file (a
+  `trust.json`, a `verify.sh`, a `README.txt`). Bundles Tracekit exports never held one.
+
+### Security
+- **The shell parser read some lines differently from bash** (1.5.2 and before). A word made only of an unset expansion
+  (`git $X push --force`), `time` before a group or function, brace expansion in an argument, a `}` inside quotes in
+  `${…}` and a backslash-newline each hid a command from the rules; an inserted `$X` alone weakened 198 of 430 decisions
+  on the dev deny corpus. The parser now reads each as bash does, with a second reading where an expansion may be empty
+  or a glob may match nothing, and holds what it can't read within its budget.
+- **Claude Code's `Monitor` and `PowerShell` tools skipped every shell rule** (every version with Claude Code hooks).
+  Both run a command, but the packs and the v1 policy decided them as unknown tools (a flag on a laptop), so a command
+  `Bash` was denied (the agent approving its own held call, for one) ran through `Monitor`. `Monitor` is decided as
+  the shell; `PowerShell` stays an unknown tool and is also held or denied where a shell rule matches its command.
+- **Gemini CLI's grep and MCP tools went unread.** Current Gemini CLI names them `grep_search` and
+  `mcp_<server>_<tool>`; the hook now maps both, and an MCP name is decided under each way it can split.
+- **The verifiers passed a forged line** (Python and TypeScript, 1.5.2 and before; Go failed these). A
+  `registry/records.jsonl` line no leaf pointed to reached the extension checks and read `[PASS]` in a `VERIFIED`
+  report. A zip entry whose stream ran past its stated size was read as its first bytes, a run's file could carry
+  another run's name, and a consistency proof from registry size 0 was never read. Each now fails, and the bounded
+  mutation tests run on a run-set and a run in parts through both verifiers. A run with more than 20 problems stops
+  being checked (a crafted bundle took 103 s in Python, now 7 s), and Go's v1 range and format version now match the
+  reference.
+- **Rules that missed ordinary spellings.** 47 rules read more of them, each with a test. The main ones: `TK-D004` (`rm
+  -r` of a home among other operands, every dotfile of a home), `TK-D006`, `TK-D010` and `TK-D011` (secrets and keys
+  sent as a body, encoded, piped to `gh gist create`, cluster, registry, gcloud and Git credentials), `TK-D021`,
+  `TK-A002`, `TK-A023`, `TK-A027`, `TK-A039`, `TK-A042`, `TK-A046`, `TK-S002`, `S003`, `S004`, `S006` and `S010`,
+  `TK-C001`, `C002` and `C010` (public snapshots, resource policies, Redshift, DocumentDB, Neptune and OpenSearch
+  deletes, closing an AWS account), `TK-DB003` to `DB005`, `TK-M002` to `M004`, `TK-B001` (`javascript:` navigation),
+  `TK-P003` (an HTTP GET's query is data sent), and an `mcp__<server>__<tool>` call is also decided as
+  `mcp:<server>/<tool>`.
+
+### Fixed
+- **5,343 fabricated gaps from one quiet week** (#538): a signer closes runs idle past `idle_s` before it serves the
+  call that woke it.
+- A signer deadlock on SIGTERM, a client file-descriptor leak and tailers that died silently (#540); audit's session and
+  copied-call counts (#541); a reworded retry after a yes and a no, and a stray session lock (#536); TK-M003 and
+  tool-name spellings (#542); examples, docs and CI (#537).
+- False denies and holds: quoted text in an unreadable line, `git commit -m '… | sh'`, a public key, `o'staff@`,
+  `python3 -m tracekit.signer --help`, an ordinary script run.
+- `tracekit why` skips a run replaced mid-scan instead of caching it as failed (#486, by @nsknojj).
+
+### Added
+- **`tracekit audit`** replays your Claude Code sessions against the policy and shows what Tracekit would have denied or
+  held (#491, by @HarshRajSinghania). `tracekit report --share` and `audit --share` print counts alone, for a [field
+  report](docs/field-reports.md) (#528).
+- Offline CrewAI (#489, by @egekots; CI against real CrewAI, #493, by @khushi-git-7) and Vercel AI approval and resume
+  (#514, by @sunxiuguo) examples.
+- `TK-A048` holds deleting Docker and Podman volumes (#485, by @ritamgh), `TK-S012` holds code, a cell or a process's
+  input sent to an MCP code runner, and `TK-F017` flags a shell line that sets `ANTHROPIC_BASE_URL` (#508); `TK-C010`
+  holds turning off AWS audit logging or detection (#532, by @WhitePepperLambSoup); the GitHub Action takes pinned v2
+  trust (#478, by @kausthubhk).
+- The viewer shows egress effects in HORIZON and GRAPH (#494, by @gezerui888); `doctor` says a missing data dir will be
+  on its file system (#527, by @ShahadatTest); the real-home test guard names the OS's own variable (#530, by @bfs2021).
+- Doctor and the hook say when Tracekit is out of date (#512); the hold message says who runs what, ready to paste
+  (#520).
+
+### Documented
+- [Limits](docs/limits.md) gains rows for what stays unread: PowerShell's own syntax, joined MCP names, a browser driven
+  over MCP, `TK-C002`'s batch grants, `TK-D004`'s bound on plain words, `TK-P003`'s reflected URLs, posting tools' text,
+  and the harness-config, log and hook-folder gaps the sweep found.
+
+### Contributors
+@HarshRajSinghania, @egekots, @khushi-git-7, @sunxiuguo, @ritamgh, @WhitePepperLambSoup, @kausthubhk, @gezerui888,
+@ShahadatTest, @bfs2021 and @nsknojj. Thank you.
+
 ## 1.5.2 (2026-10-31) — two security fixes, Crush, and holds that read what a command really does
 
 A security patch. In 1.5.1 an agent could get a call past Tracekit in two ways: Antigravity CLI could run a call with
