@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+import zlib
 from concurrent.futures import ProcessPoolExecutor
 from unittest import mock
 
@@ -85,6 +86,27 @@ def damage_crc(src, dst):
     central = data.index(entry.filename.encode(), directory) - 46   # its name follows its 46-byte central header
     for at in (entry.header_offset + 14, central + 16):
         data[at] ^= 1
+    with open(dst, "wb") as f:
+        f.write(data)
+
+
+def overinflate(src, dst):
+    """Copy a bundle with its first runs/ entry's deflate stream holding bytes past the entry's stated size, which, with
+    its CRC-32, stays that of the run's records: the layout holds, the stream inflates to more than the entry says."""
+    with zipfile.ZipFile(src) as z:
+        entries = [(n, z.read(n)) for n in z.namelist()]
+    name = next(n for n, _ in entries if n.startswith("runs/"))
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, b in entries:
+            z.writestr(n, b + b"x" * 1000 if n == name else b)
+    with zipfile.ZipFile(dst) as z:
+        entry = z.getinfo(name)
+    with open(dst, "rb") as f:
+        data = bytearray(f.read())
+    central = data.index(name.encode(), int.from_bytes(data[-6:-2], "little")) - 46
+    real = dict(entries)[name]
+    for at in (entry.header_offset + 14, central + 16):   # CRC-32, then the uncompressed size 8 bytes on
+        data[at:at + 4], data[at + 8:at + 12] = zlib.crc32(real).to_bytes(4, "little"), len(real).to_bytes(4, "little")
     with open(dst, "wb") as f:
         f.write(data)
 
