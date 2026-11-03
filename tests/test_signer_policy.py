@@ -919,6 +919,42 @@ class CodingPack(unittest.TestCase):
                         d = e.decide(tool, args)
                         self.assertNotIn("TK-A041", d["rule_ids"], d)
 
+    def test_a_destructive_statement_through_more_exec_wrappers_ctes_and_clients_asks(self):
+        """TK-A039 (1.5.3 sweep): options before a container's `exec`, podman and oc, a shell's -c inside the exec, a
+        data-modifying CTE, EXPLAIN ANALYZE (which runs the DELETE), `clickhouse client`, mongo's getCollection,
+        brackets and getSiblingDB, and more than sixteen words before -c were allowed; `redis-cli GET flushall` (a
+        key) was held."""
+        held = ['kubectl -n prod exec -it pg-0 -- psql -c "DROP TABLE users"',
+                'kubectl --context prod exec pg-0 -- psql -c "DROP TABLE users"',
+                'docker compose -f compose.prod.yml exec db psql -U app -c "DROP TABLE users"',
+                'docker -H ssh://prod exec db psql -c "DROP TABLE users"', 'podman exec db psql -c "DROP TABLE users"',
+                'oc exec pg-0 -- psql -c "DROP TABLE users"', 'docker exec -i db sh -c "psql -c \'DROP TABLE users\'"',
+                'kubectl exec pg-0 -- bash -lc "psql -c \'DROP TABLE users\'"',
+                'docker exec db sh -c \'mysql -e "DROP DATABASE prod"\'',
+                'docker exec db sh -c "mongosh --eval \'db.users.drop()\'"',
+                'psql -c "WITH d AS (DELETE FROM users RETURNING 1) SELECT count(*) FROM d"',
+                'psql -c "WITH d AS (DELETE FROM users) SELECT 1"', 'psql -c "WITH x AS (SELECT 1) DELETE FROM users"',
+                'sqlite3 app.db "WITH x AS (SELECT 1) DELETE FROM users"', 'psql -c "EXPLAIN ANALYZE DELETE FROM users"',
+                'psql -c "EXPLAIN (ANALYZE, BUFFERS) DELETE FROM users"', 'psql -c "explain analyse verbose delete from users"',
+                'clickhouse client --query "DROP TABLE events"', 'mongosh --eval "db.getCollection(\'users\').drop()"',
+                'mongosh --eval "db[\'users\'].drop()"', 'mongosh --eval "db.getSiblingDB(\'prod\').dropDatabase()"',
+                'mongosh --eval "db.getSiblingDB(\'prod\').users.deleteMany({})"', 'keydb-cli FLUSHALL',
+                "psql -h db.prod -p 5432 -U admin -d app -v ON_ERROR_STOP=1 -X -q -t -A -F , --set=x=1 -c 'DROP TABLE "
+                "users'", "redis-cli -h cache -n 2 FLUSHDB ASYNC"]
+        routine = ['psql -c "WITH x AS (SELECT id FROM t) SELECT * FROM x"',
+                   'psql -c "WITH d AS (DELETE FROM users WHERE id = 5 RETURNING *) SELECT * FROM d"',
+                   'psql -c "WITH t AS (SELECT 1) DELETE FROM users WHERE id = 3"', 'psql -c "EXPLAIN DELETE FROM users"',
+                   'psql -c "EXPLAIN ANALYZE DELETE FROM users WHERE id = 1"', 'psql -c "EXPLAIN ANALYZE SELECT 1"',
+                   'kubectl -n prod exec -it pg-0 -- psql -c "SELECT 1"', 'docker exec -i db sh -c "psql -c \'SELECT 1\'"',
+                   'mongosh --eval "db.getCollection(\'users\').find()"', 'mongosh --eval "db[\'users\'].deleteMany({a: 3})"',
+                   'redis-cli GET flushall', 'redis-cli -h flushall GET x', 'redis-cli -n 2 SET k FLUSHALL',
+                   'clickhouse client --query "SELECT 1"']
+        self.every_pack_verdicts([(c, "TK-A039") for c in held])
+        for pack, engine, e in self.every_pack():
+            for command in routine:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-A039", e.decide("Bash", {"command": command})["rule_ids"])
+
     def test_a_command_opening_hosts_beyond_claude_codes_sandbox_asks(self):
         dev = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
         d = dev.decide("Bash", {"command": "npm install", "allowed_domains": ["registry.example.org"]})
