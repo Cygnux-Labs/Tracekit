@@ -810,6 +810,24 @@ class Speed(unittest.TestCase):
                 # follows the machine, as the pattern budgets do (#518): CI's Linux runner took 2.03 s under 3.9
                 self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
 
+    def test_tk_c010s_options_after_an_aws_command_through_call_aws_decide_in_linear_time(self):
+        """#581 review: TK-C010 read the words after update-trail, update-detector and a filter command as a separator
+        then a word, so in a JSON value a backslash could start either (`\\\\t`): 64 KiB of backslashes took ~400 ms a
+        decision on the fallback engine, four times as long each time the input doubled. A word then its separator,
+        TK-C001's reading, splits the run one way. TK-C010 is in RESCAN, so the generic fillers never built it."""
+        n, scale = MAX_SUBJECT - 200, machine_scale()
+        for backend in BACKENDS:
+            e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], backend)
+            for cmd in ("cloudtrail update-trail", "guardduty update-detector", "guardduty create-filter",
+                        "guardduty update-filter"):
+                for unit in ("\\", "a\\"):
+                    args = {"cli_command": f"aws {cmd} " + unit * (n // (2 * len(unit)))}
+                    with self.subTest(backend=backend, cmd=cmd, unit=unit):
+                        start = time.perf_counter()
+                        d = e.decide("mcp__aws-api__call_aws", args)
+                        self.assertNotIn("nondeterministic", d)
+                        self.assertLess(time.perf_counter() - start, self.BUDGET_S * scale)
+
     def test_the_corpus_decides_within_budget(self):
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
         calls = list(corpus_calls())

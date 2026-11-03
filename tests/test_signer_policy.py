@@ -2411,6 +2411,10 @@ class CodingPack(unittest.TestCase):
             "aws guardduty update-detector --detector-id d --features Name=S3_DATA_EVENTS,Status=DISABLED",
             "aws guardduty update-detector --detector-id d --features '[{\"Name\":\"S3_DATA_EVENTS\",\"Status\":\"DISABLED\"}]'",
             "aws guardduty update-detector --detector-id d --features '[{\"Name\": \"EKS_AUDIT_LOGS\", \"Status\": \"DISABLED\"}]'",
+            # #581 review: JSON with its own spacing, two spaces between members or pretty-printed over lines
+            "aws guardduty update-detector --detector-id d --features '[{\"Name\": \"EKS_AUDIT_LOGS\",  \"Status\": \"DISABLED\"}]'",
+            "aws guardduty update-detector --detector-id d --features '[\n  {\n    \"Name\": \"S3_DATA_EVENTS\",\n"
+            "    \"Status\": \"DISABLED\"\n  }\n]'",
             "aws guardduty create-filter --detector-id d --name f --action ARCHIVE",
             "aws guardduty create-filter --detector-id d --name f --action=ARCHIVE --finding-criteria file://c.json",
             "aws guardduty update-filter --detector-id d --filter-name f --action ARCHIVE",
