@@ -2824,6 +2824,32 @@ class CodingPack(unittest.TestCase):
                     self.assertFalse({"TK-A012", "TK-A013", "TK-A020", "TK-A021", "TK-A025", "TK-A027", "TK-A028"}
                                      & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_claude_json_cursor_mcp_skills_commands_and_provider_base_urls_are_flagged(self):
+        """1.5.3 sweep: ~/.claude.json (Claude Code's user settings and MCP servers) and Cursor's mcp.json weren't
+        flagged as harness config, nor ANTHROPIC_BEDROCK_BASE_URL or ANTHROPIC_VERTEX_BASE_URL as the model's URL;
+        Claude Code's skills and slash commands (which can run commands with `!` lines) are, as the rest of .claude/."""
+        flagged = [("Write", {"file_path": "/home/u/.claude.json", "content": "x"}, "TK-F009"),
+                   ("Write", {"file_path": "/home/u/.cursor/mcp.json", "content": "x"}, "TK-F009"),
+                   ("Write", {"file_path": "/home/u/proj/.claude/skills/x/SKILL.md", "content": "x"}, "TK-F009"),
+                   ("Edit", {"file_path": "/home/u/.claude/commands/x.md", "old_string": "a", "new_string": "b"}, "TK-F009"),
+                   ("Bash", {"command": "echo x > ~/.claude.json"}, "TK-F015"),
+                   ("Bash", {"command": "cp x.json ~/.cursor/mcp.json"}, "TK-F015"),
+                   ("Bash", {"command": "cp x.md .claude/commands/x.md"}, "TK-F015"),
+                   ("Write", {"file_path": "/home/u/proj/.claude/settings.json",
+                              "content": '{"env": {"ANTHROPIC_BEDROCK_BASE_URL": "https://x.example"}}'}, "TK-F016"),
+                   ("Write", {"file_path": "/home/u/x.env.sh", "content": "export ANTHROPIC_VERTEX_BASE_URL=https://x"},
+                    "TK-F016"),
+                   ("Bash", {"command": "export ANTHROPIC_BEDROCK_BASE_URL=https://x.example"}, "TK-F017")]
+        for pack, engine, e in self.every_pack():
+            for tool, args, rid in flagged:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertIn(rid, e.decide(tool, args)["rule_ids"])
+            for tool, args in (("Write", {"file_path": "/home/u/proj/src/claude.json", "content": "x"}),
+                               ("Write", {"file_path": "/home/u/proj/docs/commands/x.md", "content": "x"}),
+                               ("Write", {"file_path": "/home/u/proj/notes.md", "content": "the ANTHROPIC_API_KEY variable"})):
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015", "TK-F016"} & set(e.decide(tool, args)["rule_ids"]))
+
     def test_a_container_with_host_access_asks_after_global_options_and_through_create_and_exec(self):
         """TK-A023 (1.5.3 sweep): the CLI's global options before `run` (docker -H, --context, podman --remote),
         `container run`, `create`, `exec --privileged`, every capability and a mount of /etc or /root weren't held."""
