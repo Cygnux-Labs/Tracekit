@@ -2690,6 +2690,27 @@ class CodingPack(unittest.TestCase):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-A025", "TK-A027"} & set(d["rule_ids"]), d)
 
+    def test_a_container_with_host_access_asks_after_global_options_and_through_create_and_exec(self):
+        """TK-A023 (1.5.3 sweep): the CLI's global options before `run` (docker -H, --context, podman --remote),
+        `container run`, `create`, `exec --privileged`, every capability and a mount of /etc or /root weren't held."""
+        self.every_pack_verdicts([(c, "TK-A023") for c in (
+            "docker --context prod run --privileged alpine sh", "docker -H tcp://10.0.0.5:2375 run -v /:/host alpine",
+            "podman --remote run --pid=host alpine", "docker container run --privileged alpine",
+            "docker create --privileged --name x alpine", "docker exec --privileged web sh",
+            "docker exec -u 0 --privileged -it web bash", "docker --context=prod container create -v /:/h alpine",
+            "docker run --cap-add=ALL --security-opt apparmor=unconfined alpine", "docker run --cap-add all alpine",
+            "podman run --cap-add=CAP_NET_ADMIN,ALL alpine", "docker run -v /etc:/host/etc alpine",
+            "docker run -v /root:/r alpine", "docker run -v /root/.ssh:/k:ro alpine",
+            "docker run --mount type=bind,src=/etc,dst=/e alpine")])
+        for pack, engine, e in self.every_pack():
+            for command in ("docker run -v /etc/localtime:/etc/localtime:ro alpine",
+                            "docker run -v /etc/passwd:/etc/passwd:ro -u 1000 alpine", "docker run --cap-add NET_ADMIN alpine",
+                            "docker exec -it web sh -c 'ls --privileged'", "docker --context prod ps",
+                            "docker -H tcp://x images", "docker run -v ./etc:/etc alpine", "docker create --name x alpine",
+                            "podman --remote run alpine echo hi"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-A023", e.decide("Bash", {"command": command})["rule_ids"])
+
     def test_write_and_delete_tags_leave_the_older_target_rules_as_they_were(self):
         """The WRITE_TARGET:/DELETE_TARGET: tags were target subjects, so TK-D010 read `DELETE_TARGET:.env` as a
         credentials file written and TK-A011 and TK-A013 a startup item or hook. They are `effects` now, which only the
