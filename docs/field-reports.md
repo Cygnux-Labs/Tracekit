@@ -7,9 +7,7 @@ measurement from outside our machines, and its false alarms and misses tell us w
 
 ## Run Tracekit for a week
 
-`--share` needs Tracekit 1.5.3 or later. Until that is on PyPI, install from the repository:
-`pip install git+https://github.com/Cygnux-Labs/Tracekit`. Such an install calls itself 1.5.2 until the release, in
-`tracekit --version` and in the report's first line.
+`--share` needs Tracekit 1.5.3 or later (`pip install -U tracekit-ai`).
 
 ```bash
 tracekit init --dev --v2               # Claude Code's hooks and the dev signer; --agent codex, cursor, ...: coding-agents.md
