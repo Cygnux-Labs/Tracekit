@@ -1858,6 +1858,32 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_devin_config_changes_are_harness_config_in_every_pack(self):
+        # #566: a write or delete of Devin's project hooks or config (.devin/) or its user config (~/.config/devin,
+        # Windows %APPDATA%\devin) could remove Tracekit's hook; near names and reads stay unflagged
+        paths = ("/repo/.devin/hooks.v1.json", ".devin/config.json", "/repo/.devin/config.local.json",
+                 "/home/u/.config/devin/config.json", r"C:\repo\.devin\hooks.v1.json",
+                 r"C:\Users\u\AppData\Roaming\devin\config.json")
+        commands = ("echo '{}' > .devin/hooks.v1.json", "sed -i s/600/1/ ~/.config/devin/config.json", "rm -rf .devin",
+                    r"cp x 'C:\Users\u\AppData\Roaming\devin\config.json'")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat .devin/hooks.v1.json", "ls ~/.config/devin", "echo x > .devin-old/x", "echo x > ~/.config/devin-old/x",
+            "devin --version")]
+        benign += [("Read", {"file_path": path}) for path in paths]
+        benign += [("Write", {"file_path": "/repo/.devinrc/x", "content": "{}"}),
+                   ("Write", {"file_path": "notes.md", "content": " ".join(paths)})]
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit", "MultiEdit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+
     def test_harness_flags_skip_source_files_in_claude_code_worktrees_in_every_pack(self):
         # #500: edits under .claude/worktrees/<name>/, Claude Code's own worktrees, were 3,084 of 3,097 TK-F009 flags
         # and 36 of 39 TK-F015 flags on maintainers' sessions; a file there is judged as it is in the worktree

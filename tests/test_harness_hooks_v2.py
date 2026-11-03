@@ -101,7 +101,7 @@ class Mapping(HarnessCase):
                 self.assertEqual(code, CODEX_DENY if harness == "codex" and case["exit"] == 2 else case["exit"], err)
                 self.assertEqual(json.loads(out) if out else "", case["stdout"])
                 sent = self.sent[-1]
-                if case["request"]["tool_call_id"] is None:   # Gemini, agy: paired by the hook, never defaulted
+                if case["request"]["tool_call_id"] is None:   # Gemini, agy, Devin: paired by the hook, never defaulted
                     prefix = "gem" if harness == "gemini" else harness
                     self.assertRegex(sent["tool_call_id"], rf"^{prefix}_[0-9a-f]{{16}}_\d+$")
                     sent = dict(sent, tool_call_id=None)
@@ -144,6 +144,9 @@ class Mapping(HarnessCase):
 
     def test_crush(self):
         self.check("crush")
+
+    def test_devin(self):
+        self.check("devin")
 
     def test_crush_sub_agents_are_denied_before_the_signer(self):
         # Crush runs no hooks inside a sub-agent (internal/agent/hooked_tool.go), so the hook denies agent and
@@ -595,7 +598,7 @@ class Installer(unittest.TestCase):
                     with open(path) as f:
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
-                    hooks = [h for hs in (blob if harness == "droid" else blob[key]).values() for h in hs]
+                    hooks = [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]   # Devin: its project file
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})

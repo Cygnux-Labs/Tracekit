@@ -178,11 +178,12 @@ def _dev_settings():
 
 
 def _harness_hooks(harness, config):
-    """{event: [hook groups]} of a coding agent's hook config: Droid's file is the event map, agy's names each hook's
-    (Tracekit's is agent_hooks.AGY_HOOK), the others' is under `hooks`."""
+    """{event: [hook groups]} of a coding agent's hook config: Droid's file is the event map (Devin's project one too),
+    agy's names each hook's (Tracekit's is agent_hooks.AGY_HOOK), the others' is under `hooks`."""
     from . import agent_hooks
-    if harness == "droid":
-        return {ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config}
+    if harness == "droid" or harness == "devin" and "hooks" not in config:   # Devin's project .devin/hooks.v1.json
+        return {ev: config[ev] for ev in (agent_hooks.DROID_EVENTS if harness == "droid" else agent_hooks.DEVIN_EVENTS)
+                if ev in config}
     if harness == "antigravity":   # its "enabled" is D-AGY-HOOKS-RUN's
         named = config.get(agent_hooks.AGY_HOOK) or {}
         return {ev: named[ev] for ev in agent_hooks.AGY_EVENTS if ev in named}
