@@ -458,13 +458,13 @@ class Client:
 
     def _connect(self):
         conn = _Conn(*self._dial())
+        conn.fin = weakref.finalize(self, conn.close)   # its reader detaches it: a dead connection is not kept alive
         # the threads hold the client weakly: a Client dropped without close() is collected, and its connection with it
         conn.threads = (threading.Thread(target=Client._read, args=(weakref.ref(self), conn), daemon=True,
                                          name="tracekit-client"),
                         threading.Thread(target=conn.write, daemon=True, name="tracekit-client-write"))
         for t in conn.threads:
             t.start()
-        weakref.finalize(self, conn.close)
         return conn
 
     @staticmethod
@@ -482,7 +482,10 @@ class Client:
             if client and client._conn is conn:
                 client._conn = None
             conn.out.put(None)   # the writer stops
+            conn.drop()   # and one blocked in sendall wakes before the fd closes
             conn.sock.close()
+            conn.rfile.close()   # the socket's fd closes only once its reader has too
+            conn.fin.detach()
             while conn.pending:
                 conn.pending.popleft().set_exception(_ConnectionLost())
 
