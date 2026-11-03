@@ -54,9 +54,10 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         p = None
     if event and not re.fullmatch(r"[A-Za-z][\w.]*", event):
         # not an event's name: cmd.exe hands a PowerShell tail to the hook as arguments (`PreToolUse;`, under Qwen
-        # Code before 0.15.0, which ignores a hook's "shell"). The payload's own event decides, else the name the
-        # argument starts with
-        event = (p.get("hook_event_name") if isinstance(p, dict) else None) or re.match(r"[A-Za-z]*", event).group()
+        # Code before 0.15.0, which ignores a hook's "shell"). The name it starts with is the installed event, else
+        # the payload's own event decides
+        lead = re.match(r"[A-Za-z][\w.]*", event)
+        event = lead.group() if lead else p.get("hook_event_name") if isinstance(p, dict) else None
     if not isinstance(p, dict) and event:
         pre = event in agent_hooks.PRE
         msg = f"[tracekit] the {event} hook payload is not a JSON object; " + (

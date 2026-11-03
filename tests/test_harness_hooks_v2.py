@@ -149,7 +149,11 @@ class Mapping(HarnessCase):
         code, _, err = self.hook("qwen", payload, "PreToolUse;")
         self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_90"), err)
         code, _, err = self.hook("qwen", dict(payload, hook_event_name=None, tool_use_id="toolu_91"), "PreToolUse;")
-        self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_91"), err)   # else the name it starts with
+        self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_91"), err)
+        # the installed event decides, not one the payload names
+        code, _, err = self.hook("qwen", dict(payload, hook_event_name="PostToolUse", tool_use_id="toolu_92"),
+                                 "PreToolUse;")
+        self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_92"), err)
 
     def test_qwen(self):
         self.check("qwen")
