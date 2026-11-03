@@ -145,6 +145,29 @@ def _sets_with_v(argv):
     return argv[0] == "printf" and any(a.startswith("-v") for a in argv[1:])
 
 
+def _read_names(argv):
+    """The variables bash's `read` sets with these words: its names, -a's array, REPLY with neither; None when an option
+    or a name can't be told."""
+    names, args = [], list(argv[1:])
+    while args and args[0].startswith("-") and args[0] != "-":
+        opt = args.pop(0)
+        if opt == "--":
+            break
+        for k, f in enumerate(opt[1:]):
+            if f in "ers":
+                continue
+            if f not in "adinNptu":
+                return None
+            value = opt[k + 2:] or (args.pop(0) if args else None)   # the rest of the cluster, or the next word
+            if value is None:
+                return None
+            if f == "a":
+                names.append(value)
+            break
+    names += args or ([] if names else ["REPLY"])
+    return names if all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n) for n in names) else None
+
+
 # an expansion with none inside it: a default's word is emptied innermost first (_Parser.dollar)
 _INNERMOST = re.compile(r"\$\{[^${}]*\}|\$\([^$()`]*\)|`[^`$]*`|\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])")
 # a quote or backslash pair of a word as written, its text in group 1, 2 or 3 (a default's word read without them)
@@ -1219,8 +1242,9 @@ class _Parser:
         """Update self.known (__init__) after a simple command: a variable it gives a literal on its own, or with
         `export` (`export D=build`), is known when that surely runs (`sure`) before what follows it (`;`, a newline, `&&`
         or a subshell's end); a for loop's over literal words is known in its body; any other variable it sets is not;
-        and after a command that may set any (read, declare, unset, eval, source, trap, alias, printf -v, one whose
-        name the parser can't read) none is, for the rest of the line. A known variable keeps the literals it may hold
+        after `read` the names it reads into aren't; and after a command that may set any (read with an option or a
+        name the parser can't tell, declare, unset, eval, source, trap, alias, printf -v, one whose name the parser
+        can't read) none is, for the rest of the line. A known variable keeps the literals it may hold
         (the loop's words; [""]: certainly empty, after `X=` or `unset X`), [] when unknown. `loop`: (for or select,
         the words after it); `assigns`: (name, the literal it gets or None, whether it is appended to: +=)."""
         if loop:
@@ -1249,6 +1273,10 @@ class _Parser:
             words = []
         elif words[:1] == ["unset"] and all(re.fullmatch(r"-v|[A-Za-z_][A-Za-z0-9_]*", w) for w in words[1:]):
             assigns, words = [(n, "", False) for n in words[1:] if n != "-v"], []   # each now certainly empty
+        elif cmds and all(not c["opaque"] and c["argv"][0] == "read" and _read_names(c["argv"]) for c in cmds):
+            for c in cmds:   # read sets only the names it reads into
+                for name in _read_names(c["argv"]):
+                    self.known.pop(name, None)
         elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) for c in cmds):
             self.ctx["any_set"] = True
         then = self.peek() in ("", "\n", ";", ")") or self.at("&&")

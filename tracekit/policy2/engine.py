@@ -920,7 +920,7 @@ def _carried(tool):
     seq = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold())
     words, out = set(seq), set()
     after = seq[seq.index("create") + 1:] if "create" in seq else []
-    after = after[2:] if after[:1] and after[0] in _LINKS else after
+    after = (after[2:] or after[1:2]) if after[:1] and after[0] in _LINKS else after   # create_on_issue: the issue
     thing = after[:next((i for i, w in enumerate(after) if w in _LINKS), len(after))]
     creates = any(t[:1] and t[0] in _CREATED or t[:2] in (["pull", "request"], ["merge", "request"])
                   for t in (thing, thing[-1:], thing[-2:])) and not words & _ACTED

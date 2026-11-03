@@ -1616,11 +1616,14 @@ class TimedAndBraced(unittest.TestCase):
                           ("HOME=/; rm -rf ${HOME=x}/", "TK-D004"), ("HOME=sudo; ${HOME:-x} id", "TK-D001"),
                           # and any variable's whose literals aren't empty: ${D:?} is the form shellcheck asks for
                           ('D=/; rm -rf "${D:?}"/', "TK-D004"), ("D=/; rm -rf ${D:-x}/", "TK-D004"),
-                          ("D=/root/.aws; cat ${D:?}/credentials", "TK-S004")):
+                          ("D=/root/.aws; cat ${D:?}/credentials", "TK-S004"),
+                          # read sets only the names it reads into, so D keeps its literal after `read X`
+                          ('D=/; read X; rm -rf "${D:?}"/', "TK-D004"), ('D=/; read -r -p "x: " X Y; rm -rf "$D"/', "TK-D004")):
             d = e.decide("Bash", {"command": cmd})
             self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (cmd, d))
         for cmd in ('D=build; rm -rf "${D:?}"/', "D=x; rm -rf ${D:-/}", 'rm -rf "${D:?}"/',   # no false deny or hold
-                    'D=build; read X; rm -rf "${D:?}"/', 'D=build; eval true; rm -rf "${D:?}"/'):
+                    'D=build; read X; rm -rf "${D:?}"/', 'D=build; eval true; rm -rf "${D:?}"/',
+                    'D=/; read D; rm -rf "${D:?}"/'):
             self.assertNotIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
 
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
