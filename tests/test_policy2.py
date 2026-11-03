@@ -1626,7 +1626,9 @@ class TimedAndBraced(unittest.TestCase):
             self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("deny", True), (cmd, d))
         for cmd in ('D=build; rm -rf "${D:?}"/', "D=x; rm -rf ${D:-/}", 'rm -rf "${D:?}"/',   # no false deny or hold
                     'D=build; read X; rm -rf "${D:?}"/', 'D=build; eval true; rm -rf "${D:?}"/',
-                    'D=/; read D; rm -rf "${D:?}"/'):
+                    'D=/; read D; rm -rf "${D:?}"/',
+                    'D=build; read -r -p "Continue? [y/N] " ans; rm -rf "$D"/',
+                    'set -euo pipefail; D=build; rm -rf "$D"/'):
             self.assertNotIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
         # a read word that may split or expand may name D too (`read -p $P` with P="x D"): D is unknown after it
         for cmd in ('P="x D"; D=build; read -p $P <<< /; rm -rf "$D"/', 'D=build; read -t $T X <<< /; rm -rf "$D"/',
@@ -1634,7 +1636,13 @@ class TimedAndBraced(unittest.TestCase):
                     # the review after: quotes nested in a substitution hid the unquoted $P from a quote-stripped
                     # reading, so read's D stayed known (bash ran rm -rf //)
                     'P=$(echo x D); D=build; read -p "$(: "\'")"$P"$(: "\'")" X <<< "/ y"; rm -rf "$D"/',
-                    'D=build; read -p "${Q:+"\'"}"$P"${Q:+"\'"}" X; rm -rf "$D"/'):
+                    'D=build; read -p "${Q:+"\'"}"$P"${Q:+"\'"}" X; rm -rf "$D"/',
+                    # and a bracket glob whose contents are quoted (bash globs it), and set -k, under which any
+                    # NAME=value word is an assignment
+                    'D=build; read -p ["CD"] X < answers.txt; rm -rf "$D"/',
+                    'D=build; read -p {["CD"],x} X < a; rm -rf "$D"/',
+                    'D=build; set -k; read -p Q=1 -p D X < a; rm -rf "$D"/',
+                    'D=build; set -o keyword; read X < a; rm -rf "$D"/'):
             self.assertIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
 
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
