@@ -10,7 +10,7 @@
 # grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-14'
+version: '2026.10-server-15'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -71,10 +71,26 @@ ask:
     rationale: An A2A call crosses an agent boundary; a pair rule makes its intended counterpart explicit.
   - id: TK-S010
     class: mcp
-    pattern: '"(command|cmd|script|shell_command)":["\[]'
+    # a command argument in any case, one command or a list of them, anywhere in the call (Command, commands)
+    pattern: '"([Cc][Oo][Mm][Mm][Aa][Nn][Dd][Ss]?|[Cc][Mm][Dd][Ss]?|[Ss][Cc][Rr][Ii][Pp][Tt]|[Ss][Hh][Ee][Ll][Ll]_[Cc][Oo][Mm][Mm][Aa][Nn][Dd])":["\[]'
     reason: a command through an MCP tool
     remedy: Have a person approve the held call, or use a tool whose class the policy's rules cover (a shell tool) instead of a command through MCP.
     rationale: An MCP tool that takes a command (exec in a pod or container, a remote shell) runs it outside the shell rules; a person checks it.
+  - id: TK-S012
+    class: mcp
+    # TK-S010 for code runners, notebooks and processes: an MCP tool whose name has a word for running code, a cell or a
+    # shell (run, exec, execute, eval, interpret, repl, kernel, notebook, cell, code, python, javascript, shell,
+    # terminal; snake_case, kebab-case or camelCase, as `mcp:<server>/<tool>`, `mcp__<server>__<tool>` or Crush's
+    # joined `mcp__<server>_<tool>`) or that ends in `process`, called with the code, a cell's source or a process's
+    # input (code, python_code, source, cell_source, cell_content, input), or an argv list (args, argv). Those keys are
+    # read only in such tools: a translation's `source`, a promo `code` or a form's `input` elsewhere isn't held.
+    # lean: a run-named tool that isn't a runner (run_report with a `source`) is held too; name the deployment's own
+    # runners in a rule of its own if that holds too much
+    tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Rr]un|[Ee]xec|[Ee]xecute|[Ee]val|[Ee]valuate|[Ii]nterpret|[Rr]epl|REPL|[Kk]ernel|[Nn]otebook|[Cc]ells?|[Cc]ode|[Pp]ython|[Jj]ava[Ss]cript|[Ss]hell|[Tt]erminal)([_A-Z-].*)?|mcp(:[^/]+/|__.*[_-])[^_/-]*[a-z0-9](Run|Exec|Execute|Eval|Evaluate|Interpret|Repl|REPL|Kernel|Notebook|Cells?|Code|Python|Java[Ss]cript|Shell|Terminal)([_A-Z-].*)?|mcp(:[^/]+/|__).*([_-]|[a-z0-9])[Pp]rocess'
+    pattern: '"(code|python_code|source|cell_source|cell_content|input)":["\[]|"(args|argv)":\['
+    reason: code or input through an MCP tool that runs it
+    remedy: Have a person approve the held call, or run the code through a tool whose class the policy's rules cover (a shell tool).
+    rationale: A code interpreter, notebook or process tool runs what it is given outside the shell rules; a person checks it.
 
 # Detection (signer/detect.py), all in shadow: incidents are recorded, nothing is held. The labels come from
 # coding.yaml: secrets_access (TK-F005), destructive (TK-F003), egress (TK-F012 a URL, TK-F013 a network command).
