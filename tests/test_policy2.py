@@ -1630,7 +1630,11 @@ class TimedAndBraced(unittest.TestCase):
             self.assertNotIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
         # a read word that may split or expand may name D too (`read -p $P` with P="x D"): D is unknown after it
         for cmd in ('P="x D"; D=build; read -p $P <<< /; rm -rf "$D"/', 'D=build; read -t $T X <<< /; rm -rf "$D"/',
-                    'D=build; read -p * X; rm -rf "$D"/'):
+                    'D=build; read -p * X; rm -rf "$D"/',
+                    # the review after: quotes nested in a substitution hid the unquoted $P from a quote-stripped
+                    # reading, so read's D stayed known (bash ran rm -rf //)
+                    'P=$(echo x D); D=build; read -p "$(: "\'")"$P"$(: "\'")" X <<< "/ y"; rm -rf "$D"/',
+                    'D=build; read -p "${Q:+"\'"}"$P"${Q:+"\'"}" X; rm -rf "$D"/'):
             self.assertIn("TK-D004", e.decide("Bash", {"command": cmd})["rule_ids"], cmd)
 
     def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):

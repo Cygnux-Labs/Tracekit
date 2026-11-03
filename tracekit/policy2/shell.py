@@ -145,11 +145,12 @@ def _sets_with_v(argv):
     return argv[0] == "printf" and any(a.startswith("-v") for a in argv[1:])
 
 
-def _read_names(argv, raws):
-    """The variables bash's `read` sets with these words (`raws`: each as written): its names, -a's array, REPLY with
-    neither; None when an option or a name can't be told, or a word may split or expand into more: an unquoted
-    expansion or glob (`read -p $P X` may name what $P holds; `read -p "Continue? " ans` can't)."""
-    if any(re.search(r"[$`*?[]", _UNQUOTE.sub("", r)) for r in raws[1:]):
+def _read_names(argv, splits):
+    """The variables bash's `read` sets with these words: its names, -a's array, REPLY with neither; None when an option
+    or a name can't be told, or a word may split or expand into more (`splits`: per word, a `$` or backquote as
+    written, quoted or not, as bash nests quotes inside a substitution, or an unquoted glob): `read -p $P X` may name
+    what $P holds, `read -p "Continue? " ans` can't."""
+    if any(splits[1:]):
         return None
     names, args = [], list(argv[1:])
     while args and args[0].startswith("-") and args[0] != "-":
@@ -976,7 +977,7 @@ class _Parser:
 
     def simple(self, pid, piped=False):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
-        raws = []   # per word: as written
+        splits = []   # per word: whether it may split or expand into more words (a $ or backquote, a glob)
         vanish, patterns, cuts, slots, alones = [], [], [], [], []   # per word: .vanish, a pathname pattern, .cut, .slots,
         # .alone
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
@@ -1116,7 +1117,7 @@ class _Parser:
                 if pieces is not None:
                     self.out.append(text)
                 words.append(text)
-                raws.append(raw)
+                splits.append(bool(re.search(r"[$`]", raw)) or bool(g))
                 dynamic |= bool(re.search(r"[$`]", raw))
                 idx.append(len(self.out) - 1)
                 spans.append(None if expanded or pieces is not None else (len(self.out) - 1, start, self.i))
@@ -1182,7 +1183,7 @@ class _Parser:
                                                                   for i in kept])
                 cmds = cmds + more
                 self.progs += [idx[kept[j]] for j in _programs(alt, more)]
-        self.track_values(words, cmds, assigns, loop_header and (loop_header, header), sure and not dynamic, raws)
+        self.track_values(words, cmds, assigns, loop_header and (loop_header, header), sure and not dynamic, splits)
         marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
@@ -1243,7 +1244,7 @@ class _Parser:
             self.charge(sum(len(t) for t in out[-1] if t))
         return out
 
-    def track_values(self, words, cmds, assigns, loop, sure, raws=()):
+    def track_values(self, words, cmds, assigns, loop, sure, splits=()):
         """Update self.known (__init__) after a simple command: a variable it gives a literal on its own, or with
         `export` (`export D=build`), is known when that surely runs (`sure`) before what follows it (`;`, a newline, `&&`
         or a subshell's end); a for loop's over literal words is known in its body; any other variable it sets is not;
@@ -1279,7 +1280,7 @@ class _Parser:
         elif words[:1] == ["unset"] and all(re.fullmatch(r"-v|[A-Za-z_][A-Za-z0-9_]*", w) for w in words[1:]):
             assigns, words = [(n, "", False) for n in words[1:] if n != "-v"], []   # each now certainly empty
         elif words[:1] == ["read"] and cmds and all(not c["opaque"] and c["argv"][0] == "read" for c in cmds) and \
-                (read_names := _read_names(words, raws)) is not None:
+                (read_names := _read_names(words, splits)) is not None:
             for name in read_names:   # read sets only the names it reads into
                 self.known.pop(name, None)
         elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) for c in cmds):
