@@ -63,8 +63,10 @@ payload and event names are already Claude Code's (`hook_event_name`, `session_i
 `grep` -> `Grep`, `glob` -> `Glob` (`lsp_rename`, `ls`, `grep` and `glob` are decided on the `path` they read, never a
 `file_path` sent beside it), `fetch` -> `WebFetch`, `download` -> `Write` (the file it creates is what the file rules
 decide; its URL meets no fetch rule), and `mcp_<server>_<tool>` -> `mcp__<server>_<tool>`, whose results are
-untrusted. That joined name doesn't split the server from the tool: the shipped packs' MCP rules read it too, but a
-rule of your own written for `mcp__<server>__<tool>` doesn't match it ([limits](limits.md)). Crush runs no hooks
+untrusted. That joined name doesn't split the server from the tool: the signer tries each `_` (up to eight) as the
+server's end, so the shipped packs' MCP rules and `mcp:<server>/<tool>` mappings read it, and holds it as an unknown
+tool on the server packs, but a rule of your own written for `mcp__<server>__<tool>` doesn't match it
+([limits](limits.md)). Crush runs no hooks
 inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself; set
 `"options": {"disabled_tools": ["agent", "agentic_fetch"]}` in `crush.json` so Crush doesn't offer them. It denies
 Docker MCP Gateway's `code-mode` tools too (`mcp_<server>_code-mode` and the `code-mode-<name>` tools it makes), whose

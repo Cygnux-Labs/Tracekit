@@ -564,6 +564,8 @@ def _pre(client, p, sid, tid):
             c = run.approval_consume(tid, tool, args, approval_id_hint=aid) if state == "approved" else None
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
+        if state in ("requested", "rejected") and _bash(tool, args):   # a wording rejected while the hook waited too
+            _keep_held(sid, run.run_id, args, aid)
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
             # Claude Code runs a `!` line in the session as its OS user: the person, with the dev signer; with a named
             # signer (system mode, a remote one) that user is the agent's, whom the signer refuses: another terminal
@@ -574,8 +576,6 @@ def _pre(client, p, sid, tid):
                     f"`{bang}{cmd} approve {aid}`, then asks the agent to try the same call again, unchanged (to "
                     f"refuse it: `{bang}{cmd} reject {aid}`). Agent: wait for the person's answer") + (
                         f". Why{why}" if why else "")
-            if _bash(tool, args):
-                _keep_held(sid, run.run_id, args, aid)
             print(held, file=sys.stderr)
             if AGENT == "claude-code":   # the reason goes to the model, the system message to the person
                 print(json.dumps({"systemMessage": held, "hookSpecificOutput": {
