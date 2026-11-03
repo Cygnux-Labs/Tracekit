@@ -74,6 +74,15 @@ Integrity: FAILED.
 The delete was denied before it ran, the held call ran after an approval, and the run verified. Then the demo rewrote
 the denial as allowed in a copy, and verification failed at the record it changed.
 
+Or try it on what your own coding agent already did. `audit` reads your Claude Code sessions on this machine and shows
+what Tracekit would have denied or held. Nothing is installed in your agent and nothing leaves your machine:
+
+```sh
+uvx --from tracekit-ai tracekit audit --since 7d
+```
+
+Add `--share` for counts alone, which you can post as a [field report](docs/field-reports.md).
+
 ## Add it to your agent
 
 Three lines:
