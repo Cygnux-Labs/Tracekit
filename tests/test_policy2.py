@@ -411,7 +411,7 @@ class Engines(unittest.TestCase):
         e = Engine({"tools": {"Bash": "shell"}, "flag": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
         parse = engine._shell
         with mock.patch.object(engine, "REGEX_TIMEOUT_S", 0.2), \
-                mock.patch.object(engine, "_shell", lambda args: (time.sleep(0.3), parse(args))[1]):
+                mock.patch.object(engine, "_shell", lambda *a: (time.sleep(0.3), parse(*a))[1]):
             d = e.decide("Bash", {"command": "rm x"})
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("flag", ["S"], None))
 
@@ -952,8 +952,7 @@ class Shell(unittest.TestCase):
             "if [ -f x ]; then make; fi": [["[", "-f", "x", "]"], ["make"]],
             "(cd sub && make) > log 2>&1 &": [["cd", "sub"], ["make"]],
             "echo hi # sudo id": [["echo", "hi"]],
-            "docker run --rm -v \"$PWD:/w\" img sh": [["docker", "run", "--rm", "-v", "$PWD:/w", "img", "sh"],
-                                                    ["docker", "run", "--rm", "-v", ":/w", "img", "sh"]],
+            "docker run --rm -v \"$PWD:/w\" img sh": [["docker", "run", "--rm", "-v", "$PWD:/w", "img", "sh"]],   # set
         }
         for cmd, expected in cases.items():
             with self.subTest(cmd=cmd):
@@ -1547,18 +1546,20 @@ class TimedAndBraced(unittest.TestCase):
             self.assertTrue(any(c["opaque"] for c in shell.parse(line)), line)
         self.assertEqual(argvs("echo $X rm -rf / > notes.txt"), [["echo", "$X", "rm", "-rf", "/"]])   # data, not run
         rank = ("allow", "flag", "ask", "deny").index
-        # every deny-corpus call with an unset $X inserted as a word, and glued into each of its words
+        # every deny-corpus call with an unset $X inserted as a word, and glued into each of its words: held at least,
+        # a deny that only the empty reading makes being on_parse_error's (ask; strict's deny)
         for pack, backend in itertools.product(("dev.yaml", "server.yaml", "strict.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
             self.assertEqual(e.decide("Bash", {"command": "rm $X -rf $HOME"})["verdict"],
-                             e.decide("Bash", {"command": "rm -rf $HOME"})["verdict"], pack)
+                             "deny" if pack == "strict.yaml" else "ask", pack)
             for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
                 with open(path) as f:
                     for row in map(json.loads, f):
                         cmd = row["args"].get("command")
                         if not isinstance(cmd, str) or "\n" in cmd:
                             continue
-                        plain = rank(e.decide("Bash", {"command": cmd})["verdict"])
+                        plain = min(rank(e.decide("Bash", {"command": cmd})["verdict"]),
+                                    rank(e.policy.get("on_parse_error", "ask")))
                         name, _, rest = cmd.strip().partition(" ")
                         for variant in [f"{name} $TK_UNSET {rest}"] * bool(rest) + list(glued(cmd)):
                             self.assertGreaterEqual(rank(e.decide("Bash", {"command": variant})["verdict"]), plain,
@@ -1607,7 +1608,52 @@ class TimedAndBraced(unittest.TestCase):
             for cmd, rule in cases:
                 d = e.decide("Bash", {"command": cmd})
                 self.assertIn(rule, d["rule_ids"], (pack, backend, cmd))
-                self.assertEqual(d["verdict"], "deny" if rule.startswith("TK-D") else "ask", (pack, backend, cmd))
+                # the command as written denies nothing: a deny only its empty reading makes is on_parse_error's
+                self.assertEqual(d["verdict"], e.policy.get("on_parse_error", "ask") if rule.startswith("TK-D") else "ask",
+                                 (pack, backend, cmd))
+
+    def test_a_variable_the_line_sets_is_never_read_as_empty(self):
+        """bash sets $PWD, and a literal the line gives a variable (`D=dist; rm -rf "$D"/*`, a for loop's over literal
+        words) is set before what follows: none of them is read as empty, so these aren't `rm -rf /*` (1.5.3's empty
+        reading denied them). Whatever may leave one empty or unset first still is: an assignment that may not run (after
+        && or ||, in a pipeline, a subshell, an if or a loop), select, unset, read, declare, a trap, eval or a child
+        shell's own variables, and $OLDPWD, unset in a new shell."""
+        sets = ['rm -rf "$PWD"/*', "rm -rf $PWD/*", 'cd build && rm -rf "${PWD}"/*', 'docker run -v "${PWD}/:/app" img',
+                'for d in build dist; do rm -rf "$d"/; done', 'OUT_DIR=dist; rm -rf "$OUT_DIR"/*',
+                'OUT_DIR=dist && rm -rf "$OUT_DIR/"', 'export OUT=dist; rm -rf "$OUT"/*']
+        may_not = ['rm -rf "$OLDPWD"/*', 'unset PWD; rm -rf "$PWD"/*', 'PWD=; rm -rf "$PWD"/*',
+                   'read PWD; rm -rf "$PWD"/*', 'D=build; unset D; rm -rf "$D"/*', 'D=build; D=; rm -rf "$D"/*',
+                   'false && D=build; rm -rf "$D"/*', 'D=build | cat; rm -rf "$D"/*', '(D=build); rm -rf "$D"/*',
+                   'D=build & rm -rf "$D"/*', 'D=build || true; rm -rf "$D"/*', 'D=build cmd; rm -rf "$D"/*',
+                   'if false; then :; D=build; fi; rm -rf "$D"/*', 'for d in build ""; do rm -rf "$d"/*; done',
+                   'for d in build dist; do :; done | cat; rm -rf "$d"/*', 'for d in *.none; do rm -rf "$d"/*; done',
+                   'for d in "$@"; do rm -rf "$d"/*; done', 'select d in a b; do rm -rf "$d"/*; done',
+                   "trap 'D=' DEBUG; D=build; rm -rf \"$D\"/*", 'declare -n r=D; D=build; r=; rm -rf "$D"/*',
+                   "D=build; eval 'rm -rf \"$D\"/*'", "D=build; bash -c 'rm -rf \"$D\"/*'", '$C PWD; rm -rf "$PWD"/*',
+                   "unset PWD; eval 'rm -rf \"$PWD\"/*'", "trap 'rm -rf \"$PWD\"/*' EXIT; unset PWD",
+                   'D=build; echo $(D=; rm -rf "$D"/*)', 'cat <<EOF; D=build\n$(rm -rf "$D"/*)\nEOF']
+        for pack, backend in itertools.product(("dev.yaml", "strict.yaml"), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd in sets:
+                d = e.decide("Bash", {"command": cmd})
+                self.assertFalse({"TK-D004", "TK-A023"} & set(d["rule_ids"]), (pack, backend, cmd, d))
+            for cmd in may_not:
+                d = e.decide("Bash", {"command": cmd})
+                self.assertIn("TK-D004", d["rule_ids"], (pack, backend, cmd))
+                self.assertIn(d["verdict"], ("ask", "deny"), (pack, backend, cmd))
+
+    def test_a_deny_only_an_empty_reading_makes_is_held_for_a_person(self):
+        """`rm -rf "$VENV"/` runs `rm -rf /` only when $VENV is empty, which the line can't say: it takes on_parse_error's
+        section (ask; the strict pack's deny) with the rule's id, not a deny no one can approve. A deny the command as
+        written makes stays one, beside a reading's."""
+        for pack, backend in itertools.product(("dev.yaml", "server.yaml", "strict.yaml"), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            section = e.policy.get("on_parse_error", "ask")
+            for cmd in ('rm -rf "$VENV"/', "rm -rf $EMPTY/", 'find "$DIR/" -name "*.tmp" -delete', "rm $X-rf ~"):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], d["rule_ids"][0]), (section, "TK-D004"), (pack, backend, cmd))
+            for cmd in ("rm -rf /", "rm -rf ~ $X", 'rm -rf / "$D"/'):
+                self.assertEqual(e.decide("Bash", {"command": cmd})["verdict"], "deny", (pack, backend, cmd))
 
     def test_a_deep_substitution_beside_a_brace_is_unreadable_not_a_crash(self):
         cmds = shell.parse("alpha $(: #" + "$(" * 1000 + "\n)*{a,b}")
