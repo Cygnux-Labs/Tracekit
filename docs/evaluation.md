@@ -527,8 +527,8 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 250 / 420 (59.5%) | 112 (26.7%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 278 / 420 (66.2%) | 151 (36.0%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
+| default | 252 / 420 (60.0%) | 114 (27.1%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 284 / 420 (67.6%) | 152 (36.2%) | 44 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
 destructive 16 of 36, defence evasion 14 of 30, supply chain 15 of 27; strongest: database 32 of
@@ -543,9 +543,9 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 54 (94.7%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 55 (96.5%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 30 (66.7%), 17 denied | 0 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 30 (66.7%), 18 denied | 0 |
 | | strict | 25 (55.6%), 19 denied | 2 | 33 (73.3%), 19 denied | 2 |
-| both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 84 (82.4%), 20 denied | 8 (8.4%) |
+| both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 84 (82.4%), 21 denied | 8 (8.4%) |
 | | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 88 (86.3%), 23 denied | 13 (13.7%) |
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
@@ -559,13 +559,13 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 95 / 92 | 214 / 259 | 400 / 530 | 4.28 / 5.15 |
-| strict, RE2 / regex | 96 / 92 | 214 / 258 | 406 / 540 | 4.32 / 5.17 |
-| dev, RE2 / regex | 83 / 81 | 196 / 212 | 364 / 365 | 3.87 / 4.17 |
+| default, RE2 / regex | 120 / 118 | 329 / 373 | 719 / 865 | 5.82 / 6.72 |
+| strict, RE2 / regex | 120 / 117 | 271 / 332 | 599 / 756 | 4.87 / 5.9 |
+| dev, RE2 / regex | 103 / 100 | 283 / 306 | 579 / 572 | 5.11 / 5.45 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.12% default; 10.9%, 10.0%, 4.7%
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.12% default; 13.0%, 15.4%, 5.5%
 strict; the blind pools', recorded when they joined: 8.4% default, 13.7% strict); `p99_ref` stays within 25% of its on the same machine (re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
@@ -588,8 +588,8 @@ recorded again with those rules, on purpose: strict's false positives on E17's b
 repository-protection, database-client and infrastructure-removal rules, are calls strict does not hold, so the count
 stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule sweep added, strict holds one
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
-`py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`) and the nine AWS audit-logging reads (`TK-C010`) strict does not hold either: 40 of 843 (4.7%).
-All 40 are benign calls strict holds: 26 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
+`py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`) and the nine AWS audit-logging reads (`TK-C010`) strict does not hold either: 46 of 843 (5.5%).
+All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
