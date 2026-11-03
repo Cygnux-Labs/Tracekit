@@ -326,10 +326,15 @@ def extract(cls, tool, args):
                 out["sends_to"] = info.get("host")
         else:
             out["method"] = str(args.get("method") or "GET").upper()
-            # a GET carries data in its query, the URL's or a `params` argument's (requests' and LangChain's)
-            if out["method"] not in ("GET", "HEAD") or query or args.get("params") or any(
-                    args.get(k) is not None for k in BODY_KEYS):
+            # a GET carries data in its query, the URL's or a `params` argument's (requests' and LangChain's); one that
+            # sends nothing but its URL's query names that URL as `link`: following a link as untrusted content gave
+            # it adds no data (Engine, TK-P003)
+            sends = out["method"] not in ("GET", "HEAD") or args.get("params") or any(
+                args.get(k) is not None for k in BODY_KEYS)
+            if sends or query:
                 out["sends_to"] = info.get("host")
+            if query and not sends:
+                out["link"] = url
     elif cls == "sql":
         stmt = first(args, "sql", "query", "statement")
         text = stmt if isinstance(stmt, str) else "\n;\n".join(stmt) if isinstance(stmt, list) and all(

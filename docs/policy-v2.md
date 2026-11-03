@@ -163,7 +163,7 @@ class's fields from the raw arguments (`policy2/classes.py`):
 |---|---|---|
 | `shell` | `command`, `argv`, `line`, `code`, `effects`, `package_index`, `container_host_access` | `command`, `cmd` or `commands` (one of them: a string, or a list of strings); `code` is the command and its normalised lines without the text a command only writes into a file (below); `effects` is each file the commands write or delete (below); `package_index` is each explicitly selected package source (an index or registry option, `-f`/`--find-links`, or a variable such as `PIP_INDEX_URL` or `npm_config_registry` before a command or through `env` or `export`), with default PyPI/npm registries omitted; `container_host_access` detects host-access options of a `docker`/`podman run` (those before the image; later words are the container's command) |
 | `fs` | `path`, `op`, `content_digest` | `file_path`, `notebook_path`, `path`; op from the tool (Write, Edit, Read…) or `op` |
-| `http` | `method`, `url`, `host`, `internal`, `sends_to` | `url`, `method` (default GET); `host` and `internal` as below; `sends_to`: the host, when the method is not GET or HEAD, there is a `body`, `data`, `json`, `files`, `form` or `content`, or there is a query (in the URL or a non-empty `params`) |
+| `http` | `method`, `url`, `host`, `internal`, `sends_to`, `link` | `url`, `method` (default GET); `host` and `internal` as below; `sends_to`: the host, when the method is not GET or HEAD, there is a `body`, `data`, `json`, `files`, `form` or `content`, or there is a query (in the URL or a non-empty `params`); `link`: the URL, when its query is all the call sends (a `from: untrusted` rule on `sends_to` doesn't match when untrusted content gave that URL exactly as it stands: the agent follows a link and adds nothing to it) |
 | `sql` | `statement`, `code`, `verb`, `db` | `sql`, `query` or `statement`; `db` or `database`; `code` as below, `verb` its first word |
 | `payment` | `amount`, `currency`, `payee`, `new_payee`, `payees` | `amount`/`amount_cents`, `currency`, `payee`/`to`/`recipient` (`new_payee` is not extracted yet); `payees`: every one of `payee`, `to`, `recipient`, `destination`, `account`, `account_number`, `iban` |
 | `email` | `to`, `domains`, `attachments`, `recipients` | `to` (string or list), `attachments`; `recipients`: every one of `to`, `cc`, `bcc`, `recipients` |
@@ -335,7 +335,7 @@ the text (1 MiB in well under a second), and a decision reads them only while it
 | Pack | Section | Rules |
 |---|---|---|
 | `server-comms.yaml` | ask | `TK-P001` an email recipient (`to`, `cc`, `bcc`, `recipients`) that is untrusted-only · `TK-P002` a payee or account (`payee`, `to`, `recipient`, `destination`, `account`, `account_number`, `iban`) that is untrusted-only |
-| `server-net.yaml`, `browser.yaml` | ask | `TK-P003` data sent (a method other than GET or HEAD, a body or a query; in a browser, typing, an upload or a navigation with a query string) to a host that is untrusted-only |
+| `server-net.yaml`, `browser.yaml` | ask | `TK-P003` data sent (a method other than GET or HEAD, a body or a query, but not a GET of a link exactly as untrusted content gave it; in a browser, typing, an upload or a navigation with a query string) to a host that is untrusted-only |
 
 Limits ([all of Tracekit's](limits.md)): it matches values verbatim, and only what came in through untrusted tools and observed inputs: a page the
 agent fetches with a tool the policy doesn't list as untrusted (`curl` in a shell) is not indexed, so list such tools

@@ -214,7 +214,8 @@ class Engine:
                     if (lits is None or len(texts) == 1 or any(s in low for s in lits)) and self._match(
                             pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
-                            "from" not in rule or untrusted is not None and untrusted(subject, rule.get("field"))):
+                            "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
+                                                                                     fields)):
                         return rule["id"]
             if big:   # the rule's own verdict: a flag rule cannot block a large call
                 field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
@@ -874,6 +875,15 @@ def _code(parsed):
 
 
 _REDIRECT = re.compile(r"[<>]")   # what a redirection, a heredoc or herestring, or a process substitution holds
+
+
+def _brought(untrusted, subject, field, fields):
+    """Whether a `from: untrusted` rule's `subject` is one only untrusted content brought (`untrusted`'s hits). A
+    `sends_to` host isn't, when the call sends nothing but its URL's query (`link`, classes.extract) and untrusted
+    content gave that URL exactly as it stands: the agent follows a link and adds no data to it. `untrusted(url,
+    "link")` answers that only from a complete index, never on a guess."""
+    return bool(untrusted(subject, field)) and not (
+        field == "sends_to" and fields.get("link") and untrusted(fields["link"], "link"))
 
 
 def _flat(values):
