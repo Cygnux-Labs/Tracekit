@@ -378,20 +378,20 @@ def _plain(raw, at=0, readings=True):
     """What a command the parser can't read is decided on: its text as its target and code; the line before the word
     it stopped in (`at`: where), parsed; and each piece of the rest (_PIECE), from the one it stopped in, split on
     blanks as a command (shell.analyse_argv), so a rule that reads plain words still holds what it held (`sudo id
-    {1..3..1}`). A part that can't be read so is left out."""
-    out, start = ([], [], [raw], [], [raw]), 0
+    {1..3..1}`). A part that can't be read so is left out; the parts share one parse budget (shell.MAX_WORK)."""
+    out, start, work = ([], [], [raw], [], [raw]), 0, [0]
     head = raw[:max(0, *(raw.rfind(c, 0, at) for c in " \t\n"))]
     found = []
     if head.strip():
         try:
-            found.append(shell.analyse(head, readings=readings))
+            found.append(shell.analyse(head, readings=readings, work=work))
             last = ([m.span() for m in _PIECE.finditer(head)] or [(0, 0)])[-1]
             start = last[0] if last[1] == len(head) else last[1] + 1   # after a separator that ends the head
         except shell.ParseError:
             pass
     for piece in (m.group() for m in _PIECE.finditer(raw, start)):
         try:
-            found.append(shell.analyse_argv(piece.split(), readings) if piece.split() else ())
+            found.append(shell.analyse_argv(piece.split(), readings, work) if piece.split() else ())
         except shell.ParseError:
             continue
     for reading in found:
