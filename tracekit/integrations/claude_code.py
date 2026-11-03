@@ -620,7 +620,8 @@ def _post(client, p, sid, tid):
         value = privacy.content(value, cc, dotenv)
         receipts = model_receipt.receipts(p.get("tool_name"), ti, p.get("cwd"))
         if receipts:   # the weights files the call wrote, next to the result's digest: the hook's report
-            value["model_receipts"] = receipts
+            value["model_receipts"] = receipts if sendable({**value, "model_receipts": receipts}) else [
+                model_receipt.TOO_LARGE]
     _run(client, sid, register=False, send="complete", tool_call_id=tid, decision_id=call["decision_id"],
          args_digest=call["args_digest"], status="ok" if ok else "error", result=value)
     os.remove(path)

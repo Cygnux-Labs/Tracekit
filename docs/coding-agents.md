@@ -346,9 +346,11 @@ The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can'
 
 When a call writes a model weights file (`.safetensors`, `.gguf`, `.pt`, `.pth`, `.ckpt`), the hook (Claude Code's and
 each harness's above) puts a receipt of it in the call's result, next to the result's digest: the file's sha256 and
-size and, for `.safetensors`, the sha256 of each tensor's bytes. A call writes what the policy reads it writing: a write
-tool's path, or a shell command's write targets (a redirection, a `cp` or `mv` destination, ...). The hook runs as the
-agent, so each receipt says `reported_by: hook`: it is the hook's report, not something the signer saw.
+size and, for `.safetensors`, a sha256 of each tensor (its dtype and shape, then its bytes) and one of the header's
+metadata. A call writes what the policy reads it writing: a write tool's path, or a shell command's write targets (a
+redirection, a `cp` or `mv` destination, ...). The hook runs as the agent, so each receipt says `reported_by: hook`: it
+is the hook's report, not something the signer saw. The hook hashes for at most 10 seconds per call; a receipt it can't
+finish, or any it can't read, is recorded with its reason, and the call's result is recorded either way.
 
 The signer commits to the result as to any other, so a bundle holds only that commitment. `tracekit verify-model`
 verifies the bundle, reads the run's results back from the signer's content vault (the dev signer keeps them for 7
@@ -359,13 +361,13 @@ $ tracekit verify-model before.safetensors model.safetensors --bundle $RUN.tkb -
 bundle: verified, run tk-0f3a...
 receipt: /work/proj/model.safetensors, written by tool call toolu_01 (run_seq 7), reported by the hook
 NEW model.safetensors: matches the recorded receipt (sha256:5c1e...)
-OLD -> NEW: 1 of 3 tensors differ
+OLD -> NEW: the file differs; 1 of 3 tensors differ (dtype, shape or bytes); the metadata is the same
   changed: model.layers.0.mlp.down_proj.weight
 ```
 
-It exits 0 only when the bundle verifies and NEW matches the recorded receipt. A signer it can't reach, content the
-signer didn't keep, or an identity without the `content_read` grant is said as such (exit 1); content that doesn't open
-its record's commitment is an evidence alert (exit 4). The receipt reaches the signer in clear: its vault holds the
+It exits 0 only when the bundle verifies and NEW matches the recorded receipt, and 2 when the bundle doesn't verify. A
+signer it can't reach, content the signer didn't keep, or an identity without the `content_read` grant is said as such
+(exit 1); content that doesn't open its record's commitment is an evidence alert (exit 4). The receipt reaches the signer in clear: its vault holds the
 file's path, hashes and tensor names ([limits](limits.md#model-receipts-tracekit-verify-model)).
 
 ## Antigravity CLI
