@@ -1747,6 +1747,20 @@ class TimedAndBraced(unittest.TestCase):
                 self.assertEqual(d["verdict"], e.policy.get("on_parse_error", "ask") if rule.startswith("TK-D") else "ask",
                                  (pack, backend, cmd))
 
+    def test_what_sets_a_variable_in_ways_the_parser_does_not_read_forgets_what_it_knew(self):
+        """printf -v with the name attached (-vD, -v'D', through command) and compgen -V set a variable, so a literal
+        the line gave it before is no longer known: 1.5.3's review found `D=build; printf -vD ''; rm -rf ~/"$D"` read
+        as `rm -rf ~/build` and only flagged. bash 5.3's ${ cmd; } runs commands in this shell: unreadable."""
+        for pack, backend in itertools.product(("dev.yaml",), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd in ("D=build; printf -vD ''; rm -rf ~/\"$D\"", "D=build; printf -v'D' ''; rm -rf ~/\"$D\"",
+                        "D=build; command printf -vD ''; rm -rf ~/\"$D\"", "D=build; compgen -V D -W ''; rm -rf ~/$D"):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], "TK-D004" in d["rule_ids"]), ("ask", True), (backend, cmd))
+        for cmd in ("D=build; : ${ D=; }; rm -rf ~/$D", "echo ${ rm -rf ~/; }", "echo ${| REPLY=x; }"):
+            with self.assertRaises(shell.ParseError, msg=cmd):
+                shell.parse(cmd)
+
     def test_a_variable_the_line_sets_is_never_read_as_empty(self):
         """bash sets $PWD, and a literal the line gives a variable (`D=dist; rm -rf "$D"/*`, a for loop's over literal
         words) is set before what follows: none of them is read as empty, so these aren't `rm -rf /*` (1.5.3's empty
