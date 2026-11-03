@@ -248,7 +248,12 @@ read twice, as written and as gone, because bash drops it when they expand to no
 also `git push --force`. An empty expansion inside a word joins the rest of it, so each command is also read with
 every expansion empty (`rm $X-rf ~/$X` is `rm -rf ~/`), and with only those empty that touch a character other than
 `/ = : , @` (`gh ${X}api -X PUT "repos/$R/x"` keeps `$R`, which rules read as built at run time); `${X:?}`,
-`${X:-word}` and arithmetic never expand to nothing. A backslash-newline is gone before the words are read, as in bash; one after `$` or between
+`${X:-word}` and arithmetic never expand to nothing. Neither do `$PWD`, a variable the line gave a literal before
+(`D=dist; rm -rf "$D"/*`, `export D=dist`) and a `for` loop's variable over literal words in its body, unless
+something on the line may have emptied it first (an assignment that may not run: after `&&` or `||`, in a pipeline,
+a subshell, an `if` or a loop; `unset`, `read`, `declare`, `eval`, `trap`, an unreadable command name). A deny that
+only such an empty reading makes (`rm -rf "$VENV"/`) takes `on_parse_error`'s section with the rule's id: it asks by
+default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one after `$` or between
 two operator characters is unreadable. A command it cannot parse is still decided on the line before the word it
 stopped in, parsed, and on its text split at `;`, `&`, `|` and newlines into blank-separated words, so a deny before
 an unreadable word or on plain words stands. A command it cannot parse, or one that
