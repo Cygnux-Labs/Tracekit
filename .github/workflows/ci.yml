@@ -148,6 +148,20 @@ jobs:
           cd sdk/typescript && node examples/vercel_ai.mjs
       - name: Run the v2 Vercel AI SDK example (starts a v2 dev signer on demand)
         run: cd sdk/typescript && npm install --no-save ai@7 && node examples/v2_vercel_ai.mjs
+      - name: Run the v2 Vercel AI SDK resume example (held call approved, resumed in a second process)
+        run: |
+          set -euo pipefail
+          export TRACEKIT_RUNTIME_DIR="$(mktemp -d)"
+          state="$RUNNER_TEMP/vercel-resume.json"
+          cd sdk/typescript
+          node examples/v2_vercel_ai_resume.mjs "$state" | tee "$RUNNER_TEMP/vercel-resume-1.log"
+          grep -q "Held: TK-A001" "$RUNNER_TEMP/vercel-resume-1.log"
+          approval_id="$(sed -n 's/^Approve in another terminal: tracekit approvals approve //p' "$RUNNER_TEMP/vercel-resume-1.log")"
+          test -n "$approval_id"
+          python -m tracekit approvals approve "$approval_id"
+          node examples/v2_vercel_ai_resume.mjs "$state" | tee "$RUNNER_TEMP/vercel-resume-2.log"
+          grep -q "Executed 1 time(s)" "$RUNNER_TEMP/vercel-resume-2.log"
+          test ! -e "$state"
 
   package:
     name: build and smoke-test the wheel
