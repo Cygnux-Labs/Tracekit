@@ -145,6 +145,14 @@ def _sets_with_v(argv):
     return argv[0] == "printf" and any(a.startswith("-v") for a in argv[1:])
 
 
+def _sets_keyword(argv):
+    """set -k (or -o keyword) may be on: every later NAME=value word is then an assignment, and one before a special
+    builtin stays in POSIX mode. Any option cluster with a k, a `keyword` word, or a word the parser can't read counts;
+    words after `--` are positional parameters."""
+    if argv[0] != "set":
+        return False
+    words = argv[1:argv.index("--")] if "--" in argv else argv[1:]
+    return any(re.search(r"[$`*?[]", w) or re.fullmatch(r"-[A-Za-z]*k[A-Za-z]*", w) or w == "keyword" for w in words)
 
 
 # an expansion with none inside it: a default's word is emptied innermost first (_Parser.dollar)
@@ -1251,7 +1259,8 @@ class _Parser:
             words = []
         elif words[:1] == ["unset"] and all(re.fullmatch(r"-v|[A-Za-z_][A-Za-z0-9_]*", w) for w in words[1:]):
             assigns, words = [(n, "", False) for n in words[1:] if n != "-v"], []   # each now certainly empty
-        elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) for c in cmds):
+        elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) or _sets_keyword(c["argv"])
+                 for c in cmds):
             self.ctx["any_set"] = True
         then = self.peek() in ("", "\n", ";", ")") or self.at("&&")
         for name, value, plus in assigns:
@@ -1757,7 +1766,8 @@ class _Parser:
         # empty: its default, assignment or check is the variable ($HOME as the packs name it, ${HOME:-x}, ${HOME:?}; or
         # the literal the line gave it, D=/; rm -rf "${D:?}"/); the default stays what it is when it may be empty
         named = _DEFAULT.fullmatch(text)
-        values = self.known.get(named.group(1)) if named else None
+        values = self.known.get(named.group(1)) if named and not (self.ctx["any_set"] and named.group(1) == "HOME") \
+            else None
         plain = named and ("" not in (values or ()) if named.group(1) == "HOME" else bool(values) and "" not in values)
         # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
         if not plain and (text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text)):
