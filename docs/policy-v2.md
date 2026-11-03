@@ -142,9 +142,11 @@ and no `approvals.agents`.
 
 ## Classes and fields
 
-An MCP tool (`mcp:<server>/<tool>`) is also checked under its bare name `<tool>`, and as each name `tools:` lists that
-the bare name spells (below), in that name's own class if `tools:` maps it, else the MCP call's; the stricter decision
-applies, with every reading's rule ids. A rule on an app tool's name holds when the same call is labelled an MCP one.
+An MCP tool named as Claude Code and the Claude Agent SDK name it (`mcp__<server>__<tool>`, split at the first `__`) is
+also checked as `mcp:<server>/<tool>`, so the server packs' `mcp:` mappings and rules reach it. An MCP tool
+(`mcp:<server>/<tool>`) is also checked under its bare name `<tool>`, and as each name `tools:` lists that the bare name
+spells (below), in that name's own class if `tools:` maps it, else the MCP call's; the stricter decision applies, with
+every reading's rule ids. A rule on an app tool's name holds when the same call is labelled an MCP one.
 
 A name `tools:` doesn't list, exactly or by a glob, that spells one it does (compared as CrewAI rewrites names: accents
 dropped, case, spaces and punctuation ignored) is also checked as that tool, and its results are untrusted when that

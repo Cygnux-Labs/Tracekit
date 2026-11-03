@@ -1923,14 +1923,22 @@ class SignerService:
             # one when two listed names share it
             for listed in self.policy.listed(tool):
                 d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
-            if tool.startswith("mcp:") and "/" in tool:
+            mcp = tool
+            if tool.startswith("mcp__") and "__" in tool[5:]:
+                # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
+                # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
+                # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
+                server, _, name = tool[5:].partition("__")
+                mcp = f"mcp:{server}/{name}"
+                d = _stricter(d, self.policy.decide(mcp, args, untrusted=untrusted))
+            if mcp.startswith("mcp:") and "/" in mcp:
                 # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
                 # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
                 # be dodged by naming the call an MCP one
-                bare = tool.split("/", 1)[1]
+                bare, of = mcp.split("/", 1)[1], self.policy.tool_class(mcp)
                 for name in [bare] + self.policy.listed(bare):
                     d = _stricter(d, self.policy.decide(
-                        name, args, None if self.policy.tool_class(name) != "unknown" else cls, untrusted))
+                        name, args, None if self.policy.tool_class(name) != "unknown" else of, untrusted))
             if hint is None or hint == cls:
                 return d, False, d["rule_ids"]
             h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
