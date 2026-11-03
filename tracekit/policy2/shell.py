@@ -160,7 +160,7 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 # a pathname pattern in a word's unquoted text; a ] first in a bracket is one of its characters ([]x], [!]x])
 _GLOB = re.compile(r"[*?]|\[[!^]?(?:\][^][]*|[^][]+)\]")
 _HOME_WORD = re.compile(r"\$(?:HOME|\{HOME\})")   # the one bare variable the packs name as a word
-_HOME_DEFAULT = re.compile(r"\$\{HOME:?[-=?][^{}]*\}")   # $HOME with a default, an assignment or a check
+_DEFAULT = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?[-=?][^{}]*\}")   # a variable with a default, assignment or check
 # the start of "$@", "${@...}" or "${name[@]...}": no word at all when there are no parameters or the array is empty
 _ALL_ITEMS = re.compile(r"\$(?:@|\{!?(?:@|[A-Za-z_][A-Za-z0-9_]*(?:\[@\]|@)))")
 _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E": "\x1b", "f": "\f", "v": "\v",
@@ -1751,18 +1751,20 @@ class _Parser:
             m = _NAME.match(s, self.i + 1)
             self.i = m.end() if m else self.i + 1
         text = s[start:self.i]
-        # HOME is set unless this line may have emptied it: its default, assignment or check is $HOME (${HOME:-x},
-        # ${HOME:?}), as the packs name it, or the literal the line gave it; the default stays what it is when HOME may
-        # be empty
-        home = _HOME_DEFAULT.fullmatch(text) and "" not in self.known.get("HOME", ())
+        # HOME is set unless this line may have emptied it, and so is a variable the line gave only literals that aren't
+        # empty: its default, assignment or check is the variable ($HOME as the packs name it, ${HOME:-x}, ${HOME:?}; or
+        # the literal the line gave it, D=/; rm -rf "${D:?}"/); the default stays what it is when it may be empty
+        named = _DEFAULT.fullmatch(text)
+        values = self.known.get(named.group(1)) if named else None
+        plain = named and ("" not in (values or ()) if named.group(1) == "HOME" else bool(values) and "" not in values)
         # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
-        if not home and (text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text)):
+        if not plain and (text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text)):
             return text
         # always nothing, as written too: an empty alternative, a length of 0, all of it removed (${X:+}, ${X:0:0},
         # ${X%%*})
         if re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?\+|:(?![-=?+])[^:{}]*:0+|%%\*|##\*)\}", text):
             return _Expansion("")
-        expansion = _Expansion("$HOME" if home else text)
+        expansion = _Expansion("$" + named.group(1) if plain else text)
         if m := re.fullmatch(r"(?s)\$\{\w+:?[-=](.*)\}", text):   # bash runs the word when X is empty (unset, no colon)
             expansion.word = _UNQUOTE.sub(lambda q: next(g for g in q.groups() if g is not None), m.group(1))
             expansion.empty = expansion.word
