@@ -41,14 +41,25 @@ def fs_path(raw):
 
 def fs_forms(raw):
     """What a path rule matches: fs_path(raw) and, when a `..` cut it short, also the lexically normalised path (the
-    target unless a symlink redirects it); each also casefolded, because the agent's file system may ignore case
-    (macOS, Windows) whatever the signer's does."""
+    target unless a symlink redirects it); each also as Windows opens it (_windows) and casefolded, because the
+    agent's file system may ignore case (macOS, Windows) whatever the signer's does."""
     if not isinstance(raw, str):
         return []
     forms = [fs_path(raw)]
     if ".." in raw.replace("\\", "/").split("/"):
         forms.append(posixpath.normpath(raw.replace("\\", "/")))
+    forms += [_windows(f) for f in forms]
     return list(dict.fromkeys(forms + [f.casefold() for f in forms]))
+
+
+def _windows(path):
+    """`path` (with `/`) as Windows opens it: each part without an NTFS stream (`:…`, the drive's `C:` aside) and
+    without trailing dots and spaces, so `C:/p/.env.`, `.env ` and `.env::$DATA` are `C:/p/.env`. A part that is all
+    dots or spaces is kept."""
+    parts = path.split("/")
+    return "/".join(p if p in ("", ".", "..") else (
+        p if i == 0 and re.fullmatch(r"[A-Za-z]:", p) else p.split(":")[0].rstrip(". ") or p)
+        for i, p in enumerate(parts))
 
 
 SPECIAL = ("http", "https", "ws", "wss", "ftp")   # the schemes a URL host is read for
