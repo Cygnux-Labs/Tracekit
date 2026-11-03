@@ -1,5 +1,5 @@
 {
-  "machine": "Windows AMD64 Intel64 Family 6 Model 165 Stepping 2, GenuineIntel python 3.14.2",
+  "machine": "Darwin arm64 arm python 3.11.15",
   "heldout_cases": 852,
   "blind_cases": {
     "amandeavor": 90,
@@ -9,7 +9,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:73c6ba0de5097fa19b062fca95fd427db60cc664ef8f222ef874576fe141e829",
+      "policy_hash": "sha256:47de30a8c3d6bbe6236140553b36aae036fc45612b9b0bfb3f9955fb721650e2",
       "heldout": {
         "recall": 0.5952380952380952,
         "deny_recall": 0.2642857142857143,
@@ -2558,7 +2558,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:d11916dfe9ac6288df1113b2d4432f5cac08dc73b025d89fb0fcefc5f8e0176b",
+      "policy_hash": "sha256:e3fea3dacdda1d5f1c08a25deae0640c4af8307de2fe7b07bd5fd336838bfb94",
       "heldout": {
         "recall": 0.6619047619047619,
         "deny_recall": 0.3595238095238095,
