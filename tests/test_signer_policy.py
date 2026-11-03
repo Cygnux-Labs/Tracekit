@@ -625,6 +625,42 @@ class CodingPack(unittest.TestCase):
                     if (tool, args, rule) in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_the_server_packs_mcp_rules_read_camel_case_names_more_verbs_mentions_and_addresses(self):
+        """1.5.3 sweep: TK-C011, TK-A044 and TK-M002 missed camelCase and PascalCase names (deleteProject, DeleteBucket,
+        createRefund, createPayout), TK-C011 a reset of a branch, migrate-reset, truncate_table and wipe; TK-M004 more
+        posting tools, a user group's mention and a plain @channel; TK-M003 all_staff@, allhands@ and their kin."""
+        held = (("mcp__neon__deleteProject", {"id": "x"}, "TK-C011"), ("mcp__aws__DeleteBucket", {"bucket": "x"}, "TK-C011"),
+                ("mcp__x__forceDelete", {}, "TK-C011"), ("mcp__supabase__reset_branch", {"branch": "x"}, "TK-C011"),
+                ("mcp__neon__resetBranch", {}, "TK-C011"), ("mcp__prisma__migrate-reset", {}, "TK-C011"),
+                ("mcp:prisma/migrateReset", {}, "TK-C011"), ("mcp__db__truncate_table", {"table": "x"}, "TK-C011"),
+                ("mcp__db__truncateTable", {}, "TK-C011"), ("mcp__x__wipe_disk", {}, "TK-C011"),
+                ("mcp__stripe__createRefund", {"payment_intent": "pi_1"}, "TK-A044"),
+                ("mcp__pay__createPayout", {"to": "x"}, "TK-M002"), ("mcp__pay__CreatePayout", {"to": "x"}, "TK-M002"),
+                ("mcp__pay__issueRefund", {}, "TK-M002"), ("mcp__pay__refundPayment", {}, "TK-M002"),
+                ("mcp__slack__conversations_add_message", {"channel_id": "C1", "payload": "<!channel> deploy"}, "TK-M004"),
+                ("mcp__slack__slack_send_message", {"channel": "C1", "text": "<!here>"}, "TK-M004"),
+                ("mcp__slack__chat_postMessage", {"channel": "C1", "text": "<!everyone>"}, "TK-M004"),
+                ("mcp__slack__slack_post_message", {"channel": "C1", "text": "<!subteam^S123> deploy"}, "TK-M004"),
+                ("mcp__slack__slack_post_message", {"channel": "C1", "text": "@channel deploy", "link_names": True},
+                 "TK-M004")) + tuple(("send_email", {"to": a + "@corp.example"}, "TK-M003") for a in (
+                    "all_staff", "all.staff", "allhands", "all_hands", "everybody", "all_employees", "All-Employees"))
+        not_held = (("mcp__x__undelete_file", {"path": "x"}, "TK-C011"), ("mcp__x__getDeletedItems", {}, "TK-C011"),
+                    ("mcp__auth__reset_password", {"user": "x"}, "TK-C011"), ("mcp__text__truncate_text", {}, "TK-C011"),
+                    ("mcp__ui__dropdown_select", {}, "TK-C011"), ("mcp__pay__get_refund_status", {"id": "x"}, "TK-M002"),
+                    ("mcp__slack__slack_post_message", {"channel": "C1", "text": "mail bob@here.com"}, "TK-M004"),
+                    ("mcp__search__search_messages", {"query": "<!channel>"}, "TK-M004"),
+                    ("send_email", {"to": "hands@corp.example"}, "TK-M003"),
+                    ("send_email", {"to": "u.all@corp.example"}, "TK-M003"))
+        for pack, engine, e in self.every_pack():
+            if pack not in ("server.yaml", "strict.yaml"):
+                continue
+            for tool, args, rule in held + not_held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertEqual(rule in d["rule_ids"], (tool, args, rule) in held, d)
+                    if (tool, args, rule) in held:
+                        self.assertEqual(d["verdict"], "ask", d)
+
     def test_code_and_input_through_an_mcp_runner_and_a_command_in_any_case_ask_on_the_server_packs(self):
         """TK-S010 and TK-S012 (1.5.3 sweep): a code interpreter's `code`, a notebook cell's `source`, a process's
         `input`, an exec tool's argv list, `Command` and `commands` were only flagged. The runner's keys are read only
