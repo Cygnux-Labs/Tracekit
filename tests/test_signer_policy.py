@@ -2828,6 +2828,16 @@ class CodingPack(unittest.TestCase):
         self.not_in_every_pack("TK-D010", (
             "cp ~/.aws/config /tmp/aws-config.bak", "cp x ~/.aws/config.bak", "cp k.pub ~/.ssh/id_ecdsa.pub"))
 
+    def test_every_dotfile_of_a_home_and_a_find_that_picks_every_file_there_are_denied(self):
+        # the 1.5.3 sweep: rm -rf ~/.* and a find whose filter picks every file only flagged
+        self.every_pack_verdicts([(c, "TK-D004") for c in (
+            "rm -rf ~/.*", "rm -rf $HOME/.*", "find ~ -name '*' -delete", "find ~ -iname '*' -delete",
+            "find ~ -path '*' -delete", "find ~ -regex '.*' -delete", "find ~ -size +0 -delete",
+            "find ~ -type f -name '*' -delete")])
+        self.not_in_every_pack("TK-D004", (
+            "rm -rf ~/.cache", "rm -rf ./.*", "find ~ -name '*.log' -delete", "find ~ -size +100M -delete",
+            "find ~ -regex '.*\\.tmp' -delete", "find ~/proj -name '*' -delete"))
+
     def test_infrastructure_removal_benign_commands_are_allowed(self):
         for command in (
             "cdk diff",
