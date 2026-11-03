@@ -1342,7 +1342,8 @@ class CodingPack(unittest.TestCase):
                    "zip -T -m -r /tmp/x.zip " + t, "zip -rmT /tmp/x.zip " + t,
                    # a writer's name given to a variable the unreadable command's name expands
                    "C=rm; $C -rf " + t, "D=\"rm -rf\"; $D " + t, "c=$(echo rm); $c -rf " + t,
-                   "read C <<< rm; $C -rf " + t, "printf -v C rm; $C -rf " + t, "set -- rm -rf; \"$@\" " + t,
+                   "read C <<< rm; $C -rf " + t, "printf -v C rm; $C -rf " + t, "printf -vC rm; $C -rf " + t,
+                   "printf -v'C' rm; $C -rf " + t, "set -- rm -rf; \"$@\" " + t,
                    "export C=rm; ${C} -rf " + t)
         kept = ("trap 'rm -rf \"$tmp\"' EXIT", "trap cleanup EXIT", "trap - EXIT", "zip -r out.zip " + t,
                 "zip -rm out.zip build", "at now <<< 'ls " + t + "'", "xargs -n1 echo <<< " + t,
