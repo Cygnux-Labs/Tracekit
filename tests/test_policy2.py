@@ -1252,6 +1252,24 @@ class Shell(unittest.TestCase):
                     shell.parse(cmd)
         self.assertEqual(len(shell.parse("sudo env timeout 5 nice -n 5 ls")), 5)
 
+    def test_the_second_readings_of_nested_code_stay_within_the_parse_budget(self):
+        """Each eval level's text was read again for each second reading of the level above, uncharged, so `eval eval …
+        $X \\$X \\\\\\$X … id` doubled per level: depth 13 (8 KB) took 3.6 s to decide, seven such chains before an
+        unreadable `(` 19 s (_plain read each piece on a budget of its own; 1.5.2: 0.03 s), chains of several kinds of
+        expansion 11 s. A text already read the same way is read once, each reading and its line count toward the parse
+        budget, and _plain's parts share one."""
+        def chain(depth, forms=("$X",)):   # each level's expansions escaped once more: bash reads one level each time
+            return " ".join(["eval"] * depth + [f.replace("$", "\\" * (2 ** k - 1) + "$") for k in range(depth)
+                                                for f in forms] + ["id"])
+        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        for cmd in (chain(13), chain(15), "; ".join([chain(13)] * 7) + "; (", chain(10, ("$A", "x$B", "$C/", "-$D")),
+                    "; ".join([chain(8, ("$A", "x$B"))] * 7) + "; ("):
+            for e in (Engine(pol), Engine(pol, "regex")):
+                start = time.perf_counter()
+                d = e.decide("Bash", {"command": cmd})
+                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER, (cmd[:40], e.engine))   # ~0.2 s on a laptop
+                self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
+
     def test_an_assignment_is_read_within_its_word(self):
         """`_ASSIGN` read past the word to the next `]` on the line: `a[ x]=1` made `a[` an assignment, as bash
         doesn't, and 64 KiB of `a[;` took 0.6 s to parse."""

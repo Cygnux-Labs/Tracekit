@@ -165,14 +165,16 @@ def parse(command):
     return analyse(command)[0]
 
 
-def analyse(command, persistent_target=None, readings=True):
+def analyse(command, persistent_target=None, readings=True, work=None):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
-    code). `readings`: False reads the line only as written, without its second readings (_Parser.simple)."""
+    code). `readings`: False reads the line only as written, without its second readings (_Parser.simple). `work`: a
+    budget ([characters parsed]) several parses share, MAX_WORK in all."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(),
            "command_names_mutable": False,
-           "pipes": 0, "depth": 0, "work": 0, "exp": 0, "persistent_target": persistent_target, "any_set": False,
-           "readings": readings}
+           "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
+           "persistent_target": persistent_target, "any_set": False,
+           "readings": readings, "nested": set()}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -248,12 +250,13 @@ def analyse(command, persistent_target=None, readings=True):
             ["".join(code) + command[at:]] + [x for x in ctx["kept"] if x])
 
 
-def analyse_argv(argv, readings=True):
+def analyse_argv(argv, readings=True, work=None):
     """analyse() for a command given as an argv list, run without a shell."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(),
            "command_names_mutable": False,
-           "pipes": 1, "depth": 0, "work": 0, "exp": 0, "any_set": False, "readings": readings}
+           "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False,
+           "readings": readings, "nested": set()}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
     return (ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"],
@@ -743,8 +746,8 @@ class _Parser:
         self.charge(len(src))
 
     def charge(self, n):
-        self.ctx["work"] += n
-        if self.ctx["work"] > MAX_WORK:
+        self.ctx["work"][0] += n
+        if self.ctx["work"][0] > MAX_WORK:
             raise ParseError("too much nested shell text")
 
     def peek(self, k=0):
@@ -762,8 +765,13 @@ class _Parser:
         self.ctx["depth"] -= 1
 
     def nested(self, text, via):
-        p = _Parser(text, self.ctx, via)   # a new shell sets $PWD; eval's text runs now, a trap's later
-        p.known = set() if via[-1:] == ["trap"] else self.known & {"PWD"}
+        known = set() if via[-1:] == ["trap"] else self.known & {"PWD"}   # a new shell sets $PWD; a trap runs later
+        key = (text, tuple(via), frozenset(known))
+        if key in self.ctx["nested"]:   # the same text read the same way again (each reading's eval): the same commands
+            return
+        self.ctx["nested"].add(key)
+        p = _Parser(text, self.ctx, via)
+        p.known = known
         p.script()
 
     def script(self):
@@ -776,8 +784,9 @@ class _Parser:
         if self.out[-1:] == [";"]:   # the separator list() put after the last pipeline; a `;` word before it stays
             self.out.pop()
         gones = list(map(dict, dict.fromkeys(frozenset(g.items()) for g in self.gone if g)))
-        self.ctx["lines"] += _lines(self.out, self.progs) + [
-            x for gone in gones for x in _lines_without(self.out, self.progs, gone)]
+        more = [x for gone in gones for x in _lines_without(self.out, self.progs, gone)]
+        self.charge(2 * sum(map(len, more)))   # each reading's line, here and again for the code (analyse)
+        self.ctx["lines"] += _lines(self.out, self.progs) + more
         self.ctx["kept_batches"].append((self.out.copy(), self.progs.copy(), self.data_steps.copy(), gones))
 
     def blank(self):
@@ -963,7 +972,7 @@ class _Parser:
                     pieces = _brace(raw, self.charge, MAX_BRACE - braced)
                     braced += sum(map(len, pieces or ()))
                 except ParseError:
-                    if self.ctx["work"] > MAX_WORK:
+                    if self.ctx["work"][0] > MAX_WORK:
                         raise
                     brace_unread = True
                 # an argument bash brace-expands is the words it makes; a command name it builds is unreadable
@@ -1009,6 +1018,7 @@ class _Parser:
             self.gone[k].update((idx[i], t) for i, t in enumerate(texts) if t != words[i])   # and the line (flush)
             if alt and alt not in seen and not data:
                 seen.append(alt)
+                self.charge(sum(map(len, alt)))   # each reading is read as a command of its own
                 more = self.emit(alt, pid, self.via, any(globs),
                                  [names[i] if texts[i] == words[i] else globs[i] or _name_unreadable(texts[i])
                                   for i in kept])
