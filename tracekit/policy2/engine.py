@@ -426,6 +426,10 @@ def _package_indexes(commands, refs=()):
         command = next((a for a in args if not a.startswith("-")), None)   # after global options (pip --isolated)
         if command in ("publish", "unpublish"):
             continue   # publishing doesn't change where installs come from
+        if exe == "gem" and command in ("install", "i", "update", "fetch"):
+            options = options | {"-s"}   # --source's short form there (gem cert's -s signs)
+        elif exe == "gem" and command == "sources":
+            options = {"-a", "--add"}   # a source every later install reads
         if command == "config" and "set" in args or exe == "npm" and command == "set":
             # `set key value` or `set key=value ...`, options anywhere
             words = [a for a in args[args.index("set") + 1:] if not a.startswith("-")]
@@ -445,11 +449,14 @@ def _package_indexes(commands, refs=()):
             # pip (optparse) takes a long option's unique prefix: --index-u is --index-url
             if exe == "pip" and len(name) > 2 and name.startswith("--"):
                 name = next((o for o in options if o.startswith(name)), name)
-            if name in options:
+            scoped = exe in ("npm", "pnpm", "yarn", "bun") and name.startswith("--@") and name.endswith(":registry")
+            if name in options or scoped:
                 if value is None and i + 1 < len(args):
                     value = args[i + 1]
                     i += 1
-                if exe in ("npm", "pnpm", "yarn", "bun"):
+                if scoped:   # a scope's own registry (--@acme:registry=…), whatever --registry says
+                    out += [value] if value is not None and _non_default_source(value, default) else []
+                elif exe in ("npm", "pnpm", "yarn", "bun"):
                     selected = [value] if value is not None else []  # npm uses the last --registry
                 elif value is not None:
                     if exe == "uv" and name == "--index" and "=" in value:
@@ -497,23 +504,35 @@ _RUN_FLAGS = {"--detach", "--interactive", "--tty", "--rm", "--init", "--privile
               "--no-healthcheck", "--oom-kill-disable", "--disable-content-trust", "--quiet", "--sig-proxy", "--help",
               "--use-api-socket", "--replace", "--rmi", "--http-proxy", "--env-host", "--no-hosts", "--passwd",
               "--read-only-tmpfs", "--tls-verify"}
-_HOST_PATH = re.compile(r"/|/proc(/.*)?")   # a mount source that hands the container the host's root or /proc
+# a mount source that hands the container the host's root, /proc, /etc or root's home (a file under /etc, such as
+# /etc/localtime, isn't one)
+_HOST_PATH = re.compile(r"/|/proc(/.*)?|/etc|/root(/.*)?")
+_CONTAINER_VERBS = {"run", "create", "exec", "container"}
 
 
 def _host_path(source):
-    """Whether mount source `source` is the host's root or /proc, read as the runtime resolves it (`//`, `/.`)."""
+    """Whether mount source `source` is a _HOST_PATH, read as the runtime resolves it (`//`, `/.`)."""
     p = posixpath.normpath(source)
     return bool(_HOST_PATH.fullmatch("/" + p.lstrip("/") if p.startswith("/") else p))
 
 
 def _container_host_access(commands):
-    """A docker/podman run whose own options (those before the image: later words are the container's command) give
-    it host privileges, the host's process space, or the host's root or /proc."""
+    """A docker/podman run, create or exec (also as `container run`, and after the CLI's global options: docker -H
+    host, --context prod, podman --remote) whose own options (those before the image or container: later words are
+    the command it runs) give it host privileges or every capability, the host's process space, or a _HOST_PATH."""
     for command in commands:
         argv = command["argv"]
-        if len(argv) < 2 or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman") or argv[1] != "run":
+        if not argv or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman"):
             continue
-        args, i = argv[2:], 0
+        words, i = argv[1:], 0
+        while i < len(words) and words[i].startswith("-"):   # a global option, and its value unless a verb follows
+            i += 1 if "=" in words[i] or i + 1 < len(words) and (
+                words[i + 1].startswith("-") or words[i + 1] in _CONTAINER_VERBS) else 2
+        words = words[i:]
+        words = words[1:] if words[:1] == ["container"] else words
+        if words[:1] not in (["run"], ["create"], ["exec"]):
+            continue
+        args, i = words[1:], 0
         while i < len(args) and args[i].startswith("-"):
             arg = args[i]
             if arg.startswith("--"):
@@ -529,6 +548,8 @@ def _container_host_access(commands):
             i += 1
             if (name == "--privileged" and value.lower() not in ("0", "f", "false")
                     or name == "--pid" and value == "host"
+                    or name == "--cap-add" and any(c.strip().upper().removeprefix("CAP_") == "ALL"
+                                                   for c in value.split(","))
                     or name in ("-v", "--volume") and _host_path(value.partition(":")[0])
                     or name == "--mount" and any(k in ("src", "source") and _host_path(v)
                                                  for k, _, v in (item.partition("=") for item in value.split(",")))):
@@ -572,8 +593,11 @@ def _normal(path):
     """A target with `.`, `..` and repeated separators resolved, a `\\` read as `/`: `~/./.claude` is `~/.claude`. A
     `..` after a symlink may lead elsewhere, so this is only a second reading: it adds matches, and the target as
     written is still read. One that resolves to a start of ~ or $ it didn't have (`./~/.claude`, `x/../$HOME`) names
-    a folder of that name here, and keeps a ./ in front."""
+    a folder of that name here, and keeps a ./ in front. POSIX keeps two leading slashes, which Linux and macOS read as
+    one: `//var/log` is `/var/log` (a Windows `\\\\host` share keeps its two)."""
     p = posixpath.normpath(path.replace("\\", "/")) if path else path
+    if p.startswith("//") and path.startswith("/"):
+        p = p[1:]
     if p.startswith(("~", "$")) and not path.startswith(("~", "$")):
         p = "./" + p
     return path if p == "." else p
