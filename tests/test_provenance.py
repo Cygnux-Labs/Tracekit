@@ -259,6 +259,25 @@ class Signer(unittest.TestCase):
                 d = self.decide(tool, args, f"tc-{i}")
                 self.assertEqual("TK-P003" in d["rule_ids"], held, d)
 
+    def test_following_a_link_as_untrusted_content_gave_it_sends_nothing(self):
+        # the 1.5.3 final review: counting a GET's query as data sent held most ordinary search-result links, which
+        # 1.5.2 allowed; the agent that follows a link exactly as given adds no data to it
+        links = ("https://forum.vendor.example/viewtopic.php?t=4211", "https://news.vendor.example/item?id=38211",
+                 "https://blog.vendor.example/post/x?utm_source=feed&utm_medium=rss")
+        self.call("http_get", {"url": "https://search.example/?q=x"}, "results: " + " ".join(links), "tc-search")
+        for i, url in enumerate(links):
+            with self.subTest(url=url):
+                self.assertNotIn("TK-P003", self.decide("http_request", {"url": url}, f"tc-go{i}")["rule_ids"])
+        for i, (args, why) in enumerate((
+                ({"url": links[0] + "&d=secret"}, "a query the content didn't give"),
+                ({"url": links[1].replace("38211", "38212")}, "another value"),
+                ({"url": links[0] + ")"}, "the link with something after it"),
+                ({"url": links[0], "params": {"d": "secret"}}, "a params argument"),
+                ({"url": links[0], "method": "POST", "body": "x"}, "a body"),
+                ({"url": links[0], "method": "PUT"}, "a method that sends"))):
+            with self.subTest(why=why):
+                self.assertIn("TK-P003", self.decide("http_request", args, f"tc-send{i}")["rule_ids"])
+
     def test_typing_into_a_page_whose_host_came_from_untrusted_content_is_held(self):
         self.call("browser_use:go_to_url", {"url": "https://notes.example/a"}, "log in at https://login.vendor.example/",
                   "tc-page")
