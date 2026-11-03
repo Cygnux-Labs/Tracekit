@@ -3126,6 +3126,23 @@ class SignerPolicy(unittest.TestCase):
             d = self.decide(tool, {"command": "sudo ls"}, tcid=f"tc-m{i}")
             self.assertEqual((d["decision"], "TK-D001" in d["rule_ids"]), ("deny", True), d)
 
+    def test_an_mcp_tool_named_as_claude_code_names_it_is_decided_as_mcp_server_tool(self):
+        # the 1.5.3 sweep: the server packs map and rule mcp:<server>/<tool>, so the mcp__<server>__<tool> names Claude
+        # Code and the Claude Agent SDK send were only flagged as MCP calls (a metadata fetch, COPY … PROGRAM), their
+        # bash ran past the shell rules, and the dev pack's demo deny didn't deny
+        self.open(svc.load_policy(os.path.join(PACKS, "server.yaml")))
+        for i, (tool, args, rule) in enumerate((
+                ("mcp__fetch__fetch", {"url": "http://169.254.169.254/latest/meta-data/"}, "TK-S001"),
+                ("mcp__postgres__query", {"sql": "COPY t FROM PROGRAM 'id'"}, "TK-DB005"),
+                ("mcp__postgres__query", {"sql": "ALTER ROLE agent SUPERUSER"}, "TK-DB004"),
+                ("mcp__local__bash", {"command": "sudo ls"}, "TK-D001"))):
+            d = self.decide(tool, args, tcid=f"tc-{i}")
+            self.assertEqual((d["decision"], rule in d["rule_ids"]), ("deny", True), d)
+        self.assertIn(self.decide("mcp__postgres__query", {"sql": "SELECT 1"}, tcid="tc-ok")["decision"],
+                      ("allow", "flag"))
+        self.open()
+        self.assertEqual(self.decide("mcp__demo__tracekit_demo_denied", {})["decision"], "deny")
+
     def test_two_readings_of_a_call_keep_what_either_found(self):
         # a renamed tool's and an MCP tool's bare-name reading: a rule that ran out of time in either counts as matched,
         # so the decision says it is nondeterministic, and names every oversized subject
