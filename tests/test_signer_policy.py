@@ -3360,7 +3360,10 @@ class PackReading(unittest.TestCase):
                   ec2 + "'Add=[{ Group=all }]'", ec2 + "'Add=[{UserId=1, Group=all}]'", ec2 + "'Add=[{\tGroup=all}]'",
                   # a long value: 40 user ids pretty-printed are 160 words before Group
                   ec2 + "'" + json.dumps({"Add": [{"UserId": str(111122223333 + i)} for i in range(40)] +
-                                         [{"Group": "all"}]}, indent=2) + "'")
+                                         [{"Group": "all"}]}, indent=2) + "'",
+                  # a Remove list is read to its end, however long, before the Add
+                  ec2 + "'" + json.dumps({"Remove": [{"UserId": str(111122223333 + i)} for i in range(260)],
+                                         "Add": [{"Group": "all"}]}, indent=2) + "'")
         private = (rds.replace("add", "remove") + "all", rds + "111122223333 --profile all", rds + "allison",
                    ec2 + "'Remove=[{Group=all}]'", ec2 + "'{\"Remove\": [{\"Group\": \"all\"}]}'",
                    ec2 + "'Add=[{UserId=111122223333}]'",
