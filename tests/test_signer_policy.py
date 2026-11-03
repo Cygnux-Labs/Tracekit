@@ -3576,7 +3576,10 @@ class PackReading(unittest.TestCase):
             # what create posts may come last too (the last review)
             "mcp__atlassian__createJiraIssue", "mcp:github/create_github_issue", "mcp:github/create_draft_pull_request",
             "mcp:x/create_new_issue", "mcp:github/create_comment_on_issue", "mcp:github/create_review_comment_on_pr",
-            "mcp:github/create_or_update_issue_comment")], want=False)
+            "mcp:github/create_or_update_issue_comment",
+            # and the review after: a linking word right after create starts the name; a worklog is posted text
+            "mcp:x/create_to_do_issue", "mcp:x/create_on_call_note", "mcp:x/create_in_app_note",
+            "mcp:jira/create_worklog_for_issue")], want=False)
         self.rule_on_server("TK-S001", [
             ("mcp:computer/computer", {"action": "type",
                                        "text": "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/"}),
