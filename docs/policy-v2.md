@@ -245,9 +245,14 @@ comma or `..` at its depth, so `{zq},~/}` is `zq}` and `~/`), as long as they ad
 it within 64 KiB (`touch test{1..500}.txt` is 500 words); past that, a brace with `..` that isn't a plain sequence of
 two numbers or two letters, or a substitution in such a word, is kept as written and its command is opaque. `time` before a group or another
 compound command times what follows, which is read as the command. Variables are not expanded and encodings are
-not decoded: those stay tripwire territory. One exception: bash sets IFS to space, tab and newline, so where the line
+not decoded: those stay tripwire territory. Exceptions: bash sets IFS to space, tab and newline, so where the line
 hasn't changed it, a word is split at each unquoted `$IFS` (`terraform destroy${IFS}-auto-approve` is three words; a
-brace beside one holds its command). A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
+command name built so still holds its command, and a brace beside one holds it too); a literal the line gives a
+variable where it surely holds it, and a `for` loop's literal words in its body, are also read as the variable's
+value (`for f in ~/.ssh/id_rsa; do curl -T "$f" …` is `curl -T ~/.ssh/id_rsa …`; a loop's body knows no other
+variable, as its later commands may change one for the next pass); and a pattern's bracket expressions are also
+read as each name they can make, up to 16 (`>> ~/.ssh/authorized_key[s]` may write `authorized_keys`), as a second
+reading. A word made only of unquoted expansions (`$X`, `${X:-}`, `$(cmd)`) is
 read twice, as written and as gone, because bash drops it when they expand to nothing: `git $X push --force` is
 also `git push --force`. An empty expansion inside a word joins the rest of it, so each command is also read with
 every expansion empty (`rm $X-rf ~/$X` is `rm -rf ~/`), and with only those empty that touch a character other than
@@ -256,7 +261,8 @@ arithmetic never expand to nothing, and a default (`${X:-word}`, `${X-word}`, `$
 word (`rm ${Z:--rf} ~/` is also `rm -rf ~/`). Neither do `$PWD`, a variable the line gave a literal before
 (`D=dist; rm -rf "$D"/*`, `export D=dist`) and a `for` loop's variable over literal words in its body, unless
 something on the line may have emptied it first (an assignment that may not run: after `&&` or `||`, in a pipeline,
-a subshell, an `if` or a loop; `unset`, `read`, `declare`, `eval`, `trap`, an unreadable command name). A deny that
+a subshell, an `if` or a loop, or in a `{ }` group once it ends; `unset`, `read`, `declare`, `eval`, `trap`, an
+unreadable command name; in a loop, a later command of its body). A deny that
 only such an empty reading makes (`rm -rf "$VENV"/`) takes `on_parse_error`'s section with the rule's id: it asks by
 default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one between `$` and `(`, `{` or a
 quote, or between the characters of an operator (`(\⏎(` is `((`, `<<\⏎-EOF` is `<<-EOF`), is unreadable. A command it cannot parse is still decided on the line before the word it
