@@ -1639,6 +1639,15 @@ class HoldLine(unittest.TestCase):
         not_approved = next(l for l in lines if "not approved" in l)
         return waiting, not_approved
 
+    def test_a_wording_rejected_while_its_hook_waits_is_kept_for_reworded_retries(self):
+        """Final review of the 1.5.3 sweep: only a hold left unanswered was kept in the session's held calls, so a
+        wording a person rejected while the hook waited didn't count, and a reworded retry could run under another
+        wording's approval."""
+        for answer, kept in (("rejected", ["apr-1"]), ("requested", ["apr-1"])):
+            with self.subTest(answer=answer), mock.patch.object(claude_code, "_keep_held") as keep:
+                self.pre("force push.", answer=answer, wait="1")
+                self.assertEqual([c.args[3] for c in keep.call_args_list], kept)
+
     def test_by_default_a_held_call_is_blocked_at_once_with_how_to_approve_and_retry(self):
         """No harness shows a running hook's output, so a hook that waited for an answer waited for a person who could
         not know: it blocks at once, telling the person (systemMessage) and the model (the deny reason) the command
