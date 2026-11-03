@@ -1295,13 +1295,15 @@ class Shell(unittest.TestCase):
         def chain(depth, forms=("$X",)):   # each level's expansions escaped once more: bash reads one level each time
             return " ".join(["eval"] * depth + [f.replace("$", "\\" * (2 ** k - 1) + "$") for k in range(depth)
                                                 for f in forms] + ["id"])
-        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        pol, scale = pc.build(os.path.join(PACKS, "dev.yaml"))[0], machine_scale()
         for cmd in (chain(13), chain(15), "; ".join([chain(13)] * 7) + "; (", chain(10, ("$A", "x$B", "$C/", "-$D")),
                     "; ".join([chain(8, ("$A", "x$B"))] * 7) + "; ("):
             for e in (Engine(pol), Engine(pol, "regex")):
                 start = time.perf_counter()
                 d = e.decide("Bash", {"command": cmd})
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER, (cmd[:40], e.engine))   # ~0.2 s on a laptop
+                # ~0.2 s on a laptop; the budget follows the machine, as the pattern budgets do (#518): CI's 3.9 Linux
+                # runner took 0.58 s on one that takes a laptop 0.06 s
+                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * scale, (cmd[:40], e.engine))
                 self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
 
     def test_literal_values_and_bracket_patterns_stay_within_the_parse_budget(self):
