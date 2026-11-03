@@ -844,6 +844,12 @@ def machine_scale():
     return min(4.0, max(1.0, min(Speed().search(rx, s, 2.5) for _ in range(3)) / Speed.REF_S))
 
 
+# a parse-budget test's limit on one decision, times machine_scale: these time Python parsing, which a busy runner slows
+# more than machine_scale's regex search shows (CI's 3.12 Linux runner took 1.08 s at scale 1.64 on a loop a laptop
+# decides in 0.3 s). The blowups they catch took 3.6 s or more on a laptop.
+PARSE_S = 1.5
+
+
 def argvs(command):
     return [c["argv"] for c in shell.parse(command)]
 
@@ -1303,7 +1309,7 @@ class Shell(unittest.TestCase):
                 d = e.decide("Bash", {"command": cmd})
                 # ~0.2 s on a laptop; the budget follows the machine, as the pattern budgets do (#518): CI's 3.9 Linux
                 # runner took 0.58 s on one that takes a laptop 0.06 s
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * scale, (cmd[:40], e.engine))
+                self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * scale, (cmd[:40], e.engine))
                 self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
 
     def test_literal_values_and_bracket_patterns_stay_within_the_parse_budget(self):
@@ -1318,7 +1324,7 @@ class Shell(unittest.TestCase):
                 start = time.perf_counter()
                 e.decide("Bash", {"command": cmd})
                 # ~0.3 s on a laptop; the budget follows the machine, as the pattern budgets do (#518)
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * machine_scale(), (cmd[:30], e.engine))
+                self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), (cmd[:30], e.engine))
         cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
         self.assertEqual(Engine(pol).decide("Bash", {"command": cmd})["verdict"], "allow")
 
@@ -1337,7 +1343,7 @@ class Shell(unittest.TestCase):
                 start = time.perf_counter()
                 d = e.decide("Bash", {"command": cmd})
                 # ~0.25 s on a laptop (1.5.2 took 5 s before its fix); the budget follows the machine (#518)
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * machine_scale(), (pack, e.engine))
+                self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), (pack, e.engine))
                 self.assertIn(d["verdict"], ("ask", "deny"), (pack, e.engine))
 
     def test_an_assignment_is_read_within_its_word(self):
