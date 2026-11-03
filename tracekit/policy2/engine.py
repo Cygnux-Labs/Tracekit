@@ -20,12 +20,17 @@ ALIASES = (classes.SHELL_KEYS, classes.PATH_KEYS, classes.PAYEE_KEYS, classes.RE
            ("amount", "amount_cents"), ("sql", "query", "statement"), ("db", "database"))
 _URL = re.compile(r"(?i)\b(?:https?|wss?|ftp):[^\s'\"<>`]*")
 _DOTTED = re.compile(r"(?:^|/)\.\.?(?:/|$)|(?<!:)//")   # a path with . or .. parts, or an empty one (not a URL's)
+_DOTTED_WORD = re.compile(r"(?:^|[/ ])\.\.?(?:[/ ]|$)|(?<!:)//")   # a line with a word _DOTTED finds (and maybe more)
 _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 2852039166/latest
 # ...when it reads as an IPv4 address outside 0.0.0.0/8, which no call reaches: not 1.txt, 2fa/ or head -n 50's 50.
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
 # too much
 _BARE_TARGET = re.compile(r"http://[1-9][0-9]*(\.[0-9]+){3}/")
 _SCHEDULED = {"trap", "at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's `via` for code run later
+# what every second reading of a line starts from (shell.analyse's `readings`): an expansion or substitution read as
+# empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
+# line's characters ($'…' decodes others, after a $)
+_SECOND = re.compile(r"[$`*?[]")
 REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one decision share; a match that runs out
                             # of it denies, marked nondeterministic
 
@@ -158,8 +163,8 @@ class Engine:
         """Whether a rule's tool pattern takes the tool `name` (`low`: lower-cased); none takes every name. A name
         holding none of the pattern's literals is not searched: 27 searches of a 48 KiB MCP name of `run_` took the
         fallback engine 0.3 s on a laptop, past its 1 s on CI's macOS runners (#481)."""
-        return tool_re is None or (lits is None or any(s in low for s in lits)) and self._match(tool_re, name, True,
-                                                                                                 deadline)
+        return tool_re is None or (lits is None or any(map(low.__contains__, lits))) and self._match(
+            tool_re, name, True, deadline)
 
     def decide(self, tool, args, cls=None, untrusted=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
@@ -201,17 +206,19 @@ class Engine:
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
             over MAX_SUBJECT), else None; TimeoutError past the deadline."""
             sec, rule, tool_re, pat, unless, lits, tool_lits = entry
-            if not self._named(tool_re, tool_lits, name, low_name, deadline):
+            if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
-            key = (rule.get("field"), "from" in rule)   # rules on the same subjects read them once
+            # rules on the same subjects read them once (a shell rule with no field reads argv)
+            field = rule.get("field")
+            key = ("argv" if field is None and cls == "shell" else field, "from" in rule)
             if key not in memo:
                 memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]))
             texts, lows, joined, big = memo[key]
-            if lits is None or any(s in joined for s in lits):
+            if lits is None or any(map(joined.__contains__, lits)):
                 for subject, low in zip(texts, lows):
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
-                    if (lits is None or len(texts) == 1 or any(s in low for s in lits)) and self._match(
+                    if (lits is None or len(texts) == 1 or any(map(low.__contains__, lits))) and self._match(
                             pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
@@ -232,9 +239,11 @@ class Engine:
                 break
         # a deny that only a second reading of the command makes (an expansion read as empty, a pattern as matching
         # nothing: `rm -rf "$D"/`), and not the command as written, takes on_parse_error's section: the line can't say
-        # whether $D is empty, so by default a person answers it
+        # whether $D is empty, so by default a person answers it. A line with no $, backquote or pattern character has
+        # no second reading (_SECOND): it reads the same without them, so each of its denies is as written
         written = [x for x in self._of[cls] if x[0] == "deny" and x[1]["id"] in hits["deny"]]
-        if cls == "shell" and on_parse_error == "ask" and written and not nondeterministic:
+        if cls == "shell" and on_parse_error == "ask" and written and not nondeterministic and (
+                not isinstance(command, str) or _SECOND.search(command)):
             parsed, memo = self._parse(args, command, readings=False)[0], {}
             for entry in written:
                 try:
@@ -327,14 +336,14 @@ class Engine:
                      for data in [shell.data_words(c["argv"]) | set(c.get("data_words", ()))]]
             stdin = [s for c in commands if not c.get("data_stdin") for s in c["stdin"]]
             found = [a for ws in words for a in ws] + parsed[2] + stdin
-            urls = [t for t in map(classes.url_target, (u for w in found for u in _URL.findall(w))) if t]
+            urls = [t for t in map(classes.url_target, (u for w in found if ":" in w for u in _URL.findall(w))) if t]
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
             targets = [" ".join(w) for w in words] + parsed[2] + stdin
             # a path also as plainly written: /etc/./x, /etc//x and /etc/y/../x name /etc/x
             have = set(targets)
             targets += [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
-                                    for t in targets) if n not in have]
+                                    for t in targets if _DOTTED_WORD.search(t)) if n not in have]
             have = set(targets)
             return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
         if cls == "fs":
@@ -419,6 +428,9 @@ _SOURCE_VARIABLES = dict.fromkeys(("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_
 _SOURCE_VARIABLES["NPM_CONFIG_REGISTRY"] = "registry.npmjs.org"
 
 
+_PIP = re.compile(r"pip[0-9.]*")
+
+
 def _package_indexes(commands, refs=()):
     """Return only explicitly selected non-default package sources, one subject per effective option or variable."""
     words = list(refs) + [a for c in commands if c["argv"][:1] in (["env"], ["export"]) for a in c["argv"][1:]]
@@ -434,7 +446,7 @@ def _package_indexes(commands, refs=()):
             module = _python_module(args)
             if module[:1] == ["pip"]:
                 exe, args = "pip", module[1:]
-        exe = "pip" if re.fullmatch(r"pip[0-9.]*", exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
+        exe = "pip" if _PIP.fullmatch(exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
         if exe == "pip":
             default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url", "-f", "--find-links"}
         elif exe == "uv":
@@ -642,6 +654,7 @@ def _normal(path):
 
 _WRITER = re.compile(r"\b(?:rm|unlink|truncate|shred|mv|tee|dd|ln|perl)\b")
 _WRITE_WORD = re.compile(r"\b(?:rm|unlink|truncate|shred|mv|tee|dd|ln|sed|perl|find)\b|>")
+_INTERPRETER = re.compile(r"perl|python[\d.]*|node(?:js)?|ruby|php|bun|deno|lua")
 _APPLESCRIPT_WRITE = re.compile(r"(?i)do ?shell ?script|\bdelete\b")   # JXA's doShellScript too
 
 
@@ -683,7 +696,7 @@ def _opaque(command):
     if exe == "zip" and _zip_moves(argv[1:]):
         return any("$" in a or "`" in a or re.fullmatch(r"-[^-]*@[^-]*", a) for a in argv[1:])
     if exe in ("xargs", "parallel", "docker", "podman", "kubectl", "ssh") or \
-            re.fullmatch(r"perl|python[\d.]*|node(?:js)?|ruby|php|bun|deno|lua", exe):
+            _INTERPRETER.fullmatch(exe):
         return any(_WRITE_WORD.search(a) for a in argv[1:])
     if exe in ("at", "batch"):   # at -l, -r, -d, -c and -V list, remove, show or print: they schedule nothing
         return not command["stdin"] and not any(a in ("-l", "-r", "-d", "-c", "-V") for a in argv[1:])
@@ -959,10 +972,10 @@ def _prepare(subjects):
     TK-OVERSIZE, as one that walked them in order would."""
     texts = []
     for s in subjects:
-        b = s.encode("utf-8", "backslashreplace")
+        b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
         if len(b) > MAX_SUBJECT:
             break
-        texts.append(b.decode("utf-8"))
+        texts.append(s if b is s else b.decode("utf-8"))
     lows = [t.lower() for t in texts]
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
 

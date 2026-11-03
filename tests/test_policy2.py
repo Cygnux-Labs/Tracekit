@@ -844,6 +844,12 @@ def machine_scale():
     return min(4.0, max(1.0, min(Speed().search(rx, s, 2.5) for _ in range(3)) / Speed.REF_S))
 
 
+# a parse-budget test's limit on one decision, times machine_scale: these time Python parsing, which a busy runner slows
+# more than machine_scale's regex search shows (CI's 3.12 Linux runner took 1.08 s at scale 1.64 on a loop a laptop
+# decides in 0.3 s). The blowups they catch took 3.6 s or more on a laptop.
+PARSE_S = 1.5
+
+
 def argvs(command):
     return [c["argv"] for c in shell.parse(command)]
 
@@ -1321,6 +1327,18 @@ class Shell(unittest.TestCase):
                 self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * machine_scale(), (cmd[:30], e.engine))
         cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
         self.assertEqual(Engine(pol).decide("Bash", {"command": cmd})["verdict"], "allow")
+
+    def test_a_loop_over_a_thousand_files_decides_within_the_parse_budget(self):
+        """A loop over 1,000 file names, read once for each, took 31 ms to decide in 1.5.3 (1.5.2, which read none:
+        3.4 ms): each reading's commands were copied into a new list, and each word read a character at a time (#575)."""
+        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
+        for e in (Engine(pol), Engine(pol, "regex")):
+            start = time.perf_counter()
+            d = e.decide("Bash", {"command": cmd})
+            # ~25 ms on a laptop
+            self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), e.engine)
+            self.assertEqual(d["verdict"], "allow")
 
     def test_redirections_to_bracket_patterns_decide_within_the_budget(self):
         """63 KiB of `>>a[bc][de][fg][hi]N` took 5 s to decide (1.5.2: 0.1 s): each pattern's 16 names were made

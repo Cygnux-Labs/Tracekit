@@ -162,6 +162,7 @@ _UNQUOTE = re.compile(r"""\\(.)|'([^']*)'|"((?:\\.|[^"\\])*)\"""", re.S)
 # a bracket expression of a pathname pattern: whether it is negated, and its set (a ] first is one of its characters)
 _BRACKET = re.compile(r"\[([!^]?)(\]?[^]]*)\]")
 _PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")   # $NAME or ${NAME}, fully matched
+_PLAIN = re.compile(r"""[^ \t\n;&|()<>\\'"$`]+""")   # characters _Parser.word() reads as themselves
 # the operators bash reads across a deleted backslash-newline
 _JOINED = {"&&", "||", ";;", ";&", ";;&", "|&", "<<", "<<-", "<<<", ">>", "<&", ">&", "<>", ">|", "&>", "&>>", "((",
            "<(", ">("}
@@ -194,6 +195,9 @@ _STR = re.compile(r"""(['"])((?:\\.|(?!\1)[^\\\n])*)\1""")
 # consumed whole, so a `]` in one is skipped); a quote whose literal never closes is charged for the line it read
 _LIST_NEXT = re.compile(r"""['"\]]""")
 _TICK = re.compile(r"`([^`]*)`")
+_CONFIG_ENV = re.compile(r"(?i)--config-env=(alias|include)")   # git's options that read config it can't see
+_INCLUDE = re.compile(r"(?i)include(if)?\.")
+_ALIAS = re.compile(r"(?is)alias\.[^=\s]+(?:=\s*!(.*))?")
 
 
 def parse(command):
@@ -399,7 +403,8 @@ def _git_stdin_message(argv):
 
 def _name_unreadable(text):
     """A command name an expansion builds: anything other than a literal name, or a path under a leading $VAR/."""
-    return bool(re.search(r"[$`]", re.sub(r"^(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/", "", text)))
+    return ("$" in text or "`" in text) and bool(
+        re.search(r"[$`]", re.sub(r"^(\$[A-Za-z_][A-Za-z0-9_]*|\$\{[A-Za-z_][A-Za-z0-9_]*\})/", "", text)))
 
 
 # characters the brace expansions of a line may add to it, and no more than keeps it within 64 KiB (the engine's
@@ -560,8 +565,12 @@ def _unglob(text):
     return ["".join(a + b for a, b in zip(segments, chosen)) + text[at:] for chosen in itertools.product(*sets)]
 
 
+_KINDS = re.compile("|".join(f"(?P<{kind}>{rx.pattern})" for kind, rx in KINDS))   # all of KINDS in one search
+
+
 def _kind(name):
-    return next((kind for kind, rx in KINDS if rx.fullmatch(name)), None)
+    m = _KINDS.fullmatch(name)
+    return m and m.lastgroup
 
 
 def _unwrap(name, args):
@@ -891,7 +900,7 @@ class _Parser:
         while self.i < len(s):
             if s[self.i] in " \t":
                 self.i += 1
-            elif self.at("\\\n"):
+            elif s.startswith("\\\n", self.i):
                 j = self.i
                 while s.startswith("\\\n", j):
                     j += 2
@@ -992,7 +1001,9 @@ class _Parser:
                 self.known = known   # what the subshell sets stays in it
                 self.out.append(")")
                 continue
-            m = None if c in "<>" and self.peek(1) == "(" else _REDIR.match(self.s, self.i)
+            # a redirection starts with a decimal (_REDIR's \d), {, & or an angle bracket
+            m = _REDIR.match(self.s, self.i) if (c in "{&<>" or c.isdecimal()) and not (
+                c in "<>" and self.peek(1) == "(") else None
             if m:
                 self.i = m.end()
                 self.blank()
@@ -1037,7 +1048,7 @@ class _Parser:
                 raise ParseError("a backslash-newline inside a redirection is not supported")   # bash reads 2\⏎> as 2>
             self.out.append(text)
             if loop_header:
-                header.append(None if g or re.search(r"[$`]", raw) else text)
+                header.append(None if g or "$" in raw or "`" in raw else text)
                 continue
             if raw == text and (text in KEYWORDS or text in ("for", "select", "case", "function", "coproc")):
                 untime()
@@ -1099,7 +1110,7 @@ class _Parser:
                 if pieces is not None:
                     self.out.append(text)
                 words.append(text)
-                dynamic |= bool(re.search(r"[$`]", raw))
+                dynamic |= "$" in raw or "`" in raw
                 idx.append(len(self.out) - 1)
                 spans.append(None if expanded or pieces is not None else (len(self.out) - 1, start, self.i))
                 globs.append(g)
@@ -1125,20 +1136,26 @@ class _Parser:
         # in each of word()'s readings, and again without the patterns (self.cut). Its commands are also the ones that
         # read this command's stdin, heredoc and herestring (`| sh $X` is `| sh`). Of a command that only copies text
         # into a file, only the line.
-        seen, as_written = {tuple(words)}, cmds
-        for k in range(12 if (dynamic or any(patterns)) and self.ctx["readings"] else 0):
-            texts = [None if v and not cut[k % 6] or k > 5 and p else cut[k % 6]   # None: gone
-                     for v, p, cut in zip(vanish, patterns, cuts)]
+        seen, as_written, read = {tuple(words)}, list(cmds), {}
+        columns, globbed = list(zip(*cuts)) or [()] * 6, any(patterns)   # columns[k]: each word's cut[k]
+        for k in range(12 if (dynamic or globbed) and self.ctx["readings"] else 0):
+            key = (columns[k % 6], k > 5 and globbed)
+            if key in read:   # the texts of an earlier reading: the same command, and the same line
+                self.gone[k].update(read[key])
+                continue
+            texts = [None if v and not t or k > 5 and p else t   # None: gone
+                     for t, v, p in zip(columns[k % 6], vanish, patterns)]
             kept = [i for i, t in enumerate(texts) if t is not None]
             alt = [texts[i] for i in kept]
-            self.gone[k].update((idx[i], t) for i, t in enumerate(texts) if t != words[i])   # and the line (flush)
+            read[key] = [(idx[i], t) for i, t in enumerate(texts) if t != words[i]]
+            self.gone[k].update(read[key])   # and the line (flush)
             if alt and tuple(alt) not in seen and not data:
                 seen.add(tuple(alt))
                 self.charge(sum(map(len, alt)))   # each reading is read as a command of its own
                 more = self.emit(alt, pid, self.via, any(globs),
                                  [names[i] if texts[i] == words[i] else globs[i] or _name_unreadable(texts[i])
                                   for i in kept])
-                cmds = cmds + more
+                cmds += more
                 self.progs += [idx[kept[j]] for j in _programs(alt, more)]
         # and as bash runs it with each literal a known variable may hold (certain: `F=~/.x; cat "$F"` is `cat ~/.x`),
         # and with each name a bracket pattern can make (possible, as the empty readings: `cat key[s]` may be `cat keys`)
@@ -1147,22 +1164,26 @@ class _Parser:
              for texts in self.fill(slots)),
             (words[:i] + [c] + words[i + 1:] for i, p in enumerate(patterns) if p and self.ctx["readings"]
              for c in _unglob(words[i])))
+        glob = any(globs)
         for k, texts in enumerate(extra, 12):
             self.charge(len(texts))
-            kept = [i for i, t in enumerate(texts) if t is not None]
-            alt = [texts[i] for i in kept]
+            if None in texts:   # a word gone
+                kept = [i for i, t in enumerate(texts) if t is not None]
+                alt = [texts[i] for i in kept]
+            else:
+                kept, alt = range(len(texts)), texts
             # lean: past the 4th, a reading makes a command, not a line: a rule on the line or code (TK-D011) reads the
             # first 4 (a loop over hundreds of words would read its whole script again for each); line all if needed
             if k < 16:
                 self.gone += [{} for _ in range(k + 1 - len(self.gone))]
                 self.gone[k].update((idx[i], t) for i, t in enumerate(texts) if t != words[i])
-            if alt and tuple(alt) not in seen and not data:
-                seen.add(tuple(alt))
+            if alt and (key := tuple(alt)) not in seen and not data:
+                seen.add(key)
                 self.charge(sum(map(len, alt)))
-                more = self.emit(alt, pid, self.via, any(globs), [names[i] if texts[i] == words[i] else
-                                                                  bool(_GLOB.search(texts[i])) or _name_unreadable(texts[i])
-                                                                  for i in kept])
-                cmds = cmds + more
+                more = self.emit(alt, pid, self.via, glob, [names[i] if texts[i] == words[i] else
+                                                            bool(_GLOB.search(texts[i])) or _name_unreadable(texts[i])
+                                                            for i in kept])
+                cmds += more
                 self.progs += [idx[kept[j]] for j in _programs(alt, more)]
         self.track_values(words, cmds, assigns, loop_header and (loop_header, header), sure and not dynamic)
         marks = []
@@ -1214,15 +1235,20 @@ class _Parser:
 
     def fill(self, slots):
         """Each way the known variables word() found in the words' `slots` (None: a word with none) may be set at
-        once, as the words' texts (None for a word with none): `for f in a b` sets $f to a, then to b."""
+        once, as the words' texts (None for a word with none): `for f in a b` sets $f to a, then to b. Values alike
+        (`for f in a a`) give one list, made once and charged each time."""
         names = sorted({p[0] for s in slots if s for p in s if isinstance(p, tuple)})
         if not names:
             return []
-        out = []
+        out, made = [], {}
         for values in itertools.product(*(self.known.get(n, ()) for n in names)):
-            env = dict(zip(names, values))
-            out.append([s and "".join(env[p[0]] if isinstance(p, tuple) else p for p in s) for s in slots])
-            self.charge(sum(len(t) for t in out[-1] if t))
+            if values not in made:
+                env = dict(zip(names, values))
+                texts = [s and "".join([env[p[0]] if isinstance(p, tuple) else p for p in s]) for s in slots]
+                made[values] = texts, sum(map(len, filter(None, texts)))
+            texts, n = made[values]
+            out.append(texts)
+            self.charge(n)
         return out
 
     def track_values(self, words, cmds, assigns, loop, sure):
@@ -1281,7 +1307,7 @@ class _Parser:
                                                   argv[0] in _VARIABLE_SETTING_BUILTINS or
                                                   _sets_with_v(argv) or
                                                   "command_not_found_handle" in argv or
-                                                  any(_COMMAND_NAME_ASSIGN.match(a) for a in argv[1:]))
+                                                  any(map(_COMMAND_NAME_ASSIGN.match, argv[1:])))
             if argv[0] == "alias":
                 self.ctx["redefined"].update(a.split("=", 1)[0] for a in argv[1:] if a.split("=", 1)[0] in copies)
             elif argv[0] == "enable" and "-n" in argv:
@@ -1369,11 +1395,11 @@ class _Parser:
             elif name == "git":
                 # a shell alias runs its command as sh -c does: set for this run (`git -c alias.x='!cmd' x`) or saved
                 # for a later one (`git config alias.x '!cmd'`); one from a variable or an included file isn't read
-                if any(re.match(r"(?i)--config-env=(alias|include)", a)
-                       or j and args[j - 1] == "-c" and re.match(r"(?i)include(if)?\.", a) for j, a in enumerate(args)):
+                if any(_CONFIG_ENV.match(a) or j and args[j - 1] == "-c" and _INCLUDE.match(a)
+                       for j, a in enumerate(args)):
                     raise ParseError("git config from a variable or an included file is not read")
                 for j, a in enumerate(args):
-                    m = re.fullmatch(r"(?is)alias\.[^=\s]+(?:=\s*!(.*))?", a)
+                    m = _ALIAS.fullmatch(a)
                     nxt = args[j + 1].lstrip() if m and m.group(1) is None and j + 1 < len(args) else ""
                     if m and (m.group(1) is not None or nxt.startswith("!")):
                         self.nested(m.group(1) if m.group(1) is not None else nxt[1:], via + ["git alias"])
@@ -1494,6 +1520,12 @@ class _Parser:
         those is empty in each."""
         s, start, buf, bare, exp, joins, alone, ifs = self.s, self.i, [], [], self.ctx["exp"], [], True, []
         while self.i < len(s):
+            if m := _PLAIN.match(s, self.i):   # a run of plain characters, read in one step
+                alone = False
+                bare.append(m.group())
+                buf.append(m.group())
+                self.i = m.end()
+                continue
             c = s[self.i]
             if c in "<>" and self.peek(1) == "(":
                 alone = False   # a process substitution is a file name, never nothing
@@ -1534,11 +1566,6 @@ class _Parser:
                     ifs.append((at, self.i))
             elif c == "`":
                 buf.append(self.backtick())
-            else:
-                alone = False
-                bare.append(c)
-                buf.append(c)
-                self.i += 1
         if self.i == start:
             return None
         text = "".join(buf)
@@ -1568,8 +1595,8 @@ class _Parser:
             self.cut = empty * 3 if self.vanish else (text, text) + empty + (
                 cut(lambda i, p: i not in glued), cut(lambda i, p: i not in glued or _HOME_WORD.fullmatch(p), True))
         bare = self.bare = "".join(bare)   # neither pattern backtracks: each scan from a `[` or `{` stops at the next bracket
-        glob = _GLOB.search(bare) or any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
-        raw = "".join(s[a + 2:b] for a, b in zip([start - 2] + joins, joins + [self.i]))
+        glob = _GLOB.search(bare) or "{" in bare and any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
+        raw = "".join(s[a + 2:b] for a, b in zip([start - 2] + joins, joins + [self.i])) if joins else s[start:self.i]
         return text, raw, bool(glob), self.ctx["exp"] != exp
 
     def sub(self, label):
