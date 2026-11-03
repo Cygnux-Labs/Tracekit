@@ -1453,6 +1453,25 @@ class Shell(unittest.TestCase):
                 self.assertTrue(any(c["opaque"] for c in shell.parse(cmd)))
         self.assertFalse(any(c["opaque"] for c in shell.parse("find . -name '*.py' | xargs -I{} wc -l {}")))
 
+    def test_xargs_inserting_into_a_wrapper_decides(self):
+        """The review of #575: `xargs -I{} exec sh -c '{}'` left a command's opaque None (exec is neither a shell nor
+        an interpreter), and decide raised a TypeError, which the signer denies as TK-ENGINE-ERROR (1.5.3 too)."""
+        cmd = "echo 'sudo id' | xargs -I{} exec sh -c  '{}';"
+        self.assertTrue(all(c["opaque"] in (True, False) for c in shell.parse(cmd)))
+        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        for e in (Engine(pol), Engine(pol, "regex")):
+            self.assertIn(e.decide("Bash", {"command": cmd})["verdict"], ("ask", "deny"), e.engine)
+
+    def test_a_write_target_whose_dot_part_ends_in_a_newline_is_still_read_normalised(self):
+        """The review of #575: the precheck before a target's path is normalised missed a word whose `.` part ends in
+        a newline, which _DOTTED reads (its `$` matches before a last newline), and TK-A013's ask became an allow."""
+        for cmd in ("cp -t '.git/modules/a://b/hooks/.\n' x", "cp -t '.git/modules/a://b/hooks/.\n' x y"):
+            for pack in ("dev.yaml", "coding.yaml", "server.yaml", "strict.yaml"):
+                pol = pc.build(os.path.join(PACKS, pack))[0]
+                for e in (Engine(pol), Engine(pol, "regex")):
+                    with self.subTest(cmd=cmd, pack=pack, engine=e.engine):
+                        self.assertIn("TK-A013", e.decide("Bash", {"command": cmd})["rule_ids"])
+
     def test_scheduling_and_session_wrappers_are_followed(self):
         for cmd in ("taskset 1 sudo id", "taskset -c 0-3 sudo id", "chrt -f 1 sudo id", "unbuffer sudo id",
                     "parallel sudo ::: id", "parallel -j 2 'sudo {}' ::: id", "fakeroot -- sudo id",

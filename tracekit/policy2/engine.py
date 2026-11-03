@@ -20,7 +20,8 @@ ALIASES = (classes.SHELL_KEYS, classes.PATH_KEYS, classes.PAYEE_KEYS, classes.RE
            ("amount", "amount_cents"), ("sql", "query", "statement"), ("db", "database"))
 _URL = re.compile(r"(?i)\b(?:https?|wss?|ftp):[^\s'\"<>`]*")
 _DOTTED = re.compile(r"(?:^|/)\.\.?(?:/|$)|(?<!:)//")   # a path with . or .. parts, or an empty one (not a URL's)
-_DOTTED_WORD = re.compile(r"(?:^|[/ ])\.\.?(?:[/ ]|$)|(?<!:)//")   # a line with a word _DOTTED finds (and maybe more)
+# a line with a word _DOTTED finds (and maybe more): _DOTTED's `$` also matches before a word's last newline
+_DOTTED_WORD = re.compile(r"(?:^|[/ ])\.\.?(?:[/ ]|\n? |$)|(?<!:)//")
 _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 2852039166/latest
 # ...when it reads as an IPv4 address outside 0.0.0.0/8, which no call reaches: not 1.txt, 2fa/ or head -n 50's 50.
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags

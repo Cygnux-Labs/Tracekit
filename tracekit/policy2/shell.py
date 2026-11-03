@@ -1329,7 +1329,7 @@ class _Parser:
                 raise ParseError("nested too deeply")
             name, args = _lower_name(argv[0].rsplit("/", 1)[-1] or argv[0]), argv[1:]
             # xargs -I{} inserting its input into a script or a command name: what runs comes from stdin
-            tainted = repl is not None and (repl in argv[0] or (
+            tainted = repl is not None and bool(repl in argv[0] or (
                 (name in SHELLS or _kind(name)) and any(repl in a for a in args)))
             cmd = {"argv": [name] + args, "word": argv[0], "via": via, "pipeline": pid, "glob": glob,
                    "opaque": unreadable[0] or tainted, "stdin": []}
