@@ -1497,7 +1497,7 @@ class TimedAndBraced(unittest.TestCase):
     def test_a_deny_corpus_command_timed_as_a_group_is_decided_at_least_as_strictly(self):
         e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
         rank = ("allow", "flag", "ask", "deny").index
-        with open(os.path.join(CORPUS, "deny", "shell.jsonl")) as f:
+        with open(os.path.join(CORPUS, "deny", "shell.jsonl"), encoding="utf-8") as f:
             for row in map(json.loads, f):
                 cmd = row["args"].get("command")
                 if not isinstance(cmd, str) or "<<" in cmd:   # a heredoc's terminator line can't take the `; }`
@@ -1560,7 +1560,7 @@ class TimedAndBraced(unittest.TestCase):
         for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
             for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     for row in map(json.loads, f):
                         cmd = row["args"].get("command")
                         # (an argument after a command can change what it runs: python3 <<<"code" 1 2 runs the file 1)
@@ -1771,7 +1771,7 @@ class TimedAndBraced(unittest.TestCase):
             self.assertEqual(e.decide("Bash", {"command": "rm -rf $X/"})["verdict"],
                              "deny" if pack == "strict.yaml" else "ask", pack)
             for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     for row in map(json.loads, f):
                         cmd = row["args"].get("command")
                         if not isinstance(cmd, str) or "\n" in cmd:
