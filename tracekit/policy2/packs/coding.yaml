@@ -155,9 +155,11 @@ deny:
     class: shell
     field: target
     # the dev signer's data and runtime dirs (signer/service.py dev_data_dir, sdk/autospawn.py runtime_dir) and the
-    # installed packs too, wherever a command acts on them: not in text it only writes into another file (#423)
-    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
-    unless: '^tracekit(?: [^ ]+)* --help$|^tracekit --version$'
+    # installed package (its policy engine, signer, hooks and packs) too, wherever a command acts on them, a read too:
+    # not in text it only writes into another file (#423). A help or version request is exempt, as `python -m
+    # tracekit.<module> --help` too
+    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
+    unless: '^(?:tracekit|(?:pyw?|pypy|pythonw?)[0-9.]*t? (?:-[^ ]+ +)*-m ?tracekit(?:\.[a-z_.]+)?)(?: [^ ]+)* --help$|^tracekit --version$'
     reason: touching Tracekit's own files or signer
     remedy: Leave Tracekit's files, signer and policy alone; a person changes them through the signer's own configuration.
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
@@ -165,10 +167,10 @@ deny:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit(-[0-9a-f]+)?|tmp/(tracekit|tk)-[0-9]+(-[0-9a-f]+)?|(site|dist)-packages/tracekit/policy2/packs)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
+    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit(-[0-9a-f]+)?|tmp/(tracekit|tk)-[0-9]+([-.][0-9a-f]+){0,2}|(site|dist)-packages/tracekit)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
     reason: writing Tracekit's own files, signer state or policy
     remedy: Leave Tracekit's files, signer state and policy alone; a person changes them through the signer's own configuration.
-    rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
+    rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store, the installed package the code that decides and signs.
   - id: TK-D012
     class: shell
     # each command's argv (wrappers and runners such as uvx, uv tool run, pipx run, hatch run and conda run, `sh -c`,
@@ -220,6 +222,16 @@ ask:
     reason: downloaded data passed to an interpreter
     remedy: Have a person check what the interpreter does with the downloaded input before approving it.
     rationale: Inline code and script paths can execute downloaded input in ways the policy cannot determine from the command.
+  - id: TK-A054
+    class: shell
+    # each command's argv: removing or stopping Tracekit as a person would, `tracekit uninstall` or `down` (also as
+    # `python -m tracekit`, as TK-D012 reads it), uninstalling its package with pip, uv (pip, tool or a project's
+    # remove), pipx or poetry, its Claude Code plugin's uninstall or disable, and a user service's stop. Held, not
+    # denied, so a person who means it approves it; TK-D007 denies touching the signer's files or process directly
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +)*(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^claude (-[^ ]+ +)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)( [\w\W]*?)? tracekit(@[^ ]*)?( |$)|^systemctl (-[^ ]+ +)*(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
+    reason: removing or stopping Tracekit
+    remedy: Have a person approve the held call if they mean to remove or stop Tracekit; the agent's own work has no need to.
+    rationale: Uninstalling Tracekit's hooks, package or plugin, or stopping its signer, ends the record of what the agent does next; a person confirms it, where a deny would leave a person working through the agent no way to.
   - id: TK-A020
     class: fs
     tool: Read|Grep
