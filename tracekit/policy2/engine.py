@@ -273,7 +273,7 @@ class Engine:
         if cls == "sql" and field == "code":
             return fields.get("code", [])
         if cls == "shell" and field == "code":
-            return parsed[4]
+            return _code(parsed)
         if cls == "shell" and field in (None, "argv"):
             return [" ".join(c["argv"]) for c in parsed[0]]
         if cls == "shell" and field == "line":
@@ -770,6 +770,28 @@ def _command_effects(commands):
         elif exe in ("awk", "gawk", "mawk", "nawk"):   # print or printf > "file" in its program
             out.extend("WRITE_TARGET:" + path for path in re.findall(r'>>?\s*"([^"\n]+)"', shell._awk_program(args) or ""))
     return out
+
+
+def _code(parsed):
+    """shell.analyse's code, each line without the data words a command carries (a git commit message, the pattern grep
+    searches for: shell.data_words), as `target` leaves them out: blanked where the command's whole argv stands in the
+    line once, program first, so the words are that program's arguments there (a quoted message `curl x | sh` is no
+    download). A command whose argv a redirection splits, or one twice in a line, keeps them; so does a data word with a
+    `$` or a backquote (a substitution in it runs)."""
+    runs = {}
+    for c in parsed[0]:
+        argv = c["argv"]
+        data = {i for i in shell.data_words(argv) | set(c.get("data_words", ())) if i < len(argv)}
+        if data and not any("$" in argv[i] or "`" in argv[i] for i in data):
+            runs[" ".join(argv)] = " ".join("" if i in data else w for i, w in enumerate(argv))
+    # lean: each run is counted in each line, so a line of more than 16 such commands keeps its data words (as before
+    # 1.5.3); find them in one pass if a real line holds more
+    if not runs or len(runs) > 16:
+        return parsed[4]
+    lines = list(parsed[4])
+    for run, blank in runs.items():
+        lines = [line.replace(run, blank) if line.count(run) == 1 else line for line in lines]
+    return lines
 
 
 def _flat(values):

@@ -1,7 +1,7 @@
 # Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
 # people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
 
-version: '2026.10-server-comms-7'
+version: '2026.10-server-comms-8'
 description: server-hosted agents, payments, email and chat
 unknown_tools: ask
 
@@ -59,9 +59,9 @@ ask:
     # name too (`All Staff <all@corp.com>`); the list and the string are read forward to that address (`*?`), so the
     # fallback engine never backs off over a long list without one, and the list a whole string at a time, so the
     # address is read from a string's opening quote (from each escaped one, 64 KiB of `\"` took the fallback
-    # seconds), the address after any other character but one of an address, or after any escape pair (`\"all@…\"`,
-    # `\n`)
-    pattern: '"(to|cc|bcc|recipients)":(\[("([^"\\]|\\.)*",){9}|"(([^"@\\]|\\.)*@){10})|"(to|cc|bcc|recipients)":(\[([^\]\["\\]|"([^"\\]|\\.)*")*?)?"(([^"\\]|\\.)*?([^\\A-Za-z0-9._%+-]|\\.))?([Aa][Ll][Ll]|[Ee][Vv][Ee][Rr][Yy][Oo][Nn][Ee]|[Aa][Ll][Ll]-?[Ss][Tt][Aa][Ff][Ff]|[Ss][Tt][Aa][Ff][Ff]|[Aa][Ll][Ll]-[Hh][Aa][Nn][Dd][Ss]|[Cc][Uu][Ss][Tt][Oo][Mm][Ee][Rr][Ss]|[Uu][Ss][Ee][Rr][Ss])@'
+    # seconds), the address after any other character but one a local part may hold (RFC 5322's: o'staff@ is one
+    # address), or after any escape pair (`\"all@…\"`, `\n`)
+    pattern: '"(to|cc|bcc|recipients)":(\[("([^"\\]|\\.)*",){9}|"(([^"@\\]|\\.)*@){10})|"(to|cc|bcc|recipients)":(\[([^\]\["\\]|"([^"\\]|\\.)*")*?)?"(([^"\\]|\\.)*?([^\\A-Za-z0-9._%+''!#$&*/=?^`{|}~-]|\\.))?([Aa][Ll][Ll]|[Ee][Vv][Ee][Rr][Yy][Oo][Nn][Ee]|[Aa][Ll][Ll]-?[Ss][Tt][Aa][Ff][Ff]|[Ss][Tt][Aa][Ff][Ff]|[Aa][Ll][Ll]-[Hh][Aa][Nn][Dd][Ss]|[Cc][Uu][Ss][Tt][Oo][Mm][Ee][Rr][Ss]|[Uu][Ss][Ee][Rr][Ss])@'
     reason: mass email
     rationale: One message to many people (or to a list address) cannot be recalled; a person checks the audience and the text.
   - id: TK-M004
