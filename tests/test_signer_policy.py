@@ -625,6 +625,34 @@ class CodingPack(unittest.TestCase):
                     if (tool, args, rule) in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_code_and_input_through_an_mcp_runner_and_a_command_in_any_case_ask_on_the_server_packs(self):
+        """TK-S010 and TK-S012 (1.5.3 sweep): a code interpreter's `code`, a notebook cell's `source`, a process's
+        `input`, an exec tool's argv list, `Command` and `commands` were only flagged. The runner's keys are read only
+        in a tool named for running code, a cell or a process: a translation's `source` or a promo `code` isn't held."""
+        held = (("mcp__e2b__run_code", {"code": "import os; os.system('id')"}, "TK-S012"),
+                ("mcp__jupyter__execute_cell", {"source": "!id"}, "TK-S012"),
+                ("mcp__jupyter__insert_execute_code_cell", {"cell_source": "!id"}, "TK-S012"),
+                ("mcp__dc__interact_with_process", {"pid": 1, "input": "rm -rf /data"}, "TK-S012"),
+                ("mcp__x__exec", {"args": ["sh", "-c", "id"]}, "TK-S012"),
+                ("mcp__riza__executePython", {"code": "print(1)"}, "TK-S012"), ("mcp:sandbox/runCode", {"code": "x"}, "TK-S012"),
+                ("mcp__run-python__run_python_code", {"python_code": "x"}, "TK-S012"),
+                ("mcp__srv_run_code", {"code": "x"}, "TK-S012"), ("mcp__x__run", {"Command": "id"}, "TK-S010"),
+                ("mcp__x__run", {"commands": ["id"]}, "TK-S010"))
+        not_held = (("mcp__translate__translate_text", {"source": "en", "target": "fr"}),
+                    ("mcp__shop__apply_discount", {"code": "SUMMER10"}), ("mcp__forms__fill_field", {"input": "Alice"}),
+                    ("mcp__github__search_code", {"query": "foo"}), ("mcp__x__runbook_list", {"source": "x"}),
+                    ("mcp__x__list_runs", {"source": "x"}), ("mcp__x__dropdown", {"input": "x"}))
+        for pack, engine, e in self.every_pack():
+            if pack not in ("server.yaml", "strict.yaml"):
+                continue
+            for tool, args, rule in held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    d = e.decide(tool, args)
+                    self.assertEqual((d["verdict"], rule in d["rule_ids"]), ("ask", True), d)
+            for tool, args in not_held:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-S010", "TK-S012"} & set(e.decide(tool, args)["rule_ids"]))
+
     def test_mass_email_reads_any_case_a_display_name_and_an_address_anywhere_in_the_string(self):
         """TK-M003 (1.5.3 review): a whole-company address in another case, after another address in the same string
         or after a display name, and ten recipients with quoted display names were allowed on the server packs."""
