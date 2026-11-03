@@ -665,7 +665,8 @@ def _reaches_unread(parsed):
     if not any(c["opaque"] and re.search(r"[$`]", c["word"]) for c in commands):
         return False
     values = [r for r in parsed[2] if shell._ASSIGN.match(r)] + [
-        w for c in commands if c["argv"][0] in _SETS_VARIABLES or c["argv"][0] == "printf" and "-v" in c["argv"]
+        w for c in commands if c["argv"][0] in _SETS_VARIABLES
+        or c["argv"][0] == "printf" and any(a.startswith("-v") for a in c["argv"][1:])   # -v C, -vC: getopt reads both
         for w in c["argv"][1:] + c["stdin"]]
     return any(_WRITER.search(v.lower()) for v in values)
 
