@@ -269,8 +269,7 @@ that may not run: after `&&` or `||`, in a pipeline, a subshell, an `if` or a lo
 unreadable command name; in a loop, a later command of its body). `X=`, `unset X`, a loop over `""`, `${X:+}`,
 `${X:0:0}` and `${X%%*}` are empty for certain, so a deny they make stays one. A deny that
 only such an empty reading makes (`rm -rf "$VENV"/`) takes `on_parse_error`'s section with the rule's id: it asks by
-default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one between `$` and `(`, `{` or a
-quote, or between the characters of an operator (`(\⏎(` is `((`, `<<\⏎-EOF` is `<<-EOF`), makes the line unreadable,
+default, as the line can't say whether `$VENV` is empty. A backslash-newline is gone before the words are read, as in bash; one between `$` and `(` or `{`, or between the characters of an operator (`(\⏎(` is `((`, `<<\⏎-EOF` is `<<-EOF`), makes the line unreadable,
 as does bash 5.3's `${ cmd; }`. A command it cannot parse is still decided on the line before the word it
 stopped in, parsed, and on its text split at `;`, `&`, `|` and newlines into blank-separated words, so a deny before
 an unreadable word or on plain words stands. A command it cannot parse, or one that

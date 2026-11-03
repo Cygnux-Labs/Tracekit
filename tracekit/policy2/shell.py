@@ -1676,15 +1676,18 @@ class _Parser:
             while s.startswith("\\\n", j):
                 j += 2
             m = _NAME.match(s, j)
-            if s[j:j + 1] in ("(", "{", "'", '"'):
-                # lean: a $( ${ $' or $" across one is held, not read; read it if real commands write one
-                raise ParseError("a backslash-newline between $ and ( { or a quote is not supported")
-            if not m:
+            if s[j:j + 1] in ("(", "{"):
+                # lean: a $( or ${ across one is held, not read; read it if real commands write one
+                raise ParseError("a backslash-newline between $ and ( or { is not supported")
+            if s[j:j + 1] in ("'", '"') and not in_dq:
+                self.i, nxt = j - 1, s[j]   # the $'...' or $"..." it is, read below
+            elif not m:
                 self.i += 1
                 return "$"
-            self.i = m.end()
-            self.ctx["exp"] += 1
-            return _Expansion("$" + m.group())
+            else:
+                self.i = m.end()
+                self.ctx["exp"] += 1
+                return _Expansion("$" + m.group())
         if nxt == "'" and not in_dq:
             m = re.compile(r"((?:\\.|[^'\\])*)'", re.S).match(s, self.i + 2)
             if not m:
