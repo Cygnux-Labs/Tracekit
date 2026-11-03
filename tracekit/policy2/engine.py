@@ -531,6 +531,15 @@ _RUN_FLAGS = {"--detach", "--interactive", "--tty", "--rm", "--init", "--privile
 # /etc/localtime, isn't one)
 _HOST_PATH = re.compile(r"/|/proc(/.*)?|/etc|/root(/.*)?")
 _CONTAINER_VERBS = {"run", "create", "exec", "container"}
+# docker's and podman's global options that always take the next word, a verb's name too (`docker --context run run`),
+# and those that never do; another reads one unless an option or a verb follows
+_GLOBAL_VALUED = {"-H", "--host", "-c", "--context", "--connection", "--config", "-l", "--log-level", "--url",
+                  "--tlscacert", "--tlscert", "--tlskey", "--identity", "--root", "--runroot", "--storage-driver",
+                  "--storage-opt", "--cgroup-manager", "--events-backend", "--hooks-dir", "--module", "--tmpdir",
+                  "--runtime", "--runtime-flag", "--conmon", "--network-cmd-path", "--network-config-dir",
+                  "--volumepath", "--imagestore", "--db-backend", "--ssh"}
+_GLOBAL_FLAGS = {"-D", "--debug", "--tls", "--tlsverify", "-r", "--remote", "--syslog", "--noout", "-v", "--version",
+                 "-h", "--help"}
 
 
 def _host_path(source):
@@ -541,15 +550,17 @@ def _host_path(source):
 
 def _container_host_access(commands):
     """A docker/podman run, create or exec (also as `container run`, and after the CLI's global options: docker -H
-    host, --context prod, podman --remote) whose own options (those before the image or container: later words are
+    host, --context prod, podman --remote; one that takes a value takes it whatever it is named, _GLOBAL_VALUED) whose
+    own options (those before the image or container: later words are
     the command it runs) give it host privileges or every capability, the host's process space, or a _HOST_PATH."""
     for command in commands:
         argv = command["argv"]
         if not argv or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman"):
             continue
         words, i = argv[1:], 0
-        while i < len(words) and words[i].startswith("-"):   # a global option, and its value unless a verb follows
-            i += 1 if "=" in words[i] or i + 1 < len(words) and (
+        while i < len(words) and words[i].startswith("-"):   # a global option, and its value (_GLOBAL_VALUED)
+            w = words[i]
+            i += 1 if "=" in w or w in _GLOBAL_FLAGS or w not in _GLOBAL_VALUED and i + 1 < len(words) and (
                 words[i + 1].startswith("-") or words[i + 1] in _CONTAINER_VERBS) else 2
         words = words[i:]
         words = words[1:] if words[:1] == ["container"] else words

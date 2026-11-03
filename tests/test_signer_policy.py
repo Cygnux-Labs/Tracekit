@@ -2964,6 +2964,20 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertNotIn("TK-A023", e.decide("Bash", {"command": command})["rule_ids"])
 
+    def test_a_global_option_that_takes_a_value_takes_one_named_like_a_verb(self):
+        # the 1.5.3 final review: a global option's value named run, exec or create read as the verb, so the real verb
+        # and its options went unread and these were only flagged
+        self.every_pack_verdicts([(c, "TK-A023") for c in (
+            "docker --context run run --privileged img", "docker -H exec run -v /:/h img",
+            "docker --config create run --pid=host img", "docker -l run run --privileged img",
+            "docker --log-level exec exec --privileged c sh", "podman --url run run --privileged img",
+            "podman --connection create run --pid=host img", "podman -c exec run --privileged img",
+            "docker --tlscert run --debug run --privileged img", "podman --remote --url run run --privileged img")])
+        for pack, engine, e in self.every_pack():
+            for command in ("docker --context run ps", "docker --debug run img", "podman --remote run img echo hi"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertNotIn("TK-A023", e.decide("Bash", {"command": command})["rule_ids"])
+
     def test_write_and_delete_tags_leave_the_older_target_rules_as_they_were(self):
         """The WRITE_TARGET:/DELETE_TARGET: tags were target subjects, so TK-D010 read `DELETE_TARGET:.env` as a
         credentials file written and TK-A011 and TK-A013 a startup item or hook. They are `effects` now, which only the
