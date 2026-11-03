@@ -3327,7 +3327,10 @@ class PackReading(unittest.TestCase):
             "mcp:s3/grant_access_to_bucket", "mcp__gcp__grant_project_iam_role")])
         # a grant names what it grants: a reviewers list or a list of grants is a read
         self.rule_on_server("TK-C002", [(t, {}) for t in ("mcp:github/grant_reviewers_list", "mcp:kms/list_grants",
-                                                          "mcp:x/grantee_report")], want=False)
+                                                          "mcp:x/grantee_report",
+                                                          # a sandbox's grant, held by Wassette's own rule (ask)
+                                                          "mcp__wassette__grant-network-permission",
+                                                          "mcp:wassette/grant-storage-permission")], want=False)
         self.rule_on_server("TK-C001", [("Bash", {"command": c}) for c in (
             "aws ec2 modify-snapshot-attribute --snapshot-id s --attribute createVolumePermission --operation-type remove "
             "--group-names all", "aws rds modify-db-snapshot-attribute --db-snapshot-identifier s --attribute-name restore "
