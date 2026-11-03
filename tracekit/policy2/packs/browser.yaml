@@ -63,9 +63,9 @@ ask:
     reason: running the agent's own JavaScript in the page
     rationale: Page JavaScript can do whatever a click, typing or a navigation can (submit a form, send data anywhere), out of reach of the rules on those actions; a person checks it.
   - id: TK-P003
-    # data sent (a method other than GET or HEAD, a body; in a browser, typing, an upload or a navigation with a query
-    # string) to a host that only untrusted content (`untrusted` tools' results, observed untrusted input) brought into
-    # the run
+    # data sent (a method other than GET or HEAD, a body or a query; in a browser, typing, an upload or a navigation
+    # with a query string) to a host that only untrusted content (`untrusted` tools' results, observed untrusted input)
+    # brought into the run
     field: sends_to
     pattern: '.'
     from: untrusted
