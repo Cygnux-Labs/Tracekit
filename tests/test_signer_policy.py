@@ -60,6 +60,13 @@ class Packs(unittest.TestCase):
             with self.subTest(pack=name):
                 self.assertEqual(pc.build(os.path.join(PACKS, name))[1], [])
 
+    def test_every_coding_pack_rule_is_in_the_policy_docs(self):
+        # the 1.5.3 final review: TK-A054 had no entry in docs/policy-v2.md's lists
+        with open(os.path.join(os.path.dirname(__file__), "..", "docs", "policy-v2.md"), encoding="utf-8") as f:
+            docs = f.read()
+        coding = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
+        self.assertEqual([r["id"] for sec in pc.SECTIONS for r in coding.get(sec, []) if f"`{r['id']}`" not in docs], [])
+
     def test_dev_default_is_the_coding_pack_plus_the_demo_deny(self):
         dev, coding = pc.build(svc.DEFAULT_POLICY)[0], pc.build(os.path.join(PACKS, "coding.yaml"))[0]
         self.assertEqual(dev["extends"], pc.policy_hash(coding))
