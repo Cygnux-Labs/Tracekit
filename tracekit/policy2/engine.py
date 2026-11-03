@@ -350,21 +350,27 @@ def _shell(args, persistent_target=None):
     raise shell.ParseError("the command is neither a string nor a list of strings")
 
 
+# a piece of a line between ;, &, | and newlines outside quotes, as bash separates commands; a quote left open runs to
+# the end of the line, as bash reads no command after it
+_PIECE = re.compile(r"""(?:[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
+
+
 def _plain(raw, at=0):
     """What a command the parser can't read is decided on: its text as its target and code; the line before the word
-    it stopped in (`at`: where), parsed; and each piece of the rest, from the one it stopped in, between ;, &, | and
-    newlines, split on blanks as a command (shell.analyse_argv), so a rule that reads plain words still holds what it
-    held (`sudo id {1..3..1}`). A part that can't be read so is left out."""
+    it stopped in (`at`: where), parsed; and each piece of the rest (_PIECE), from the one it stopped in, split on
+    blanks as a command (shell.analyse_argv), so a rule that reads plain words still holds what it held (`sudo id
+    {1..3..1}`). A part that can't be read so is left out."""
     out, start = ([], [], [raw], [], [raw]), 0
     head = raw[:max(0, *(raw.rfind(c, 0, at) for c in " \t\n"))]
     readings = []
     if head.strip():
         try:
             readings.append(shell.analyse(head))
-            start = max(0, *(head.rfind(c) + 1 for c in ";&|\n"))
+            last = ([m.span() for m in _PIECE.finditer(head)] or [(0, 0)])[-1]
+            start = last[0] if last[1] == len(head) else last[1] + 1   # after a separator that ends the head
         except shell.ParseError:
             pass
-    for piece in re.split(r"[;&|\n]", raw[start:]):
+    for piece in (m.group() for m in _PIECE.finditer(raw, start)):
         try:
             readings.append(shell.analyse_argv(piece.split()) if piece.split() else ())
         except shell.ParseError:

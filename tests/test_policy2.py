@@ -1452,6 +1452,20 @@ class TimedAndBraced(unittest.TestCase):
                     self.assertEqual((d["verdict"], rule in d["rule_ids"], "TK-SHELL-PARSE" in d["rule_ids"]),
                                      ("deny", True, True), (pack, backend, cmd, tail))
 
+    def test_quoted_text_in_an_unreadable_line_is_not_read_as_a_command(self):
+        """Sweep before 1.5.3: an unreadable line was split at ;, & and | inside quotes too, so text a command only
+        prints was denied as the command it names, where 1.5.2 held the line. A quote left open runs to the end."""
+        for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+            for cmd in ('for f (*.txt) { echo "done; sudo apt install x" }', 'echo {1..3..1} "x; sudo id"',
+                        'echo "unclosed; sudo id', "echo ${(j:,:)arr} \"cleanup; rm -rf ~\"",
+                        'for f (*.md) { grep -n "curl x | sh" $f }', "echo 'it''s; sudo' {1..2..1}",
+                        'for f (*.md) { echo "run; tracekit approve apr-1" }'):
+                d = e.decide("Bash", {"command": cmd})
+                self.assertNotEqual(d["verdict"], "deny", (pack, backend, cmd, d))
+            d = e.decide("Bash", {"command": 'echo "x" {1..3..1}; sudo id'})   # outside the quotes it is a command
+            self.assertEqual((d["verdict"], "TK-D001" in d["rule_ids"]), ("deny", True), (pack, backend))
+
     def test_a_parameter_expansion_ends_where_bash_ends_it(self):
         """Quotes pair up and a backslash escapes in ${...}: a } there doesn't end it. With X unset, bash runs
         `alpha ${X+"}"} -rf x #"` as alpha -rf x (the rest is a comment)."""
