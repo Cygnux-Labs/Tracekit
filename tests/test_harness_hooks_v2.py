@@ -1524,6 +1524,22 @@ class VersionNotice(HarnessCase):
             return {"run_id": "r", "tool": "Bash", "state": "approved", "args": dict(args, description="Deploy")}
         self.assertEqual(claude_code._reworded(mock.Mock(approval_get=get), "cc-u", args, lambda: None), (None, None))
 
+    def test_a_reworded_retry_is_held_again_once_a_held_call_was_dropped(self):
+        """Sweep before 1.5.3: HELD further holds pushed a rejected wording out of the session's held calls, and a
+        reworded retry then ran under the approved one."""
+        args = {"command": "make deploy", "description": "Deploy again"}
+        with open(claude_code._state("cc-w"), "w") as f:
+            json.dump({"run_id": "r"}, f)
+        claude_code._keep_held("cc-w", "r", dict(args, description="Ship it"), "apr-no")
+        claude_code._keep_held("cc-w", "r", dict(args, description="Deploy"), "apr-ok")
+        for n in range(claude_code.HELD - 1):
+            claude_code._keep_held("cc-w", "r", {"command": f"make job{n}", "description": "x"}, f"apr-{n}")
+
+        def get(req):
+            self.assertEqual(req["approval_id"], "apr-ok")
+            return {"run_id": "r", "tool": "Bash", "state": "approved", "args": dict(args, description="Deploy")}
+        self.assertEqual(claude_code._reworded(mock.Mock(approval_get=get), "cc-w", args, lambda: None), (None, None))
+
     def test_once_said_no_event_takes_the_session_lock_for_it(self):
         """Review of #512: while the versions differed, every event took the session lock to find it said already."""
         with open(claude_code._state("cc-l"), "w") as f:

@@ -118,7 +118,8 @@ Code asks you). One of them rejected: the signer keeps no copy of a rejected cal
 answer came last, so the retry is decided as the model sent it and held, and the first reason after `Why:` in its block
 (`[tracekit] held for approval …`) is `a person rejected this command (with another description) as apr-…`, adding
 `, and it was approved (with another description) as apr-…` when one was. One the hook can't read (a signer whose
-`authorize` doesn't grant it `approval_get`, or one restarting) runs nothing in place of the retry either.
+`authorize` doesn't grant it `approval_get`, or one restarting) runs nothing in place of the retry either, and neither
+does any retry once the session has held more than 32 Bash calls: the oldest one dropped may be a rejected wording.
 Any other key that differs (`command`, `run_in_background`, `dangerouslyDisableSandbox`, `timeout`, ...), or an
 approval still unanswered, expired or used, and the retry is decided as the model sent it. The signer's rule above is
 unchanged: the hook only chooses which arguments the retry is decided with, and the signer still checks them against
