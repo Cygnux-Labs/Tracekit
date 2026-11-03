@@ -51,26 +51,29 @@ TOO_LARGE = {"refused": "the receipts would take the call's result past the half
              "reported_by": "hook"}
 
 
-def receipts(tool, args, cwd):
+def receipts(tool, args, cwd, later=False):
     """The receipts of the weights files (WEIGHTS) call (`tool`, `args`) of one of TOOLS wrote: a write tool's path, or
-    a Bash command's write targets (constraints.shell), relative ones against `cwd`.
+    a Bash command's write targets (constraints.shell), relative ones against `cwd`. `later`: the harness's hook says
+    the call's effect comes after its post-tool hook (agent_hooks.LATER).
     Each is marked `reported_by: hook`, its path and reason JSON-safe (a lone surrogate escaped) and cut to MAX_TEXT.
     Refused rather than guessed: what _named refuses, and a relative path when there is no `cwd`. At most MAX_FILES
     receipts, then one entry counting the files past them, all hashed within BUDGET_S. Never raises: any other error
     is a refusal too, so the call's result is still sent."""
     try:
-        out = _receipts(tool, args, cwd)
+        out = _receipts(tool, args, cwd, later)
     except Exception as e:   # the receipts ride on the call's result, which goes to the signer whatever happens here
         out = [{"refused": f"the hook could not read the call's weights files ({type(e).__name__})"}]
     return [{**r, **{k: _text(r[k]) for k in ("path", "refused") if k in r}, "reported_by": "hook"} for r in out]
 
 
-def _named(tool, args):
+def _named(tool, args, later=False):
     """[(path, why the hook can't place it, or None)] of the weights files call (`tool`, `args`) of one of TOOLS
     writes, as it names them: a write tool's path, or a Bash command's write targets (constraints.shell); none for
-    another tool. Refused rather than guessed: a path starting with `~`, every path of a command line whose paths are
-    elsewhere (constraints.shell's `elsewhere`: cp -t, git -C, env --chdir, chroot, ssh, ...), and a relative one when
-    the command changes directory (`cd`: cd, pushd, popd, git --work-tree)."""
+    another tool. Refused rather than guessed: a path starting with `~`; every path of a call whose writes may land
+    after the hook reads (`later`, run_in_background or Qwen Code's is_background, constraints.shell's `later`:
+    systemd-run, at), or of a command line whose paths are elsewhere (constraints.shell's `elsewhere`: cp -t, git -C,
+    env --chdir, chroot, ssh, ...); and a relative one when the command changes directory (`cd`: cd, pushd, popd, git
+    --work-tree)."""
     args = args if isinstance(args, dict) else {}
     if tool in WRITERS:
         paths, s = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")], {}
@@ -79,15 +82,18 @@ def _named(tool, args):
         paths = s["paths"]
     else:
         return []
+    later = later or s.get("later") or any(args.get(k) for k in ("run_in_background", "is_background"))
     return [(p, "a path starting with ~, which the hook doesn't expand" if p.startswith("~") else
+             "the call's writes may land after the hook reads (a command left running, input typed into another "
+             "session, systemd-run, at)" if later else
              "the command line's paths are in another directory, root or host (cp -t, git -C, env --chdir, chroot, "
              "ssh, ...)" if s.get("elsewhere") else "a path relative to a directory the command changed to"
              if s.get("cd") and not os.path.isabs(p) else None)
             for p in dict.fromkeys(p for p in paths if p.lower().endswith(WEIGHTS))]
 
 
-def _receipts(tool, args, cwd):
-    named = _named(tool, args)
+def _receipts(tool, args, cwd, later):
+    named = _named(tool, args, later)
     cwd, deadline, out = cwd if isinstance(cwd, str) else "", time.monotonic() + BUDGET_S, []
     for p, why in named[:MAX_FILES]:
         why = why or (None if os.path.isabs(p) or cwd else

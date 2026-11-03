@@ -353,9 +353,11 @@ Bash command's write targets (a redirection, a `cp` or `mv` destination, ...). A
 refused: one starting with `~`; every path of a command line in which `cp`, `mv`, `install` or `ln` has `-t` (in a
 cluster too, `-vt`), `git`, `env`, `make` or `tar` has `-C`, `sudo` has `-D`, or one of them has `--target-directory`,
 `--directory` or `--chdir` or a prefix of one that GNU accepts (`env --ch=sub`); every path of a command line that runs
-`ssh`, `chroot`, `nsenter`, `unshare` or `firejail`; and a relative one in a command that changes directory (`cd`,
-`pushd`, `popd`, `git --work-tree`). The hook hashes for at most 10 seconds per call; a receipt it can't finish, or any
-it can't read, is recorded with its reason, and the call's result is recorded either way.
+`ssh`, `chroot`, `nsenter`, `unshare` or `firejail`; every path of a call whose write may land after the hook reads (a
+Bash call `run_in_background`, input typed into another session, Qwen Code's `monitor`, `systemd-run`, `at`); and a
+relative one in a command that changes directory (`cd`, `pushd`, `popd`, `git --work-tree`). The hook hashes for at
+most 10 seconds per call; a receipt it can't finish, or any it can't read, is recorded with its reason, and the call's
+result is recorded either way.
 
 The hook runs as the agent's user, so each receipt (`reported_by: hook`) is the agent side's record, not something the
 signer saw. The `model_receipts` key is the hook's on those five tools' results: it removes one it didn't set. Every

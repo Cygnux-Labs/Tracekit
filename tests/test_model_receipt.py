@@ -26,6 +26,8 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileReader
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LATER = ("the call's writes may land after the hook reads (a command left running, input typed into another session, "
+         "systemd-run, at)")
 HAVE_SDK = importlib.util.find_spec("claude_agent_sdk") is not None
 receipt = model_receipt.receipt
 
@@ -260,6 +262,16 @@ class Receipts(Base):
         self.assertEqual(model_receipt.receipts("Write", {"file_path": "~/model.safetensors"}, self.d)[0]["refused"],
                          home)
 
+    def test_a_write_that_may_land_after_the_hook_reads_is_refused(self):
+        """Review of 59c428db: `cp new.pt m.pt` run in the background got a receipt of the file before the copy, and
+        so did a command systemd-run runs later; a harness's hook marks input typed into another session `later`."""
+        for args, later in (({"command": "cp new.pt model.safetensors", "run_in_background": True}, False),
+                            ({"command": "cp new.pt model.safetensors", "is_background": True}, False),
+                            ({"command": "systemd-run cp new.pt model.safetensors"}, False),
+                            ({"command": "at now <<< 'cp new.pt model.safetensors'"}, False),
+                            ({"command": "cp new.pt model.safetensors"}, True)):
+            self.assertEqual([r["refused"] for r in model_receipt.receipts("Bash", args, self.d, later)], [LATER], args)
+
     def test_another_commands_t_or_c_flag_refuses_nothing(self):
         """Review of d013a1dd: `grep -C3` or `sort -t,` anywhere in a command refused every weights path in it."""
         want = [dict(receipt(self.w), reported_by="hook")]
@@ -378,6 +390,28 @@ class HookRecords(Base):
         anyio.run(post, dict(p, hook_event_name="PostToolUse", tool_response={
             "content": "x", "model_receipts": planted}), "t1", None)
         self.assertEqual(self.complete("t1")["result"], {"content": "x", "model_receipts": planted})
+
+    def test_input_typed_into_another_session_or_a_monitor_gets_no_receipt(self):
+        """Review of 59c428db: Codex's write_stdin, agy's send_input and Qwen Code's monitor, decided as Bash, type into
+        another session or leave a command running, so the hook read the file before their write."""
+        from tracekit import agent_hooks
+        from tracekit.integrations import harness_hooks
+        agent = mock.patch.object(claude_code, "AGENT", claude_code.AGENT)   # harness_hooks.run sets it
+        agent.start()
+        self.addCleanup(agent.stop)
+        safetensors(self.path("model.safetensors"), {"a": b"\x01"})
+        cp = "cp new.pt model.safetensors"
+        for tid, harness, name, ti in (("t1", "codex", "write_stdin", {"session_id": 1, "chars": cp + "\n"}),
+                                       ("t2", "qwen", "monitor", {"command": cp})):
+            p = {"session_id": f"s-{harness}", "tool_use_id": tid, "tool_name": name, "tool_input": ti, "cwd": self.d}
+            for event, more in (("PreToolUse", {}), ("PostToolUse", {"tool_response": {"output": ""}})):
+                self.assertEqual(harness_hooks.run(harness, json.dumps(dict(p, hook_event_name=event, **more)),
+                                                   io.StringIO(), io.StringIO()), 0, (harness, event))
+            self.assertEqual([r["refused"] for r in self.complete(tid)["result"]["model_receipts"]], [LATER], harness)
+        q = agent_hooks.normalise("antigravity", {
+            "hook_event_name": "PostToolUse", "conversationId": "c1", "stepIdx": 3,
+            "toolCall": {"name": "manage_task", "args": {"Action": "send_input", "Input": cp}}})
+        self.assertEqual((q["tool_name"], q["later"]), ("Bash", True))
 
     def test_a_call_that_failed_gets_no_receipts(self):
         """Review of 6b0a568e: a failed, interrupted or is_error call got receipts too."""

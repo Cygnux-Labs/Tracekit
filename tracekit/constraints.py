@@ -236,6 +236,7 @@ ELSEWHERE = {"cp": "t", "mv": "t", "install": "t", "ln": "t", "git": "C", "env":
 ELSEWHERE_LONG = ("--target-directory", "--directory", "--chdir")
 # commands that run theirs on another host, in another root, or in another mount namespace or sandbox
 ELSEWHERE_RUNS = frozenset(("ssh", "chroot", "nsenter", "unshare", "firejail"))
+LATER_RUNS = frozenset(("systemd-run", "at", "batch"))   # commands that run theirs after the line returns
 NET_COMMANDS = frozenset(("curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
                           "http", "https"))
 NET_GIT = frozenset(("push", "pull", "fetch", "clone", "ls-remote"))
@@ -780,18 +781,19 @@ def _elsewhere(name, rest):
 def shell(cmd):
     """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs": those
     of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory (cd, pushd, popd, git
-    --work-tree), "elsewhere": a command's paths are in another directory, root or host (_elsewhere),
-    "push": a git push, "network": a command that reaches the network, "writes": it writes or commits}. `cmd`: a
-    command line, or a shell call's arguments (`command` or `cmd` a line or an argv list, `commands` a list of lines),
-    read as the policy engine reads them (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines
-    included).
+    --work-tree), "elsewhere": a command's paths are in another directory, root or host (_elsewhere), "later": a
+    command runs its own after the line returns (LATER_RUNS), "push": a git push, "network": a command that reaches
+    the network, "writes": it writes or commits}. `cmd`: a command line, or a shell call's arguments (`command` or
+    `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine reads them (policy2/shell.py:
+    wrappers, `bash -c`, `eval`, substitutions and pipelines included).
     lean: redirections, the arguments of tee/touch/mkdir/rm/rmdir/truncate/shred/unlink and of formatters that write
     in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
     ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
     after `--`, and the -name of a find that deletes or runs a command; a word with a variable, a glob, braces or a
     command substitution is no path; a line the parser can't read (`case`, over its size) does nothing, and the
     policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
-    out = {"paths": [], "dirs": [], "cd": False, "elsewhere": False, "push": False, "network": False, "writes": False}
+    out = {"paths": [], "dirs": [], "cd": False, "elsewhere": False, "later": False, "push": False, "network": False,
+           "writes": False}
     try:
         cmds, _, _, written, _ = _parse(cmd if isinstance(cmd, dict) else
                                         {"command": cmd if isinstance(cmd, str) else ""})
@@ -803,6 +805,7 @@ def shell(cmd):
         out["cd"] = out["cd"] or name in ("cd", "pushd", "popd") or name == "git" and any(
             w.split("=", 1)[0] == "--work-tree" for w in rest)
         out["elsewhere"] = out["elsewhere"] or _elsewhere(name, rest)
+        out["later"] = out["later"] or name in LATER_RUNS
         mode = WRITERS.get(name)
         if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
                                            for w in rest):

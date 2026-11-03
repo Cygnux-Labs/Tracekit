@@ -621,7 +621,7 @@ def _post(client, p, sid, tid):
         # the weights files a call of a tool the hook receipts (model_receipt.TOOLS) wrote, if it succeeded, next to
         # the result's digest: the hook's report, kept while the result still fits its frame, else a marker in their
         # place while that fits
-        receipts = model_receipt.receipts(p.get("tool_name"), ti, p.get("cwd")) if ok else []
+        receipts = model_receipt.receipts(p.get("tool_name"), ti, p.get("cwd"), p.get("later") is True) if ok else []
         for kept in (receipts, [model_receipt.TOO_LARGE]) if receipts else ():
             if sendable({**value, "model_receipts": kept}):
                 value["model_receipts"] = kept
