@@ -383,7 +383,7 @@ def _shell(args, persistent_target=None, readings=True):
 # a piece of a line between ;, &, | and newlines outside quotes, as bash separates commands; a quote left open runs to
 # the end of the line, as bash reads no command after it; a # that starts a word comments out the rest of its line, a
 # quote in it too
-_PIECE = re.compile(r"""(?:(?<![^\s;&|(])(?<!\\[ \t])#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
+_PIECE = re.compile(r"""(?:(?<![^\s;&|(])(?<!\\.)#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
 
 
 def _plain(raw, at=0, readings=True, persistent_target=None):
@@ -896,8 +896,10 @@ def _flat(values):
 # comment): a path or an address named there is mentioned, not read or fetched
 _CARRIED = frozenset(("title", "body", "text", "description", "comment", "message", "subject", "content"))
 _POSTS = frozenset(("post", "comment", "reply"))
-# what `create` posts (create_issue, createPullRequest); a file, a job or a workflow it creates is acted on
-_CREATED = frozenset(("issue", "issues", "comment", "pull", "discussion", "review", "ticket", "note"))
+# what `create` posts, the word right after it (create_issue, createPullRequest, create_merge_request); a name that
+# also says file, cache, rule, job or workflow (create_note_file) creates something that is acted on
+_CREATED = frozenset(("issue", "issues", "comment", "comments", "discussion", "review", "ticket", "note", "notes", "pr"))
+_ACTED = frozenset(("file", "files", "cache", "rule", "rules", "job", "jobs", "cron", "workflow", "function"))
 _MESSAGES = frozenset(("message", "messages", "email", "mail", "dm", "chat", "notification"))
 # a name that types, sends keys, runs or holds code: what such a tool carries is what it runs
 _RUNS = frozenset(("type", "typing", "key", "keys", "keystroke", "keystrokes", "run", "exec", "execute", "eval",
@@ -910,9 +912,11 @@ def _carried(tool):
     comments, replies, creates an issue, comment, pull request or the like (_CREATED), or sends a message, and doesn't
     say it types, sends keys, runs or holds code or a cell (_RUNS); `query` and `q` when it says it searches and doesn't
     say it fetches or reads (_FETCHES) or runs. Words in snake, kebab or camel case."""
-    words = set(re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold()))
-    out = set()
-    posts = words & _POSTS or "create" in words and words & _CREATED or "send" in words and words & _MESSAGES
+    seq = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold())
+    words, out = set(seq), set()
+    creates = any(seq[i + 1] in _CREATED or seq[i + 1:i + 3] in (["pull", "request"], ["merge", "request"])
+                  for i, w in enumerate(seq[:-1]) if w == "create") and not words & _ACTED
+    posts = words & _POSTS or creates or "send" in words and words & _MESSAGES
     if posts and not words & _RUNS:
         out |= _CARRIED
     if any(w.startswith("search") for w in words) and not words & (_RUNS - {"code"} | _FETCHES):

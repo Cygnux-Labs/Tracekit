@@ -3324,7 +3324,10 @@ class PackReading(unittest.TestCase):
             "mcp:iam/AttachUserPolicy", "mcp__aws__AttachRolePolicy", "mcp:gcp/setIamPolicy", "mcp:iam/attach-user-policy",
             "mcp:iam/ATTACH_USER_POLICY", "mcp:k8s/create_cluster_role_binding", "mcp__k8s__createClusterRoleBinding",
             "mcp__aws__put_bucket_policy", "mcp:iam/create_access_key_v2", "mcp:db/grant", "mcp:gcp/grantRole",
-            "mcp:s3/grant_access_to_bucket", "mcp__gcp__grant_project_iam_role")])
+            "mcp:s3/grant_access_to_bucket", "mcp__gcp__grant_project_iam_role",
+            # a grant of permissions in snake or camel case is one (Wassette's kebab-case sandbox grants aren't)
+            "mcp:aws/grant_permissions", "mcp:lakeformation/batch_grant_permissions", "mcp__databricks__grant_permissions",
+            "mcp:s3/grant_bucket_permission", "mcp:x/GRANT_PERMISSIONS", "mcp:x/grantPermission")])
         # a grant names what it grants: a reviewers list or a list of grants is a read
         self.rule_on_server("TK-C002", [(t, {}) for t in ("mcp:github/grant_reviewers_list", "mcp:kms/list_grants",
                                                           "mcp:x/grantee_report",
@@ -3526,7 +3529,12 @@ class PackReading(unittest.TestCase):
             # file update or a job it creates is acted on
             ("mcp:fs/create_file", {"path": "/repo/x.sh", "content": "cat /root/.aws/credentials"}),
             ("mcp:github/create_or_update_file", {"path": "x.yml", "content": "run: cat /root/.aws/credentials"}),
-            ("mcp:k8s/createCronJob", {"name": "x", "content": "cat /root/.aws/credentials"})])
+            ("mcp:k8s/createCronJob", {"name": "x", "content": "cat /root/.aws/credentials"}),
+            ("mcp:notes/create_note_file", {"content": "cat /root/.aws/credentials"}),
+            ("mcp:ecr/create_pull_through_cache_rule", {"description": "/root/.aws/credentials"})])
+        # what create posts, the word after it: a merge request's or a PR's text is carried, as an issue's is
+        self.rule_on_server("TK-S004", [(t, {"title": "x", "body": "see /root/.aws/credentials"}) for t in (
+            "mcp:gitlab/create_merge_request", "mcp:github/create_pr", "mcp:github/createPullRequest")], want=False)
         self.rule_on_server("TK-S001", [
             ("mcp:computer/computer", {"action": "type",
                                        "text": "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/"}),

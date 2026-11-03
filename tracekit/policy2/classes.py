@@ -328,7 +328,7 @@ def extract(cls, tool, args):
             out["method"] = str(args.get("method") or "GET").upper()
             # a GET carries data in its query, the URL's or a `params` argument's (requests' and LangChain's); one that
             # sends nothing but its URL's query names that URL as `link`: following a link as untrusted content gave
-            # it adds no data (Engine, TK-P003)
+            # it adds no data (Engine, TK-P003). A call with a `urls` list gets no `link`: it reaches every URL there
             sends = out["method"] not in ("GET", "HEAD") or args.get("params") or any(
                 args.get(k) is not None for k in BODY_KEYS)
             if sends or query:
