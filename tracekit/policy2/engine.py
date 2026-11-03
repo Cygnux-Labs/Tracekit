@@ -255,7 +255,7 @@ class Engine:
     def _parse(self, args, command, readings=True):
         """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; whether it can't).
         `readings`: False reads the command only as written (shell.analyse)."""
-        target = (lambda t: any(p.search(t.casefold()) for p in self._persistent_targets)) \
+        target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
             if self._persistent_targets else None
         try:
             return _shell(args, target, readings), False
