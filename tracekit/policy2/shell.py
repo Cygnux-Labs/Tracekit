@@ -145,38 +145,6 @@ def _sets_with_v(argv):
     return argv[0] == "printf" and any(a.startswith("-v") for a in argv[1:])
 
 
-def _sets_keyword(argv):
-    """set -k (or -o keyword): every later NAME=value word, anywhere in a command, is an assignment, so a command may
-    set any variable and lose that word from its argv."""
-    return argv[0] == "set" and any(re.fullmatch(r"-[A-Za-z]*k[A-Za-z]*", a) or a == "keyword" and argv[i] == "-o"
-                                    for i, a in enumerate(argv[1:]))
-
-
-def _read_names(argv, splits):
-    """The variables bash's `read` sets with these words: its names, -a's array, REPLY with neither; None when an option
-    or a name can't be told, or a word may split or expand into more (`splits`: per word, a `$` or backquote as
-    written, quoted or not, as bash nests quotes inside a substitution, or an unquoted `*`, `?`, `[` or brace list):
-    `read -p $P X` may name what $P holds, and `read -p ["CD"] X` the files C and D; `read -p "Continue? " ans` can't."""
-    if any(splits[1:]):
-        return None
-    names, args = [], list(argv[1:])
-    while args and args[0].startswith("-") and args[0] != "-":
-        opt = args.pop(0)
-        if opt == "--":
-            break
-        for k, f in enumerate(opt[1:]):
-            if f in "ers":
-                continue
-            if f not in "adinNptu":
-                return None
-            value = opt[k + 2:] or (args.pop(0) if args else None)   # the rest of the cluster, or the next word
-            if value is None:
-                return None
-            if f == "a":
-                names.append(value)
-            break
-    names += args or ([] if names else ["REPLY"])
-    return names if all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n) for n in names) else None
 
 
 # an expansion with none inside it: a default's word is emptied innermost first (_Parser.dollar)
@@ -984,7 +952,6 @@ class _Parser:
 
     def simple(self, pid, piped=False):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
-        splits = []   # per word: whether it may split or expand into more words (a $ or backquote, a glob)
         vanish, patterns, cuts, slots, alones = [], [], [], [], []   # per word: .vanish, a pathname pattern, .cut, .slots,
         # .alone
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
@@ -1124,7 +1091,6 @@ class _Parser:
                 if pieces is not None:
                     self.out.append(text)
                 words.append(text)
-                splits.append(bool(re.search(r"[$`]", raw) or g or re.search(r"[*?[]", self.bare)))
                 dynamic |= bool(re.search(r"[$`]", raw))
                 idx.append(len(self.out) - 1)
                 spans.append(None if expanded or pieces is not None else (len(self.out) - 1, start, self.i))
@@ -1190,7 +1156,7 @@ class _Parser:
                                                                   for i in kept])
                 cmds = cmds + more
                 self.progs += [idx[kept[j]] for j in _programs(alt, more)]
-        self.track_values(words, cmds, assigns, loop_header and (loop_header, header), sure and not dynamic, splits)
+        self.track_values(words, cmds, assigns, loop_header and (loop_header, header), sure and not dynamic)
         marks = []
         if data:
             marks = here + ([s for s in spans[1:] if s] if words[0] in ("echo", "printf") else [])
@@ -1251,13 +1217,12 @@ class _Parser:
             self.charge(sum(len(t) for t in out[-1] if t))
         return out
 
-    def track_values(self, words, cmds, assigns, loop, sure, splits=()):
+    def track_values(self, words, cmds, assigns, loop, sure):
         """Update self.known (__init__) after a simple command: a variable it gives a literal on its own, or with
         `export` (`export D=build`), is known when that surely runs (`sure`) before what follows it (`;`, a newline, `&&`
         or a subshell's end); a for loop's over literal words is known in its body; any other variable it sets is not;
-        after `read` the names it reads into aren't; and after a command that may set any (read with an option or a
-        name the parser can't tell, declare, unset, eval, source, trap, alias, printf -v, one whose name the parser
-        can't read) none is, for the rest of the line. A known variable keeps the literals it may hold
+        and after a command that may set any (read, declare, unset, eval, source, trap, alias, printf -v, one whose
+        name the parser can't read) none is, for the rest of the line. A known variable keeps the literals it may hold
         (the loop's words; [""]: certainly empty, after `X=` or `unset X`), [] when unknown. `loop`: (for or select,
         the words after it); `assigns`: (name, the literal it gets or None, whether it is appended to: +=)."""
         if loop:
@@ -1286,12 +1251,7 @@ class _Parser:
             words = []
         elif words[:1] == ["unset"] and all(re.fullmatch(r"-v|[A-Za-z_][A-Za-z0-9_]*", w) for w in words[1:]):
             assigns, words = [(n, "", False) for n in words[1:] if n != "-v"], []   # each now certainly empty
-        elif words[:1] == ["read"] and cmds and all(not c["opaque"] and c["argv"][0] == "read" for c in cmds) and \
-                (read_names := _read_names(words, splits)) is not None:
-            for name in read_names:   # read sets only the names it reads into
-                self.known.pop(name, None)
-        elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) or _sets_keyword(c["argv"])
-                 for c in cmds):
+        elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) for c in cmds):
             self.ctx["any_set"] = True
         then = self.peek() in ("", "\n", ";", ")") or self.at("&&")
         for name, value, plus in assigns:
@@ -1797,7 +1757,7 @@ class _Parser:
         # empty: its default, assignment or check is the variable ($HOME as the packs name it, ${HOME:-x}, ${HOME:?}; or
         # the literal the line gave it, D=/; rm -rf "${D:?}"/); the default stays what it is when it may be empty
         named = _DEFAULT.fullmatch(text)
-        values = self.known.get(named.group(1)) if named and not self.ctx["any_set"] else None
+        values = self.known.get(named.group(1)) if named else None
         plain = named and ("" not in (values or ()) if named.group(1) == "HOME" else bool(values) and "" not in values)
         # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
         if not plain and (text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text)):
