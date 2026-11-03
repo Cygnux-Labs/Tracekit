@@ -229,6 +229,8 @@ FORMATTERS = {"prettier": ("--write", "-w"), "gofmt": ("-w",), "eslint": ("--fix
               "autopep8": ("-i", "--in-place")}   # rewrite their files in place with one of these flags
 UNREAD = frozenset("$`*?[{")   # a word with one of these (a variable, a glob, a substitution) is no path
 FIND_NAMES = ("-name", "-iname", "-path", "-ipath", "-wholename")   # what find -delete or -exec acts on
+# flags that put a command's paths in another directory (git/tar/make/env -C, cp/mv -t, env --chdir, ...)
+ELSEWHERE = ("-C", "-t", "--directory", "--target-directory", "--chdir")
 NET_COMMANDS = frozenset(("curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
                           "http", "https"))
 NET_GIT = frozenset(("push", "pull", "fetch", "clone", "ls-remote"))
@@ -758,7 +760,8 @@ def lifts(kind, mention, is_object):
 
 def shell(cmd):
     """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs": those
-    of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory, "push": a git push,
+    of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory, "elsewhere": a command
+    names a directory its paths are in or go to (ELSEWHERE, also as -Cdir or --directory=dir), "push": a git push,
     "network": a command that reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell
     call's arguments (`command` or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine
     reads them (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included).
@@ -768,7 +771,7 @@ def shell(cmd):
     after `--`, and the -name of a find that deletes or runs a command; a word with a variable, a glob, braces or a
     command substitution is no path; a line the parser can't read (`case`, over its size) does nothing, and the
     policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
-    out = {"paths": [], "dirs": [], "cd": False, "push": False, "network": False, "writes": False}
+    out = {"paths": [], "dirs": [], "cd": False, "elsewhere": False, "push": False, "network": False, "writes": False}
     try:
         cmds, _, _, written, _ = _parse(cmd if isinstance(cmd, dict) else
                                         {"command": cmd if isinstance(cmd, str) else ""})
@@ -778,6 +781,8 @@ def shell(cmd):
         name, rest = c["argv"][0], c["argv"][1:]
         args = [w for w in rest if not w.startswith("-")]
         out["cd"] = out["cd"] or name in ("cd", "pushd")
+        out["elsewhere"] = out["elsewhere"] or any(
+            w.split("=", 1)[0] in ELSEWHERE or w[:2] in ("-C", "-t") and len(w) > 2 for w in rest)
         mode = WRITERS.get(name)
         if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
                                            for w in rest):

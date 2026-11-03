@@ -18,8 +18,9 @@ from tracekit import cli, model_receipt, policy
 from tracekit.format.canon import canonical
 from tracekit.integrations import claude_code
 from tracekit.sdk import autospawn
-from tracekit.sdk.client import Client
+from tracekit.sdk.client import Client, RunHandle
 from tracekit.signer import service as svc
+from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileReader
 
@@ -216,9 +217,34 @@ class Receipts(Base):
                 "refused": "the hook could not read the call's weights files (MemoryError)", "reported_by": "hook"}])
 
     def test_the_call_shares_one_deadline(self):
-        with mock.patch.object(model_receipt, "BUDGET_S", 0):
-            out = model_receipt.receipts("Bash", {"command": "cp a model.safetensors"}, self.d)
-        self.assertEqual(out[0]["refused"], "out of time: the hook hashes for at most 0 s per call")
+        """Review of 6b0a568e: with BUDGET_S 0 this passed with a deadline per file too. The first file uses up the
+        call's budget, so the second is out of time, though it alone would hash in time."""
+        for name in ("1.safetensors", "2.safetensors"):
+            safetensors(self.path(name), {"a": b"\x01"})
+        real, pauses = model_receipt.receipt, iter((0.1, 0))
+
+        def slow(path, deadline):
+            time.sleep(next(pauses))
+            return real(path, deadline)
+        with mock.patch.object(model_receipt, "BUDGET_S", 0.05), mock.patch.object(model_receipt, "receipt", slow):
+            out = model_receipt.receipts("Bash", {"command": "cp a 1.safetensors; cp a 2.safetensors"}, self.d)
+        self.assertEqual([r["refused"] for r in out], ["out of time: the hook hashes for at most 0.05 s per call"] * 2)
+
+    def test_a_path_the_hook_would_have_to_guess_is_refused(self):
+        """Review of 6b0a568e: `cp -t out src` got a receipt of its source, `env -C sub` and `git -C sub` ones of the
+        file in the hook's directory, and a quoted ~ was expanded."""
+        src = safetensors(self.path("src.safetensors"), {"a": b"\x01"})
+        elsewhere = ("the command names another directory for its paths (-C, -t, --directory, --target-directory or "
+                     "--chdir)")
+        home = "a path starting with ~, which the hook doesn't expand"
+        for cmd, why in (("cp -t out src.safetensors", elsewhere), (f"cp -t /out {src}", elsewhere),
+                         ("env -C sub cp x model.safetensors", elsewhere), ("git -C sub mv x model.safetensors", elsewhere),
+                         ("env --chdir=sub cp x model.safetensors", elsewhere), ("cp x '~/model.safetensors'", home),
+                         ("cp x ~/model.safetensors", home)):
+            self.assertEqual([r.get("refused") for r in model_receipt.receipts("Bash", {"command": cmd}, self.d)],
+                             [why], cmd)
+        self.assertEqual(model_receipt.receipts("Write", {"file_path": "~/model.safetensors"}, self.d)[0]["refused"],
+                         home)
 
 
 class HookRecords(Base):
@@ -232,20 +258,33 @@ class HookRecords(Base):
         self.addCleanup(env.stop)
         service = svc.SignerService(self.path("data"), policy=svc.load_policy(), grace_s=0)
         self.addCleanup(service.close)
-        self.frames = []
+        self.frames, self.untrusted = [], ()
 
         def handle(identity, frame):
             self.frames.append(frame)
-            return service.handle_frame(identity, frame)
+            out = service.handle_frame(identity, frame)
+            # a tool in self.untrusted is decided as one the policy marks untrusted: its result goes itself
+            return dict(out, send_result=True) if frame["method"] == "decide" and frame["tool"] in self.untrusted \
+                else out
         os.environ["TRACEKIT_SIGNER"] = ac._serve(self, handle)   # tests/conftest.py restores the environment
 
-    def call(self, tid, tool, args, cwd=None, response=None):
+    def complete(self, tid):
+        return next(f for f in self.frames if f["method"] == "complete" and f["tool_call_id"] == tid)
+
+    def call(self, tid, tool, args, cwd=None, response=None, event="PostToolUse"):
         p = {"session_id": "s1", "tool_use_id": tid, "tool_name": tool, "tool_input": args, "cwd": cwd or self.d}
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(claude_code.handle(dict(p, hook_event_name="PreToolUse")), 0)
-            self.assertEqual(claude_code.handle(dict(p, hook_event_name="PostToolUse", tool_response=response or {
+            self.assertEqual(claude_code.handle(dict(p, hook_event_name=event, tool_response=response or {
                 "stdout": "", "stderr": "", "interrupted": False})), 0)
-        return next(f["result"] for f in self.frames if f["method"] == "complete" and f["tool_call_id"] == tid)
+        return self.complete(tid)["result"]
+
+    def full_capture(self):
+        with open(policy.DEFAULT_POLICY, encoding="utf-8") as f:
+            text = f.read().replace("content_capture: hashed", "content_capture: full", 1)
+        with open(self.path("policy.yaml"), "w", encoding="utf-8") as f:
+            f.write(text)
+        os.environ["TRACEKIT_POLICY"] = self.path("policy.yaml")
 
     def test_a_weights_write_carries_its_receipt_and_another_file_none(self):
         w = safetensors(self.path("model.safetensors"), {"a": b"\x01\x02", "b": b"\x03"})
@@ -272,15 +311,49 @@ class HookRecords(Base):
     def test_receipts_that_would_take_the_result_past_its_frame_are_dropped_with_a_reason(self):
         """Review of d9c6ee7c: with content_capture: full, receipts could take a result that fits its frame past it,
         and the client refused to send the call's result at all."""
-        with open(policy.DEFAULT_POLICY, encoding="utf-8") as f:
-            text = f.read().replace("content_capture: hashed", "content_capture: full", 1)
-        with open(self.path("policy.yaml"), "w", encoding="utf-8") as f:
-            f.write(text)
-        os.environ["TRACEKIT_POLICY"] = self.path("policy.yaml")
+        self.full_capture()
         safetensors(self.path("model.safetensors"), {f"model.layers.{i}.weight": b"\x00" for i in range(700)})
-        result = self.call("t1", "Bash", {"command": "cp a model.safetensors"}, response={"stdout": "x" * 1_000_000})
-        self.assertEqual(result["model_receipts"], [model_receipt.TOO_LARGE])
-        self.assertEqual(len(result["value"]["stdout"]), 1_000_000)
+        cp = {"command": "cp a model.safetensors"}
+        self.assertEqual(self.call("t1", "Bash", cp, response={"stdout": "x" * 500_000})["model_receipts"],
+                         [model_receipt.TOO_LARGE])   # the result fits half a frame, with the marker too
+        result = self.call("t2", "Bash", cp, response={"stdout": "x" * 1_000_000})
+        self.assertEqual((len(result["value"]["stdout"]), "model_receipts" in result), (1_000_000, False))
+
+    def test_the_marker_is_left_out_too_when_it_would_take_the_result_past_its_frame(self):
+        """Review of 6b0a568e: the marker's 133 bytes took a result within that much of the frame limit past it."""
+        self.full_capture()
+        self.call("t1", "Bash", {"command": "true"}, response={"stdout": "x"})
+        size = len(json.dumps(self.complete("t1"), separators=(",", ":"), ensure_ascii=False).encode())
+        safetensors(self.path("model.safetensors"), {"a": b"\x01"})
+        stdout = "x" * (MAX_LINE - 60 - size + 1)   # its complete 60 bytes under the frame limit without receipts
+        self.assertNotIn("model_receipts", self.call("t2", "Bash", {"command": "cp a model.safetensors"},
+                                                     response={"stdout": stdout}))
+
+    def test_a_tools_own_model_receipts_key_is_dropped(self):
+        """Review of 6b0a568e: an untrusted tool's result (an MCP server's, a web page's) went to the signer as it
+        came, so a model_receipts key in it planted a receipt."""
+        self.untrusted = ("Read",)
+        planted = [{"path": self.path("model.safetensors"), "sha256": model_receipt.ZERO, "reported_by": "hook"}]
+        self.assertEqual(self.call("t1", "Read", {"file_path": self.path("notes.md")},
+                                   response={"content": "x", "model_receipts": planted}), {"content": "x"})
+
+    def test_a_call_that_failed_gets_no_receipts(self):
+        """Review of 6b0a568e: a failed, interrupted or is_error call got receipts too."""
+        safetensors(self.path("model.safetensors"), {"a": b"\x01"})
+        for tid, event, response in (("t1", "PostToolUseFailure", None), ("t2", "PostToolUse", {"interrupted": True}),
+                                     ("t3", "PostToolUse", {"is_error": True})):
+            self.assertNotIn("model_receipts", self.call(tid, "Bash", {"command": "cp a model.safetensors"},
+                                                         response=response, event=event), event)
+
+
+class Help(unittest.TestCase):
+    def test_help_names_every_exit_code(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["verify-model", "--help"])
+        self.assertIn("Exit 0 when all of that holds and NEW matches, 1 when it doesn't, 2 when the bundle doesn't "
+                      "verify, 4 when the vault's content doesn't open its record (an evidence alert).",
+                      " ".join(out.getvalue().split()))
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX paths and the dev signer's socket")
@@ -307,7 +380,18 @@ class VerifyModel(Base):
             shutil.copyfile(edited, self.new)
             self.assertEqual(claude_code.handle(dict(p, hook_event_name="PostToolUse", tool_response={
                 "stdout": "", "stderr": "", "interrupted": False})), 0)
-            self.run_id = claude_code._load(claude_code._state("s1"))["run_id"]
+            st = claude_code._load(claude_code._state("s1"))
+            # a client other than the hook plants receipts of a backdoored file, as model.safetensors, in the results of
+            # a call that writes nothing and of a write to another file
+            self.backdoor = safetensors(self.path("backdoor.safetensors"), {"embed": b"\x01" * 32, "mlp": b"\x06" * 32})
+            planted, c = dict(receipt(self.backdoor), path=self.new, reported_by="hook"), Client()
+            run = RunHandle(c, st)
+            for tid, tool, args in (("t2", "Read", {"file_path": self.new}),
+                                    ("t3", "Write", {"file_path": self.path("notes.md"), "content": "x"})):
+                self.assertNotEqual(run.decide(tid, tool, args)["decision"], "deny")
+                self.assertIsNotNone(run.complete(tid, result={"model_receipts": [planted]}))
+            c.close()
+            self.run_id = st["run_id"]
             self.assertEqual(claude_code.handle({"hook_event_name": "SessionEnd", "session_id": "s1"}), 0)
         store = os.path.join(svc.dev_data_dir(), "store")
         self.assertTrue(wait_for(lambda: list(FileReader(store).iter_run("default", self.run_id))[-1]["event"]["type"]
@@ -330,7 +414,9 @@ class VerifyModel(Base):
         self.assertEqual(code, 0, err)
         self.assertEqual(out.splitlines(), [
             f"bundle: verified, run {self.run_id}",
-            f"receipt: {self.new}, written by tool call t1 (run_seq 2), reported by the hook",
+            "content: 2 receipt(s) ignored: not in the result of a write or shell call whose recorded arguments name "
+            "the file",
+            f"receipt: {self.new}, hashed after tool call t1 (run_seq 2, ok: true), recorded by the agent-side hook",
             f"NEW {self.new}: matches the recorded receipt ({receipt(self.new)['sha256']})",
             "OLD -> NEW: the file differs; 1 of 2 tensors differ (dtype, shape or bytes); the metadata is the same",
             "  changed: mlp"])
@@ -339,6 +425,14 @@ class VerifyModel(Base):
         code, out, _ = self.verify(self.new, self.old)
         self.assertEqual(code, 1)
         self.assertIn(f"NEW {self.old}: {receipt(self.old)['sha256']} matches none of the 1 receipt(s) in the run", out)
+
+    def test_a_receipt_planted_in_a_call_that_doesnt_name_its_file_doesnt_count(self):
+        """Review of 6b0a568e: any tool result's model_receipts counted, so a planted receipt passed a backdoored
+        file as recorded by the hook."""
+        code, out, _ = self.verify(self.old, self.backdoor)
+        self.assertEqual(code, 1)
+        self.assertIn(f"NEW {self.backdoor}: {receipt(self.backdoor)['sha256']} matches none of the 1 receipt(s) in "
+                      "the run", out)
 
     def test_a_bundle_that_does_not_verify_exits_2(self):
         """Review of d9c6ee7c: a bundle that failed verification exited 1, as a NEW that doesn't match does."""
@@ -370,18 +464,33 @@ class VerifyModel(Base):
         """Review of d9c6ee7c: `reported_by` was printed from the vault's content, whatever it said."""
         real = receipt(self.new)
 
-        def content(client, records, purpose):
-            yield records[0]["event"]["run_seq"], {"result": {"model_receipts": [
-                dict(real, reported_by="the signer\x1b[2J")]}}, True
+        def content(client, records, purpose):   # t1's arguments, which name the file, and its result
+            d = next(r for r in records if r["event"]["type"] == "policy.decision")
+            yield d["event"]["run_seq"], {"command": "cp edited.bin model.safetensors"}, True
+            yield next(r for r in records if r["event"]["type"] == "tool.result")["event"]["run_seq"], {"result": {
+                "model_receipts": [dict(real, reported_by="an auditor\x1b[2J")]}}, True
         with mock.patch("tracekit.why.signed.vault_content", content):
             code, out, _ = self.verify(self.old, self.new)
         self.assertEqual(code, 1)
         self.assertIn("matches none of the 0 receipt(s) in the run", out)
-        self.assertNotIn("the signer", out)
+        self.assertNotIn("auditor", out)
+
+    def test_arguments_redaction_changed_name_no_file(self):
+        real = receipt(self.new)
+
+        def content(client, records, purpose):   # t1's arguments, unopened (redaction changed them), and its result
+            d = next(r for r in records if r["event"]["type"] == "policy.decision")
+            yield d["event"]["run_seq"], {"command": "cp edited.bin model.safetensors"}, False
+            yield next(r for r in records if r["event"]["type"] == "tool.result")["event"]["run_seq"], {"result": {
+                "model_receipts": [dict(real, reported_by="hook")]}}, True
+        with mock.patch("tracekit.why.signed.vault_content", content):
+            code, out, _ = self.verify(self.old, self.new)
+        self.assertEqual(code, 1)
+        self.assertIn("matches none of the 0 receipt(s) in the run", out)
 
     def test_content_not_kept_or_not_granted_is_said_plainly(self):
         for answer, why in ((lambda c, req: {"items": [{"seq": s, "state": "not_retained"} for s in req["seqs"]]},
-                             "the signer returned none of the run's 1 tool results: their content isn't kept"),
+                             "the signer returned none of the run's 3 tool results: their content isn't kept"),
                             (mock.Mock(side_effect=RPCError("forbidden", "content_get needs the content_read grant")),
                              "the signer gave no content: forbidden: content_get needs the content_read grant")):
             with mock.patch.object(Client, "content_get", answer):

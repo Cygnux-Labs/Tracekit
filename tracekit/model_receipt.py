@@ -52,9 +52,10 @@ def receipts(tool, args, cwd):
     """The receipts of the weights files (WEIGHTS) call (`tool`, `args`) wrote, as constraints.facts reads what a call
     writes: a write tool's path, or a shell command's write targets (constraints.shell), relative ones against `cwd`.
     Each is marked `reported_by: hook`, its path and reason JSON-safe (a lone surrogate escaped) and cut to MAX_TEXT.
-    A relative path is refused when the command changes directory or there is no `cwd`. At most MAX_FILES receipts,
-    then one entry counting the files past them, all hashed within BUDGET_S. Never raises: any other error is a
-    refusal too, so the call's result is still sent."""
+    Refused rather than guessed: a path starting with `~`, every path of a command that names another directory for
+    them (constraints.shell's `elsewhere`: -C, -t, ...), and a relative one when the command changes directory or
+    there is no `cwd`. At most MAX_FILES receipts, then one entry counting the files past them, all hashed within
+    BUDGET_S. Never raises: any other error is a refusal too, so the call's result is still sent."""
     try:
         out = _receipts(tool, args, cwd)
     except Exception as e:   # the receipts ride on the call's result, which goes to the signer whatever happens here
@@ -62,24 +63,30 @@ def receipts(tool, args, cwd):
     return [{**r, **{k: _text(r[k]) for k in ("path", "refused") if k in r}, "reported_by": "hook"} for r in out]
 
 
-def _receipts(tool, args, cwd):
-    args, cwd, cd = args if isinstance(args, dict) else {}, cwd if isinstance(cwd, str) else "", False
+def _named(tool, args):
+    """(the weights files call (`tool`, `args`) writes, as it names them; constraints.shell's reading of its command,
+    or {}): a write tool's path, or a shell command's write targets, as constraints.facts reads what a call writes."""
+    args = args if isinstance(args, dict) else {}
     if tool in WRITE_TOOLS:
-        paths = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")]
+        paths, s = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), "")], {}
     elif any(args.get(k) is not None for k in SHELL_KEYS):
         s = constraints.shell(args)
-        paths, cd = s["paths"], s["cd"]
+        paths = s["paths"]
     else:
-        return []
-    paths = list(dict.fromkeys(p for p in paths if p.lower().endswith(WEIGHTS)))
-    deadline, out = time.monotonic() + BUDGET_S, []
+        return [], {}
+    return list(dict.fromkeys(p for p in paths if p.lower().endswith(WEIGHTS))), s
+
+
+def _receipts(tool, args, cwd):
+    paths, s = _named(tool, args)
+    cwd, deadline, out = cwd if isinstance(cwd, str) else "", time.monotonic() + BUDGET_S, []
     for p in paths[:MAX_FILES]:
-        full = os.path.expanduser(p)
-        if not os.path.isabs(full) and (cd or not cwd):
-            out.append({"path": p, "refused": "a path relative to a directory the command changed to" if cd else
-                        "a relative path, and the hook was given no working directory"})
-        else:
-            out.append(receipt(os.path.join(cwd, full), deadline))
+        why = ("a path starting with ~, which the hook doesn't expand" if p.startswith("~") else
+               "the command names another directory for its paths (-C, -t, --directory, --target-directory or "
+               "--chdir)" if s.get("elsewhere") else None if os.path.isabs(p) else
+               "a path relative to a directory the command changed to" if s.get("cd") else
+               None if cwd else "a relative path, and the hook was given no working directory")
+        out.append({"path": p, "refused": why} if why else receipt(os.path.join(cwd, p), deadline))
     if len(paths) > MAX_FILES:
         out.append({"refused": f"{len(paths) - MAX_FILES} more weights file(s): a call's result holds at most "
                                f"{MAX_FILES} receipts"})
@@ -186,7 +193,7 @@ def main(argv=None):
                                  "that differ from OLD. The bundle is verified first; the receipt is read from the "
                                  "signer's content vault and checked against its record's commitment. Exit 0 when "
                                  "all of that holds and NEW matches, 1 when it doesn't, 2 when the bundle doesn't "
-                                 "verify.")
+                                 "verify, 4 when the vault's content doesn't open its record (an evidence alert).")
     ap.add_argument("old", help="the model file before the run")
     ap.add_argument("new", help="the model file to check")
     ap.add_argument("--bundle", required=True, help="the run's v2 bundle (tracekit export --v2)")
@@ -221,18 +228,14 @@ def main(argv=None):
         if "refused" in r:
             return fail(f"{r['path']}: {r['refused']}")
     results = {r["event"]["run_seq"]: r for r in records if r["event"]["type"] == "tool.result"}
-    client, got, unopened, recorded = Client(), 0, 0, []
+    decisions = {r["event"]["data"]["decision_id"]: r for r in records
+                 if r["event"]["type"] == "policy.decision" and "decision_id" in r["event"]["data"]}
+    client, kept, args = Client(), {}, {}   # run_seq -> a tool result's content, a decision's arguments
     try:
-        for seq, content, opened in vault_content(client, list(results.values()), f"tracekit verify-model {a.run}"):
-            got += 1
-            result = content.get("result") if isinstance(content, dict) else None
-            found = result.get("model_receipts") if isinstance(result, dict) else None
-            if not isinstance(found, list):
-                continue
-            if not opened:   # redaction changed it: it opens no commitment
-                unopened += 1
-                continue
-            recorded += [(seq, r) for r in found if isinstance(r, dict) and r.get("reported_by") == "hook"]
+        for seq, content, opened in vault_content(client, [*results.values(), *decisions.values()],
+                                                  f"tracekit verify-model {a.run}"):
+            if opened:   # else redaction changed it, so it opens no commitment (only a decision's arguments can be)
+                (kept if seq in results else args)[seq] = content
     except (SignerUnavailable, OSError) as e:
         return fail(f"the signer can't be reached for the run's content ({e})")
     except RPCError as e:   # no vault, no content_read grant, or a run this signer doesn't hold
@@ -241,20 +244,35 @@ def main(argv=None):
         return fail(f"EVIDENCE ALERT: {e}", 4)
     finally:
         client.close()
-    if results and not got:
+    if results and not kept:
         return fail(f"the signer returned none of the run's {len(results)} tool results: their content isn't kept "
                     "(content.retain off, past its retention, or erased)")
-    if got < len(results):
-        print(f"content: {len(results) - got} of the run's {len(results)} tool results not kept by the signer")
-    if unopened:
-        print(f"content: {unopened} tool result(s) with receipts changed by redaction, so not checked and not used")
+    if len(kept) < len(results):
+        print(f"content: {len(results) - len(kept)} of the run's {len(results)} tool results not kept by the signer")
+    recorded, ignored = [], 0   # a receipt counts only in the result of a call whose arguments name its file
+    for seq, content in sorted(kept.items()):
+        result = content.get("result") if isinstance(content, dict) else None
+        found = result.get("model_receipts") if isinstance(result, dict) else None
+        d = decisions.get(results[seq]["event"]["data"].get("decision_id"))
+        named = _named(d["event"]["data"].get("tool"), args.get(d["event"]["run_seq"]))[0] if d else []
+        for r in found if isinstance(found, list) else ():
+            path = r.get("path") if isinstance(r, dict) else None
+            if isinstance(path, str) and r.get("reported_by") == "hook" and any(
+                    path == n or not os.path.isabs(n) and path.endswith(os.sep + n) for n in named):
+                recorded.append((seq, r))
+            else:
+                ignored += 1
+    if ignored:
+        print(f"content: {ignored} receipt(s) ignored: not in the result of a write or shell call whose recorded "
+              "arguments name the file")
     seq, rec = next(((s, r) for s, r in recorded if r.get("sha256") == new["sha256"]), (None, None))
     same = rec is not None and all(rec.get(k) == new.get(k) for k in ("size", "sha256", "tensors", "metadata"))
     if rec is None:
         print(f"NEW {shown(a.new)}: {new['sha256']} matches none of the {len(recorded)} receipt(s) in the run")
     else:
-        print(f"receipt: {shown(rec.get('path'))}, written by tool call "
-              f"{shown(results[seq]['event']['data']['tool_use_id'])} (run_seq {seq}), reported by the hook")
+        call = results[seq]["event"]["data"]
+        print(f"receipt: {shown(rec.get('path'))}, hashed after tool call {shown(call['tool_use_id'])} (run_seq {seq}, "
+              f"ok: {'true' if call['ok'] else 'false'}), recorded by the agent-side hook")
         print(f"NEW {shown(a.new)}: {'matches' if same else 'does NOT match'} the recorded receipt ({new['sha256']})")
     differs = "differs" if old["sha256"] != new["sha256"] else "is the same"
     if "tensors" in old and "tensors" in new:

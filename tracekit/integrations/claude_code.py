@@ -618,10 +618,15 @@ def _post(client, p, sid, tid):
     value = resp if resp is not None else ""
     if not (call.get("send_result") and sendable(value)):   # an untrusted tool's result goes itself, for provenance
         value = privacy.content(value, cc, dotenv)
-        receipts = model_receipt.receipts(p.get("tool_name"), ti, p.get("cwd"))
-        if receipts:   # the weights files the call wrote, next to the result's digest: the hook's report
-            value["model_receipts"] = receipts if sendable({**value, "model_receipts": receipts}) else [
-                model_receipt.TOO_LARGE]
+        # the weights files a call that succeeded wrote, next to the result's digest: the hook's report, kept while the
+        # result still fits its frame, else a marker in their place while that fits
+        receipts = model_receipt.receipts(p.get("tool_name"), ti, p.get("cwd")) if ok else []
+        for kept in (receipts, [model_receipt.TOO_LARGE]) if receipts else ():
+            if sendable({**value, "model_receipts": kept}):
+                value["model_receipts"] = kept
+                break
+    elif isinstance(value, dict):   # model_receipts is the hook's key: a tool's own result can't plant a receipt
+        value = {k: v for k, v in value.items() if k != "model_receipts"}
     _run(client, sid, register=False, send="complete", tool_call_id=tid, decision_id=call["decision_id"],
          args_digest=call["args_digest"], status="ok" if ok else "error", result=value)
     os.remove(path)

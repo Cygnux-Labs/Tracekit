@@ -344,13 +344,18 @@ The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can'
 
 ### Weights files a call wrote
 
-When a call writes a model weights file (`.safetensors`, `.gguf`, `.pt`, `.pth`, `.ckpt`), the hook (Claude Code's and
-each harness's above) puts a receipt of it in the call's result, next to the result's digest: the file's sha256 and
-size and, for `.safetensors`, a sha256 of each tensor (its dtype and shape, then its bytes) and one of the header's
-metadata. A call writes what the policy reads it writing: a write tool's path, or a shell command's write targets (a
-redirection, a `cp` or `mv` destination, ...). The hook runs as the agent, so each receipt says `reported_by: hook`: it
-is the hook's report, not something the signer saw. The hook hashes for at most 10 seconds per call; a receipt it can't
-finish, or any it can't read, is recorded with its reason, and the call's result is recorded either way.
+When a call that succeeds writes a model weights file (`.safetensors`, `.gguf`, `.pt`, `.pth`, `.ckpt`), the hook
+(Claude Code's and each harness's above) hashes it after the call and puts the receipt in the call's result, next to the
+result's digest: the file's sha256 and size and, for `.safetensors`, a sha256 of each tensor (its dtype and shape, then
+its bytes) and one of the header's metadata. A call writes what the policy reads it writing: a write tool's path, or a
+shell command's write targets (a redirection, a `cp` or `mv` destination, ...). A path the hook would have to guess is
+refused: one starting with `~`, every path of a command with `-C`, `-t`, `--directory`, `--target-directory` or
+`--chdir`, and a relative one after a `cd`. The hook hashes for at most 10 seconds per call; a receipt it can't finish,
+or any it can't read, is recorded with its reason, and the call's result is recorded either way.
+
+The hook runs as the agent's user, so each receipt (`reported_by: hook`) is the agent side's record, not something the
+signer saw. A `model_receipts` key in a tool's own result is dropped, and `verify-model` counts a receipt only in the
+result of a write or shell call whose recorded arguments name its file, so a tool's output can't plant one.
 
 The signer commits to the result as to any other, so a bundle holds only that commitment. `tracekit verify-model`
 verifies the bundle, reads the run's results back from the signer's content vault (the dev signer keeps them for 7
@@ -359,7 +364,7 @@ days), checks each against its record's commitment, then compares two files with
 ```
 $ tracekit verify-model before.safetensors model.safetensors --bundle $RUN.tkb --run $RUN --trust $RUN.trust.json
 bundle: verified, run tk-0f3a...
-receipt: /work/proj/model.safetensors, written by tool call toolu_01 (run_seq 7), reported by the hook
+receipt: /work/model.safetensors, hashed after tool call toolu_01 (run_seq 7, ok: true), recorded by the agent-side hook
 NEW model.safetensors: matches the recorded receipt (sha256:5c1e...)
 OLD -> NEW: the file differs; 1 of 3 tensors differ (dtype, shape or bytes); the metadata is the same
   changed: model.layers.0.mlp.down_proj.weight
@@ -367,8 +372,9 @@ OLD -> NEW: the file differs; 1 of 3 tensors differ (dtype, shape or bytes); the
 
 It exits 0 only when the bundle verifies and NEW matches the recorded receipt, and 2 when the bundle doesn't verify. A
 signer it can't reach, content the signer didn't keep, or an identity without the `content_read` grant is said as such
-(exit 1); content that doesn't open its record's commitment is an evidence alert (exit 4). The receipt reaches the signer in clear: its vault holds the
-file's path, hashes and tensor names ([limits](limits.md#model-receipts-tracekit-verify-model)).
+(exit 1); content that doesn't open its record's commitment is an evidence alert (exit 4). The receipt reaches the
+signer in clear: its vault holds the file's path, hashes and tensor names
+([limits](limits.md#model-receipts-tracekit-verify-model)).
 
 ## Antigravity CLI
 
