@@ -947,19 +947,20 @@ class _Parser:
 
     def simple(self, pid, piped=False):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
-        vanish, patterns, cuts, slots = [], [], [], []   # per word: only expansions; a pathname pattern; self.cut; .slots
+        vanish, patterns, cuts, slots, alones = [], [], [], [], []   # per word: .vanish, a pathname pattern, .cut, .slots,
+        # .alone
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = False
         dynamic = brace_unread = False   # brace_unread: the command is held (a brace kept as written, a split name)
         timed = 0   # how many leading words are an unquoted `time` and its -p or --: bash's keyword, so far
         # an assignment here runs whenever what follows it on the line does: outside compound commands but a { }
         # group, first in its list (not after && or ||, nor a pipeline stage), and no keyword but a { before it
         sure = (not self.blocks or self.blocks[-1][0] == "{") and (self.out[-1] if self.out else ";") in (";", "&", "(")
-        assigns, header = [], []   # (name, its literal or "", +=); a loop header's literal words (None: other)
+        assigns, header = [], []   # (name, its literal or None, +=); a loop header's literal words (None: other)
 
         def untime():   # the words so far only time what follows: read that as the command's start
             nonlocal timed
             if timed and timed == len(words):
-                del words[:], globs[:], names[:], idx[:], spans[:], vanish[:], patterns[:], cuts[:], slots[:]
+                del words[:], globs[:], names[:], idx[:], spans[:], vanish[:], patterns[:], cuts[:], slots[:], alones[:]
                 timed = 0
         while True:
             self.blank()
@@ -1042,7 +1043,7 @@ class _Parser:
             if not words and raw == text and text in ("case", "function", "coproc"):
                 raise ParseError(f"{text} is not supported")
             if not words and (m := _ASSIGN.match(raw)):   # within the word, as bash reads it
-                assigns.append((re.match(r"\w+", raw).group(), "" if m.group(1) or expanded else text.partition("=")[2],
+                assigns.append((re.match(r"\w+", raw).group(), None if m.group(1) or expanded else text.partition("=")[2],
                                 m.group().endswith("+=")))
                 self.ctx["refs"].append(text)
                 self.ctx["command_names_mutable"] |= bool(_COMMAND_NAME_ASSIGN.match(text))
@@ -1090,6 +1091,7 @@ class _Parser:
                 patterns.append(bool(_GLOB.search(self.bare)))
                 cuts.append(self.cut)
                 slots.append(self.slots)
+                alones.append(self.alone)
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         if brace_unread and cmds:
             cmds[0]["opaque"] = True
@@ -1123,24 +1125,28 @@ class _Parser:
                 self.progs += [idx[kept[j]] for j in _programs(alt, more)]
         # and as bash runs it with each literal a known variable may hold (certain: `F=~/.x; cat "$F"` is `cat ~/.x`),
         # and with each name a bracket pattern can make (possible, as the empty readings: `cat key[s]` may be `cat keys`)
-        extra = itertools.chain(  # built one at a time, each charged (below) before the next
-            ([w if t is None else t for t, w in zip(texts, words)] for texts in self.fill(slots)),
+        extra = itertools.chain(  # built one at a time, each charged (below) before the next; None: a word gone
+            ([w if t is None else None if not t and a else t for t, w, a in zip(texts, words, alones)]
+             for texts in self.fill(slots)),
             (words[:i] + [c] + words[i + 1:] for i, p in enumerate(patterns) if p and self.ctx["readings"]
              for c in _unglob(words[i])))
-        for k, alt in enumerate(extra, 12):
-            self.charge(len(alt))
+        for k, texts in enumerate(extra, 12):
+            self.charge(len(texts))
+            kept = [i for i, t in enumerate(texts) if t is not None]
+            alt = [texts[i] for i in kept]
             # lean: past the 4th, a reading makes a command, not a line: a rule on the line or code (TK-D011) reads the
             # first 4 (a loop over hundreds of words would read its whole script again for each); line all if needed
             if k < 16:
                 self.gone += [{} for _ in range(k + 1 - len(self.gone))]
-                self.gone[k].update((idx[i], t) for i, t in enumerate(alt) if t != words[i])
-            if tuple(alt) not in seen and not data:
+                self.gone[k].update((idx[i], t) for i, t in enumerate(texts) if t != words[i])
+            if alt and tuple(alt) not in seen and not data:
                 seen.add(tuple(alt))
                 self.charge(sum(map(len, alt)))
-                more = self.emit(alt, pid, self.via, any(globs), [names[i] if t == words[i] else bool(_GLOB.search(t))
-                                                                  or _name_unreadable(t) for i, t in enumerate(alt)])
+                more = self.emit(alt, pid, self.via, any(globs), [names[i] if texts[i] == words[i] else
+                                                                  bool(_GLOB.search(texts[i])) or _name_unreadable(texts[i])
+                                                                  for i in kept])
                 cmds = cmds + more
-                self.progs += [idx[j] for j in _programs(alt, more)]
+                self.progs += [idx[kept[j]] for j in _programs(alt, more)]
         self.track_values(words, cmds, assigns, loop_header and (loop_header, header), sure and not dynamic)
         marks = []
         if data:
@@ -1208,11 +1214,11 @@ class _Parser:
         or a subshell's end); a for loop's over literal words is known in its body; any other variable it sets is not;
         and after a command that may set any (read, declare, unset, eval, source, trap, alias, printf -v, one whose
         name the parser can't read) none is, for the rest of the line. A known variable keeps the literals it may hold
-        (the loop's words), [] when unknown (`X+=y` of an unknown X). `loop`: (for or select, the words after it);
-        `assigns`: (name, the literal it gets or "", whether it is appended to: +=)."""
+        (the loop's words; [""]: certainly empty, after `X=` or `unset X`), [] when unknown. `loop`: (for or select,
+        the words after it); `assigns`: (name, the literal it gets or None, whether it is appended to: +=)."""
         if loop:
             kind, (name, *rest) = loop[0], loop[1] or [None]
-            literal = kind == "for" and rest[:1] == ["in"] and len(rest) > 1 and all(rest[1:])
+            literal = kind == "for" and rest[:1] == ["in"] and len(rest) > 1 and None not in rest[1:]
             # the body runs again after its later commands: what they may change isn't known in it, nor after it
             self.known = {}
             if literal and not self.ctx["any_set"] and name != "IFS":
@@ -1234,15 +1240,19 @@ class _Parser:
                 re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\+?=.+", w, re.S) for w in words[1:]):
             assigns = [(n.rstrip("+"), v, n.endswith("+")) for n, v in (w.split("=", 1) for w in words[1:])]
             words = []
+        elif words[:1] == ["unset"] and all(re.fullmatch(r"-v|[A-Za-z_][A-Za-z0-9_]*", w) for w in words[1:]):
+            assigns, words = [(n, "", False) for n in words[1:] if n != "-v"], []   # each now certainly empty
         elif any(c["opaque"] or c["argv"][0] in _SETS_ANY or _sets_with_v(c["argv"]) for c in cmds):
             self.ctx["any_set"] = True
         then = self.peek() in ("", "\n", ";", ")") or self.at("&&")
         for name, value, plus in assigns:
             old = self.known.pop(name, None)
-            if value and sure and then and not words and not self.ctx["any_set"] and name != "IFS":
-                self.known[name] = [o + value for o in old] if plus and old else [] if plus else [value]
-                if self.blocks:   # a group's: forgotten at its }, as the group may not run
-                    self.blocks[-1][1].append(name)
+            # X+=y of an X the line doesn't know may be y alone: not known; X= (or unset X) is known to be empty
+            if value is None or not (sure and then) or words or self.ctx["any_set"] or name == "IFS" or plus and not old:
+                continue
+            self.known[name] = [o + value for o in old] if plus else [value]
+            if self.blocks:   # a group's: forgotten at its }, as the group may not run
+                self.blocks[-1][1].append(name)
 
     def track_redefinitions(self, cmds):
         """Record redefinitions and mutations which make command names untrustworthy."""
@@ -1515,6 +1525,7 @@ class _Parser:
             return None
         text = "".join(buf)
         self.vanish, self.cut, self.ifs, self.slots = False, (text,) * 6, ifs, None
+        self.alone = alone and self.ctx["exp"] != exp   # only unquoted expansions: gone when they are empty
         if self.ctx["exp"] != exp:
             known = {} if self.ctx["any_set"] else self.known   # a known variable reads as written, never empty
             pieces, glued, j = [str(p) if (m := _PLAIN_VARIABLE.fullmatch(p)) and m.group(1) in known else p
@@ -1733,6 +1744,10 @@ class _Parser:
         # never nothing: arithmetic, a lone $, and ${X:?...}, which stops the command instead
         if text == "$" or text.startswith("$((") or re.fullmatch(r"(?s)\$\{\w+:\?.*", text):
             return text
+        # always nothing, as written too: an empty alternative, a length of 0, all of it removed (${X:+}, ${X:0:0},
+        # ${X%%*})
+        if re.fullmatch(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::?\+|:[^:{}]*:0+|%%\*|##\*)\}", text):
+            return ""
         expansion = _Expansion(text)
         if m := re.fullmatch(r"(?s)\$\{\w+:?[-=](.*)\}", text):   # bash runs the word when X is empty (unset, no colon)
             expansion.word = _UNQUOTE.sub(lambda q: next(g for g in q.groups() if g is not None), m.group(1))
