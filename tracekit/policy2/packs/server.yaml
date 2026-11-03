@@ -6,11 +6,12 @@
 # TK-N002, for one). docs/policy-v2.md lists every rule.
 #
 # TK-S001 and TK-S004 match each call's `target`: what it acts on (a path, a URL, a command's argv, redirections and
-# assignments, attachments, an MCP tool's arguments), not what it carries (file content, a commit message, the pattern
-# grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
+# assignments, attachments, an MCP tool's arguments, each path in them also normalised), not what it carries (file
+# content, a commit message, the pattern grep searches for, an MCP tool's title, body, message or content, a search
+# tool's query). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-14'
+version: '2026.10-server-15'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -48,7 +49,7 @@ deny:
     rationale: TK-S002 for the whole command line, where a secret can sit in a VAR= prefix, a redirection or a heredoc.
   - id: TK-S004
     field: target
-    pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/([Aa]ccess[Tt]okens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9]+($|[^.a-z0-9_])|/proc/(self|[0-9]+)/environ\b'
+    pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/([Aa]ccess[Tt]okens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9]+($|[^.a-z0-9_])|/proc/(self|thread-self|[0-9]+)(/task/[0-9]+)?/environ\b'
     reason: reading or touching a credentials file
     remedy: Leave credential files unread and use the access the deployment gives the tool; a person allows a path by redefining TK-S004 in their policy.
     rationale: Cloud, cluster, registry and database credentials and the service account token on a server are the keys to everything else; the agent's tools get access through the deployment, not these files.
