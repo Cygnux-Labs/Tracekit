@@ -709,8 +709,12 @@ flag:
   - id: TK-F004
     class: shell
     field: line
-    # git's push, reset --hard and clean after up to eight global options, as TK-D003 reads `push` (git -C dir push)
-    pattern: '\b(git\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
+    # git's push, reset --hard and clean after up to eight global options, as TK-D003 reads `push` (git -C dir push); a
+    # package install or publish (npm, pnpm, yarn, bun, pip of any version, uv, pipx, poetry, conda, cargo, gem,
+    # bundle, go, brew, apt, dnf, yum, apk, twine), a docker or podman run or push (container run, image push, after
+    # up to eight options), terraform or tofu apply, pulumi up, helm install, upgrade or push and kubectl apply or
+    # delete (both after up to eight options). The strict pack holds it, so its list is what "every install" means there
+    pattern: '\b(git\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
     # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
@@ -801,7 +805,10 @@ flag:
   - id: TK-F011
     class: shell
     field: command
-    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|bash_profile)\b'
+    # a variable that changes what the next commands run or load (PATH, its += too, the loaders' preload and library
+    # paths, Python's startup file, git's ssh command), unsetting the model URL or a proxy, and appending to or teeing
+    # into a bash or zsh startup file
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|PYTHONSTARTUP|NODE_OPTIONS|GIT_SSH_COMMAND)\+?=|\bunset\s+(ANTHROPIC_([A-Z]+_)?BASE_URL|HTTPS?_PROXY)\b|(>>?|\btee(\s+-[^\s]+){0,8}\s)\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b'
     label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with
@@ -810,7 +817,8 @@ flag:
     pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://'
     label: egress
   - id: TK-F013
-    # a network command, whatever it names: `curl host/?k=v` and `nslookup data.example` send data without a URL
+    # a network command, whatever it names: `curl host/?k=v` and `nslookup data.example` send data without a URL;
+    # HTTPie (http, https), xh, socat, sftp, aria2c and openssl s_client too
     class: shell
-    pattern: '^(curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp|dig|nslookup|host)( |$)'
+    pattern: '^(curl|wget|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|ftp|dig|nslookup|host|http|https|xh|xhs|aria2c)( |$)|^openssl s_client( |$)'
     label: egress
