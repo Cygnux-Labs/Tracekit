@@ -2489,7 +2489,7 @@ class CodingPack(unittest.TestCase):
                                 # the review after: escaped tabs at each place the value is read
                                 rds + "\t" * 30000 + "x", ec2 + " {" + "\t" * 30000 + "x",
                                 ec2 + " Add=" + "\t" * 30000 + "x", ec2 + " Add=[{Group=" + "\t" * 30000 + "x",
-                                ec2 + " Add=" + "\\" * 30000 + "x"):
+                                ec2 + " Add=" + "\\" * 30000 + "x", ec2 + " Add=" + " x" * 32000, ec2 + " Add=" + "a-" * 32000):
                     for tool, args in (("Bash", {"command": command}), ("mcp:aws/call_aws", {"cli_command": command})):
                         self.assertIsNone(e.decide(tool, args).get("nondeterministic"), (tool, command[:60]))
 
@@ -3351,7 +3351,9 @@ class PackReading(unittest.TestCase):
                   ec2 + "'Remove=[{UserId=1}],Add=[{Group=all}]'", ec2 + "'{\"Remove\":[],\"Add\":[{\"Group\":\"all\"}]}'",
                   ec2 + "'{\n  \"Add\": [{\"Group\":\n\"all\"}]\n}'", rds.replace("--values-to-add", "--values-to-a") + "all",
                   ec2.replace("--create-volume-permission", "--create-volume-perm") + "'Add=[{Group=all}]'",
-                  rds + "ALL", ec2.replace("--create-volume-permission ", "--operation-type Add --group-names all"))
+                  rds + "ALL", ec2.replace("--create-volume-permission ", "--operation-type Add --group-names all"),
+                  # and spaces or a tab before a shorthand Group
+                  ec2 + "'Add=[{ Group=all }]'", ec2 + "'Add=[{UserId=1, Group=all}]'", ec2 + "'Add=[{\tGroup=all}]'")
         private = (rds.replace("add", "remove") + "all", rds + "111122223333 --profile all", rds + "allison",
                    ec2 + "'Remove=[{Group=all}]'", ec2 + "'{\"Remove\": [{\"Group\": \"all\"}]}'",
                    ec2 + "'Add=[{UserId=111122223333}]'",
@@ -3594,7 +3596,9 @@ class PackReading(unittest.TestCase):
             "mcp:github/create_or_update_issue_comment",
             # and the review after: a linking word right after create starts the name; a worklog is posted text
             "mcp:x/create_to_do_issue", "mcp:x/create_on_call_note", "mcp:x/create_in_app_note",
-            "mcp:jira/create_worklog_for_issue")], want=False)
+            "mcp:jira/create_worklog_for_issue",
+            # a leading linking word with nothing after its word: what it names is what is created
+            "mcp:github/create_on_issue", "mcp:x/create_for_pr")], want=False)
         self.rule_on_server("TK-S001", [
             ("mcp:computer/computer", {"action": "type",
                                        "text": "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/"}),
