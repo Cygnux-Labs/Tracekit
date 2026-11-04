@@ -678,8 +678,8 @@ class TestCli(unittest.TestCase):
         self.assertIn('"to": "acct-666"', shown.stdout)
         self.assertIn(big, shown.stdout)   # in full, never cut to a summary
         self.assertIn('unverified): "harmless read of a.txt"', shown.stdout)
-        listed = tracekit("approvals", "--signer", cfg["socket"], "list").stdout
-        self.assertEqual([line.split()[:2] for line in listed.splitlines()], [[a, "requested"] for a in aids])
+        listed = tracekit("approvals", "--signer", cfg["socket"], "list").stdout   # newest first
+        self.assertEqual([line.split()[:2] for line in listed.splitlines()], [[a, "requested"] for a in aids[::-1]])
         out = tracekit("approvals", "--signer", cfg["socket"], "approve", aids[0], "--reason", "checked")
         self.assertEqual((out.returncode, out.stdout.strip()),
                          (0, f"approved: {aids[0]}" + cli._self_approved("approved", False)))
@@ -691,6 +691,43 @@ class TestCli(unittest.TestCase):
         self.assertEqual(again.returncode, 1)
         self.assertIn("approval_not_pending", again.stderr)
 
+
+    def test_show_says_why_what_to_do_instead_and_how_to_answer_and_list_puts_the_live_ones_first(self):
+        """#587: show printed the arguments, but no reason and no command to answer with; list put 31 expired
+        approvals before the 7 live ones, oldest first, with nothing on what each call runs."""
+        d = ts.tmpdir(self)
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "approvals": {"self_approval": "allow"}}
+        service = svc.open_service(cfg, policy=svc.load_policy(os.path.join(ts.ROOT, "tracekit", "policy2", "packs",
+                                                                            "coding.yaml")))
+        self.addCleanup(service.close)
+        for srv in svc.serve(cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        client = Client(cfg["socket"])
+        self.addCleanup(client.close)
+        run = client.run(agent="a")
+        aids = []
+        for tcid in ("tc-1", "tc-2", "tc-3"):
+            run.decide(tcid, "Bash", {"command": f"stripe refunds create --charge ch_{tcid[-1]}"})
+            aids.append(run.call("approval_request", tool_call_id=tcid)["approval_id"])
+        run.call("approval_abandon", approval_id=aids[0])   # expired
+        sock = cfg["socket"]
+        shown = tracekit("approvals", "--signer", sock, "show", aids[1])
+        self.assertEqual(shown.returncode, 0, shown.stderr)
+        self.assertIn("\nwhy         moving money (a Stripe, PayPal or Square charge, payout, transfer or refund) "
+                      "(TK-A043)\ninstead     Check the amount, currency and payee", shown.stdout)
+        self.assertRegex(shown.stdout, r"\nexpires     \S+Z \(in 5\d min\)\n")
+        self.assertIn(f"\nanswer      `tracekit approvals --signer {sock} approve {aids[1]}` to allow it once, "
+                      f"`tracekit approvals --signer {sock} reject {aids[1]}` to refuse it\n", shown.stdout)
+        self.assertIn(f"\nrecord      tracekit view --approval {aids[1]} (with the --config or --data-dir of this "
+                      "signer)\n", shown.stdout)
+        listed = tracekit("approvals", "--signer", sock, "list").stdout.splitlines()
+        self.assertEqual([line.split()[0] for line in listed[:-1]], [aids[2], aids[1]])
+        self.assertTrue(listed[0].endswith('  "stripe refunds create --charge ch_3"'), listed[0])
+        self.assertEqual(listed[-1], "(1 expired, not shown: list them with --all)")
+        listed = tracekit("approvals", "--signer", sock, "list", "--all").stdout.splitlines()
+        self.assertEqual([line.split()[:2] for line in listed], [[aids[2], "requested"], [aids[1], "requested"],
+                                                                 [aids[0], "expired"]])
 
     def test_a_refusal_and_an_empty_list_say_how_to_get_further(self):
         d = ts.tmpdir(self)

@@ -30,7 +30,7 @@ import threading
 import time
 import warnings
 
-from tracekit.sdk.client import Client, named_rules, result_field
+from tracekit.sdk.client import Client, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 AGENT = "hermes"
@@ -153,7 +153,7 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
         try:
             end = start + (timeout_s() or MAX_TIMEOUT_S) - MARGIN_S
             run, d = decide(session_id, tool_call_id, tool_name, args)
-            why = named_rules(d["rule_ids"]) or d.get("reason") or d["decision"]
+            why = refusal(d) or d["decision"]
             if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
                 return None if d["decision"] == "allow" else _block(f"Tool call refused by Tracekit: {d['reason']}")
             if d["decision"] == "deny":
@@ -164,11 +164,12 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
                 while state == "requested" and end > time.monotonic() and key not in gone:
                     left_ms = int(min(end - time.monotonic(), POLL_S) * 1000)
                     state = run.call("approval_wait", approval_id=aid, timeout_ms=max(left_ms, 0))["state"]
+                held = f"Tool call held by Tracekit policy and not approved: {state}; {refusal(d, aid)}"
                 if state not in ("requested", "approved"):   # rejected, expired
-                    return _block(f"Tool call held by Tracekit policy ({why}) and not approved: {state}")
+                    return _block(held)
                 if state == "requested" and key not in gone:   # unanswered: withdrawn, so no one approves it later
                     run.call("approval_abandon", approval_id=aid, reason="no answer within Hermes's limits")
-                    return _block(f"Tool call held by Tracekit policy ({why}) and not approved: {state}")
+                    return _block(held)
             if key in gone:   # its post_tool_call came first (a deadline, a /stop): the call must not run now
                 if aid is None:
                     run.complete(tool_call_id, "error", error=f"not run: {GONE}")

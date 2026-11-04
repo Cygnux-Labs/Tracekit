@@ -76,6 +76,8 @@ DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
+# in a deny's or an ask's `reason` (decide), what follows it is the rules' remedies: what to do instead
+INSTEAD = ". Instead: "
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:[^\n]+" + _END)   # scheme:subject
 HOST = _str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END)   # a host name or IP address, lower case
 TS = _str(27, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z" + _END)

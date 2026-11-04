@@ -153,7 +153,7 @@ class Corpus:
         done(hook("SessionStart"))
         for tid, command in (("t1", SAFE), ("t2", RISKY), ("t3", HELD)):
             p = hook("PreToolUse", tool_name="Bash", tool_input={"command": command}, tool_use_id=tid)
-            if command == HELD:   # "[tracekit] held for approval apr-... (rule): ...": a person approves it, then the
+            if command == HELD:   # "[tracekit] HELD, nothing ran: apr-... (rule), ...": a person approves it, then the
                 tk("approvals", "approve", p.stderr.readline().split()[4])   # agent sends the same call again
                 done(p)
                 tid = "t3-retry"

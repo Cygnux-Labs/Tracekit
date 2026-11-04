@@ -194,13 +194,31 @@ to verify it as it stands, `tracekit last --open`.
 
 ### Held calls: approve, then retry
 
-A call the policy holds (`ask`) is blocked at once, in Claude Code and every harness above, with the approval's id and
-the command that approves it, as the harness's block message (in Claude Code also a `systemMessage`, which it shows
-you, and the deny reason, which the model reads):
+A call the policy holds (`ask`) is blocked at once, in Claude Code and every harness above, with the approval's id, why,
+what to do instead, the commands that answer it and what the agent does, as the harness's block message (in Claude
+Code also a `systemMessage`, which it shows you, and the deny reason, which the model reads):
 
 ```text
-[tracekit] held for approval apr-… (TK-A032): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: uploading to cloud storage. Have a person approve the held call, or write the files locally and let a person upload them.
+[tracekit] HELD, nothing ran: apr-… (TK-A032), expires 09:27 UTC.
+Why: uploading to cloud storage
+Instead: Have a person approve the held call, or write the files locally and let a person upload them.
+Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
+Agent: tell the person what this call was for and pass on these commands, then wait for their answer; a subagent puts them in its final report. Once it is approved, make the identical call again. If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs to get past the policy: every call is signed and kept.
 ```
+
+A call the policy denies says so, in the same form, with no commands: no one can approve it.
+
+```text
+[tracekit] BLOCKED, nothing ran, and no one can approve it (TK-D005, TK-F005).
+Why: writing to a credentials file
+Instead: Write a template with placeholders (.env.example) instead; a person fills in the real credentials file.
+Agent: tell the person what you were doing and why it was blocked. If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs to get past the policy: every call is signed and kept.
+```
+
+`tracekit approvals show apr-…` prints why and what to do instead, when it expires, the commands that answer it, and
+the command that opens the call in the viewer, `tracekit view --approval apr-…` (the page opens at `#approval=apr-…`).
+`tracekit approvals list` lists the calls waiting for an answer first, newest first, each with what it runs; the
+expired ones only with `--all`.
 
 In Claude Code, paste the `! …` line into the same session: `!` runs it as you, the session's user, not as the agent.
 In another harness, or from another terminal, run the same command without the `!` (a shell reads a leading `!` as
@@ -242,6 +260,28 @@ so why none waits by default:
 | Devin | not documented | not documented |
 | Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |
 
+### When Tracekit stops a call
+
+The block message tells the agent what to do, but an agent reads its own instructions first. `tracekit init --v2`
+points to these lines; paste them into the agent's `CLAUDE.md` or `AGENTS.md`. The Claude Code plugin ships them as
+its `tracekit-holds` skill.
+
+```markdown
+## When Tracekit stops a tool call
+
+- `[tracekit] HELD, nothing ran`: a person must answer it. In one message, tell them what the call was for, its Why
+  line and the commands on its Person line, then wait. A subagent or a background job puts the same in its final
+  report.
+- Once the person says it is approved, make exactly the same call again (the same tool and arguments): it runs once.
+- `[tracekit] BLOCKED, nothing ran` or `NOT APPROVED`: tell the person what you were doing and why it was stopped. If
+  there is an Instead line, you may do that instead; say you did.
+- Never run `tracekit approvals approve` or `reject` yourself: they are the person's commands. `tracekit approvals
+  list` and `show` only read.
+- Never hide what a call runs to get past a hold or a block (encoding it, a variable for the program, a script file,
+  another tool or agent): every call is signed and kept. A readable call that does the same thing, as an Instead line
+  says, is fine; say you made it.
+```
+
 ### Calls that move money
 
 Stripe holds an agent's refunds, payouts and outbound payments for a person only when the agent uses an agent-tagged
@@ -260,7 +300,11 @@ The v2 coding pack holds these calls for a person whatever the key:
 The hold says what to check:
 
 ```text
-[tracekit] held for approval apr-… (TK-A043): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
+[tracekit] HELD, nothing ran: apr-… (TK-A043), expires 09:27 UTC.
+Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund)
+Instead: Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier.
+Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
+Agent: …
 ```
 
 Read the command before you approve it, and the file it sends (`-d @body.json`): the approval covers that exact
@@ -318,7 +362,10 @@ in a sentence is live, though the text from that name on is recorded as untruste
 held for your approval ([held calls](#held-calls-approve-then-retry)), and you and the agent read why:
 
 ```text
-[tracekit] held for approval apr-… (TK-CONSTRAINT): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: the person's request in this run said not to modify billing.py; ask the person
+[tracekit] HELD, nothing ran: apr-… (TK-CONSTRAINT), expires 09:27 UTC.
+Why: the person's request in this run said not to modify billing.py; ask the person
+Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
+Agent: …
 ```
 
 Answer it with the command the line names: in Claude Code, its `! …` form in the session; elsewhere, from another

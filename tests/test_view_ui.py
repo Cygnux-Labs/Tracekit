@@ -79,7 +79,7 @@ class DeepLinks(unittest.TestCase):
         """The URL said nothing of what was open: a run could be linked (#run=) but not its view or record, and Back
         left the page."""
         needs_node(self)
-        out = json.loads(page_js(["PAGES", "RVIEWS", "show", "linkOf", "syncLink", "followLink"], """
+        out = json.loads(page_js(["PAGES", "RVIEWS", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
             let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
             const V2 = true, RUNS = new Map([["r 1&x", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [], goLive = () => {};
             const location = { hash: "#seq=7&view=graph&run=r+1%26x", pathname: "/" };
@@ -108,6 +108,25 @@ class DeepLinks(unittest.TestCase):
                                ["#run=r+1%26x", "run", "calls", False], ["#page=runs", "runs", "calls", False],
                                ["#view=waterfall&run=r+1%26x", "run", "waterfall", False],
                                ["#page=map", "horizon", "waterfall", False]])
+
+    def test_an_approval_link_opens_the_call_it_held(self):
+        """#587: nothing linked a hold to the page, which had no link by approval id: #approval=apr-… opens the held
+        call's run and its hold's record; an approval the page has no record of leaves it on DESK."""
+        needs_node(self)
+        out = json.loads(page_js(["PAGES", "RVIEWS", "show", "linkOf", "syncLink", "heldAt", "followLink"], """
+            let scope = null, PAGE = "desk", RV = "calls", CALLSLOG = false, selected = null, R = null, linked = false, following = false, wvKey = "x";
+            const V2 = true, RUNS = new Map([["r1", {}]]), lseq = r => r.tk_seq, schedule = () => {}, seen = [], goLive = () => {};
+            const ALL = [{ session_id: "r1", event: "PreToolUse", tool_use_id: "t1", tk_seq: 5, v2: { decision: "ask" } },
+                         { session_id: "r1", event: "tk_alert", tk_seq: 6, v2: { approval: "requested", approval_id: "apr-1", tool_use_id: "t1" } }];
+            const location = { hash: "#approval=apr-1", pathname: "/" };
+            const history = { pushState() {}, replaceState(_, __, h) { location.hash = h; } };
+            const setScope = id => { scope = id; selected = null; };
+            const openSeq = n => { selected = { tk_seq: n }; };
+            followLink(); seen.push([scope, PAGE, RV, selected]); syncLink(); seen.push(location.hash);
+            scope = null; PAGE = "desk"; selected = null; location.hash = "#approval=apr-2"; followLink();
+            seen.push([scope, PAGE, selected]);
+            process.stdout.write(JSON.stringify(seen));"""))
+        self.assertEqual(out, [["r1", "run", "calls", {"tk_seq": 5}], "#run=r1&view=calls&seq=5", [None, "desk", None]])
 
     def test_back_and_forward_follow_the_link_and_the_seq_command_shares_its_record_lookup(self):
         self.assertIn('window.addEventListener("popstate", () => linked && followLink());', PAGE)

@@ -63,6 +63,9 @@ computer's setting), light or dark, kept in this browser.
 The address bar follows what is open (`#run=…&view=graph&seq=42`, `#page=permissions`), so a link opens the same run,
 view and record, and Back and Forward step through what you opened. Links from before keep working: `#run=…` opens the
 run's page, and the old view names (`view=timeline` is CALLS with the why log's events) map to the new places.
+`#approval=apr-…` opens the call that approval held, on its run's page; `tracekit view --approval apr-…` prints the
+link that ends with it (`tracekit approvals show` names that command). A held call whose records the page doesn't
+have yet (it shows the newest ones) opens nothing: open its run from RUNS.
 
 ## Tour
 

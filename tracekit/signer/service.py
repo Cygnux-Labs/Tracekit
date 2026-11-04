@@ -332,7 +332,7 @@ from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog
                                       cooldown_key, degrade, epoch, final_run, owner, person_only_keys, ran, salt_label,
                                       skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
-from tracekit.signer.rpc_schema import REQUESTS, RPCError
+from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
@@ -1972,14 +1972,15 @@ class SignerService:
             return d, False, d["rule_ids"]
 
     def _reasons(self, ids):
-        """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then their
-        remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed
-        ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520). A flag
-        rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
+        """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
+        INSTEAD their remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its
+        fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520).
+        A flag rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
         by = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
-        return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]
+        instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
+        return (why + INSTEAD * bool(why and instead) + instead)[:1024]
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""

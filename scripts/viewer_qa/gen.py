@@ -125,7 +125,7 @@ def run_claude_code():
         {"type": "tool_use", "id": "toolu_04", "name": "Edit", "input": a4}])
     if d4["decision"] == "ask":   # the live constraint (don't touch billing.py) holds it: a person rejects it
         approve(run, "toolu_04", "reject", "the request said to leave billing.py alone")
-        result("toolu_04", "Held by tracekit policy (TK-CONSTRAINT) and not approved")
+        result("toolu_04", "[tracekit] NOT APPROVED, nothing ran (TK-CONSTRAINT): rejected.")
     else:
         run.complete("toolu_04"); result("toolu_04", "ok")
     # a prompt line in the transcript the harness never submitted (TK-X208)

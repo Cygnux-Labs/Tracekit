@@ -887,7 +887,7 @@ class EndToEnd(unittest.TestCase):
                         tool_use_id="b1")[0] == 2
         held = {"command": 'echo "open'}   # the dev pack can't parse it: a person must approve
         code, line = cls.hook("PreToolUse", tool_name="Bash", tool_input=held, tool_use_id="b2")
-        assert code == 2 and "held for approval" in line, line
+        assert code == 2 and "HELD, nothing ran:" in line, line
         cls.client.approval_decide({"approval_id": line.split()[4], "decision": "approve"})
         # the agent sends the same call again: it runs under the approval
         assert cls.hook("PreToolUse", tool_name="Bash", tool_input=held, tool_use_id="b3") == (0, "")

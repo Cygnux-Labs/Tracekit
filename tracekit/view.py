@@ -37,7 +37,9 @@ bundle once it verifies (what `tracekit observe` runs), on this server, token an
 
     tracekit view [--dev | --config signer.yaml | --data-dir DIR | --ledger [HOME] | --bundle FILE] [--log-vkey VKEY]
                   [--host H] [--port N] [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR]
-                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL]
+                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID]
+
+`--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held.
 """
 import argparse
 import atexit
@@ -53,6 +55,7 @@ import logging
 import json
 import math
 import os
+import re
 import secrets
 import shutil
 import signal
@@ -1811,7 +1814,13 @@ def main(argv=None):
                     help="a bearer token /v1/ingest takes for why logs, and nothing else (repeatable; default: the "
                          "viewer's token)")
     ap.add_argument("--webhook", help="POST each new high why alert here as JSON (Slack-compatible)")
+    ap.add_argument("--approval", metavar="ID", help="print the link that opens the call approval ID held "
+                                                     "(`tracekit approvals show ID` names it)")
     a = ap.parse_args(argv)
+    if a.approval and not re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval):
+        print(f"tracekit view: --approval takes an approval id (apr- and 32 hex digits), not {a.approval!r}",
+              file=sys.stderr)
+        return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
     from .cli import experimental
     if a.why:
@@ -1882,6 +1891,7 @@ def main(argv=None):
     scheme = "https" if tls else "http"
     print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
+          + (f"#approval={a.approval}" if a.approval else "")
           + (f"  ({len(runs.logs)} Postgres logs, read-only)" if runs else
              f"  (bundle: {a.bundle}, verified, read-only)" if a.bundle else
              f"  (ledger: {feed.path}, read-only)" if v1 else f"  (why logs alone: {why.root})" if alone else

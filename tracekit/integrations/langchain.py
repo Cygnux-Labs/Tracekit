@@ -56,7 +56,7 @@ from tracekit.format.canon import event_hash
 from tracekit.integrations import said
 from tracekit.integrations.claude_code import _tool_class
 from tracekit.integrations.executor_tools import CALL_ID, EXECUTOR
-from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules, result_field
+from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 
@@ -106,7 +106,7 @@ class TracekitMiddleware(AgentMiddleware):
         except RPCError as e:
             return self._refusal(call, f"signer refused the call: {e}"), None
         if d["decision"] == "deny":
-            return self._refusal(call, named_rules(d["rule_ids"]) or "deny"), d
+            return self._refusal(call, refusal(d) or "deny"), d
         d["args_digest"] = event_hash({"tool": call["name"], "args": call["args"]})
         try:
             if d["decision"] == "ask":
@@ -129,7 +129,7 @@ class TracekitMiddleware(AgentMiddleware):
             if "args" in c:   # T2: the signer's copy is what runs
                 d["args"], d["args_digest"] = c["args"], event_hash({"tool": call["name"], "args": c["args"]})
             return None, d
-        return self._refusal(call, named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")), d
+        return self._refusal(call, refusal(c, c.get("approval_id"))), d
 
     def _refusal(self, call, why):
         return ToolMessage(f"Tool call blocked by policy: {why}", tool_call_id=call["id"], name=call["name"],

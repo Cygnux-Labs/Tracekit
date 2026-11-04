@@ -4596,7 +4596,7 @@
         + reviewHtml(r, false) + (r.decisions && r.report ? `<div class="sec">VERIFIER REPORT · AS THE VIEWER PRINTED IT</div><pre>${esc(r.report)}</pre>` : ""));
       $("wvsum").textContent = "the server's result · the bundle is the evidence";
     }
-    /* ---------------- deep links: #page=…&run=…&view=…&seq=…; Back and Forward step through what was opened ---------------- */
+    /* ---------------- deep links: #page=…&run=…&view=…&seq=…, or #approval=…; Back and Forward step through what was opened ---------------- */
     let linked = false, following = false;   // linked: the page's link was read (until then the URL keeps it)
     function linkOf() {
       const sel = selected && (selected.pre || selected), seq = sel && lseq(sel), p = new URLSearchParams();
@@ -4613,8 +4613,16 @@
       following = false;
       if (h !== location.hash) history[replace ? "replaceState" : "pushState"](null, "", h || location.pathname);
     }
+    // #approval=apr-…: the call that approval held, as [its run, its hold's seq]; null while the page has no record of it
+    function heldAt(id) {
+      const q = id && ALL.find(r => r.v2?.approval === "requested" && r.v2.approval_id === id), k = q && (q.tool_use_id ?? q.v2.tool_use_id);
+      if (!q) return null;
+      const d = ALL.find(r => r.session_id === q.session_id && r.event === "PreToolUse" && r.v2?.decision === "ask" && (r.tool_use_id ?? r.v2?.tool_use_id) === k);
+      return [q.session_id, (d || q).tk_seq];
+    }
     function followLink() {
-      const p = new URLSearchParams(location.hash.slice(1)), run = p.get("run") || null, seq = p.get("seq");
+      const p = new URLSearchParams(location.hash.slice(1)), held = heldAt(p.get("approval"));
+      const run = held ? held[0] : p.get("run") || null, seq = held ? held[1] : p.get("seq");
       linked = following = true;
       if (V2 && run !== scope && (!run || RUNS.has(run))) setScope(run);
       // a page by name; else a view by its old or new name; else a run's page for a run, DESK without one

@@ -4,7 +4,8 @@
 > [stable core](https://github.com/Cygnux-Labs/Tracekit/wiki/Support). The same hooks wired by `tracekit init --dev --v2` are stable.
 
 Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-status`, `/tracekit-verify` and
-`/tracekit-pending`.
+`/tracekit-pending`, and the `tracekit-holds` skill, which tells Claude what to do when Tracekit holds or blocks one of
+its calls: tell you, pass on the commands that answer it, and make the identical call again once you approve it.
 
 ```text
 /plugin marketplace add Cygnux-Labs/Tracekit
@@ -37,9 +38,10 @@ plugin's hooks (`D-HOOKS-PRESENT`) and warns when both run. In system mode, run 
 ## When a hook can't run
 
 Each hook runs Tracekit's v2 Claude Code hook (`tracekit.integrations.claude_code`) for its event. The signer
-decides: deny blocks the call, and ask blocks it with the approval's id and the command that approves it; once someone
-has approved it (in the session with `! tracekit approvals approve <id>`, or from another terminal without the `!`),
-Claude's retry of the same call runs.
+decides: deny blocks the call (`[tracekit] BLOCKED, nothing ran, and no one can approve it`), and ask blocks it
+(`[tracekit] HELD, nothing ran: apr-…`) with why, what to do instead and the commands that look at, approve or reject
+it; once someone has approved it (in the session with `! tracekit approvals approve <id>`, or from another terminal
+without the `!`), Claude's retry of the same call runs.
 
 - A tool call whose hook starts but can't finish is blocked.
 - Any other event (a prompt, Stop, a tool's result, a session or subagent event) is never blocked. Its error shows in
