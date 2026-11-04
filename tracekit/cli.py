@@ -570,7 +570,7 @@ def _run(a):
             print(f"dev signer running (same-user): {cfg['socket']}")
             print("hooks:", hooks or "not installed")
             return 0
-        if a.agent in ("antigravity", "crush", "kilo"):   # the v1 system signer installs Claude Code's hooks only
+        if a.agent in ("antigravity", "crush", "kilo", "devin"):   # the v1 system signer installs Claude Code's hooks only
             print(f"tracekit: --agent {a.agent} goes with --dev or --v2", file=sys.stderr)
             return 2
         user = a.user or os.environ.get("SUDO_USER") or getpass.getuser()

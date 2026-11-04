@@ -1,5 +1,5 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI and
-Crush, on the Claude Code pipeline.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush
+and Devin (CLI and Desktop), on the Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -11,6 +11,7 @@ Crush, on the Claude Code pipeline.
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
     tracekit init --dev --agent antigravity  # ~/.gemini/config/hooks.json (project: .agents/hooks.json)
     tracekit init --dev --agent crush        # ~/.config/crush/crush.json (project: crush.json)
+    tracekit init --dev --agent devin        # ~/.config/devin/config.json (project: .devin/hooks.v1.json)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -48,10 +49,15 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             (lsp_rename, ls, grep and glob decided on the `path` they read; its payload is Claude Code's shape);
             agent, agentic_fetch and Docker MCP Gateway's code-mode tools are denied in the hook (the calls they make
             run no hooks), and so is a built-in tool's input with argument names Crush may read otherwise
+    Devin   exec, write_to_process, read, write, edit, apply_patch, grep, glob, webfetch, mcp__s__t
+            -> Bash, Bash (command = all its text), Read, Write, Edit (every path under file_path, notebook_path, path
+            and paths), Edit (all patch file headers in paths), Grep, Glob, WebFetch, mcp__s__t (its payload is Claude
+            Code's shape); a read, write, edit, apply_patch or webfetch with nothing to decide it on is denied in the
+            hook; init turns off its reading of Claude Code's hooks, which would decide each call a second time
 
-What each harness exposes decides what Tracekit can see: Gemini CLI and Droid do not give tool calls an id, so pre and post
-events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments); Cursor and
-Qwen Code report failures through postToolUseFailure.
+What each harness exposes decides what Tracekit can see: Gemini CLI, Droid and Devin do not give tool calls an id, so
+pre and post events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments);
+Cursor and Qwen Code report failures through postToolUseFailure.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
 import hashlib
@@ -70,7 +76,8 @@ from .policy2.classes import PATH_KEYS, first
 
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
-               "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush"}
+               "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
+               "devin": "devin"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -122,6 +129,16 @@ CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit",
                "lsp_replace_symbol": "Edit", "lsp_rename": "Edit", "ls": "LS", "grep": "Grep", "glob": "Glob",
                "fetch": "WebFetch", "download": "Write"}
 CRUSH_PATH_TOOLS = ("lsp_rename", "ls", "grep", "glob")   # they read `path`, the directory they search, not `file_path`
+# Devin's tools (docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks): its payload and event names are Claude Code's.
+# lean: only exec's input (command, shell_id) is documented; read, write and edit are decided on every path under the
+# keys the policy reads, write_to_process on all its text, until a recorded session names their fields
+DEVIN_TOOLS = {"exec": "Bash", "write_to_process": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
+               "apply_patch": "Edit", "grep": "Grep", "glob": "Glob", "webfetch": "WebFetch"}
+DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
+# what each of these Devin tools is decided on: a call that sends none of it is denied in the hook (_blocked)
+DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"), "path under file_path, notebook_path, path or paths"),
+                    "apply_patch": "file header (*** Add File:, *** Update File: or *** Delete File:)",
+                    "webfetch": "url"}
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -151,26 +168,35 @@ def _input(v):
     return v if isinstance(v, dict) else ({} if v is None else {"value": v})
 
 
+def _strings(value):
+    """Every string in a JSON value, at any depth."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _strings(child)
+
+
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
-    if harness == "droid":
-        if name == "ApplyPatch":
-            def strings(value):
-                if isinstance(value, str):
-                    yield value
-                elif isinstance(value, dict):
-                    for child in value.values():
-                        yield from strings(child)
-                elif isinstance(value, list):
-                    for child in value:
-                        yield from strings(child)
-
-            text = "\n".join(strings(ti))
-            files = [f.strip() for f in PATCH_FILE.findall(text)]
+    if harness in ("droid", "devin"):
+        files = None
+        if name == ("ApplyPatch" if harness == "droid" else "apply_patch"):   # every file a patch header names,
+            files = [f.strip() for f in PATCH_FILE.findall("\n".join(_strings(ti)))]   # whichever argument holds it
+        elif harness == "devin" and name in ("read", "write", "edit"):
+            # every path under a key the policy reads (v2 decides the first path key and `paths`, v1 `file_path` and
+            # `paths`), so a decoy `file_path` beside the path Devin's tool reads never replaces it
+            files = list(dict.fromkeys(f for k in (*PATH_KEYS, "paths") for f in _strings(ti.get(k))))
+        elif harness == "devin" and name == "write_to_process":   # input typed into a running exec shell
+            ti["command"] = "\n".join(_strings(ti))
+        if files is not None:
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
-        return DROID_TOOLS.get(name, name), ti
+        return (DROID_TOOLS if harness == "droid" else DEVIN_TOOLS).get(name, name), ti
     if harness == "codex":
         if name == "apply_patch":
             patch = ti.get("patch") or ti.get("input") or ti.get("command") or ""
@@ -335,7 +361,7 @@ def normalise(harness, p):
     ev = p.get("hook_event_name") or ""
     out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
-    if harness in ("codex", "qwen", "droid", "crush"):   # Claude Code's payloads; Qwen Code and Crush add
+    if harness in ("codex", "qwen", "droid", "crush", "devin"):   # Claude Code's payloads; Qwen Code and Crush add
         # PostToolUseFailure (Crush's payload is Claude Code's own: same field and event names)
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
@@ -348,11 +374,13 @@ def normalise(harness, p):
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
             out["tool_use_id"] = p.get("tool_use_id")
-            if harness == "droid":   # Droid's documented stdin carries no call id
+            if harness in ("droid", "devin"):   # their documented payloads carry no call id
                 out["tool_use_id"] = out["session_id"] and _paired_ids(
                     harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
             if ev != "PreToolUse":
-                out["tool_response"] = p.get("tool_response")
+                out["tool_response"] = r = p.get("tool_response")
+                if harness == "devin" and isinstance(r, dict) and r.get("success") is False:   # {success, output, error}
+                    out["hook_event_name"], out["error"] = "PostToolUseFailure", r.get("error")
             if ev == "PostToolUseFailure":
                 out["error"] = p.get("error")
         if ev == "UserPromptSubmit":
@@ -466,7 +494,7 @@ class Tee(io.StringIO):
 
 
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
-PAIRED = ("gemini", "droid", "antigravity")   # the harnesses whose call ids _paired_ids makes
+PAIRED = ("gemini", "droid", "antigravity", "devin")   # the harnesses whose call ids _paired_ids makes
 
 
 # goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
@@ -579,7 +607,17 @@ def _blocked(harness, p, raw=""):
         call = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("toolCall") if raw.strip() else None
         call = dict(call) if isinstance(call, _Pairs) else {}
         return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
-    return _blocked_tool(harness, str(p.get("tool_name") or ""), raw)
+    name = str(p.get("tool_name") or "")
+    if harness == "devin" and name in DEVIN_DECIDED_ON:   # Devin documents none of these tools' arguments: one sent
+        # under a name Tracekit doesn't read would leave the call decided on nothing
+        ti = tool(harness, name, p.get("tool_input"))[1]
+        if not isinstance(ti.get("url" if name == "webfetch" else "file_path"), str):
+            sent = ", ".join(map(str, _input(p.get("tool_input"))))[:200] or "none"
+            return (f"Blocked by Tracekit: Devin's {name} call names no {DEVIN_DECIDED_ON[name]}, which Tracekit "
+                    f"decides it on, so it can't decide this call (its arguments: {sent}). Devin doesn't document "
+                    "them: please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so "
+                    "Tracekit can read them.")
+    return _blocked_tool(harness, name, raw)
 
 
 def run(harness, raw, stdout=None, stderr=None, event=None):
@@ -686,7 +724,13 @@ def config_path(harness, project=None, home=None):
             # $XDG_CONFIG_HOME (else ~/.config; Windows %USERPROFILE%\.config)/crush/crush.json
             "crush": os.path.join(base, "crush.json") if project else
                      os.path.join((None if home else os.environ.get("CRUSH_GLOBAL_CONFIG")) or
-                                  os.path.join(xdg, "crush"), "crush.json")}[harness]
+                                  os.path.join(xdg, "crush"), "crush.json"),
+            # Devin's project hooks file is the event map itself; its user config (Windows: %APPDATA%\devin) nests
+            # them under `hooks`
+            "devin": os.path.join(base, ".devin", "hooks.v1.json") if project else
+                     os.path.join(os.environ["APPDATA"], "devin", "config.json")
+                     if os.name == "nt" and not home and os.environ.get("APPDATA") else
+                     os.path.join(base, ".config", "devin", "config.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -938,11 +982,12 @@ def _command(harness, ev, v2, python):
     # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
     # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
     # can't parse: an interpreter path that needs no quotes goes bare, which both run
-    # assume Droid runs hooks under cmd.exe. goose (sh -c) and Crush keep _hook_command's form
+    # assume Droid runs hooks under cmd.exe. goose (sh -c) and Crush keep _hook_command's form. Devin doesn't document
+    # its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that doesn't goes bare, which both run
     if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
-    c = m.group(1) + c[m.end():] if m else f"& {c}"
+    c = m.group(1) + c[m.end():] if m else c if harness == "devin" else f"& {c}"
     # Windows PowerShell hands a native exit 2 back as 1, and Qwen Code blocks a call only at 2; a PreToolUse hook whose
     # Python didn't run or failed exits 2 ($LASTEXITCODE isn't enough: the profile Qwen Code doesn't skip may set it)
     if harness != "qwen":
@@ -1097,10 +1142,12 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     if harness == "droid" and not uninstall and txt is None:
         # Droid reads settings hooks only while the standalone file is absent; preserve them when creating it.
         s = dict(_droid_settings_hooks(path) or {})
-    # Droid's standalone hooks.json is the event map; only its settings.json nests that map under `hooks`. agy's maps
-    # each hook's name to its event map: Tracekit's is AGY_HOOK
+    # Droid's standalone hooks.json is the event map, and so is a Devin project's hooks.v1.json; Droid's settings.json
+    # and Devin's config.json nest that map under `hooks`. agy's maps each hook's name to its event map: Tracekit's is
+    # AGY_HOOK
     key = AGY_HOOK if harness == "antigravity" else "hooks"
-    hooks = s if harness == "droid" else s.setdefault(key, {})
+    bare = harness == "droid" or harness == "devin" and os.path.basename(path) == "hooks.v1.json"
+    hooks = s if bare else s.setdefault(key, {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'{key}' in {path} must be an object; Tracekit did not change it.")
     if harness == "cursor":
@@ -1116,6 +1163,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         removed = _merge(hooks, path, events, entry, uninstall, flat=True)
     else:
         events = (DROID_EVENTS if harness == "droid" else AGY_EVENTS if harness == "antigravity" else
+                  DEVIN_EVENTS if harness == "devin" else
                   ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
                   else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
                   if harness == "qwen" else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
@@ -1132,7 +1180,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                     h["shell"] = "powershell"
             else:
                 h["timeout"] = 600 if ev == "PreToolUse" else 30
-            return {"matcher": "*", "hooks": [h]} if ev in tools else {"hooks": [h]}
+            # Devin's matcher is a regex, which "*" isn't: a group with none matches every tool
+            return {"matcher": "*", "hooks": [h]} if ev in tools and harness != "devin" else {"hooks": [h]}
         removed = _merge(hooks, path, events, entry, uninstall)
     if harness == "antigravity":   # Tracekit's named hook holds only its own two entries, rewritten whole: agy loads a
         # named hook with "enabled": false and never runs it
@@ -1140,8 +1189,16 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             s[key] = {ev: hooks[ev][-1:] for ev in AGY_EVENTS}
         elif removed:
             s.pop(key)
-    if not hooks and harness != "droid":
+    if not hooks and not bare:
         s.pop(key, None)
+    # Devin also runs Claude Code's hooks (read_config_from.claude, on by default), so with Tracekit's Claude Code hook
+    # installed it would decide each Devin call a second time (that hook blocks them: they carry no tool_use_id). A
+    # project keeps the setting in .devin/config.json, beside hooks.v1.json
+    devin_rc = os.path.join(os.path.dirname(path), "config.json") if bare else path
+    if harness == "devin" and not uninstall:
+        c, ctxt = _read(devin_rc) if bare else (s, None)
+        if _devin_claude_off(c, devin_rc) and bare and _backup_changed(devin_rc, ctxt, c):
+            _atomic_write_json(devin_rc, c)
     # what is left of a Droid hooks.json once Tracekit's hooks are out can be the copy of settings.json's hooks init
     # made it with: gone, Droid reads those again. Any other stays (`kept`: why), and is named
     kept, settings = None, os.path.join(os.path.dirname(path), "settings.json")
@@ -1164,7 +1221,29 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     if kept:
         print(f"{path} kept: {kept}. Droid runs the hooks in it, and those in {settings} only once it is gone: move "
               f"any you want into {settings}, then delete it")
+    if harness == "devin" and uninstall:
+        with contextlib.suppress(SettingsError):   # a line of advice, never in the way of the uninstall
+            rc = (_read(devin_rc)[0] if bare else s).get("read_config_from")
+            if isinstance(rc, dict) and rc.get("claude") is False:
+                print(f"read_config_from.claude stays false in {devin_rc}: set it to true there for Devin to read "
+                      "Claude Code's hooks, rules, skills, commands and MCP servers again")
     return path
+
+
+def _devin_claude_off(s, path):
+    """Set read_config_from.claude to false in `s`, the Devin config at `path`, and say what that costs. -> whether `s`
+    changed."""
+    from .install import SettingsError
+    rc = s.setdefault("read_config_from", {})
+    if not isinstance(rc, dict):
+        raise SettingsError(f"'read_config_from' in {path} must be an object; Tracekit did not change it.")
+    if rc.get("claude") is False:
+        return False
+    rc["claude"] = False
+    print(f"read_config_from.claude set to false in {path}: Devin no longer runs Claude Code's hooks (Tracekit's would "
+          "decide each call a second time), nor reads its rules, skills, commands or MCP servers; set it back to true "
+          "for those (uninstall leaves it)")
+    return True
 
 
 def _droid_settings_hooks(path):
