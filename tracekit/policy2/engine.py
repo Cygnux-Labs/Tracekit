@@ -1262,13 +1262,16 @@ _AUTOLOAD = re.compile(r"(?:^|/)(?:conftest\.py|sitecustomize\.py|usercustomize\
                        r"\.pre-commit-config\.yaml)$|(?:^|/)\.git/hooks/[^/]+$|"
                        # a program planted where a later call finds it by name: a bin dir
                        r"(?:^|/)s?bin/[^/]+$")
-# code an interpreter imports by a name the line needn't spell (`import x` x.py, require('./x') x.js, `use x` x.pm,
-# `python3 .` __main__.py), so it runs where imports look: the working tree, a search path, a dir the line imports from
+# code an interpreter imports by a name a later call needn't spell (`import x` x.py, require('./x') x.js, `use x`
+# x.pm, `python3 .` __main__.py), from the working tree or a search path
 _IMPORTABLE = (".py", ".pyc", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pm", ".lua")
-# a scratch dir nothing imports from by itself (but a search path's dir in it: site-packages, node_modules)
-_SCRATCH = re.compile(r"(?:(?:/private)?/(?:var/)?tmp|(?:/private)?/var/folders|\$\{?TMPDIR\}?|"
-                      r"(?:~|\$\{?HOME\}?|/Users/[^/]+|/home/[^/]+)/Downloads)/"
-                      r"(?!(?:.*/)?(?:site-packages|dist-packages|node_modules)/)")
+# a scratch dir nothing imports from by itself (but a search path's dir in it: site-packages, node_modules), spelled
+# literally: $TMPDIR or a variable may be the working tree
+_SCRATCH = re.compile(r"(?:(?:/private)?/(?:var/)?tmp|(?:/private)?/var/folders|"
+                      r"(?:~|/Users/[^/]+|/home/[^/]+)/Downloads)/"
+                      r"(?!(?:.*/)?(?:site-packages|dist-packages|node_modules)/)[^$`]*$")
+# what runs code on a line that downloads: a shell, an interpreter, and these
+_RUNNERS = {"source", ".", "eval", "exec"}
 # the options of a Python that runs its inline code (or json.tool) and nothing else: -i would read stdin after it
 _PY_PLAIN_FLAGS = re.compile(r"-[IEsBu]*[cm]?")
 
@@ -1296,12 +1299,13 @@ def _downloads(parsed):
     is one that only prints, removes or copies it (_TAINT_READERS whose output reaches no more than the terminal or a
     filter, _TAINT_MOVES, Python inline code _data_only reads as data); a downloaded file whose name a program or shell
     loads by itself (_AUTOLOAD: conftest.py, a .pth, a shell rc file, a git hook, a bin dir or one the line puts on
-    PATH), and importable code (_IMPORTABLE) but in a scratch dir the line doesn't import from; any script or path
-    program when the line can't name a download (curl -J, an archive); a substitution of curl or wget, a variable the
-    line sets to one,
-    or a substitution that reads a downloaded file, as a command's name, in eval or source, in -c code, in a herestring
-    or pipe into a shell or interpreter; a shell or interpreter xargs, parallel or find -exec runs on a line that
-    downloads. Piped to code: a later stage of a download's pipeline that is a shell with -c or a script, an
+    PATH), and importable code (_IMPORTABLE) outside a scratch dir, also as a copy of a pattern or an expansion; any
+    script or path program when the line can't name a download (curl -J, an archive); a substitution of curl or wget,
+    a variable the line sets to one, or a substitution that reads a downloaded file, as a command's name, in eval or
+    source, in -c code, in a herestring or pipe into a shell or interpreter; and on a line that downloads, wherever it
+    is, any shell, interpreter, source, eval or exec, and any program named by a path, a pattern or an expansion, but
+    data-only Python when no download may be code it imports. Piped to code: a later stage of a download's pipeline
+    that is a shell with -c or a script, an
     interpreter with a script or a module (python -m json.tool aside), or with inline code: Python's unless _data_only
     reads it as data."""
     commands, tags = parsed[0], []
@@ -1358,23 +1362,26 @@ def _downloads(parsed):
         if len(exact) + len(patterns) == size:
             break
     unknown |= "*" in patterns or len(patterns) > 64
+    fetchers = [k for k, c in enumerate(commands) if c["argv"][0] in _FETCHERS]
+    for c in commands if fetchers else ():   # a copy of what a pattern or an expansion names may be the download
+        args = [a for a in c["argv"][1:] if not a.startswith("-")]
+        if c["argv"][0] in ("cp", "mv", "install", "ln", "rsync") and any(re.search(r"[*?[$`]", s) for s in args[:-1]):
+            paths.update([args[-1]] + [args[-1].rstrip("/") + "/" + _base(s) for s in args[:-1]])
+        if any(re.search(r"[*?[$`]", a) for a in c["argv"][1:] + c["stdin"]):
+            paths.update(c.get("out", ()))
     assigns = parsed[2] + [a for c in commands if c["argv"][0] == "export" for a in c["argv"][1:]]
     # a dir the line puts on PATH: a download planted there runs when a later call names it
     bins = {d.rstrip("/") for r in assigns if r.startswith("PATH=") for d in r[5:].split(":") if d and "$" not in d}
-    # the dirs the line names when an interpreter runs on it: a cd, a -I, a search path, an operand, code's text
-    reached = {t.rstrip("/") for w in [a for c in commands if c["argv"][0] not in _FETCHERS
-                                       for a in c["argv"][1:] + c["stdin"]] + assigns
-               for t in re.findall(r"[^\s'\"();=:,`]+", re.sub(r"^-I", "", w))} if any(
-        shell._kind(c["argv"][0]) not in (None, "awk", "sed") for c in commands) else set()
+    homeless = any(r.startswith("HOME=") for r in assigns) or any(c["argv"][0] == "ln" for c in commands)
 
-    def loadable(path):   # importable code outside a scratch dir, or in one the line imports from (or may link)
+    def loadable(path):   # importable code a later call may import: but in a scratch dir the line can't redirect
         path = posixpath.normpath(path)
-        folder = posixpath.dirname(path)
-        return path.endswith(_IMPORTABLE) and (not _SCRATCH.match(path) or any(c["argv"][0] == "ln" for c in commands)
-                                               or bool({folder, posixpath.dirname(folder)} & reached))
+        return path.endswith(_IMPORTABLE) and (homeless or not _SCRATCH.match(path))
     if any(_AUTOLOAD.search(p := f.replace("\\", "/")) or loadable(p) or posixpath.dirname(p).rstrip("/") in bins
            for f in paths):
         tags.append("RUNS_DOWNLOAD:a file a program, shell or later call loads by its name")
+    # data-only Python may run on a line that downloads only when no download may be code it imports
+    code_downloaded = unknown or any(posixpath.normpath(p).endswith(_IMPORTABLE) for p in paths)
     for r in parsed[2]:   # an assignment that names one: BASH_ENV, ENV, PYTHONSTARTUP …
         if "=" in r and downloaded(r.partition("=")[2]):
             tags.append("RUNS_DOWNLOAD:" + r)
@@ -1397,6 +1404,14 @@ def _downloads(parsed):
                 (shell._stdin_shell([c]) or shell._stdin_interpreter([c]) or code is not None) and (
                     c["pipeline"] in carries or any(map(fetched, c["stdin"]))) and not data or \
                 runner and (exact or patterns or unknown) and set(c["via"][-1:]) & {"xargs", "parallel", "find -exec"}:
+            tags.append("RUNS_DOWNLOAD:" + " ".join(argv))
+        # on a line that downloads, wherever it is: a shell, an interpreter, source, eval or exec, and a program named
+        # by a path, a pattern or an expansion, may run the download; but a stage only a download's pipe feeds (as
+        # piped to code below) and data-only Python where no download may be code it imports
+        elif fetchers and k not in fetchers and not (data and not code_downloaded) and (
+                (runner or argv[0] in _RUNNERS) and not all(f < k and commands[f]["pipeline"] == c["pipeline"]
+                                                           for f in fetchers)
+                or c["opaque"] or re.search(r"[/$`]", c["word"])):
             tags.append("RUNS_DOWNLOAD:" + " ".join(argv))
         if any(map(fetched, argv[1:] + c["stdin"])) or use:
             carries.add(c["pipeline"])

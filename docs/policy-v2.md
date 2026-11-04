@@ -214,9 +214,12 @@ a file a command only reads or copies. The tags are not in `target`, so a target
   or is Python inline code read as data; a download written or copied under a name a shell or tool loads by itself
   (`package.json`, `conftest.py`, a `.pth`, a shell rc or alias file, a tool's config such as `pytest.ini` or a
   `Makefile`, a git hook), into a `bin` dir or one the line puts on `PATH`, or as importable code (`.py`, `.js`, `.rb`,
-  `.pm` …) anywhere but a scratch dir (`/tmp`, `~/Downloads`) the line doesn't import from; a `$(curl …)` (or a variable set to one, or a substitution that reads a
-  downloaded file) as a command's name, in `eval`, `source` or `-c`/`-e` code, in a herestring or pipe into a shell
-  or interpreter that reads stdin. And where a download's pipe feeds code that may run or store it (`TK-A046`,
+  `.pm` …) anywhere but a scratch dir spelled literally (`/tmp`, `~/Downloads`); a `$(curl …)` (or a variable set to
+  one, or a substitution that reads a downloaded file) as a command's name, in `eval`, `source` or `-c`/`-e` code, in
+  a herestring or pipe into a shell or interpreter that reads stdin; and on a line that downloads, wherever they are,
+  every shell, interpreter, `source`, `.`, `eval` and `exec` and every program a path, a pattern or an expansion
+  names, but data-only Python (below) where no download may be code it imports, and a stage only a download's pipe
+  feeds. And where a download's pipe feeds code that may run or store it (`TK-A046`,
   `PIPED_TO_CODE:`): a later stage that is a shell with `-c` or a script, an interpreter with a script or a module
   (`python3 -m json.tool` aside), or with inline code; Python's unless its options are only `-I`, `-E`, `-s`, `-B`
   and `-u` (`-i` would run stdin after it; nor `PYTHONINSPECT`) and all its syntax is on an allowlist: `import
