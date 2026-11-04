@@ -355,6 +355,16 @@ class Mapping(HarnessCase):
         self.assertEqual((code, out), (2, ""))
         self.assertIn("tool call blocked", err)
 
+    def test_kilo_notebook_execute_is_denied_before_the_signer(self):
+        # Kilo's notebook_execute runs a notebook cell no command rule has read: denied before any decide request
+        code, out, err = self.hook("kilo", {"session_id": "kc-9", "hook_event_name": "tool.execute.before",
+                                            "tool_name": "notebook_execute", "tool_use_id": "kc-9",
+                                            "tool_input": {"path": "a.ipynb", "expected_revision": "r1", "index": 0}},
+                                   "tool.execute.before")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("native_notebook_tools", err)
+        self.assertEqual(self.sent, [])
+
     def test_signer_unreachable_is_fail_closed_by_default(self):
         os.environ["TRACEKIT_SIGNER"] = os.path.join(os.environ["HOME"], "nowhere.sock")
         code, out, err = self.hook("codex", cases("codex")[0]["payload"])
@@ -566,7 +576,7 @@ class Installer(unittest.TestCase):
                     code, out = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")
                     self.assertEqual(code, 0)
                     self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {path}", out)
-                    if harness == "opencode":
+                    if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
                             plugin = f.read()
                         self.assertEqual(agent_hooks._version(plugin), "v2")
@@ -720,7 +730,8 @@ class Installer(unittest.TestCase):
         gone, old = os.path.join(d, "gone", "python"), install._blocking
         for python in (None, gone):   # dev mode (this interpreter, moved), system mode (OPT_PYTHON)
             # OpenCode: no shell; agy answers at exit 0 in JSON (test_antigravity_installed_commands_answer_in_json_…)
-            for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("opencode", "antigravity"))):
+            for harness in ("claude", *(h for h in agent_hooks.HARNESSES
+                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity"))):
                 path = os.path.join(d, str(bool(python)), harness, "hooks.json")
 
                 def init():

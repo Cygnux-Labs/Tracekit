@@ -1282,6 +1282,28 @@ class CodingPack(unittest.TestCase):
             self.assertIn(e.decide("Bash", {"command": "rm ~/.claude/projects/p/a.jsonl; echo '"})["verdict"],
                           ("ask", "deny"))
 
+    def test_kilo_codes_config_and_data_folders_are_opencodes_under_its_names(self):
+        """#551's review: Kilo Code keeps OpenCode's layout under its own names. Its plugin folder (Tracekit's hook is
+        in it), project config and data folder were none of the rules' paths, so deleting Tracekit's plugin went
+        unflagged and its sessions unprotected."""
+        for pack, engine, e in self.every_pack():
+            for command in ("rm ~/.config/kilo/plugin/tracekit.js", "echo x > .kilo/plugin/x.js", "rm -rf .kilocode",
+                            "echo '{}' > kilo.json", "sed -i s/a/b/ kilo.jsonc"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for path in ("/home/u/.config/kilo/plugin/tracekit.js", "/w/.kilo/plugin/x.js", "/w/kilo.json"):
+                with self.subTest(pack=pack, engine=engine, path=path):
+                    self.assertIn("TK-F009", e.decide("Write", {"file_path": path, "content": "x"})["rule_ids"])
+            for command in ("rm ~/.local/share/kilo/kilo.db", "echo x > ~/.local/share/kilo/storage/message/s/m.json",
+                            "rm -rf ~/.local/share/kilo"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D008" in d["rule_ids"]), ("deny", True), d)
+            d = e.decide("Write", {"file_path": "/home/u/.local/share/kilo/storage/session/s.json", "content": "x"})
+            self.assertEqual((d["verdict"], "TK-D009" in d["rule_ids"]), ("deny", True), d)
+            d = e.decide("Bash", {"command": "echo x > ~/.local/share/kilo/log/a.txt"})   # its logs aren't sessions
+            self.assertNotIn("TK-D008", d["rule_ids"])
+
     def test_transcript_rule_holds_deletes_of_the_folders_that_hold_transcripts(self):
         """Deleting ~/.claude, ~/.codex, ~/.gemini or OpenCode's data folder (or a folder above it in the home)
         deletes the transcripts in it; TK-F015 only flagged it. Writing into those folders outside the transcripts,

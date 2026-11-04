@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-56'
+version: '2026.10-v2-57'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -128,7 +128,7 @@ deny:
     # its files at run time (xargs rm, rm "$f") or in code it runs (docker exec c sh -c, perl -e, osascript, at from a
     # pipe), or whose commands the parser can't read (| sh, fish -c) with a writer's name or > in it, and a link ln or
     # cp -s/-l makes. Anchored and lazy, so the fallback engine stays linear
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET|MAY_WRITE):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\]opencode[/\\](?:storage(?:[/\\]|$)|opencode[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\]opencode)?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\]opencode)?)[/\\]*\*?$'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET|MAY_WRITE):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\](?:opencode|kilo)[/\\](?:storage(?:[/\\]|$)|(?:opencode|kilo)[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\](?:opencode|kilo))?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\](?:opencode|kilo))?)[/\\]*\*?$'
     # not Claude Code's memory notes beside its transcripts (a .md file directly in a project's memory/, as TK-D009
     # reads them), which the agent writes and deletes; a link made there (MAY_WRITE) is still held
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
@@ -150,7 +150,7 @@ deny:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode|\.local/share/opencode/storage)/|(^|/)\.local/share/opencode/opencode[^/]*\.db'
+    pattern: '(^|/)(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/(opencode|kilo)|\.local/share/(opencode|kilo)/storage)/|(^|/)\.local/share/(opencode|kilo)/(opencode|kilo)[^/]*\.db'
     # Claude Code keeps the agent's own memory notes beside its transcripts: those it may write
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     reason: writing to the agent harness's transcripts
@@ -793,14 +793,15 @@ flag:
     # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
     # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
     # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
-    # home, and ~/.config/crush/. Claude Code keeps its user settings and MCP servers in ~/.claude.json, and its skills
+    # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
+    # kilo.json. Claude Code keeps its user settings and MCP servers in ~/.claude.json, and its skills
     # and slash commands (which can run commands with `!` lines) under .claude/ (flagged as the rest of .claude/);
     # Cursor its MCP servers in .cursor/mcp.json.
     # A file inside one of Claude Code's worktrees (.claude/worktrees/<name>/…) is judged as it is in the worktree: that
     # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
     # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
     # itself, and a name starting with a dot
-    pattern: '(^|/)\.(codex|gemini|opencode|qwen|factory)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|block/goose/config)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)opencode\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|managed-settings|\.mcp\.json'
+    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|block/goose/config)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|managed-settings|\.mcp\.json'
     # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     label: harness_config
@@ -810,7 +811,8 @@ flag:
     # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
     # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
     # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
-    # home config is crush.json, .crush.json, crushrc or .crushrc. The agy, goose and Droid paths are TK-F009's, and
+    # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
+    # (.kilo, .kilocode, ~/.config/kilo, kilo.json). The agy, goose and Droid paths are TK-F009's, and
     # a delete of a whole .agents folder (agy's hooks.json with it).
     # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
     # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
@@ -818,7 +820,7 @@ flag:
     # only the worktree (`x/`, `x/.`, `x//`).
     # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
     # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose|crush)|block[/\\]goose[/\\]config)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|opencode\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush)|block[/\\]goose[/\\]config)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config
