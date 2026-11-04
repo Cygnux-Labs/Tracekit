@@ -188,8 +188,9 @@ time or inside code it runs (an `rm`, `unlink`, `shred`, `truncate`, `tee`, `cp`
 or backtick operand, `rm "$f"`, but not `sed -i`, `perl -i` or `dd of=`; or `xargs`, `parallel`, `docker`, `podman`,
 `kubectl`, `ssh` or an interpreter such as `perl -e` or `python -c` whose words hold `rm`, `unlink`, `truncate`,
 `shred`, `mv`, `tee`, `dd`, `ln`, `sed`, `perl`, `find` or `>`; Python code the line shows, its `-c` code, heredoc or a
-script the line wrote, only when that code also writes a file, spawns a process or runs text: an `if n > 1` is no
-write), each argument of every command in the call (on any of
+script the line wrote, only when that code also writes a file, spawns a process or runs text, or opens a file with a
+mode that isn't a literal `'r'`, `'rb'` or `'rt'`: an `if n > 1` is no write), each argument of every command in the
+call (on any of
 its lines) is also a `MAY_WRITE:word` subject, which only `TK-D008` reads, and so is the link `ln`, `cp -s` or
 `cp -l` makes (a later write through it writes the file it points at). A rule on `effects` can tell a destination from
 a file a command only reads or copies. The tags are not in `target`, so a target rule reads the same subjects as before `effects` existed.
@@ -200,31 +201,14 @@ a file a command only reads or copies. The tags are not in `target`, so a target
   `LIST:` what `ls`, `stat`, `test` or `find` (without an action, `-fprint`, `-fls` or `-files0-from`) names, and an
   assignment the line uses only in readers (not to `CDPATH`, `HOME`, `OLDPWD` or another variable the shell reads on
   its own; none on a line that may set or export variables). `READ:` what `cat`, `head`, `tail`, `grep`,
-  `sed -n` (a script that only prints) or `jq` names, printing to the terminal or a filter, and the files a
+  `sed -n` (a script that only prints; not `-i`, `-I`, `-f` or another option but `-n`, `-e`, `-E`, `-r`, `-s`, `-u`
+  and `-z`) or `jq` names, printing to the terminal or a filter, and the files a
   redirection reads. `DEEP:` what such a reader reads all of (`grep -r`, a pattern) or names when its output goes to
   a file, a substitution or anything but a filter (`find … | xargs cat`, `cat $(find …)`, a `while read` loop), and the
   folder a `cd` enters where every command only reads or lists. Any other program's words are `ACT:`.
   `SIGNER_MODULE:` an `ACT:` text whose code reaches more of `tracekit.signer` than `rpc_schema`'s tables,
-  `reconcile.compared` and `model_names`, and the service's `load_policy` and `DEFAULT_POLICY`, by those names.
-- `downloads` (shell): the `code` subjects, and where downloaded bytes run (`TK-D002`, `RUNS_DOWNLOAD:` and the
-  command): a file a `curl` or `wget` wrote (`-o`, `-O`, a redirection, a later pipeline stage's redirection or `tee`;
-  then copied, moved or unpacked) that a later command runs as a script, a program or by `source`; any script when
-  the line can't name the download (`curl -J`, an archive unpacked); any command or assignment that names a
-  downloaded file or a copy of it, unless it only prints it to the terminal or a filter, removes, copies or moves it,
-  or is Python inline code read as data; a download written or copied under a name a shell or tool loads by itself
-  (`package.json`, `conftest.py`, a `.pth`, a shell rc or alias file, a tool's config such as `pytest.ini` or a
-  `Makefile`, a git hook), into a `bin` dir or one the line puts on `PATH`, or as importable code (`.py`, `.js`, `.rb`,
-  `.pm` …) anywhere but a scratch dir spelled literally (`/tmp`, `~/Downloads`); a `$(curl …)` (or a variable set to
-  one, or a substitution that reads a downloaded file) as a command's name, in `eval`, `source` or `-c`/`-e` code, in
-  a herestring or pipe into a shell or interpreter that reads stdin; and on a line that downloads, wherever they are,
-  every shell, interpreter, `source`, `.`, `eval` and `exec` and every program a path, a pattern or an expansion
-  names, but data-only Python (below) where no download may be code it imports, and a stage only a download's pipe
-  feeds. And where a download's pipe feeds code that may run or store it (`TK-A046`,
-  `PIPED_TO_CODE:`): a later stage that is a shell with `-c` or a script, an interpreter with a script or a module
-  (`python3 -m json.tool` aside), or with inline code; Python's unless its options are only `-I`, `-E`, `-s`, `-B`
-  and `-u` (`-i` would run stdin after it; nor `PYTHONINSPECT`) and all its syntax is on an allowlist: `import
-  json` and `import sys`, reading `sys.stdin`, `json.load` and `json.loads`, subscripts, `len`, `print`,
-  comprehensions and string formatting. A tagged subject's tag doesn't count toward its size.
+  `reconcile.compared` and `model_names`, and the service's `load_policy` and `DEFAULT_POLICY`, by those names. A
+  tagged subject's tag doesn't count toward its size.
 
 - `host`: the URL's host as a browser reads it (`host:port/path` without a scheme is http; controls, tabs and newlines dropped, `view-source:` and `blob:`
   peeled, `\` as `/`, any number of slashes after the scheme, the host after the last `@`), percent-decoded, NFKC

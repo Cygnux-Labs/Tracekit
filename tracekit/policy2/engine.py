@@ -33,9 +33,9 @@ _SCHEDULED = {"trap", "at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's
 # empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
 # line's characters ($'…' decodes others, after a $)
 _SECOND = re.compile(r"[$`*?[]")
-# the shell fields whose subjects carry a tag of up to this many bytes (ACT:, RUNS_DOWNLOAD: …), which doesn't count
+# the shell fields whose subjects carry a tag of up to this many bytes (ACT:, SIGNER_MODULE: …), which doesn't count
 # toward a subject's size: a command just under MAX_SUBJECT isn't oversize for being tagged
-_TAGGED = {"tracekit": 16, "downloads": 16}
+_TAGGED = {"tracekit": 16}
 REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one decision share; a match that runs out
                             # of it denies, marked nondeterministic
 
@@ -308,8 +308,6 @@ class Engine:
             return _effects(parsed)
         if cls == "shell" and field == "tracekit":
             return _tracekit(parsed)
-        if cls == "shell" and field == "downloads":
-            return _code(parsed) + _downloads(parsed)
         if cls == "shell" and field == "package_index":
             return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
@@ -740,10 +738,12 @@ def _opaque(command, scripts=None):
     if exe in ("xargs", "parallel", "docker", "podman", "kubectl", "ssh") or \
             _INTERPRETER.fullmatch(exe):
         # lean: Python whose words name a write (`>`, rm, find …) is released when the code the line shows has
-        # nothing _PY_ACTS finds: a write by a call _PY_ACTS doesn't list is then missed; Python whose words name no
-        # write stays no writer, as before #589, even when its code writes; add the call to _PY_ACTS when one turns up
+        # nothing _PY_ACTS finds and opens files only to read: a write by a call _PY_ACTS doesn't list (not open) is
+        # then missed; Python whose words name no write stays no writer, as before #589, even when its code writes;
+        # add the call to _PY_ACTS when one turns up
         return any(_WRITE_WORD.search(a) for a in argv[1:]) and (
-            (code := _python_code(command, scripts or {})) is None or bool(_PY_ACTS.search(code)))
+            (code := _python_code(command, scripts or {})) is None or bool(_PY_ACTS.search(code)) or
+            not _opens_to_read(code))
     if exe in ("at", "batch"):   # at -l, -r, -d, -c and -V list, remove, show or print: they schedule nothing
         return not command["stdin"] and not any(a in ("-l", "-r", "-d", "-c", "-V") for a in argv[1:])
     if exe == "osascript":
@@ -922,69 +922,27 @@ _PY_ACTS = re.compile(
     r"\b(?:filename|FileHandler|RotatingFileHandler|basicConfig)\b|"
     r"['\"][rbtU]*[wax+][rbtU+]*['\"]")   # a mode a file opens with, anywhere: `open(p, 'w' if … else 'r')`
 _PYTHON = re.compile(r"python[0-9.]*t?")
-# Python inline code that only reads a download as data (TK-A046; TK-D002 for a downloaded file a command names), as
-# an allowlist of syntax: `import json` and `import sys`, reading sys.stdin, json.load and json.loads, subscripts,
-# len and print, comprehensions, comparisons and string formatting; `files` adds open() in read mode, sys.argv and a
-# value's get, keys, values and items. Anything else, a dunder name too, isn't data.
-_DATA_NODES = (ast.Module, ast.Expr, ast.Assign, ast.Name, ast.Load, ast.Store, ast.Constant, ast.Subscript, ast.Slice,
-               ast.Tuple, ast.List, ast.Dict, ast.Set, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
-               ast.comprehension, ast.JoinedStr, ast.FormattedValue, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare,
-               ast.IfExp, ast.Call, ast.Attribute, ast.Import, ast.alias, ast.keyword, ast.operator, ast.unaryop,
-               ast.boolop, ast.cmpop, ast.expr_context)
-_DATA_ATTRS = {("sys", "stdin"), ("sys.stdin", "read"), ("sys.stdin", "readline"), ("sys.stdin", "readlines"),
-               ("json", "load"), ("json", "loads")}
 
 
-def _dotted(node):
-    """`a.b.c` as text for a chain of names, else None."""
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute) and (base := _dotted(node.value)):
-        return base + "." + node.attr
-    return None
-
-
-def _data_only(code, files=False):
-    """Whether Python code passes _DATA_NODES' allowlist (see above)."""
+def _opens_to_read(code):
+    """Whether every `open` in Python code is called by that name with a literal read-only mode ('r', 'rb', 'rt' or
+    none) and no opener: a mode it works out at run time (`'W'.lower()`, `chr(119)`), or `open` passed on, may write."""
     try:
         tree = ast.parse(code)
     except (SyntaxError, ValueError, RecursionError, MemoryError):
         return False
-    stored = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
-    calls = {"print", "len"} | ({"open"} if files else set())
-    names = calls | {"json", "sys"} | stored
+    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
     for node in ast.walk(tree):
-        if not isinstance(node, _DATA_NODES):
+        if isinstance(node, ast.Name) and node.id == "open" and id(node) not in called:
             return False
-        if isinstance(node, ast.Import):
-            if any(a.name not in ("json", "sys") or a.asname for a in node.names):
-                return False
-        elif isinstance(node, ast.Name):
-            if "__" in node.id or node.id not in names:
-                return False
-        elif isinstance(node, ast.Attribute):
-            base = _dotted(node.value)
-            if "__" in node.attr or not (
-                    (base, node.attr) in _DATA_ATTRS or files and (base, node.attr) == ("sys", "argv") or
-                    isinstance(node.value, ast.Constant) and isinstance(node.value.value, str) and
-                    node.attr in ("format", "join") or
-                    files and base not in ("json", "sys", "sys.stdin") and node.attr in ("get", "keys", "values", "items")):
-                return False
-        elif isinstance(node, ast.Call):
-            f = node.func
-            if isinstance(f, ast.Name):
-                if f.id not in calls or f.id == "open" and (node.keywords or len(node.args) > 2 or len(node.args) == 2 and not (
-                        isinstance(node.args[1], ast.Constant) and node.args[1].value in ("r", "rb", "rt"))):
-                    return False
-            elif not isinstance(f, ast.Attribute):
-                return False
-        elif isinstance(node, ast.Assign):
-            if not all(isinstance(t, ast.Name) or isinstance(t, ast.Tuple) and all(isinstance(e, ast.Name) for e in t.elts)
-                       for t in node.targets):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
+            mode = node.args[1] if len(node.args) > 1 else next(
+                (k.value for k in node.keywords if k.arg == "mode"), None)
+            if len(node.args) > 2 or any(isinstance(a, ast.Starred) for a in node.args) or any(
+                    k.arg not in ("file", "mode", "encoding", "errors", "newline") for k in node.keywords) or \
+                    mode is not None and not (isinstance(mode, ast.Constant) and mode.value in ("r", "rb", "rt")):
                 return False
     return True
-
-
 def _base(path):
     """The last part of a path as written (`./i.sh` and `/tmp/./i.sh` are i.sh)."""
     return posixpath.basename(posixpath.normpath(path)) if path else path
@@ -1000,6 +958,25 @@ def _operand(args, valued=()):
             return args[i]
         i += 2 if args[i] in valued else 1
     return None
+
+
+# the options of a Python that runs its inline code (or json.tool) and nothing else: -i would read stdin after it
+_PY_PLAIN_FLAGS = re.compile(r"-[IEsBu]*[cm]?")
+
+
+def _plain_python(argv, refs=()):
+    """Whether a Python runs the program its words give and nothing more: every option before its -c code, -m module,
+    `-` or script is one of _PY_PLAIN_FLAGS (-I, -E, -s, -B, -u), and nothing on the line sets PYTHONINSPECT."""
+    if any("PYTHONINSPECT" in w for w in list(refs) + argv):
+        return False
+    for a in argv[1:]:
+        if a == "-" or not a.startswith("-"):
+            return True
+        if not _PY_PLAIN_FLAGS.fullmatch(a):
+            return False
+        if a[-1] in "cm":
+            return True
+    return False
 
 
 def _python_code(command, scripts):
@@ -1050,12 +1027,10 @@ _SPECIAL = re.compile(r"CDPATH|HOME|OLDPWD|PWD|PATH|IFS|ENV|BASH_ENV|SHELLOPTS|B
                       r"PAGER|EDITOR|VISUAL")
 
 
-def _sed_reads_only(script):
-    """Whether a sed script only reads and prints: its s and y commands taken out (s's flags without w or e), what is
-    left only picks and prints lines (shell._sed_prints)."""
-    rest = re.sub(r"([sy])([^\\\n])((?:\\.|(?!\2).){0,200})\2((?:\\.|(?!\2).){0,200})\2([A-Za-z0-9]{0,8})",
-                  lambda m: ";" if not set("we") & set(m.group(5)) else "w", script)
-    return shell._sed_prints(rest)
+# the options of a sed that only reads: any other (GNU's -i, BSD's -I, -f, a prefix of --in-place such as --in) may
+# write or run what the line doesn't show
+_SED_READ_OPTION = re.compile(r"-[nrsuzEe]+|--|--(?:quiet|silent|regexp-extended|expression|null-data|separate|"
+                              r"unbuffered|posix|debug|sandbox)(?:=[\w\W]*)?")
 
 
 def _reading(argv):
@@ -1065,8 +1040,8 @@ def _reading(argv):
     name, args = argv[0], argv[1:]
     if name == "sed":
         script = shell._sed_scripts(args)
-        return "read" if "-n" in args and script is not None and shell._sed_prints(script) and not any(
-            re.match(r"-[nrsuzE]*[if]|--in-place|--file", a) for a in args) else None
+        return "read" if "-n" in args and script is not None and shell._sed_prints(script) and all(
+            _SED_READ_OPTION.fullmatch(a) for a in args if a.startswith("-") and a != "-") else None
     if name in ("grep", "egrep", "fgrep"):
         return "deep" if any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(
             ("--recursive", "--dereference-recursive", "--directories=recurse", "-d")) for a in args) else "read"
@@ -1173,258 +1148,6 @@ def _private(learned, commands, acted):
         return set()
     used = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", acted))
     return {text for name, text in learned["assigned"] if name not in used and not _SPECIAL.fullmatch(name)}
-
-
-_FETCHERS = ("curl", "wget")
-_EXPANDED = re.compile(r"\$\([^)]*\)?|\$\{[^}]*\}?|\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])|`[^`]*`?|[*?[\]]")   # in a name
-# a substitution (or process substitution) whose command is curl or wget, as a word holds it
-_FETCHED = re.compile(r"(?:\$\(|`|<\()\s*(?:[^\s|;&()`]*/)?(?:curl|wget)\b")
-_EXTRACTORS = {"tar", "bsdtar", "unzip", "gunzip", "bunzip2", "unxz", "xz", "7z", "7za", "zstd", "unzstd", "cpio", "ar"}
-# curl's and wget's short options that take a value (in a cluster, the rest of it or the next word)
-_VALUED = {"curl": set("AbcCdDeEFHKmoPQrtTuUwxXyYz"), "wget": set("aABDeiIlOoPQRtTUwX")}
-
-
-def _fetched_files(argv):
-    """(the files a curl or wget writes what it downloads to, whether it may write one the line can't name): curl's -o
-    and -O (the URL's last part), wget's -O, or the URL's last part when wget has no -O; a name with an expansion,
-    curl -J, --output-dir or -K, and wget -i, -r, -m or --content-disposition can't be named. `-` is stdout."""
-    name, args = argv[0], argv[1:]
-    remote = [_base(re.sub(r"[?#].*", "", a.split("://", 1)[1].partition("/")[2])) or "index.html"
-              for a in args if re.match(r"(?i)[a-z][a-z0-9+.-]*://", a)]
-    files, unknown, named, i = set(), False, False, 0
-    while i < len(args):
-        a, nxt = args[i], args[i + 1] if i + 1 < len(args) else ""
-        long, _, value = a.partition("=")
-        if long in ("--output", "--output-document"):
-            files.add(value if _ else nxt)
-            named, i = True, i + (not _)
-        elif a in ("--remote-name", "--remote-name-all"):
-            files.update(remote)
-            named = True
-        elif long in ("--remote-header-name", "--output-dir", "--config", "--input-file", "--recursive", "--mirror",
-                      "--content-disposition"):
-            unknown = True
-        elif re.fullmatch(r"-[A-Za-z0-9#:]+", a):
-            for k, ch in enumerate(a[1:], 2):
-                if ch == "O" and name == "curl":
-                    files.update(remote)
-                    named = True
-                elif ch in "Jrmi" and (ch == "J") == (name == "curl") or ch == "K" and name == "curl":
-                    unknown = True
-                if ch in _VALUED[name]:
-                    value = a[k:] or nxt
-                    i += not a[k:]
-                    if ch in ("o" if name == "curl" else "O"):
-                        files.add(value)
-                        named = True
-                    break
-        i += 1
-    if name == "wget" and not named:
-        files.update(remote)
-    files.discard("-")
-    return files, unknown
-
-
-def _runs_files(c):
-    """The files command c runs as code: its program when that is a path, the script a shell or interpreter runs (the
-    file its stdin is redirected from, when it reads its program there), a file source or . reads."""
-    argv, name = c["argv"], c["argv"][0]
-    out, kind = [c["word"]], shell._kind(name)
-    if name in shell.SHELLS:
-        mode, _ = shell._shell_mode(argv[1:])
-        out += [_operand(argv[1:], shell.SHELL_VALUE_OPTS)] if mode is None else list(c.get("in", ()))
-    elif kind and kind not in ("awk", "sed") and shell._code_arg(kind, argv[1:]) is None:
-        if shell._reads_stdin(kind, argv[1:]):
-            out += list(c.get("in", ()))
-        elif module := _python_module(argv[1:]):   # python -m m runs m.py, or the package m
-            out += [module[0].replace(".", "/") + ".py", module[0].partition(".")[0]]
-        else:
-            out.append(_operand(argv[1:], shell.INTERP_VALUE_OPTS))
-    elif name in ("source", "."):
-        out += argv[1:2]
-    return [f for f in out if f]
-
-
-# what may name a downloaded file without running it (TK-D002): programs that print what they read (to the terminal
-# or a filter: else what they print may run), remove it, or copy or move it (the copy is downloaded too)
-_TAINT_READERS = {"cat", "head", "tail", "grep", "egrep", "fgrep", "wc", "jq", "file", "stat", "ls",
-                  "test", "[", "sha256sum", "shasum", "sha1sum", "md5", "md5sum", "cksum", "diff", "cmp", "od",
-                  "hexdump", "strings", "sort", "cut", "nl"}
-_TAINT_MOVES = {"rm", "unlink", "chmod", "cp", "mv"}
-# a file a program or shell loads by itself wherever it is: one downloaded there runs
-_AUTOLOAD = re.compile(r"(?:^|/)(?:conftest\.py|sitecustomize\.py|usercustomize\.py|[^/]*\.pth|\.bashrc|\.bash_profile|"
-                       r"\.bash_login|\.bash_logout|\.bash_aliases|\.aliases|\.zsh_aliases|\.profile|\.zshrc|\.zshenv|"
-                       r"\.zprofile|\.zlogin|\.kshrc|\.mkshrc|\.cshrc|\.tcshrc|\.envrc|\.pythonrc(?:\.py)?|"
-                       r"package\.json|"
-                       # a tool's config, which can name code it runs (`addopts = -p`, a make recipe, core.fsmonitor)
-                       r"pytest\.ini|tox\.ini|setup\.cfg|pyproject\.toml|[Mm]akefile|GNUmakefile|[Jj]ustfile|Rakefile|"
-                       r"Gemfile|Cargo\.toml|build\.rs|\.npmrc|\.yarnrc(?:\.yml)?|\.gitconfig|\.git/config|"
-                       r"\.pre-commit-config\.yaml)$|(?:^|/)\.git/hooks/[^/]+$|"
-                       # a program planted where a later call finds it by name: a bin dir
-                       r"(?:^|/)s?bin/[^/]+$")
-# code an interpreter imports by a name a later call needn't spell (`import x` x.py, require('./x') x.js, `use x`
-# x.pm, `python3 .` __main__.py), from the working tree or a search path
-_IMPORTABLE = (".py", ".pyc", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pm", ".lua")
-# a scratch dir nothing imports from by itself (but a search path's dir in it: site-packages, node_modules), spelled
-# literally: $TMPDIR or a variable may be the working tree
-_SCRATCH = re.compile(r"(?:(?:/private)?/(?:var/)?tmp|(?:/private)?/var/folders|"
-                      r"(?:~|/Users/[^/]+|/home/[^/]+)/Downloads)/"
-                      r"(?!(?:.*/)?(?:site-packages|dist-packages|node_modules)/)[^$`]*$")
-# what runs code on a line that downloads: a shell, an interpreter, and these
-_RUNNERS = {"source", ".", "eval", "exec"}
-# the options of a Python that runs its inline code (or json.tool) and nothing else: -i would read stdin after it
-_PY_PLAIN_FLAGS = re.compile(r"-[IEsBu]*[cm]?")
-
-
-def _plain_python(argv, refs=()):
-    """Whether a Python runs the program its words give and nothing more: every option before its -c code, -m module,
-    `-` or script is one of _PY_PLAIN_FLAGS (-I, -E, -s, -B, -u), and nothing on the line sets PYTHONINSPECT."""
-    if any("PYTHONINSPECT" in w for w in list(refs) + argv):
-        return False
-    for a in argv[1:]:
-        if a == "-" or not a.startswith("-"):
-            return True
-        if not _PY_PLAIN_FLAGS.fullmatch(a):
-            return False
-        if a[-1] in "cm":
-            return True
-    return False
-
-
-def _downloads(parsed):
-    """Where downloaded bytes run, as RUNS_DOWNLOAD: the command (TK-D002), and where a download's pipe feeds code that
-    may run or store it, as PIPED_TO_CODE: the command (TK-A046). A file curl or wget wrote (-o, -O, its redirection, a
-    later stage's redirection or tee) is downloaded, and so is a copy of it (cp, mv, a reader's redirection). Runs: any
-    command or assignment that names a downloaded file (`BASH_ENV=f`, `--rcfile f`, `openssl -in f`, `sh f`) unless it
-    is one that only prints, removes or copies it (_TAINT_READERS whose output reaches no more than the terminal or a
-    filter, _TAINT_MOVES, Python inline code _data_only reads as data); a downloaded file whose name a program or shell
-    loads by itself (_AUTOLOAD: conftest.py, a .pth, a shell rc file, a git hook, a bin dir or one the line puts on
-    PATH), and importable code (_IMPORTABLE) outside a scratch dir, also as a copy of a pattern or an expansion; any
-    script or path program when the line can't name a download (curl -J, an archive); a substitution of curl or wget,
-    a variable the line sets to one, or a substitution that reads a downloaded file, as a command's name, in eval or
-    source, in -c code, in a herestring or pipe into a shell or interpreter; and on a line that downloads, wherever it
-    is, any shell, interpreter, source, eval or exec, and any program named by a path, a pattern or an expansion, but
-    data-only Python when no download may be code it imports. Piped to code: a later stage of a download's pipeline
-    that is a shell with -c or a script, an
-    interpreter with a script or a module (python -m json.tool aside), or with inline code: Python's unless _data_only
-    reads it as data."""
-    commands, tags = parsed[0], []
-    files, unknown, piped = set(), False, {}
-    for k, c in enumerate(commands):
-        if c["argv"][0] in _FETCHERS:
-            named, maybe = _fetched_files(c["argv"])
-            files |= named | set(c.get("out", ()))
-            unknown |= maybe
-            piped.setdefault(c["pipeline"], k)
-        elif c["pipeline"] in piped:   # a later stage of a download's pipeline stores what it gets
-            files |= set(c.get("out", ())) | ({a for a in c["argv"][1:] if not a.startswith("-")}
-                                             if c["argv"][0] == "tee" else set())
-    # each name a pattern: an expansion in one may be any text (`-o "view-$(basename $p).json"` is view-*.json); one
-    # that is only an expansion may be any file, and so may any, past 64 patterns
-    paths = set(files)
-    names = {_EXPANDED.sub("*", _base(f)) for f in files}
-    exact, patterns = {n for n in names if "*" not in n}, {n for n in names if "*" in n}
-    tainted = [m.group(1) for r in parsed[2] + [a for c in commands for a in c["argv"][1:]]
-               if (m := re.match(r"([A-Za-z_][A-Za-z0-9_]*)\+?=", r)) and _FETCHED.search(r)]
-    uses = re.compile(r"\$\{?(?:%s)\b" % "|".join(map(re.escape, tainted))) if tainted else None
-    stages = {}
-    for c in commands:
-        stages.setdefault(c["pipeline"], []).append((c.get("stage", 0), c["argv"][0] in _FILTERS))
-
-    def downloaded(path):
-        return _base(path) in exact or any(fnmatch.fnmatchcase(_base(path), p) for p in patterns if p != "*")
-
-    def fetched(text):   # curl's output, a variable set to it, or a substitution that reads a downloaded file
-        return bool(_FETCHED.search(text) or uses and uses.search(text) or
-                    re.search(r"\$\(|`", text) and any(map(downloaded, re.findall(r"[\w./-]+", text))))
-
-    def named(c):   # the downloaded files a command names: in a word, after a word's `=`, or as its stdin
-        words = c["argv"][1:] + [a.partition("=")[2] for a in c["argv"][1:] if "=" in a] + list(c.get("in", ()))
-        return [w for w in words if w and downloaded(w)]
-
-    def passes(c):   # its output goes no further than the terminal or a filter
-        return not c.get("out") and not ({"$()", "``", "<()"} & set(c["via"])) and not any(
-            s > c.get("stage", 0) and not f for s, f in stages[c["pipeline"]])
-    # copies: a reader's redirection, cp and mv, from a downloaded file or text; until nothing new is found
-    for _ in range(8):
-        size = len(exact) + len(patterns)
-        for c in commands:
-            name, args = c["argv"][0], [a for a in c["argv"][1:] if not a.startswith("-")]
-            if not (named(c) or any(map(fetched, c["argv"][1:] + c["stdin"]))):
-                continue
-            unknown |= name in _EXTRACTORS
-            dest = args[-1:] if name in ("cp", "mv") and len(args) > 1 else []
-            copies = list(c.get("out", ())) + (args if name == "tee" else []) + [
-                d.rstrip("/") + "/" + _base(s) for d in dest for s in args[:-1]] + dest
-            for f in copies:
-                paths.add(f)
-                (patterns if "*" in (n := _EXPANDED.sub("*", _base(f))) else exact).add(n)
-        if len(exact) + len(patterns) == size:
-            break
-    unknown |= "*" in patterns or len(patterns) > 64
-    fetchers = [k for k, c in enumerate(commands) if c["argv"][0] in _FETCHERS]
-    for c in commands if fetchers else ():   # a copy of what a pattern or an expansion names may be the download
-        args = [a for a in c["argv"][1:] if not a.startswith("-")]
-        if c["argv"][0] in ("cp", "mv", "install", "ln", "rsync") and any(re.search(r"[*?[$`]", s) for s in args[:-1]):
-            paths.update([args[-1]] + [args[-1].rstrip("/") + "/" + _base(s) for s in args[:-1]])
-        if any(re.search(r"[*?[$`]", a) for a in c["argv"][1:] + c["stdin"]):
-            paths.update(c.get("out", ()))
-    assigns = parsed[2] + [a for c in commands if c["argv"][0] == "export" for a in c["argv"][1:]]
-    # a dir the line puts on PATH: a download planted there runs when a later call names it
-    bins = {d.rstrip("/") for r in assigns if r.startswith("PATH=") for d in r[5:].split(":") if d and "$" not in d}
-    homeless = any(r.startswith("HOME=") for r in assigns) or any(c["argv"][0] == "ln" for c in commands)
-
-    def loadable(path):   # importable code a later call may import: but in a scratch dir the line can't redirect
-        path = posixpath.normpath(path)
-        return path.endswith(_IMPORTABLE) and (homeless or not _SCRATCH.match(path))
-    if any(_AUTOLOAD.search(p := f.replace("\\", "/")) or loadable(p) or posixpath.dirname(p).rstrip("/") in bins
-           for f in paths):
-        tags.append("RUNS_DOWNLOAD:a file a program, shell or later call loads by its name")
-    # data-only Python may run on a line that downloads only when no download may be code it imports
-    code_downloaded = unknown or any(posixpath.normpath(p).endswith(_IMPORTABLE) for p in paths)
-    for r in parsed[2]:   # an assignment that names one: BASH_ENV, ENV, PYTHONSTARTUP …
-        if "=" in r and downloaded(r.partition("=")[2]):
-            tags.append("RUNS_DOWNLOAD:" + r)
-    carries = set()   # the pipelines an earlier stage of which names a download's output
-    for k, c in enumerate(commands):
-        argv, kind = c["argv"], shell._kind(c["argv"][0])
-        code = shell._dash_c(argv[1:]) if argv[0] in shell.SHELLS else \
-            shell._code_arg(kind, argv[1:]) if kind else None
-        plain = kind == "python" and _plain_python(argv, parsed[2])
-        data = plain and code is not None and _data_only(code, files=True)
-        use = named(c) if argv[0] not in _FETCHERS else []
-        if code is not None and not use:   # code that names a downloaded file, or imports a downloaded module
-            use = [w for w in re.findall(r"[\w./-]+", code) if any(downloaded(w + e) for e in ("",) + _IMPORTABLE)] + [
-                m for m in re.findall(r"\b(?:import|from)\s+(\w+)", code) if downloaded(m + ".py")]
-        ran = [f for f in _runs_files(c) if downloaded(f) or fetched(f) or unknown and (f is not c["word"] or "/" in f)]
-        harmless = argv[0] in _TAINT_READERS and passes(c) or argv[0] in _TAINT_MOVES or data
-        runner = argv[0] in shell.SHELLS or kind and kind not in ("awk", "sed")
-        if ran or use and not harmless or fetched(c["word"]) or code is not None and fetched(code) or \
-                argv[0] in ("eval", "source", ".") and any(map(fetched, argv[1:] + c["stdin"])) or \
-                (shell._stdin_shell([c]) or shell._stdin_interpreter([c]) or code is not None) and (
-                    c["pipeline"] in carries or any(map(fetched, c["stdin"]))) and not data or \
-                runner and (exact or patterns or unknown) and set(c["via"][-1:]) & {"xargs", "parallel", "find -exec"}:
-            tags.append("RUNS_DOWNLOAD:" + " ".join(argv))
-        # on a line that downloads, wherever it is: a shell, an interpreter, source, eval or exec, and a program named
-        # by a path, a pattern or an expansion, may run the download; but a stage only a download's pipe feeds (as
-        # piped to code below) and data-only Python where no download may be code it imports
-        elif fetchers and k not in fetchers and not (data and not code_downloaded) and (
-                (runner or argv[0] in _RUNNERS) and not all(f < k and commands[f]["pipeline"] == c["pipeline"]
-                                                           for f in fetchers)
-                or c["opaque"] or re.search(r"[/$`]", c["word"])):
-            tags.append("RUNS_DOWNLOAD:" + " ".join(argv))
-        if any(map(fetched, argv[1:] + c["stdin"])) or use:
-            carries.add(c["pipeline"])
-        first = piped.get(c["pipeline"])
-        if first is None or k <= first or c["argv"][0] in _FETCHERS:
-            continue
-        if argv[0] in shell.SHELLS and shell._shell_mode(argv[1:])[0] != "stdin" or \
-                kind and kind not in ("awk", "sed") and (
-                    code is not None and not (plain and _data_only(code)) or code is None and
-                    not shell._reads_stdin(kind, argv[1:]) and
-                    not (plain and _python_module(argv[1:])[:1] == ["json.tool"])):
-            tags.append("PIPED_TO_CODE:" + " ".join(argv))
-    return list(dict.fromkeys(tags))
 
 
 def _code(parsed):
