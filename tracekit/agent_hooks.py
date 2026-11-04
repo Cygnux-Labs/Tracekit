@@ -141,8 +141,22 @@ DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart",
 # ignoring case, as Go's encoding/json does (K and ſ fold to k and s; so does str.casefold): the key casefolded and
 # without `_` ends in path, paths or file
 DEVIN_PATH_KEY = re.compile(r"(?:path|paths|file)$")
-# a unified diff's file names: --- a/x and +++ b/x (up to a tab), and diff --git a/x b/x
-DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+))$", re.M)
+# a unified diff's file names: --- a/x and +++ b/x (up to a tab, where diff -u puts the time), and diff --git a/x b/x
+DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+)$)", re.M)
+
+
+def _diff_names(name):
+    """A unified diff's file name, without git's a/ or b/. git writes a name with a space, a quote, a backslash or a
+    byte past ASCII in "…" with C escapes (\\" \\\\ \\t, \\303\\251): both the name with its quotes dropped and the
+    unescaped one are decided."""
+    names = [name]
+    if len(name) > 1 and name[0] == name[-1] == '"':
+        names = [name[1:-1]]
+        try:
+            names.append(name[1:-1].encode("latin-1").decode("unicode_escape").encode("latin-1").decode("utf-8"))
+        except (UnicodeError, ValueError):
+            pass
+    return [re.sub(r"^[ab]/", "", n) for n in names]
 # what each of these Devin tools is decided on: a call that sends none of it is denied in the hook (_blocked)
 DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
                                     "path under a key ending in path, paths or file (case and _ ignored)"),
@@ -198,9 +212,9 @@ def tool(harness, name, ti):
             text = "\n".join(_strings(ti))   # whichever argument holds it
             files = [f.strip() for f in PATCH_FILE.findall(text)]
             if harness == "devin":   # its patch format isn't documented: a unified diff's files are decided too
-                files = list(dict.fromkeys(files + [re.sub(r"^[ab]/", "", f) for a, b in DIFF_FILE.findall(text)
+                files = list(dict.fromkeys(files + [n for a, b in DIFF_FILE.findall(text)
                                                     for f in ([a.strip()] if a else b.split())
-                                                    if f not in ("", "/dev/null")]))
+                                                    if f not in ("", "/dev/null") for n in _diff_names(f)]))
         elif harness == "devin" and name in ("read", "write", "edit"):
             # every path under a key Devin's tool may read (v2 decides the first path key and `paths`, v1 `file_path`
             # and `paths`), so a decoy `file_path` beside the path the tool reads never replaces it

@@ -778,6 +778,17 @@ class DevinTools(unittest.TestCase):
         from tracekit import policy
         _, args = agent_hooks.tool("devin", "apply_patch", {"patch": "--- a/config/.env\n+++ b/config/.env\n@@\n-A=1\n+A=2\n"})
         self.assertEqual(policy.evaluate(policy.load(policy.DEFAULT_POLICY)[0], "Edit", args, "/w")["decision"], "deny")
+        # the third review: a tab and time after the name (diff -u) dropped the file, and a quoted name kept its quotes
+        timed = ("--- a/.devin/hooks.v1.json\t2026-11-04 10:00:00\n+++ b/.devin/hooks.v1.json\t2026-11-04 10:01:00\n"
+                 "@@ -1 +1 @@\n-x\n+y\n")
+        tool, args = agent_hooks.tool("devin", "apply_patch", {"patch": timed, "note": "*** Update File: README.md"})
+        self.assertIn(".devin/hooks.v1.json", args["paths"])
+        self.assertIn("TK-F009", load_policy().decide(tool, args)["rule_ids"])
+        _, args = agent_hooks.tool("devin", "apply_patch", {"patch": '--- "a/.env"\n+++ "b/.env"\n@@\n-A=1\n+A=2\n'})
+        self.assertIn(".env", args["paths"])
+        self.assertEqual(policy.evaluate(policy.load(policy.DEFAULT_POLICY)[0], "Edit", args, "/w")["decision"], "deny")
+        _, args = agent_hooks.tool("devin", "apply_patch", {"patch": '+++ "b/caf\\303\\251 x.py"\n@@\n+x\n'})
+        self.assertIn("café x.py", args["paths"])
 
     def test_typed_input_is_decided_as_a_shell_command(self):
         tool, args = agent_hooks.tool("devin", "write_to_process", {"shell_id": "main", "input": "rm -rf ~\n"})
