@@ -900,15 +900,19 @@ def _command(harness, ev, v2, python):
                       (harness, ev) if v2 or harness == "antigravity" else (harness,), python, ev in PRE,
                       harness == "antigravity")
     # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
-    # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
-    # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
-    # which both run
-    # assume Droid runs hooks under cmd.exe; Qwen Code does, so a path that needs quotes keeps cmd.exe's form there,
-    # and one that doesn't goes bare, which either shell runs. goose (sh -c) and Crush keep _hook_command's form
+    # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
+    # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
+    # can't parse: an interpreter path that needs no quotes goes bare, which both run
+    # assume Droid runs hooks under cmd.exe. goose (sh -c) and Crush keep _hook_command's form
     if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
-    return m.group(1) + c[m.end():] if m else c if harness == "qwen" else f"& {c}"
+    c = m.group(1) + c[m.end():] if m else f"& {c}"
+    # Windows PowerShell hands a native exit 2 back as 1, and Qwen Code blocks a call only at 2; a PreToolUse hook whose
+    # Python didn't run or failed exits 2 ($LASTEXITCODE isn't enough: the profile Qwen Code doesn't skip may set it)
+    if harness != "qwen":
+        return c
+    return c + ("; if ($?) { exit $LASTEXITCODE } else { exit 2 }" if ev in PRE else "; exit $LASTEXITCODE")
 
 
 def _merge(hooks, path, events, entry, uninstall, flat=False):
@@ -1087,6 +1091,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             # ms for Gemini CLI; newer Qwen Code reads seconds, but 1000 or more still as ms, so 600 s in both
             if harness in ("gemini", "qwen"):   # holds wait for approval (Qwen Code's default is 60 s)
                 h.update(name="tracekit", timeout=600_000 if ev in PRE else 30_000)
+                if harness == "qwen" and os.name == "nt":
+                    # Qwen Code otherwise runs it under cmd.exe or Git Bash, by how it was started; Node's quoting
+                    # of the command for cmd.exe leaves a quoted program path it can't run
+                    h["shell"] = "powershell"
             else:
                 h["timeout"] = 600 if ev == "PreToolUse" else 30
             return {"matcher": "*", "hooks": [h]} if ev in tools else {"hooks": [h]}
@@ -1150,6 +1158,8 @@ def stdin_text():
 def entry(harness=None, event=None):
     """event: the hook event the command names (OpenCode's plugin does), or None."""
     harness = harness or (sys.argv[1] if len(sys.argv) > 1 else "")
+    if harness.endswith(";"):   # Qwen Code before 0.15.0 runs the Windows command under cmd.exe, which hands PowerShell's
+        harness, event = harness[:-1], None   # tail (_command) to the hook as arguments: `qwen;`, then the tail's words
     if harness not in HARNESSES:
         closed = H.fail_closed()
         print(f"usage: python -m tracekit.agent_hooks {{{'|'.join(HARNESSES)}}} [EVENT]; "
