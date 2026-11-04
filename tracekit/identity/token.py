@@ -79,8 +79,10 @@ class TokenStore:
     def _hash(salt, secret):
         return hashlib.sha256(bytes.fromhex(salt) + secret.encode()).hexdigest()
 
-    def add(self, name, ttl_s, tenant=None):
-        """A new token for `name`, returned once. A name is never reused, revoked or not."""
+    def add(self, name, ttl_s, tenant=None, box=False, addr=None):
+        """A new token for `name`, returned once. A name is never reused, revoked or not. `box`: issued to a
+        `tracekit up --isolated` box (identity claim `box`: the signer records its runs as a box's); `addr`: taken
+        only from that source address (a box's container IP)."""
         if not NAME_RE.fullmatch(name or "") or name in RESERVED:
             raise ValueError(f"token name {name!r}: 1-64 of a-z 0-9 _ -, not {' or '.join(sorted(RESERVED))}")
         tokens = self.load()
@@ -88,7 +90,8 @@ class TokenStore:
             raise ValueError(f"token {name!r} exists; add one under a new name, then revoke {name!r}")
         secret, salt, now = secrets.token_urlsafe(32), secrets.token_hex(16), self.clock()
         tokens[name] = {"salt": salt, "sha256": self._hash(salt, secret), "created": now, "expires": now + ttl_s,
-                        "tenant": tenant, "revoked": None}
+                        "tenant": tenant, "revoked": None, **({"box": True} if box else {}),
+                        **({"addr": addr} if addr else {})}
         # lean: read-modify-write without a lock; two admins adding tokens at the same instant can lose one
         files.write_json(self.path, tokens)
         return f"{PREFIX}{name}.{secret}"
@@ -110,12 +113,14 @@ class TokenStore:
         try:
             rec = self.load().get(name) if NAME_RE.fullmatch(name) else None
             ok = rec and (hmac.compare_digest(self._hash(rec["salt"], secret), rec["sha256"])
-                          and rec["revoked"] is None and self.clock() < rec["expires"])
+                          and rec["revoked"] is None and self.clock() < rec["expires"]
+                          and rec.get("addr") in (None, (getattr(conn, "client_address", None) or ("",))[0]))
         except (OSError, ValueError, KeyError, TypeError) as e:
             raise RPCError("unavailable", "token store unreadable") from e
         if not ok:
-            raise RPCError("unauthenticated", "unknown, expired or revoked token")
-        return CallerIdentity("token", name, True, {"expires_at": rec["expires"], "tenant": rec["tenant"]})
+            raise RPCError("unauthenticated", "unknown, expired or revoked token, or not from its address")
+        return CallerIdentity("token", name, True, {"expires_at": rec["expires"], "tenant": rec["tenant"],
+                                                    **({"box": True} if rec.get("box") else {})})
 
 
 class BearerToken:

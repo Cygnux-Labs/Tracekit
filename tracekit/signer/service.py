@@ -2205,6 +2205,10 @@ class SignerService:
     def _isolation(identity):
         if identity.scheme == "uid" and hasattr(os, "getuid"):
             return "same-user" if identity.subject == str(os.getuid()) else "separate-user"
+        if identity.scheme == "token" and identity.claims.get("box"):
+            # a box's token (tracekit up --isolated): any process of this signer's user can hold it too, so no
+            # isolation from the agent is measured; run.registered's ext.box says the key was outside that box
+            return "unknown"
         # k8s_sa, mtls and tokens other than the dev transport's authenticate over the HTTP transport only
         if identity.scheme in ("k8s_sa", "mtls", "oidc", "token") and subject(identity) != "token:dev":
             return "remote"
@@ -2658,7 +2662,9 @@ class SignerService:
             if principal is not None:
                 out["principal"] = top["principal"] = principal
                 tx.set(run, "principal", principal)
-            data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
+            boxed = identity.scheme == "token" and bool(identity.claims.get("box"))   # whatever this signer's own
+            data = {"agent": req["agent"], "signer_isolation": self._isolation(identity) if boxed else
+                    self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
                     "identity": _recorded(identity)}
             data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
             if up:
@@ -2669,6 +2675,8 @@ class SignerService:
                 data["posture"] = {**self.posture, "attested": False}
             if imported:
                 data["fidelity"], top["tier"] = "none", "T3"
+            if boxed:   # non-critical (format-v2.md §9): a verifier that doesn't read it sees `unknown`, claims nothing
+                top["ext"] = {"box": {"token": identity.subject}}
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             # evasion: a new run of a held owner and principal, or of a held parent run, starts held
             now = _iso(time.time())

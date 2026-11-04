@@ -706,12 +706,34 @@ function checkOpenshellPolicy(rep: Report, events: J[]) {
     + "recorded").slice(0, 20), true);
 }
 
+export const BOXED = "PROOF AGAINST THE BOXED AGENT: the signing key was outside its box";
+
+/**
+ * ext.box: the run's caller held the token the signer issued to a `tracekit up --isolated` box, which got neither the
+ * signing key nor the store. Proof against the agent in that box only: any process of the signer's own user on the
+ * host can hold the token too, which is why the signer records the run's isolation as `unknown`. The signer writes it
+ * on run.registered only, naming the token the run's identity is; anywhere else, a warning.
+ */
+function checkBox(rep: Report, events: J[]) {
+  const box = (e: J): boolean => {
+    const v = isObj(get(e, "ext")) ? get(e.ext, "box") : undefined, d = get(e, "data");
+    const i = isObj(d) ? get(d, "identity") : undefined;
+    return isObj(v) && Object.keys(v).length === 1 && typeof get(v, "token") === "string"
+      && get(e, "type") === "run.registered" && isObj(i) && get(i, "scheme") === "token"
+      && get(i, "subject") === v.token && get(d, "signer_isolation") === "unknown";
+  };
+  const good = events.filter(box), bad = events.filter((e) => !box(e));
+  rep.check("boxed agent", bad.length === 0, `${BOXED} (${good.length} run(s)); not proof against a process of the `
+    + "signer's own user on the host, which could hold the box's token",
+  bad.map((e) => `seq ${str(get(e, "seq"))}: ext.box is not a box token's run.registered`).slice(0, 20), true);
+}
+
 /**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
  */
 const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended],
-  ["openshell.policy", checkOpenshellPolicy]]);
+  ["openshell.policy", checkOpenshellPolicy], ["box", checkBox]]);
 const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
 /** A run's problems past which its later records go unchecked: forged records cost a verifier little. */
 const RUN_PROBLEMS = 20;

@@ -9,6 +9,7 @@ can prove.
 | Mode | Platforms | Agent reaches the signer by | Who can reach the keys and store | Recorded `isolation` |
 |---|---|---|---|---|
 | [Laptop dev](#laptop-dev) | Linux, macOS, Windows | auto-spawned Unix socket (Windows: loopback TCP) | the agent's own user | `same-user` |
+| [Laptop box](#laptop-box) (experimental) | macOS, Linux, with Docker | HTTPS through its relay, a token per box | you, anything running as you, whoever runs the Docker host; not the agent in its box | `unknown`, with `ext.box`: proof against the boxed agent only |
 | [Laptop system mode](#laptop-system-mode) | Linux; macOS experimental | `/run/tracekit-signer/signer.sock` | root and the signer's OS user | `separate-user` |
 | [Container sidecar](#container-and-kubernetes-sidecar) | Linux containers, Kubernetes 1.29+ | a socket in a shared directory | the signer's uid and whoever runs the node | `separate-user` |
 | [Central](#central) | Linux containers | HTTPS (`k8s_sa`, `mtls` or `token` identity) | whoever administers the signer's host and storage | `remote` |
@@ -63,6 +64,54 @@ tracekit verify run.tkb --trust trust.json
   rewrite its store ([what dev assurance means](quickstart-v2.md#what-dev-assurance-means)).
 - **Bundles reach:** `Integrity: VERIFIED`, `Assurance: dev`, `isolation: same-user`, `approvals: self`. A witness
   in signer.yaml raises the assurance level, never the isolation.
+
+## Laptop box
+
+Experimental. The agent runs in a container; its signer runs outside it, as you. One command, no root and no second
+user, so it works whether or not you are an admin ([design note](design/isolated-up.md)). Prerequisites: Docker
+(colima or Docker Desktop on a Mac, Docker Engine on Linux) and a project dir inside your home (colima mounts only
+your home into its VM).
+
+```sh
+cd my-project
+tracekit up --isolated -- stand-in-agent 'ls -la'        # Bash calls through the box's hooks; no network needed
+tracekit up --isolated --network                         # Claude Code in a box, with the internet: log in there
+tracekit doctor                                          # D-BOX-SIGNER, D-BOX-MOUNTS, D-BOX-TOKENS
+tracekit export --v2 --config "<box home>/signer.yaml" --run <run id> -o run.tkb   # up prints this line per run
+tracekit signer trust --config "<box home>/signer.yaml" -o trust.json
+tracekit verify run.tkb --trust trust.json               # boxed agent: PROOF AGAINST THE BOXED AGENT ...
+```
+
+The first `up --isolated` builds the box image, `tracekit-box:<version>-<hash>`: Claude Code (a pinned version) and
+this Tracekit, the hooks' client, on `node:22-bookworm-slim`, about 1 GB. On an M-series Mac with colima, the base
+image already pulled, the first run took 197 s from the command to the agent's last call; each later one a few
+seconds. `up --isolated` sets up a signer of its own next to the dev signer's data dir (`<dev data dir>-box`, its keys,
+store, TLS key and token store) and starts it, or reuses it. Each box gets a token of its own and runs with the
+project at `/work`, the token and the signer's CA certificate read-only, as your uid, every capability dropped, no new
+privileges, pids and memory limits. What the host runs from the project on its own is read-only: `.git` and `.claude`
+always (an empty placeholder when missing), husky, pre-commit and lefthook configs, every coding agent's project
+config, `.mcp.json`, `.vscode`, `.idea`; a symlink among them stops `up`. The box is on an internal network with its
+relay as its only way out; `--network` adds Docker's bridge. Its hooks are in Claude Code's managed settings, which
+pin the signer's variables, and a root-owned `/etc/tracekit/client.json` names the signer. When `up` exits or is
+stopped, the box goes and its token is revoked (the next `up` revokes the token of one killed outright), and `up`
+lists the files the box changed that the host may run. You answer the box's held calls on the box signer's socket, as
+your uid (`tracekit approvals --signer SOCKET approve ID`, with the `socket` the box's signer.yaml names); the box's
+token can't.
+
+Claude Code's login: never mount `~/.claude` into a box (it holds your login and your own hooks; doctor fails such a
+box). Run `tracekit up --isolated --network`, then `/login` in the box's Claude Code: it prints a link to open on the
+host and takes the code back. The login is the box's, gone when it exits.
+
+- **Protects against:** the agent in the box reading the signer's key, stopping it, rewriting its store or policy,
+  answering its own approvals, reaching the Docker socket or (without `--network`) the host's services and the
+  internet, or planting what the host runs on its own. `tests/test_box.py` tries each one from inside a box.
+- **Doesn't protect against:** you, anything else that runs as you on the host (it can read the key, and use a box's
+  token while the box runs), or root on the host or in the Docker VM; an agent you run outside the box (its runs are
+  dev mode's, `same-user`); a container you start by hand with more mounted (doctor's `D-BOX-MOUNTS` flags one);
+  project files you run that the box changed.
+- **Bundles reach:** `isolation: unknown` and, from verifiers that read the signed `ext.box`, `PROOF AGAINST THE BOXED
+  AGENT: the signing key was outside its box`, never more; `Assurance: dev` until you add a witness to the box's
+  signer.yaml.
 
 ## Laptop system mode
 

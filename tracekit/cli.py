@@ -164,6 +164,16 @@ def main(argv=None):
     p.add_argument("--wait", action="store_true", help="return once it answers")
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
+    p.add_argument("--isolated", action="store_true", help="(experimental) run the agent in a container, its signer "
+                   f"outside it: `tracekit up --isolated [-- COMMAND ...]` ({wiki_url('docs/design/isolated-up.md')})")
+    p.add_argument("--image", help="with --isolated: the agent's image (default: tracekit-box, Claude Code and this "
+                   "Tracekit's hooks, built on first use)")
+    p.add_argument("--project", default=".", help="with --isolated: the project dir the box gets at /work")
+    p.add_argument("--network", action="store_true", help="with --isolated: give the box the internet (Docker's "
+                   "bridge; on a Mac, also every service on the host's 127.0.0.1). Without it the box reaches only "
+                   "its signer, so Claude Code can't reach its API")
+    p.add_argument("command", nargs=argparse.REMAINDER, help="with --isolated: what the box runs (default: the "
+                   "image's command)")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
     p = sub.add_parser("doctor", help=f"check this setup (v1/v2 system mode, the dev signer); {wiki_url('docs/doctor.md')}")
     p.add_argument("--json", action="store_true", help="print [{id, status, detail, fix}]")
@@ -617,6 +627,21 @@ def _run(a):
         from .sdk import autospawn
         print(json.dumps({**install.status(), "signer_v2": autospawn.status()}, indent=2))
         return 0
+    if a.cmd == "up" and (a.isolated or a.command or a.image or a.project != "." or a.network):
+        from . import box
+        from .sdk.client import SignerUnavailable
+        if not a.isolated:
+            print("tracekit up: --image, --project, --network and a command go with --isolated", file=sys.stderr)
+            return 2
+        if not _signer_extra():
+            return 2
+        experimental("tracekit up --isolated")
+        try:
+            return box.up(a.project, a.image, a.command[1:] if a.command[:1] == ["--"] else a.command,
+                          network=a.network)
+        except (box.BoxError, OSError, ValueError, SignerUnavailable) as e:
+            print(f"tracekit up --isolated: {e}", file=sys.stderr)
+            return 1
     if a.cmd == "up":
         from .sdk import autospawn
         if not _signer_extra():

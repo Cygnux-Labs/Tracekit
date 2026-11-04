@@ -254,7 +254,8 @@ class Agreement(unittest.TestCase):
                                          "mtls:spiffe://acme/tetragon": ["observe_effect"],
                                          "mtls:spiffe://acme/openshell": ["register_run", "observe_effect",
                                                                           "close_run"],
-                                         "mtls:spiffe://acme/gateway": ["model_event"]})
+                                         "mtls:spiffe://acme/gateway": ["model_event"],
+                                         "token:box-agree": ["register_run", "close_run"]})
         try:
             runs = {"closed": cls.record_run(s, "read_file"), "approval": cls.record_run(s, "pay", approve=True),
                     "retry": cls.record_run(s, "pay", approve=True, retry=True),
@@ -264,7 +265,7 @@ class Agreement(unittest.TestCase):
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
                     "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s),
                     "constraint": cls.constraint_run(s), "amended": cls.amended_run(s),
-                    "openshell": cls.openshell_run(s)}
+                    "openshell": cls.openshell_run(s), "box": cls.box_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -424,6 +425,14 @@ class Agreement(unittest.TestCase):
         return r["run_id"]
 
     @staticmethod
+    def box_run(s):
+        """A run a `tracekit up --isolated` box's token registered: isolation unknown and a format 1.6 ext.box."""
+        boxed = CallerIdentity("token", "box-agree", True, {"box": True})
+        r = s.call(boxed, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        s.call(boxed, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
+    @staticmethod
     def openshell_run(s):
         """A sandbox's run the OpenShell middleware registered, with its OCSF import's reports: a connection OpenShell
         blocked and a policy change, a format 1.4 ext.openshell.policy."""
@@ -460,6 +469,17 @@ class Agreement(unittest.TestCase):
                 edit(files, manifest)
         rewrite_bundle(self.bundles[src], out, apply)
         return out
+
+    def test_a_box_run_is_proof_against_its_boxed_agent_only(self):
+        """#601's review: a box's runs read `remote`, which anything of the signer's user holding the box's token gets
+        too. Now `unknown` (a verifier that doesn't read ext.box claims nothing) and, from both verifiers, BOXED."""
+        _, rep = self.agree(self.bundles["box"], self.trusts["dev"])
+        [box] = [c for c in rep.checks if c["check"] == "boxed agent"]
+        self.assertEqual((box["status"], box["detail"].split(" (")[0]), ("pass", v2.BOXED))
+        self.assertIn({"check": "isolation", "status": "pass", "detail": "signer-reported: unknown 1 run(s)"},
+                      [{k: c[k] for k in ("check", "status", "detail")} for c in rep.checks])
+        self.assertEqual([c for c in ts_verify(self.bundles["box"], self.trusts["dev"])["checks"]
+                          if c["check"] == "boxed agent"], [box])
 
     def test_honest_bundles(self):
         for name, bundle in self.bundles.items():

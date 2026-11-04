@@ -459,7 +459,8 @@ def _tail(client, path, st):
         # final, or with a tailer_lost after tailer.IDLE_TAILER_S without a new line
         handle["run_token"] = RunHandle(client, st).call("delegate_run", identity=f"uid:{t['uid']}")["run_token"]
         argv = ["sudo", "-n", "-u", t["user"], t["python"], "-I", "-m", "tracekit.tailer"]
-    elif sc.get("signer"):   # system mode, but init could not give the tailer access
+    elif sc.get("signer") and not sc.get("box"):   # system mode, but init could not give the tailer access; a box's
+        # (tracekit.box: its signer named, its tailer its own, as in dev mode)
         RunHandle(client, st).call("tailer_lost", reason="no transcript tailer is installed", offset=0)
     else:   # exits once SessionEnd removes the session state
         handle["until"] = path

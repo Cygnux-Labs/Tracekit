@@ -125,7 +125,47 @@ def collect(config=None, issuer_key=None):
                 continue
             _codex_trust(lambda id, ok, detail, fix, bad=FAIL: rows.append(result(id, OK if ok else bad, detail, fix)),
                          path, hooks if isinstance(hooks, dict) else {}, None, WARN)
-    return rows
+    return rows + _box()
+
+
+def _box():
+    """The box signer's checks (`tracekit up --isolated`), once one was set up here: does it answer and what isolation
+    did its last box run record (D-BOX-SIGNER), and does each running box get nothing but the project, its token and
+    the signer's certificate (D-BOX-MOUNTS)."""
+    from . import box
+    from .signer.service import load_config
+    from .storage.base import StorageCorrupt
+    path = os.path.join(box.home(), "signer.yaml")
+    if not os.path.exists(path):
+        return []
+    try:
+        cfg = load_config(path)
+        last = (box.runs(cfg["data_dir"]) or [None])[-1] if os.path.isdir(os.path.join(cfg["data_dir"], "store")) \
+            else None
+    except (OSError, ValueError, StorageCorrupt) as e:
+        return [result("D-BOX-SIGNER", FAIL, f"the box signer's {path} or its store does not load: {e}",
+                       f"fix signer.yaml; check the store with tracekit signer fsck --config {path}")]
+    up = box._hello(cfg["socket"])
+    out = [result("D-BOX-SIGNER", OK if up else WARN, f"box signer {'answers' if up else 'is not running'} at "
+                  f"{cfg['socket']}; " + (f"its last box run, {last[0]}, recorded isolation {last[1]}" if last else
+                                          "no box run yet"), "tracekit up --isolated starts it")]
+    try:
+        ids = subprocess.run(["docker", "ps", "-q", "--filter", f"label={box.LABEL}"], capture_output=True, text=True,
+                             timeout=30, check=True).stdout.split()
+        found = json.loads(subprocess.run(["docker", "inspect", *ids], capture_output=True, text=True, timeout=30,
+                                          check=True).stdout) if ids else []
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        return out + [result("D-BOX-MOUNTS", WARN, f"can't list the boxes: {e}", "start Docker, or set DOCKER_CONTEXT")]
+    bad = [f"{c['Name'].lstrip('/')}: {'; '.join(p)}" for c in found if (p := box.problems(c, box.home()))]
+    from .identity.token import TokenStore
+    left = box.orphans(TokenStore(cfg["http"]["tokens"]), {(c.get("Config") or {}).get("Labels", {}).get(box.LABEL)
+                                                            for c in found})
+    return out + [result("D-BOX-MOUNTS", FAIL if bad else OK, "; ".join(bad) or f"{len(found)} box(es) running, each "
+                         "with the project, its token and the signer's certificate only",
+                         "stop it; run the agent with tracekit up --isolated, which mounts none of these"),
+                  result("D-BOX-TOKENS", WARN if left else OK, f"{len(left)} box token(s) still valid with no box "
+                         f"running: {', '.join(left)}" if left else "no box token outlives its box",
+                         "the next tracekit up --isolated revokes them")]
 
 
 def _managed():
