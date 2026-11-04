@@ -119,8 +119,8 @@ class DemoServer(unittest.TestCase):
         self.assertIn("Integrity: FAILED.", tampered)
         kept = tampered.split("\nkept ", 1)[1].split("\n")[0]
         self.addCleanup(shutil.rmtree, kept, True)
-        self.assertEqual(sorted(f for f in os.listdir(kept) if f.endswith((".tkb", ".json"))),
-                         ["run.tkb", "tampered.tkb", "trust.json"])
+        kept_files = {f for f in os.listdir(kept) if f.endswith((".tkb", ".json"))}   # Windows: the signer's endpoint
+        self.assertEqual(kept_files - {"endpoint.json"}, {"run.tkb", "tampered.tkb", "trust.json"})
         from tracekit.cli import _quote
         self.assertIn(f"\n  verify the bundle again: tracekit verify {_quote(os.path.join(kept, 'run.tkb'))} --trust "
                       f"{_quote(os.path.join(kept, 'trust.json'))}\n", tampered)

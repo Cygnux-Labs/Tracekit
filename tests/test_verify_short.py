@@ -204,6 +204,7 @@ class V1(unittest.TestCase):
         self.assertTrue(warned.startswith("Warnings: signing key, ") and warned.endswith(". Add --detail to read them."),
                         warned)
 
+    @unittest.skipUnless(hasattr(os, "getuid"), "the v1 signer stamps isolation from the peer's uid; Windows has none")
     def test_another_users_signer_is_proof_only_with_its_key_pinned(self):
         out, key = self.export(peer_uid=os.getuid() + 1)   # the signer stamps the agent's user as not its own
         code, pinned = verify(out, "--key", key)
