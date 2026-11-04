@@ -446,6 +446,8 @@ def _stricter(a, b):
         d["nondeterministic"] = True
     if a.get("oversize") or b.get("oversize"):
         d["oversize"] = list(dict.fromkeys(a.get("oversize", []) + b.get("oversize", [])))
+    if a.get("unread") or b.get("unread"):
+        d["unread"] = a.get("unread") or b.get("unread")
     return d
 
 
@@ -1971,12 +1973,16 @@ class SignerService:
                  "engine": self.policy.engine, "error": type(e).__name__}
             return d, False, d["rule_ids"]
 
-    def _reasons(self, ids):
+    def _reasons(self, ids, unread=None):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then their
         remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed
-        ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520). A flag
-        rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
-        by = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
+        ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520), for
+        TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs, so
+        its label is no reason it was denied or held."""
+        engine_reasons = {**policy_compile.ENGINE_REASONS}
+        if cause := engine_reasons["TK-SHELL-PARSE"]["causes"].get(unread):
+            engine_reasons["TK-SHELL-PARSE"] = cause
+        by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
         return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]
@@ -2840,7 +2846,8 @@ class SignerService:
                    **({"reason": "; ".join(big["reasons"])[:1024]} if big else {})}
             said_no = d["decision"] == "ask" and self._said_no(key, tool, holder[0], digest)
             if d["decision"] in ("deny", "ask") and not big and (why := "; ".join(x for x in (
-                    said_no, held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"]))
+                    said_no, held if "TK-CONSTRAINT" in d["rule_ids"] else None,
+                    self._reasons(d["rule_ids"], ruled and ruled[0].get("unread")))
                     if x)[:1024]):
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids
             if "incident_id" in d:

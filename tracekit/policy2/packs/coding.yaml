@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-60'
+version: '2026.10-v2-61'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -53,8 +53,12 @@ deny:
     rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
   - id: TK-D002
     class: shell
-    field: code
-    pattern: '(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(env\s+|nohup\s+)?(\S*/)?(sh|bash|zsh|dash)\b(?: -(?:e|x|n|v|u|a|C|f|l|i))*(?:\s+-s|\s+(?:-|/dev/stdin|/dev/fd/0|/proc/self/fd/0|<&0)\s*(?:[;&|)>\n]|$)|\s*(?:[;&|)>\n]|$))|(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(\S*/)?(python3?|perl|ruby|node)\b(?: -(?:I|B|u|s|w|W|O|OO|x))*(?:\s+(?:-|/dev/stdin|/dev/fd/0|/proc/self/fd/0|<&0))?\s*(?:[;&|)>\n]|$)|(curl|wget)\b[^;&\n]*\|\s*xargs\b[^;&\n]*\b(sh|bash|zsh|dash)\s+-c(?:\s|[;&|)]|$)|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*\b(sh|bash|zsh|dash|python3?|node|perl|ruby)\b\s+\S+|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*(?:\bsource|\.)\s+\S+|(curl|wget)\b[^;\n]*(?:&&|;)[^\n]*(^|[;&]\s*)\./\S+|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
+    field: downloads
+    # the code (as `field: code`): a download piped into a shell, or into an interpreter that reads its program from
+    # stdin; and where the engine follows the downloaded bytes to a run (engine._downloads, RUNS_DOWNLOAD:): a file
+    # curl or wget wrote, run as a script or program or by source, or a substitution of one (or a variable set to
+    # it) run as a command, by eval or as -c code. A download used as data, then an unrelated interpreter, isn't one
+    pattern: '(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(env\s+|nohup\s+)?(\S*/)?(sh|bash|zsh|dash)\b(?: -(?:e|x|n|v|u|a|C|f|l|i))*(?:\s+-s|\s+(?:-|/dev/stdin|/dev/fd/0|/proc/self/fd/0|<&0)\s*(?:[;&|)>\n]|$)|\s*(?:[;&|)>\n]|$))|(curl|wget)\b[^;&\n]*\|\s*(sudo\s+)?(\S*/)?(python3?|perl|ruby|node)\b(?: -(?:I|B|u|s|w|W|O|OO|x))*(?:\s+(?:-|/dev/stdin|/dev/fd/0|/proc/self/fd/0|<&0))?\s*(?:[;&|)>\n]|$)|(curl|wget)\b[^;&\n]*\|\s*xargs\b[^;&\n]*\b(sh|bash|zsh|dash)\s+-c(?:\s|[;&|)]|$)|(ba|z)?sh\s+<\(\s*(curl|wget)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen|^RUNS_DOWNLOAD:'
     reason: running a downloaded script
     remedy: Download the script to a file and show it for review instead of piping it into a shell; a person runs it once they have read it.
     rationale: Remote code execution without review.
@@ -160,13 +164,19 @@ deny:
   # --- harness self-protection ---
   - id: TK-D007
     class: shell
-    field: target
-    # the dev signer's data and runtime dirs (signer/service.py dev_data_dir, sdk/autospawn.py runtime_dir) and the
-    # installed package (its policy engine, signer, hooks and packs) too, wherever a command acts on them, a read too:
-    # not in text it only writes into another file (#423). A help or version request is exempt, as `python -m
-    # tracekit.<module> --help` too
-    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
-    unless: '^(?:tracekit|(?:pyw?|pypy|pythonw?)[0-9.]*t? (?:-[^ ]+ +)*-m ?tracekit(?:\.[a-z_.]+)?)(?: [^ ]+)* --help$|^tracekit --version$'
+    field: tracekit
+    # what a command does to Tracekit's own files and signer (engine._tracekit), not where its names appear: acting on
+    # the dev signer's data and runtime dirs (signer/service.py dev_data_dir, sdk/autospawn.py runtime_dir), the
+    # system dirs, the client and v1 signer homes or the installed package (writing, deleting, moving, running or
+    # changing them, a cd into one before a write), stopping or starting the signer (kill, pkill, systemctl,
+    # launchctl, `tracekit signer`, `python -m tracekit.signer`), and reading its keys (also a recursive or pattern
+    # read of a data dir, which takes them in). Reading the rest is allowed (#589): `ls /etc/tracekit`, `grep … in
+    # site-packages/tracekit`, a variable set to such a path that is only read as itself. Code that imports the
+    # signer's modules acts only when it names a live location's function (dev_data_dir, serve_dev, main …): reading
+    # load_policy or rpc_schema from a checkout is allowed. Not text a command only writes into another file (#423).
+    # A help or version request is exempt, as `python -m tracekit.<module> --help` too
+    pattern: '^ACT:[\w\W]*?(?:/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client|\btracekitd\b|\btracekit\s+signer\b|-m ?tracekit\.(daemon|proxy|signer)\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit)|^(?:ACT|READ|DEEP):[\w\W]*?(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|\.tracekit-signer)[^\s]*?key|^DEEP:[\w\W]*?(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|\.tracekit-signer)|^SIGNER_MODULE:[\w\W]*?\b(?:dev_data_dir|runtime_dir|data_dir|serve_dev|_serve_dev|main|_dev_token|_token_cmd)\b'
+    unless: '^ACT:(?:tracekit|(?:pyw?|pypy|pythonw?)[0-9.]*t? (?:-[^ ]+ +)*-m ?tracekit(?:\.[a-z_.]+)?)(?: [^ ]+)* --help$|^ACT:tracekit --version$'
     reason: touching Tracekit's own files or signer
     remedy: Leave Tracekit's files, signer and policy alone; a person changes them through the signer's own configuration.
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
@@ -224,13 +234,12 @@ deny:
 ask:
   - id: TK-A046
     class: shell
-    field: code
-    # curl or wget where a command starts (the line's start or after a separator, as TK-A040 reads its client; after
-    # up to four keywords, assignments or wrappers such as then, time -p, env, nice -n 5, timeout 5, sudo; by a path
-    # too), piped, through up to four more stages (base64 -d, tee), into an interpreter (a path, sudo, env and a
-    # versioned python too) whose own words give it inline code (-c, -e) or a script: a word that is no option.
-    # `python3 -m json.tool` only pretty-prints, so json.tool is no script (the alternatives spell every other word)
-    pattern: '(^|[|;&({!`]\s*)((then|do|else|if|elif|while|until|time|exec|command|builtin|nohup|env|nice|timeout|stdbuf|sudo|doas)(\s(-[^\s]*|[0-9][^\s]*|[A-Za-z_][A-Za-z0-9_]*=[^\s]*))*\s+|[A-Za-z_][A-Za-z0-9_]*=[^\s]*\s+){0,4}([^\s|;&(){}`]{0,256}/)?(curl|wget)[^|;&\n]*(\|[^|;&\n]+){0,4}?\|\s*(sudo\s+)?((?:/[A-Za-z0-9._+-]{1,64}){0,8}/?env\s+)?(?:/[A-Za-z0-9._+-]{1,64}){0,8}/?((ba|z|da)?sh|python[0-9.]*|perl|ruby|node)(\s[^\s;&|]*)*?\s((-c|-e|--eval|--execute)(\s|$)|([^-\s;&|)j][^\s;&|)]*|j([^\s;&|)s][^\s;&|)]*|s([^\s;&|)o][^\s;&|)]*|o([^\s;&|)n][^\s;&|)]*|n([^\s;&|).][^\s;&|)]*|\.([^\s;&|)t][^\s;&|)]*|t([^\s;&|)o][^\s;&|)]*|o([^\s;&|)o][^\s;&|)]*|o([^\s;&|)l][^\s;&|)]*|l[^\s;&|)]+)?)?)?)?)?)?)?)?)(\s|$))'
+    field: downloads
+    # a later stage of a download's pipeline (through any stages: base64 -d, tee, jq) that is a shell with -c or a
+    # script, or an interpreter with a script or a module (`python3 -m json.tool` only pretty-prints), or with inline
+    # code (-c, -e): Python's only when it can run or store what it reads (an exec-style call, a spawner or a file
+    # write: engine._PY_ACTS), so `| python3 -c 'import json,sys; print(json.load(sys.stdin))'` is read as data
+    pattern: '^PIPED_TO_CODE:'
     reason: downloaded data passed to an interpreter
     remedy: Have a person check what the interpreter does with the downloaded input before approving it.
     rationale: Inline code and script paths can execute downloaded input in ways the policy cannot determine from the command.

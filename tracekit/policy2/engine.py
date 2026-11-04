@@ -185,6 +185,7 @@ class Engine:
         if cls == "a2a" and fields.get("unreadable"):
             hits["deny"].append("TK-A2A-NAME")   # a name with spellings its rules can't see (classes.a2a_fields)
         parsed, oversize, on_parse_error = ([], [], [], [], []), [], self.policy.get("on_parse_error", "ask")
+        cause = None
         if cls == "shell":
             command = fields.get("command", "")
             if len(_text(command if isinstance(command, str) else canonical(command)).encode()) > MAX_SUBJECT:
@@ -194,8 +195,10 @@ class Engine:
                 parsed, unread = self._parse(args, command)
                 # what trap, at or batch run later and the parser can't read (trap "$f" EXIT) isn't held, as before
                 # their code was read; with a writer's name in it, it counts for TK-D008 (_effects)
-                if unread or any(c["opaque"] and not _SCHEDULED.intersection(c["via"]) for c in parsed[0]):
+                held = next((c for c in parsed[0] if c["opaque"] and not _SCHEDULED.intersection(c["via"])), None)
+                if unread or held:
                     hits[on_parse_error].append("TK-SHELL-PARSE")
+                    cause = "syntax" if unread else _unread_cause(held)
         # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
@@ -261,6 +264,8 @@ class Engine:
             out["nondeterministic"] = True
         if oversize:
             out["oversize"] = oversize
+        if cause:
+            out["unread"] = cause
         return out
 
     def _parse(self, args, command, readings=True):
@@ -296,6 +301,10 @@ class Engine:
             return Engine._targets(cls, args, fields, parsed)
         if cls == "shell" and field == "effects":
             return _effects(parsed)
+        if cls == "shell" and field == "tracekit":
+            return _tracekit(parsed)
+        if cls == "shell" and field == "downloads":
+            return _code(parsed) + _downloads(parsed)
         if cls == "shell" and field == "package_index":
             return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
@@ -341,12 +350,7 @@ class Engine:
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
             targets = [" ".join(w) for w in words] + parsed[2] + stdin
-            # a path also as plainly written: /etc/./x, /etc//x and /etc/y/../x name /etc/x
-            have = set(targets)
-            targets += [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
-                                    for t in targets if _DOTTED_WORD.search(t)) if n not in have]
-            have = set(targets)
-            return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
+            return _path_forms(targets) + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
         if cls in ("http", "browser"):
@@ -370,6 +374,33 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+def _unread_cause(command):
+    """Why the parser can't read what an opaque command runs, as a key of compile.ENGINE_REASONS's TK-SHELL-PARSE
+    causes: its name is built by a variable or substitution (name) or a pattern (pattern); a shell bash isn't (foreign);
+    a shell, interpreter, source, at, batch, parallel or xargs that runs code from a pipe, a file or its input (input);
+    else other."""
+    name = command["argv"][0]
+    if re.search(r"[$`]", command["word"]):
+        return "name"
+    if re.search(r"[*?[{]", command["word"]):
+        return "pattern"
+    if name in shell.FOREIGN_SHELLS:
+        return "foreign"
+    if name in shell.SHELLS or shell._kind(name) or name in ("source", ".", "at", "batch", "parallel", "xargs") or \
+            name in shell.DASH_C or command["via"][-1:] == ["xargs"]:
+        return "input"
+    return "other"
+
+
+def _path_forms(targets):
+    """Targets, each also as plainly written (/etc/./x, /etc//x and /etc/y/../x name /etc/x) and casefolded."""
+    have = set(targets)
+    targets = targets + [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
+                                     for t in targets if _DOTTED_WORD.search(t)) if n not in have]
+    have = set(targets)
+    return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
 
 
 def _shell(args, persistent_target=None, readings=True):
@@ -628,8 +659,8 @@ def _effects(parsed):
     expansion builds may hold the path). A link ln or cp -s/-l makes is also MAY_WRITE: a later write through it
     writes the file it points at."""
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
-    unread = any(c["opaque"] for c in parsed[0])
-    if any(_opaque(c) for c in parsed[0]) or unread and _reaches_unread(parsed):
+    unread, scripts = any(c["opaque"] for c in parsed[0]), _written_scripts(parsed[0])
+    if any(_opaque(c, scripts) for c in parsed[0]) or unread and _reaches_unread(parsed):
         # lean: a read on the same line as such a writer counts as a write (as TK-D008 read the whole line before
         # #421); follow the names into the writer if that holds real reads
         tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:] + c["stdin"]]
@@ -684,12 +715,14 @@ def _reaches_unread(parsed):
     return any(_WRITER.search(v.lower()) for v in values)
 
 
-def _opaque(command):
+def _opaque(command, scripts=None):
     """Whether a command writes files _command_effects can't name: a writer whose operand is a variable or a
     substitution (rm "$f"), or zip -m reading its names from stdin (-@); xargs, parallel, a container's exec or ssh,
     or an interpreter running code with a write in it (xargs rm, parallel 'rm {}', docker exec c sh -c 'rm …',
-    perl -e 'open F, ">", …'); at or batch scheduling commands from a pipe or a file (the parser reads a herestring
-    or heredoc), or osascript's do shell script or a Finder delete."""
+    perl -e 'open F, ">", …': Python whose code the line shows, its -c code, heredoc or a script the line wrote
+    (`scripts`, _written_scripts), only when that code also has a real write, a spawner or an exec-style call,
+    _PY_ACTS, so `if n > 1` or a word `find` in it is no write); at or batch scheduling commands from a pipe or a file
+    (the parser reads a herestring or heredoc), or osascript's do shell script or a Finder delete."""
     argv = command["argv"]
     exe = argv[0].rsplit("/", 1)[-1].casefold()
     if exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
@@ -698,7 +731,10 @@ def _opaque(command):
         return any("$" in a or "`" in a or re.fullmatch(r"-[^-]*@[^-]*", a) for a in argv[1:])
     if exe in ("xargs", "parallel", "docker", "podman", "kubectl", "ssh") or \
             _INTERPRETER.fullmatch(exe):
-        return any(_WRITE_WORD.search(a) for a in argv[1:])
+        # lean: Python code only releases a writer its words named (a `>` that compares); a write its words don't
+        # name (open(p, "w")) isn't one, as before #589; name its targets from the code if that must hold
+        return any(_WRITE_WORD.search(a) for a in argv[1:]) and (
+            (code := _python_code(command, scripts or {})) is None or bool(_PY_ACTS.search(code)))
     if exe in ("at", "batch"):   # at -l, -r, -d, -c and -V list, remove, show or print: they schedule nothing
         return not command["stdin"] and not any(a in ("-l", "-r", "-d", "-c", "-V") for a in argv[1:])
     if exe == "osascript":
@@ -860,6 +896,271 @@ def _command_effects(commands):
 
 _SQL_WRITE = re.compile(r"(?im)\b(?:insert|update|delete|drop|create|alter|replace\s+into|vacuum|reindex)\b"
                         r"|^\s*\.(?:restore|import)\b")
+
+# Python code that may run text or a program, or write, move or delete a file: exec-style calls and what looks a name
+# up at run time, unpicklers, process spawners (os's, and any name imported from os), and file writes (a w, a, x or +
+# mode, os.open's write flags, pathlib's, os's and shutil's file operations, the writers of pandas, numpy and plots)
+_PY_ACTS = re.compile(
+    r"\b(?:exec|eval|compile|execfile|__import__|import_module|importlib|runpy|pickle|cPickle|_pickle|dill|marshal|"
+    r"shelve|jsonpickle|subprocess|pty|ctypes|cffi|getattr|setattr|globals|locals|__builtins__|builtins|codeop|"
+    r"shutil|sqlite3|urlretrieve|inplace|O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND)\b|\byaml\.(?:load|load_all|unsafe_load|"
+    r"full_load)\b|\bcode\.\w|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|fork\w*|remove|unlink|rmdir|"
+    r"removedirs|rename|renames|replace|truncate|makedirs|mkdir|mkfifo|mknod|symlink|link|chmod|chown|lchown|utime|"
+    r"kill\w*|putenv|chdir|chroot)\b|\bfrom\s+(?:os|posix|nt)\s+import\b|\bimport\s+os\s+as\b|"
+    r"\.(?:write_text|write_bytes|unlink|rmdir|touch|mkdir|rename|symlink_to|hardlink_to|chmod|save|savefig|savez\w*|"
+    r"to_(?:csv|json|parquet|pickle|excel|sql|hdf|feather|html|markdown|latex|xml|stata))\s*\(|"
+    r"(?:,|\bmode\s*=)\s*['\"][rbtU]*[wax+][rbtU+]*['\"]\s*[,)]")
+_PYTHON = re.compile(r"python[0-9.]*t?")
+
+
+def _base(path):
+    """The last part of a path as written (`./i.sh` and `/tmp/./i.sh` are i.sh)."""
+    return posixpath.basename(posixpath.normpath(path)) if path else path
+
+
+def _operand(args, valued=()):
+    """The first argument that is no option (an option in `valued` takes the next word), or None."""
+    i = 0
+    while i < len(args):
+        if args[i] == "--":
+            return args[i + 1] if i + 1 < len(args) else None
+        if not args[i].startswith("-") or args[i] == "-":
+            return args[i]
+        i += 2 if args[i] in valued else 1
+    return None
+
+
+def _python_code(command, scripts):
+    """The program text a Python command runs, when the line shows it: its -c code, the heredoc or herestring it reads,
+    or a script this line wrote (`scripts`: base name -> text); else None."""
+    argv = command["argv"]
+    if not _PYTHON.fullmatch(argv[0]):
+        return None
+    code = shell._code_arg("python", argv[1:])
+    if code is None and shell._reads_stdin("python", argv[1:]) and command["stdin"]:
+        code = "\n".join(command["stdin"])
+    if code is None and _python_module(argv[1:]) == [] and (script := _operand(argv[1:], shell.INTERP_VALUE_OPTS)):
+        code = scripts.get(_base(script))
+    return code
+
+
+def _written_scripts(commands):
+    """Base name -> the text this line's cat, tee, echo or printf writes into a file (a script it may then run)."""
+    out = {}
+    for c in commands:
+        name = c["argv"][0]
+        if name in ("cat", "tee", "echo", "printf"):
+            text = "\n".join(c["stdin"] + (c["argv"][1:] if name in ("echo", "printf") else []))
+            files = list(c.get("out", ())) + ([a for a in c["argv"][1:] if not a.startswith("-")] if name == "tee" else [])
+            out.update((_base(f), out.get(_base(f), "") + "\n" + text) for f in files)
+    return out
+
+
+# programs that only read the files they name and print what they find (TK-D007: reading Tracekit's files is allowed,
+# its keys aside); those that read every file under a folder they name, or a pattern's files, read it deeply
+_READERS = {"ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "ack", "wc", "stat", "du", "diff", "cmp",
+            "readlink", "realpath", "test", "[", "find", "sed", "jq", "od", "hexdump", "strings", "tree", "pgrep", "ps",
+            "sort", "cut", "nl", "sha256sum", "shasum", "sha1sum", "md5", "md5sum", "cksum"}
+_NAVIGATE = ("cd", "pushd", "popd")
+
+
+def _sed_reads_only(script):
+    """Whether a sed script only reads and prints: its s and y commands taken out (s's flags without w or e), what is
+    left only picks and prints lines (shell._sed_prints)."""
+    rest = re.sub(r"([sy])([^\\\n])((?:\\.|(?!\2).){0,200})\2((?:\\.|(?!\2).){0,200})\2([A-Za-z0-9]{0,8})",
+                  lambda m: ";" if not set("we") & set(m.group(5)) else "w", script)
+    return shell._sed_prints(rest)
+
+
+def _reading(argv, glob):
+    """(whether a command only reads what it names, whether it reads all of it: every file under a folder, grep -r,
+    rg, ag or ack, or a pattern's files). A _READERS program, without the options that make it write, delete or run
+    something: sed -i, -f or a script that writes or runs (w, e), find's actions, rg --pre, sort or tree -o."""
+    name, args = argv[0], argv[1:]
+    if name not in _READERS:
+        return False, False
+    if name == "sed":
+        script = shell._sed_scripts(args)
+        ok = script is not None and _sed_reads_only(script) and not any(
+            re.match(r"-[nrsuzE]*i|--in-place", a) for a in args)
+    elif name == "find":
+        ok = not any(a.startswith(("-exec", "-ok", "-fprint", "-fls")) or a == "-delete" for a in args)
+    elif name in ("rg", "ag", "ack"):
+        ok = not any(a.startswith(("--pre", "--pager")) for a in args)
+    elif name in ("sort", "tree"):
+        ok = not any(a.startswith("--output") or re.fullmatch(r"-[A-Za-z]*o.*", a) for a in args)
+    else:
+        ok = True
+    deep = glob or name in ("rg", "ag", "ack") or name in ("grep", "egrep", "fgrep") and any(
+        re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(("--recursive", "--dereference-recursive",
+                                                                     "--directories=recurse")) for a in args)
+    return ok, ok and deep
+
+
+_SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
+
+
+def _tracekit(parsed):
+    """What a shell call does to Tracekit itself (TK-D007), each as a tagged subject: ACT: what a command acts on or runs
+    (its words but data words, its stdin, the files redirections write, _effects' files, the other words that name
+    something: assignments, heredoc programs); READ: what a command that only reads names (_reading), the files a
+    redirection reads and the shell's own variables set to a value the line uses only as itself (_private); DEEP: what
+    a reader reads all of; SIGNER_MODULE: an ACT text that names a module of Tracekit's signer. A cd, pushd or popd is
+    a READ only where every command only reads and no redirection writes (a later relative name may act in its folder).
+    Each also normalised and casefolded as a path is (_path_forms)."""
+    commands, refs, written = parsed[0], parsed[2], set(parsed[3])
+    learned = parsed[5] if len(parsed) > 5 else None
+    kinds = [_reading(c["argv"], c["glob"]) for c in commands]
+    roams = not written and all(ok or c["argv"][0] in _NAVIGATE for c, (ok, _) in zip(commands, kinds))
+    act, read, deep = [], [], []
+    for c, (ok, all_of) in zip(commands, kinds):
+        data = shell.data_words(c["argv"]) | set(c.get("data_words", ()))
+        words = " ".join(a for i, a in enumerate(c["argv"]) if i not in data)
+        (deep if all_of else read if ok or roams and c["argv"][0] in _NAVIGATE else act).append(words)
+        act += [] if c.get("data_stdin") else c["stdin"]
+    reads, private = set(learned["read"]) if learned else set(), _private(learned, commands, "\n".join(act))
+    for r in refs:
+        (read if r not in written and (r in reads or r in private) else act).append(r)
+    act += [t.partition(":")[2] for t in _effects(parsed)]
+    act = list(dict.fromkeys(act))
+    return ["ACT:" + s for s in _path_forms(act)] + ["READ:" + s for s in _path_forms(list(dict.fromkeys(read)))] + \
+        ["DEEP:" + s for s in _path_forms(list(dict.fromkeys(deep)))] + \
+        ["SIGNER_MODULE:" + s for s in act if _SIGNER_MODULE.search(s)]
+
+
+def _private(learned, commands, acted):
+    """The assignment words that set a shell variable only commands that read use: standalone (the shell's own, not a
+    command's environment), its $NAME in none of the `acted` text (the words, code and stdin of the commands that act),
+    with nothing on the line that may set or export any variable (`set` too: set -a exports them) or name one at run
+    time (${!x})."""
+    if not learned or learned["any_set"] or "*" in learned["unresolved"] or any(c["argv"][0] == "set" for c in commands):
+        return set()
+    return {text for name, text in learned["assigned"] if not re.search(r"\$\{?%s\b" % re.escape(name), acted)}
+
+
+_FETCHERS = ("curl", "wget")
+_EXPANDED = re.compile(r"\$\([^)]*\)?|\$\{[^}]*\}?|\$(?:[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-])|`[^`]*`?|[*?[\]]")   # in a name
+# a substitution (or process substitution) whose command is curl or wget, as a word holds it
+_FETCHED = re.compile(r"(?:\$\(|`|<\()\s*(?:[^\s|;&()`]*/)?(?:curl|wget)\b")
+_EXTRACTORS = {"tar", "bsdtar", "unzip", "gunzip", "bunzip2", "unxz", "xz", "7z", "7za", "zstd", "unzstd", "cpio", "ar"}
+# curl's and wget's short options that take a value (in a cluster, the rest of it or the next word)
+_VALUED = {"curl": set("AbcCdDeEFHKmoPQrtTuUwxXyYz"), "wget": set("aABDeiIlOoPQRtTUwX")}
+
+
+def _fetched_files(argv):
+    """(the files a curl or wget writes what it downloads to, whether it may write one the line can't name): curl's -o
+    and -O (the URL's last part), wget's -O, or the URL's last part when wget has no -O; a name with an expansion,
+    curl -J, --output-dir or -K, and wget -i, -r, -m or --content-disposition can't be named. `-` is stdout."""
+    name, args = argv[0], argv[1:]
+    remote = [_base(re.sub(r"[?#].*", "", a.split("://", 1)[1].partition("/")[2])) or "index.html"
+              for a in args if re.match(r"(?i)[a-z][a-z0-9+.-]*://", a)]
+    files, unknown, named, i = set(), False, False, 0
+    while i < len(args):
+        a, nxt = args[i], args[i + 1] if i + 1 < len(args) else ""
+        long, _, value = a.partition("=")
+        if long in ("--output", "--output-document"):
+            files.add(value if _ else nxt)
+            named, i = True, i + (not _)
+        elif a in ("--remote-name", "--remote-name-all"):
+            files.update(remote)
+            named = True
+        elif long in ("--remote-header-name", "--output-dir", "--config", "--input-file", "--recursive", "--mirror",
+                      "--content-disposition"):
+            unknown = True
+        elif re.fullmatch(r"-[A-Za-z0-9#:]+", a):
+            for k, ch in enumerate(a[1:], 2):
+                if ch == "O" and name == "curl":
+                    files.update(remote)
+                    named = True
+                elif ch in "Jrmi" and (ch == "J") == (name == "curl") or ch == "K" and name == "curl":
+                    unknown = True
+                if ch in _VALUED[name]:
+                    value = a[k:] or nxt
+                    i += not a[k:]
+                    if ch in ("o" if name == "curl" else "O"):
+                        files.add(value)
+                        named = True
+                    break
+        i += 1
+    if name == "wget" and not named:
+        files.update(remote)
+    files.discard("-")
+    return files, unknown
+
+
+def _runs_files(c):
+    """The files command c runs as code: its program when that is a path, the script a shell or interpreter runs (the
+    file its stdin is redirected from, when it reads its program there), a file source or . reads."""
+    argv, name = c["argv"], c["argv"][0]
+    out, kind = [c["word"]], shell._kind(name)
+    if name in shell.SHELLS:
+        mode, _ = shell._shell_mode(argv[1:])
+        out += [_operand(argv[1:], shell.SHELL_VALUE_OPTS)] if mode is None else list(c.get("in", ()))
+    elif kind and kind not in ("awk", "sed") and shell._code_arg(kind, argv[1:]) is None:
+        out += list(c.get("in", ())) if shell._reads_stdin(kind, argv[1:]) else [
+            _operand(argv[1:], shell.INTERP_VALUE_OPTS)] if _python_module(argv[1:]) == [] else []
+    elif name in ("source", "."):
+        out += argv[1:2]
+    return [f for f in out if f]
+
+
+def _downloads(parsed):
+    """Where downloaded bytes run, as RUNS_DOWNLOAD: the command (TK-D002), and where a download's pipe feeds code that
+    may run or store it, as PIPED_TO_CODE: the command (TK-A046). Runs: a file a curl or wget wrote (-o, -O, its
+    redirection, a later stage's redirection or tee; then copied, moved or unpacked) run as a script, a program or by
+    source; any script or path program when a download's file names can't be told; a substitution of curl or wget,
+    or a variable the line sets to one, as a command's name, in eval, in -c code, or piped into a shell or interpreter
+    that reads its program from stdin. Piped to code: a later stage of a download's pipeline that is a shell with -c
+    or a script, or an interpreter with a script or a module (python -m json.tool aside), or with inline code: Python
+    code only when it has an exec-style call, a spawner or a file write (_PY_ACTS)."""
+    commands, tags = parsed[0], []
+    files, unknown, piped = set(), False, {}
+    for k, c in enumerate(commands):
+        if c["argv"][0] in _FETCHERS:
+            named, maybe = _fetched_files(c["argv"])
+            files |= named | set(c.get("out", ()))
+            unknown |= maybe
+            piped.setdefault(c["pipeline"], k)
+        elif c["pipeline"] in piped:   # a later stage of a download's pipeline stores what it gets
+            files |= set(c.get("out", ())) | ({a for a in c["argv"][1:] if not a.startswith("-")}
+                                             if c["argv"][0] == "tee" else set())
+    # each name a pattern: an expansion in one may be any text (`-o "view-$(basename $p).json"` is view-*.json); one
+    # that is only an expansion may be any file
+    base = {_EXPANDED.sub("*", _base(f)) for f in files}
+    unknown |= "*" in base
+
+    def downloaded(path):
+        return any(fnmatch.fnmatchcase(_base(path), b) for b in base if b != "*")
+    for c in commands:   # a downloaded file copied, moved or linked; unpacked into files no name says
+        name, args = c["argv"][0], [a for a in c["argv"][1:] if not a.startswith("-")]
+        if name in ("cp", "mv", "install", "ln") and len(args) > 1 and any(map(downloaded, args[:-1])):
+            base.add(_EXPANDED.sub("*", _base(args[-1])))
+        unknown |= name in _EXTRACTORS and any(map(downloaded, args))
+    tainted = [m.group(1) for r in parsed[2] + [a for c in commands for a in c["argv"][1:]]
+               if (m := re.match(r"([A-Za-z_][A-Za-z0-9_]*)\+?=", r)) and _FETCHED.search(r)]
+    uses = re.compile(r"\$\{?(?:%s)\b" % "|".join(map(re.escape, tainted))) if tainted else None
+
+    def fetched(text):
+        return bool(_FETCHED.search(text) or uses and uses.search(text))
+    for k, c in enumerate(commands):
+        argv, kind = c["argv"], shell._kind(c["argv"][0])
+        code = shell._dash_c(argv[1:]) if argv[0] in shell.SHELLS else \
+            shell._code_arg(kind, argv[1:]) if kind else None
+        ran = [f for f in _runs_files(c) if downloaded(f) or unknown and (f is not c["word"] or "/" in f)]
+        earlier = [w for d in commands[:k] if d["pipeline"] == c["pipeline"] for w in d["argv"][1:] + d["stdin"]]
+        if ran or fetched(c["word"]) or code is not None and fetched(code) or \
+                argv[0] in ("eval", "source", ".") and any(map(fetched, argv[1:])) or \
+                (shell._stdin_shell([c]) or shell._stdin_interpreter([c])) and any(map(fetched, earlier)):
+            tags.append("RUNS_DOWNLOAD:" + " ".join(argv))
+        first = piped.get(c["pipeline"])
+        if first is None or k <= first or c["argv"][0] in _FETCHERS:
+            continue
+        if argv[0] in shell.SHELLS and shell._shell_mode(argv[1:])[0] != "stdin" or \
+                kind and kind not in ("awk", "sed") and (
+                    code is not None and (kind != "python" or _PY_ACTS.search(code)) or code is None and
+                    not shell._reads_stdin(kind, argv[1:]) and _python_module(argv[1:])[:1] != ["json.tool"]):
+            tags.append("PIPED_TO_CODE:" + " ".join(argv))
+    return list(dict.fromkeys(tags))
 
 
 def _code(parsed):

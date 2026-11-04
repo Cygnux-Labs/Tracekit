@@ -36,8 +36,28 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
     # #519: a hold for these said no why, and an agent didn't know a readable command was its way through. Short: a
     # harness that cuts the message at 500 characters keeps the remedy and other rules' reasons; and no "a person
     # approves it", which a deny (the strict pack's on_parse_error) can't be
+    # #589: the decision's `unread` (engine._unread_cause) picks the cause's own reason and remedy: a function or `bash
+    # --version` was told to name its program, which didn't apply
     "TK-SHELL-PARSE": {"reason": "the policy can't read what this shell command runs",
-                       "remedy": "Name the program itself (`git push …`, not `$g push …`) so the policy can read it."},
+                       "remedy": "Name the program itself (`git push …`, not `$g push …`) so the policy can read it.",
+                       "causes": {
+                           "name": {"reason": "the program's name comes from a variable or a command's output that the "
+                                              "line doesn't set to plain text, so the policy can't see what runs",
+                                    "remedy": "Name the program itself, or set the variable to plain text earlier on "
+                                              "the same line (`PY=.venv/bin/python; $PY -m pytest`)."},
+                           "pattern": {"reason": "the program's name is a pattern or a brace expansion, so the policy "
+                                                 "can't see what runs",
+                                       "remedy": "Name the program itself, written out in full."},
+                           "input": {"reason": "a shell or interpreter runs code it reads from a pipe, a file or its "
+                                               "input, which the policy can't see",
+                                     "remedy": "Write out the commands it would run on the line itself, so the policy "
+                                               "can read them."},
+                           "foreign": {"reason": "a shell whose language the policy doesn't read (fish, PowerShell …) "
+                                                 "runs text",
+                                       "remedy": "Run the commands with bash or sh."},
+                           "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
+                                      "remedy": "Split it into plain commands: pipes, &&, if, for, case and functions "
+                                                "are read."}}},
     "TK-SQL-PARSE": {"reason": "the policy can't read this SQL",
                      "remedy": "Close the quote or comment so the policy can read it."}}
 # a remedy says what to do, in the present tense: not what one might, could or should do
@@ -63,7 +83,8 @@ AGENT_KEYS, BOUND_KEYS, BUDGET_KEYS = {"mode", "allow", "budget", "veto_s"}, {"t
 BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
-CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access"},
+CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access", "tracekit",
+                     "downloads"},
            "fs": {"path", "op", "content_digest"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
