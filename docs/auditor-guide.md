@@ -58,11 +58,13 @@ salt, so it lets you test guessed run ids against that tenant's leaves (only tha
 ## 4. Verify
 
 ```sh
-tracekit verify run.tkb --trust trust.json --strict
+tracekit verify run.tkb --trust trust.json --strict --detail
 tracekit verify run-set.tkb --trust trust.json --strict --json > run-set.report.json
 ```
 
-Exit 0 is clean, 1 failed, 2 unusable, 3 warnings under `--strict`. For a bundle whose log continues a v1 ledger, add
+Exit 0 is clean, 1 failed, 2 unusable, 3 warnings under `--strict`. `--detail` prints every check and the lines
+[step 5](#5-read-the-report) reads; without it you get a short result (the verdict, the warnings by name and how far
+the setup protects the record). For a bundle whose log continues a v1 ledger, add
 `--v1-ledger ledger.jsonl --v1-key signer.pub` to check the format bridge.
 
 **A second verifier.** The TypeScript verifier was written from the [format spec](format-v2.md), not from the Python

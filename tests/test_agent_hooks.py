@@ -1787,7 +1787,8 @@ class DemoPerAgent(unittest.TestCase):
             self.assertIn("BLOCKED  Bash: curl", out.getvalue())
             self.assertIn("original bundle exit 0, tampered bundle exit 1", out.getvalue())
             # #499: the run-boundaries gap of a harness that sends no session end is said to be expected
-            self.assertEqual("[WARN] run boundaries" in out.getvalue(), agent in demo.NO_SESSION_EVENTS)
+            self.assertEqual("\nVERIFIED WITH GAPS (run boundaries): " in out.getvalue(),
+                             agent in demo.NO_SESSION_EVENTS)
             self.assertEqual(f"gap is expected: {agent} sends no session end" in out.getvalue(),
                              agent in demo.NO_SESSION_EVENTS)
 

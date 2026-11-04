@@ -6,7 +6,7 @@ system works, one concept per page: [how Tracekit works](concepts/README.md).
 ## What does a verified bundle prove?
 
 That the records in it are the ones the signer signed: none edited, dropped, reordered or added after signing, all in
-one chain covered by a checkpoint signed by the log key **you** pinned. The `Assurance` line says who else vouches for
+one chain covered by a checkpoint signed by the log key **you** pinned. The `Assurance` line (`--detail`) says who else vouches for
 that checkpoint (witnesses, Rekor, a monitor). [Reading a verify report](verdicts.md) explains every line.
 
 ## What can't Tracekit prove?
@@ -31,8 +31,9 @@ Each limit is mapped to its attacker in the threat models: [laptop](threat-model
 Nothing against the agent itself. The dev signer runs as your user, the same user as the agent, so an agent that can
 run commands can read the signer's key, stop it, or rewrite its store and sign it again. The policy blocks the obvious
 attempts (`TK-D007`) and every record is still signed and chained, so dev mode catches mistakes and accidents and
-gives you real bundles to try the verifier on. Every dev bundle says so: `isolation: same-user`, and usually
-`Assurance: dev` and `approvals: self`. Protection against the agent starts with
+gives you real bundles to try the verifier on. Every dev bundle says so: `tracekit verify` prints `Protection: none
+against the agent`, and `--detail` shows `isolation: same-user`, and usually `Assurance: dev` and `approvals: self`.
+Protection against the agent starts with
 [system mode](deploy.md#laptop-system-mode) or a server signer.
 
 ## What does harness binding not stop?

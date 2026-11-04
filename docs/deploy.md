@@ -20,7 +20,8 @@ What each mode defends, and against whom: [threat model: laptop](threat-model-la
 
 ## What decides a bundle's assurance
 
-`tracekit verify` prints two lines ([verdicts](verdicts.md)). `Integrity` is the same in every mode: a bundle whose
+`tracekit verify --detail` ends with two lines ([verdicts](verdicts.md)); without `--detail`, its short `Protection`
+line says whether the agent could reach the signer. `Integrity` is the same in every mode: a bundle whose
 records were signed by the log key you pinned, in one unbroken chain covered by a checkpoint, reads `VERIFIED`.
 `Assurance` depends on who vouches for the checkpoint, not on the mode:
 

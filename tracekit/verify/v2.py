@@ -770,7 +770,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("run parts", not layout, _found(layout, f"{len(parted)} run(s) in {sum(map(len, parted))} parts, "
                                                           "each part continuing the one before it",
                                                   f"the parts of {len(parted)} run(s)"), layout)
-    count = sum(map(len, runs.values())) - unchecked
+    count = rep.events = sum(map(len, runs.values())) - unchecked
     rep.check("signatures", not problems, _found(problems, f"{count} record(s), keys valid at their position",
                                                  f"{count} record(s)"), problems)
     only = len(runs) == 1 and next(iter(runs.values()))[0]["event"]
@@ -802,6 +802,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                         for r in every)
     against = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
                if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "executed_against_policy"]
+    rep.kids = sorted({str(r.get("kid")) for r in every})   # each record is a dict by now: `against` read every one
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
@@ -900,7 +901,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("args source", True, f"{len(sources)} record(s): "
                   + ", ".join(f"{s} {sources.count(s)}" for s in ("raw", "parsed", "coerced")))
     registered = [rs[0]["event"]["data"] if rs[0]["event"].get("type") == "run.registered" else {} for rs in runs.values()]
-    isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64] for d in registered)
+    isolation = rep.isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64]
+                                                    for d in registered)
     rep.check("isolation", True, "signer-reported: " + ", ".join(f"{k} {n} run(s)" for k, n in sorted(isolation.items())))
     principals = [f"{str(e['principal'])[:256]} ({'attested' if e.get('principal_attested') is True else 'app-asserted'})"
                   for e in (rs[0]["event"] for rs in runs.values())

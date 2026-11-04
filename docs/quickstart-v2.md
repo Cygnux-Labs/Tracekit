@@ -228,6 +228,14 @@ tracekit verify run.tkb --trust trust.json
 ```
 
 ```text
+VERIFIED: <n> events, signed by sha256:<key id>, nothing edited or missing.
+Protection: none against the agent. Dev mode: the signer ran as the agent's own user, so the agent could have re-signed this log.
+For real protection, run the signer where the agent can't reach it: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+```
+
+`--detail` prints every check, then:
+
+```text
 Integrity: VERIFIED.
 Assurance: dev; records ed25519; checkpoint Ed25519 only (...); no witness cosignature; approvals: self; key retirements not proven complete
 ```

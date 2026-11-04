@@ -325,6 +325,8 @@ def main(argv=None):
                    help="format v2: a report of a monitor the trust config pins (tracekit monitor)")
     p.add_argument("--revocations", action="append", default=[],
                    help="format v2: record-key revocations, JSON lines (an issuer's issuance.jsonl)")
+    p.add_argument("--detail", action="store_true", help="print every check, then the Integrity and Assurance lines "
+                   "(the full report; scripts that read the text use it, or --json)")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint "
@@ -342,7 +344,10 @@ def main(argv=None):
 
     p = sub.add_parser("demo", help="end-to-end demo in a temp folder")
     p.add_argument("--real", action="store_true", help="drive a real `claude -p` session instead of the scripted agent")
-    p.add_argument("--keep", action="store_true")
+    p.add_argument("--keep", action="store_true", help="keep the demo's temp folder (its bundles, trust config and "
+                   "signer data) and print where it is; without it the folder is deleted at the end")
+    p.add_argument("--detail", action="store_true", help="print every check of each verification, as `tracekit verify "
+                   "--detail` does (not with --why)")
     p.add_argument("--server", action="store_true",
                    help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
     p.add_argument("--why", action="store_true",
@@ -746,8 +751,11 @@ def _run(a):
                               "integrity": integrity, "assurance": assurance, "notes": rep.notes,
                               **({"findings": rep.findings} if getattr(rep, "findings", None) else {})},
                              indent=2))
-        else:
+        elif a.detail or code == 2:   # an unusable bundle's report is the reason it is one
             mod.print_report(rep, code)
+        else:
+            from .verify import summary
+            summary(rep, code, integrity, assurance)
         return code
     if a.cmd == "policy":
         from .policy2 import compile as policy_compile
@@ -795,9 +803,9 @@ def _run(a):
         return demo_why.main(keep=a.keep)
     if a.cmd == "demo" and a.server:
         from . import demo_server
-        return demo_server.main(keep=a.keep)
+        return demo_server.main(keep=a.keep, detail=a.detail)
     if a.cmd == "demo":
-        return demo.main(real=a.real, keep=a.keep, agent=a.agent)
+        return demo.main(real=a.real, keep=a.keep, agent=a.agent, detail=a.detail)
     return 2
 
 

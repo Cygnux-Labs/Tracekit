@@ -102,9 +102,27 @@ class DemoServer(unittest.TestCase):
                            timeout=120, cwd=ROOT)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         verified, tampered = p.stdout.split("tamper test")
+        self.assertRegex(verified, r"\nVERIFIED: 11 events, signed by sha256:[0-9a-f]{64}, nothing edited or "
+                                   r"missing\.\nProtection: none against the agent\. Dev mode: ")   # what dev means
+        self.assertNotIn("PASS", verified)
+        self.assertIn("\nTAMPERED at event 4: hash does not match the event.\n", tampered)
+        self.assertRegex(tampered, r"\ndeleted .+ \(--keep keeps it\)\n$")
+
+    def test_detail_prints_every_check_and_keep_says_where_the_files_are(self):
+        p = subprocess.run([sys.executable, "-m", "tracekit", "demo", "--server", "--detail", "--keep"],
+                           capture_output=True, text=True, timeout=120, cwd=ROOT)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        verified, tampered = p.stdout.split("tamper test")
         self.assertIn("Integrity: VERIFIED.", verified)
         self.assertIn("cosigned ed25519 by witness.demo.tracekit.local", verified)
         self.assertIn("Integrity: FAILED.", tampered)
+        kept = tampered.split("\nkept ", 1)[1].split("\n")[0]
+        self.addCleanup(shutil.rmtree, kept, True)
+        self.assertEqual(sorted(f for f in os.listdir(kept) if f.endswith((".tkb", ".json"))),
+                         ["run.tkb", "tampered.tkb", "trust.json"])
+        from tracekit.cli import _quote
+        self.assertIn(f"\n  verify the bundle again: tracekit verify {_quote(os.path.join(kept, 'run.tkb'))} --trust "
+                      f"{_quote(os.path.join(kept, 'trust.json'))}\n", tampered)
 
 
 if __name__ == "__main__":

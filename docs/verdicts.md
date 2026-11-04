@@ -1,7 +1,29 @@
 # Reading a v2 verify report
 
-`tracekit verify bundle.tkb --trust trust.json` prints one line per check, then two summary lines, and a third when
-the bundle holds `review` records (signed findings, or reviews imported with no citations):
+`tracekit verify bundle.tkb --trust trust.json` prints a short result: the verdict, how many events and which keys
+signed them, the warnings by name, and how far the setup protects the record from the agent:
+
+```text
+VERIFIED: 11 events, signed by sha256:12cf00a6…, nothing edited or missing.
+Protection: none against the agent. Dev mode: the signer ran as the agent's own user, so the agent could have re-signed this log.
+For real protection, run the signer where the agent can't reach it: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+```
+
+A bundle that fails says where it breaks, by the record's log `seq`:
+
+```text
+TAMPERED at event 4: hash does not match the event.
+Add --detail to see each check.
+```
+
+`nothing edited or missing` is said only of a `VERIFIED` bundle with no warning; with warnings it says `nothing
+edited` and names them. `Protection` comes from the `isolation` each run's signer recorded: `none against the agent`
+for `same-user` (dev mode); for `separate-user` or `remote`, whether an independent witness cosigned the log too
+(`Assurance: witnessed`). A bundle that can't be checked at all (exit 2) gets the full report.
+
+`tracekit verify bundle.tkb --trust trust.json --detail` prints one line per check, then two summary lines, and a third
+when the bundle holds `review` records (signed findings, or reviews imported with no citations). The rest of this page
+reads that report; scripts that parse the text use it, or `--json`:
 
 ```text
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
@@ -100,7 +122,7 @@ It shows, in this order:
 - what to do next, with the commands to run, for every result that isn't plainly VERIFIED;
 - when nothing failed, a summary: records and time span, signer, assurance, agents, tool calls, calls held for
   approval and who answered them, gaps, and findings with their author labels;
-- every line exactly as `tracekit verify` prints it, each with what it means, then **copy report** and **download
+- every line exactly as `tracekit verify --detail` prints it, each with what it means, then **copy report** and **download
   JSON**, the JSON of `tracekit verify --json`.
 
 Without a trust file it checks everything that needs no pinned key: a changed, missing or reordered record still

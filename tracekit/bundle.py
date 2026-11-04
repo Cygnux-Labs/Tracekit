@@ -213,6 +213,9 @@ class Report:
     def __init__(self):
         self.checks, self.failures, self.warnings, self.notes = [], [], [], []
         self.assurance = None
+        # for the short result (tracekit.verify.summary): records checked, the keys that signed them, and (v2) each
+        # run's signer_isolation; never read by a check
+        self.events, self.kids, self.isolation = None, [], {}
 
     def check(self, name, ok, detail="", problems=None, warn=False):
         self.checks.append({"check": name, "status": "pass" if ok else ("warn" if warn else "fail"), "detail": detail,
@@ -328,6 +331,7 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
         except ValueError:
             rec = None
         recs.append(rec if isinstance(rec, dict) else None)
+    rep.events, rep.kids = len(recs), [kid] if kid else []
 
     # 1. chain intact
     probs, prev, expect, events = [], GENESIS, 0, []
