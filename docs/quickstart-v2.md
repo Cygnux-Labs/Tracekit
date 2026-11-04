@@ -139,8 +139,9 @@ tracekit last
 
 ```text
 run 40c7ee89ae9eaec8f8eb8556b32fdc9d (my-agent)
-Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (...); no witness cosignature; ...
+VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
 bundle: /home/me/project/40c7ee89ae9eaec8f8eb8556b32fdc9d.tkb
 check it again: tracekit verify 40c7....tkb --trust 40c7....trust.json
 next: tracekit view --dev   (every run, replayed and reviewed)
@@ -226,6 +227,14 @@ tracekit signer trust -o trust.json             # pins this signer's log key
 tracekit export --v2 --run <run id> -o run.tkb
 tracekit verify run.tkb --trust trust.json
 ```
+
+```text
+VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+```
+
+`--detail` prints every check, then:
 
 ```text
 Integrity: VERIFIED.

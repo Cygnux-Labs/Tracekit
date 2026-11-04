@@ -20,7 +20,7 @@ rejected: apr-4d6d2e155aedadda2555fd1a75eac269
 send_email: Tool call blocked by policy: TK-APPROVAL-REJECTED: not approved (state=rejected)
 agent: Garden tools are 20% off until May, and it is sunny in Lisbon.
 
-$ tracekit verify aaa37c704f5fbbcec8275cd6b8280273.tkb --trust trust.json
+$ tracekit verify aaa37c704f5fbbcec8275cd6b8280273.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/8e68ae24f0e8902ef59a8c6733596128 at tree size 28, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required

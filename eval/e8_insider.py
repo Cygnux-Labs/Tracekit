@@ -103,7 +103,8 @@ def has_call(rid, tid):
 def verdict(rid):
     out = os.path.join(tempfile.mkdtemp(), "run.tkb")
     subprocess.run([sys.executable, "-m", "tracekit", "export", "--home", HOME, "-o", out, "--run", rid], capture_output=True, text=True)
-    r = subprocess.run([sys.executable, "-m", "tracekit", "verify", out, "--witness", f"git:{HOME}/witness"], capture_output=True, text=True)
+    r = subprocess.run([sys.executable, "-m", "tracekit", "verify", out, "--witness", f"git:{HOME}/witness",
+                        "--detail"], capture_output=True, text=True)
     text = r.stdout + r.stderr
     lines = [l for l in text.splitlines() if l.startswith("Integrity: ")]
     if lines:

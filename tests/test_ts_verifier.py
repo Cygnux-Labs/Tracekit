@@ -706,7 +706,7 @@ class Agreement(SignerBundles):
                 self.assertTrue(rep.checks[0]["detail"].startswith(said), rep.checks)
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                    py = cli.main(["verify", bundle, "--trust", t])
+                    py = cli.main(["verify", bundle, "--trust", t, "--detail"])   # the TS CLI prints the full report
                 self.assertEqual(ts_cli(bundle, t), (py, out.getvalue()))
                 self.assertNotRegex(out.getvalue(), r"Error\b|BadZipFile")
 

@@ -66,7 +66,7 @@ The [auditor guide](../auditor-guide.md) is the full procedure. In short:
 
    ```sh
    pip install 'tracekit-ai==<version>'
-   tracekit verify run.tkb --trust trust.json --strict
+   tracekit verify run.tkb --trust trust.json --strict --detail
    tracekit verify run-set.tkb --trust trust.json --strict --json > run-set.report.json
    ```
 

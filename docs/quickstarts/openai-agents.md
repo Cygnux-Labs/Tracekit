@@ -63,21 +63,20 @@ An offline run of all this (a mock model, no API key), with an approval: `python
 
 ## Read the verify report
 
+`tracekit last` and `tracekit verify` print a short result:
+
 ```text
-[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/... at tree size 12, signed by its pinned log key
-[PASS] witness quorum — 0 pinned cosignature(s), 0 required
-[PASS] signatures — 11 record(s), keys valid at their position
-[PASS] run chain — run '...' of tenant 'default', contiguous from run_seq 0
-...
-Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (...); no witness cosignature; approvals: self; ...
+VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
 ```
 
-`Integrity: VERIFIED` means every record was signed by the log key in `trust.json`, the run is one unbroken chain, and a
+`VERIFIED` means every record was signed by the log key in `trust.json`, the run is one unbroken chain, and a
 checkpoint signed by that key includes it: nothing was edited, dropped or reordered after signing. Change one byte of
-the bundle and it reads `Integrity: FAILED`, naming the check (`tracekit demo --server` shows this). `Assurance: dev`
-says no pinned witness cosigned the checkpoint and the approval was a self-approval. [The v2
+the bundle and it reads `TAMPERED at event n: ...`, naming the record and what broke (`tracekit demo --server` shows
+this). `NOT PROOF AGAINST THE AGENT` is dev mode: the signer runs as your own user. Add `--detail` for every check, then
+the `Integrity` and `Assurance` lines; the scripted example prints that full report. `Assurance: dev` says no pinned
+witness cosigned the checkpoint and the approval was a self-approval. [The v2
 quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
 
 ## Next steps

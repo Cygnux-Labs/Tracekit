@@ -22,7 +22,7 @@ call-3 issue_refund A-1001 $15.00: ask (TK-M001)
   reviewer, told its id: refused (unknown_approval: apr-6855bf1d01bf9fb8b62964e7cb6188b2)
   call-3 attempt 1 waits for a person; the run ends and its approval expires with it
 
-$ tracekit verify eab61b80df6c18fa5f2d66f4bff8b054.tkb --trust trust.json
+$ tracekit verify eab61b80df6c18fa5f2d66f4bff8b054.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/266bbf80b8e9dae5f9c8c988da272fdb at tree size 21, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required

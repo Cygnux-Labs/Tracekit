@@ -26,6 +26,8 @@ supplying the evidence.
 
 ## Check these three report lines first
 
+Tracekit after 1.5.3 prints a short result by default; add `--detail` to `tracekit verify` for these lines.
+
 1. `Integrity:` Look for exactly `Integrity: VERIFIED.` Read any extra wording:
    `open` means the run has no recorded ending, so later records may be missing, and `WITH GAPS` needs
    investigation. `FAILED` (v1: `VERIFICATION FAILED`) means a check failed; the `[FAIL]` lines say which.

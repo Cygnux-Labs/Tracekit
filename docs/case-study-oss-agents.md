@@ -90,7 +90,7 @@ Export a run and verify it with a trust config built from sources you trust, not
 ```sh
 tracekit export --v2 --config signer.yaml --run RUN_ID -o run.tkb
 tracekit signer trust --config signer.yaml -o trust.json
-tracekit verify run.tkb --trust trust.json
+tracekit verify run.tkb --trust trust.json --detail
 npx --package ./cygnuxlabs-tracekit-<version>.tgz tracekit verify run.tkb --trust trust.json   # the TypeScript verifier must agree
 ```
 

@@ -788,7 +788,7 @@ def ledger_path(home=None, bundle=None, prog="tracekit observe"):
         return None, code
     if code != 0:
         print(f"{prog}: bundle {bundle} FAILED verification (exit {code}); refusing to show it. "
-              f"Run `tracekit verify {bundle}` for the details.", file=sys.stderr)
+              f"Run `tracekit verify {bundle} --detail` for the details.", file=sys.stderr)
         return None, code
     print(f"{prog}: bundle {bundle} verified", file=sys.stderr)
     return path, 0

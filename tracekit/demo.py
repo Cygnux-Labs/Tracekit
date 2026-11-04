@@ -224,15 +224,18 @@ def tamper_copy(src, dst):
             z.writestr(n, v)
 
 
-def main(real=False, keep=False, agent="claude"):
+def main(real=False, keep=False, agent="claude", detail=False):
     if agent not in AGENTS:
         print(f"tracekit demo: --agent must be one of {', '.join(AGENTS)}", file=sys.stderr)
         return 2
     if real and agent != "claude":
         print("tracekit demo: --real drives Claude Code only; the other agents run scripted", file=sys.stderr)
         return 2
+    from .cli import _quote
+    from .verify import summary
     d = tempfile.mkdtemp(prefix="tracekit-demo-")
     home = os.path.join(d, "signer")
+    out, witness = os.path.join(d, "run.tkb"), [f"git:{home}/witness"]
     env = dict(os.environ, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"),
                PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
     os.environ["TRACEKIT_CLIENT_HOME"] = env["TRACEKIT_CLIENT_HOME"]
@@ -249,27 +252,34 @@ def main(real=False, keep=False, agent="claude"):
             scripted(env, proj, agent)
         install.stop_dev_daemon(home)  # final checkpoint on shutdown
         say("export the run as an evidence bundle")
-        out = os.path.join(d, "run.tkb")
         bundle.export(home, out)
         print(f"  wrote {out}  (open replay.html inside it to browse the run)")
         say("verify offline against the git witness")
-        rep, code = bundle.verify(out, [f"git:{home}/witness"])
-        bundle.print_report(rep, code)
+        rep, code = bundle.verify(out, witness)
+        if detail:
+            bundle.print_report(rep, code)
+        else:
+            summary(rep, code, bundle.integrity(rep, code), bundle.assurance(rep))
         if agent in NO_SESSION_EVENTS:
             print(f"  note     the run-boundaries gap is expected: {agent} sends no session end, so the run has no "
                   "signed run.end" + ("; every record in it verified" if code == 0 else ""))
         say("tamper test: rewrite one recorded command in a copy, then verify again")
         bad = os.path.join(d, "tampered.tkb")
         tamper_copy(out, bad)
-        rep2, code2 = bundle.verify(bad, [f"git:{home}/witness"])
-        for c in rep2.checks:
-            if c["status"] == "fail":
-                print(f"  [FAIL] {c['check']}: " + "; ".join(c["problems"][:2]))
+        rep2, code2 = bundle.verify(bad, witness)
+        if detail:
+            for c in rep2.checks:
+                if c["status"] == "fail":
+                    print(f"  [FAIL] {c['check']}: " + "; ".join(c["problems"][:2]))
+        else:
+            summary(rep2, code2, bundle.integrity(rep2, code2), bundle.assurance(rep2))
         print(f"\n  original bundle exit {code}, tampered bundle exit {code2}")
         return 0 if code == 0 and code2 == 1 else 1
     finally:
         install.stop_dev_daemon(home)
         if keep:
-            print(f"\nkept {d}")
+            print(f"\nkept {d}" + (f"\n  verify the bundle again: tracekit verify {_quote(out)} --witness "
+                                   f"{_quote(witness[0])}" if os.path.exists(out) else ""))
         else:
             shutil.rmtree(d, ignore_errors=True)
+            print(f"\ndeleted {d} (--keep keeps it)")
