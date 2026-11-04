@@ -2185,18 +2185,22 @@ class HarmlessStops(unittest.TestCase):
             with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
                 shell.parse(cmd)
 
-    def test_transcript_writes_are_read_per_python_code(self):
-        """TK-D008 read any `>` or `find` in Python code as a write, so a read of a transcript next to `if n > 1` was
-        denied. Python code the line shows is a write only with a real one (os, shutil …), or an open whose mode isn't
-        a literal read: one worked out at run time may write."""
+    def test_transcript_writes_are_read_as_on_main(self):
+        """TK-D008 reads Python as 1.5.3 did: any `>`, `rm` or `find` in an interpreter's words beside a transcript is a
+        write, whatever the code does. Reading the code for real writes kept missing spellings in #598's review (a
+        mode worked out at run time, open under another name), so a read of a transcript next to `if n > 1` is denied
+        again."""
         t = "~/.claude/projects/p"
         self.check(
-            [f"cd {t}/memory && wc -c MEMORY.md && python3 -I -c \"for l in open('MEMORY.md'): print(len(l) > 3)\"",
-             f'f={t}/tool-results/a.html; wc -c "$f"; python3 -c "import sys; print(len(open(sys.argv[1]).read()) > 3)" "$f"',
-             f"python3 -c \"import sys; print(len(open(sys.argv[1], 'rb').read()) > 3)\" {t}/s.jsonl"],
+            [f"wc -c {t}/tool-results/a.html", f"python3 -c \"print(1)\" {t}/s.jsonl"],
             [(f"xargs rm -rf <<< {t}", "deny", "TK-D008"), (f"echo 'rm -rf {t}' | sh", "deny", "TK-D008"),
              (f"python3 -c \"import os,sys; [os.remove(f) for f in sys.argv[1:] if len(f) > 3]\" {t}/s.jsonl", "deny",
               "TK-D008"),
+             # the week's reads, denied as on 1.5.3
+             (f'f={t}/tool-results/a.html; wc -c "$f"; python3 -c "import sys; print(len(open(sys.argv[1]).read()) > 3)" '
+              '"$f"', "deny", "TK-D008"),
+             (f"python3 -c \"import sys; print(len(open(sys.argv[1], 'rb').read()) > 3)\" {t}/s.jsonl", "deny", "TK-D008"),
+             # the review's writes (rounds 5, 8 and 9)
              (f"python3 -c \"import sys; open(sys.argv[1], 'W'.lower()).close() if len(sys.argv) > 1 else 0\" "
               f"{t}/s.jsonl", "deny", "TK-D008"),
              (f"python3 -c \"import sys; open(sys.argv[1], chr(119)).close() if len(sys.argv) > 1 else 0\" {t}/s.jsonl",
@@ -2204,10 +2208,72 @@ class HarmlessStops(unittest.TestCase):
              (f"python3 -c \"import sys; m = 'w'; open(sys.argv[1], mode=m) if len(sys.argv) > 1 else 0\" {t}/s.jsonl",
               "deny", "TK-D008"),
              (f"python3 -c \"import sys; o = open; o(sys.argv[1], *'w') if len(sys.argv) > 1 else 0\" {t}/s.jsonl",
-              "deny", "TK-D008")])
+              "deny", "TK-D008"),
+             (f"python3 -c \"from io import open as op; import sys; op(sys.argv[1], chr(119)) if 2 > 1 else 0\" "
+              f"{t}/s.jsonl", "deny", "TK-D008"),
+             (f"python3 -c \"from pathlib import Path; import sys; m = Path.open; m(Path(sys.argv[1]), chr(119)) "
+              f"if 2 > 1 else 0\" {t}/s.jsonl", "deny", "TK-D008")])
 
     # #598's review: spellings main stops (a deny stays a deny; a hold may become a deny)
     REVIEW = (
+        # round 9 (TK-D008 as on main)
+        ('f(){ ls; }; f; f(){ sudo id; }; unset -f f', 'ask'),
+        ('f(){ ls; }; f; unset -f f; f(){ sudo id; }', 'ask'),
+        ('f(){ ls; }; f; declare -f f >/dev/null; f(){ sudo id; }', 'ask'),
+        ('f(){ ls; }; f; typeset -f f; function f { rm -rf ~; }', 'ask'),
+        ('f(){ ls; }; for i in 1 2; do f; f(){ sudo id; }; done', 'ask'),
+        ('f(){ ls; }; while f; do f(){ sudo id; }; break; done', 'ask'),
+        ('f(){ ls; }; f; if true; then f(){ sudo id; }; fi', 'ask'),
+        ('f(){ ls; }; f; case x in *) f(){ sudo id; };; esac', 'ask'),
+        ('f(){ ls; }; f; g(){ f(){ sudo id; }; }; g', 'ask'),
+        ("f(){ ls; }; f; eval 'f(){ sudo id; }'", 'ask'),
+        ("f(){ ls; }; f; source /dev/stdin <<< 'f(){ sudo id; }'", 'ask'),
+        ('f(){ ls; }; (f; f(){ sudo id; })', 'ask'),
+        ('f(){ ls; }; f | f(){ sudo id; }', 'ask'),
+        ('f(){ ls; }; f & f(){ sudo id; }', 'ask'),
+        ('f(){ g; }; g(){ ls; }; f; g(){ sudo id; }', 'ask'),
+        ('unset -f ls; ls(){ sudo id; }; ls', 'ask'),
+        ('declare -f -x f; f(){ sudo id; }', 'ask'),
+        ('typeset -fx f 2>/dev/null; f(){ ls; }; f', 'ask'),
+        ('readonly -f f 2>/dev/null; f(){ ls; }; f; f(){ sudo id; }', 'ask'),
+        ('X=/usr/bin/sudo; IFS= ; $X id', 'deny'),
+        ('X=/usr/bin/sudo; unset IFS; $X id', 'deny'),
+        ('X=/usr/bin/sudoxid; I=IFS; declare "$I=x"; $X', 'ask'),
+        ('X=/usr/bin/sudoxid; eval "$(printf \'%s=x\' IFS)"; $X', 'ask'),
+        ('X=/usr/bin/sudoxid; read -r ${!N} <<< x; $X', 'ask'),
+        ('f(){ $1 "$2"; }; f /usr/bin/sudo id', 'ask'),
+        ('f(){ local X=$1; $X id; }; f /usr/bin/sudo', 'ask'),
+        ('case "$1" in --version) bash --version;; *) sudo id;; esac', 'ask'),
+        ('case x in x) bash --help; sudo id;; esac', 'deny'),
+        ('bash --version | sh', 'ask'),
+        ('bash --help 2>&1 | bash', 'ask'),
+        ("bash --help -c 'sudo id'", 'deny'),
+        ('sh --version </dev/null; sudo id', 'deny'),
+        ('sed -n --quiet p /var/lib/tracekit-signer/keys/log.key', 'deny'),
+        ("sed -n 'p;W /tmp/x' /etc/tracekit/client.json", 'deny'),
+        ("sed -n '1r /var/lib/tracekit-signer/keys/log.key' /etc/tracekit/client.json", 'deny'),
+        ("sed -n -E 's/(a)/\\1/e' /etc/tracekit/client.json", 'deny'),
+        ("sed -n -z -e 's/x/y/w /tmp/z' /etc/tracekit/client.json", 'deny'),
+        ('grep -n -e x -f /etc/tracekit/webhook.secret /etc/tracekit/client.json', 'deny'),
+        ('head -n 5 /etc/tracekit/client.json /etc/tracekit/pg.dsn', 'deny'),
+        ('jq -r . /etc/tracekit/client.json --rawfile s /etc/tracekit/webhook.secret', 'deny'),
+        ('cat /etc/tracekit/client.json ~/.tracekit-client/config.json', 'deny'),
+        ('python3 -c "import sys; open(sys.argv[1], \'r+\').close() if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "import sys; open(sys.argv[1], \'rw\'[1]).close() if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "import sys; open(sys.argv[1], \'r\', closefd=True).close() if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "import sys; open(sys.argv[1], buffering=0, mode=\'r\' + \'w\'[:0]).close() if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "import sys; o = __builtins__.open; o(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "import sys, builtins as b; b.open(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "from io import open as op; import sys; op(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "from builtins import open as op; import sys; op(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "import sys; print(open(sys.argv[1], \'rt\', encoding=\'utf-8\').read(9) if 2 > 1 else 0)" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "from io import open as op; import sys; op(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "from io import open as op; import sys; op(sys.argv[1], \'w\') if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "import io, sys; op = io.open; op(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "from codecs import open as op; import sys; op(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "from gzip import open as op; import sys; op(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "from io import FileIO as F; import sys; F(sys.argv[1], chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
+        ('python3 -c "from pathlib import Path; import sys; m = Path.open; m(Path(sys.argv[1]), chr(119)) if 2 > 1 else 0" ~/.claude/projects/p/s.jsonl', 'deny'),
         # round 8 (a body given after its name's last call is held)
         ('f(){ ls; }; f; f(){ sudo id; }', 'ask'),
         ('f(){ ls; }; f; function f { rm -rf ~; }', 'ask'),

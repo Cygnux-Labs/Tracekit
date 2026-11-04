@@ -3,7 +3,6 @@
 google-re2 when installed, else the `regex` module on the same pattern subset in ASCII mode (`compile.translate`).
 Every decision names the engine (id@version) and the policy_hash. Precedence: deny > ask > flag > allow.
 """
-import ast
 import fnmatch
 import functools
 import posixpath
@@ -665,8 +664,8 @@ def _effects(parsed):
     expansion builds may hold the path). A link ln or cp -s/-l makes is also MAY_WRITE: a later write through it
     writes the file it points at."""
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
-    unread, scripts = any(c["opaque"] for c in parsed[0]), _written_scripts(parsed[0])
-    if any(_opaque(c, scripts) for c in parsed[0]) or unread and _reaches_unread(parsed):
+    unread = any(c["opaque"] for c in parsed[0])
+    if any(_opaque(c) for c in parsed[0]) or unread and _reaches_unread(parsed):
         # lean: a read on the same line as such a writer counts as a write (as TK-D008 read the whole line before
         # #421); follow the names into the writer if that holds real reads
         tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:] + c["stdin"]]
@@ -721,14 +720,12 @@ def _reaches_unread(parsed):
     return any(_WRITER.search(v.lower()) for v in values)
 
 
-def _opaque(command, scripts=None):
+def _opaque(command):
     """Whether a command writes files _command_effects can't name: a writer whose operand is a variable or a
     substitution (rm "$f"), or zip -m reading its names from stdin (-@); xargs, parallel, a container's exec or ssh,
     or an interpreter running code with a write in it (xargs rm, parallel 'rm {}', docker exec c sh -c 'rm …',
-    perl -e 'open F, ">", …': Python whose code the line shows, its -c code, heredoc or a script the line wrote
-    (`scripts`, _written_scripts), only when that code also has a real write, a spawner or an exec-style call,
-    _PY_ACTS, so `if n > 1` or a word `find` in it is no write); at or batch scheduling commands from a pipe or a file
-    (the parser reads a herestring or heredoc), or osascript's do shell script or a Finder delete."""
+    perl -e 'open F, ">", …'); at or batch scheduling commands from a pipe or a file (the parser reads a herestring
+    or heredoc), or osascript's do shell script or a Finder delete."""
     argv = command["argv"]
     exe = argv[0].rsplit("/", 1)[-1].casefold()
     if exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
@@ -737,13 +734,7 @@ def _opaque(command, scripts=None):
         return any("$" in a or "`" in a or re.fullmatch(r"-[^-]*@[^-]*", a) for a in argv[1:])
     if exe in ("xargs", "parallel", "docker", "podman", "kubectl", "ssh") or \
             _INTERPRETER.fullmatch(exe):
-        # lean: Python whose words name a write (`>`, rm, find …) is released when the code the line shows has
-        # nothing _PY_ACTS finds and opens files only to read: a write by a call _PY_ACTS doesn't list (not open) is
-        # then missed; Python whose words name no write stays no writer, as before #589, even when its code writes;
-        # add the call to _PY_ACTS when one turns up
-        return any(_WRITE_WORD.search(a) for a in argv[1:]) and (
-            (code := _python_code(command, scripts or {})) is None or bool(_PY_ACTS.search(code)) or
-            not _opens_to_read(code))
+        return any(_WRITE_WORD.search(a) for a in argv[1:])
     if exe in ("at", "batch"):   # at -l, -r, -d, -c and -V list, remove, show or print: they schedule nothing
         return not command["stdin"] and not any(a in ("-l", "-r", "-d", "-c", "-V") for a in argv[1:])
     if exe == "osascript":
@@ -905,111 +896,6 @@ def _command_effects(commands):
 
 _SQL_WRITE = re.compile(r"(?im)\b(?:insert|update|delete|drop|create|alter|replace\s+into|vacuum|reindex)\b"
                         r"|^\s*\.(?:restore|import)\b")
-
-# Python code that may run text or a program, or write, move or delete a file: exec-style calls and what looks a name
-# up at run time, unpicklers, process spawners (os's, and any name imported from os), and file writes (a w, a, x or +
-# mode, os.open's write flags, pathlib's, os's and shutil's file operations, the writers of pandas, numpy and plots)
-_PY_ACTS = re.compile(
-    r"\b(?:exec|eval|compile|execfile|__import__|import_module|importlib|runpy|pickle|cPickle|_pickle|dill|marshal|"
-    r"shelve|jsonpickle|subprocess|pty|ctypes|cffi|getattr|setattr|globals|locals|__builtins__|builtins|codeop|"
-    r"shutil|sqlite3|urlretrieve|inplace|O_WRONLY|O_RDWR|O_CREAT|O_TRUNC|O_APPEND)\b|\byaml\.(?:load|load_all|unsafe_load|"
-    r"full_load)\b|\bcode\.\w|\bos\.(?:system|popen|exec\w*|spawn\w*|posix_spawn\w*|fork\w*|remove|unlink|rmdir|"
-    r"removedirs|rename|renames|replace|truncate|makedirs|mkdir|mkfifo|mknod|symlink|link|chmod|chown|lchown|utime|"
-    r"kill\w*|putenv|chdir|chroot|open|fdopen|ftruncate|write|writev|pwrite\w*|sendfile|copy_file_range)\b|"
-    r"\bfrom\s+(?:os|posix|nt)\s+import\b|\bimport\s+os\s+as\b|\bposix\b|"
-    r"\.(?:write_text|write_bytes|unlink|rmdir|touch|mkdir|rename|replace|symlink_to|hardlink_to|chmod|open|"
-    r"save\w*|to_(?:csv|json|parquet|pickle|excel|sql|hdf|feather|html|markdown|latex|xml|stata))\s*\(|"
-    r"\b(?:filename|FileHandler|RotatingFileHandler|basicConfig)\b|"
-    r"['\"][rbtU]*[wax+][rbtU+]*['\"]")   # a mode a file opens with, anywhere: `open(p, 'w' if … else 'r')`
-_PYTHON = re.compile(r"python[0-9.]*t?")
-
-
-def _opens_to_read(code):
-    """Whether every `open` in Python code is called by that name with a literal read-only mode ('r', 'rb', 'rt' or
-    none) and no opener: a mode it works out at run time (`'W'.lower()`, `chr(119)`), or `open` passed on, may write."""
-    try:
-        tree = ast.parse(code)
-    except (SyntaxError, ValueError, RecursionError, MemoryError):
-        return False
-    called = {id(n.func) for n in ast.walk(tree) if isinstance(n, ast.Call)}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Name) and node.id == "open" and id(node) not in called:
-            return False
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "open":
-            mode = node.args[1] if len(node.args) > 1 else next(
-                (k.value for k in node.keywords if k.arg == "mode"), None)
-            if len(node.args) > 2 or any(isinstance(a, ast.Starred) for a in node.args) or any(
-                    k.arg not in ("file", "mode", "encoding", "errors", "newline") for k in node.keywords) or \
-                    mode is not None and not (isinstance(mode, ast.Constant) and mode.value in ("r", "rb", "rt")):
-                return False
-    return True
-def _base(path):
-    """The last part of a path as written (`./i.sh` and `/tmp/./i.sh` are i.sh)."""
-    return posixpath.basename(posixpath.normpath(path)) if path else path
-
-
-def _operand(args, valued=()):
-    """The first argument that is no option (an option in `valued` takes the next word), or None."""
-    i = 0
-    while i < len(args):
-        if args[i] == "--":
-            return args[i + 1] if i + 1 < len(args) else None
-        if not args[i].startswith("-") or args[i] == "-":
-            return args[i]
-        i += 2 if args[i] in valued else 1
-    return None
-
-
-# the options of a Python that runs its inline code (or json.tool) and nothing else: -i would read stdin after it
-_PY_PLAIN_FLAGS = re.compile(r"-[IEsBu]*[cm]?")
-
-
-def _plain_python(argv, refs=()):
-    """Whether a Python runs the program its words give and nothing more: every option before its -c code, -m module,
-    `-` or script is one of _PY_PLAIN_FLAGS (-I, -E, -s, -B, -u), and nothing on the line sets PYTHONINSPECT."""
-    if any("PYTHONINSPECT" in w for w in list(refs) + argv):
-        return False
-    for a in argv[1:]:
-        if a == "-" or not a.startswith("-"):
-            return True
-        if not _PY_PLAIN_FLAGS.fullmatch(a):
-            return False
-        if a[-1] in "cm":
-            return True
-    return False
-
-
-def _python_code(command, scripts):
-    """The program text a Python command runs, when the line shows it: its -c code, the heredoc or herestring it reads,
-    or a script this line wrote (`scripts`: base name -> text); else None."""
-    argv = command["argv"]
-    if not _PYTHON.fullmatch(argv[0]) or not _plain_python(argv):   # -i runs stdin after it: what runs isn't shown
-        return None
-    code = shell._code_arg("python", argv[1:])
-    if code is None and shell._reads_stdin("python", argv[1:]) and command["stdin"]:
-        code = "\n".join(command["stdin"])
-    if code is None and _python_module(argv[1:]) == [] and (script := _operand(argv[1:], shell.INTERP_VALUE_OPTS)):
-        code = scripts.get(_base(script))
-    return code
-
-
-def _written_scripts(commands):
-    """Base name -> the text this line's cat, tee, echo or printf writes into a file (a script it may then run), for a
-    file nothing else on the line writes (`cp evil.py s.py` after it: what runs isn't that text)."""
-    out, others = {}, set()
-    for c in commands:
-        name = c["argv"][0]
-        if name in ("cat", "tee", "echo", "printf"):
-            text = "\n".join(c["stdin"] + (c["argv"][1:] if name in ("echo", "printf") else []))
-            files = list(c.get("out", ())) + ([a for a in c["argv"][1:] if not a.startswith("-")] if name == "tee" else [])
-            for f in files:
-                out.setdefault(_base(f), []).append(text)
-        else:
-            others |= {_base(f) for f in c.get("out", ())}
-    others |= {_base(t.partition(":")[2]) for t in _command_effects(
-        [c for c in commands if c["argv"][0] not in ("cat", "tee", "echo", "printf")])}
-    return {f: "\n".join(texts) for f, texts in out.items() if f not in others}
-
 
 # TK-D007's allowlists (#589): the programs that may read a file's contents under Tracekit's dirs (which files they
 # may read there the pack's `unless` names: the installed package and /etc/tracekit's client.json and policy), and

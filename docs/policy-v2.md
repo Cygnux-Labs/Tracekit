@@ -187,10 +187,7 @@ paths (also after `--`), the paths its `-path`, `-ipath`, `-wholename`, `-iwhole
 time or inside code it runs (an `rm`, `unlink`, `shred`, `truncate`, `tee`, `cp`, `mv`, `install` or `ln` with a `$`
 or backtick operand, `rm "$f"`, but not `sed -i`, `perl -i` or `dd of=`; or `xargs`, `parallel`, `docker`, `podman`,
 `kubectl`, `ssh` or an interpreter such as `perl -e` or `python -c` whose words hold `rm`, `unlink`, `truncate`,
-`shred`, `mv`, `tee`, `dd`, `ln`, `sed`, `perl`, `find` or `>`; Python code the line shows, its `-c` code, heredoc or a
-script the line wrote, only when that code also writes a file, spawns a process or runs text, or opens a file with a
-mode that isn't a literal `'r'`, `'rb'` or `'rt'`: an `if n > 1` is no write), each argument of every command in the
-call (on any of
+`shred`, `mv`, `tee`, `dd`, `ln`, `sed`, `perl`, `find` or `>`), each argument of every command in the call (on any of
 its lines) is also a `MAY_WRITE:word` subject, which only `TK-D008` reads, and so is the link `ln`, `cp -s` or
 `cp -l` makes (a later write through it writes the file it points at). A rule on `effects` can tell a destination from
 a file a command only reads or copies. The tags are not in `target`, so a target rule reads the same subjects as before `effects` existed.
