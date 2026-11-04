@@ -564,7 +564,7 @@ class TestVerifyV2(Case):
         Assurance line is not rated (--json keeps the level the checkpoint has)."""
         _, out = self.honest()
         edited = self.mutate(out, lambda rs: rs[2]["event"]["data"].update(name="Write"))
-        code, stdout, _ = self.cli(edited, "--trust", self.trust)
+        code, stdout, _ = self.cli(edited, "--trust", self.trust, "--detail")
         self.assertEqual(code, 1)
         self.assertRegex(stdout, r"\n\[FAIL\] signatures — 1 problem\(s\) in 5 record\(s\)\n        seq \d+: ")
         self.assertNotIn("keys valid at their position", stdout)
@@ -865,7 +865,7 @@ class TestVerifyV2(Case):
 
     def test_cli_dispatches_on_format(self):
         _, out = self.honest()
-        code, stdout, _ = self.cli(out, "--trust", self.trust)
+        code, stdout, _ = self.cli(out, "--trust", self.trust, "--detail")
         self.assertEqual(code, 0)
         self.assertIn("Integrity: VERIFIED.\nAssurance: witnessed;", stdout)
         code, stdout, err = self.cli(out)
@@ -925,9 +925,11 @@ class TestVerifyV2(Case):
             files.append((path, trust, said))
         for path, t, said in files:
             with self.subTest(os.path.basename(path)):
-                self.assertEqual(self.cli(path, "--trust", t), (2, f"[FAIL] bundle readable — cannot read bundle: {said}"
-                                                                   "\n\nIntegrity: UNUSABLE BUNDLE.\nAssurance: none.\n",
-                                                                ""))
+                self.assertEqual(self.cli(path, "--trust", t, "--detail"),
+                                 (2, f"[FAIL] bundle readable — cannot read bundle: {said}\n\nIntegrity: UNUSABLE "
+                                     "BUNDLE.\nAssurance: none.\n", ""))
+                self.assertEqual(self.cli(path, "--trust", t),
+                                 (2, f"UNUSABLE BUNDLE: cannot read bundle: {said}.\n", ""))
                 code, stdout, _ = self.cli(path, "--trust", t, "--json")
                 self.assertEqual((code, json.loads(stdout)["integrity"]), (2, "UNUSABLE BUNDLE"))
 
@@ -948,10 +950,13 @@ class TestVerifyV2(Case):
                    "assert crypto.BACKEND == 'pure-python'\n"
                    "sys.exit(cli.main(sys.argv[1:]))\n")
         key = ["--key", os.path.join(sample, "signer.pub")]
-        cases = {"v1 sample": (["verify", os.path.join(sample, "demo-run.tkb"), *key], 0, "Integrity: VERIFIED."),
+        cases = {"v1 sample": (["verify", os.path.join(sample, "demo-run.tkb"), *key], 0,
+                               "VERIFIED: 6 tool calls in 23 signed records, "),
                  "v1 tampered sample": (["verify", os.path.join(sample, "demo-run-tampered.tkb"), *key], 1,
-                                        "Integrity: VERIFICATION FAILED."),
-                 "v2 bundle": (["verify", v2_bundle, "--trust", self.trust], 0, "Integrity: VERIFIED.")}
+                                        "TAMPERED at event 6: "),
+                 "v1 sample, every check": (["verify", os.path.join(sample, "demo-run.tkb"), *key, "--detail"], 0,
+                                            "Integrity: VERIFIED."),
+                 "v2 bundle": (["verify", v2_bundle, "--trust", self.trust], 0, "VERIFIED: 5 signed records, ")}
         for why, (argv, want, verdict) in cases.items():
             with self.subTest(why):
                 p = subprocess.run([sys.executable, "-c", blocker, *argv], capture_output=True, text=True,

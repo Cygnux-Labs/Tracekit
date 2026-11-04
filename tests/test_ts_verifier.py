@@ -235,11 +235,11 @@ def page_words(bundle, trust):
         capture_output=True, text=True, check=True).stdout)
 
 
-@unittest.skipIf(SKIP, SKIP)
-class Agreement(unittest.TestCase):
+class SignerBundles(unittest.TestCase):
+    """The real signer's bundles, the trust configs they're read under, and mutated copies of them (`mutations`), with
+    no TypeScript: Agreement holds the TypeScript verifier to the reference on them, test_go_verifier.py the Go one."""
     @classmethod
     def setUpClass(cls):
-        _build()
         cls.d = d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
         cls.addClassCleanup(shutil.rmtree, d, True)
         witness = Witness()
@@ -440,13 +440,6 @@ class Agreement(unittest.TestCase):
         s.call(mw, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
         return r["run_id"]
 
-    def agree(self, bundle, trust):
-        rep, code = v2.verify(bundle, trust)
-        ts = ts_verify(bundle, trust)
-        self.assertEqual((ts["exit_code"], ts["integrity"], ts["assurance"]), (code, rep.integrity, rep.assurance))
-        self.assertEqual([(c["check"], c["status"]) for c in ts["checks"]], [(c["check"], c["status"]) for c in rep.checks])
-        return code, rep
-
     def mutate(self, edit_run=None, edit=None, src="closed"):
         out = os.path.join(self.d, f"m-{uuid.uuid4().hex}.tkb")
 
@@ -460,6 +453,78 @@ class Agreement(unittest.TestCase):
                 edit(files, manifest)
         rewrite_bundle(self.bundles[src], out, apply)
         return out
+
+    def mutations(self):
+        """{name: (bundle, trust, the reference's exit code)}: the mutated copies, each with the trust config it's read
+        under."""
+        def resign(i, change):
+            def go(rs):
+                change(rs[i]["event"])
+                rs[i] = make_record(rs[i]["event"], self.record_key)
+            return go
+
+        def manifest(change):
+            return lambda files, m: change(m)
+
+        def drop_cosignatures(files, m):
+            k = next(k for k in files if k.startswith("checkpoints/"))
+            text, sigs = files[k].split(b"\n\n")
+            files[k] = text + b"\n\n" + sigs.split(b"\n")[0] + b"\n"
+
+        def forge_proof(files, m, path=None):
+            p = json.loads(files["proofs/records.json"])
+            if path is None:
+                p["inclusion"][max(p["inclusion"], key=int)][0] = base64.b64encode(bytes(32)).decode()
+            else:   # a path that is no list fails inclusion in both, never the bundle's structure
+                p["inclusion"][max(p["inclusion"], key=int)] = path
+            files["proofs/records.json"] = json.dumps(p).encode()
+        other, witnessed = os.urandom(32), self.trusts["witnessed"]
+        cases = {name: (self.mutate(**how), witnessed, code) for name, (code, how) in {
+            "edited record": (1, dict(edit_run=lambda rs: rs[1]["event"].update(tool="write_file"))),
+            "dropped record": (1, dict(edit_run=lambda rs: rs.pop(1))),
+            "reordered records": (1, dict(edit_run=lambda rs: rs.insert(1, rs.pop(2)))),
+            "swapped signature": (1, dict(edit_run=lambda rs: rs[1].update(sig=rs[2]["sig"]))),
+            "wrong key": (1, dict(edit_run=lambda rs: rs.__setitem__(1, make_record(rs[1]["event"], other)))),
+            "schema-invalid field, re-signed": (1, dict(edit_run=resign(-1, lambda e: e.update(extra=1)))),
+            "integer written as a float": (1, dict(edit_run=lambda rs: rs[1]["event"].update(run_seq=1.0))),
+            "missing witness cosignature": (1, dict(edit=drop_cosignatures)),
+            "forged inclusion proof": (1, dict(edit=forge_proof)),
+            "inclusion proof an empty string": (1, dict(edit=lambda f, m: forge_proof(f, m, ""))),
+            "inclusion proof an object": (1, dict(edit=lambda f, m: forge_proof(f, m, {"AAAA": 1}))),
+            "newer verifier_min_version": (2, dict(edit=manifest(lambda m: m.update(verifier_min_version="9.0")))),
+            "older verifier_min_version": (0, dict(edit=manifest(lambda m: m.update(verifier_min_version="0.4")))),
+        }.items()}
+        for token in (b"0.0", b"0e0", b"false"):   # run-set bounds are integer tokens
+            cases[f"run-set from {token}"] = (self.mutate(src="run-set", edit=lambda f, m: f.update({
+                "registry/run-set.json": f["registry/run-set.json"].replace(b'"from": 0,', b'"from": ' + token + b",")
+            })), witnessed, 1)
+        cases["below quorum"] = (self.bundles["closed"], self.trusts["below-quorum"], 1)
+        bad = os.path.join(self.d, "bad-manifest.tkb")
+        with zipfile.ZipFile(self.bundles["closed"]) as z, zipfile.ZipFile(bad, "w") as out:
+            for i in z.infolist():
+                data = z.read(i)
+                if i.filename == "manifest.json":
+                    m = json.loads(data)
+                    m["files"]["keys/records.jsonl"] = "0" * 64
+                    data = json.dumps(m).encode()
+                out.writestr(i.filename, data)
+        cases["bad manifest hash"] = (bad, witnessed, 1)
+        return cases
+
+
+@unittest.skipIf(SKIP, SKIP)
+class Agreement(SignerBundles):
+    @classmethod
+    def setUpClass(cls):
+        _build()
+        super().setUpClass()
+
+    def agree(self, bundle, trust):
+        rep, code = v2.verify(bundle, trust)
+        ts = ts_verify(bundle, trust)
+        self.assertEqual((ts["exit_code"], ts["integrity"], ts["assurance"]), (code, rep.integrity, rep.assurance))
+        self.assertEqual([(c["check"], c["status"]) for c in ts["checks"]], [(c["check"], c["status"]) for c in rep.checks])
+        return code, rep
 
     def test_honest_bundles(self):
         for name, bundle in self.bundles.items():
@@ -533,71 +598,21 @@ class Agreement(unittest.TestCase):
                                  [c for c in rep.checks if c["check"] == "constraints"])
 
     def test_mutations(self):
-        def resign(i, change):
-            def go(rs):
-                change(rs[i]["event"])
-                rs[i] = make_record(rs[i]["event"], self.record_key)
-            return go
-
-        def manifest(change):
-            return lambda files, m: change(m)
-
-        def drop_cosignatures(files, m):
-            k = next(k for k in files if k.startswith("checkpoints/"))
-            text, sigs = files[k].split(b"\n\n")
-            files[k] = text + b"\n\n" + sigs.split(b"\n")[0] + b"\n"
-
-        def forge_proof(files, m, path=None):
-            p = json.loads(files["proofs/records.json"])
-            if path is None:
-                p["inclusion"][max(p["inclusion"], key=int)][0] = base64.b64encode(bytes(32)).decode()
-            else:   # a path that is no list fails inclusion in both, never the bundle's structure
-                p["inclusion"][max(p["inclusion"], key=int)] = path
-            files["proofs/records.json"] = json.dumps(p).encode()
-        other = os.urandom(32)
-        cases = {
-            "edited record": (1, dict(edit_run=lambda rs: rs[1]["event"].update(tool="write_file"))),
-            "dropped record": (1, dict(edit_run=lambda rs: rs.pop(1))),
-            "reordered records": (1, dict(edit_run=lambda rs: rs.insert(1, rs.pop(2)))),
-            "swapped signature": (1, dict(edit_run=lambda rs: rs[1].update(sig=rs[2]["sig"]))),
-            "wrong key": (1, dict(edit_run=lambda rs: rs.__setitem__(1, make_record(rs[1]["event"], other)))),
-            "schema-invalid field, re-signed": (1, dict(edit_run=resign(-1, lambda e: e.update(extra=1)))),
-            "integer written as a float": (1, dict(edit_run=lambda rs: rs[1]["event"].update(run_seq=1.0))),
-            "missing witness cosignature": (1, dict(edit=drop_cosignatures)),
-            "forged inclusion proof": (1, dict(edit=forge_proof)),
-            "inclusion proof an empty string": (1, dict(edit=lambda f, m: forge_proof(f, m, ""))),
-            "inclusion proof an object": (1, dict(edit=lambda f, m: forge_proof(f, m, {"AAAA": 1}))),
-            "newer verifier_min_version": (2, dict(edit=manifest(lambda m: m.update(verifier_min_version="9.0")))),
-            "older verifier_min_version": (0, dict(edit=manifest(lambda m: m.update(verifier_min_version="0.4")))),
-        }
-        for name, (code, how) in cases.items():
+        cases = self.mutations()
+        for name, (bundle, trust, code) in cases.items():
             with self.subTest(name):
-                self.assertEqual(self.agree(self.mutate(**how), self.trusts["witnessed"])[0], code)
-        for token in (b"0.0", b"0e0", b"false"):   # run-set bounds are integer tokens
-            with self.subTest(f"run-set from {token}"):
-                code, rep = self.agree(self.mutate(src="run-set", edit=lambda f, m: f.update({
-                    "registry/run-set.json": f["registry/run-set.json"].replace(b'"from": 0,', b'"from": ' + token + b",")
-                })), self.trusts["witnessed"])
-                self.assertEqual((code, rep.failures), (1, ["run-set"]))
-        with self.subTest("below quorum"):
-            self.assertEqual(self.agree(self.bundles["closed"], self.trusts["below-quorum"])[0], 1)
+                got, rep = self.agree(bundle, trust)
+                self.assertEqual(got, code)
+                if name.startswith("run-set from"):
+                    self.assertEqual(rep.failures, ["run-set"])
         with self.subTest("bad manifest hash"):
-            bad = os.path.join(self.d, "bad-manifest.tkb")
-            with zipfile.ZipFile(self.bundles["closed"]) as z, zipfile.ZipFile(bad, "w") as out:
-                for i in z.infolist():
-                    data = z.read(i)
-                    if i.filename == "manifest.json":
-                        m = json.loads(data)
-                        m["files"]["keys/records.jsonl"] = "0" * 64
-                        data = json.dumps(m).encode()
-                    out.writestr(i.filename, data)
-            self.assertEqual(self.agree(bad, self.trusts["witnessed"])[0], 1)
+            bad, trust, _ = cases["bad manifest hash"]
             # the failure names the file (it repeated the pass text), the same in both verifiers
             want = "files differ from the manifest: keys/records.jsonl (changed)"
-            self.assertEqual(next(c["detail"] for c in v2.verify(bad, self.trusts["witnessed"])[0].checks
-                                  if c["check"] == "manifest"), want)
-            self.assertEqual(next(c["detail"] for c in ts_verify(bad, self.trusts["witnessed"])["checks"]
-                                  if c["check"] == "manifest"), want)
+            self.assertEqual(next(c["detail"] for c in v2.verify(bad, trust)[0].checks if c["check"] == "manifest"),
+                             want)
+            self.assertEqual(next(c["detail"] for c in ts_verify(bad, trust)["checks"] if c["check"] == "manifest"),
+                             want)
 
     def test_a_witness_key_counts_once_in_both(self):
         """One witness key pinned under two names: both verifiers refuse the trust config, with the same line; two
@@ -691,7 +706,7 @@ class Agreement(unittest.TestCase):
                 self.assertTrue(rep.checks[0]["detail"].startswith(said), rep.checks)
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-                    py = cli.main(["verify", bundle, "--trust", t])
+                    py = cli.main(["verify", bundle, "--trust", t, "--detail"])   # the TS CLI prints the full report
                 self.assertEqual(ts_cli(bundle, t), (py, out.getvalue()))
                 self.assertNotRegex(out.getvalue(), r"Error\b|BadZipFile")
 

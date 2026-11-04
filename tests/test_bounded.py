@@ -225,7 +225,8 @@ class EveryStructuralMutation(unittest.TestCase):
     """Each mutation of BUNDLE refreshes the manifest's hashes, as anyone rewriting a bundle would. None verifies; a run
     cut back to a record whose inclusion proof the bundle holds reads open (exit 0) and never closed, since nothing in
     one run's bundle shows the dropped records (docs/limits.md, "A run cut back"; a run-set bundle shows them). The
-    TypeScript verifier reads every mutation as the reference does (test_ts_verifier's agreement)."""
+    TypeScript verifier reads every mutation as the reference does (test_ts_verifier's agreement), and the Go one gives
+    each its verdict (test_go_verifier.py)."""
     BUNDLE, TRUST = os.path.join(GOLDEN, "v2", "closed.tkb"), os.path.join(GOLDEN, "v2", "trust.json")
 
     @classmethod

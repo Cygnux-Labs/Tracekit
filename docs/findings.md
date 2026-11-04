@@ -12,7 +12,7 @@ tracekit analyze --last              # detectors on the latest run; new findings
 tracekit analyze --run R --dry-run   # print only
 tracekit analyze --all --json        # every run, machine-readable; exit code 4 if anything high or critical
 tracekit export --run R -o r.tkb     # the bundle carries findings:R with the run
-tracekit verify r.tkb                # [PASS] findings cite intact evidence
+tracekit verify r.tkb --detail       # [PASS] findings cite intact evidence
 tracekit-sql "SELECT rule, severity, title FROM findings WHERE run_id='R'"   # contrib/query
 ```
 
