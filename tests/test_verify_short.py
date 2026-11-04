@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 import pytest
 
@@ -97,12 +98,25 @@ class V2(tb.Case):
                          "VERIFIED: 2 tool calls in 5 signed records, none changed after signing; 1 policy mismatch "
                          "recorded (see --detail).")
 
-    def test_a_run_sets_tenant_level_gaps_are_gaps(self):
+    def test_a_run_sets_tenant_level_gaps_are_counted_by_what_they_are(self):
+        """The golden run-set's one tenant-level gap is degraded_unanchored (no witness for a while): nothing missed, a
+        note. Read as a kind the signer missed, or one against its decision, the same leaf counts as such."""
         golden = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "v2")
-        code, out = verify(os.path.join(golden, "run-set.tkb"), "--trust", os.path.join(golden, "trust.json"))
-        self.assertEqual((code, out.splitlines()[0]), (0, "VERIFIED WITH GAPS: 2 tool calls in 13 signed records, "
-                                                          "none changed after signing; 1 signed gap (things Tracekit "
-                                                          "knows it missed)."))
+        argv = (os.path.join(golden, "run-set.tkb"), "--trust", os.path.join(golden, "trust.json"))
+        code, out = verify(*argv)
+        self.assertEqual((code, out.splitlines()[0]), (0, "VERIFIED: 2 tool calls in 13 signed records, none changed "
+                                                          "after signing."))
+        self.assertIn("\nNote: for a while no witness anchored the log; the signer ran without one.\n", out)
+        self.assertNotIn("gap (", out)
+        with mock.patch.object(v2, "INFO_GAPS", v2.INFO_GAPS - {"degraded_unanchored"}):
+            self.assertEqual(verify(*argv)[1].splitlines()[0], "VERIFIED WITH GAPS: 2 tool calls in 13 signed records, "
+                                                               "none changed after signing; 1 signed gap (things "
+                                                               "Tracekit knows it missed).")
+        with mock.patch.object(v2, "INFO_GAPS", v2.INFO_GAPS - {"degraded_unanchored"}), \
+                mock.patch.object(v2, "AGAINST", ("degraded_unanchored",)):
+            self.assertEqual(verify(*argv)[1].splitlines()[0], "VERIFIED: 2 tool calls in 13 signed records, none "
+                                                               "changed after signing; 1 policy mismatch recorded (see "
+                                                               "--detail).")
 
     def test_a_tampered_bundle_says_where_it_breaks(self):
         changed = self.bundle("same-user", edit_run=lambda rs: rs[2]["event"]["data"].update(input={"command": "ls"}))

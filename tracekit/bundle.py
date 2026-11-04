@@ -214,9 +214,9 @@ class Report:
         self.checks, self.failures, self.warnings, self.notes = [], [], [], []
         self.assurance = None
         # for the short result (tracekit.verify.summary): records checked, the tool calls they name, signed gap records
-        # of what was missed, (v2) of calls that ran or were imported against the signer's decision, and each run's
-        # signer_isolation; never read by a check
-        self.events, self.calls, self.gaps, self.mismatches, self.isolation = None, None, 0, 0, {}
+        # of what was missed, (v2) of calls that ran or were imported against the signer's decision, a run-set's
+        # informational tenant-level gaps by kind, and each run's signer_isolation; never read by a check
+        self.events, self.calls, self.gaps, self.mismatches, self.info, self.isolation = None, None, 0, 0, {}, {}
 
     def check(self, name, ok, detail="", problems=None, warn=False):
         self.checks.append({"check": name, "status": "pass" if ok else ("warn" if warn else "fail"), "detail": detail,

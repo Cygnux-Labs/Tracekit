@@ -37,6 +37,11 @@ CHECKS = {"files match manifest": "a file in the bundle was changed, added or re
 GAPS = {"run boundaries": "the run's start or end is not in the bundle, so actions before or after it may be missing",
         "run completeness": "some of the run's records were left out of the bundle",
         "rejected writes": "the signer refused writes to this run"}
+# a run-set's informational tenant-level gaps (tracekit.signer.pipeline.TENANT_GAPS), in plain words: nothing missed
+INFO = {"degraded_unanchored": "for a while no witness anchored the log; the signer ran without one",
+        "witness_failed": "for a while a witness did not cosign the log",
+        "witness_late": "a witness cosigned the log late",
+        "clock_skew": "a witness's clock disagreed with the signer's"}
 
 
 def is_v2(path):
@@ -125,6 +130,8 @@ def summary(rep, code, integrity, assurance, stream=None):
         say(f"Warnings: {', '.join(warned)}. Add --detail to read them.")
     for note in rep.notes:   # what the verdict did not use (v1's replay.html, v2's format bridge)
         say(f"Note: {note}")
+    for kind, n in sorted(rep.info.items(), key=lambda kv: str(kv[0])):
+        say(f"Note: {INFO.get(kind, f'the signer recorded {kind}')}" + (f" ({n} times)" if n > 1 else "") + ".")
     for line in protection(rep, assurance, unanchored):
         say(line)
 

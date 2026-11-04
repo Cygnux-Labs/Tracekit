@@ -808,7 +808,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     # gaps a run-set's tenant-level leaves hold are counted already (_run_set)
     kinds = [r["event"]["data"].get("kind") for r in every if r["event"].get("type") == "capture.gap"]
     rep.gaps += sum(k not in (*INFO_GAPS, *AGAINST) for k in kinds)
-    rep.mismatches = sum(k in AGAINST for k in kinds)
+    rep.mismatches += sum(k in AGAINST for k in kinds)
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
@@ -1509,7 +1509,11 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
               f"INCOMPLETE, {span}", problems)
     if gaps:
         rep.check("tenant-level gaps", False, f"{sum(gaps.values())} in the range: {counted}", warn=True)
-        rep.gaps = sum(gaps.values())   # the runs' own are added to them (_verify)
+        # as _verify counts run records' (and adds them to these): what the signer missed, what ran against it, and the
+        # informational kinds (no witness for a while, a late or skewed cosignature), which are neither
+        rep.gaps = sum(n for k, n in gaps.items() if k not in (*INFO_GAPS, *AGAINST))
+        rep.mismatches = sum(n for k, n in gaps.items() if k in AGAINST)
+        rep.info = {k: n for k, n in gaps.items() if k in INFO_GAPS}
     rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
               f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
     return retired, top if lo == 0 else -1, reg_cosigs, pointed

@@ -18,7 +18,8 @@ key. Pin it with --key, or use a witness.` With several runs, the weakest isolat
 
 The counts are of what was signed: the tool calls the records name, in that many signed records. A verified bundle shows
 that what was signed is intact, not that every call was captured. `none changed, removed or added` is said only when no
-check warned. Signed gaps, records the signer wrote about what it missed (a run-set's tenant-level gaps among them), read
+check warned. Signed gaps, records the signer wrote about what it missed (a run-set's tenant-level ones among them; its
+informational ones, like a stretch with no witness, are a `Note:` line instead), read
 `VERIFIED WITH GAPS: 1 tool call in 6 signed records, none changed after signing; 2 signed gaps (things Tracekit knows
 it missed)`. A call that ran against the signer's decision, or an imported decision that disagrees with it, was
 recorded, not missed: `1 policy mismatch recorded (see --detail)`. A bundle that fails says where it breaks, by the record's log `seq`, in plain words:
