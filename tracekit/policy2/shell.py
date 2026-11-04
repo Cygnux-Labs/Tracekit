@@ -160,6 +160,18 @@ def _sets_keyword(argv):
     return any(re.search(r"[$`*?[]", w) or re.fullmatch(r"-[A-Za-z]*k[A-Za-z]*", w) or w == "keyword" for w in words)
 
 
+def _names_ifs(command):
+    """Whether a line may name IFS in any spelling: with its quotes, backslashes and $'…' escapes resolved
+    (`I"F"S`, `I\\FS`, `$'\\x49'FS`), or an indirect expansion (${!x}), which may name any variable."""
+    plain = re.sub(r"\$'((?:\\.|[^'\\])*)'", lambda m: _ansi_c(m.group(1)), command)
+    return "IFS" in re.sub(r"[\"'\\\n]", "", plain) or "${!" in command
+
+
+# a variable's value read through as a program's path (_Parser.simple): only the characters of an ordinary path, so a
+# value a changed IFS would split there (`X=/usr/bin/sudo,id`) is not
+_PLAIN_PATH = re.compile(r"[A-Za-z0-9_./~+-]+")
+
+
 def _may_set(text, name):
     """Whether shell text may give variable `name` a value: an assignment to it (`name=`, `name+=`, `${name:=…}`), a
     loop over it, arithmetic that names it, or any builtin that sets variables by name (read, eval, declare …, printf
@@ -274,7 +286,7 @@ def analyse(command, persistent_target=None, readings=True, work=None):
     readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
-           "unresolved": set(), "called": set(), "exported": set(), "ifs_named": "IFS" in command,
+           "unresolved": set(), "called": set(), "exported": set(), "ifs_named": _names_ifs(command),
            "command_names_mutable": False,
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
@@ -1127,7 +1139,8 @@ class _Parser:
         arguments when the call gives literals (else unknown, so a body that runs one is held), the caller's known
         variables are the body's. A call within its own body (recursion) or past 8 calls deep is unreadable (opaque)."""
         calling = self.ctx["calling"]
-        self.ctx["called"].add(name)
+        if "trap" not in via:   # a trap's call runs later, when the shell (which may persist) may hold another body
+            self.ctx["called"].add(name)
         if name in calling or len(calling) >= 8:
             cmd["opaque"] = True
             return
@@ -1352,7 +1365,8 @@ class _Parser:
             names = globs[:]
         # but a bare program name a variable gives (X=rm; $X …) only hides that name: it is read and still held, as a
         # name the line builds; a path (PY=.venv/bin/python; $PY …) is read
-        names = [n or g and any("/" not in t for t in ([w] if s is None else [x[0] for x in self.fill([s])]))
+        names = [n or g and any("/" not in t or not _PLAIN_PATH.fullmatch(t)
+                                for t in ([w] if s is None else [x[0] for x in self.fill([s])]))
                  for n, g, w, s in zip(names, givens, words, slots)]
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         if brace_unread and cmds:

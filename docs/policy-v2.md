@@ -196,27 +196,29 @@ a file a command only reads or copies. The tags are not in `target`, so a target
 
 - `tracekit` (shell): what a command does to Tracekit's own files and signer, each a tagged subject (`TK-D007`).
   `ACT:` what a command acts on or runs: its words (data words aside) and stdin, the files redirections write, the
-  files `effects` names, assignments and heredoc programs. `LIST:` what a command that prints only names, sizes or
-  counts names (`ls`, `stat`, `du`, `find` without an action, `wc` …), and an assignment the line uses only in readers
-  (none on a line that may set or export variables). `READ:` what a command that reads contents names (`cat`,
-  `head`, `grep`, `sed` with a script that only prints or substitutes, `diff` …), and the files a redirection reads.
-  `DEEP:` what a reader reads all of (`grep -r`, `rg`, a pattern), what a reader names whose output goes on to
-  something other than a filter (`find … | xargs cat`, `cat $(find …)`, a `while read` loop), and the folder a `cd`
-  enters where every command only reads. `SIGNER_MODULE:` an `ACT:` text whose code reaches more of
-  `tracekit.signer` than its read-only parts (`rpc_schema`, `reconcile`, `detect`, the service's `load_policy` and
-  `DEFAULT_POLICY`), or `tracekit.daemon`, `tracekit.proxy`, or looks names up at run time (`runpy`, `getattr` …).
+  files `effects` names, assignments and heredoc programs. The other tags are allowlists, one subject per word.
+  `LIST:` what `ls`, `stat`, `test` or `find` (without an action, `-fprint`, `-fls` or `-files0-from`) names, and an
+  assignment the line uses only in readers (not to `CDPATH`, `HOME`, `OLDPWD` or another variable the shell reads on
+  its own; none on a line that may set or export variables). `READ:` what `cat`, `head`, `tail`, `less`, `grep`,
+  `sed -n` (a script that only prints) or `jq` names, printing to the terminal or a filter, and the files a
+  redirection reads. `DEEP:` what such a reader reads all of (`grep -r`, a pattern) or names when its output goes to
+  a file, a substitution or anything but a filter (`find … | xargs cat`, `cat $(find …)`, a `while read` loop), and the
+  folder a `cd` enters where every command only reads or lists. Any other program's words are `ACT:`.
+  `SIGNER_MODULE:` an `ACT:` text whose code reaches more of `tracekit.signer` than `rpc_schema`'s tables,
+  `reconcile.compared` and `model_names`, and the service's `load_policy` and `DEFAULT_POLICY`, by those names.
 - `downloads` (shell): the `code` subjects, and where downloaded bytes run (`TK-D002`, `RUNS_DOWNLOAD:` and the
   command): a file a `curl` or `wget` wrote (`-o`, `-O`, a redirection, a later pipeline stage's redirection or `tee`;
   then copied, moved or unpacked) that a later command runs as a script, a program or by `source`; any script when
-  the line can't name the download (`curl -J`, an archive unpacked); a `$(curl …)` (or a variable set to one, or a
-  substitution that reads a downloaded file) as a command's name, in `eval`, `source` or `-c`/`-e` code, in a
-  herestring or pipe into a shell or interpreter that reads stdin; a downloaded file copied (`cat >`, `dd`, `cp`,
-  `rsync`, `tee`) and run, run by `python -m`, by inline code that names it, by `find -exec` or `xargs`. And where a
-  download's pipe feeds code that may run or store it (`TK-A046`, `PIPED_TO_CODE:`): a later stage that is a shell
-  with `-c` or a script, an interpreter with a script or a module (`python3 -m json.tool` aside), or with inline code;
-  Python's unless it imports only modules that keep what it reads as data (`json`, `sys` for its streams and
-  arguments, `re`, `math`, `csv`, `collections` …) and has no exec-style call, dunder name or write. A tagged subject's
-  tag doesn't count toward its size.
+  the line can't name the download (`curl -J`, an archive unpacked); any command or assignment that names a
+  downloaded file or a copy of it, unless it only prints it to the terminal or a filter, removes, copies or moves it,
+  or is Python inline code read as data; a downloaded file named as one a program loads by itself (`conftest.py`, a
+  `.pth`, a shell rc file, a git hook); a `$(curl …)` (or a variable set to one, or a substitution that reads a
+  downloaded file) as a command's name, in `eval`, `source` or `-c`/`-e` code, in a herestring or pipe into a shell
+  or interpreter that reads stdin. And where a download's pipe feeds code that may run or store it (`TK-A046`,
+  `PIPED_TO_CODE:`): a later stage that is a shell with `-c` or a script, an interpreter with a script or a module
+  (`python3 -m json.tool` aside), or with inline code; Python's unless all its syntax is on an allowlist: `import
+  json` and `import sys`, reading `sys.stdin`, `json.load` and `json.loads`, subscripts, `len`, `print`,
+  comprehensions and string formatting. A tagged subject's tag doesn't count toward its size.
 
 - `host`: the URL's host as a browser reads it (`host:port/path` without a scheme is http; controls, tabs and newlines dropped, `view-source:` and `blob:`
   peeled, `\` as `/`, any number of slashes after the scheme, the host after the last `@`), percent-decoded, NFKC

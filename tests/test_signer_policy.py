@@ -1963,8 +1963,10 @@ class CodingPack(unittest.TestCase):
         coding_network_passes = (
             "curl -s -o /dev/null -w '%{http_code}' https://example.com",
             "curl -s https://example.com/page.html -o page.html",
-            "curl -s https://example.com/data.json | python3 -c 'import sys,json;print(json.load(sys.stdin))'",   # #589
         )
+        # #589: Python inline code that reads a download as data, in every pack (the strict pack may hold the network
+        # call for itself)
+        data_pipes = ("curl -s https://example.com/data.json | python3 -c 'import sys,json;print(json.load(sys.stdin))'",)
         asks = (
             "curl -s https://example.com/data.json | python3 -c 'import sys,json;print(eval(sys.stdin.read()))'",
             "curl -s https://example.com/data.json | python3 parse.py",
@@ -1988,6 +1990,12 @@ class CodingPack(unittest.TestCase):
                     d = e.decide("Bash", {"command": command})
                     self.assertIn(d["verdict"], ("allow", "flag"), d)
                     self.assertNotIn("TK-D002", d["rule_ids"], d)
+            for command in data_pipes:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertFalse({"TK-A046", "TK-D002", "TK-SHELL-PARSE"} & set(d["rule_ids"]), d)
+                    if pack != "strict.yaml":
+                        self.assertIn(d["verdict"], ("allow", "flag"), d)
             for command in asks:
                 with self.subTest(pack=pack, engine=engine, command=command):
                     d = e.decide("Bash", {"command": command})

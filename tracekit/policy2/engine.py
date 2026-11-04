@@ -3,6 +3,7 @@
 google-re2 when installed, else the `regex` module on the same pattern subset in ASCII mode (`compile.translate`).
 Every decision names the engine (id@version) and the policy_hash. Precedence: deny > ask > flag > allow.
 """
+import ast
 import fnmatch
 import functools
 import posixpath
@@ -921,21 +922,67 @@ _PY_ACTS = re.compile(
     r"\b(?:filename|FileHandler|RotatingFileHandler|basicConfig)\b|"
     r"['\"][rbtU]*[wax+][rbtU+]*['\"]")   # a mode a file opens with, anywhere: `open(p, 'w' if … else 'r')`
 _PYTHON = re.compile(r"python[0-9.]*t?")
-# the modules Python inline code reading a download may import and stay data (TK-A046), and the attributes of sys it
-# may read
-_PY_SAFE = {"json", "sys", "re", "math", "statistics", "collections", "itertools", "functools", "string", "textwrap",
-            "datetime", "time", "decimal", "fractions", "csv", "html", "unicodedata", "base64", "binascii", "hashlib",
-            "pprint", "urllib.parse"}
-_SYS_SAFE = {"stdin", "stdout", "stderr", "argv", "exit", "version", "version_info", "maxsize", "platform"}
+# Python inline code that only reads a download as data (TK-A046; TK-D002 for a downloaded file a command names), as
+# an allowlist of syntax: `import json` and `import sys`, reading sys.stdin, json.load and json.loads, subscripts,
+# len and print, comprehensions, comparisons and string formatting; `files` adds open() in read mode, sys.argv and a
+# value's get, keys, values and items. Anything else, a dunder name too, isn't data.
+_DATA_NODES = (ast.Module, ast.Expr, ast.Assign, ast.Name, ast.Load, ast.Store, ast.Constant, ast.Subscript, ast.Slice,
+               ast.Tuple, ast.List, ast.Dict, ast.Set, ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp,
+               ast.comprehension, ast.JoinedStr, ast.FormattedValue, ast.BinOp, ast.UnaryOp, ast.BoolOp, ast.Compare,
+               ast.IfExp, ast.Call, ast.Attribute, ast.Import, ast.alias, ast.keyword, ast.operator, ast.unaryop,
+               ast.boolop, ast.cmpop, ast.expr_context)
+_DATA_ATTRS = {("sys", "stdin"), ("sys.stdin", "read"), ("sys.stdin", "readline"), ("sys.stdin", "readlines"),
+               ("json", "load"), ("json", "loads")}
 
 
-def _reads_as_data(code):
-    """Whether Python inline code keeps what it reads as data: every module it imports is in _PY_SAFE, sys only for
-    _SYS_SAFE, no dunder name, no help() or breakpoint() (they start a pager or a debugger), and nothing _PY_ACTS finds."""
-    modules = [item.strip().partition(" as ")[0] for m in shell._PY_IMPORT.finditer(code) for item in m.group(1).split(",")]
-    modules += re.findall(r"\bfrom\s+([\w.]+)\s+import\b", code)
-    return all(m in _PY_SAFE for m in modules) and set(re.findall(r"\bsys\.(\w+)", code)) <= _SYS_SAFE and \
-        "__" not in code and not re.search(r"\b(?:help|breakpoint)\s*\(", code) and not _PY_ACTS.search(code)
+def _dotted(node):
+    """`a.b.c` as text for a chain of names, else None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute) and (base := _dotted(node.value)):
+        return base + "." + node.attr
+    return None
+
+
+def _data_only(code, files=False):
+    """Whether Python code passes _DATA_NODES' allowlist (see above)."""
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError, RecursionError, MemoryError):
+        return False
+    stored = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store)}
+    calls = {"print", "len"} | ({"open"} if files else set())
+    names = calls | {"json", "sys"} | stored
+    for node in ast.walk(tree):
+        if not isinstance(node, _DATA_NODES):
+            return False
+        if isinstance(node, ast.Import):
+            if any(a.name not in ("json", "sys") or a.asname for a in node.names):
+                return False
+        elif isinstance(node, ast.Name):
+            if "__" in node.id or node.id not in names:
+                return False
+        elif isinstance(node, ast.Attribute):
+            base = _dotted(node.value)
+            if "__" in node.attr or not (
+                    (base, node.attr) in _DATA_ATTRS or files and (base, node.attr) == ("sys", "argv") or
+                    isinstance(node.value, ast.Constant) and isinstance(node.value.value, str) and
+                    node.attr in ("format", "join") or
+                    files and base not in ("json", "sys", "sys.stdin") and node.attr in ("get", "keys", "values", "items")):
+                return False
+        elif isinstance(node, ast.Call):
+            f = node.func
+            if isinstance(f, ast.Name):
+                if f.id not in calls or f.id == "open" and (node.keywords or len(node.args) > 2 or len(node.args) == 2 and not (
+                        isinstance(node.args[1], ast.Constant) and node.args[1].value in ("r", "rb", "rt"))):
+                    return False
+            elif not isinstance(f, ast.Attribute):
+                return False
+        elif isinstance(node, ast.Assign):
+            if not all(isinstance(t, ast.Name) or isinstance(t, ast.Tuple) and all(isinstance(e, ast.Name) for e in t.elts)
+                       for t in node.targets):
+                return False
+    return True
 
 
 def _base(path):
@@ -987,17 +1034,20 @@ def _written_scripts(commands):
     return {f: "\n".join(texts) for f, texts in out.items() if f not in others}
 
 
-# programs that only read the files they name and print what they find (TK-D007): those that print only names, sizes
-# or counts list; the others read contents; those that read every file under a folder they name, or a pattern's files,
-# read it deeply
-_LISTERS = {"ls", "stat", "du", "test", "[", "readlink", "realpath", "tree", "wc", "find", "pgrep", "ps"}
-_READERS = _LISTERS | {"cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag", "ack", "diff", "cmp", "sed", "jq",
-                       "od", "hexdump", "strings", "sort", "cut", "nl", "sha256sum", "shasum", "sha1sum", "md5",
-                       "md5sum", "cksum"}
+# TK-D007's allowlists (#589): the programs that may read a file's contents under Tracekit's dirs (which files they
+# may read there the pack's `unless` names: the installed package and /etc/tracekit's client.json and policy), and
+# the programs that may list one; any other program there acts
+_PLAIN_READERS = {"cat", "head", "tail", "less", "grep", "egrep", "fgrep", "sed", "jq"}
+_LISTERS = {"ls", "stat", "test", "[", "find"}
 _NAVIGATE = ("cd", "pushd", "popd")
 # a later pipeline stage that only filters text: what an earlier stage prints goes no further than the terminal
 _FILTERS = {"head", "tail", "grep", "egrep", "fgrep", "wc", "sort", "uniq", "cut", "tr", "sed", "jq", "column", "nl",
             "cat", "less", "more"}
+# variables the shell or a program reads on its own (cd's CDPATH, HOME and OLDPWD, a startup file, a search path): an
+# assignment to one is never a value the line only reads
+_SPECIAL = re.compile(r"CDPATH|HOME|OLDPWD|PWD|PATH|IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|GLOBIGNORE|PROMPT_COMMAND|"
+                      r"PS[0-4]|TMPDIR|HISTFILE|INPUTRC|MAIL\w*|LD_\w+|DYLD_\w+|PYTHON\w*|XDG_\w+|TRACEKIT\w*|LESS\w*|"
+                      r"PAGER|EDITOR|VISUAL")
 
 
 def _sed_reads_only(script):
@@ -1008,104 +1058,100 @@ def _sed_reads_only(script):
     return shell._sed_prints(rest)
 
 
-def _reading(argv, glob):
-    """(whether a command only reads what it names, whether it reads all of it: every file under a folder, grep -r,
-    rg, ag or ack, or a pattern's files). A _READERS program, without the options that make it write, delete or run
-    something: sed -i, -f or a script that writes or runs (w, e), find's actions, rg --pre, sort or tree -o."""
+def _reading(argv):
+    """What a command does with the files it names, for TK-D007: "read" (a _PLAIN_READERS program: sed only with -n
+    and a script that only prints, grep without -r), "deep" (grep -r: every file under a folder), "list" (a _LISTERS
+    program: find without an action, -fprint, -fls or -files0-from; pgrep and ps naming no file), else None."""
     name, args = argv[0], argv[1:]
-    if name not in _READERS:
-        return False, False
     if name == "sed":
         script = shell._sed_scripts(args)
-        ok = script is not None and _sed_reads_only(script) and not any(
-            re.match(r"-[nrsuzE]*i|--in-place", a) for a in args)
-    elif name == "find":
-        ok = not any(a.startswith(("-exec", "-ok", "-fprint", "-fls")) or a == "-delete" for a in args)
-    elif name in ("rg", "ag", "ack"):
-        ok = not any(a.startswith(("--pre", "--pager")) for a in args)
-    elif name in ("sort", "tree"):
-        ok = not any(a.startswith("--output") or re.fullmatch(r"-[A-Za-z]*o.*", a) for a in args)
-    else:
-        ok = True
-    deep = glob or name in ("rg", "ag", "ack") or name in ("grep", "egrep", "fgrep") and any(
-        re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(("--recursive", "--dereference-recursive",
-                                                                     "--directories=recurse")) for a in args)
-    return ok, ok and deep
+        return "read" if "-n" in args and script is not None and shell._sed_prints(script) and not any(
+            re.match(r"-[nrsuzE]*[if]|--in-place|--file", a) for a in args) else None
+    if name in ("grep", "egrep", "fgrep"):
+        return "deep" if any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(
+            ("--recursive", "--dereference-recursive", "--directories=recurse", "-d")) for a in args) else "read"
+    if name in _PLAIN_READERS:
+        return "read"
+    if name == "find":
+        return None if any(a.startswith(("-exec", "-ok", "-fprint", "-fls", "-files0-from", "--files0-from")) or
+                           a == "-delete" for a in args) else "list"
+    if name in _LISTERS or name in ("pgrep", "ps") and not any("/" in a for a in args):
+        return "list"
+    return None
 
 
 _SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
-# the parts of Tracekit's signer code may read without running a signer or touching its files: modules that only
-# define and compute, and the service's policy loader and its helpers
-_SIGNER_READS = {"rpc_schema", "reconcile", "detect"}
-_SERVICE_READS = {"load_policy", "DEFAULT_POLICY", "_stricter", "_shown", "_dotenv", "_escaped"}
+# the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
+# service's policy loader on its default policy
+_SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
+                 "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
 _PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins)\b|"
                         r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
 
 
 def _runs_signer(code):
-    """Whether code that names tracekit.signer, .daemon or .proxy may run more than _SIGNER_READS and
-    _SERVICE_READS: the daemon or proxy, any other name or module, a name looked up at run time (runpy, getattr,
-    importlib …), or a module alias used other than to reach an allowed name."""
-    if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code):
+    """Whether code that names tracekit.signer, .daemon or .proxy may reach more than _SIGNER_READS: the daemon or the
+    proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
+    other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
+    reached by its full name."""
+    if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
+            re.search(r"\btracekit\.signer\.\w+\.\w", code):
         return True
-    services = []   # the names the code gives tracekit.signer.service
+    aliases = {}   # a name the code gives one of the signer's modules -> that module
     for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+\(?([\w\s,*]+)", code):
         for item in m.group(2).replace("\n", " ").split(","):
-            name, _, alias = item.strip().partition(" as ")
+            name, _, alias = (x.strip() for x in item.partition(" as "))
             if not name:
                 continue
-            if m.group(1) is None and name == "service":
-                services.append(alias.strip() or name)
-            elif not (m.group(1) is None and name in _SIGNER_READS or m.group(1) in _SIGNER_READS or
-                      m.group(1) == "service" and name in _SERVICE_READS):
+            if m.group(1) is None and name in _SIGNER_READS:
+                aliases[alias or name] = name
+            elif m.group(1) not in _SIGNER_READS or alias or name not in _SIGNER_READS[m.group(1)]:
                 return True
     for m in re.finditer(r"\bimport\s+tracekit\.signer(?:\.(\w+))?(?:\s+as\s+(\w+))?", code):
-        if m.group(1) == "service":
-            services.append(m.group(2) or "tracekit.signer.service")
-        elif m.group(1) not in _SIGNER_READS:
-            if m.group(2) or m.group(1):
-                return True
-            services.append("tracekit.signer.service")   # import tracekit.signer: reached as tracekit.signer.…
-    for m in re.finditer(r"\btracekit\.signer\.(\w+)", code):   # a module reached by its full name
-        if m.group(1) not in _SIGNER_READS | {"service"}:
+        if m.group(1) not in _SIGNER_READS or not m.group(2):
             return True
-    for alias in services:
+        aliases[m.group(2)] = m.group(1)
+    for alias, module in aliases.items():
         uses = re.findall(r"(?<![\w.])%s\b(\.\w+)?" % re.escape(alias), code)
-        if any(u and u[1:] not in _SERVICE_READS for u in uses) or uses.count("") > 1:   # the import names it once
+        if any(u and u[1:] not in _SIGNER_READS[module] for u in uses) or uses.count("") > 1:   # the import names it
             return True
     return False
 
 
 def _tracekit(parsed):
-    """What a shell call does to Tracekit itself (TK-D007), each as a tagged subject. ACT: what a command acts on or runs
-    (its words but data words, its stdin, the files redirections write, _effects' files, the other words that name
-    something: assignments, heredoc programs). LIST: what a command that prints only names, sizes or counts names
-    (_LISTERS), and the shell's own variables set to a value the line uses only in readers (_private). READ: what a
-    command that only reads names (_reading) and the files a redirection reads. DEEP: what a reader reads all of
-    (grep -r, rg, a pattern), and what a reader names whose output goes on to something other than a filter
-    (`find … | xargs cat`, `cat $(find …)`, `find … | while read f`), and the folder a cd, pushd or popd enters
-    where every command only reads and no redirection writes (else ACT: a later relative name may act in it).
-    SIGNER_MODULE: an ACT text whose code reaches more of Tracekit's signer than it may read (_runs_signer). Each also
-    normalised and casefolded as a path is (_path_forms)."""
+    """What a shell call does to Tracekit itself (TK-D007), each as a tagged subject. ACT: what a command acts on or
+    runs, its words joined (but data words), its stdin, the files redirections write, _effects' files, the other words
+    that name something (assignments, heredoc programs). READ, DEEP and LIST: one subject per word a command that only
+    reads names (_reading; the pack's `unless` names the files a READ may name under Tracekit's dirs): DEEP for a
+    recursive read, a pattern, a reader whose output goes on to a file, a substitution or anything but a filter
+    (`find … > l; xargs cat < l`, `cat $(find …)`, `find … | while read f`), and the folder a cd, pushd or popd enters
+    where every command only reads or lists and no redirection writes (else the cd is ACT); a file a redirection
+    reads is READ, an assignment the line uses only in readers (_private) LIST. SIGNER_MODULE: an ACT text whose code
+    reaches more of Tracekit's signer than it may read (_runs_signer). Each also normalised and casefolded as a path
+    is (_path_forms)."""
     commands, refs, written = parsed[0], parsed[2], set(parsed[3])
     learned = parsed[5] if len(parsed) > 5 else None
-    kinds = [_reading(c["argv"], c["glob"]) for c in commands]
-    roams = not written and all(ok or c["argv"][0] in _NAVIGATE for c, (ok, _) in zip(commands, kinds))
+    kinds = [_reading(c["argv"]) for c in commands]
+    roams = not written and all(k or c["argv"][0] in _NAVIGATE for c, k in zip(commands, kinds))
     stages = {}   # pipeline -> the stage of each command, and whether it only filters
     for c in commands:
         stages.setdefault(c["pipeline"], []).append((c.get("stage", 0), c["argv"][0] in _FILTERS))
     act, listed, read, deep = [], [], [], []
-    for c, (ok, all_of) in zip(commands, kinds):
+    for c, kind in zip(commands, kinds):
         data = shell.data_words(c["argv"]) | set(c.get("data_words", ()))
-        words = " ".join(a for i, a in enumerate(c["argv"]) if i not in data)
+        words = [a for i, a in enumerate(c["argv"]) if i not in data]
+        named = [a for a in words[1:] if not re.fullmatch(r"-[^/=]*", a)]
         feeds = any(s > c.get("stage", 0) and not f for s, f in stages[c["pipeline"]]) or \
-            bool({"$()", "``"} & set(c["via"]))
+            bool({"$()", "``", "<()"} & set(c["via"])) or bool(c.get("out"))
         if c["argv"][0] in _NAVIGATE:
-            (deep if roams else act).append(words)
-        elif not ok:
-            act.append(words)
+            if roams:
+                deep += named
+            else:
+                act.append(" ".join(words))
+        elif kind is None:
+            act.append(" ".join(words))
         else:
-            (deep if all_of or feeds else listed if c["argv"][0] in _LISTERS else read).append(words)
+            {"read": read, "list": listed, "deep": deep}["deep" if feeds or c["glob"] else kind].extend(named)
         act += [] if c.get("data_stdin") else c["stdin"]
     reads, private = set(learned["read"]) if learned else set(), _private(learned, commands, "\n".join(act))
     for r in refs:
@@ -1120,13 +1166,13 @@ def _tracekit(parsed):
 
 def _private(learned, commands, acted):
     """The assignment words that set a shell variable only commands that read use: standalone (the shell's own, not a
-    command's environment), its $NAME in none of the `acted` text (the words, code and stdin of the commands that act),
-    with nothing on the line that may set or export any variable (`set` too: set -a exports them) or name one at run
-    time (${!x})."""
+    command's environment), of no variable the shell or a program reads on its own (_SPECIAL), its $NAME in none of the
+    `acted` text (the words, code and stdin of the commands that act), with nothing on the line that may set or export
+    any variable (`set` too: set -a exports them) or name one at run time (${!x})."""
     if not learned or learned["any_set"] or "*" in learned["unresolved"] or any(c["argv"][0] == "set" for c in commands):
         return set()
     used = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", acted))
-    return {text for name, text in learned["assigned"] if name not in used}
+    return {text for name, text in learned["assigned"] if name not in used and not _SPECIAL.fullmatch(name)}
 
 
 _FETCHERS = ("curl", "wget")
@@ -1199,15 +1245,32 @@ def _runs_files(c):
     return [f for f in out if f]
 
 
+# what may name a downloaded file without running it (TK-D002): programs that print what they read (to the terminal
+# or a filter: else what they print may run), remove it, or copy or move it (the copy is downloaded too)
+_TAINT_READERS = {"cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "wc", "jq", "file", "stat", "ls",
+                  "test", "[", "sha256sum", "shasum", "sha1sum", "md5", "md5sum", "cksum", "diff", "cmp", "od",
+                  "hexdump", "strings", "sort", "cut", "nl"}
+_TAINT_MOVES = {"rm", "unlink", "chmod", "cp", "mv"}
+# a file a program or shell loads by itself: one downloaded there runs
+_AUTOLOAD = re.compile(r"(?:^|/)(?:conftest\.py|sitecustomize\.py|usercustomize\.py|[^/]*\.pth|\.bashrc|\.bash_profile|"
+                       r"\.bash_login|\.bash_logout|\.profile|\.zshrc|\.zshenv|\.zprofile|\.zlogin|\.envrc|\.pythonrc"
+                       r"(?:\.py)?)$|(?:^|/)\.git/hooks/[^/]+$")
+
+
 def _downloads(parsed):
     """Where downloaded bytes run, as RUNS_DOWNLOAD: the command (TK-D002), and where a download's pipe feeds code that
-    may run or store it, as PIPED_TO_CODE: the command (TK-A046). Runs: a file a curl or wget wrote (-o, -O, its
-    redirection, a later stage's redirection or tee; then copied, moved or unpacked) run as a script, a program or by
-    source; any script or path program when a download's file names can't be told; a substitution of curl or wget,
-    or a variable the line sets to one, as a command's name, in eval, in -c code, or piped into a shell or interpreter
-    that reads its program from stdin. Piped to code: a later stage of a download's pipeline that is a shell with -c
-    or a script, or an interpreter with a script or a module (python -m json.tool aside), or with inline code: Python
-    code only when it has an exec-style call, a spawner or a file write (_PY_ACTS)."""
+    may run or store it, as PIPED_TO_CODE: the command (TK-A046). A file curl or wget wrote (-o, -O, its redirection, a
+    later stage's redirection or tee) is downloaded, and so is a copy of it (cp, mv, a reader's redirection). Runs: any
+    command or assignment that names a downloaded file (`BASH_ENV=f`, `--rcfile f`, `openssl -in f`, `sh f`) unless it
+    is one that only prints, removes or copies it (_TAINT_READERS whose output reaches no more than the terminal or a
+    filter, _TAINT_MOVES, Python inline code _data_only reads as data); a downloaded file whose name a program or shell
+    loads by itself (_AUTOLOAD: conftest.py, a .pth, a shell rc file, a git hook); any script or path program when the
+    line can't name a download (curl -J, an archive); a substitution of curl or wget, a variable the line sets to one,
+    or a substitution that reads a downloaded file, as a command's name, in eval or source, in -c code, in a herestring
+    or pipe into a shell or interpreter; a shell or interpreter xargs, parallel or find -exec runs on a line that
+    downloads. Piped to code: a later stage of a download's pipeline that is a shell with -c or a script, an
+    interpreter with a script or a module (python -m json.tool aside), or with inline code: Python's unless _data_only
+    reads it as data."""
     commands, tags = parsed[0], []
     files, unknown, piped = set(), False, {}
     for k, c in enumerate(commands):
@@ -1221,13 +1284,15 @@ def _downloads(parsed):
                                              if c["argv"][0] == "tee" else set())
     # each name a pattern: an expansion in one may be any text (`-o "view-$(basename $p).json"` is view-*.json); one
     # that is only an expansion may be any file, and so may any, past 64 patterns
+    paths = set(files)
     names = {_EXPANDED.sub("*", _base(f)) for f in files}
     exact, patterns = {n for n in names if "*" not in n}, {n for n in names if "*" in n}
-    unknown |= "*" in patterns or len(patterns) > 64
-
     tainted = [m.group(1) for r in parsed[2] + [a for c in commands for a in c["argv"][1:]]
                if (m := re.match(r"([A-Za-z_][A-Za-z0-9_]*)\+?=", r)) and _FETCHED.search(r)]
     uses = re.compile(r"\$\{?(?:%s)\b" % "|".join(map(re.escape, tainted))) if tainted else None
+    stages = {}
+    for c in commands:
+        stages.setdefault(c["pipeline"], []).append((c.get("stage", 0), c["argv"][0] in _FILTERS))
 
     def downloaded(path):
         return _base(path) in exact or any(fnmatch.fnmatchcase(_base(path), p) for p in patterns if p != "*")
@@ -1236,51 +1301,62 @@ def _downloads(parsed):
         return bool(_FETCHED.search(text) or uses and uses.search(text) or
                     re.search(r"\$\(|`", text) and any(map(downloaded, re.findall(r"[\w./-]+", text))))
 
-    def named(code):   # code that names a downloaded file, or imports a downloaded module
-        modules = re.findall(r"\b(?:import|from)\s+(\w+)", code)
-        return any(map(downloaded, re.findall(r"[\w./-]+", code))) or any(downloaded(m + ".py") for m in modules)
-    # what a downloaded file or text is copied into (cat, dd, cp, mv, rsync, tee, a redirection; also from a
-    # substitution of curl), and unpacked into files no name says: until nothing new is found
+    def named(c):   # the downloaded files a command names: in a word, after a word's `=`, or as its stdin
+        words = c["argv"][1:] + [a.partition("=")[2] for a in c["argv"][1:] if "=" in a] + list(c.get("in", ()))
+        return [w for w in words if w and downloaded(w)]
+
+    def passes(c):   # its output goes no further than the terminal or a filter
+        return not c.get("out") and not ({"$()", "``", "<()"} & set(c["via"])) and not any(
+            s > c.get("stage", 0) and not f for s, f in stages[c["pipeline"]])
+    # copies: a reader's redirection, cp and mv, from a downloaded file or text; until nothing new is found
     for _ in range(8):
         size = len(exact) + len(patterns)
         for c in commands:
             name, args = c["argv"][0], [a for a in c["argv"][1:] if not a.startswith("-")]
-            sources = ([] if name == "tee" else args) + list(c.get("in", ())) + [
-                a[3:] for a in args if a.startswith("if=")]
-            if not (any(map(downloaded, sources)) or any(map(fetched, c["argv"][1:] + c["stdin"]))):
+            if not (named(c) or any(map(fetched, c["argv"][1:] + c["stdin"]))):
                 continue
             unknown |= name in _EXTRACTORS
-            for f in list(c.get("out", ())) + (args if name == "tee" else []) + [a[3:] for a in args if a.startswith(
-                    "of=")] + (args[-1:] if name in ("cp", "mv", "install", "ln", "rsync", "scp") and len(args) > 1 else []):
+            dest = args[-1:] if name in ("cp", "mv") and len(args) > 1 else []
+            copies = list(c.get("out", ())) + (args if name == "tee" else []) + [
+                d.rstrip("/") + "/" + _base(s) for d in dest for s in args[:-1]] + dest
+            for f in copies:
+                paths.add(f)
                 (patterns if "*" in (n := _EXPANDED.sub("*", _base(f))) else exact).add(n)
         if len(exact) + len(patterns) == size:
             break
     unknown |= "*" in patterns or len(patterns) > 64
+    if any(_AUTOLOAD.search(p.replace("\\", "/")) for p in paths):
+        tags.append("RUNS_DOWNLOAD:a file a program or shell loads by itself")
+    for r in parsed[2]:   # an assignment that names one: BASH_ENV, ENV, PYTHONSTARTUP …
+        if "=" in r and downloaded(r.partition("=")[2]):
+            tags.append("RUNS_DOWNLOAD:" + r)
     carries = set()   # the pipelines an earlier stage of which names a download's output
     for k, c in enumerate(commands):
         argv, kind = c["argv"], shell._kind(c["argv"][0])
         code = shell._dash_c(argv[1:]) if argv[0] in shell.SHELLS else \
             shell._code_arg(kind, argv[1:]) if kind else None
+        data = kind == "python" and code is not None and _data_only(code, files=True)
+        use = named(c) if argv[0] not in _FETCHERS else []
+        if code is not None and not use:   # code that names a downloaded file, or imports a downloaded module
+            use = [w for w in re.findall(r"[\w./-]+", code) if downloaded(w)] + [
+                m for m in re.findall(r"\b(?:import|from)\s+(\w+)", code) if downloaded(m + ".py")]
         ran = [f for f in _runs_files(c) if downloaded(f) or fetched(f) or unknown and (f is not c["word"] or "/" in f)]
+        harmless = argv[0] in _TAINT_READERS and passes(c) or argv[0] in _TAINT_MOVES or data
         runner = argv[0] in shell.SHELLS or kind and kind not in ("awk", "sed")
-        if ran or fetched(c["word"]) or \
-                code is not None and (fetched(code) or named(code) and not (kind == "python" and _reads_as_data(code)) or
-                                      any(map(downloaded, c.get("in", ()))) and not (
-                                          kind == "python" and _reads_as_data(code))) or \
+        if ran or use and not harmless or fetched(c["word"]) or code is not None and fetched(code) or \
                 argv[0] in ("eval", "source", ".") and any(map(fetched, argv[1:] + c["stdin"])) or \
                 (shell._stdin_shell([c]) or shell._stdin_interpreter([c]) or code is not None) and (
-                    c["pipeline"] in carries or any(map(fetched, c["stdin"]))) and not (
-                    kind == "python" and code is not None and _reads_as_data(code)) or \
+                    c["pipeline"] in carries or any(map(fetched, c["stdin"]))) and not data or \
                 runner and (exact or patterns or unknown) and set(c["via"][-1:]) & {"xargs", "parallel", "find -exec"}:
             tags.append("RUNS_DOWNLOAD:" + " ".join(argv))
-        if any(map(fetched, argv[1:] + c["stdin"])):
+        if any(map(fetched, argv[1:] + c["stdin"])) or use:
             carries.add(c["pipeline"])
         first = piped.get(c["pipeline"])
         if first is None or k <= first or c["argv"][0] in _FETCHERS:
             continue
         if argv[0] in shell.SHELLS and shell._shell_mode(argv[1:])[0] != "stdin" or \
                 kind and kind not in ("awk", "sed") and (
-                    code is not None and (kind != "python" or not _reads_as_data(code)) or code is None and
+                    code is not None and (kind != "python" or not _data_only(code)) or code is None and
                     not shell._reads_stdin(kind, argv[1:]) and _python_module(argv[1:])[:1] != ["json.tool"]):
             tags.append("PIPED_TO_CODE:" + " ".join(argv))
     return list(dict.fromkeys(tags))
