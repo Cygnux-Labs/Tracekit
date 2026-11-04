@@ -3038,7 +3038,7 @@ class FinalQA(unittest.TestCase):
         for c in cmds:
             with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(cli.main(shlex.split(c)[1:]), 0, (c, err.getvalue()))
-        self.assertIn("Integrity: VERIFIED.", out.getvalue())
+        self.assertTrue(out.getvalue().startswith("VERIFIED: "), out.getvalue())   # the verify command, run last
 
     def test_a_runs_list_says_1_gap_and_1_call(self):
         needs_node(self)
