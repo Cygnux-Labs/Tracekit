@@ -108,7 +108,8 @@ def summary(rep, code, integrity, assurance, stream=None):
     else:
         head = "VERIFIED SO FAR" if still_open else "VERIFIED WITH GAPS" if gaps else \
             "VERIFIED WITH WARNINGS (strict)" if code == 3 else "VERIFIED"
-        said = ["none changed after signing" if warned or still_open else "none changed, removed or added after signing"]
+        said = ["none changed after signing" if warned or still_open else
+                "none changed, removed or added after signing"]
     if still_open:
         said.append("the run has not ended, so more may follow" if "TO HEAD" in integrity else
                     "not every run has ended, so more may follow")
@@ -141,8 +142,8 @@ def protection(rep, assurance, unanchored):
     out = ["NOT SHOWN: nothing outside the bundle vouches for the signing key. Pin it with --key, or use a witness."] \
         if unanchored else []
     if REACH.get(weakest, 1) == 0:
-        return out + ["NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have "
-                      "rewritten the record.", fix]
+        return out + ["NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could "
+                      "have rewritten the record.", fix]
     if REACH.get(weakest, 1) == 1:
         return out + [f"NOT SHOWN: the signer did not record that the signing key was out of the agent's reach "
                       f"(isolation: {shown}).", fix]

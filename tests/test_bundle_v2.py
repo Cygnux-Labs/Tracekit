@@ -928,7 +928,8 @@ class TestVerifyV2(Case):
                 self.assertEqual(self.cli(path, "--trust", t, "--detail"),
                                  (2, f"[FAIL] bundle readable — cannot read bundle: {said}\n\nIntegrity: UNUSABLE "
                                      "BUNDLE.\nAssurance: none.\n", ""))
-                self.assertEqual(self.cli(path, "--trust", t), (2, f"UNUSABLE BUNDLE: cannot read bundle: {said}.\n", ""))
+                self.assertEqual(self.cli(path, "--trust", t),
+                                 (2, f"UNUSABLE BUNDLE: cannot read bundle: {said}.\n", ""))
                 code, stdout, _ = self.cli(path, "--trust", t, "--json")
                 self.assertEqual((code, json.loads(stdout)["integrity"]), (2, "UNUSABLE BUNDLE"))
 

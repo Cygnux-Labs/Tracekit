@@ -163,7 +163,8 @@ class V1(unittest.TestCase):
         n = bundle.verify(out, trusted_key=key)[0].events
         first, warned, rest = said.split("\n", 2)
         self.assertEqual((code, first, rest), (0, f"VERIFIED: {n} recorded actions, none changed after signing.", DEV))
-        self.assertTrue(warned.startswith("Warnings: signing key, ") and warned.endswith(". Add --detail to read them."))
+        self.assertTrue(warned.startswith("Warnings: signing key, ") and warned.endswith(". Add --detail to read them."),
+                        warned)
 
     def test_another_users_signer_is_proof_only_with_its_key_pinned(self):
         out, key = self.export(peer_uid=os.getuid() + 1)   # the signer stamps the agent's user as not its own
