@@ -546,6 +546,14 @@ def named_rules(rule_ids):
     return ", ".join(r for r in rule_ids if r != "TK-UNKNOWN-TOOL")
 
 
+def refusal(out, approval_id=None):
+    """Why the signer stopped a call, as the model reads it: the rule ids (named_rules), the approval a person answers
+    (by id), then the signer's reason (a decision's or a refused consume's), which says what to do instead
+    (rpc_schema.INSTEAD) when a rule gives a remedy; "" when it gives none of them."""
+    head = named_rules(out["rule_ids"]) + (f" (approval {approval_id})" if approval_id else "")
+    return ": ".join(x for x in (head.strip(), out.get("reason")) if x)
+
+
 def result_field(send, out):
     """What `complete` carries as a tool's `result`: the result itself when `send` (the decision's `send_result`: an
     untrusted tool, whose result the signer redacts, commits to and indexes for provenance) and it is sendable, else

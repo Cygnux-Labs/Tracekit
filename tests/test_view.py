@@ -1594,6 +1594,21 @@ class View(unittest.TestCase):
         self.assertLess(time.monotonic() - t, 2)
         self.assertTrue(wait_for(lambda: not os.path.exists(why), 15))
 
+    def test_approval_prints_the_link_that_opens_the_held_call(self):
+        """#587: nothing linked a held call to the viewer: `--approval ID` ends the printed link with #approval=ID,
+        which the page follows; anything else than an approval id is refused, not put in the link."""
+        aid = "apr-" + "0" * 32
+        with mock.patch.object(view, "server") as server, mock.patch.dict(os.environ), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            os.environ.pop("TRACEKIT_VIEW_TOKEN", None)
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            server.return_value.server_address = ("127.0.0.1", 7778)
+            self.assertEqual(view.main(["--data-dir", self.d, "--approval", aid]), 0)
+        self.assertIn(f"http://127.0.0.1:7778/?token={server.call_args[0][3]}#approval={aid} ", out.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(view.main(["--data-dir", self.d, "--approval", aid + "&x=<b>"]), 2)
+        self.assertIn("--approval takes an approval id", err.getvalue())
+
     def test_loopback_viewer_prints_a_token_url_and_needs_it(self):
         with mock.patch.object(view, "server") as server, mock.patch.dict(os.environ), \
                 contextlib.redirect_stdout(io.StringIO()) as out:

@@ -22,6 +22,13 @@ def experimental_gate(enabled, what):
     return True
 
 
+def guidance():
+    """The line `tracekit init --v2` prints once it installs hooks: where the agent's instructions for a held or blocked
+    call are (the Claude Code plugin's tracekit-holds skill holds the same lines)."""
+    return ("when Tracekit holds or blocks a call, the agent should tell you and pass on the commands: paste the lines "
+            f"at {wiki_url('docs/coding-agents.md', 'when-tracekit-stops-a-call')} into its CLAUDE.md or AGENTS.md")
+
+
 def experimental(what, help=False):
     """The one line each experimental command or server prints when it starts (docs/support.md); with `help`, the line
     its --help ends with, on stdout."""
@@ -276,9 +283,12 @@ def main(argv=None):
                        "`approvals slack serve --config slack.yaml`")
     p.add_argument("--signer", help="the signer's Unix socket or tcp://host:port (default: the same-user dev signer)")
     acts = p.add_subparsers(dest="action", required=True)
-    acts.add_parser("list", help="pending and recent approvals").add_argument("--json", action="store_true",
-                                                                            help="print one JSON array")
-    q = acts.add_parser("show", help="one approval, with the signer's copy of the arguments in full")
+    q = acts.add_parser("list", help="approvals, those waiting for an answer first, newest first, each with what its "
+                        "call runs")
+    q.add_argument("--json", action="store_true", help="print one JSON array: every approval, in the signer's order")
+    q.add_argument("--all", action="store_true", help="the expired ones too")
+    q = acts.add_parser("show", help="one approval: why its call was held, what to do instead, the commands that "
+                        "answer it, and the signer's copy of the arguments in full")
     q.add_argument("approval_id")
     q.add_argument("--json", action="store_true", help="print one JSON object without a pager")
     for name in ("approve", "reject"):
@@ -423,6 +433,8 @@ def _init_remote_v2(a, url):
     print(f"remote v2 signer configured: {url}; v2 hooks: {hooks or 'not installed'}")
     if hooks and not a.no_thinking_summaries:
         print(install.thinking_line(hooks, on))
+    if hooks:
+        print(guidance())
     print("for SDK clients, set:\n" + "\n".join(f"  export {k}={v}" for k, v in env.items()))
     return 0
 
@@ -499,6 +511,8 @@ def _run(a):
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
+            if settings:
+                print(guidance())
             if settings and a.agent == "codex":
                 import pwd
 
@@ -516,6 +530,8 @@ def _run(a):
             print(f"v2 {a.agent} hooks:", path or "not installed")
             if summary:
                 print(agent_hooks.reasoning_line(*summary))
+            if path:
+                print(guidance())
             if path and a.agent == "codex":
                 print(agent_hooks.codex_trust_line())
             return 0
@@ -570,6 +586,8 @@ def _run(a):
                 print("v2 hooks:", hooks or "not installed")
                 if hooks and not a.no_thinking_summaries:
                     print(install.thinking_line(hooks, on))
+                if hooks:
+                    print(guidance())
                 return 0
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
@@ -1061,11 +1079,72 @@ def _self_approved(state, dev):
                "sets approvals: {self_approval: allow}." if dev else ""))
 
 
+def _args(x):
+    """The arguments of approval `x` (approval_get), decoded: None once it is no longer live."""
+    from .format.canon import loads_strict
+    return loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]
+
+
+def _gist(c, aid, n=60):
+    """The call approval `aid` holds, in at most `n` characters: its command, file path or URL, else its arguments as
+    JSON, from the signer's copy; "" when the signer gives none."""
+    from .signer.rpc_schema import RPCError
+    try:
+        args = _args(c.approval_get({"approval_id": aid}))
+    except RPCError:   # answered or gone since it was listed
+        return ""
+    if args is None:
+        return ""
+    v = next((args[k] for k in ("command", "file_path", "path", "url") if isinstance(args, dict)
+              and isinstance(args.get(k), str)), None)
+    text = " ".join((json.dumps(args) if v is None else v).split())
+    return text if len(text) <= n else text[:n - 3] + "..."
+
+
+def _stop_lines(c, x):
+    """What `approvals show` adds to approval `x`: why its call was held and what to do instead (the reasons and
+    remedies of its rules, in the policy whose hash it records: a shipped pack's, or one the dev signer kept), when
+    it expires, the commands that answer it and where the viewer opens it."""
+    import datetime
+
+    from . import view
+    from .integrations.claude_code import approvals_cmd
+    from .policy2.compile import ENGINE_REASONS
+    from .signer.service import dev_data_dir
+    try:
+        kept = None if c.signer else os.path.join(dev_data_dir(create=False), "policies")
+    except FileNotFoundError:
+        kept = None
+    reasons = view.policy_reasons(kept=kept)
+    known = reasons.get(x["policy_hash"], {})
+    flags = {r["id"] for r in reasons.policies.get(x["policy_hash"], {}).get("flag", [])}   # a flagged call runs
+    rules = [(i, known.get(i) or ENGINE_REASONS.get(i) or {"reason": view.ENGINE_RULES.get(i, "")})
+             for i in x["rule_ids"] if i != "TK-UNKNOWN-TOOL" and i not in flags]
+    why = "; ".join(f"{r['reason']} ({i})" for i, r in rules if r.get("reason"))
+    instead = " ".join(dict.fromkeys(r["remedy"] for _, r in rules if r.get("remedy")))
+    try:
+        left = (datetime.datetime.strptime(x["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                .replace(tzinfo=datetime.timezone.utc) - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+        left = f" (in {left // 60:.0f} min)" if left >= 0 else f" ({-left // 60:.0f} min ago)"
+    except ValueError:   # another signer's time format: as it is
+        left = ""
+    cmd = approvals_cmd(c.signer)
+    why = why or ("not on this machine: `tracekit policy compile <file>` prints the reasons of the signer's policy, "
+                  + x["policy_hash"])
+    return [f"why         {why}",
+            *([f"instead     {instead}"] if instead else []),
+            f"expires     {x['expires_at']}{left}",
+            *([f"answer      `{cmd} approve {x['approval_id']}` to allow it once, `{cmd} reject {x['approval_id']}` "
+               "to refuse it" + ("" if c.signer else "; in the agent's Claude Code session, with a leading `! `")]
+              if x["state"] == "requested" else []),
+            f"record      tracekit view --approval {x['approval_id']}"
+            + (" (with the --config or --data-dir of this signer)" if c.signer else "")]
+
+
 def _approvals(a):
     """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
     import pydoc
 
-    from .format.canon import loads_strict
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
     if a.action == "slack":
@@ -1079,16 +1158,23 @@ def _approvals(a):
             while True:
                 page = c.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
                 approvals.extend(page["approvals"])
-                for x in page["approvals"]:
-                    if a.json:
-                        continue
-                    state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
-                    print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
-                          f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
                 if page["next_cursor"] is None:
                     break
+            # the live ones (still waiting for an answer) first, newest first: an approval expires a fixed time after
+            # it was requested; the expired ones only with --all
+            shown = sorted((x for x in approvals if a.all or x["state"] != "expired"),
+                           key=lambda x: (x["state"] == "requested" and not x.get("run_closing"), x["expires_at"]),
+                           reverse=True)
+            for x in [] if a.json else shown:
+                state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
+                print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
+                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}" + (
+                          f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
+                          else ""))
             if a.json:
                 print(json.dumps(approvals))
+            elif len(shown) < len(approvals):
+                print(f"({len(approvals) - len(shown)} expired, not shown: list them with --all)")
             elif not approvals:
                 try:
                     me = "{scheme}:{subject}".format(**c.status({})["identity"])
@@ -1099,14 +1185,14 @@ def _approvals(a):
                       "identities approvals.approvers lists)")
         elif a.action == "show":
             x = c.approval_get({"approval_id": a.approval_id})
-            args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]
+            args = _args(x)
             if a.json:
                 print(json.dumps({**x, "args": args}))
                 return 0
             lines = [f"approval    {x['approval_id']} ({x['state']})", f"tool        {json.dumps(x['tool'])}",
-                     f"rules       {', '.join(x['rule_ids'])}", f"policy      {x['policy_hash']}",
+                     *_stop_lines(c, x), f"rules       {', '.join(x['rule_ids'])}", f"policy      {x['policy_hash']}",
                      f"requester   {json.dumps(x['requester'])}", f"run         {x['run_id']}",
-                     f"call        {x['tool_call_id']} attempt {x['attempt']}", f"expires     {x['expires_at']}",
+                     f"call        {x['tool_call_id']} attempt {x['attempt']}",
                      f"binding     {x['binding_digest']}", "arguments (the signer's copy, in full):",
                      json.dumps(args, indent=2) if x["args"] is not None else "  (deleted: the approval is no longer live)"]
             if "reason" in x:
