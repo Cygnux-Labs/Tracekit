@@ -1328,6 +1328,18 @@ class Shell(unittest.TestCase):
         cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
         self.assertEqual(Engine(pol).decide("Bash", {"command": cmd})["verdict"], "allow")
 
+    def test_a_loop_over_a_thousand_files_decides_within_the_parse_budget(self):
+        """A loop over 1,000 file names, read once for each, took 31 ms to decide in 1.5.3 (1.5.2, which read none:
+        3.4 ms): each reading's commands were copied into a new list, and each word read a character at a time (#575)."""
+        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
+        for e in (Engine(pol), Engine(pol, "regex")):
+            start = time.perf_counter()
+            d = e.decide("Bash", {"command": cmd})
+            # ~25 ms on a laptop
+            self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), e.engine)
+            self.assertEqual(d["verdict"], "allow")
+
     def test_redirections_to_bracket_patterns_decide_within_the_budget(self):
         """63 KiB of `>>a[bc][de][fg][hi]N` took 5 s to decide (1.5.2: 0.1 s): each pattern's 16 names were made
         uncharged, and the shell targets were deduplicated against a list. The names count toward the parse budget,
@@ -1440,6 +1452,25 @@ class Shell(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertTrue(any(c["opaque"] for c in shell.parse(cmd)))
         self.assertFalse(any(c["opaque"] for c in shell.parse("find . -name '*.py' | xargs -I{} wc -l {}")))
+
+    def test_xargs_inserting_into_a_wrapper_decides(self):
+        """The review of #575: `xargs -I{} exec sh -c '{}'` left a command's opaque None (exec is neither a shell nor
+        an interpreter), and decide raised a TypeError, which the signer denies as TK-ENGINE-ERROR (1.5.3 too)."""
+        cmd = "echo 'sudo id' | xargs -I{} exec sh -c  '{}';"
+        self.assertTrue(all(c["opaque"] in (True, False) for c in shell.parse(cmd)))
+        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        for e in (Engine(pol), Engine(pol, "regex")):
+            self.assertIn(e.decide("Bash", {"command": cmd})["verdict"], ("ask", "deny"), e.engine)
+
+    def test_a_write_target_whose_dot_part_ends_in_a_newline_is_still_read_normalised(self):
+        """The review of #575: the precheck before a target's path is normalised missed a word whose `.` part ends in
+        a newline, which _DOTTED reads (its `$` matches before a last newline), and TK-A013's ask became an allow."""
+        for cmd in ("cp -t '.git/modules/a://b/hooks/.\n' x", "cp -t '.git/modules/a://b/hooks/.\n' x y"):
+            for pack in ("dev.yaml", "coding.yaml", "server.yaml", "strict.yaml"):
+                pol = pc.build(os.path.join(PACKS, pack))[0]
+                for e in (Engine(pol), Engine(pol, "regex")):
+                    with self.subTest(cmd=cmd, pack=pack, engine=e.engine):
+                        self.assertIn("TK-A013", e.decide("Bash", {"command": cmd})["rule_ids"])
 
     def test_scheduling_and_session_wrappers_are_followed(self):
         for cmd in ("taskset 1 sudo id", "taskset -c 0-3 sudo id", "chrt -f 1 sudo id", "unbuffer sudo id",
