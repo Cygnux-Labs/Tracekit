@@ -139,6 +139,22 @@ class Mapping(HarnessCase):
         self.assertEqual((code, out), (2, ""))   # the name before goose 1.56, prefixed
         self.assertEqual(self.sent, [])
 
+    def test_qwen_under_cmd_exe_decides_the_payloads_event(self):
+        # the review of #547: Qwen Code before 0.15.0 runs the hook under cmd.exe, which hands PowerShell's tail to it
+        # as arguments; `PreToolUse;` replaced the payload's event, no event matched, and the call ran unchecked
+        self.decision = "deny"
+        payload = {"session_id": "qw-9", "cwd": "/w", "transcript_path": None, "hook_event_name": "PreToolUse",
+                   "tool_name": "run_shell_command", "tool_use_id": "toolu_90",
+                   "tool_input": {"command": "rm -rf build"}}
+        code, _, err = self.hook("qwen", payload, "PreToolUse;")
+        self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_90"), err)
+        code, _, err = self.hook("qwen", dict(payload, hook_event_name=None, tool_use_id="toolu_91"), "PreToolUse;")
+        self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_91"), err)
+        # the installed event decides, not one the payload names
+        code, _, err = self.hook("qwen", dict(payload, hook_event_name="PostToolUse", tool_use_id="toolu_92"),
+                                 "PreToolUse;")
+        self.assertEqual((code, self.sent[-1]["tool_call_id"]), (2, "toolu_92"), err)
+
     def test_qwen(self):
         self.check("qwen")
 
@@ -338,6 +354,16 @@ class Mapping(HarnessCase):
                                                  "tool_name": "bash", "tool_input": {"command": "ls"}})
         self.assertEqual((code, out), (2, ""))
         self.assertIn("tool call blocked", err)
+
+    def test_kilo_notebook_execute_is_denied_before_the_signer(self):
+        # Kilo's notebook_execute runs a notebook cell no command rule has read: denied before any decide request
+        code, out, err = self.hook("kilo", {"session_id": "kc-9", "hook_event_name": "tool.execute.before",
+                                            "tool_name": "notebook_execute", "tool_use_id": "kc-9",
+                                            "tool_input": {"path": "a.ipynb", "expected_revision": "r1", "index": 0}},
+                                   "tool.execute.before")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("native_notebook_tools", err)
+        self.assertEqual(self.sent, [])
 
     def test_signer_unreachable_is_fail_closed_by_default(self):
         os.environ["TRACEKIT_SIGNER"] = os.path.join(os.environ["HOME"], "nowhere.sock")
@@ -550,7 +576,7 @@ class Installer(unittest.TestCase):
                     code, out = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")
                     self.assertEqual(code, 0)
                     self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {path}", out)
-                    if harness == "opencode":
+                    if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
                             plugin = f.read()
                         self.assertEqual(agent_hooks._version(plugin), "v2")
@@ -603,9 +629,9 @@ class Installer(unittest.TestCase):
                     self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
-                    # PowerShell can't start a quoted first word; Cursor, Droid, Qwen Code and Crush don't use it (Crush
-                    # runs hooks through its own POSIX shell)
-                    if os.name == "nt" and harness not in ("cursor", "droid", "qwen", "crush"):
+                    # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
+                    # through its own POSIX shell)
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
@@ -704,7 +730,8 @@ class Installer(unittest.TestCase):
         gone, old = os.path.join(d, "gone", "python"), install._blocking
         for python in (None, gone):   # dev mode (this interpreter, moved), system mode (OPT_PYTHON)
             # OpenCode: no shell; agy answers at exit 0 in JSON (test_antigravity_installed_commands_answer_in_json_…)
-            for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("opencode", "antigravity"))):
+            for harness in ("claude", *(h for h in agent_hooks.HARNESSES
+                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity"))):
                 path = os.path.join(d, str(bool(python)), harness, "hooks.json")
 
                 def init():
@@ -735,24 +762,19 @@ class Installer(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             agent_hooks.install(harness, d, v2=True)
         with open(agent_hooks.config_path(harness, d)) as f:
-            groups = json.load(f)["hooks"]["PreToolUse" if harness == "codex" else "BeforeTool"]
+            groups = json.load(f)["hooks"]["BeforeTool" if harness == "gemini" else "PreToolUse"]
         return groups[0]["hooks"][0]["command"]
 
-    def test_droid_and_qwen_windows_commands_keep_the_quoted_interpreter_for_cmd(self):
-        # both run hooks under cmd.exe, which can't run PowerShell's `& "..."` (#448: Qwen Code's had it)
+    def test_droid_windows_commands_keep_the_quoted_interpreter_for_cmd(self):
+        # Droid runs hooks under cmd.exe, which can't run PowerShell's `& "..."`
         d = ac.tmpdir(self)
-        for harness in ("droid", "qwen"):
-            for exe in (r"C:\Program Files\Python311\python.exe", r"C:\Python311\python.exe"):
-                with self.subTest(harness=harness, exe=exe), mock.patch("os.name", "nt"), \
-                        mock.patch.object(sys, "executable", exe), contextlib.redirect_stdout(io.StringIO()):
-                    agent_hooks.install(harness, d, v2=True)
-                    with open(agent_hooks.config_path(harness, d)) as f:
-                        config = json.load(f)
-                    command = (config if harness == "droid" else config["hooks"])["PreToolUse"][0]["hooks"][0]["command"]
-                    # a path that needs no quotes goes bare for Qwen Code, which either shell runs
-                    plain = harness == "qwen" and " " not in exe
-                    self.assertTrue(command.startswith(f'{exe} -I ' if plain else f'"{exe}" -I '), command)
-                    self.assertFalse(command.startswith("&"), command)
+        for exe in (r"C:\Program Files\Python311\python.exe", r"C:\Python311\python.exe"):
+            with self.subTest(exe=exe), mock.patch("os.name", "nt"), \
+                    mock.patch.object(sys, "executable", exe), contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("droid", d, v2=True)
+                with open(agent_hooks.config_path("droid", d)) as f:
+                    command = json.load(f)["PreToolUse"][0]["hooks"][0]["command"]
+                self.assertTrue(command.startswith(f'"{exe}" -I '), command)
 
     @unittest.skipUnless(os.name == "nt", "Droid runs Windows hooks under cmd.exe")
     def test_droid_cmd_runs_a_hook_with_a_spaced_interpreter_path_and_keeps_its_denial(self):
@@ -786,16 +808,20 @@ class Installer(unittest.TestCase):
         with mock.patch("os.name", "posix"):
             self.assertFalse(self.installed_pre("codex", d).startswith("&"))   # POSIX shells: unchanged
 
-    @unittest.skipUnless(os.name == "nt", "Codex and Gemini CLI run hooks through PowerShell on Windows")
+    @unittest.skipUnless(os.name == "nt", "Codex, Gemini CLI and Qwen Code run hooks through PowerShell on Windows")
     def test_under_powershell_the_installed_hook_blocks(self):
         d = ac.tmpdir(self)
         env = dict(os.environ, TRACEKIT_RUNTIME_DIR=os.path.join(d, "run"), HOME=d, USERPROFILE=d)
-        # Gemini CLI appends `exit $LASTEXITCODE` and reads the JSON at any exit status; Codex reads it at exit 0
-        for harness, tail in (("codex", ""), ("gemini", "; exit $LASTEXITCODE")):
+        # Gemini CLI appends `exit $LASTEXITCODE` and reads the JSON at any exit status; Codex reads it at exit 0;
+        # Qwen Code blocks at exit 2, which its command carries out of PowerShell itself
+        for harness, tail in (("codex", ""), ("gemini", "; exit $LASTEXITCODE"), ("qwen", "")):
             with self.subTest(harness=harness):
                 p = subprocess.run(["powershell", "-NoProfile", "-Command", self.installed_pre(harness, d) + tail],
                                    cwd=d, input="not json", capture_output=True, text=True, timeout=120, env=env)
                 self.assertIn("not a JSON object", p.stderr)   # PowerShell passed the payload through to the hook
+                if harness == "qwen":
+                    self.assertEqual(p.returncode, 2, p.stderr)
+                    continue
                 out = json.loads(p.stdout)
                 if harness == "codex":
                     self.assertEqual(p.returncode, 0, p.stderr)
