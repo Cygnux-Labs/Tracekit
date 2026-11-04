@@ -8,6 +8,8 @@ import os
 import plistlib
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import types
 import unittest
@@ -283,6 +285,9 @@ class InstallAndUninstall(unittest.TestCase):
         wall = self.written[os.path.join(self.d, install.EGRESS_FIREWALL + ".service")].decode()
         self.assertIn(f"$$t -I OUTPUT -m owner --uid-owner {AGENT.pw_uid} -j TRACEKIT-EGRESS", wall)
         self.assertIn("$$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT", wall)
+        for proto in ("udp", "tcp"):   # DNS to a loopback stub is refused before loopback is let through (#588)
+            self.assertLess(wall.index(f"$$t -A TRACEKIT-EGRESS -p {proto} --dport 53 -j REJECT"),
+                            wall.index("$$t -A TRACEKIT-EGRESS -o lo -j RETURN"))
         self.assertIn(["systemctl", "enable", "--now", install.V2_EGRESS, install.EGRESS_FIREWALL],
                       [c.args[0] for c in run.call_args_list])
         proxy = {"HTTPS_PROXY": "http://127.0.0.1:3128", "HTTP_PROXY": "http://127.0.0.1:3128"}
@@ -595,6 +600,55 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertIn(["setfacl", "-R", "-x", "u:tracekit-tailer,d:u:tracekit-tailer", projects], cmds)
         self.assertFalse(os.path.exists(install.TAILER_SUDOERS))
         self.assertIn(["userdel", install.V2_TAILER], cmds)
+
+
+REACH = r"""
+import json, socket
+def reach(kind, family, host, port):
+    srv = socket.socket(family, kind)
+    srv.bind((host, port))
+    c = socket.socket(family, kind)
+    c.settimeout(1)
+    srv.settimeout(1)
+    try:
+        if kind == socket.SOCK_STREAM:
+            srv.listen()
+            c.connect((host, port))
+            return True
+        c.connect((host, port))
+        c.send(b"q")
+        return srv.recv(8) == b"q"
+    except OSError:
+        return False
+four, six = socket.AF_INET, socket.AF_INET6
+print(json.dumps({f"{k} {h}:{p}": reach(socket.SOCK_DGRAM if k == "udp" else socket.SOCK_STREAM, f, h, p)
+                  for k, f, h, p in [("udp", four, "127.0.0.53", 53), ("tcp", four, "127.0.0.53", 53),
+                                     ("udp", six, "::1", 53), ("udp", four, "127.0.0.1", 5353),
+                                     ("tcp", four, "127.0.0.1", 3128)]}))
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and all(map(shutil.which, ("unshare", "ip", "iptables",
+                                                                                  "ip6tables"))),
+                     "Linux with unshare, ip and iptables: the firewall unit's rule applied in a network namespace")
+class EgressFirewallLive(unittest.TestCase):
+    """The firewall unit's own ExecStart, run as uid 0 (the agent here) in a new network namespace (and a new user
+    namespace unless run as root): loopback is reachable, DNS to a loopback stub is not (#588)."""
+
+    def test_the_agent_reaches_loopback_but_not_a_dns_stub(self):
+        env = dict(os.environ, PATH=os.environ.get("PATH", "") + ":/usr/sbin:/sbin")
+        ns = ["unshare", "-n" if os.geteuid() == 0 else "-rn", "/bin/sh", "-c"]
+        if subprocess.run(ns + ["iptables -L -n && ip6tables -L -n"], env=env, capture_output=True).returncode:
+            self.skipTest("this kernel or host does not allow iptables in an unprivileged network namespace")
+        unit = install.FIREWALL_UNIT_TEXT.format(agent="agent", uid=0)
+        start = unit.split("ExecStart=/bin/sh -c '", 1)[1].split("\nExecStop=", 1)[0]
+        rule = start.replace("\\\n", " ").rstrip().removesuffix("'").replace("$$", "$")
+        out = subprocess.run(ns + ['ip link set lo up && /bin/sh -c "$1" && exec "$2" -I -c "$3"', "sh", rule,
+                                   sys.executable, REACH], env=env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), {"udp 127.0.0.53:53": False, "tcp 127.0.0.53:53": False,
+                                                  "udp ::1:53": False, "udp 127.0.0.1:5353": True,
+                                                  "tcp 127.0.0.1:3128": True})
 
 
 @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")

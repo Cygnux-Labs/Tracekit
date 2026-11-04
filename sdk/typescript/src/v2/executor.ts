@@ -21,7 +21,8 @@ export class ExecutorRefused extends Error {}
 
 /** Set on the tools built here: the Tracekit adapters don't gate them. */
 export const EXECUTOR = Symbol.for("tracekit.executor");
-/** The Claude Agent SDK hooks leave the tools of an MCP server of this name (mcp__tracekit-executor__<action>) alone. */
+/** The Claude Agent SDK hooks leave the tools of the in-process MCP server under this key (mcp__tracekit-executor__<action>)
+ * alone when the app hands them its `mcpServers`. */
 export const SERVER = "tracekit-executor";
 
 export type Action = {

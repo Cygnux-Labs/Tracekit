@@ -56,6 +56,20 @@ test("the Vercel AI adapter leaves executor tools to the executor: no decide on 
   assert.equal(await tracekitAI(run).toolApproval({ toolCall: call, tools: { pay } }), "not-applicable");
   assert.deepEqual(await tools.pay.execute(call.input, { toolCallId: "call-1" }), { status: 201, id: "call-1" });
   assert.equal(openaiAgentsTool((o) => ({ ...o }), a)[EXECUTOR], true);
-  const [pre] = tracekitHooks(run).PreToolUse[0].hooks;   // the Claude Agent SDK hooks: by the server's name
+  // the Claude Agent SDK hooks: the app's own in-process server under the name, as `query()` gets it
+  const mcpServers = { "tracekit-executor": { type: "sdk", name: "tracekit-executor", instance: {} } };
+  const [pre] = tracekitHooks(run, { mcpServers }).PreToolUse[0].hooks;
   assert.deepEqual(await pre({ tool_name: "mcp__tracekit-executor__pay", tool_use_id: "tu-1", tool_input: {} }), {});
+});
+
+test("the Claude Agent SDK hooks gate a server of the executor's name the app did not build in-process (#588)", async () => {
+  const decided = [];
+  const run = { decide: async (id, tool) => { decided.push([id, tool]); throw new Error("refused"); } };
+  const project = { "tracekit-executor": { type: "stdio", command: "/tmp/not-the-executor" } };   // as .mcp.json adds it
+  for (const [i, opts] of [undefined, {}, { mcpServers: {} }, { mcpServers: project }].entries()) {
+    const [pre] = tracekitHooks(run, opts).PreToolUse[0].hooks;
+    const out = await pre({ tool_name: "mcp__tracekit-executor__pay", tool_use_id: `tu-${i}`, tool_input: {} });
+    assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
+  }
+  assert.deepEqual(decided, [0, 1, 2, 3].map((i) => [`tu-${i}`, "mcp__tracekit-executor__pay"]));
 });

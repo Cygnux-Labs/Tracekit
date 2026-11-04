@@ -14,7 +14,7 @@ inputs:
     description: "Independent witness copy to check against, e.g. git:/path/to/clone or file:/path/witness.jsonl"
     required: false
   trust:
-    description: "Path to the verifier's pinned trust config for v2 bundles"
+    description: "Path to the verifier's pinned trust config for v2 bundles (on a pull request, one committed in its checkout is read from its base commit, as are key and witness files)"
     required: false
   strict:
     description: "Fail on warnings too (exit code 3)"
@@ -59,7 +59,58 @@ runs:
         TK_TRUST: ${{ inputs.trust }}
         TK_STRICT: ${{ inputs.strict }}
         TK_REQUIRE_ANCHOR: ${{ inputs.require-anchor }}
+        TK_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        TK_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
+        # On a pull request, a trust, key or witness file in the pull request's own checkout (a work tree at its merge
+        # or head commit) is read from its base commit: its author could change the file together with the bundle.
+        from_base() {
+          [ -n "$TK_BASE_SHA" ] || { printf '%s\n' "$2"; return; }
+          python -I - "$@" <<'PY'
+        import os, subprocess, sys
+        kind, path = sys.argv[1:3]
+        base, why = os.environ["TK_BASE_SHA"], "the pull request's author can change it"
+        def git(cwd, *a):
+            return subprocess.run(["git", "-C", cwd, *a], capture_output=True)
+        def refuse(msg):
+            print("::error::" + msg)
+            sys.exit(1)
+        d = path if kind == "witness repository" else os.path.dirname(os.path.abspath(path))
+        r = git(d, "rev-parse", "--show-toplevel", "HEAD")
+        top, head = (r.stdout.decode().splitlines() + ["", ""])[:2]
+        # lean: a checkout without .git (actions/checkout's REST fallback) reads as not the pull request's; refuse
+        # files under GITHUB_WORKSPACE outside a work tree if that fallback turns up in use
+        if r.returncode or head not in (os.environ.get("GITHUB_SHA"), os.environ.get("TK_HEAD_SHA")):
+            print(path)   # not in the pull request's checkout: as given
+            sys.exit()
+        if kind == "witness repository":
+            refuse(f"witness git:{path} is the pull request's own checkout, and {why}: clone the witness repository "
+                   "into a directory of its own")
+        rel = os.path.relpath(os.path.join(os.path.realpath(d), os.path.basename(path)), os.path.realpath(top))
+        rel = rel.replace(os.sep, "/")
+        blob = git(top, "rev-parse", "-q", "--verify", f"HEAD:{rel}")
+        if blob.returncode or blob.stdout != git(top, "hash-object", "--", rel).stdout:
+            print(path)   # not the pull request's file (the workflow wrote or changed it): as given
+            sys.exit()
+        if git(top, "cat-file", "-e", base + "^{commit}").returncode:
+            git(top, "fetch", "--no-tags", "--depth=1", "origin", base)
+        out = git(top, "show", f"{base}:{rel}")
+        if out.returncode:
+            refuse(f"{kind} file {path} is in the pull request's checkout, and {why}; it can't be read at the base "
+                   f"commit {base[:12]} ({out.stderr.decode().strip()[:200]}): add it on the base branch first, or keep "
+                   "it outside the repository")
+        dst = os.path.join(os.environ["RUNNER_TEMP"], "tracekit-base-" + kind)
+        with open(dst, "wb") as f:
+            f.write(out.stdout)
+        print(dst)
+        PY
+        }
+        if [ -n "$TK_TRUST" ]; then TK_TRUST=$(from_base trust "$TK_TRUST") || { echo "$TK_TRUST"; exit 1; }; fi
+        if [ -f "$TK_KEY" ]; then TK_KEY=$(from_base key "$TK_KEY") || { echo "$TK_KEY"; exit 1; }; fi
+        case "$TK_WITNESS" in
+          file:*) w=$(from_base witness "${TK_WITNESS#file:}") || { echo "$w"; exit 1; }; TK_WITNESS="file:$w" ;;
+          git:*) w=$(from_base "witness repository" "${TK_WITNESS#git:}") || { echo "$w"; exit 1; } ;;
+        esac
         args=("$TK_BUNDLE" --json)
         [ -n "$TK_KEY" ] && args+=(--key "$TK_KEY")
         [ -n "$TK_WITNESS" ] && args+=(--witness "$TK_WITNESS")
@@ -69,10 +120,10 @@ runs:
         code=0
         tracekit verify "${args[@]}" > "$report" || code=$?
         cat "$report"
-        delim="tracekit_$(python -c 'import secrets; print(secrets.token_hex(16))')"
+        delim="tracekit_$(python -I -c 'import secrets; print(secrets.token_hex(16))')"
         { echo "json<<$delim"; cat "$report"; echo "$delim"; } >> "$GITHUB_OUTPUT"
         if [ "$code" = 0 ] && [ "$TK_REQUIRE_ANCHOR" = "true" ]; then
-          [ -n "$TK_TRUST" ] || python -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(not any(c["check"] == "trust root" and c["status"] == "pass" for c in r["checks"]))' "$report" \
+          [ -n "$TK_TRUST" ] || python -I -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(not any(c["check"] == "trust root" and c["status"] == "pass" for c in r["checks"]))' "$report" \
             || { echo "::error::bundle is unanchored: pass key, witness, or v2 trust, or set require-anchor: false"; code=1; }
         fi
         exit "$code"

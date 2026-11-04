@@ -207,9 +207,10 @@ status rests on posture. The verifier prints it as a `coverage matrix` line and 
 - <a id="linux-system-mode"></a>**Linux system mode**: `tracekit init --v2 --user AGENT --egress`, run as root
   ([laptop system mode](deploy.md#laptop-system-mode)), runs the
   observer as its own user on `127.0.0.1:3128`, sets `HTTPS_PROXY` in Claude Code's settings, and installs a firewall
-  unit (`tracekit-egress-firewall`) whose owner-match rule lets the agent's uid reach only loopback: its outside
-  traffic goes through the observer, attributed by uid, or nowhere, except what a loopback service sends on for it
-  (a local DNS stub's lookups, see [limits](limits.md#egress-observation-12)). A stopped observer leaves the agent's
+  unit (`tracekit-egress-firewall`) whose owner-match rule lets the agent's uid reach only loopback, and there not
+  DNS (port 53, so a local DNS stub resolves nothing for it): its outside traffic goes through the observer,
+  attributed by uid, or nowhere, except what another loopback service or a Unix-socket resolver sends on for it (see
+  [limits](limits.md#egress-observation-12)). A stopped observer leaves the agent's
   traffic blocked, never unobserved. `sudo /opt/tracekit/bin/python -I -m tracekit uninstall --v2` removes the rule, the units and the settings. Needs
   iptables with the owner match. Laptops without it are `reported`.
 

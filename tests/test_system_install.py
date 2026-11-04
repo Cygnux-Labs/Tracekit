@@ -500,9 +500,9 @@ class ActionInputs(unittest.TestCase):
         self.assertIn("TK_TRUST: ${{ inputs.trust }}", text)
         self.assertIn('[ -n "$TK_TRUST" ] && args+=(--trust "$TK_TRUST")', text)
 
-    @unittest.skipUnless(os.name != "nt" and shutil.which("bash"),
-                         "the composite action run block is exercised by Linux CI")
-    def test_run_block_enforces_v1_and_v2_anchors(self):
+    @staticmethod
+    def run_block():
+        """The verify step's `run: |` script, as the runner gets it."""
         with open(os.path.join(ROOT, "action.yml"), encoding="utf-8") as f:
             lines = f.read().splitlines()
         step = next(i for i, line in enumerate(lines) if line.strip() == "- name: Verify bundle")
@@ -512,34 +512,103 @@ class ActionInputs(unittest.TestCase):
             if line.strip() and len(line) - len(line.lstrip()) <= 6:
                 break
             script.append(line[8:] if line.startswith("        ") else line)
-        with tempfile.TemporaryDirectory() as temp:
-            runner_temp = os.path.join(temp, "runner")
-            bin_dir = os.path.join(temp, "bin")
-            os.makedirs(runner_temp)
-            os.makedirs(bin_dir)
-            tracekit = os.path.join(bin_dir, "tracekit")
-            with open(tracekit, "w", encoding="utf-8", newline="\n") as f:
-                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -m tracekit.cli \"$@\"\n")
-            os.chmod(tracekit, 0o755)
-            python = os.path.join(bin_dir, "python")
-            with open(python, "w", encoding="utf-8", newline="\n") as f:
-                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
-            os.chmod(python, 0o755)
+        return "\n".join(script)
 
-            def verify(bundle, *, key="", witness="", trust="", strict="false", require_anchor="true"):
-                output = os.path.join(temp, "github-output")
-                with open(output, "w", encoding="utf-8"):
-                    pass
-                env = os.environ.copy()
-                env.update({"PATH": bin_dir + os.pathsep + env.get("PATH", ""),
-                            "TK_BUNDLE": bundle, "TK_KEY": key, "TK_WITNESS": witness, "TK_TRUST": trust,
-                            "TK_STRICT": strict, "TK_REQUIRE_ANCHOR": require_anchor,
-                            "RUNNER_TEMP": runner_temp, "GITHUB_OUTPUT": output})
-                result = subprocess.run([shutil.which("bash"), "-e", "-o", "pipefail", "-c", "\n".join(script)],
-                                        cwd=ROOT, env=env, capture_output=True, text=True)
-                with open(output, encoding="utf-8") as f:
-                    result.github_output = f.read()
-                return result
+    def runner(self, temp):
+        """verify(bundle, ...): the run block in bash with `tracekit` and `python` on PATH and the runner's files in
+        `temp`; `cwd` and `env` as the step gets them."""
+        runner_temp = os.path.join(temp, "runner")
+        bin_dir = os.path.join(temp, "bin")
+        os.makedirs(runner_temp)
+        os.makedirs(bin_dir)
+        # tracekit as its console script runs: nothing imported from the working directory
+        cli = "-c 'import sys; del sys.path[0]; from tracekit.cli import main; sys.exit(main())' "
+        for name, argv in (("tracekit", cli), ("python", "")):
+            with open(os.path.join(bin_dir, name), "w", encoding="utf-8", newline="\n") as f:
+                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {argv}\"$@\"\n")
+            os.chmod(os.path.join(bin_dir, name), 0o755)
+
+        def verify(bundle, *, key="", witness="", trust="", strict="false", require_anchor="true", cwd=ROOT, env=()):
+            output = os.path.join(temp, "github-output")
+            with open(output, "w", encoding="utf-8"):
+                pass
+            full = os.environ.copy()
+            full.update({"PATH": bin_dir + os.pathsep + full.get("PATH", ""),
+                         "TK_BUNDLE": bundle, "TK_KEY": key, "TK_WITNESS": witness, "TK_TRUST": trust,
+                         "TK_STRICT": strict, "TK_REQUIRE_ANCHOR": require_anchor,
+                         "RUNNER_TEMP": runner_temp, "GITHUB_OUTPUT": output, **dict(env)})
+            result = subprocess.run([shutil.which("bash"), "-e", "-o", "pipefail", "-c", self.run_block()],
+                                    cwd=cwd, env=full, capture_output=True, text=True)
+            with open(output, encoding="utf-8") as f:
+                result.github_output = f.read()
+            return result
+        return verify
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("bash") and shutil.which("git"),
+                         "the composite action run block is exercised by Linux CI")
+    def test_on_a_pull_request_trust_files_come_from_its_base_commit(self):
+        """A pull request that brings its own trust config, key or witness file in its checkout is verified against the
+        base commit's (#588); files outside its checkout are used as given."""
+        sample = os.path.join(ROOT, "sdk/typescript/src/verify/sample")
+        with tempfile.TemporaryDirectory() as temp:
+            verify, repo = self.runner(temp), os.path.join(temp, "repo")
+            git = lambda *a: subprocess.run(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t.invalid",
+                                             "-c", "commit.gpgsign=false", *a], check=True, capture_output=True,
+                                            text=True).stdout.strip()
+            os.makedirs(repo)
+            git("init", "-q")
+            with open(os.path.join(sample, "sample.trust.json"), encoding="utf-8") as f:
+                theirs = json.load(f)   # trusts the sample bundle's log
+            with open(os.path.join(ROOT, "tests/golden/v2/trust.json"), encoding="utf-8") as f:
+                ours = dict(theirs, logs=json.load(f)["logs"])   # the base branch's: another log
+            with open(os.path.join(repo, "trust.json"), "w", encoding="utf-8") as f:
+                json.dump(ours, f)
+            shutil.copy(os.path.join(ROOT, "tests/golden/v1/external-signer.pub"), os.path.join(repo, "signer.pub"))
+            git("add", "-A")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            shutil.copy(os.path.join(sample, "sample.tkb"), os.path.join(repo, "run.tkb"))
+            shutil.copy(os.path.join(ROOT, "docs/sample/demo-run.tkb"), os.path.join(repo, "demo-run.tkb"))
+            shutil.copy(os.path.join(ROOT, "docs/sample/signer.pub"), os.path.join(repo, "signer.pub"))
+            shutil.copy(os.path.join(ROOT, "tests/golden/v1/multi-run.witness.jsonl"), os.path.join(repo, "w.jsonl"))
+            shutil.copy(os.path.join(sample, "sample.trust.json"), os.path.join(repo, "new-trust.json"))
+            planted = os.path.join(temp, "planted")
+            for mod in ("subprocess", "secrets", "json"):   # the step's python imports nothing from the checkout
+                with open(os.path.join(repo, mod + ".py"), "w", encoding="utf-8") as f:
+                    f.write(f"open({planted!r}, 'a').write({mod!r})\n")
+            with open(os.path.join(repo, "trust.json"), "w", encoding="utf-8") as f:
+                json.dump(theirs, f)   # the pull request trusts its own bundle's log
+            git("add", "-A")
+            git("commit", "-qm", "pull request")
+            pr = {"TK_BASE_SHA": base, "TK_HEAD_SHA": "", "GITHUB_SHA": git("rev-parse", "HEAD")}
+            self.assertEqual(verify("run.tkb", trust="trust.json", cwd=repo).returncode, 0)   # a push: as checked out
+            origin, shallow = os.path.join(temp, "origin.git"), os.path.join(temp, "shallow")
+            subprocess.run(["git", "clone", "-q", "--bare", repo, origin], check=True)
+            subprocess.run(["git", "clone", "-q", "--depth=1", "file://" + origin, shallow], check=True)
+            for cwd in (repo, shallow):   # actions/checkout's depth-1 clone fetches the base commit
+                out = verify("run.tkb", trust="trust.json", cwd=cwd, env=pr)
+                self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+                self.assertIn("checkpoint", json.loads(out.stdout)["failures"])
+            out = verify("demo-run.tkb", key="signer.pub", cwd=repo, env=pr)
+            self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)   # the base's key signed nothing here
+            self.assertEqual(verify("demo-run.tkb", key=os.path.join(ROOT, "docs/sample/signer.pub"), cwd=repo,
+                                    env=pr).returncode, 0)   # outside the checkout: as given
+            shutil.copy(os.path.join(sample, "sample.trust.json"), os.path.join(repo, "fetched.json"))
+            self.assertEqual(verify("run.tkb", trust="fetched.json", cwd=repo, env=pr).returncode, 0)   # the workflow's
+            for kw in ({"witness": "file:w.jsonl"}, {"trust": "new-trust.json"}):   # files the pull request adds
+                out = verify("run.tkb", cwd=repo, env=pr, **kw)
+                self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+                self.assertIn("can't be read at the base commit", out.stdout)
+            out = verify("run.tkb", witness="git:" + repo, cwd=repo, env=pr)
+            self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+            self.assertIn("::error::witness git:", out.stdout)
+            self.assertFalse(os.path.exists(planted))
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("bash"),
+                         "the composite action run block is exercised by Linux CI")
+    def test_run_block_enforces_v1_and_v2_anchors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            verify = self.runner(temp)
 
             v2 = os.path.join(ROOT, "sdk/typescript/src/verify/sample/sample.tkb")
             v2_tampered = os.path.join(ROOT, "sdk/typescript/src/verify/sample/sample-tampered.tkb")

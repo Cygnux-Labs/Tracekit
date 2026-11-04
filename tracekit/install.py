@@ -145,7 +145,8 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 """
-# its own unit, so a stopped or crashed observer leaves the agent's traffic blocked, never unobserved ($$: systemd's $)
+# its own unit, so a stopped or crashed observer leaves the agent's traffic blocked, never unobserved ($$: systemd's $);
+# DNS to loopback is refused too: a local stub (127.0.0.53) would resolve, and so carry out, any name the agent asks
 FIREWALL_UNIT_TEXT = """[Unit]
 Description=Tracekit: {agent}'s outside traffic only through the egress observer
 Before=network-pre.target
@@ -154,6 +155,7 @@ Before=network-pre.target
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/bin/sh -c 'for t in iptables ip6tables; do $$t -N TRACEKIT-EGRESS 2>/dev/null; $$t -F TRACEKIT-EGRESS && \
+$$t -A TRACEKIT-EGRESS -p udp --dport 53 -j REJECT && $$t -A TRACEKIT-EGRESS -p tcp --dport 53 -j REJECT && \
 $$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT && \
 {{ $$t -C OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS 2>/dev/null || \
 $$t -I OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; }} || exit 1; done'
