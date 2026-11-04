@@ -176,6 +176,8 @@ INFO_GAPS = {"witness_late", "witness_failed", "degraded_unanchored", "clock_ske
              "args_coerced", "approval_expired"}
 # capture.gap kinds warned on lines of their own
 OWN_LINE = {"executed_against_policy", "held_call_unresolved", "decision_mismatch", "observer_lost"}
+# capture.gap kinds of a call that ran, or a decision imported, against the signer's: recorded, not missed
+AGAINST = ("executed_against_policy", "decision_mismatch")
 
 MAX_ENTRIES = 10_000
 MAX_ENTRY = 64 << 20
@@ -802,9 +804,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                         for r in every)
     against = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
                if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "executed_against_policy"]
-    # read as `against` reads them, which raised first on a malformed record; a tuple, as a kind may be unhashable
-    rep.gaps = sum(r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") not in (*INFO_GAPS,)
-                   for r in every)
+    # read as `against` reads them, which raised first on a malformed record; tuples, as a kind may be unhashable; the
+    # gaps a run-set's tenant-level leaves hold are counted already (_run_set)
+    kinds = [r["event"]["data"].get("kind") for r in every if r["event"].get("type") == "capture.gap"]
+    rep.gaps += sum(k not in (*INFO_GAPS, *AGAINST) for k in kinds)
+    rep.mismatches = sum(k in AGAINST for k in kinds)
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
@@ -890,6 +894,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         if decided:
             paths.setdefault(k, set()).add((str(e.get("source"))[:64], tier))
     tiers.update(claims)
+    rep.calls = len(tiers)   # the tool calls the records name, by run and tool_call_id
     split = [f"{str(run)[:200]} {str(tcid)[:200]}: " + ", ".join(sorted(f"{s} {t or 'untiered'}" for s, t in p))
              for (run, tcid), p in ((json.loads(k), p) for k, p in paths.items()) if len(p) > 1]
     if tiers:
@@ -1504,6 +1509,7 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
               f"INCOMPLETE, {span}", problems)
     if gaps:
         rep.check("tenant-level gaps", False, f"{sum(gaps.values())} in the range: {counted}", warn=True)
+        rep.gaps = sum(gaps.values())   # the runs' own are added to them (_verify)
     rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
               f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
     return retired, top if lo == 0 else -1, reg_cosigs, pointed

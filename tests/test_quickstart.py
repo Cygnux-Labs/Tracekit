@@ -66,7 +66,7 @@ class Quickstart(unittest.TestCase):
         """Step 3; its time."""
         t = time.monotonic()
         out = self.sh(self.tracekit, "last").stdout
-        self.assertRegex(out, r"\nVERIFIED: \d+ recorded actions, none changed")
+        self.assertRegex(out, r"\nVERIFIED: (\d+ tool calls? in )?\d+ signed records, none changed")
         self.assertIn("\nNOT PROOF AGAINST THE AGENT: ", out)   # a dev signer
         self.assertIn("next: tracekit view --dev", out)
         return time.monotonic() - t

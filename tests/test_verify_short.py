@@ -35,16 +35,18 @@ def verify(*argv):
 
 
 class V2(tb.Case):
-    def bundle(self, isolation, witnesses=((tb.WITNESS, tb.WIT_SECRET),), edit_run=None, extra=()):
+    def bundle(self, isolation, witnesses=((tb.WITNESS, tb.WIT_SECRET),), edit_run=None, extra=(), calls=("t1", "t2")):
+        """A closed run of `calls` decided calls, then `extra` records ((type, data, fields)), exported."""
         name = f"s{len(os.listdir(self.d))}"
         log = self.log(name)
         log.epoch(tb.KEY1)
         log.add("run.registered", {"agent": {"name": "agent"}, "signer_isolation": isolation,
                                    "identity": {"scheme": "uid", "subject": "1", "attested": True}})
-        log.call()
-        log.call()
-        for type_, data in extra:
-            log.add(type_, data)
+        for t in calls:
+            log.add("policy.decision", {"tool_use_id": t, "decision": "allow", "rule_ids": []}, tool_call_id=t,
+                    source="sdk")
+        for type_, data, fields in extra:
+            log.add(type_, data, **fields)
         log.final()
         out = os.path.join(self.d, f"{name}.tkb")
         export(log.store, "acme", "run-a", log.note(witnesses=witnesses), out)
@@ -52,7 +54,7 @@ class V2(tb.Case):
 
     def test_a_signer_out_of_the_agents_reach_is_proof_against_it(self):
         self.assertEqual(verify(self.bundle("separate-user"), "--trust", self.trust), (0, (
-            "VERIFIED: 4 recorded actions, none changed, removed or added after signing.\n"
+            "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after signing.\n"
             "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).\n"
             "An independent witness cosigned the log too.\n")))
 
@@ -65,7 +67,12 @@ class V2(tb.Case):
 
     def test_a_dev_bundle_is_not_proof_against_the_agent_however_it_was_witnessed(self):
         self.assertEqual(verify(self.bundle("same-user"), "--trust", self.trust),
-                         (0, f"VERIFIED: 4 recorded actions, none changed, removed or added after signing.\n{DEV}"))
+                         (0, "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after "
+                             f"signing.\n{DEV}"))
+
+    def test_a_run_with_no_tool_call_counts_its_signed_records(self):
+        self.assertEqual(verify(self.bundle("same-user", calls=()), "--trust", self.trust)[1].splitlines()[0],
+                         "VERIFIED: 2 signed records, none changed, removed or added after signing.")
 
     def test_an_isolation_the_signer_could_not_tell_shows_nothing(self):
         code, out = verify(self.bundle("unknown"), "--trust", self.trust)
@@ -77,10 +84,25 @@ class V2(tb.Case):
         out = tb.gaps_bundle(self.log("gaps"), os.path.join(self.d, "gaps.tkb"))
         code, said = verify(out, "--trust", self.trust)
         self.assertEqual((code, said.splitlines()[0]), (0, (
-            "VERIFIED WITH GAPS: 6 recorded actions, none changed after signing; 2 signed gaps (things Tracekit knows "
-            "it missed or could not check).")))
+            "VERIFIED WITH GAPS: 1 tool call in 6 signed records, none changed after signing; 2 signed gaps (things "
+            "Tracekit knows it missed).")))
         self.assertIn("NOT SHOWN: the signer did not record that the signing key was out of the agent's reach "
                       "(isolation: not recorded).", said)
+
+    def test_a_call_that_ran_against_policy_is_recorded_not_missed(self):
+        ran = self.bundle("same-user", extra=[("capture.gap", {"kind": "executed_against_policy",
+                                                                "reason": "t2 ran against a deny"},
+                                               {"tool_call_id": "t2"})])
+        self.assertEqual(verify(ran, "--trust", self.trust)[1].splitlines()[0],
+                         "VERIFIED: 2 tool calls in 5 signed records, none changed after signing; 1 policy mismatch "
+                         "recorded (see --detail).")
+
+    def test_a_run_sets_tenant_level_gaps_are_gaps(self):
+        golden = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "v2")
+        code, out = verify(os.path.join(golden, "run-set.tkb"), "--trust", os.path.join(golden, "trust.json"))
+        self.assertEqual((code, out.splitlines()[0]), (0, "VERIFIED WITH GAPS: 2 tool calls in 13 signed records, "
+                                                          "none changed after signing; 1 signed gap (things Tracekit "
+                                                          "knows it missed)."))
 
     def test_a_tampered_bundle_says_where_it_breaks(self):
         changed = self.bundle("same-user", edit_run=lambda rs: rs[2]["event"]["data"].update(input={"command": "ls"}))
@@ -93,7 +115,7 @@ class V2(tb.Case):
     @pytest.mark.unverified_bundles
     def test_an_invalid_event_is_one_short_line(self):
         bad = self.bundle("same-user", extra=[("policy.decision", {"tool_use_id": "t", "decision": "maybe",
-                                                                   "rule_ids": []})])
+                                                                   "rule_ids": []}, {})])
         code, out = verify(bad, "--trust", self.trust)
         self.assertEqual((code, out.splitlines()[0]), (1, "FAILED at event 4: it is not a valid event at "
                                                           "event.data.decision (--detail shows the rule)."))
@@ -136,6 +158,7 @@ class Negative(unittest.TestCase):
                 self.assertTrue(said.isascii(), said)
                 if code:
                     self.assertNotIn("VERIFIED", said)
+                    self.assertNotIn("PROOF", said)
                 if name in want:
                     self.assertTrue(said.startswith(want[name]), said)
 
@@ -162,7 +185,8 @@ class V1(unittest.TestCase):
         code, said = verify(out, "--key", key)
         n = bundle.verify(out, trusted_key=key)[0].events
         first, warned, rest = said.split("\n", 2)
-        self.assertEqual((code, first, rest), (0, f"VERIFIED: {n} recorded actions, none changed after signing.", DEV))
+        self.assertEqual((code, first, rest), (0, f"VERIFIED: 1 tool call in {n} signed records, none changed after "
+                                                  "signing.", DEV))
         self.assertTrue(warned.startswith("Warnings: signing key, ") and warned.endswith(". Add --detail to read them."),
                         warned)
 

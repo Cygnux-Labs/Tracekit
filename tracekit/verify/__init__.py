@@ -71,10 +71,10 @@ def _where(problem):
 
 def summary(rep, code, integrity, assurance, stream=None):
     """The short result `tracekit verify`, `tracekit last` and `tracekit demo` print by default, in plain words: for a
-    bundle that verified (exit 0, or 3 under --strict) the verdict on the recorded actions, the warnings by name and
-    whether the record is proof against the agent; for one that failed (exit 1) where it breaks; for one that could not
-    be checked (exit 2) why. It reads the report only: `--detail` prints all of it (print_report). Its own words are
-    ASCII; bundle-derived text is printed without control characters."""
+    bundle that verified (exit 0, or 3 under --strict) the verdict, with the tool calls and signed records it covers,
+    the warnings by name and whether the record is proof against the agent; for one that failed (exit 1) where it
+    breaks; for one that could not be checked (exit 2) why. It reads the report only: `--detail` prints all of it
+    (print_report). Its own words are ASCII; bundle-derived text is printed without control characters."""
     from tracekit.verify.v2 import _CONTROL
     s = stream or sys.stdout
     say = lambda line: s.write(_CONTROL.sub("", str(line)) + "\n")   # noqa: E731
@@ -101,8 +101,11 @@ def summary(rep, code, integrity, assurance, stream=None):
     warned = list(dict.fromkeys(c["check"] for c in rep.checks if c["status"] == "warn"))
     unanchored = any(c["check"] == "trust root" and c["status"] != "pass" for c in rep.checks)   # v1's
     still_open = "open)" in integrity   # v2: VERIFIED TO HEAD n (open), VERIFIED (k run(s) open)
-    gaps = ([f"{rep.gaps} signed gap{'s' if rep.gaps != 1 else ''} (things Tracekit knows it missed or could not "
-             "check)"] if rep.gaps else []) + [GAPS[c] for c in warned if c in GAPS]
+    gaps = ([f"{rep.gaps} signed gap{'s' if rep.gaps != 1 else ''} (things Tracekit knows it missed)"] if rep.gaps
+            else []) + [GAPS[c] for c in warned if c in GAPS]
+    # recorded, not missed: a call that ran, or a decision imported, against the signer's
+    against = [f"{rep.mismatches} policy mismatch{'es' if rep.mismatches != 1 else ''} recorded (see --detail)"] \
+        if rep.mismatches else []
     if unanchored:
         head, said = "VERIFIED BUT UNANCHORED", ["consistent with the bundle's own key"]
     else:
@@ -113,9 +116,9 @@ def summary(rep, code, integrity, assurance, stream=None):
     if still_open:
         said.append("the run has not ended, so more may follow" if "TO HEAD" in integrity else
                     "not every run has ended, so more may follow")
-    n = rep.events
-    say(f"{head}: " + (f"{n} recorded action{'s' if n != 1 else ''}, " if n is not None else "")
-        + "; ".join(said + gaps) + ".")
+    counted = ([f"{rep.calls} tool call{'s' if rep.calls != 1 else ''} in "] if rep.calls else []) + (
+        [f"{rep.events} signed record{'s' if rep.events != 1 else ''}, "] if rep.events is not None else [])
+    say(f"{head}: {''.join(counted)}" + "; ".join(said + gaps + against) + ".")
     if getattr(rep, "findings", None):   # v2's signed findings: an opinion of the run, worth a line of their own
         say(f"Findings: {rep.findings}.")
     if warned:

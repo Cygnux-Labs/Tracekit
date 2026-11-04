@@ -322,7 +322,7 @@ class DevSignerEndToEnd(unittest.TestCase):
                                r"trust\.json\n$")
         trust, verify = [shlex.split(x)[1:] for x in said.splitlines() if x.startswith("  tracekit ")]
         self.cli(*trust)
-        self.assertRegex(self.cli(*verify), r"^VERIFIED: \d+ recorded actions, none changed")
+        self.assertRegex(self.cli(*verify), r"^VERIFIED: (\d+ tool calls? in )?\d+ signed records, none changed")
         info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "-o", "again.tkb", "--json"))
         self.assertEqual((info["bundle"], info["verifier_min_version"] in said), ("again.tkb", True))
 

@@ -1,11 +1,11 @@
 # Reading a v2 verify report
 
 `tracekit verify bundle.tkb --trust trust.json` (and `tracekit last`, and `tracekit demo`) prints a short result in
-plain words: the verdict on the recorded actions, the warnings by name, and whether the record is proof against the
-agent. A dev signer's bundle:
+plain words: the verdict, with the tool calls and signed records it covers, the warnings by name, and whether the
+record is proof against the agent. A dev signer's bundle:
 
 ```text
-VERIFIED: 11 recorded actions, none changed, removed or added after signing.
+VERIFIED: 3 tool calls in 11 signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
 ```
@@ -16,10 +16,12 @@ bundle vouches for the signing key: always for a v2 bundle (your trust file pins
 `--key` or `--witness`. Without them a v1 bundle prints `NOT SHOWN: nothing outside the bundle vouches for the signing
 key. Pin it with --key, or use a witness.` With several runs, the weakest isolation counts.
 
-"Recorded" matters: a verified bundle shows that what was signed is intact, not that every action was captured. `none
-changed, removed or added` is said only when no check warned; signed gaps, records the signer wrote about what it
-missed or could not check, read `VERIFIED WITH GAPS: 6 recorded actions, none changed after signing; 2 signed gaps
-(...)`. A bundle that fails says where it breaks, by the record's log `seq`, in plain words:
+The counts are of what was signed: the tool calls the records name, in that many signed records. A verified bundle shows
+that what was signed is intact, not that every call was captured. `none changed, removed or added` is said only when no
+check warned. Signed gaps, records the signer wrote about what it missed (a run-set's tenant-level gaps among them), read
+`VERIFIED WITH GAPS: 1 tool call in 6 signed records, none changed after signing; 2 signed gaps (things Tracekit knows
+it missed)`. A call that ran against the signer's decision, or an imported decision that disagrees with it, was
+recorded, not missed: `1 policy mismatch recorded (see --detail)`. A bundle that fails says where it breaks, by the record's log `seq`, in plain words:
 
 ```text
 TAMPERED at event 4: its content was changed after it was signed.

@@ -102,7 +102,7 @@ class DemoServer(unittest.TestCase):
                            timeout=120, cwd=ROOT)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         verified, tampered = p.stdout.split("tamper test")
-        self.assertIn("\nVERIFIED: 11 recorded actions, none changed, removed or added after signing.\n"
+        self.assertIn("\nVERIFIED: 3 tool calls in 11 signed records, none changed, removed or added after signing.\n"
                       "NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could "
                       "have rewritten the record.\n", verified)   # what dev mode means
         self.assertNotIn("PASS", verified)

@@ -139,7 +139,7 @@ tracekit last
 
 ```text
 run 40c7ee89ae9eaec8f8eb8556b32fdc9d (my-agent)
-VERIFIED: <n> recorded actions, none changed, removed or added after signing.
+VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
 bundle: /home/me/project/40c7ee89ae9eaec8f8eb8556b32fdc9d.tkb
@@ -229,7 +229,7 @@ tracekit verify run.tkb --trust trust.json
 ```
 
 ```text
-VERIFIED: <n> recorded actions, none changed, removed or added after signing.
+VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
 ```

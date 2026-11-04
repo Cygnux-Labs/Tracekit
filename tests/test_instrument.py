@@ -96,7 +96,7 @@ class TestThreeSteps(DevSigner):
                 if name != "openai":
                     self.assertIn(REFUSED, out[1])
                 p = self.sh("-m", "tracekit", "last")
-                self.assertRegex(p.stdout, r"\nVERIFIED: \d+ recorded actions, none changed")
+                self.assertRegex(p.stdout, r"\nVERIFIED: (\d+ tool calls? in )?\d+ signed records, none changed")
                 self.assertIn("\nNOT PROOF AGAINST THE AGENT: ", p.stdout)   # a dev signer
                 bundle = p.stdout.split("bundle: ", 1)[1].splitlines()[0]
                 self.assertTrue(os.path.isfile(bundle) and os.path.isfile(bundle[:-4] + ".trust.json"))
