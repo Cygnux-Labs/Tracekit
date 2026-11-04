@@ -127,6 +127,31 @@ class CodingPack(unittest.TestCase):
                      for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml")
                      for engine in (("re2", "regex") if HAVE_RE2 else ("regex",)))
 
+    def test_deleting_ci_pipeline_files_asks(self):
+        deletes = ["rm -rf .github/workflows/security-scan.yml .github/workflows/codeql.yml",
+                   "git rm -f .github/workflows/deploy.yml", "rm .gitlab-ci.yml", "git rm .circleci/config.yml",
+                   "rm azure-pipelines.yml", "git rm Jenkinsfile", "rm -rf .github/workflows",
+                   "rm /work/project/.github/workflows/security.yml", "rm ./src/../.github/workflows/ci.yml",
+                   r"rm 'C:\repo\.github\workflows\ci.yml'", r"git rm '.circleci\config.yml'",
+                   "rm -rf .github", "git rm -r .github", "rm -rf ./.github/",
+                   "rm -rf .github/*", "rm -r .circleci",
+                   "find .github -name '*.yml' -delete",
+                   # A symlink may redirect .., so effects retain this path as given.
+                   "rm .github/workflows/../dependabot.yml"]
+        benign = ["actionlint .github/workflows/ci.yml", "git diff -- .github/workflows/ci.yml",
+                  "cat .github/workflows/ci.yml", "rm src/workflows/ci.yml", "rm .circleci/config.yml.bak",
+                  "rm myJenkinsfile", "echo 'rm .github/workflows/ci.yml'",
+                  "rm .github/dependabot.yml", "rm -rf .github-old", "rm -r .circleci-backup",
+                  ": > .github/workflows/ci.yml", "truncate -s 0 .github/workflows/ci.yml",
+                  "git commit -m 'remove .github/workflows/test.yml later'"]
+        for pack, backend, engine in self.every_pack():
+            for command in deletes + benign:
+                with self.subTest(pack=pack, backend=backend, command=command):
+                    result = engine.decide("Bash", {"command": command})
+                    self.assertEqual("TK-A049" in result["rule_ids"], command in deletes, result)
+                    if command in deletes:
+                        self.assertEqual(result["verdict"], "ask", result)
+                    self.assertNotIn("nondeterministic", result)
     def test_claude_codes_monitor_tool_is_decided_as_its_shell(self):
         # Monitor runs its command in the shell Bash uses; the packs flagged it as an unknown tool, so a command Bash
         # denies ran through it, the agent approving its own held call among them (PowerShell: SignerPolicy's test)
