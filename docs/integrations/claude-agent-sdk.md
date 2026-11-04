@@ -38,6 +38,24 @@ Register the run when the session starts; the hooks close it at `SessionEnd`. To
 lists in the mapping. Tools run in the CLI subprocess under their Claude Code names (`Bash`, `Edit`, `Write`, ...), so
 the signer's coding packs apply to them as they do to the Claude Code hook.
 
+### With a tool executor
+
+A [tool executor](../executor.md) decides and records its own actions (tier T2), so the hooks leave them to it. Hand
+the hooks the `mcp_servers` you give `ClaudeAgentOptions`:
+
+```python
+from tracekit.integrations import executor_tools as ex
+
+servers = {ex.SERVER: ex.claude_agent_sdk(ex.actions("https://executor.internal:8090", run, headers=auth))}
+options = ClaudeAgentOptions(mcp_servers=servers, hooks=tracekit_hooks(signer, run, mcp_servers=servers))
+```
+
+The hooks skip a call only when its tool name is exactly `mcp__tracekit-executor__<action>` for an action of the server
+`ex.claude_agent_sdk` built, and that server is under `ex.SERVER` in `mcp_servers`. They gate every other tool,
+including a server a project `.mcp.json` adds under that name (or one whose name starts with it). Without
+`mcp_servers`, the executor's calls are decided twice: by the hooks and by the executor. `tracekit.instrument()` passes
+each `ClaudeAgentOptions`' own `mcp_servers` for you.
+
 ## What is recorded
 
 | When | RPC | Sent |

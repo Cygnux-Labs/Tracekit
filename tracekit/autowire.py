@@ -221,17 +221,28 @@ def _langgraph(run):
 def _claude_agent_sdk(run):
     from claude_agent_sdk import ClaudeAgentOptions
 
-    from .integrations.claude_agent_sdk import tracekit_hooks
-    ours = tracekit_hooks(run.client, run.registered)
-    del ours["SessionEnd"]   # the run is the process's: closed at exit, not when its first session ends
+    from .integrations.claude_agent_sdk import _executor_tools, tracekit_hooks
+    from .integrations.executor_tools import SERVER
+    built = {}   # the executor tools of an options' mcp_servers -> the hooks that leave those to the executor
+
+    def ours(servers):
+        tools = _executor_tools(servers)
+        if tools not in built:
+            # lean: a hooks instance, and so a stream, per distinct executor server (the signer allows 64 per run)
+            built[tools] = tracekit_hooks(run.client, run.registered, {SERVER: servers[SERVER]} if tools else None)
+            del built[tools]["SessionEnd"]   # the run is the process's: closed at exit, not when its first session ends
+        return built[tools]
     init = ClaudeAgentOptions.__init__
 
     @functools.wraps(init)
     def hooked(self, *a, **kw):
         init(self, *a, **kw)
-        hooks = dict(self.hooks or {})
-        for event, matchers in ours.items():   # dataclasses.replace builds options again from hooked ones
-            hooks[event] = [*hooks.get(event, []), *(m for m in matchers if m not in hooks.get(event, []))]
+        mine = ours(self.mcp_servers)
+        # dataclasses.replace builds options again from hooked ones, maybe with other servers: ours go in once, fresh
+        built_ids = {id(m) for h in built.values() for ms in h.values() for m in ms}
+        hooks = {e: [m for m in ms if id(m) not in built_ids] for e, ms in (self.hooks or {}).items()}
+        for event, matchers in mine.items():
+            hooks[event] = [*hooks.get(event, []), *matchers]
         self.hooks = hooks
     ClaudeAgentOptions.__init__ = hooked
 
