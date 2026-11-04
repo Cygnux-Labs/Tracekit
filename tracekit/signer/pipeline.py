@@ -552,6 +552,10 @@ class RecordLog:
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 if "session" in e["data"]:
                     run["session"] = e["data"]["session"]
+                if "box" in (e.get("ext") or {}):   # the box label (SignerService._register_run)
+                    run["box"] = e["ext"]["box"]
+                    if "parent_run" in e["data"]:   # its box's agent channel's run: the box's identity owns it
+                        run["owner"] = f"box:{run['owner'].split(':', 1)[1]}/{run['box']['id']}"
                 if {"replay_of", "analyzes"} & e["data"].keys():
                     run["replay"] = True
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1

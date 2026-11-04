@@ -249,7 +249,7 @@ class SignerBundles(unittest.TestCase):
                               witnesses=[witness], isolation="same-user", grace_s=0, fsck_every_s=0,
                               fail_modes={"default": "closed", "read": "open"}, observe_grace_s=0,
                               gateways=["mtls:spiffe://acme/gateway", "mtls:spiffe://acme/openshell"],
-                              verify_tool_results="record",
+                              verify_tool_results="record", box_daemons={f"uid:{ME.subject}": "firecracker"},
                               authorize={"mtls:spiffe://acme/egress": ["observe_effect"],
                                          "mtls:spiffe://acme/tetragon": ["observe_effect"],
                                          "mtls:spiffe://acme/openshell": ["register_run", "observe_effect",
@@ -264,7 +264,7 @@ class SignerBundles(unittest.TestCase):
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
                     "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s),
                     "constraint": cls.constraint_run(s), "amended": cls.amended_run(s),
-                    "openshell": cls.openshell_run(s)}
+                    "openshell": cls.openshell_run(s), "box": cls.box_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -438,6 +438,19 @@ class SignerBundles(unittest.TestCase):
                 {**at, "kind": "policy", "change": "approved", "policy_hash": "3f" * 32, "by": "user:dev@example.com",
                  "detail_digest": "sha256:" + "b" * 64}]})
         s.call(mw, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
+    @staticmethod
+    def box_run(s):
+        """A Tracekit Box box's agent run, through its channel (this process's uid is the box daemon): a format 1.6
+        ext.box."""
+        box = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "tkbox"}, "box": {
+            "id": "b-agree", "image_digest": "sha256:" + "a" * 64, "allow": ["claude-code"], "channel": "agent"}})
+        ids = {"run_id": box["run_id"], "run_token": box["run_token"]}
+        agent = s.call(ME, "channel_open", dict(ids)).identity
+        r = s.call(agent, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        s.call(agent, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, **ids})
         return r["run_id"]
 
     def mutate(self, edit_run=None, edit=None, src="closed"):
@@ -850,6 +863,53 @@ class Agreement(SignerBundles):
                 [line] = [c for c in rep.checks if c["check"] == "openshell policy"]
                 self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "openshell policy"],
                                  [line])
+                self.assertEqual(line["status"], status)
+
+    def test_both_verifiers_say_the_same_of_a_boxed_agent(self):
+        """#602: a box's runs get the same `boxed agent` lines from both (proof against the boxed agent, its own
+        account, review before running, the witness that anchored it), and a label the signer never writes gets the
+        same warning and no claim."""
+        _, rep = self.agree(self.bundles["box"], self.trusts["witnessed"])
+        [line] = [c for c in rep.checks if c["check"] == "boxed agent"]
+        self.assertEqual([c for c in ts_verify(self.bundles["box"], self.trusts["witnessed"])["checks"]
+                          if c["check"] == "boxed agent"], [line])
+        self.assertEqual(line["detail"], "PROOF AGAINST THE BOXED AGENT (micro-VM): the signing key was outside its "
+                                         "box for this run.")
+        self.assertTrue(line["problems"][0].startswith("This run's records are the agent's own account of its calls;"))
+        self.assertRegex(line["problems"][-1], r"^anchored by \S+ \(customer\) at \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
+        import test_bundle_v2 as b
+        trust = os.path.join(self.d, "box-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        label = {"id": "b-1", "image_digest": "sha256:" + "a" * 64, "allow": ["claude-code"], "engine": "firecracker"}
+        uid = {"scheme": "uid", "subject": "1001", "attested": True}
+
+        def labelled(box, identity=uid, **data):
+            log = b.Log(os.path.join(self.d, f"box-{uuid.uuid4().hex}"))
+            self.addCleanup(log.store.close)
+            log.epoch(b.KEY1)
+            log.add("run.registered", {"agent": {"name": "a"}, "identity": identity, **data}, ext={"box": box})
+            log.final()
+            out = os.path.join(self.d, f"box-{uuid.uuid4().hex}.tkb")
+            export(log.store, "acme", "run-a", log.note(), out)
+            return out
+        odd = b.Log(os.path.join(self.d, f"box-{uuid.uuid4().hex}"))
+        self.addCleanup(odd.store.close)
+        for name, bundle, status in (
+                ("the box's own run", labelled(label), "pass"),
+                ("its agent's run", labelled(dict(label, channel="agent"), parent_run="run-box"), "pass"),
+                ("another engine", labelled(dict(label, engine="docker")), "warn"),
+                ("an engine that is no string", labelled(dict(label, engine=["firecracker"])), "warn"),
+                ("a field the signer never writes", labelled(dict(label, extra=1)), "warn"),
+                ("another channel", labelled(dict(label, channel="other")), "warn"),
+                ("not a uid's run", labelled(label, {"scheme": "token", "subject": "box", "attested": True}), "warn"),
+                ("a box id the signer refuses", labelled(dict(label, id="b 1")), "warn"),
+                ("not on run.registered", b.ext_bundle(odd, os.path.join(self.d, "box-odd.tkb"), {"box": {}},
+                                                       ("box", {})), "warn")):
+            with self.subTest(name):
+                _, rep = self.agree(bundle, trust)
+                [line] = [c for c in rep.checks if c["check"] == "boxed agent"]
+                self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "boxed agent"], [line])
                 self.assertEqual(line["status"], status)
 
     def test_the_browser_page_reports_what_the_cli_does(self):

@@ -572,6 +572,7 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
+| 1.6.0 | — | — | — | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
@@ -606,6 +607,9 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
   sent either way); a verifier that reads it adds a `gateway amendments` line.
 - `openshell.policy` is non-critical: it is OpenShell's report of its own configuration, beside every record a
   verifier reads; without it every line stays true, and a verifier that reads it adds an `openshell policy` line.
+- `box` is non-critical: a box channel's run records `signer_isolation: unknown`, so a verifier that doesn't read the
+  label claims nothing for it; one that reads it adds a `boxed agent` line, which narrows what the run proves (against
+  the boxed agent only) and never widens it.
 - `review.cites` and `effect.observed.sensor` stay critical: a verifier that passed over a signed finding's citations
   would label it `imported`, a false line; and a sensor's effects are records of what the agent's own processes did,
   in its run, which a verifier must read to verify that run. So does `capture.gap.sensor`: a 1.3 verifier counts every
@@ -725,7 +729,18 @@ line and verdict is in [verdicts](verdicts.md).
     policy`, passing with `OpenShell changed the sandbox policy or configuration n time(s) (<change>: <count>, ... the
     first 8 in code-point order), as OpenShell reported it`, a warning listing the records (the first 20) that carry it
     other than as an `ext` record of source `signer` with a `change` of `[a-z0-9_.-]{1,64}` and a non-empty
-    `observer`.
+    `observer`. `box` (1.6.0): `boxed agent`, a warning listing the records (the first 20) when any record carries it
+    other than on a `run.registered` whose `data.identity.scheme` is `uid`, as an object with exactly `id`
+    (`[A-Za-z0-9._:-]{1,128}`), `image_digest` (`sha256:` and 64 hex digits), `allow` (a list of strings), `engine`
+    (`firecracker`, read as `micro-VM`) and optionally `channel` (`agent`); else passing with `PROOF AGAINST THE BOXED
+    AGENT (micro-VM): the signing key was outside its box for this run.` (`these n runs` for more than one) and the
+    lines: what the records are (one run with `parent_run`, its agent's: `This run's records are the agent's own
+    account of its calls; the box's doors (its connections and file writes) are the record of what it could do.`; one
+    without, the box's own: `This run's records are the box's doors (its connections and file writes), as the Box daemon
+    recorded them.`; several: `In these runs, the agent's records are its own account of its calls; the box's doors
+    (its connections and file writes) are the record of what it could do.`), `Before you run anything the box wrote,
+    review it: code you run on this machine can reach the key.`, and `anchored by <name> (<class>) at <time>` per
+    pinned cosignature, oldest first.
 11. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED` (every check this verifier implements
     passed), `VERIFIED TO HEAD n (open)` for one open
     run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,
