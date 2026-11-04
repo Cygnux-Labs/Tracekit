@@ -544,7 +544,7 @@ class RecordLog:
             if "span_id" in e:   # an imported record: its span and type are written once per run
                 run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
-                run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                run["owner"], run["source"] = detect.recorded_owner(e), e["source"]
                 run["registered"] = e["ts"]
                 run["principal"] = e.get("principal")
                 run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
@@ -554,8 +554,6 @@ class RecordLog:
                     run["session"] = e["data"]["session"]
                 if "box" in (e.get("ext") or {}):   # the box label (SignerService._register_run)
                     run["box"] = e["ext"]["box"]
-                    if "parent_run" in e["data"]:   # its box's agent channel's run: the box's identity owns it
-                        run["owner"] = f"box:{run['owner'].split(':', 1)[1]}/{run['box']['id']}"
                 if {"replay_of", "analyzes"} & e["data"].keys():
                     run["replay"] = True
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1

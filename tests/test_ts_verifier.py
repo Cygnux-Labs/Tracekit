@@ -912,6 +912,14 @@ class Agreement(SignerBundles):
                 self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "boxed agent"], [line])
                 self.assertEqual(line["status"], status)
 
+    def test_a_run_set_claims_only_for_its_own_runs_in_both(self):
+        """#603's review: a box run's label on a run-set's registry record (another run's run.registered) is no claim
+        about the bundle's own plain run, in either verifier."""
+        import test_box_channel as box
+        bundle, trust = box.runset_bundle(os.path.join(self.d, f"runset-{uuid.uuid4().hex}"))
+        _, rep = self.agree(bundle, trust)   # the same lines in both
+        self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])
+
     def test_the_browser_page_reports_what_the_cli_does(self):
         """verify.html: its one script and its style allowed by hash, workers only from blob: URLs (its own script, which
         inherits the policy), nothing else, no network API in the script, and for each bundle the TypeScript CLI's

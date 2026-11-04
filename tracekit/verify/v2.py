@@ -278,15 +278,22 @@ def _box(rep, events):
     signer's own config) and of each run its agent channel registered (a copy, with parent_run). The signing key was
     outside that box, so the runs are proof against the agent in it, and no more: an agent run's records are its own
     account, the box's doors held it, and anything running as the daemon's or the signer's user on the host is outside
-    the claim. Anywhere else, or in another shape, a warning and no claim. rep.boxed: the records carrying ext.box and
-    the lines tracekit.verify.summary prints for them in place of the general claim."""
-    good, bad = [e for e in events if _box_label(e)], [e for e in events if not _box_label(e)]
+    the claim. Anywhere else, or in another shape, a warning and no claim. Only the bundle's own runs are claimed for
+    (rep.firsts: the seqs of their first records): a run-set's records of other runs (`pointed`) carry their labels
+    too. rep.boxed: the runs claimed for and the lines tracekit.verify.summary prints for them in place of the general
+    claim (with a label the signer never writes: every run, and none is claimed for)."""
+    firsts = getattr(rep, "firsts", None)
+    bad = [e for e in events if not _box_label(e)]
     if bad:
-        rep.boxed = (len(events), ["NOT SHOWN: a record carries a box label the signer never writes, so nothing is "
-                                   "claimed about who could reach the signing key."])
+        rep.boxed = (len(events) if firsts is None else len(firsts), [
+            "NOT SHOWN: a record carries a box label the signer never writes, so nothing is claimed about who could "
+            "reach the signing key."])
         rep.check("boxed agent", False, f"{len(bad)} record(s) carry ext.box where or how the signer never writes it: "
                   "no proof against a boxed agent", [f"seq {e.get('seq')}: ext.box is not a box's label on its "
                                                      "run.registered" for e in bad][:20], warn=True)
+        return
+    good = [e for e in events if firsts is None or e.get("seq") in firsts]
+    if not good:   # labels of runs this bundle doesn't hold
         return
     one, agent = len(good) == 1, any("parent_run" in e["data"] for e in good)
     lines = [f"{BOXED} ({', '.join(sorted({ENGINES[e['ext']['box']['engine']] for e in good}))}): the signing key was "
@@ -991,9 +998,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
-    rep.anchored = [f"{k.split('+')[0]} ({witnesses[k]}) at "   # the pinned cosignatures (the box check's lines)
+    # for the box check: the pinned cosignatures, and the seqs of the bundle's own runs' first records
+    rep.anchored = [f"{k.split('+')[0]} ({witnesses[k]}) at "
                     f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
                     for k, ts in sorted(cosigs, key=lambda c: c[1])]
+    rep.firsts = {rs[0]["event"]["seq"] for rs in runs.values()}
     _ext(rep, list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values()),
          manifest.get("verifier_version"))
 

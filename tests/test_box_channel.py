@@ -3,21 +3,25 @@ signer-written `ext.box` label, `channel_open` and the box's own identity `box:<
 owner, quotas, request ids, cooldowns and approvals, the channel's methods only, each run a child of its box run), the
 contract's version 21 in both directions, and what the verifier says of a box's runs (tests/test_ts_verifier.py holds
 the TypeScript verifier to the same lines)."""
+import importlib.util
 import io
 import json
 import os
 import socket
+import time
 import unittest
 import uuid
+import zipfile
 from unittest import mock
 
-from test_signer_service import ME, PAY_ASKS, SocketSigner, tmpdir
+from test_signer_service import ME, PAY_ASKS, ROOT, SocketSigner, tmpdir
 from tracekit.bundle_v2 import export
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import rpc_schema, service as svc
 from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
+from tracekit.storage.base import registry_tree
 from tracekit.transport import Bound
 from tracekit.verify import protection, summary, v2
 
@@ -25,17 +29,44 @@ DAEMON, OTHER_DAEMON = CallerIdentity("uid", "1001", True), CallerIdentity("uid"
 CLIENT = CallerIdentity("uid", "2000", True)   # an agent outside any box
 BOX = {"id": "b-1", "image_digest": "sha256:" + "a" * 64, "allow": ["claude-code", "anthropic"], "channel": "agent"}
 DAEMONS = {"uid:1001": "firecracker", "uid:1002": "firecracker"}
+_spec = importlib.util.spec_from_file_location("e17_detection", os.path.join(ROOT, "eval", "e17_detection.py"))
+e17 = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(e17)
 
 
 def rid():
     return uuid.uuid4().hex
 
 
+def runset_bundle(d):
+    """(a run-set bundle of a plain run whose registry range also points to an open box run's run.registered, its trust
+    file): the box's label is on a record of a run the bundle doesn't hold (#603's review)."""
+    os.makedirs(d, exist_ok=True)
+    s = svc.SignerService(os.path.join(d, "data"), grace_s=0, fsck_every_s=0,
+                          box_daemons={f"uid:{ME.subject}": "firecracker"})
+    try:
+        s.call(ME, "register_run", {"request_id": rid(), "agent": {"name": "tkbox"}, "box": BOX})   # stays open
+        plain = s.call(ME, "register_run", {"request_id": rid(), "agent": {"name": "plain-agent"}})
+        s.call(ME, "close_run", {"request_id": rid(), "run_id": plain["run_id"], "run_token": plain["run_token"]})
+        s.sweep(time.monotonic() + 1)
+        s.checkpoint()
+        st, out, trust = s.log.storage, os.path.join(d, "plain-runset.tkb"), os.path.join(d, "plain-runset-trust.json")
+        export(st, "default", plain["run_id"], st.checkpoint_latest()[1], out,
+               run_set=(0, st.checkpoint_latest(registry_tree("default"))[0]), tenant_salt=s.log.tenant_salt("default"))
+        with open(trust, "w") as f:
+            json.dump({"logs": [s.vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0}, f)
+    finally:
+        s.close()
+    with zipfile.ZipFile(out) as z:
+        assert b'"box":{"id":"b-1"' in z.read("registry/records.jsonl"), "the range holds no box label"
+    return out, trust
+
+
 class Signer(unittest.TestCase):
     def signer(self, **kw):
-        kw.setdefault("box_daemons", DAEMONS)
+        kw = {"box_daemons": DAEMONS, "policy": PAY_ASKS, **kw}
         self.dir = tmpdir(self)
-        s = svc.SignerService(self.dir, policy=PAY_ASKS, fsck_every_s=0, **kw)
+        s = svc.SignerService(self.dir, fsck_every_s=0, **kw)
         self.addCleanup(s.close)
         return s
 
@@ -228,6 +259,31 @@ class TestBoxIdentity(Signer):
         self.assertEqual(e["ext"], {"box": {**BOX, "engine": "firecracker"}})
         self.assertEqual(s.log.runs[(e["tenant"], e["run_id"])]["owner"], "box:1001/b-1")
 
+    def test_its_runs_record_isolation_unknown_whatever_the_signers_own(self):
+        """A signer that fixes every run's isolation (the dev signer: same-user) still records a box channel's run as
+        unknown, so no general claim covers it; the daemon's box run keeps the signer's."""
+        s = self.signer(isolation="same-user")
+        run, box = self.channel(s)
+        self.assertEqual(self.registered(s, self.register(s, box))["data"]["signer_isolation"], "unknown")
+        self.assertEqual(self.registered(s, run)["data"]["signer_isolation"], "same-user")
+
+    def test_a_reused_box_id_reaches_only_its_own_box_runs_runs(self):
+        """Two box runs a daemon gives one box id share the identity box:<uid>/<box id>; each channel still writes, and
+        sees the approvals of, only the runs registered under its own box run."""
+        s = self.signer()
+        _, first = self.channel(s)
+        _, second = self.channel(s)
+        self.assertEqual(first.subject, second.subject)
+        theirs = self.register(s, first)
+        s.call(first, "decide", {**theirs, "request_id": rid(), "stream": "s", "client_seq": 0, "tool_call_id": "t",
+                                 "tool": "pay", "args_source": "parsed", "args": {"amount": 5}})
+        aid = s.call(first, "approval_request", {**theirs, "request_id": rid(), "tool_call_id": "t"})["approval_id"]
+        e = self.refused("run_token_invalid", s, second, "close_run", {**theirs, "request_id": rid()})
+        self.assertIn("another box run", e.message)
+        self.refused("unknown_approval", s, second, "approval_get", {"approval_id": aid})
+        self.assertEqual(s.call(first, "approval_get", {"approval_id": aid})["state"], "requested")
+        s.call(first, "close_run", {**theirs, "request_id": rid()})
+
     def test_it_sends_no_parent_and_registers_nothing_once_its_box_run_closed(self):
         s = self.signer()
         run, box = self.channel(s)
@@ -355,6 +411,32 @@ class TestOneIdentityPerBox(Signer):
         self.assertEqual(first(a), "ask")
         self.assertEqual((first(b), first(DAEMON)), ("allow", "allow"))
 
+    def test_an_owner_scoped_detection_contains_its_own_box_only(self):
+        """#603's review: a sequence scoped by owner that one box's agent completes holds that box's runs (and its new
+        ones, by cooldown); not the other box's, nor its daemon's box runs, whose records name the same uid."""
+        pol = {**e17.POLICY, "sequences": [{"id": "Q", "steps": ["secret", "egress"], "scope": "owner", "window": 600}],
+               "respond": [{"trigger": "Q", "mode": "enforce", "action": "hold", "cooldown_s": 600}]}
+        s = self.signer(policy=e17.engine(pol), approvals={"approvers": ["group:corp/ops"]})
+        box_a, a = self.channel(s)
+        box_b, b = self.channel(s, box=dict(BOX, id="b-2"))
+        mine, theirs = self.register(s, a), self.register(s, b)
+        n = iter(range(100))
+
+        def decide(who, run, tool):
+            i = next(n)
+            return s.call(who, "decide", {**run, "request_id": rid(), "stream": "s", "client_seq": i,
+                                          "tool_call_id": f"t{i}", "tool": tool[0], "args_source": "parsed",
+                                          "args": tool[1]})
+        decide(a, mine, e17.SECRET)
+        decide(a, mine, e17.EGRESS)
+        held = {name: bool(s.log.runs[("default", r["run_id"])].get("held"))
+                for name, r in (("a's run", mine), ("b's run", theirs), ("box run a", box_a), ("box run b", box_b))}
+        self.assertEqual(held, {"a's run": True, "b's run": False, "box run a": False, "box run b": False})
+        read = ("read_file", {"path": "/a"})
+        self.assertEqual(decide(a, self.register(s, a), read)["decision"], "ask")   # inherits the hold
+        self.assertEqual(decide(b, self.register(s, b), read)["decision"], "allow")
+        self.assertFalse(s.log.runs[("default", self.box_run(s, box=dict(BOX, id="b-3"))["run_id"])].get("held"))
+
 
 class TestContractVersion(unittest.TestCase):
     """Version 21 adds the channel and the label; a version 20 client keeps working with no label (TestChannelOpen's
@@ -467,6 +549,18 @@ class TestVerifier(unittest.TestCase):
             with self.subTest(iso):
                 said = protection(self.rep(iso, (1, lines)), "witnessed; records ed25519", False)
                 self.assertEqual(said, lines)
+
+    def test_a_run_set_claims_only_for_the_runs_it_holds(self):
+        """#603's review: a run-set's registry records point to other runs' run.registered, labels included. A plain
+        run's run-set bundle whose range holds a box run gets no box line: it isn't that run's."""
+        bundle, trust = runset_bundle(tmpdir(self))
+        rep, code = v2.verify(bundle, trust)
+        self.assertEqual(code, 0, rep.checks)
+        self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])
+        said = io.StringIO()
+        summary(rep, code, rep.integrity, rep.assurance, said)
+        self.assertNotIn("BOXED", said.getvalue())
+        self.assertIn("\nNOT PROOF AGAINST THE AGENT: ", said.getvalue())   # the plain run's own: same-user
 
     def test_a_mixed_bundle_never_gets_the_general_claim(self):
         lines = ["PROOF AGAINST THE BOXED AGENT (micro-VM): ..."]

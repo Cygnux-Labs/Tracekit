@@ -1751,6 +1751,9 @@ class SignerService:
         if key not in self.log.runs:
             raise RPCError("unknown_run", req["run_id"])
         self.tokens.verify(req["run_token"], tenant, req["run_id"], identity)
+        run = self.log.runs[key]   # a box's channel: only its own box run's runs (another box run may reuse the box id)
+        if identity.scheme == "box" and not run["final"] and run.get("session") != identity.claims["run"]:
+            raise RPCError("run_token_invalid", "run token belongs to another box run's channel")
         if gw is None:
             self._check_harness(identity, key)
             if key in self._beats and self._tailer(identity):   # any call of a watched run's tailer shows it alive
@@ -1815,10 +1818,11 @@ class SignerService:
         agent-eligible approvals of its tenant."""
         if self._is_agent(identity):
             return bool((a.get("agent") or {}).get("eligible")) and a["run_key"][0] == self._tenant_of(identity)
-        if owner(identity) == self.log.runs[a["run_key"]]["owner"] or self._in(self._break_glass, identity):
+        run = self.log.runs[a["run_key"]]
+        if identity.scheme == "box":   # a box's agent channel sees its own box run's runs' approvals only
+            return owner(identity) == run["owner"] and run.get("session") == identity.claims["run"]
+        if owner(identity) == run["owner"] or self._in(self._break_glass, identity):
             return True
-        if identity.scheme == "box":   # a box's agent channel sees its own runs' approvals only
-            return False
         return (self.approvals is None or self._in(self._approvers, identity)
                 or any(ON_BEHALF in (lookup(self.authorize, k) or ()) for k in keys(identity))) and \
             a["run_key"][0] == self._tenant_of(identity)
@@ -2706,8 +2710,9 @@ class SignerService:
                 out["principal"] = top["principal"] = principal
                 tx.set(run, "principal", principal)
             # a box channel's run records the identity its transport established, the daemon's (a closed format field),
-            # and its box in ext.box; its isolation is the box's, unknown: no general claim covers it
-            data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
+            # and its box in ext.box; its isolation is unknown, whatever this signer's own: no general claim covers it
+            data = {"agent": req["agent"], "fail_modes": self.fail_modes,
+                    "signer_isolation": "unknown" if boxed else self.isolation or self._isolation(identity),
                     "identity": _recorded(identity.claims["daemon"] if boxed else identity)}
             data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
             if up:

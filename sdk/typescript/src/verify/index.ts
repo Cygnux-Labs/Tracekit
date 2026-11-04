@@ -72,8 +72,10 @@ export class Report {
   findings: string | null = null;
   /** Checks the bundle needs that this verifier does not implement. */
   unsupported: string[] = [];
-  /** The pinned witnesses' cosignatures of the checkpoint, `name (class) at time` (the box check's lines). */
+  /** For the box check: the pinned witnesses' cosignatures of the checkpoint, `name (class) at time`, and the seqs of
+   * the bundle's own runs' first records. */
   anchored: string[] = [];
+  firsts = new Set<J>();
 
   check(check: string, ok: boolean, detail = "", problems: string[] = [], warn = false) {
     this.checks.push({ check, status: ok ? "pass" : warn ? "warn" : "fail", detail, problems });
@@ -660,6 +662,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
   rep.anchored = [...cosigs].sort((a, b) => a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)
     .map(([k, ts]) => `${k.split("+")[0]} (${witnesses.get(k)}) at ${fmt(ts)}`);
+  rep.firsts = new Set(firsts.map((e) => at(e, "seq")));
   checkExt(rep,[...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
     .values()], get(manifest, "verifier_version"));
 }
@@ -736,16 +739,19 @@ function boxLabel(e: J): boolean {
  * own config) and of each run its agent channel registered (a copy, with parent_run). The signing key was outside that
  * box, so the runs are proof against the agent in it, and no more: an agent run's records are its own account, the
  * box's doors held it, and anything running as the daemon's or the signer's user on the host is outside the claim.
- * Anywhere else, or in another shape, a warning and no claim.
+ * Anywhere else, or in another shape, a warning and no claim. Only the bundle's own runs are claimed for
+ * (rep.firsts): a run-set's records of other runs carry their labels too.
  */
 function checkBox(rep: Report, events: J[]) {
-  const good = events.filter(boxLabel), bad = events.filter((e) => !boxLabel(e));
+  const bad = events.filter((e) => !boxLabel(e));
   if (bad.length) {
     rep.check("boxed agent", false, `${bad.length} record(s) carry ext.box where or how the signer never writes it: `
       + "no proof against a boxed agent", bad.map((e) => `seq ${str(get(e, "seq"))}: ext.box is not a box's label on `
       + "its run.registered").slice(0, 20), true);
     return;
   }
+  const good = events.filter((e) => rep.firsts.has(get(e, "seq")));
+  if (!good.length) return;   // labels of runs this bundle doesn't hold
   const one = good.length === 1, agent = good.some((e) => Object.hasOwn(e.data, "parent_run"));
   const kinds = [...new Set(good.map((e) => ENGINES[e.ext.box.engine]))].sort(byCodePoint).join(", ");
   rep.check("boxed agent", true, `${BOXED} (${kinds}): the signing key was outside its box for `

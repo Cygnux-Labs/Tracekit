@@ -732,7 +732,9 @@ line and verdict is in [verdicts](verdicts.md).
     `observer`. `box` (1.6.0): `boxed agent`, a warning listing the records (the first 20) when any record carries it
     other than on a `run.registered` whose `data.identity.scheme` is `uid`, as an object with exactly `id`
     (`[A-Za-z0-9._:-]{1,128}`), `image_digest` (`sha256:` and 64 hex digits), `allow` (a list of strings), `engine`
-    (`firecracker`, read as `micro-VM`) and optionally `channel` (`agent`); else passing with `PROOF AGAINST THE BOXED
+    (`firecracker`, read as `micro-VM`) and optionally `channel` (`agent`). Else only the labels on the first record of
+    a run the bundle holds count (a run-set's records of other runs carry theirs too; with none of the bundle's, no
+    line), passing with `PROOF AGAINST THE BOXED
     AGENT (micro-VM): the signing key was outside its box for this run.` (`these n runs` for more than one) and the
     lines: what the records are (one run with `parent_run`, its agent's: `This run's records are the agent's own
     account of its calls; the box's doors (its connections and file writes) are the record of what it could do.`; one
