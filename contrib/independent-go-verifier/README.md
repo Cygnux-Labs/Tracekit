@@ -113,3 +113,19 @@ be misrouted to v1 and produce a non-JSON argument error. V1 cases use the
 Python CLI. Every verdict mismatch and every unexpected check-name difference fails the gate and is captured in the optional JSON report.
 
 The gate compares exit code, integrity, assurance, and the names of warning and failed checks outside the verdict-only ones. It is an executable acceptance test, not a substitute for reviewing unsupported features. Rerun it against the checkout being reviewed; report files are generated on demand and are not committed.
+
+## Mutated bundles
+
+`tests/test_go_verifier.py` builds `tkverify` and gives it the mutated bundles the TypeScript verifier is held to:
+every structural mutation of the golden closed bundle, run-set and run in parts (`tests/test_bounded.py`) and the
+mutated copies of the real signer's bundles (`tests/test_ts_verifier.py`). Each must get Python's exit code and
+integrity. It skips without Go on `PATH`; CI's go-verifier job runs it and fails if it skips.
+
+```sh
+PYTHONPATH=$PWD python -m pytest -q tests/test_go_verifier.py
+```
+
+It compares the verdict only. On a few mutations both fail, but Go stops sooner, at `bundle structure` (a run file
+without its final newline, a run file under a name that isn't a run's, an integer written as a float), where Python
+names the checks it fails later (`manifest`, `run chain`, `run parts`, `signatures`, ...); and the JSON assurance of a
+failed bundle can differ. Both CLIs print a failed bundle's assurance as `not rated`.
