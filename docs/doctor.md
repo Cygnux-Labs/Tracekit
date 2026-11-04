@@ -74,6 +74,8 @@ skipped with the reason) and checks that doctor flags each one. It also checks t
 | `D-WITNESS-FRESH` | `store/witness-queue.json` against the latest checkpoint | a witness has never cosigned the latest checkpoint, or has been failing for longer than the witness gap window (300 s) (warn) | check the witness is reachable and accepts this log |
 | `D-CLOCK-SKEW` | this clock against the latest cosignature timestamp | this clock is more than 300 s behind it (warn) | sync the clock (NTP) |
 | `D-DATA-FS` | the data dir's file system | it's NFS, SMB/CIFS, AFP, WebDAV, 9p or FUSE, where file locking and fsync can't be trusted | put `data_dir` on a local disk |
+| `D-BOX-SIGNER` | dev mode, once `tracekit up --isolated` set up a box signer: its socket, and the isolation the signer recorded for the last run a box's token registered | it doesn't answer (warn) | `tracekit up --isolated` starts it ([laptop box](deploy.md#laptop-box)) |
+| `D-BOX-MOUNTS` | every running container labelled `tracekit.box`, from `docker inspect` | one has the Docker socket or `/run`, `/var/run` or `/var`, your home or a dir above it, or a signer's file other than its read-only token and CA certificate mounted; runs as root; is privileged; adds or keeps capabilities; allows new privileges; or shares the host's pid, network or IPC namespace (warn: doctor can't list them) | stop it; run the agent with `tracekit up --isolated` |
 
 Ids are stable. A check that doesn't apply to the setup isn't listed. For example, the dev profile has no agent-user,
 venv or unit checks. If there's no service file, `D-UNIT-HARDENING` warns.
