@@ -99,6 +99,10 @@ OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edi
 # `source`, not `path`: a decoy `path` beside it must not move the decision)
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
+# harness tools mapped to Bash whose effect comes after their post-tool hook: input typed into another running session
+# (Codex's write_stdin, agy's manage_task send_input) or a command left running (Qwen Code's monitor); normalise marks
+# their payload `later`, and the hook takes no receipt of what they write (tracekit.model_receipt)
+LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
@@ -347,7 +351,7 @@ def normalise(harness, p):
         out["hook_event_name"] = m[ev]
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
-            out["tool_use_id"] = p.get("tool_use_id")
+            out["tool_use_id"], out["later"] = p.get("tool_use_id"), (harness, p.get("tool_name")) in LATER
             if harness == "droid":   # Droid's documented stdin carries no call id
                 out["tool_use_id"] = out["session_id"] and _paired_ids(
                     harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
@@ -445,6 +449,7 @@ def normalise(harness, p):
         sid, step = p.get("conversationId"), p.get("stepIdx")
         out.update(cwd=(p.get("workspacePaths") or [None])[0], transcript_path=p.get("transcriptPath"),
                    model=p.get("modelName"), session_id=sid, hook_event_name=ev, tool_name=name, tool_input=ti,
+                   later=(harness, raw.casefold()) in LATER,
                    tool_use_id=sid and type(step) is int and _paired_ids(
                        harness, sid, f"{step}|{raw}", ti, "pre" if ev == "PreToolUse" else "post"))
         if ev == "PostToolUse" and p.get("error"):

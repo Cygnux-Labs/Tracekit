@@ -354,6 +354,50 @@ Without anything else installed, the signer turns what it saw and then never hea
 
 The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can't be used with the Claude Code hooks: they record a digest of each tool's raw output, not what the model is sent, so every result would mismatch ([gateway](gateway.md#verified-tool-results)).
 
+### Weights files a call wrote
+
+When a Write, Edit, MultiEdit, NotebookEdit or Bash call that succeeds (the names every harness's hook gives its
+write and shell tools) writes a model weights file (`.safetensors`, `.gguf`, `.pt`, `.pth`, `.ckpt`), the hook (Claude
+Code's and each harness's above) hashes it after the call and puts the receipt in the call's result, next to the
+result's digest: the file's sha256 and size and, for `.safetensors`, a sha256 of each tensor (its dtype and shape, then
+its bytes) and one of the header's metadata. A call writes what the policy reads it writing: a write tool's path, or a
+Bash command's write targets (a redirection, a `cp` or `mv` destination, ...). A path the hook would have to guess is
+refused: one starting with `~`; every path of a command line in which `cp`, `mv`, `install` or `ln` has `-t` (in a
+cluster too, `-vt`), `git`, `env`, `make` or `tar` has `-C`, `sudo` has `-D`, or one of them has `--target-directory`,
+`--directory` or `--chdir` or a prefix of one that GNU accepts (`env --ch=sub`); every path of a command line that runs
+`ssh`, `chroot`, `nsenter`, `unshare` or `firejail`; every path of a call whose write may land after the hook reads (a
+Bash call `run_in_background` or with a lone `&`, input typed into another session, Qwen Code's `monitor`,
+`systemd-run`, `setsid -f`, `at`); and a relative one in a command that changes directory (`cd`, `pushd`, `popd`, `git
+--work-tree`, or a shell call's own working directory: `dir_path`, `directory`, `working_directory`, `workdir`, agy's
+`Cwd`, Crush's `working_dir`). The hook hashes for at most 10 seconds per call; a receipt it can't finish, or any it
+can't read, is recorded with its
+reason, and the call's result is recorded either way.
+
+The hook runs as the agent's user, so each receipt (`reported_by: hook`) is the agent side's record, not something the
+signer saw. The `model_receipts` key is the hook's on those five tools' results: it removes one it didn't set. Every
+other tool's result is recorded as the tool returned it, and `verify-model` counts a receipt only in the result of one
+of the five tools whose recorded arguments name a file the hook hashes, so a receipt in an MCP or web tool's output is
+never counted.
+
+The signer commits to the result as to any other, so a bundle holds only that commitment. `tracekit verify-model`
+verifies the bundle, reads the run's results back from the signer's content vault (the dev signer keeps them for 7
+days), checks each against its record's commitment, then compares two files with the receipt:
+
+```
+$ tracekit verify-model before.safetensors model.safetensors --bundle $RUN.tkb --run $RUN --trust $RUN.trust.json
+bundle: verified, run tk-0f3a...
+receipt: /work/model.safetensors, hashed after tool call toolu_01 (run_seq 7, ok: true), recorded by the agent-side hook
+NEW model.safetensors: matches the recorded receipt (sha256:5c1e...)
+OLD -> NEW: the file differs; 1 of 3 tensors differ (dtype, shape or bytes); the metadata is the same
+  changed: model.layers.0.mlp.down_proj.weight
+```
+
+It exits 0 only when the bundle verifies and NEW matches the recorded receipt, and 2 when the bundle doesn't verify. A
+signer it can't reach, content the signer didn't keep, or an identity without the `content_read` grant is said as such
+(exit 1); content that doesn't open its record's commitment is an evidence alert (exit 4). The receipt reaches the
+signer in clear: its vault holds the file's path, hashes and tensor names
+([limits](limits.md#model-receipts-tracekit-verify-model)).
+
 ## Antigravity CLI
 
 Antigravity CLI (`agy`) support is experimental: tested through agy's documented hook payloads
