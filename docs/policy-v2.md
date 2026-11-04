@@ -199,7 +199,7 @@ a file a command only reads or copies. The tags are not in `target`, so a target
   files `effects` names, assignments and heredoc programs. The other tags are allowlists, one subject per word.
   `LIST:` what `ls`, `stat`, `test` or `find` (without an action, `-fprint`, `-fls` or `-files0-from`) names, and an
   assignment the line uses only in readers (not to `CDPATH`, `HOME`, `OLDPWD` or another variable the shell reads on
-  its own; none on a line that may set or export variables). `READ:` what `cat`, `head`, `tail`, `less`, `grep`,
+  its own; none on a line that may set or export variables). `READ:` what `cat`, `head`, `tail`, `grep`,
   `sed -n` (a script that only prints) or `jq` names, printing to the terminal or a filter, and the files a
   redirection reads. `DEEP:` what such a reader reads all of (`grep -r`, a pattern) or names when its output goes to
   a file, a substitution or anything but a filter (`find … | xargs cat`, `cat $(find …)`, a `while read` loop), and the
@@ -211,12 +211,15 @@ a file a command only reads or copies. The tags are not in `target`, so a target
   then copied, moved or unpacked) that a later command runs as a script, a program or by `source`; any script when
   the line can't name the download (`curl -J`, an archive unpacked); any command or assignment that names a
   downloaded file or a copy of it, unless it only prints it to the terminal or a filter, removes, copies or moves it,
-  or is Python inline code read as data; a downloaded file named as one a program loads by itself (`conftest.py`, a
-  `.pth`, a shell rc file, a git hook); a `$(curl …)` (or a variable set to one, or a substitution that reads a
+  or is Python inline code read as data; a download written or copied under a name an interpreter, shell or tool loads
+  by itself (code by its extension, as `__init__.py` and `index.js` are, `package.json`, `conftest.py`, a `.pth`, a
+  shell rc or alias file, a tool's config such as `pytest.ini` or a `Makefile`, a git hook) or into a `bin` dir or one
+  the line puts on `PATH`; a `$(curl …)` (or a variable set to one, or a substitution that reads a
   downloaded file) as a command's name, in `eval`, `source` or `-c`/`-e` code, in a herestring or pipe into a shell
   or interpreter that reads stdin. And where a download's pipe feeds code that may run or store it (`TK-A046`,
   `PIPED_TO_CODE:`): a later stage that is a shell with `-c` or a script, an interpreter with a script or a module
-  (`python3 -m json.tool` aside), or with inline code; Python's unless all its syntax is on an allowlist: `import
+  (`python3 -m json.tool` aside), or with inline code; Python's unless its options are only `-I`, `-E`, `-s`, `-B`
+  and `-u` (`-i` would run stdin after it; nor `PYTHONINSPECT`) and all its syntax is on an allowlist: `import
   json` and `import sys`, reading `sys.stdin`, `json.load` and `json.loads`, subscripts, `len`, `print`,
   comprehensions and string formatting. A tagged subject's tag doesn't count toward its size.
 

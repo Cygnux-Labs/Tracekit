@@ -1006,7 +1006,7 @@ def _python_code(command, scripts):
     """The program text a Python command runs, when the line shows it: its -c code, the heredoc or herestring it reads,
     or a script this line wrote (`scripts`: base name -> text); else None."""
     argv = command["argv"]
-    if not _PYTHON.fullmatch(argv[0]):
+    if not _PYTHON.fullmatch(argv[0]) or not _plain_python(argv):   # -i runs stdin after it: what runs isn't shown
         return None
     code = shell._code_arg("python", argv[1:])
     if code is None and shell._reads_stdin("python", argv[1:]) and command["stdin"]:
@@ -1037,12 +1037,12 @@ def _written_scripts(commands):
 # TK-D007's allowlists (#589): the programs that may read a file's contents under Tracekit's dirs (which files they
 # may read there the pack's `unless` names: the installed package and /etc/tracekit's client.json and policy), and
 # the programs that may list one; any other program there acts
-_PLAIN_READERS = {"cat", "head", "tail", "less", "grep", "egrep", "fgrep", "sed", "jq"}
+_PLAIN_READERS = {"cat", "head", "tail", "grep", "egrep", "fgrep", "sed", "jq"}
 _LISTERS = {"ls", "stat", "test", "[", "find"}
 _NAVIGATE = ("cd", "pushd", "popd")
 # a later pipeline stage that only filters text: what an earlier stage prints goes no further than the terminal
 _FILTERS = {"head", "tail", "grep", "egrep", "fgrep", "wc", "sort", "uniq", "cut", "tr", "sed", "jq", "column", "nl",
-            "cat", "less", "more"}
+            "cat"}
 # variables the shell or a program reads on its own (cd's CDPATH, HOME and OLDPWD, a startup file, a search path): an
 # assignment to one is never a value the line only reads
 _SPECIAL = re.compile(r"CDPATH|HOME|OLDPWD|PWD|PATH|IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|GLOBIGNORE|PROMPT_COMMAND|"
@@ -1247,14 +1247,41 @@ def _runs_files(c):
 
 # what may name a downloaded file without running it (TK-D002): programs that print what they read (to the terminal
 # or a filter: else what they print may run), remove it, or copy or move it (the copy is downloaded too)
-_TAINT_READERS = {"cat", "head", "tail", "less", "more", "grep", "egrep", "fgrep", "wc", "jq", "file", "stat", "ls",
+_TAINT_READERS = {"cat", "head", "tail", "grep", "egrep", "fgrep", "wc", "jq", "file", "stat", "ls",
                   "test", "[", "sha256sum", "shasum", "sha1sum", "md5", "md5sum", "cksum", "diff", "cmp", "od",
                   "hexdump", "strings", "sort", "cut", "nl"}
 _TAINT_MOVES = {"rm", "unlink", "chmod", "cp", "mv"}
 # a file a program or shell loads by itself: one downloaded there runs
 _AUTOLOAD = re.compile(r"(?:^|/)(?:conftest\.py|sitecustomize\.py|usercustomize\.py|[^/]*\.pth|\.bashrc|\.bash_profile|"
-                       r"\.bash_login|\.bash_logout|\.profile|\.zshrc|\.zshenv|\.zprofile|\.zlogin|\.envrc|\.pythonrc"
-                       r"(?:\.py)?)$|(?:^|/)\.git/hooks/[^/]+$")
+                       r"\.bash_login|\.bash_logout|\.bash_aliases|\.aliases|\.zsh_aliases|\.profile|\.zshrc|\.zshenv|"
+                       r"\.zprofile|\.zlogin|\.kshrc|\.mkshrc|\.cshrc|\.tcshrc|\.envrc|\.pythonrc(?:\.py)?|"
+                       r"package\.json|"
+                       # a tool's config, which can name code it runs (`addopts = -p`, a make recipe, core.fsmonitor)
+                       r"pytest\.ini|tox\.ini|setup\.cfg|pyproject\.toml|[Mm]akefile|GNUmakefile|[Jj]ustfile|Rakefile|"
+                       r"Gemfile|Cargo\.toml|build\.rs|\.npmrc|\.yarnrc(?:\.yml)?|\.gitconfig|\.git/config|"
+                       r"\.pre-commit-config\.yaml)$|(?:^|/)\.git/hooks/[^/]+$|"
+                       # code by its name: what an interpreter or shell loads by a name the line needn't spell
+                       # (`python3 .` loads __main__.py, `node .` index.js, require('./x') x.js, `use x` x.pm)
+                       r"\.(?:py|pyc|pyw|js|mjs|cjs|ts|rb|pl|pm|sh|bash|zsh|ksh|fish|ps1|php|lua|command)$|"
+                       # a program planted where a later call finds it by name: a bin dir
+                       r"(?:^|/)s?bin/[^/]+$")
+# the options of a Python that runs its inline code (or json.tool) and nothing else: -i would read stdin after it
+_PY_PLAIN_FLAGS = re.compile(r"-[IEsBu]*[cm]?")
+
+
+def _plain_python(argv, refs=()):
+    """Whether a Python runs the program its words give and nothing more: every option before its -c code, -m module,
+    `-` or script is one of _PY_PLAIN_FLAGS (-I, -E, -s, -B, -u), and nothing on the line sets PYTHONINSPECT."""
+    if any("PYTHONINSPECT" in w for w in list(refs) + argv):
+        return False
+    for a in argv[1:]:
+        if a == "-" or not a.startswith("-"):
+            return True
+        if not _PY_PLAIN_FLAGS.fullmatch(a):
+            return False
+        if a[-1] in "cm":
+            return True
+    return False
 
 
 def _downloads(parsed):
@@ -1325,8 +1352,11 @@ def _downloads(parsed):
         if len(exact) + len(patterns) == size:
             break
     unknown |= "*" in patterns or len(patterns) > 64
-    if any(_AUTOLOAD.search(p.replace("\\", "/")) for p in paths):
-        tags.append("RUNS_DOWNLOAD:a file a program or shell loads by itself")
+    # a dir the line puts on PATH: a download planted there runs when a later call names it
+    bins = {d.rstrip("/") for r in parsed[2] + [a for c in commands if c["argv"][0] == "export" for a in c["argv"][1:]]
+            if r.startswith("PATH=") for d in r[5:].split(":") if d and "$" not in d}
+    if any(_AUTOLOAD.search(p.replace("\\", "/")) or posixpath.dirname(p).rstrip("/") in bins for p in paths):
+        tags.append("RUNS_DOWNLOAD:a file a program, shell or later call loads by its name")
     for r in parsed[2]:   # an assignment that names one: BASH_ENV, ENV, PYTHONSTARTUP …
         if "=" in r and downloaded(r.partition("=")[2]):
             tags.append("RUNS_DOWNLOAD:" + r)
@@ -1335,7 +1365,8 @@ def _downloads(parsed):
         argv, kind = c["argv"], shell._kind(c["argv"][0])
         code = shell._dash_c(argv[1:]) if argv[0] in shell.SHELLS else \
             shell._code_arg(kind, argv[1:]) if kind else None
-        data = kind == "python" and code is not None and _data_only(code, files=True)
+        plain = kind == "python" and _plain_python(argv, parsed[2])
+        data = plain and code is not None and _data_only(code, files=True)
         use = named(c) if argv[0] not in _FETCHERS else []
         if code is not None and not use:   # code that names a downloaded file, or imports a downloaded module
             use = [w for w in re.findall(r"[\w./-]+", code) if downloaded(w)] + [
@@ -1356,8 +1387,9 @@ def _downloads(parsed):
             continue
         if argv[0] in shell.SHELLS and shell._shell_mode(argv[1:])[0] != "stdin" or \
                 kind and kind not in ("awk", "sed") and (
-                    code is not None and (kind != "python" or not _data_only(code)) or code is None and
-                    not shell._reads_stdin(kind, argv[1:]) and _python_module(argv[1:])[:1] != ["json.tool"]):
+                    code is not None and not (plain and _data_only(code)) or code is None and
+                    not shell._reads_stdin(kind, argv[1:]) and
+                    not (plain and _python_module(argv[1:])[:1] == ["json.tool"])):
             tags.append("PIPED_TO_CODE:" + " ".join(argv))
     return list(dict.fromkeys(tags))
 
