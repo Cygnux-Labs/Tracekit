@@ -157,9 +157,15 @@ def _box():
     except (OSError, subprocess.SubprocessError, ValueError) as e:
         return out + [result("D-BOX-MOUNTS", WARN, f"can't list the boxes: {e}", "start Docker, or set DOCKER_CONTEXT")]
     bad = [f"{c['Name'].lstrip('/')}: {'; '.join(p)}" for c in found if (p := box.problems(c, box.home()))]
+    from .identity.token import TokenStore
+    left = box.orphans(TokenStore(cfg["http"]["tokens"]), {(c.get("Config") or {}).get("Labels", {}).get(box.LABEL)
+                                                            for c in found})
     return out + [result("D-BOX-MOUNTS", FAIL if bad else OK, "; ".join(bad) or f"{len(found)} box(es) running, each "
                          "with the project, its token and the signer's certificate only",
-                         "stop it; run the agent with tracekit up --isolated, which mounts none of these")]
+                         "stop it; run the agent with tracekit up --isolated, which mounts none of these"),
+                  result("D-BOX-TOKENS", WARN if left else OK, f"{len(left)} box token(s) still valid with no box "
+                         f"running: {', '.join(left)}" if left else "no box token outlives its box",
+                         "the next tracekit up --isolated revokes them")]
 
 
 def _managed():

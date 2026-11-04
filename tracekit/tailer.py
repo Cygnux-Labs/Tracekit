@@ -352,7 +352,7 @@ def main():
     h = json.loads(sys.stdin.read())
     sc = system_config() or {}
     import pwd   # POSIX only, as the tailer is
-    uid = pwd.getpwnam(sc["hooks"]["user"]).pw_uid if sc.get("signer") else os.getuid()
+    uid = pwd.getpwnam(sc["hooks"]["user"]).pw_uid if sc.get("signer") and not sc.get("box") else os.getuid()
     client = Client()
     try:
         tail(RunHandle(client, h), h["path"], uid, h.get("until"), status=lambda: client.status({}),

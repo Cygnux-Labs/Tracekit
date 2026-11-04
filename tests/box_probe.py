@@ -66,6 +66,17 @@ def docker_socket(paths):
     raise FileNotFoundError(f"no Docker socket at {', '.join(paths)} and no Docker API on host.docker.internal")
 
 
+def reach(targets):
+    """Connect to any of `targets` ((host, port)): the host's services, the VM's sshd, the internet."""
+    for host, port in targets:
+        try:
+            socket.create_connection((host, port), timeout=3).close()
+            return f"connected to {host}:{port}"
+        except OSError:
+            continue
+    raise ConnectionRefusedError(f"none of {', '.join(f'{h}:{p}' for h, p in targets)} answered")
+
+
 def rewrite_store(data_dir):
     with open(os.path.join(data_dir, "store", "records.jsonl"), "ab") as f:
         f.write(b"{}\n")
@@ -95,6 +106,9 @@ def main(data_dir, *sockets):
         attempt("stop the signer", stop_signer),
         attempt("reach the Docker socket", lambda: docker_socket(["/var/run/docker.sock", "/run/docker.sock", *sockets])),
         attempt("rewrite the store", lambda: rewrite_store(data_dir)),
+        attempt("reach the host's services", lambda: reach([("host.docker.internal", 22), ("192.168.5.2", 22),
+                                                             ("172.17.0.1", 22), ("host.docker.internal", 80)])),
+        attempt("reach the internet", lambda: reach([("1.1.1.1", 443), ("example.com", 443)])),
         attempt("claim an isolation", lambda: rpc("register_run", {"request_id": "probe-1", "agent": {"name": "probe"},
                                                                    "signer_isolation": "separate-user"})),
         attempt("answer an approval", lambda: rpc("approval_decide", {"request_id": "probe-2", "approval_id": "a1",

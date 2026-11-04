@@ -111,7 +111,7 @@ verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) a
 interpreted` warning each (MAX_UNREAD of them; one more counts the rest); the records are signed, chained and included like any other, and the bundle stays VERIFIED.
 This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`)
 and `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import: `openshell
-policy`).
+policy`), and `box` (a run a `tracekit up --isolated` box's token registered: `boxed agent`, BOXED).
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -248,9 +248,30 @@ def _openshell_policy(rep, events):
                for e in bad][:20], warn=True)
 
 
+BOXED = "PROOF AGAINST THE BOXED AGENT: the signing key was outside its box"
+
+
+def _box(rep, events):
+    """ext.box: the run's caller held the token the signer issued to a `tracekit up --isolated` box, which got
+    neither the signing key nor the store. Proof against the agent in that box only: any process of the signer's own
+    user on the host can hold the token too, which is why the signer records the run's isolation as `unknown`. The
+    signer writes it on run.registered only, naming the token the run's identity is; anywhere else, a warning."""
+    def box(e):
+        v, d = e["ext"].get("box") if isinstance(e.get("ext"), dict) else None, e.get("data")
+        i = d.get("identity") if isinstance(d, dict) else None
+        return isinstance(v, dict) and set(v) == {"token"} and e.get("type") == "run.registered" and \
+            isinstance(i, dict) and i.get("scheme") == "token" and i.get("subject") == v["token"] and \
+            d.get("signer_isolation") == "unknown"
+    good, bad = [e for e in events if box(e)], [e for e in events if not box(e)]
+    rep.boxed = len(good)
+    rep.check("boxed agent", not bad, f"{BOXED} ({len(good)} run(s)); not proof against a process of the signer's "
+              "own user on the host, which could hold the box's token", [
+                  f"seq {e.get('seq')}: ext.box is not a box token's run.registered" for e in bad][:20], warn=True)
+
+
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
 # whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
-EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy}
+EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy, "box": _box}
 MAX_UNREAD = 20   # `not interpreted` lines, one per ext name; the rest on one line
 RUN_PROBLEMS = 20   # a run's problems past which its later records go unchecked: forged records cost a verifier little
 

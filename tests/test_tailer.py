@@ -672,6 +672,13 @@ class HookStartsTheTailer(unittest.TestCase):
         self.assertEqual(self.client.call.call_args.args, ("tailer_lost", {
             "run_id": "run-1", "run_token": "tok", "reason": "no transcript tailer is installed", "offset": 0}))
 
+    def test_a_box_keeps_its_own_tailer(self):
+        """A `tracekit up --isolated` box's root-owned client config names its signer (#601 review 4), with no tailer
+        user: its hook starts the tailer itself, as in dev mode, rather than record every run's tailer_lost."""
+        popen = self.start({"signer": "https://host.docker.internal:8443", "box": True})
+        self.assertEqual(popen.call_args.args[0][1:], ["-I", "-m", "tracekit.tailer"])
+        self.assertNotIn("tailer_lost", [c.args[0] for c in self.client.call.call_args_list])
+
     def test_a_run_registered_after_an_idle_close_gets_its_own_tailer(self):
         self.start()
         self.client.register_run.return_value = {"run_id": "run-2", "run_token": "tok-2"}
