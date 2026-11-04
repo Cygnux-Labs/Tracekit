@@ -154,7 +154,7 @@ def _diff_names(name):
         names = [name[1:-1]]
         try:
             names.append(name[1:-1].encode("latin-1").decode("unicode_escape").encode("latin-1").decode("utf-8"))
-        except (UnicodeError, ValueError):
+        except (UnicodeError, ValueError, DeprecationWarning):   # a bad escape (\q) warns, or raises under -W error
             pass
     return [re.sub(r"^[ab]/", "", n) for n in names]
 # what each of these Devin tools is decided on: a call that sends none of it is denied in the hook (_blocked)
