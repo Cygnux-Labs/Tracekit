@@ -2091,23 +2091,36 @@ class CodingPack(unittest.TestCase):
                  r"C:\Users\u\OneDrive - Contoso\Documents\WindowsPowerShell\profile.ps1",
                  r"C:\USERS\U\DOCUMENTS\POWERSHELL\PROFILE.PS1",
                  r"C:\Windows\System32\WindowsPowerShell\v1.0\profile.ps1",
-                 r"C:\Program Files\PowerShell\7\Microsoft.PowerShell_profile.ps1")
+                 r"C:\Program Files\PowerShell\7\Microsoft.PowerShell_profile.ps1",
+                 # review on #567: OneDrive's localized Documents, pwsh on Linux and macOS, PowerShell 7 preview
+                 r"C:\Users\u\OneDrive - Contoso\Dokumente\WindowsPowerShell\Microsoft.PowerShell_profile.ps1",
+                 r"C:\Users\u\OneDrive\Documentos\PowerShell\profile.ps1",
+                 "/home/u/.config/powershell/Microsoft.PowerShell_profile.ps1",
+                 "/Users/u/.config/powershell/profile.ps1",
+                 r"C:\Program Files\PowerShell\7-preview\profile.ps1")
         commands = ("echo exit >> $PROFILE", 'echo exit >> "$Profile"', "echo exit >> ${PROFILE}",
                     "echo exit > $PROFILE.CurrentUserAllHosts", "echo exit > $profile.AllUsersCurrentHost",
                     "tee -a $PROFILE < x", "rm $PROFILE", "cp x ~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1",
                     'cp x "$HOME/OneDrive/Documents/WindowsPowerShell/profile.ps1"',
-                    r"echo exit >> 'C:\Users\u\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1'")
+                    r"echo exit >> 'C:\Users\u\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1'",
+                    "echo exit >> $global:PROFILE", "echo exit >> ${global:PROFILE}",
+                    'cp x "$HOME/OneDrive - Contoso/Dokumente/WindowsPowerShell/profile.ps1"',
+                    "echo exit >> /home/u/.config/powershell/Microsoft.PowerShell_profile.ps1",
+                    r"echo exit > 'C:\Program Files\PowerShell\7-preview\profile.ps1'")
         benign = [("Bash", {"command": c}) for c in (
             "cat $PROFILE", "echo $PROFILE", "echo x > $PROFILE_DIR/a", "echo x > $PROFILES", "echo x > ./profile.ps1",
             "echo x > ~/Documents/PowerShell/Modules/a/a.psm1",
             "cp ~/Documents/PowerShell/Microsoft.PowerShell_profile.ps1 ./backup/",
-            "echo x > ~/Documents/PowerShell/profile.ps1.bak")]
+            "echo x > ~/Documents/PowerShell/profile.ps1.bak", "echo x > $global:PROFILES",
+            "echo x > ~/.config/powershell/Modules/a/a.psm1", "cat ~/.config/powershell/profile.ps1")]
         benign += [("Read", {"file_path": path}) for path in paths]
         benign += [(tool, args) for tool, args in (
             ("Write", {"file_path": "/repo/scripts/profile.ps1", "content": "x"}),
             ("Write", {"file_path": "/repo/tools/WindowsPowerShell/profile.ps1", "content": "x"}),
             ("Write", {"file_path": r"C:\Users\u\Documents\PowerShell\Modules\x\x.psm1", "content": "x"}),
             ("Write", {"file_path": r"C:\Users\u\Documents\PowerShell\profile.ps1.bak", "content": "x"}),
+            ("Write", {"file_path": "/repo/.config/powershell-docs/profile.ps1", "content": "x"}),
+            ("Write", {"file_path": r"C:\Program Files\PowerShell\Modules\profile.ps1", "content": "x"}),
             ("Write", {"file_path": "notes.md", "content": "$PROFILE " + " ".join(paths)}))]
         for pack, engine, e in self.every_pack():
             for path in paths:
