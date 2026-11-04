@@ -500,46 +500,171 @@ class ActionInputs(unittest.TestCase):
         self.assertIn("TK_TRUST: ${{ inputs.trust }}", text)
         self.assertIn('[ -n "$TK_TRUST" ] && args+=(--trust "$TK_TRUST")', text)
 
-    @unittest.skipUnless(os.name != "nt" and shutil.which("bash"),
-                         "the composite action run block is exercised by Linux CI")
-    def test_run_block_enforces_v1_and_v2_anchors(self):
+    @staticmethod
+    def run_block(name="Verify bundle"):
+        """Step `name`'s `run: |` script, as the runner gets it."""
         with open(os.path.join(ROOT, "action.yml"), encoding="utf-8") as f:
             lines = f.read().splitlines()
-        step = next(i for i, line in enumerate(lines) if line.strip() == "- name: Verify bundle")
+        step = next(i for i, line in enumerate(lines) if line.strip() == f"- name: {name}")
         start = next(i for i in range(step + 1, len(lines)) if lines[i].strip() == "run: |")
         script = []
         for line in lines[start + 1:]:
             if line.strip() and len(line) - len(line.lstrip()) <= 6:
                 break
             script.append(line[8:] if line.startswith("        ") else line)
-        with tempfile.TemporaryDirectory() as temp:
-            runner_temp = os.path.join(temp, "runner")
-            bin_dir = os.path.join(temp, "bin")
-            os.makedirs(runner_temp)
-            os.makedirs(bin_dir)
-            tracekit = os.path.join(bin_dir, "tracekit")
-            with open(tracekit, "w", encoding="utf-8", newline="\n") as f:
-                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} -m tracekit.cli \"$@\"\n")
-            os.chmod(tracekit, 0o755)
-            python = os.path.join(bin_dir, "python")
-            with open(python, "w", encoding="utf-8", newline="\n") as f:
-                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} \"$@\"\n")
-            os.chmod(python, 0o755)
+        return "\n".join(script)
 
-            def verify(bundle, *, key="", witness="", trust="", strict="false", require_anchor="true"):
-                output = os.path.join(temp, "github-output")
-                with open(output, "w", encoding="utf-8"):
-                    pass
-                env = os.environ.copy()
-                env.update({"PATH": bin_dir + os.pathsep + env.get("PATH", ""),
-                            "TK_BUNDLE": bundle, "TK_KEY": key, "TK_WITNESS": witness, "TK_TRUST": trust,
-                            "TK_STRICT": strict, "TK_REQUIRE_ANCHOR": require_anchor,
-                            "RUNNER_TEMP": runner_temp, "GITHUB_OUTPUT": output})
-                result = subprocess.run([shutil.which("bash"), "-e", "-o", "pipefail", "-c", "\n".join(script)],
-                                        cwd=ROOT, env=env, capture_output=True, text=True)
-                with open(output, encoding="utf-8") as f:
-                    result.github_output = f.read()
-                return result
+    def runner(self, temp):
+        """verify(bundle, ...): the run block in bash with `tracekit` and `python` on PATH and the runner's files in
+        `temp`; `cwd` and `env` as the step gets them."""
+        runner_temp = os.path.join(temp, "runner")
+        bin_dir = os.path.join(temp, "bin")
+        os.makedirs(runner_temp)
+        os.makedirs(bin_dir)
+        # tracekit as its console script runs: nothing imported from the working directory
+        cli = "-c 'import sys; del sys.path[0]; from tracekit.cli import main; sys.exit(main())' "
+        for name, argv in (("tracekit", cli), ("python", "")):
+            with open(os.path.join(bin_dir, name), "w", encoding="utf-8", newline="\n") as f:
+                f.write(f"#!/bin/sh\nexec {shlex.quote(sys.executable)} {argv}\"$@\"\n")
+            os.chmod(os.path.join(bin_dir, name), 0o755)
+
+        def verify(bundle, *, key="", witness="", trust="", strict="false", require_anchor="true", cwd=ROOT, env=()):
+            output = os.path.join(temp, "github-output")
+            with open(output, "w", encoding="utf-8"):
+                pass
+            full = os.environ.copy()
+            full.update({"PATH": bin_dir + os.pathsep + full.get("PATH", ""),
+                         "TK_BUNDLE": bundle, "TK_KEY": key, "TK_WITNESS": witness, "TK_TRUST": trust,
+                         "TK_STRICT": strict, "TK_REQUIRE_ANCHOR": require_anchor,
+                         "RUNNER_TEMP": runner_temp, "GITHUB_OUTPUT": output, **dict(env)})
+            result = subprocess.run([shutil.which("bash"), "-e", "-o", "pipefail", "-c", self.run_block()],
+                                    cwd=cwd, env=full, capture_output=True, text=True)
+            with open(output, encoding="utf-8") as f:
+                result.github_output = f.read()
+            return result
+        return verify
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("bash") and shutil.which("git"),
+                         "the composite action run block is exercised by Linux CI")
+    def test_on_a_pull_request_trust_files_come_from_its_base_commit(self):
+        """A pull request that brings its own trust config, key or witness file in $GITHUB_WORKSPACE is verified against
+        its base commit's, by the path as given, or refused: a symlink, a directory made to look like a bare repository,
+        a submodule, a file in no checkout, one the pull request adds (#588). Files outside the workspace are used as
+        given, and the step's python imports nothing from the checkout."""
+        sample = os.path.join(ROOT, "sdk/typescript/src/verify/sample")
+        with tempfile.TemporaryDirectory() as temp:
+            temp = os.path.realpath(temp)   # as git reports it (/var is /private/var on macOS)
+            verify, ws, src = self.runner(temp), os.path.join(temp, "ws"), os.path.join(temp, "trust-src")
+            repo = os.path.join(ws, "repo")   # $GITHUB_WORKSPACE, with the pull request checked out in repo/
+
+            def git(*a, cwd=repo):
+                return subprocess.run(["git", "-C", cwd, "-c", "user.name=t", "-c", "user.email=t@t.invalid",
+                                       "-c", "commit.gpgsign=false", "-c", "protocol.file.allow=always", *a],
+                                      check=True, capture_output=True, text=True).stdout.strip()
+
+            def put(path, data):
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(data if isinstance(data, str) else json.dumps(data))
+            with open(os.path.join(sample, "sample.trust.json"), encoding="utf-8") as f:
+                theirs = json.load(f)   # trusts the sample bundle's log
+            with open(os.path.join(ROOT, "tests/golden/v2/trust.json"), encoding="utf-8") as f:
+                ours = dict(theirs, logs=json.load(f)["logs"])   # the base branch's: another log
+            for d in (repo, src):
+                os.makedirs(d)
+                git("init", "-q", cwd=d)
+            put(os.path.join(src, "trust.json"), theirs)   # a repository the pull request's author controls
+            git("add", "-A", cwd=src)
+            git("commit", "-qm", "theirs", cwd=src)
+            for name in ("trust.json", "link.json", "cfg/trust.json"):
+                put(os.path.join(repo, name), ours)
+            shutil.copy(os.path.join(ROOT, "tests/golden/v1/external-signer.pub"), os.path.join(repo, "signer.pub"))
+            git("add", "-A")
+            git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            shutil.copy(os.path.join(sample, "sample.tkb"), os.path.join(repo, "run.tkb"))
+            shutil.copy(os.path.join(ROOT, "docs/sample/demo-run.tkb"), os.path.join(repo, "demo-run.tkb"))
+            shutil.copy(os.path.join(ROOT, "docs/sample/signer.pub"), os.path.join(repo, "signer.pub"))
+            shutil.copy(os.path.join(ROOT, "tests/golden/v1/multi-run.witness.jsonl"), os.path.join(repo, "w.jsonl"))
+            for name in ("trust.json", "new-trust.json", "cfg/trust.json"):   # the pull request trusts its bundle
+                put(os.path.join(repo, name), theirs)
+            os.remove(os.path.join(repo, "link.json"))
+            os.symlink("new-trust.json", os.path.join(repo, "link.json"))
+            put(os.path.join(repo, "d1", "d2", "keep"), "")
+            os.symlink(os.path.join("d1", "d2"), os.path.join(repo, "lnk"))   # lnk/../../x is repo/x, not ws/x
+            for name, data in (("HEAD", "ref: refs/heads/main\n"), ("objects/x", ""), ("refs/x", "")):
+                put(os.path.join(repo, "cfg", name), data)   # cfg/ looks like a bare repository
+            git("submodule", "add", "-q", src, "sub")
+            planted = os.path.join(temp, "planted")
+            for mod in ("subprocess", "secrets", "json"):
+                put(os.path.join(repo, mod + ".py"), f"open({planted!r}, 'a').write({mod!r})\n")
+            git("add", "-A")
+            git("commit", "-qm", "pull request")
+            pr = {"TK_BASE_SHA": base, "TK_HEAD_SHA": "", "GITHUB_SHA": git("rev-parse", "HEAD"), "GITHUB_WORKSPACE": ws}
+            self.assertEqual(verify("run.tkb", trust="trust.json", cwd=repo).returncode, 0)   # a push: as checked out
+            origin, shallow = os.path.join(temp, "origin.git"), os.path.join(ws, "shallow")
+            subprocess.run(["git", "clone", "-q", "--bare", repo, origin], check=True)
+            subprocess.run(["git", "clone", "-q", "--depth=1", "file://" + origin, shallow], check=True)
+            # pull_request_target: GITHUB_SHA is the base branch's; the workflow checks out the merge ref (depth 1, so
+            # only its parent lines show it has the head) or a commit made on top of it (whose history does)
+            head = git("rev-parse", "HEAD")
+            merge = git("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "merge")
+            git("update-ref", "refs/heads/pull-merge", merge)
+            git("update-ref", "refs/heads/pull-child", git("commit-tree", "HEAD^{tree}", "-p", merge, "-m", "on top"))
+            target = dict(pr, GITHUB_SHA=base, TK_HEAD_SHA=head)
+            for name, depth in (("pull-merge", ["--depth=1"]), ("pull-child", [])):
+                subprocess.run(["git", "clone", "-q", *depth, "--branch", name, "file://" + repo,
+                                os.path.join(ws, name)], check=True)
+                out = verify("run.tkb", trust="trust.json", cwd=os.path.join(ws, name), env=target)
+                self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+                self.assertIn("checkpoint", json.loads(out.stdout)["failures"])
+            for cwd in (repo, shallow):
+                out = verify("run.tkb", trust="trust.json", cwd=cwd, env=pr)   # the base commit's, fetched if shallow
+                self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+                self.assertIn("checkpoint", json.loads(out.stdout)["failures"])
+            out = verify("demo-run.tkb", key="signer.pub", cwd=repo, env=pr)
+            self.assertNotEqual(out.returncode, 0, out.stdout + out.stderr)   # the base's key signed nothing here
+            self.assertEqual(verify("demo-run.tkb", key=os.path.join(ROOT, "docs/sample/signer.pub"), cwd=repo,
+                                    env=pr).returncode, 0)   # outside the workspace: as given
+            put(os.path.join(temp, "runner", "fetched.json"), theirs)   # the workflow's own, in $RUNNER_TEMP
+            self.assertEqual(verify("run.tkb", trust=os.path.join(temp, "runner", "fetched.json"), cwd=repo,
+                                    env=pr).returncode, 0)
+            put(os.path.join(ws, "loose.json"), theirs)
+            put(os.path.join(repo, "untracked.json"), theirs)
+            for kw, why in (({"trust": "lnk/../../new-trust.json"}, "without `..`"),
+                            ({"trust": "link.json"}, "is a symlink"),
+                            ({"trust": "cfg/trust.json"}, "in no git checkout"),   # git won't take cfg/ for a repo
+                            ({"trust": "sub/trust.json"}, "in a submodule"),
+                            ({"trust": os.path.join(ws, "loose.json")}, "in no git checkout"),
+                            ({"trust": "untracked.json"}, "no file at its base commit"),
+                            ({"trust": "new-trust.json"}, "no file at its base commit"),
+                            ({"witness": "file:w.jsonl"}, "no file at its base commit"),
+                            ({"witness": "git:" + repo}, "the pull request's own checkout")):
+                out = verify("run.tkb", cwd=repo, env=pr, **kw)
+                self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+                self.assertIn(why, out.stdout)
+            self.assertFalse(os.path.exists(planted))
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("bash"), "the composite action run block is exercised by "
+                                                                   "Linux CI")
+    def test_install_runs_pip_isolated_from_the_checkout(self):
+        """The install step runs in the pull request's checkout: a pip.py there is never what runs (#588)."""
+        with tempfile.TemporaryDirectory() as temp:
+            self.runner(temp)   # its python on PATH
+            planted = os.path.join(temp, "planted")
+            with open(os.path.join(temp, "pip.py"), "w", encoding="utf-8") as f:
+                f.write(f"open({planted!r}, 'w').close()\n")
+            env = dict(os.environ, PATH=os.path.join(temp, "bin") + os.pathsep + os.environ.get("PATH", ""),
+                       TK_VERSION="0.0.0.dev0", TK_ACTION_PATH="", PIP_NO_INDEX="1", PIP_DISABLE_PIP_VERSION_CHECK="1")
+            subprocess.run([shutil.which("bash"), "-e", "-o", "pipefail", "-c", self.run_block("Install Tracekit")],
+                           cwd=temp, env=env, capture_output=True)   # no index: the real pip finds nothing to install
+            self.assertFalse(os.path.exists(planted))
+
+    @unittest.skipUnless(os.name != "nt" and shutil.which("bash"),
+                         "the composite action run block is exercised by Linux CI")
+    def test_run_block_enforces_v1_and_v2_anchors(self):
+        with tempfile.TemporaryDirectory() as temp:
+            verify = self.runner(temp)
 
             v2 = os.path.join(ROOT, "sdk/typescript/src/verify/sample/sample.tkb")
             v2_tampered = os.path.join(ROOT, "sdk/typescript/src/verify/sample/sample-tampered.tkb")

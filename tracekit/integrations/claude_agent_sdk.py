@@ -16,8 +16,11 @@ the signer, for at most APPROVAL_WAIT_S, below the hook's own timeout (HOOK_TIME
 approved by then is blocked. Every call that is not denied runs only after the signer's `approval_consume` agrees; an
 approval with a T2 executor runs the arguments it returns (the hook's `updatedInput`).
 PostToolUse and PostToolUseFailure complete the call against its decision; SessionEnd closes the run. The tools of
-the tool executor's server (executor_tools.claude_agent_sdk, named `tracekit-executor`) are left to the executor: the
-hook only notes the call's tool_use_id for the server's handler, which hands it to the executor to decide under.
+the tool executor's server are left to the executor when the app hands the hooks the `mcp_servers` it gives
+ClaudeAgentOptions and the server under `tracekit-executor` there is the in-process one executor_tools.claude_agent_sdk
+built: for its actions' exact tool names, the hook only notes the call's tool_use_id for the server's handler, which
+hands it to the executor to decide under. The CLI connects the app's server in place of a project .mcp.json server of
+the same name, and the hooks gate every other tool, those of a server whose name starts with that one included.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open`, else it is blocked. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
@@ -90,9 +93,20 @@ def _deny(why):
                                    "permissionDecisionReason": BLOCKED + why}}
 
 
-def tracekit_hooks(signer, run):
+def _executor_tools(servers):
+    """The exact tool names (mcp__tracekit-executor__<action>) of the in-process server executor_tools.claude_agent_sdk
+    built, when `servers`, the app's mcp_servers, hold it under SERVER: what the CLI routes to that server, never a tool
+    of a server a project file names (a key like `tracekit-executor__x` included)."""
+    cfg = servers.get(SERVER) if isinstance(servers, dict) else None
+    names = getattr(cfg.get("instance"), executor_tools.EXECUTOR, None) \
+        if isinstance(cfg, dict) and cfg.get("type") == "sdk" else None
+    return frozenset(EXECUTOR_TOOL + n for n in names) if isinstance(names, frozenset) else frozenset()
+
+
+def tracekit_hooks(signer, run, mcp_servers=None):
     """The `hooks=` mapping for ClaudeAgentOptions. `signer` is a tracekit Client or any `SignerAPI`; `run` is its
-    `register_run` response (`run_id`, `run_token`). To add hooks of your own, extend the lists."""
+    `register_run` response (`run_id`, `run_token`); `mcp_servers`: the mapping given ClaudeAgentOptions, when it holds
+    a tool executor's server. To add hooks of your own, extend the lists."""
     rpc, calls = _Run(signer, run), {}   # calls: tool_use_id -> (decision_id, args_digest), from Pre to PostToolUse
 
     async def pre(inp, tool_use_id, ctx):
@@ -100,7 +114,7 @@ def tracekit_hooks(signer, run):
         tid, tool, args = inp.get("tool_use_id") or tool_use_id, inp.get("tool_name") or "?", inp.get("tool_input")
         if not tid:   # never defaulted: a result could not be bound to its decision
             return _deny("the hook got no tool_use_id")
-        if tool.startswith(EXECUTOR_TOOL):   # a tool executor's action: the executor decides and records it (T2)
+        if tool in _executor_tools(mcp_servers):   # the executor decides and records it (T2)
             executor_tools.called(rpc.ids["run_id"], tool[len(EXECUTOR_TOOL):], args, tid)
             return {}
         try:
