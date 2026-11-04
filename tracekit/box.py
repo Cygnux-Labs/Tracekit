@@ -1,6 +1,12 @@
 """`tracekit up --isolated [--image IMAGE] [--project DIR] [-- COMMAND ...]` (experimental): the coding agent in a
 container, the signer outside it (docs/design/isolated-up.md).
 
+The box image (image()) is built on first use from DOCKERFILE: Claude Code (CLAUDE_CODE) and this Tracekit, the
+hooks' client, with Claude Code's managed settings holding Tracekit's v2 hooks, which nothing in the project can turn
+off. Its tag names this Tracekit's version and a hash of its files, so a changed Tracekit builds a new one. Its default
+command is `claude`; `stand-in-agent CMD ...` (stand_in, `python -m tracekit.box`) runs Bash calls through the same
+hooks as Claude Code would, for a box without a Claude Code login.
+
 The box signer is a v2 signer of its own, run as you from home() (`<dev data dir>-box`, or $TRACEKIT_BOX_HOME):
 signer.yaml, its keys and store under data/, its TLS key under tls/, tokens.json. The dev signer is not touched. Each
 box gets a token of its own (identity token:box-<id>, TTL_S), revoked when the container exits. The container gets the
@@ -13,6 +19,8 @@ signer records each run's isolation from the caller it authenticates (a token it
 never from anything the container sends.
 """
 import datetime
+import hashlib
+import importlib.metadata
 import ipaddress
 import json
 import os
@@ -21,15 +29,37 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 import warnings
 
+from tracekit import __version__
 from tracekit.deploy import files
 from tracekit.identity.token import TokenStore
 from tracekit.sdk import autospawn
 
-IMAGE = "tracekit-box:dev"   # deploy/box/Dockerfile
-BUILD = "docker build -f deploy/box/Dockerfile -t tracekit-box:dev ."
+CLAUDE_CODE = "2.1.305"   # pinned: published 2026-10-20
+# node:22.20.0-bookworm-slim (multi-arch index), pinned by digest; Debian's python3 runs the hooks
+DOCKERFILE = f"""FROM node:22.20.0-bookworm-slim@sha256:b21fe589dfbe5cc39365d0544b9be3f1f33f55f3c86c87a76ff65a02f8f5848e
+ENV PYTHONDONTWRITEBYTECODE=1 HOME=/home/agent
+COPY requirements.txt /tmp/requirements.txt
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv git ca-certificates \\
+ && rm -rf /var/lib/apt/lists/* \\
+ && python3 -m venv /opt/tracekit && /opt/tracekit/bin/pip install --no-cache-dir -r /tmp/requirements.txt \\
+ && npm install -g --no-audit --no-fund @anthropic-ai/claude-code@{CLAUDE_CODE} && npm cache clean --force \\
+ && install -d -m 1777 /home/agent
+COPY tracekit /opt/tracekit/src/tracekit
+RUN /opt/tracekit/bin/python -c "import site; open(site.getsitepackages()[0] + '/tracekit.pth', 'w').write('/opt/tracekit/src')" \\
+ && /opt/tracekit/bin/python -c "from tracekit import install; install.install_hooks('/etc/claude-code/managed-settings.json', \\
+    module=install.V2_HOOK, python='/opt/tracekit/bin/python', mode=0o644)" \\
+ && printf '#!/bin/sh\\nexec /opt/tracekit/bin/python -I -m tracekit.box "$@"\\n' > /usr/local/bin/stand-in-agent \\
+ && chmod 755 /usr/local/bin/stand-in-agent
+WORKDIR /work
+USER 1000:1000
+CMD ["claude"]
+"""
+SETTINGS = "/etc/claude-code/managed-settings.json"
 HOST = "host.docker.internal"
 LABEL = "tracekit.box"
 # lean: a box past 12 h loses its token, and its hooks then block every call; renew it while the box runs once
@@ -48,6 +78,72 @@ class BoxError(Exception):
 
 def home():
     return os.environ.get("TRACEKIT_BOX_HOME") or autospawn.data_dir() + "-box"
+
+
+def _package():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def image():
+    """The box image's tag: this Tracekit's version and a hash of its files (DOCKERFILE is one of them)."""
+    h = hashlib.sha256()
+    for d, dirs, names in sorted(os.walk(_package())):
+        dirs[:] = sorted(x for x in dirs if x != "__pycache__")
+        for n in sorted(names):
+            if not n.endswith(".pyc"):
+                with open(os.path.join(d, n), "rb") as f:
+                    h.update(os.path.relpath(os.path.join(d, n), _package()).encode() + b"\0" + f.read())
+    return f"tracekit-box:{__version__}-{h.hexdigest()[:12]}"
+
+
+def build(tag, out=print):
+    """Build image `tag` from DOCKERFILE unless Docker has it; BoxError when the build fails."""
+    if subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0:
+        return
+    out(f"tracekit: building the box image {tag}: Claude Code {CLAUDE_CODE} and this Tracekit (once; a minute or two)")
+    sys.stdout.flush()
+    # the installed distribution's dependencies; extras are the signer's, not the hooks'
+    reqs = [r for r in importlib.metadata.requires("tracekit-ai") or () if "extra ==" not in r]
+    with tempfile.TemporaryDirectory() as ctx:
+        shutil.copytree(_package(), os.path.join(ctx, "tracekit"), ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        for name, text in (("Dockerfile", DOCKERFILE), ("requirements.txt", "\n".join(reqs) + "\n")):
+            with open(os.path.join(ctx, name), "w", encoding="utf-8") as f:
+                f.write(text)
+        p = subprocess.run(["docker", "build", "-q", "-t", tag, ctx], capture_output=True, text=True)
+    if p.returncode:
+        raise BoxError(f"the box image did not build:\n{(p.stdout + p.stderr)[-2000:]}")
+
+
+def stand_in(commands):
+    """A stand-in for Claude Code in the box: runs each of `commands` as a Bash tool call through the hooks in Claude
+    Code's managed settings, as Claude Code runs them (SessionStart; per call PreToolUse, the command if the hooks let
+    it through, PostToolUse; SessionEnd). The worst exit code: 2 when a hook blocked a call."""
+    with open(SETTINGS, encoding="utf-8") as f:
+        hooks = json.load(f)["hooks"]
+    session = str(uuid.uuid4())
+
+    def hook(event, **fields):
+        payload = json.dumps({"hook_event_name": event, "session_id": session, "cwd": os.getcwd(), **fields})
+        for h in (h for g in hooks.get(event, ()) for h in g["hooks"]):
+            if code := subprocess.run(h["command"], shell=True, input=payload, text=True).returncode:
+                return code
+        return 0
+    hook("SessionStart", source="startup")
+    worst = 0
+    for i, command in enumerate(commands):
+        call = {"tool_name": "Bash", "tool_input": {"command": command}, "tool_use_id": f"toolu_standin_{i}"}
+        if hook("PreToolUse", **call):
+            print(f"stand-in-agent: blocked: {command}", file=sys.stderr)
+            worst = 2
+            continue
+        p = subprocess.run(command, shell=True, capture_output=True, text=True)
+        sys.stdout.write(p.stdout)
+        sys.stderr.write(p.stderr)
+        hook("PostToolUse", **call, tool_response={"stdout": p.stdout[-4000:], "stderr": p.stderr[-4000:],
+                                                   "exit_code": p.returncode})
+        worst = worst or p.returncode
+    hook("SessionEnd", reason="exit")
+    return worst
 
 
 def _listen_host():
@@ -178,7 +274,7 @@ def check_project(project, h):
     return p
 
 
-def argv(name, project, token, ca, port, image=IMAGE, cmd=(), tty=False, linux=sys.platform != "darwin"):
+def argv(name, project, token, ca, port, image, cmd=(), tty=False, linux=sys.platform != "darwin"):
     """The `docker run` of box `name`: the project, the token file and CA certificate, nothing else of the host."""
     ro = [x for d in READ_ONLY for x in ("-v", f"{os.path.join(project, d)}:/work/{d}:ro")
           if not os.path.islink(os.path.join(project, d)) and os.path.exists(os.path.join(project, d))]
@@ -233,8 +329,9 @@ def problems(c, h):
     return out
 
 
-def up(project=".", image=IMAGE, cmd=(), out=print):
-    """Run `cmd` (default: the image's) in a box on `project`; the container's exit code."""
+def up(project=".", tag=None, cmd=(), out=print):
+    """Run `cmd` (default: the image's, Claude Code) in a box on `project`, in image `tag` (default: image(), built
+    on first use); the container's exit code."""
     from tracekit.signer.service import load_config
     if os.name == "nt" or not hasattr(os, "getuid"):
         raise BoxError("up --isolated runs on macOS and Linux")
@@ -244,6 +341,8 @@ def up(project=".", image=IMAGE, cmd=(), out=print):
         raise BoxError("needs Docker: colima or Docker Desktop on a Mac, Docker Engine on Linux")
     h = home()
     project = check_project(project, h)
+    if tag is None:
+        build(tag := image(), out)
     path = setup(h)
     cfg = load_config(path)
     start(path, cfg)
@@ -257,14 +356,17 @@ def up(project=".", image=IMAGE, cmd=(), out=print):
             files.write(d, "token", token.encode())
         finally:
             files.close(d)
+        sys.stdout.flush()
         code = subprocess.call(argv(name, project, os.path.join(box, "token"), os.path.join(h, "tls", "ca.pem"),
-                                    cfg["http"]["listen"].rpartition(":")[2], image, cmd, sys.stdin.isatty()))
+                                    cfg["http"]["listen"].rpartition(":")[2], tag, cmd, sys.stdin.isatty()))
     finally:
         TokenStore(cfg["http"]["tokens"]).revoke(name)
         shutil.rmtree(box, ignore_errors=True)
-    if code == 125:
-        out(f"tracekit: docker could not start the box; is the image built? ({BUILD})")
     ids = runs(cfg["data_dir"], name)
     out(f"{name}: {len(ids) or 'no'} run(s)" + "".join(
         f"\n  {r} (isolation {iso}): tracekit export --v2 --config {json.dumps(path)} --run {r}" for r, iso in ids))
     return code
+
+
+if __name__ == "__main__":   # stand-in-agent in the box image
+    sys.exit(stand_in(sys.argv[1:]))

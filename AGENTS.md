@@ -45,7 +45,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/policy.py`, `tracekit/policy/` | v1 regex policy engine and its YAML rule packs | [HIGH CONFIDENCE] |
 | `tracekit/bundle.py` | v1 bundle export and the frozen v1 verifier (`tracekit/verify/v1.py` re-exports it; its `Report` is shared with v2) | [HIGH CONFIDENCE] |
 | `tracekit/install.py`, `tracekit/cli.py` | `tracekit init` (dev/system mode), CLI | [HIGH CONFIDENCE] |
-| `tracekit/box.py`, `deploy/box/` | `tracekit up --isolated` (experimental): the agent in a container, its own signer outside it (`docs/design/isolated-up.md`); the stand-in agent image | [HIGH CONFIDENCE] |
+| `tracekit/box.py` | `tracekit up --isolated` (experimental): the agent in a container, its own signer outside it (`docs/design/isolated-up.md`); the box image it builds (Claude Code and Tracekit's hooks) and the stand-in agent | [HIGH CONFIDENCE] |
 | `tracekit/witness.py`, `tracekit/witness_server.py`, `tracekit/rekor.py` | Checkpoint witnesses | [HIGH CONFIDENCE] |
 | `tracekit/otlp.py`, `tracekit/ingest.py`, `tracekit/proxy.py` | OTLP receiver, remote ingest, Anthropic proxy | [HIGH CONFIDENCE] |
 | `sdk/typescript/` | TS SDK: the v2 client speaks the signer RPC itself (`sdk/typescript/src/v2/`); only the legacy v1 API (`sdk/typescript/src/v1.ts`) spawns `tracekit.bridge`; the independent verifier is in `sdk/typescript/src/verify/` | [HIGH CONFIDENCE] |

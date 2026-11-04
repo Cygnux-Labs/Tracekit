@@ -54,7 +54,7 @@ experimental.
 | Container image, Helm chart, compose stack (`tracekit deploy compose`) | [compose](deploy-compose.md), [Kubernetes](deploy-kubernetes.md), [container](deploy-container.md) |
 | The signer outside a Kubernetes agent-sandbox `Sandbox` (tested end to end on a kind cluster with agent-sandbox v1.0.7; not with a gVisor or Kata RuntimeClass) | [agent-sandbox](integrations/agent-sandbox.md) |
 | System mode on macOS (`--experimental-macos`) | [platforms](portability.md) |
-| `tracekit up --isolated`: the agent in a container, its signer outside it (run end to end on a Mac with colima and a stand-in agent image; not with Claude Code in the box, and not yet on Linux) | [design note](design/isolated-up.md), [deployment](deploy.md#laptop-box) |
+| `tracekit up --isolated`: the agent in a container, its signer outside it (run end to end on a Mac with colima, with Claude Code in the box and its stand-in agent; no logged-in Claude Code session has run in a box yet, and not yet on Linux) | [design note](design/isolated-up.md), [deployment](deploy.md#laptop-box) |
 | Harness binding and the transcript tailer | [quickstart](quickstart-v2.md#system-mode-linux-macos-experimental) |
 | The Claude Code plugin (`plugin/`): the v2 Claude Code hooks through Claude Code's plugin system (its hook script is tested against the dev signer; loading inside a live Claude Code isn't) | [plugin](../plugin/README.md) |
 | The sandbox-runtime decider (`tracekit srt-decider`; tested against a stand-in that speaks srt-proxy's decider protocol, not a released srt-proxy) | [sandbox-runtime](integrations/sandbox-runtime.md) |

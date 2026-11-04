@@ -159,8 +159,8 @@ def main(argv=None):
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     p.add_argument("--isolated", action="store_true", help="(experimental) run the agent in a container, its signer "
                    f"outside it: `tracekit up --isolated [-- COMMAND ...]` ({wiki_url('docs/design/isolated-up.md')})")
-    p.add_argument("--image", help="with --isolated: the agent's image (default: tracekit-box:dev, built from "
-                   "deploy/box/Dockerfile)")
+    p.add_argument("--image", help="with --isolated: the agent's image (default: tracekit-box, Claude Code and this "
+                   "Tracekit's hooks, built on first use)")
     p.add_argument("--project", default=".", help="with --isolated: the project dir the box gets at /work")
     p.add_argument("command", nargs=argparse.REMAINDER, help="with --isolated: what the box runs (default: the "
                    "image's command)")
@@ -616,7 +616,7 @@ def _run(a):
             return 2
         experimental("tracekit up --isolated")
         try:
-            return box.up(a.project, a.image or box.IMAGE, a.command[1:] if a.command[:1] == ["--"] else a.command)
+            return box.up(a.project, a.image, a.command[1:] if a.command[:1] == ["--"] else a.command)
         except (box.BoxError, OSError, ValueError, SignerUnavailable) as e:
             print(f"tracekit up --isolated: {e}", file=sys.stderr)
             return 1

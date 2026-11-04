@@ -73,12 +73,18 @@ user, so it works whether or not you are an admin ([design note](design/isolated
 your home into its VM).
 
 ```sh
-docker build -f deploy/box/Dockerfile -t tracekit-box:dev .     # once, from the repo: the stand-in agent image
-tracekit up --isolated -- stand-in-agent 'ls -la'                # or no command: the image's shell
-tracekit doctor                                                  # D-BOX-SIGNER and D-BOX-MOUNTS
+cd my-project
+tracekit up --isolated                                   # Claude Code in a box; log in there, as on a new machine
+tracekit up --isolated -- stand-in-agent 'ls -la'        # or Bash calls through the same hooks, no login needed
+tracekit doctor                                          # D-BOX-SIGNER and D-BOX-MOUNTS
 tracekit export --v2 --config "<box home>/signer.yaml" --run <run id> -o run.tkb   # up prints this line per run
+tracekit signer trust --config "<box home>/signer.yaml" -o trust.json
+tracekit verify run.tkb --trust trust.json               # isolation: remote
 ```
 
+The first `up --isolated` builds the box image, `tracekit-box:<version>-<hash>`: Claude Code (a pinned version) and
+this Tracekit, the hooks' client, on `node:22-bookworm-slim`, about 1 GB. On an M-series Mac with colima, the base
+image already pulled, the first run took 197 s from the command to the agent's last call; each later one about 3 s.
 `up --isolated` sets up a signer of its own next to the dev signer's data dir (`<dev data dir>-box`, its keys, store,
 TLS key and token store) and starts it, or reuses it. It gives each box a token of its own and runs the image with the
 project at `/work`, the token and the signer's CA certificate read-only, as your uid, with every capability dropped and

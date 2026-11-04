@@ -6,6 +6,7 @@ stand-in agent and tests/box_probe.py in a real box (Docker only: skipped withou
 colima set DOCKER_CONTEXT=colima)."""
 import contextlib
 import io
+import json
 import os
 import shutil
 import signal
@@ -45,7 +46,7 @@ class Argv(unittest.TestCase):
         self.project = tmpdir(self)
 
     def test_the_box_gets_the_project_its_token_and_the_ca_only(self):
-        a = box.argv("box-1", self.project, "/h/boxes/box-1/token", "/h/tls/ca.pem", "8443", linux=False)
+        a = box.argv("box-1", self.project, "/h/boxes/box-1/token", "/h/tls/ca.pem", "8443", "img", linux=False)
         self.assertEqual(mounts(a), [f"{self.project}:/work", "/h/boxes/box-1/token:/run/tracekit/token:ro",
                                      "/h/tls/ca.pem:/run/tracekit/ca.pem:ro"])
         for flag in (["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"], ["--pull", "never"],
@@ -55,7 +56,7 @@ class Argv(unittest.TestCase):
         self.assertNotIn("--add-host", a)   # colima and Docker Desktop name the host themselves
         self.assertNotIn("--privileged", a)
         self.assertFalse([x for x in a if "docker.sock" in x])
-        self.assertEqual(a[-1], box.IMAGE)
+        self.assertEqual(a[-1], "img")
         linux = box.argv("box-1", self.project, "t", "c", "8443", "img", ["stand-in-agent", "ls"], linux=True)
         self.assertIn("host.docker.internal:host-gateway", linux)
         self.assertEqual(linux[-3:], ["img", "stand-in-agent", "ls"])
@@ -64,11 +65,11 @@ class Argv(unittest.TestCase):
         os.mkdir(os.path.join(self.project, ".git"))
         with open(os.path.join(self.project, ".claude"), "w"):   # a file is protected as well as a dir
             pass
-        ro = mounts(box.argv("box-1", self.project, "t", "c", "1", linux=False))[1:3]
+        ro = mounts(box.argv("box-1", self.project, "t", "c", "1", "i", linux=False))[1:3]
         self.assertEqual(ro, [f"{self.project}/.git:/work/.git:ro", f"{self.project}/.claude:/work/.claude:ro"])
         os.remove(os.path.join(self.project, ".claude"))
         os.symlink(os.path.expanduser("~"), os.path.join(self.project, ".claude"))   # docker would mount its target
-        self.assertNotIn(f"{self.project}/.claude:/work/.claude:ro", mounts(box.argv("b", self.project, "t", "c", "1")))
+        self.assertNotIn(f"{self.project}/.claude:/work/.claude:ro", mounts(box.argv("b", self.project, "t", "c", "1", "i")))
 
 
 @unittest.skipUnless(hasattr(os, "getuid"), "the box runs as your uid: macOS and Linux")
@@ -199,9 +200,11 @@ class Up(unittest.TestCase):
             return code
         out = io.StringIO()
         with mock.patch.object(box, "start"), mock.patch.object(box, "runs", return_value=[("r1", "remote")]), \
+                mock.patch.object(box, "image", return_value="img"), mock.patch.object(box, "build") as build, \
                 mock.patch.object(box.shutil, "which", return_value="/usr/bin/docker"), \
                 mock.patch.object(box.subprocess, "call", call), contextlib.redirect_stderr(out):
             got = cli.main(["up", "--isolated", "--project", self.project, "--", "stand-in-agent", "ls"])
+        build.assert_called_once_with("img", print)
         return got, seen, out.getvalue()
 
     def test_the_token_is_revoked_and_removed_when_the_box_exits(self):
@@ -214,10 +217,6 @@ class Up(unittest.TestCase):
         self.assertTrue(seen["token"].startswith(f"tk2_{name}."))
         self.assertEqual(os.listdir(os.path.join(self.h, "boxes")), [])
 
-    def test_a_box_that_did_not_start_says_how_to_build_the_image(self):
-        with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(self.up(125)[0], 125)
-        self.assertIn(box.BUILD, out.getvalue())
 
     def test_options_without_isolated_are_refused(self):
         with contextlib.redirect_stderr(io.StringIO()) as err:
@@ -231,17 +230,74 @@ class Up(unittest.TestCase):
         self.assertIn("is not running", rows["D-BOX-SIGNER"]["detail"])
 
 
+class Image(unittest.TestCase):
+    def test_the_tag_follows_the_package_files(self):
+        pkg = tmpdir(self)
+        with open(os.path.join(pkg, "a.py"), "w") as f:
+            f.write("x = 1\n")
+        with mock.patch.object(box, "_package", return_value=pkg):
+            first = box.image()
+            with open(os.path.join(pkg, "b.pyc"), "w"):   # bytecode doesn't count
+                pass
+            self.assertEqual(box.image(), first)
+            with open(os.path.join(pkg, "a.py"), "a") as f:
+                f.write("y = 2\n")
+            self.assertNotEqual(box.image(), first)
+        self.assertRegex(first, r"^tracekit-box:[0-9.]+-[0-9a-f]{12}$")
+
+    def test_a_missing_image_is_built_from_this_tracekit_and_an_existing_one_reused(self):
+        built = {}
+
+        def run(argv, **kw):
+            if argv[:3] == ["docker", "image", "inspect"]:
+                return subprocess.CompletedProcess(argv, 1 if not built else 0)
+            ctx = argv[-1]
+            built.update(files=sorted(os.listdir(ctx)), dockerfile=open(os.path.join(ctx, "Dockerfile")).read(),
+                         reqs=open(os.path.join(ctx, "requirements.txt")).read().split("\n"),
+                         box=os.path.exists(os.path.join(ctx, "tracekit", "box.py")))
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with mock.patch.object(box.subprocess, "run", run):
+            box.build("tracekit-box:x", out=lambda *_: None)
+            box.build("tracekit-box:x", out=self.fail)   # there now: not built again
+        self.assertEqual(built["files"], ["Dockerfile", "requirements.txt", "tracekit"])
+        self.assertTrue(built["box"])
+        self.assertIn(f"@anthropic-ai/claude-code@{box.CLAUDE_CODE}", built["dockerfile"])
+        self.assertTrue([r for r in built["reqs"] if r.startswith("rfc8785")], built["reqs"])
+        self.assertFalse([r for r in built["reqs"] if "extra" in r])   # the signer's extras stay out of the box
+        with mock.patch.object(box.subprocess, "run", side_effect=[subprocess.CompletedProcess([], 1),
+                                                                   subprocess.CompletedProcess([], 1, "", "no net")]), \
+                self.assertRaises(box.BoxError) as cm:
+            box.build("tracekit-box:y", out=lambda *_: None)
+        self.assertIn("no net", str(cm.exception))
+
+
+@unittest.skipUnless(os.name == "posix", "the stand-in's hooks are shell commands")
+class StandIn(unittest.TestCase):
+    def test_each_call_goes_through_the_hooks_and_a_blocked_one_does_not_run(self):
+        d = tmpdir(self)
+        log = os.path.join(d, "log")
+        hook = (f"{sys.executable} -c \"import json, sys; p = json.load(sys.stdin); open({log!r}, 'a').write("
+                f"p['hook_event_name'] + ' ' + p.get('tool_input', {{}}).get('command', '') + '\\\\n'); "
+                f"sys.exit(2 if 'blocked' in p.get('tool_input', {{}}).get('command', '') else 0)\"")
+        settings = os.path.join(d, "managed-settings.json")
+        with open(settings, "w") as f:
+            json.dump({"hooks": {e: [{"matcher": "*", "hooks": [{"type": "command", "command": hook}]}]
+                                 for e in ("SessionStart", "PreToolUse", "PostToolUse", "SessionEnd")}}, f)
+        with mock.patch.object(box, "SETTINGS", settings), contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = box.stand_in([f"echo ran > {d}/ran", "echo blocked > /dev/null"])
+        self.assertEqual(code, 2)
+        with open(log) as f:
+            self.assertEqual(f.read().splitlines(), [
+                "SessionStart ", f"PreToolUse echo ran > {d}/ran", f"PostToolUse echo ran > {d}/ran",
+                "PreToolUse echo blocked > /dev/null", "SessionEnd "])
+        self.assertTrue(os.path.exists(os.path.join(d, "ran")))
+
+
 @unittest.skipIf(NO_DOCKER, NO_DOCKER)
 @unittest.skipUnless(sys.platform in ("darwin", "linux"), "the box: macOS and Linux")
 class BoxInDocker(unittest.TestCase):
-    IMAGE = "tracekit-box:test"
-
-    @classmethod
-    def setUpClass(cls):
-        p = subprocess.run(["docker", "build", "-q", "-f", "deploy/box/Dockerfile", "-t", cls.IMAGE, "."], cwd=ROOT,
-                           capture_output=True, text=True, timeout=900)
-        if p.returncode:
-            raise AssertionError(p.stdout + p.stderr)
+    """Builds the box image on its first `up` (a few minutes once), as a person's first `up --isolated` does."""
 
     def setUp(self):
         self.h, self.project = (os.path.join(tmpdir(self, under_home=True), n) for n in ("box", "project"))
@@ -256,9 +312,8 @@ class BoxInDocker(unittest.TestCase):
             os.kill(hello["pid"], signal.SIGTERM)
 
     def up(self, *cmd):
-        return subprocess.run([sys.executable, "-m", "tracekit", "up", "--isolated", "--image", self.IMAGE,
-                               "--project", self.project, "--", *cmd], capture_output=True, text=True,
-                              timeout=300, stdin=subprocess.DEVNULL)
+        return subprocess.run([sys.executable, "-m", "tracekit", "up", "--isolated", "--project", self.project, "--",
+                               *cmd], capture_output=True, text=True, timeout=900, stdin=subprocess.DEVNULL)
 
     def test_the_hooks_reach_the_signer_and_nothing_else_does(self):
         p = self.up("stand-in-agent", "echo from-the-box > made.txt", "touch .git/hooks/pre-commit")
@@ -275,7 +330,7 @@ class BoxInDocker(unittest.TestCase):
         self.assertIn(f"{run_id} (isolation remote)", p.stdout)
 
         hello = box._hello(cfg["socket"])
-        p = self.up("python", "/work/box_probe.py", cfg["data_dir"], str(hello["pid"]),
+        p = self.up("/opt/tracekit/bin/python", "/work/box_probe.py", cfg["data_dir"],
                     os.path.expanduser("~/.colima/default/docker.sock"))
         print(p.stdout + p.stderr)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)

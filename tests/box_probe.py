@@ -1,9 +1,10 @@
 """Run inside a box (`tracekit up --isolated`) by tests/test_box.py: tries to reach the signer outside it the ways an
 agent would, and prints one line per try. Exit 1 if any try got through.
 
-    python box_probe.py DATA_DIR SIGNER_PID [SOCKET ...]
+    python box_probe.py DATA_DIR [SOCKET ...]
 
-DATA_DIR is the box signer's data dir on the host, SIGNER_PID its pid there, SOCKET the host's Docker sockets.
+DATA_DIR is the box signer's data dir on the host, SOCKET the host's Docker sockets. The box runs it as its first
+process, so signalling every process it can reach (stop the signer) signals none of the host's.
 """
 import http.client
 import json
@@ -37,9 +38,15 @@ def find_key():
     return found
 
 
-def stop_signer(pid):
-    os.kill(pid, signal.SIGTERM)
-    return f"sent SIGTERM to {pid}"
+def stop_signer():
+    """Signal a signer process the box can see, then every process it can reach."""
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            if b"signer\0serve" in f.read():
+                os.kill(int(pid), signal.SIGTERM)
+                return f"sent SIGTERM to signer pid {pid}"
+    os.kill(-1, signal.SIGTERM)   # ProcessLookupError: nothing but this process to signal
+    return "signalled every process it could"
 
 
 def docker_socket(paths):
@@ -81,11 +88,11 @@ def rpc(method, req):
     return out
 
 
-def main(data_dir, pid, *sockets):
+def main(data_dir, *sockets):
     ok = all([
         attempt("read the signer's key", lambda: read_key(data_dir)),
         attempt("find a key or token store in the box", find_key),
-        attempt("stop the signer", lambda: stop_signer(int(pid))),
+        attempt("stop the signer", stop_signer),
         attempt("reach the Docker socket", lambda: docker_socket(["/var/run/docker.sock", "/run/docker.sock", *sockets])),
         attempt("rewrite the store", lambda: rewrite_store(data_dir)),
         attempt("claim an isolation", lambda: rpc("register_run", {"request_id": "probe-1", "agent": {"name": "probe"},

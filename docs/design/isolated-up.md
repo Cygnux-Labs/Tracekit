@@ -14,8 +14,8 @@ real separation from one command, and picks one for laptops.
 | Protects against | The agent reading the key, stopping the signer, rewriting the store or policy, answering its own approvals, reaching the Docker socket, turning its hooks off | The same, measured by the socket's peer uid | Nothing on a laptop unless the agent is in a container too, which is (a) |
 | What breaks it | Giving the container the Docker socket or your home; running the agent outside it; root on the host or in the Docker VM; a container escape; code the agent leaves in the project that you then run on the host | Running the agent as you, not as the second user; on a Mac you are an admin, and an admin is a password away from root; root | The registry or the image's build; whoever runs the Docker host |
 | What you need | Docker (colima or Docker Desktop on a Mac, Docker Engine on Linux) | root, a second user, project files shared with it, the agent's login set up again as that user; macOS is experimental | an image release process: build, sign, publish by digest |
-| First run | measured on an M-series Mac with colima: 20 s to build the stand-in image (base image cached), 9 s for the first box (TLS, signer start, three hooked calls), 2.6 s for each later one | 10 minutes to an hour, mostly the second user (judgment, not measured) | a pull (about 50 MB), then as (a) |
-| Work | a command, a small image, a doctor check, docs | a wrapper around `tracekit init --v2 --user` that creates the user and runs the agent as it | release work; no laptop change |
+| First run | measured on an M-series Mac with colima, from a fresh install, the base image already pulled: 197 s for the first `up --isolated` (building the box image with Claude Code, TLS, signer start, two hooked calls); about 3 s for each later one | 10 minutes to an hour, mostly the second user (judgment, not measured) | a pull (about 50 MB), then as (a) |
+| Work | a command, an image it builds on first use (Claude Code and Tracekit's hooks), a doctor check, docs | a wrapper around `tracekit init --v2 --user` that creates the user and runs the agent as it | release work; no laptop change |
 
 ## The choice: (a), the agent in a container
 
@@ -62,4 +62,4 @@ itself (its mounts, through the Docker API) when a run registers; that is left u
   `host.docker.internal` to them). Don't run services on 127.0.0.1 that trust every local caller.
 - **Inside the box, the agent can still act outside its hooks** (a background process); that is contained to the
   project and the network, and recorded only if it goes through a hook.
-- The prototype ships a stand-in image without Claude Code. Linux is written but not yet run.
+- Claude Code in the box keeps no login between boxes: log in in each one. Linux is written but not yet run.
