@@ -95,14 +95,16 @@ generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(
 
 `run` is the agent's `register_run` response (Python) or `RunHandle` (TypeScript). A refusal reaches the model as the
 tool's error. The Tracekit adapters leave these tools alone (each is marked), so they can sit next to gated tools of
-your own: the executor decides and records them. The Claude Agent SDK hooks skip the tools of the server under the key
-`tracekit-executor` (`ex.SERVER`; the SDK names its tools by that key, not by the server's own name) only when you hand
-them the same `mcp_servers` and the server there is the in-process one `ex.claude_agent_sdk` built. A project
-`.mcp.json` can add a server of that name, which the CLI loads when your app has none of its own (Claude Code 2.1.294;
-your app's server replaces it when it has one); the hooks gate its tools like any other. TypeScript has no Claude Agent
-SDK helper (its `tool()` takes only a zod shape): write a `tool()` per action with its zod shape whose handler returns
+your own: the executor decides and records them. The Claude Agent SDK hooks skip only the exact tool names of the
+executor's actions, `mcp__tracekit-executor__<action>` (`ex.SERVER`; the SDK names its tools by the key in
+`mcp_servers`, not by the server's own name), and only when you hand them the same `mcp_servers` and the server under
+that key is the in-process one `ex.claude_agent_sdk` built. A project `.mcp.json` can add a server of that name, which
+the CLI loads when your app has none of its own (Claude Code 2.1.294; your app's server replaces it when it has one),
+or one whose name starts with it (`tracekit-executor__x`); the hooks gate their tools like any other. `tracekit.instrument()`
+hands each `ClaudeAgentOptions`' own `mcp_servers` to the hooks it adds. TypeScript has no Claude Agent SDK helper (its
+`tool()` takes only a zod shape): write a `tool()` per action with its zod shape whose handler returns
 `action.call(args)`, put the `createSdkMcpServer` server under the key `tracekit-executor`, and pass the hooks the same
-servers (`tracekitHooks(run, { mcpServers })`).
+servers and the actions (`tracekitHooks(run, { mcpServers, executorActions: actions })`).
 
 ## What is recorded
 

@@ -288,8 +288,9 @@ class InstallAndUninstall(unittest.TestCase):
         for proto in ("udp", "tcp"):   # DNS to a loopback stub is refused before loopback is let through (#588)
             self.assertLess(wall.index(f"$$t -A TRACEKIT-EGRESS -p {proto} --dport 53 -j REJECT"),
                             wall.index("$$t -A TRACEKIT-EGRESS -o lo -j RETURN"))
-        self.assertIn(["systemctl", "enable", "--now", install.V2_EGRESS, install.EGRESS_FIREWALL],
-                      [c.args[0] for c in run.call_args_list])
+        for verb in ("enable", "restart"):   # an active firewall unit from an earlier install gets the new rule (#588)
+            self.assertIn(["systemctl", verb, install.V2_EGRESS, install.EGRESS_FIREWALL],
+                          [c.args[0] for c in run.call_args_list])
         proxy = {"HTTPS_PROXY": "http://127.0.0.1:3128", "HTTP_PROXY": "http://127.0.0.1:3128"}
         self.assertEqual(hooks.call_args.kwargs["signer"], {"TRACEKIT_SIGNER": sock, **proxy})
         sc = sys_cfg.call_args.args[0]

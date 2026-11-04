@@ -135,5 +135,6 @@ def claude_agent_sdk(actions, name=SERVER):
             return {"content": [{"type": "text", "text": json.dumps(out)}]}
         return tool(action.name, action.description, action.args)(handler)
     server = create_sdk_mcp_server(name, tools=[one(a) for a in actions])
-    setattr(server["instance"], EXECUTOR, True)   # what tracekit_hooks knows this in-process server by
+    # what tracekit_hooks knows this in-process server by: the names of the actions it serves, and no others
+    setattr(server["instance"], EXECUTOR, frozenset(a.name for a in actions))
     return server

@@ -45,9 +45,9 @@ runs:
         TK_ACTION_PATH: ${{ github.action_path }}
       run: |
         if [ -n "$TK_VERSION" ]; then
-          python -m pip install "tracekit-ai==$TK_VERSION"
+          python -I -m pip install "tracekit-ai==$TK_VERSION"
         else
-          python -m pip install "$TK_ACTION_PATH"
+          python -I -m pip install "$TK_ACTION_PATH"
         fi
     - name: Verify bundle
       id: verify
@@ -62,43 +62,60 @@ runs:
         TK_BASE_SHA: ${{ github.event.pull_request.base.sha }}
         TK_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
-        # On a pull request, a trust, key or witness file in the pull request's own checkout (a work tree at its merge
-        # or head commit) is read from its base commit: its author could change the file together with the bundle.
+        # On a pull request, a trust, key or witness file in $GITHUB_WORKSPACE is the pull request's to change unless it
+        # is in another checkout there: one in the pull request's own checkout (a work tree at its merge or head commit)
+        # is read from its base commit, by the path as given; a symlink, a submodule or no checkout at all is refused.
         from_base() {
           [ -n "$TK_BASE_SHA" ] || { printf '%s\n' "$2"; return; }
           python -I - "$@" <<'PY'
         import os, subprocess, sys
         kind, path = sys.argv[1:3]
-        base, why = os.environ["TK_BASE_SHA"], "the pull request's author can change it"
-        def git(cwd, *a):
-            return subprocess.run(["git", "-C", cwd, *a], capture_output=True)
+        base, ws = os.environ["TK_BASE_SHA"], os.environ.get("GITHUB_WORKSPACE", "")
+        why = "the pull request's author can change it"
+        def git(cwd, *a):   # a directory made to look like a bare repository is never taken for one
+            return subprocess.run(["git", "--literal-pathspecs", "-c", "safe.bareRepository=explicit", "-C", cwd, *a],
+                                  capture_output=True)
         def refuse(msg):
-            print("::error::" + msg)
+            print(f"::error::{kind} {path}: {msg}")
             sys.exit(1)
-        d = path if kind == "witness repository" else os.path.dirname(os.path.abspath(path))
-        r = git(d, "rev-parse", "--show-toplevel", "HEAD")
-        top, head = (r.stdout.decode().splitlines() + ["", ""])[:2]
-        # lean: a checkout without .git (actions/checkout's REST fallback) reads as not the pull request's; refuse
-        # files under GITHUB_WORKSPACE outside a work tree if that fallback turns up in use
-        if r.returncode or head not in (os.environ.get("GITHUB_SHA"), os.environ.get("TK_HEAD_SHA")):
-            print(path)   # not in the pull request's checkout: as given
+        given = os.path.abspath(path)
+        inside = lambda p, w: p == w or p.startswith(w + os.sep)
+        root = next((w for w in (os.path.abspath(ws), os.path.realpath(ws)) if ws and inside(given, w)), "")
+        if not root and ws and inside(os.path.realpath(given), os.path.realpath(ws)):
+            refuse("it reaches $GITHUB_WORKSPACE through a symlink")
+        if not root or not os.path.lexists(given):
+            print(path)   # outside the workspace, or missing: as given
+            sys.exit()
+        p = given
+        while p != root:
+            if os.path.islink(p):
+                refuse(f"{os.path.relpath(p, root)} in $GITHUB_WORKSPACE is a symlink, which {why}")
+            p = os.path.dirname(p)
+        r = git(given if kind == "witness repository" else os.path.dirname(given), "rev-parse", "--show-toplevel",
+                "HEAD", "--show-superproject-working-tree")
+        top, head, parent = (r.stdout.decode().splitlines() + ["", "", ""])[:3]
+        if r.returncode:
+            refuse("it is in $GITHUB_WORKSPACE but in no git checkout there: keep it outside $GITHUB_WORKSPACE")
+        if head not in (os.environ.get("GITHUB_SHA"), os.environ.get("TK_HEAD_SHA")):
+            if parent:
+                refuse("it is in a submodule, which the pull request can point at other files")
+            print(path)   # another checkout in the workspace (of a trust repository, say): as given
             sys.exit()
         if kind == "witness repository":
-            refuse(f"witness git:{path} is the pull request's own checkout, and {why}: clone the witness repository "
-                   "into a directory of its own")
-        rel = os.path.relpath(os.path.join(os.path.realpath(d), os.path.basename(path)), os.path.realpath(top))
+            refuse(f"it is the pull request's own checkout, and {why}: clone the witness repository into a directory "
+                   "of its own")
+        rel = os.path.relpath(os.path.join(os.path.realpath(root), os.path.relpath(given, root)), os.path.realpath(top))
         rel = rel.replace(os.sep, "/")
-        blob = git(top, "rev-parse", "-q", "--verify", f"HEAD:{rel}")
-        if blob.returncode or blob.stdout != git(top, "hash-object", "--", rel).stdout:
-            print(path)   # not the pull request's file (the workflow wrote or changed it): as given
-            sys.exit()
         if git(top, "cat-file", "-e", base + "^{commit}").returncode:
             git(top, "fetch", "--no-tags", "--depth=1", "origin", base)
-        out = git(top, "show", f"{base}:{rel}")
-        if out.returncode:
-            refuse(f"{kind} file {path} is in the pull request's checkout, and {why}; it can't be read at the base "
-                   f"commit {base[:12]} ({out.stderr.decode().strip()[:200]}): add it on the base branch first, or keep "
-                   "it outside the repository")
+        at = {rev: git(top, "ls-tree", "-z", rev, "--", rel).stdout.decode().rstrip("\0").split(None, 3)
+              for rev in ("HEAD", base)}
+        if "120000" in at["HEAD"][:1] + at[base][:1]:
+            refuse(f"it is committed as a symlink, which {why}")
+        if at[base][1:2] != ["blob"]:
+            refuse(f"it is in the pull request's checkout, where {why}, and is no file at its base commit {base[:12]}: "
+                   "add it on the base branch first, or keep it outside $GITHUB_WORKSPACE")
+        out = git(top, "cat-file", "blob", at[base][2])
         dst = os.path.join(os.environ["RUNNER_TEMP"], "tracekit-base-" + kind)
         with open(dst, "wb") as f:
             f.write(out.stdout)

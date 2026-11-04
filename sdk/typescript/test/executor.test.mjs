@@ -58,18 +58,25 @@ test("the Vercel AI adapter leaves executor tools to the executor: no decide on 
   assert.equal(openaiAgentsTool((o) => ({ ...o }), a)[EXECUTOR], true);
   // the Claude Agent SDK hooks: the app's own in-process server under the name, as `query()` gets it
   const mcpServers = { "tracekit-executor": { type: "sdk", name: "tracekit-executor", instance: {} } };
-  const [pre] = tracekitHooks(run, { mcpServers }).PreToolUse[0].hooks;
+  const [pre] = tracekitHooks(run, { mcpServers, executorActions: [a] }).PreToolUse[0].hooks;
   assert.deepEqual(await pre({ tool_name: "mcp__tracekit-executor__pay", tool_use_id: "tu-1", tool_input: {} }), {});
 });
 
-test("the Claude Agent SDK hooks gate a server of the executor's name the app did not build in-process (#588)", async () => {
+test("the Claude Agent SDK hooks gate every tool but the app's executor actions, by exact name (#588)", async () => {
   const decided = [];
   const run = { decide: async (id, tool) => { decided.push([id, tool]); throw new Error("refused"); } };
   const project = { "tracekit-executor": { type: "stdio", command: "/tmp/not-the-executor" } };   // as .mcp.json adds it
-  for (const [i, opts] of [undefined, {}, { mcpServers: {} }, { mcpServers: project }].entries()) {
+  const app = { "tracekit-executor": { type: "sdk", name: "tracekit-executor", instance: {} } };
+  const pay = "mcp__tracekit-executor__pay", actions = [{ name: "pay" }];
+  const cases = [[undefined, pay], [{}, pay], [{ mcpServers: {} }, pay], [{ mcpServers: project, executorActions: actions }, pay],
+    [{ mcpServers: app }, pay],   // no actions named
+    // a project server keyed `tracekit-executor__pay` or `tracekit-executor_` next to the app's executor
+    ...["mcp__tracekit-executor__pay__shell", "mcp__tracekit-executor___x", "mcp__tracekit-executor__payx"].map(
+      (t) => [{ mcpServers: app, executorActions: actions }, t])];
+  for (const [i, [opts, tool]] of cases.entries()) {
     const [pre] = tracekitHooks(run, opts).PreToolUse[0].hooks;
-    const out = await pre({ tool_name: "mcp__tracekit-executor__pay", tool_use_id: `tu-${i}`, tool_input: {} });
+    const out = await pre({ tool_name: tool, tool_use_id: `tu-${i}`, tool_input: {} });
     assert.equal(out.hookSpecificOutput.permissionDecision, "deny");
   }
-  assert.deepEqual(decided, [0, 1, 2, 3].map((i) => [`tu-${i}`, "mcp__tracekit-executor__pay"]));
+  assert.deepEqual(decided, cases.map(([, tool], i) => [`tu-${i}`, tool]));
 });

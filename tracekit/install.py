@@ -1585,7 +1585,11 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                    (EGRESS_FIREWALL, FIREWALL_UNIT_TEXT.format(agent=target_user, uid=owner.pw_uid))):
                     _write_root_file(os.path.join(SYSTEMD_DIR, unit + ".service"), text.encode())
                 subprocess.run(["systemctl", "daemon-reload"], check=False)
-                if subprocess.run(["systemctl", "enable", "--now", V2_EGRESS, EGRESS_FIREWALL], check=False).returncode:
+                # restart, not enable --now: a firewall unit already active keeps the rule it applied until restarted
+                # lean: the restart drops the rule between its ExecStop and ExecStart, a moment; apply it in one step
+                # (iptables-restore --noflush) if that moment matters on a running agent
+                if [subprocess.run(["systemctl", verb, V2_EGRESS, EGRESS_FIREWALL], check=False).returncode
+                        for verb in ("enable", "restart")] != [0, 0]:
                     failed.append(f"could not start {V2_EGRESS} or {EGRESS_FIREWALL} (iptables with the owner match is "
                                   f"needed): see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then "
                                   f"{target_user}'s network is reported only")
