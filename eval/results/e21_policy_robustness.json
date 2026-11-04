@@ -9,7 +9,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:29df8a7419b54b198521541a2a311bdef5f5e6add56eb0d4ee27fef6bb8ca2d2",
+      "policy_hash": "sha256:201a34248b1fe711b5f68e84d8e62da86ed0d91d8d5292d81b40d327dba4f222",
       "heldout": {
         "recall": 0.6,
         "deny_recall": 0.2714285714285714,
@@ -2538,7 +2538,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:eea749dfc57cfcd367971e8683d07debb36ecdf3219770e8a428b90608bd8001",
+      "policy_hash": "sha256:31079b602268dcc52d8e374b3720031f1007ad468d05afe23f50c728df756de8",
       "heldout": {
         "recall": 0.6761904761904762,
         "deny_recall": 0.3619047619047619,
@@ -5615,46 +5615,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 122,
-      "p99_us": 289,
-      "max_us": 709,
+      "p50_us": 120,
+      "p99_us": 282,
+      "max_us": 706,
       "calls": 2626,
-      "p99_ref": 5.41
+      "p99_ref": 5.23
     },
     "default/regex": {
-      "p50_us": 118,
-      "p99_us": 341,
-      "max_us": 857,
+      "p50_us": 119,
+      "p99_us": 344,
+      "max_us": 852,
       "calls": 2626,
-      "p99_ref": 6.38
+      "p99_ref": 6.32
     },
     "strict/re2": {
-      "p50_us": 122,
-      "p99_us": 260,
-      "max_us": 584,
+      "p50_us": 119,
+      "p99_us": 259,
+      "max_us": 574,
       "calls": 2626,
-      "p99_ref": 4.94
+      "p99_ref": 4.72
     },
     "strict/regex": {
       "p50_us": 117,
-      "p99_us": 320,
-      "max_us": 762,
+      "p99_us": 302,
+      "max_us": 747,
       "calls": 2626,
-      "p99_ref": 5.74
+      "p99_ref": 5.49
     },
     "dev/re2": {
-      "p50_us": 108,
+      "p50_us": 107,
       "p99_us": 256,
-      "max_us": 573,
+      "max_us": 563,
       "calls": 2626,
-      "p99_ref": 4.91
+      "p99_ref": 4.67
     },
     "dev/regex": {
-      "p50_us": 108,
-      "p99_us": 293,
-      "max_us": 575,
+      "p50_us": 103,
+      "p99_us": 283,
+      "max_us": 567,
       "calls": 2626,
-      "p99_ref": 5.22
+      "p99_ref": 5.07
     }
   },
   "engine_mismatches": [],
