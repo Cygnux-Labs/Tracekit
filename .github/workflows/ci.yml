@@ -163,6 +163,22 @@ jobs:
           node examples/v2_vercel_ai_resume.mjs "$state" | tee "$RUNNER_TEMP/vercel-resume-2.log"
           grep -q "Executed 1 time(s)" "$RUNNER_TEMP/vercel-resume-2.log"
           test ! -e "$state"
+          # a state file others can read is refused before it is parsed
+          loose="$RUNNER_TEMP/vercel-resume-loose.json"
+          echo '{}' > "$loose"
+          chmod 644 "$loose"
+          if node examples/v2_vercel_ai_resume.mjs "$loose" > "$RUNNER_TEMP/vercel-resume-3.log" 2>&1; then
+            echo "a mode-644 state file was accepted"; exit 1
+          fi
+          grep -q "must be a regular file owned by you with mode 0600; refused" "$RUNNER_TEMP/vercel-resume-3.log"
+          test -e "$loose"
+          # a state file for a run this signer never knew resumes nothing
+          unknown="$RUNNER_TEMP/vercel-resume-unknown.json"
+          (umask 077; echo '{"runId":"run-unknown","runToken":"not-a-token","messages":[],"content":[]}' > "$unknown")
+          node examples/v2_vercel_ai_resume.mjs "$unknown" | tee "$RUNNER_TEMP/vercel-resume-4.log"
+          grep -q "Executed 0 times" "$RUNNER_TEMP/vercel-resume-4.log"
+          test ! -e "$unknown"
+          if grep -q "(pretend) ran" "$RUNNER_TEMP/vercel-resume-4.log"; then echo "the unknown run executed the tool"; exit 1; fi
 
   package:
     name: build and smoke-test the wheel
