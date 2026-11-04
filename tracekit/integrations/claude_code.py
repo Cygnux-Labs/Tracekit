@@ -11,9 +11,10 @@ Without it (hooks installed before 1.2) the event comes from the payload alone.
 Each hook is a new process, so the run of a Claude Code session (id, token, fail modes, and the one event stream and
 next client_seq all its hooks share) and the decision binding of a tool call are kept in the runtime dir between hooks.
 Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr); only a PreToolUse is blocked: another event whose
-hook fails exits 1, an error the harness shows without blocking. A call the policy holds (`ask`) is blocked at once,
-with its approval's id and the command that approves it (Claude Code: also the deny reason the model reads and a
-systemMessage the person sees); once a person approves it, the agent's retry of the same call (the same tool and
+hook fails exits 1, an error the harness shows without blocking. A call the policy denies or holds (`ask`) is blocked
+at once with one message (stopped): why, what to do instead, for a hold its approval's id and the commands that answer
+it, and what the agent does (Claude Code: also the deny reason the model reads and a systemMessage the person sees,
+_block); once a person approves a held call, the agent's retry of the same call (the same tool and
 exactly the same arguments) runs under that approval, which approval_request returns for it. A Claude Code Bash call's
 free-text `description`, which a model rewords on almost every retry, is the exception: a retry that differs only there
 from a held call of the same command a person approved (none of them rejected) is decided and consumed with
@@ -87,7 +88,7 @@ from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, fail_open, named_rules, sendable
 from tracekit.signer.quotas import MAX_LINE
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.rpc_schema import INSTEAD, RPCError
 
 AGENT = "claude-code"
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
@@ -192,6 +193,58 @@ def _skew(client, sid):
             return None
         files.write_json(path, dict(st, skew=pair))
     return notice
+
+
+def stopped(head, reason=None, person=None, agent=None):
+    """What a call Tracekit stopped tells its agent and person, in every harness (each delivers it its own way: _block
+    for Claude Code, agent_hooks._reply for the others): `head` (with _rules), the signer's `reason` (Why) and, after
+    its INSTEAD, what to do instead; then `person`, the commands that answer a held call, and what the agent does
+    (`agent`, else: with `person`, pass them on and, once approved, make the identical call again; without, tell the
+    person). An Instead step may be the person's (check the payee before approving): the agent takes only its own."""
+    why, _, instead = (reason or "").partition(INSTEAD)
+    agent = (agent or ("tell the person what this call was for and pass on these commands, then wait for their "
+                       "answer; a subagent puts them in its final report. Once it is approved, make the identical call "
+                       "again." if person else "tell the person what you were doing and why it was blocked.")) + (
+        " If the Instead line is a step you can take yourself, you may take it and say so." if instead else "")
+    return "\n".join([f"[tracekit] {head}", *([f"Why: {why}"] if why else []),
+                      *([f"Instead: {instead}"] if instead else []), *([f"Person: {person}"] if person else []),
+                      f"Agent: {agent} Never hide what a call runs to get past the policy: every call is signed and "
+                      "kept."])
+
+
+def _rules(rule_ids):
+    """The rule ids a stop names (named_rules), in brackets after a space, or nothing."""
+    rules = named_rules(rule_ids)
+    return f" ({rules})" if rules else ""
+
+
+def _block(msg):
+    """Block a call with `msg` (stopped): on stderr, and for Claude Code also as its JSON deny, whose reason the model
+    reads (in place of the hook's command line and stderr) and whose systemMessage the person sees. -> 2, the exit
+    code that blocks the call even where the JSON isn't read."""
+    print(msg, file=sys.stderr)
+    if AGENT == "claude-code":
+        print(json.dumps({"systemMessage": msg, "hookSpecificOutput": {
+            "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": msg}}))
+    return 2
+
+
+def approvals_cmd(signer):
+    """`tracekit approvals`, for a person to run, naming `signer` when there is one: a named signer (system mode's,
+    $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside system mode the agent may have set it. On
+    Windows (cmd.exe reads no single quotes) in double quotes, which cmd.exe and PowerShell both read as written but for
+    a quote (PowerShell's curly ones too), $, a backtick, cmd.exe's %VAR% or a line break: a name holding one is left
+    for the person to fill in."""
+    unsafe = r'["\N{LEFT DOUBLE QUOTATION MARK}-\N{DOUBLE LOW-9 QUOTATION MARK}$`%\x00-\x1f\x7f]'
+    named = signer and (shlex.quote(signer) if os.name != "nt" else
+                        "<TRACEKIT_SIGNER>" if re.search(unsafe, signer) else f'"{signer}"')
+    return "tracekit approvals" + (f" --signer {named}" if named else "")
+
+
+def _utc(ts):
+    """An RFC 3339 UTC time as `HH:MM UTC`, else None."""
+    m = re.fullmatch(r"\d{4}-\d\d-\d\dT(\d\d:\d\d):\d\d(\.\d+)?Z", ts or "")
+    return m and f"{m.group(1)} UTC"
 
 
 def approval_wait_s():
@@ -521,28 +574,19 @@ def _pre(client, p, sid, tid):
     run, d = _run(client, sid, send="decide", transcript=_transcript(p), tool_call_id=tid, tool=tool, args=args,
                   args_source="parsed")
     if d["decision"] == "deny":
-        print("Blocked by tracekit policy: " + named_rules(d["rule_ids"]) + (f": {d['reason']}" if d.get("reason") else ""),
-              file=sys.stderr)
-        return 2
+        return _block(stopped(f"BLOCKED, nothing ran, and no one can approve it{_rules(d['rule_ids'])}.",
+                              d.get("reason")))
     if d["decision"] == "ask":
         # a live constraint's reason says which and what to do; a reworded retry of a rejected command's note first
         reason = "; ".join(x for x in (said_no, d.get("reason")) if x)
         why = f": {reason if reason.endswith('..') else reason.removesuffix('.')}" if reason else ""   # keeps a ...
-        waited = {}   # the last approval_wait's answer
+        waited, aid = {}, None   # the last approval_wait's answer; the approval, once one is requested
         try:
             cap()
             # the same call held earlier in the run (the agent's retry) gets that call's approval: approved, it runs
             asked = run.call("approval_request", tool_call_id=tid)
             aid, state = asked["approval_id"], asked["state"]
-            # a named signer (system mode's, or $TRACEKIT_SIGNER's) may not be the person's default; quoted: outside
-            # system mode the agent may have set it. On Windows (cmd.exe reads no single quotes) in double quotes,
-            # which cmd.exe and PowerShell both read as written but for a quote (PowerShell's curly ones too), $, a
-            # backtick, cmd.exe's %VAR% or a line break: a name holding one is left for the person to fill in
-            named = client.signer and (
-                shlex.quote(client.signer) if os.name != "nt" else
-                "<TRACEKIT_SIGNER>" if re.search(r'["\u201c-\u201e$`%\x00-\x1f\x7f]', client.signer) else
-                f'"{client.signer}"')
-            cmd = "tracekit approvals" + (f" --signer {named}" if named else "")
+            cmd = approvals_cmd(client.signer)
             wait_s = approval_wait_s()
             # the commands before the reasons, as in the held line: a harness that cuts the message keeps them
             if state == "requested" and wait_s:
@@ -569,30 +613,26 @@ def _pre(client, p, sid, tid):
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
             # Claude Code runs a `!` line in the session as its OS user: the person, with the dev signer; with a named
             # signer (system mode, a remote one) that user is the agent's, whom the signer refuses: another terminal
-            bang = "! " if AGENT == "claude-code" and not named else ""
-            held = (f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is {waited['reason']}, then try the same "
-                    "call again, unchanged" if waited.get("reason") else
-                    f"[tracekit] held for approval {aid} ({'; '.join(d['rule_ids'])}): a person lets it run with "
-                    f"`{bang}{cmd} approve {aid}`, then asks the agent to try the same call again, unchanged (to "
-                    f"refuse it: `{bang}{cmd} reject {aid}`). Agent: wait for the person's answer") + (
-                        f". Why{why}" if why else "")
-            print(held, file=sys.stderr)
-            if AGENT == "claude-code":   # the reason goes to the model, the system message to the person
-                print(json.dumps({"systemMessage": held, "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": held}}))
-            return 2
-        if c is None:   # the outcome first (a rejected one's who), the reasons after: a cut keeps it
+            bang = "! " if AGENT == "claude-code" and not client.signer else ""
+            expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
+            if waited.get("reason"):   # an agent approver's approval in its veto delay: approved, it may run after it
+                return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])} is {waited['reason']}, then "
+                                      "make the identical call again.", reason, look + ".",
+                                      "wait as the first line says, then make the identical call again; if it is "
+                                      "held again, tell the person and pass on what it says."))
+            return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])}"
+                                  + (f", expires {expires}." if expires else "."), reason,
+                                  f"{look}; allow once with `{bang}{cmd} approve {aid}`; refuse with "
+                                  f"`{bang}{cmd} reject {aid}`."))
+        if c is None:   # rejected (and by whom), expired, or the wait failed
             outcome = (state == "rejected" and waited.get("reason")) or state
-            print(f"[tracekit] not approved: {outcome} ({'; '.join(d['rule_ids'])})" + (f". Why{why}" if why else ""),
-                  file=sys.stderr)
-            return 2
+            return _block(stopped(f"NOT APPROVED, nothing ran{f': {aid}' if aid else ''}{_rules(d['rule_ids'])}: "
+                                  f"{outcome}.", reason))
     else:
         cap()
         c = run.approval_consume(tid, tool, args)   # every call that runs: once, for the decided args
     if not c["ok"]:
-        why = " ".join(x for x in ("; ".join(c["rule_ids"]), c.get("reason", "")) if x)
-        print(f"Held by tracekit policy: {why}", file=sys.stderr)
-        return 2
+        return _block(stopped(f"BLOCKED, nothing ran{_rules(c['rule_ids'])}.", c.get("reason")))
     if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
         args = c["args"]
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))

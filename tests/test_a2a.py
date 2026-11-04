@@ -605,7 +605,7 @@ class Transfer(unittest.TestCase):
             with self.subTest(sender=sender):
                 out = self.run.transfer(sender, "llama-1b@2", b"state", "kv-cache", projector="c2c@0.1")
                 self.assertEqual((out["ok"], out["rule_ids"]), (ok, rule_ids))
-                self.assertEqual(out.get("reason"), None if ok else f"{fixed['reason']}. {fixed['remedy']}")
+                self.assertEqual(out.get("reason"), None if ok else f"{fixed['reason']}. Instead: {fixed['remedy']}")
                 d = [r["event"]["data"] for r in self.s.log.storage.iter_run("default", self.run.run_id)
                      if r["event"]["type"] == "policy.decision"][-1]
                 args = {"sender": sender, "receiver": "llama-1b@2", "modality": "kv-cache", "size": 5,
