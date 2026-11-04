@@ -308,13 +308,13 @@ class Receipts(Base):
             self.assertEqual(model_receipt.receipts("Bash", {"command": "cp a model.safetensors", key: "sub"},
                                                     self.d)[0]["refused"],
                              "a path relative to a directory the command changed to", key)
+            self.assertEqual(model_receipt.receipts("Bash", {"command": f"cp a {shlex.quote(self.w)}", key: "sub"},
+                                                    self.d),
+                             [dict(receipt(self.w), reported_by="hook")], key)
         for value in (["sub"], 5):
             self.assertEqual(model_receipt.receipts("Bash", {"command": "cp a model.safetensors", "workdir": value},
                                                     self.d)[0]["refused"],
                              "a path relative to a directory the command changed to", value)
-            self.assertEqual(model_receipt.receipts("Bash", {"command": f"cp a {shlex.quote(self.w)}", key: "sub"},
-                                                    self.d),
-                             [dict(receipt(self.w), reported_by="hook")], key)
 
     def test_another_commands_t_or_c_flag_refuses_nothing(self):
         """Review of d013a1dd: `grep -C3` or `sort -t,` anywhere in a command refused every weights path in it."""
