@@ -107,6 +107,12 @@ OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edi
 # `source`, not `path`: a decoy `path` beside it must not move the decision)
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
+# harness tools mapped to Bash whose effect comes after their post-tool hook: input typed into another running session
+# (Codex's write_stdin, agy's manage_task send_input, Devin's write_to_process) or a command left running (Qwen Code's
+# monitor); normalise marks their payload `later`, and the hook takes no receipt of what they write
+# (tracekit.model_receipt)
+LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task"),
+                   ("devin", "write_to_process")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
@@ -403,7 +409,7 @@ def normalise(harness, p):
         out["hook_event_name"] = m[ev]
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
-            out["tool_use_id"] = p.get("tool_use_id")
+            out["tool_use_id"], out["later"] = p.get("tool_use_id"), (harness, p.get("tool_name")) in LATER
             if harness in ("droid", "devin"):   # their documented payloads carry no call id
                 out["tool_use_id"] = out["session_id"] and _paired_ids(
                     harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
@@ -503,6 +509,7 @@ def normalise(harness, p):
         sid, step = p.get("conversationId"), p.get("stepIdx")
         out.update(cwd=(p.get("workspacePaths") or [None])[0], transcript_path=p.get("transcriptPath"),
                    model=p.get("modelName"), session_id=sid, hook_event_name=ev, tool_name=name, tool_input=ti,
+                   later=(harness, raw.casefold()) in LATER,
                    tool_use_id=sid and type(step) is int and _paired_ids(
                        harness, sid, f"{step}|{raw}", ti, "pre" if ev == "PreToolUse" else "post"))
         if ev == "PostToolUse" and p.get("error"):
@@ -895,6 +902,7 @@ def _opencode_plugin(python, v2, harness="opencode"):
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
                 _dev_hook_argv(module, "entry", (harness, ev)) for ev in ("tool.execute.before", "tool.execute.after")}
+    agent, config = ("Kilo Code", "kilo.json") if harness == "kilo" else ("OpenCode", "opencode.json")
     return f'''{_plugin_marker(harness)}
 const commands = {json.dumps(commands)};
 // above the most a hook takes to answer, a held call's approval wait included (Tracekit's APPROVAL_WAIT_S), as the
@@ -934,8 +942,8 @@ async function tracekit(event, input, toolInput, toolResponse) {{
 export const TracekitPlugin = async ({{ directory }}) => ({{
   "tool.execute.before": async (input, output) => {{
     if (input.tool === "batch") {{   // OpenCode runs the calls inside a batch with no plugin hooks
-      throw new Error("Blocked by Tracekit: OpenCode's experimental batch tool runs its calls without plugin hooks, " +
-        "so Tracekit can't decide them. Turn it off (experimental.batch_tool in opencode.json) and make each call itself.");
+      throw new Error("Blocked by Tracekit: {agent}'s experimental batch tool runs its calls without plugin hooks, " +
+        "so Tracekit can't decide them. Turn it off (experimental.batch_tool in {config}) and make each call itself.");
     }}
     const result = await tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
     if (result.code !== 0) {{   // blocked (2), or the hook could not decide the call: it doesn't run

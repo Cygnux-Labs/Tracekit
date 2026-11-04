@@ -608,6 +608,13 @@ class Harnesses(DaemonCase):
         self.assertEqual(code, 2)
         self.assertIn("Blocked by tracekit policy: TK-D004", err)
 
+    def test_the_plugins_batch_block_names_the_agent_it_runs_in(self):
+        # the review of #551: under Kilo Code the block named OpenCode and opencode.json
+        for harness, agent, config in (("opencode", "OpenCode", "opencode.json"), ("kilo", "Kilo Code", "kilo.json")):
+            plugin = agent_hooks._opencode_plugin(None, True, harness)
+            self.assertIn(f"Blocked by Tracekit: {agent}'s experimental batch tool", plugin, harness)
+            self.assertIn(f"(experimental.batch_tool in {config})", plugin, harness)
+
     @unittest.skipUnless(shutil.which("node"), "runs the OpenCode plugin under Node, with Bun's spawn stood in")
     def test_the_opencode_plugin_decides_each_call_and_blocks_a_batch(self):
         d = tempfile.mkdtemp()
@@ -1536,9 +1543,11 @@ class Installer(unittest.TestCase):
                 agent_hooks.install("kilo", d, v2=v2, python="/opt/tracekit/python")
                 with open(path) as f:
                     plugin = f.read()
-                # the same plugin, whose hook is told it runs for Kilo
+                # the same plugin, whose hook is told it runs for Kilo, and whose batch block names Kilo Code's config
                 self.assertEqual(plugin, agent_hooks._opencode_plugin("/opt/tracekit/python", v2).replace(
-                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace("--agent opencode", "--agent kilo"))
+                    '"opencode", "tool.execute', '"kilo", "tool.execute').replace("--agent opencode", "--agent kilo")
+                    .replace("OpenCode's experimental batch", "Kilo Code's experimental batch").replace(
+                        "batch_tool in opencode.json", "batch_tool in kilo.json"))
                 self.assertIn("`[tracekit] hook error (", plugin)   # a Kilo user isn't told of an OpenCode error
                 self.assertNotIn("OpenCode", plugin.split("const commands", 1)[1].split("export const", 1)[0])
         self.assertFalse(os.path.exists(agent_hooks.config_path("opencode", d)))

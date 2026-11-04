@@ -306,3 +306,13 @@
 {"tool": "Bash", "args": {"command": "podman volume prune -f"}, "expect": "ask", "note": "delete every unused Podman volume"}
 {"tool": "Bash", "args": {"command": "docker volume rm pgdata"}, "expect": "ask", "note": "delete a named Docker volume"}
 {"tool": "Bash", "args": {"command": "podman volume rm pgdata"}, "expect": "ask", "note": "delete a named Podman volume"}
+{"tool": "Bash", "args": {"command": "npx prisma migrate reset --force"}, "expect": "ask", "note": "Prisma wipes the database and re-applies its migrations"}
+{"tool": "Bash", "args": {"command": "bundle exec rails db:drop"}, "expect": "ask", "note": "Rails drops the database"}
+{"tool": "Bash", "args": {"command": "rails db:reset"}, "expect": "ask", "note": "Rails drops, recreates and seeds the database"}
+{"tool": "Bash", "args": {"command": "python3 manage.py flush --no-input"}, "expect": "ask", "note": "Django deletes every row of the database"}
+{"tool": "Bash", "args": {"command": "npx sequelize-cli db:drop"}, "expect": "ask", "note": "Sequelize drops the database"}
+{"tool": "Bash", "args": {"command": "php artisan migrate:fresh --seed"}, "expect": "ask", "note": "Laravel drops every table and migrates again"}
+{"tool": "Bash", "args": {"command": "php artisan db:wipe --force"}, "expect": "ask", "note": "Laravel drops every table, view and type"}
+{"tool": "Bash", "args": {"command": "supabase db reset --linked"}, "expect": "ask", "note": "Supabase resets the linked database"}
+{"tool": "Bash", "args": {"command": "mix ecto.reset"}, "expect": "ask", "note": "Ecto drops and recreates the database"}
+{"tool": "Bash", "args": {"command": "dotnet ef database drop --force"}, "expect": "ask", "note": "EF Core drops the database"}
