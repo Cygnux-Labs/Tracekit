@@ -41,22 +41,18 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
     "TK-SHELL-PARSE": {"reason": "the policy can't read what this shell command runs",
                        "remedy": "Name the program itself (`git push …`, not `$g push …`) so the policy can read it.",
                        "causes": {
-                           "name": {"reason": "the program's name comes from a variable or a command's output that the "
-                                              "line doesn't set to plain text, so the policy can't see what runs",
-                                    "remedy": "Name the program itself, or set the variable to plain text earlier on "
-                                              "the same line (`PY=.venv/bin/python; $PY -m pytest`)."},
-                           "pattern": {"reason": "the program's name is a pattern or a brace expansion, so the policy "
-                                                 "can't see what runs",
-                                       "remedy": "Name the program itself, written out in full."},
-                           "input": {"reason": "a shell or interpreter runs code it reads from a pipe, a file or its "
-                                               "input, which the policy can't see",
-                                     "remedy": "Write out the commands it would run on the line itself, so the policy "
-                                               "can read them."},
-                           "foreign": {"reason": "a shell whose language the policy doesn't read (fish, PowerShell …) "
-                                                 "runs text",
+                           # short: a harness that shows 500 characters keeps the remedy too
+                           "name": {"reason": "its program is a variable the line doesn't set to plain text",
+                                    "remedy": "Name the program, or set the variable to plain text earlier on the "
+                                              "line."},
+                           "pattern": {"reason": "its program's name is a pattern or a brace expansion",
+                                       "remedy": "Name the program in full."},
+                           "input": {"reason": "a shell or interpreter runs code from a pipe, a file or its input",
+                                     "remedy": "Write out the commands it would run."},
+                           "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
-                                      "remedy": "Split it into plain commands: pipes, &&, if, for, case and functions "
+                                      "remedy": "Split it into plain commands; pipes, &&, if, for, case and functions "
                                                 "are read."}}},
     "TK-SQL-PARSE": {"reason": "the policy can't read this SQL",
                      "remedy": "Close the quote or comment so the policy can read it."}}

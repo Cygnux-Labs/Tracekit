@@ -32,6 +32,9 @@ _SCHEDULED = {"trap", "at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's
 # empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
 # line's characters ($'…' decodes others, after a $)
 _SECOND = re.compile(r"[$`*?[]")
+# the shell fields whose subjects carry a tag of up to this many bytes (ACT:, RUNS_DOWNLOAD: …), which doesn't count
+# toward a subject's size: a command just under MAX_SUBJECT isn't oversize for being tagged
+_TAGGED = {"tracekit": 16, "downloads": 16}
 REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one decision share; a match that runs out
                             # of it denies, marked nondeterministic
 
@@ -216,7 +219,8 @@ class Engine:
             field = rule.get("field")
             key = ("argv" if field is None and cls == "shell" else field, "from" in rule)
             if key not in memo:
-                memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]))
+                memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]),
+                                     _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
             if lits is None or any(map(joined.__contains__, lits)):
                 for subject, low in zip(texts, lows):
@@ -952,8 +956,9 @@ def _written_scripts(commands):
         if name in ("cat", "tee", "echo", "printf"):
             text = "\n".join(c["stdin"] + (c["argv"][1:] if name in ("echo", "printf") else []))
             files = list(c.get("out", ())) + ([a for a in c["argv"][1:] if not a.startswith("-")] if name == "tee" else [])
-            out.update((_base(f), out.get(_base(f), "") + "\n" + text) for f in files)
-    return out
+            for f in files:
+                out.setdefault(_base(f), []).append(text)
+    return {f: "\n".join(texts) for f, texts in out.items()}
 
 
 # programs that only read the files they name and print what they find (TK-D007: reading Tracekit's files is allowed,
@@ -1035,7 +1040,8 @@ def _private(learned, commands, acted):
     time (${!x})."""
     if not learned or learned["any_set"] or "*" in learned["unresolved"] or any(c["argv"][0] == "set" for c in commands):
         return set()
-    return {text for name, text in learned["assigned"] if not re.search(r"\$\{?%s\b" % re.escape(name), acted)}
+    used = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", acted))
+    return {text for name, text in learned["assigned"] if name not in used}
 
 
 _FETCHERS = ("curl", "wget")
@@ -1125,16 +1131,17 @@ def _downloads(parsed):
             files |= set(c.get("out", ())) | ({a for a in c["argv"][1:] if not a.startswith("-")}
                                              if c["argv"][0] == "tee" else set())
     # each name a pattern: an expansion in one may be any text (`-o "view-$(basename $p).json"` is view-*.json); one
-    # that is only an expansion may be any file
-    base = {_EXPANDED.sub("*", _base(f)) for f in files}
-    unknown |= "*" in base
+    # that is only an expansion may be any file, and so may any, past 64 patterns
+    names = {_EXPANDED.sub("*", _base(f)) for f in files}
+    exact, patterns = {n for n in names if "*" not in n}, {n for n in names if "*" in n}
+    unknown |= "*" in patterns or len(patterns) > 64
 
     def downloaded(path):
-        return any(fnmatch.fnmatchcase(_base(path), b) for b in base if b != "*")
+        return _base(path) in exact or any(fnmatch.fnmatchcase(_base(path), p) for p in patterns)
     for c in commands:   # a downloaded file copied, moved or linked; unpacked into files no name says
         name, args = c["argv"][0], [a for a in c["argv"][1:] if not a.startswith("-")]
         if name in ("cp", "mv", "install", "ln") and len(args) > 1 and any(map(downloaded, args[:-1])):
-            base.add(_EXPANDED.sub("*", _base(args[-1])))
+            exact.add(_base(args[-1]))   # lean: a destination with an expansion is read as written
         unknown |= name in _EXTRACTORS and any(map(downloaded, args))
     tainted = [m.group(1) for r in parsed[2] + [a for c in commands for a in c["argv"][1:]]
                if (m := re.match(r"([A-Za-z_][A-Za-z0-9_]*)\+?=", r)) and _FETCHED.search(r)]
@@ -1142,16 +1149,18 @@ def _downloads(parsed):
 
     def fetched(text):
         return bool(_FETCHED.search(text) or uses and uses.search(text))
+    carries = set()   # the pipelines an earlier stage of which names a download's output
     for k, c in enumerate(commands):
         argv, kind = c["argv"], shell._kind(c["argv"][0])
         code = shell._dash_c(argv[1:]) if argv[0] in shell.SHELLS else \
             shell._code_arg(kind, argv[1:]) if kind else None
-        ran = [f for f in _runs_files(c) if downloaded(f) or unknown and (f is not c["word"] or "/" in f)]
-        earlier = [w for d in commands[:k] if d["pipeline"] == c["pipeline"] for w in d["argv"][1:] + d["stdin"]]
+        ran = [f for f in _runs_files(c) if downloaded(f) or fetched(f) or unknown and (f is not c["word"] or "/" in f)]
         if ran or fetched(c["word"]) or code is not None and fetched(code) or \
                 argv[0] in ("eval", "source", ".") and any(map(fetched, argv[1:])) or \
-                (shell._stdin_shell([c]) or shell._stdin_interpreter([c])) and any(map(fetched, earlier)):
+                (shell._stdin_shell([c]) or shell._stdin_interpreter([c])) and c["pipeline"] in carries:
             tags.append("RUNS_DOWNLOAD:" + " ".join(argv))
+        if any(map(fetched, argv[1:] + c["stdin"])):
+            carries.add(c["pipeline"])
         first = piped.get(c["pipeline"])
         if first is None or k <= first or c["argv"][0] in _FETCHERS:
             continue
@@ -1268,14 +1277,14 @@ def _strings(value):
     return [s for v in value for s in _strings(v)] if isinstance(value, list) else []
 
 
-def _prepare(subjects):
-    """(the subjects as text, up to the first longer than MAX_SUBJECT; their lower-case forms; those joined by a
-    newline; whether one was longer). A rule matches the subjects before a long one and, matching none, takes
-    TK-OVERSIZE, as one that walked them in order would."""
+def _prepare(subjects, tag=0):
+    """(the subjects as text, up to the first longer than MAX_SUBJECT, past `tag` bytes a field's own tag adds
+    (_TAGGED); their lower-case forms; those joined by a newline; whether one was longer). A rule matches the subjects
+    before a long one and, matching none, takes TK-OVERSIZE, as one that walked them in order would."""
     texts = []
     for s in subjects:
         b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
-        if len(b) > MAX_SUBJECT:
+        if len(b) > MAX_SUBJECT + tag:
             break
         texts.append(s if b is s else b.decode("utf-8"))
     lows = [t.lower() for t in texts]
