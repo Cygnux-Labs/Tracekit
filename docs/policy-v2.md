@@ -196,21 +196,27 @@ a file a command only reads or copies. The tags are not in `target`, so a target
 
 - `tracekit` (shell): what a command does to Tracekit's own files and signer, each a tagged subject (`TK-D007`).
   `ACT:` what a command acts on or runs: its words (data words aside) and stdin, the files redirections write, the
-  files `effects` names, assignments and heredoc programs. `READ:` what a command that only reads names (`ls`, `cat`,
-  `head`, `grep`, `rg`, `find` without an action, `sed` with a script that only prints or substitutes, `diff`, `stat`,
-  `pgrep` …), the files a redirection reads, a `cd` where every command only reads, and an assignment the line uses
-  only in those (none on a line that may set or export variables). `DEEP:` what a reader reads all of (`grep -r`,
-  `rg`, a pattern). `SIGNER_MODULE:` an `ACT:` text that names `tracekit.signer`, `tracekit.daemon` or
-  `tracekit.proxy`, so a rule can deny only code that also names a live location's function.
+  files `effects` names, assignments and heredoc programs. `LIST:` what a command that prints only names, sizes or
+  counts names (`ls`, `stat`, `du`, `find` without an action, `wc` …), and an assignment the line uses only in readers
+  (none on a line that may set or export variables). `READ:` what a command that reads contents names (`cat`,
+  `head`, `grep`, `sed` with a script that only prints or substitutes, `diff` …), and the files a redirection reads.
+  `DEEP:` what a reader reads all of (`grep -r`, `rg`, a pattern), what a reader names whose output goes on to
+  something other than a filter (`find … | xargs cat`, `cat $(find …)`, a `while read` loop), and the folder a `cd`
+  enters where every command only reads. `SIGNER_MODULE:` an `ACT:` text whose code reaches more of
+  `tracekit.signer` than its read-only parts (`rpc_schema`, `reconcile`, `detect`, the service's `load_policy` and
+  `DEFAULT_POLICY`), or `tracekit.daemon`, `tracekit.proxy`, or looks names up at run time (`runpy`, `getattr` …).
 - `downloads` (shell): the `code` subjects, and where downloaded bytes run (`TK-D002`, `RUNS_DOWNLOAD:` and the
   command): a file a `curl` or `wget` wrote (`-o`, `-O`, a redirection, a later pipeline stage's redirection or `tee`;
   then copied, moved or unpacked) that a later command runs as a script, a program or by `source`; any script when
-  the line can't name the download (`curl -J`, an archive unpacked); a `$(curl …)` (or a variable set to one) as a
-  command's name, in `eval`, `source` or `-c`/`-e` code, or piped into a shell that reads stdin. And where a download's
-  pipe feeds code that may run or store it (`TK-A046`, `PIPED_TO_CODE:`): a later stage that is a shell with `-c` or
-  a script, an interpreter with a script or a module (`python3 -m json.tool` aside), or with inline code; Python's
-  only with an exec-style call, an unpickler, a spawner or a file write. A tagged subject's tag doesn't count toward
-  its size.
+  the line can't name the download (`curl -J`, an archive unpacked); a `$(curl …)` (or a variable set to one, or a
+  substitution that reads a downloaded file) as a command's name, in `eval`, `source` or `-c`/`-e` code, in a
+  herestring or pipe into a shell or interpreter that reads stdin; a downloaded file copied (`cat >`, `dd`, `cp`,
+  `rsync`, `tee`) and run, run by `python -m`, by inline code that names it, by `find -exec` or `xargs`. And where a
+  download's pipe feeds code that may run or store it (`TK-A046`, `PIPED_TO_CODE:`): a later stage that is a shell
+  with `-c` or a script, an interpreter with a script or a module (`python3 -m json.tool` aside), or with inline code;
+  Python's unless it imports only modules that keep what it reads as data (`json`, `sys` for its streams and
+  arguments, `re`, `math`, `csv`, `collections` …) and has no exec-style call, dunder name or write. A tagged subject's
+  tag doesn't count toward its size.
 
 - `host`: the URL's host as a browser reads it (`host:port/path` without a scheme is http; controls, tabs and newlines dropped, `view-source:` and `blob:`
   peeled, `\` as `/`, any number of slashes after the scheme, the host after the last `@`), percent-decoded, NFKC
@@ -298,11 +304,14 @@ literal name is fine), a shell or interpreter reading its program from a pipe or
 into a script or command name, sed's `s///e`. A command name a variable gives is read with the literal the line
 surely gives it (`PY=.venv/bin/python; $PY -m pytest`, a for loop's words), and isn't opaque when it is a path; a
 bare program name a variable gives (`X=rm; $X …`) only hides that name, so it is read and still held. A value from a
-substitution, the environment or an assignment that may not run (`cd x && PY=…; $PY`) stays opaque. A shell function
+substitution, the environment or an assignment that may not run (`cd x && PY=…; $PY`) stays opaque, and so does every
+variable on a line that names `IFS` (where bash splits a value can't be told). A shell function
 (`f() { …; }`, `function f { …; }`) is read where it is called, its body with the call's words as `$1` … and `"$@"`
 (a call in its own body is opaque; a function named `cd`, `export`, `unset` or `command_not_found_handle` makes the
-line unreadable); every arm of a `case` is read; `bash --version` and `--help` run no script. The decision's `unread`
-says why a command is held (`name`, `pattern`, `input`, `foreign`, `syntax`), and the signer gives that cause's own
+line unreadable); one the line doesn't call, or exports (`export -f`), is read as if it ran and held, as a shell that
+persists or a bash child may run it later; every arm of a `case` is read; `bash --version` and `--help` run no
+script. The decision's `unread`
+says why a command is held (`function`, `name`, `pattern`, `input`, `foreign`, `syntax`), and the signer gives that cause's own
 reason and remedy.
 
 **Paths:** a `\` is a `/` and `C:/…` is absolute (the agent may run on Windows). An absolute path without `..` is

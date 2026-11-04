@@ -8,7 +8,9 @@ runs git for `Git`; Windows runs git.exe for git); `word` is that first word as 
 an expansion builds); `via` says how the command was reached (empty at top level); commands with the same `pipeline`
 are stages of one pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or
 expansion in its name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of
-a stream). `stdin`: the herestring and heredoc text the command reads (the names `xargs rm <<< x` deletes).
+a stream). `stdin`: the herestring and heredoc text the command reads (the names `xargs rm <<< x` deletes). A command
+of the line itself also has `out` and `in`, the files its redirections write and read, and `stage`, its place in its
+pipeline (0 first).
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
@@ -272,7 +274,7 @@ def analyse(command, persistent_target=None, readings=True, work=None):
     readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
-           "unresolved": set(),
+           "unresolved": set(), "called": set(), "exported": set(), "ifs_named": "IFS" in command,
            "command_names_mutable": False,
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
@@ -324,6 +326,17 @@ def analyse(command, persistent_target=None, readings=True, work=None):
     top = _Parser(command, ctx, [])
     try:
         top.script()
+        # a function the line defines and doesn't call, or exports, runs where the policy doesn't see it (a later call
+        # in a shell that persists, any bash child): its body is read as if it ran, and it is held
+        for name, bodies in list(ctx["functions"].items()):
+            if name not in ctx["called"] or name in ctx["exported"]:
+                for body in bodies:
+                    first = len(ctx["cmds"])
+                    p = _Parser(body, ctx, [f"function {name} (defined)"])
+                    p.known = {}
+                    p.script()
+                    for c in ctx["cmds"][first:first + 1]:
+                        c["opaque"] = True
     except ParseError as e:
         e.at = top.i   # where the line stops being readable: the words before it may still be (engine._plain)
         raise
@@ -366,7 +379,7 @@ def analyse_argv(argv, readings=True, work=None):
     """analyse() for a command given as an argv list, run without a shell."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
-           "unresolved": set(),
+           "unresolved": set(), "called": set(), "exported": set(), "ifs_named": False,
            "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False, "brace": MAX_BRACE,
            "readings": readings, "nested": set()}
@@ -1114,6 +1127,7 @@ class _Parser:
         arguments when the call gives literals (else unknown, so a body that runs one is held), the caller's known
         variables are the body's. A call within its own body (recursion) or past 8 calls deep is unreadable (opaque)."""
         calling = self.ctx["calling"]
+        self.ctx["called"].add(name)
         if name in calling or len(calling) >= 8:
             cmd["opaque"] = True
             return
@@ -1135,11 +1149,11 @@ class _Parser:
 
     def pipeline(self):
         self.ctx["pipes"] += 1
-        pid, piped = self.ctx["pipes"], False
+        pid, piped, stage = self.ctx["pipes"], False, 0
         while True:
-            if not self.simple(pid, piped):
+            if not self.simple(pid, piped, stage):
                 raise ParseError("command expected")
-            piped = True
+            piped, stage = True, stage + 1
             self.blank()
             if self.at("||"):
                 return
@@ -1152,7 +1166,7 @@ class _Parser:
             self.out.append("|")
             self.gap()
 
-    def simple(self, pid, piped=False):
+    def simple(self, pid, piped=False, stage=0):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
         # per word: .vanish, a pathname pattern, .cut, .slots, .alone, .full, a known variable in it (.given or .slots)
         vanish, patterns, cuts, slots, alones, fulls, givens = [], [], [], [], [], [], []
@@ -1440,7 +1454,7 @@ class _Parser:
             d["always_data"] = git_stdin_message
         for c in cmds:
             c["stdin"] += strings
-            c["out"], c["in"] = outs, ins
+            c["out"], c["in"], c["stage"] = outs, ins, stage
         shell = _stdin_shell(cmds)
         # its script comes from a pipe, a file or inherited stdin; one only a second reading makes (`bash $f` read as
         # `bash`) from a pipe or a file: the script file of an ordinary `bash $f` isn't held; `bash --version` and
@@ -1568,6 +1582,8 @@ class _Parser:
             cmds.append(cmd)
             if not unreadable[0] and argv[0] in self.ctx["functions"]:   # and as the program of that name, if it isn't
                 self.call(argv[0], args, via, cmd)
+            if name in ("export", "declare", "typeset", "readonly") and any(re.fullmatch(r"-\w*f\w*", a) for a in args):
+                self.ctx["exported"].update(a for a in args if not a.startswith(("-", "+")))   # export -f: any child
             if name in ("export", "declare", "typeset", "readonly", "local", "env"):   # git config set in the environment
                 for a in args:
                     if (alias := _git_env_alias(a)) is not None:
@@ -1815,7 +1831,8 @@ class _Parser:
             return None
         known = {} if self.ctx["any_set"] else self.known   # a known variable reads as written, never empty
         given = buf
-        if self.ctx["exp"] != exp:
+        # (not on a line that names IFS: where bash splits a value then can't be told, so none is read through)
+        if self.ctx["exp"] != exp and not self.ctx["ifs_named"]:
             # a variable the line surely gave one literal expands to it, as bash runs it; unquoted, only a literal bash
             # neither splits nor globs (the others are fill()'s slots)
             buf = [v[0] if isinstance(p, _Expansion) and (m := _PLAIN_VARIABLE.fullmatch(p)) and len(
@@ -1827,8 +1844,9 @@ class _Parser:
         self.alone = alone and self.ctx["exp"] != exp   # only unquoted expansions: gone when they are empty
         if self.ctx["exp"] != exp:
             # every expansion in the word is a variable the line gives literals
-            self.full = all(not isinstance(p, _Expansion) or (m := _PLAIN_VARIABLE.fullmatch(p)) and known.get(
-                m.group(1)) for p in buf if p)
+            self.full = not self.ctx["ifs_named"] and all(
+                not isinstance(p, _Expansion) or (m := _PLAIN_VARIABLE.fullmatch(p)) and known.get(m.group(1))
+                for p in buf if p)
             pieces, glued, j = [str(p) if (m := _PLAIN_VARIABLE.fullmatch(p)) and m.group(1) in known else p
                                 for p in buf if p], set(), 0
             # the text with each known variable that has literals as a slot, (name,), for fill()

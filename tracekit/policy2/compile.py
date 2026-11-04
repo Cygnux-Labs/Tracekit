@@ -49,6 +49,8 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                        "remedy": "Name the program in full."},
                            "input": {"reason": "a shell or interpreter runs code from a pipe, a file or its input",
                                      "remedy": "Write out the commands it would run."},
+                           "function": {"reason": "it defines a shell function it doesn't call, or exports one",
+                                        "remedy": "Call the function on the same line, or run its commands directly."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
