@@ -819,6 +819,7 @@ def _opencode_plugin(python, v2, harness="opencode"):
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
                 _dev_hook_argv(module, "entry", (harness, ev)) for ev in ("tool.execute.before", "tool.execute.after")}
+    agent, config = ("Kilo Code", "kilo.json") if harness == "kilo" else ("OpenCode", "opencode.json")
     return f'''{_plugin_marker(harness)}
 const commands = {json.dumps(commands)};
 // above the most a hook takes to answer, a held call's approval wait included (Tracekit's APPROVAL_WAIT_S), as the
@@ -858,8 +859,8 @@ async function tracekit(event, input, toolInput, toolResponse) {{
 export const TracekitPlugin = async ({{ directory }}) => ({{
   "tool.execute.before": async (input, output) => {{
     if (input.tool === "batch") {{   // OpenCode runs the calls inside a batch with no plugin hooks
-      throw new Error("Blocked by Tracekit: OpenCode's experimental batch tool runs its calls without plugin hooks, " +
-        "so Tracekit can't decide them. Turn it off (experimental.batch_tool in opencode.json) and make each call itself.");
+      throw new Error("Blocked by Tracekit: {agent}'s experimental batch tool runs its calls without plugin hooks, " +
+        "so Tracekit can't decide them. Turn it off (experimental.batch_tool in {config}) and make each call itself.");
     }}
     const result = await tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
     if (result.code !== 0) {{   // blocked (2), or the hook could not decide the call: it doesn't run

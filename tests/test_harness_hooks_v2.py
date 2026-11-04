@@ -139,7 +139,7 @@ class Mapping(HarnessCase):
         self.assertEqual((code, out), (2, ""))   # the name before goose 1.56, prefixed
         self.assertEqual(self.sent, [])
 
-    def test_qwen_under_cmd_exe_decides_the_payloads_event(self):
+    def test_qwen_under_cmd_exe_decides_the_event_its_command_names(self):
         # the review of #547: Qwen Code before 0.15.0 runs the hook under cmd.exe, which hands PowerShell's tail to it
         # as arguments; `PreToolUse;` replaced the payload's event, no event matched, and the call ran unchecked
         self.decision = "deny"
