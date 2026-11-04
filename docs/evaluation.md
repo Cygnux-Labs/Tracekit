@@ -280,9 +280,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 790 harmful and 850 benign tool calls in 11 classes
+- **Policy packs** (`eval/e17_policy_corpus.py`): 790 harmful and 854 benign tool calls in 11 classes
   (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 790 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 850 (0.12%); the engines
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 854 (0.12%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -590,7 +590,7 @@ recorded again with those rules, on purpose: strict's false positives on E17's b
 repository-protection, database-client and infrastructure-removal rules, are calls strict does not hold, so the count
 stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule sweep added, strict holds one
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
-`py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the nine AWS audit-logging reads (`TK-C010`) and the six lookalikes of `TK-A055` strict does not hold either: 46 of 850 (5.4%).
+`py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the nine AWS audit-logging reads (`TK-C010`) and the six lookalikes of `TK-A055` strict does not hold either: 46 of 854 (5.4%).
 All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
