@@ -1251,7 +1251,7 @@ _TAINT_READERS = {"cat", "head", "tail", "grep", "egrep", "fgrep", "wc", "jq", "
                   "test", "[", "sha256sum", "shasum", "sha1sum", "md5", "md5sum", "cksum", "diff", "cmp", "od",
                   "hexdump", "strings", "sort", "cut", "nl"}
 _TAINT_MOVES = {"rm", "unlink", "chmod", "cp", "mv"}
-# a file a program or shell loads by itself: one downloaded there runs
+# a file a program or shell loads by itself wherever it is: one downloaded there runs
 _AUTOLOAD = re.compile(r"(?:^|/)(?:conftest\.py|sitecustomize\.py|usercustomize\.py|[^/]*\.pth|\.bashrc|\.bash_profile|"
                        r"\.bash_login|\.bash_logout|\.bash_aliases|\.aliases|\.zsh_aliases|\.profile|\.zshrc|\.zshenv|"
                        r"\.zprofile|\.zlogin|\.kshrc|\.mkshrc|\.cshrc|\.tcshrc|\.envrc|\.pythonrc(?:\.py)?|"
@@ -1260,11 +1260,15 @@ _AUTOLOAD = re.compile(r"(?:^|/)(?:conftest\.py|sitecustomize\.py|usercustomize\
                        r"pytest\.ini|tox\.ini|setup\.cfg|pyproject\.toml|[Mm]akefile|GNUmakefile|[Jj]ustfile|Rakefile|"
                        r"Gemfile|Cargo\.toml|build\.rs|\.npmrc|\.yarnrc(?:\.yml)?|\.gitconfig|\.git/config|"
                        r"\.pre-commit-config\.yaml)$|(?:^|/)\.git/hooks/[^/]+$|"
-                       # code by its name: what an interpreter or shell loads by a name the line needn't spell
-                       # (`python3 .` loads __main__.py, `node .` index.js, require('./x') x.js, `use x` x.pm)
-                       r"\.(?:py|pyc|pyw|js|mjs|cjs|ts|rb|pl|pm|sh|bash|zsh|ksh|fish|ps1|php|lua|command)$|"
                        # a program planted where a later call finds it by name: a bin dir
                        r"(?:^|/)s?bin/[^/]+$")
+# code an interpreter imports by a name the line needn't spell (`import x` x.py, require('./x') x.js, `use x` x.pm,
+# `python3 .` __main__.py), so it runs where imports look: the working tree, a search path, a dir the line imports from
+_IMPORTABLE = (".py", ".pyc", ".pyw", ".js", ".mjs", ".cjs", ".ts", ".rb", ".pm", ".lua")
+# a scratch dir nothing imports from by itself (but a search path's dir in it: site-packages, node_modules)
+_SCRATCH = re.compile(r"(?:(?:/private)?/(?:var/)?tmp|(?:/private)?/var/folders|\$\{?TMPDIR\}?|"
+                      r"(?:~|\$\{?HOME\}?|/Users/[^/]+|/home/[^/]+)/Downloads)/"
+                      r"(?!(?:.*/)?(?:site-packages|dist-packages|node_modules)/)")
 # the options of a Python that runs its inline code (or json.tool) and nothing else: -i would read stdin after it
 _PY_PLAIN_FLAGS = re.compile(r"-[IEsBu]*[cm]?")
 
@@ -1291,8 +1295,10 @@ def _downloads(parsed):
     command or assignment that names a downloaded file (`BASH_ENV=f`, `--rcfile f`, `openssl -in f`, `sh f`) unless it
     is one that only prints, removes or copies it (_TAINT_READERS whose output reaches no more than the terminal or a
     filter, _TAINT_MOVES, Python inline code _data_only reads as data); a downloaded file whose name a program or shell
-    loads by itself (_AUTOLOAD: conftest.py, a .pth, a shell rc file, a git hook); any script or path program when the
-    line can't name a download (curl -J, an archive); a substitution of curl or wget, a variable the line sets to one,
+    loads by itself (_AUTOLOAD: conftest.py, a .pth, a shell rc file, a git hook, a bin dir or one the line puts on
+    PATH), and importable code (_IMPORTABLE) but in a scratch dir the line doesn't import from; any script or path
+    program when the line can't name a download (curl -J, an archive); a substitution of curl or wget, a variable the
+    line sets to one,
     or a substitution that reads a downloaded file, as a command's name, in eval or source, in -c code, in a herestring
     or pipe into a shell or interpreter; a shell or interpreter xargs, parallel or find -exec runs on a line that
     downloads. Piped to code: a later stage of a download's pipeline that is a shell with -c or a script, an
@@ -1352,10 +1358,22 @@ def _downloads(parsed):
         if len(exact) + len(patterns) == size:
             break
     unknown |= "*" in patterns or len(patterns) > 64
+    assigns = parsed[2] + [a for c in commands if c["argv"][0] == "export" for a in c["argv"][1:]]
     # a dir the line puts on PATH: a download planted there runs when a later call names it
-    bins = {d.rstrip("/") for r in parsed[2] + [a for c in commands if c["argv"][0] == "export" for a in c["argv"][1:]]
-            if r.startswith("PATH=") for d in r[5:].split(":") if d and "$" not in d}
-    if any(_AUTOLOAD.search(p.replace("\\", "/")) or posixpath.dirname(p).rstrip("/") in bins for p in paths):
+    bins = {d.rstrip("/") for r in assigns if r.startswith("PATH=") for d in r[5:].split(":") if d and "$" not in d}
+    # the dirs the line names when an interpreter runs on it: a cd, a -I, a search path, an operand, code's text
+    reached = {t.rstrip("/") for w in [a for c in commands if c["argv"][0] not in _FETCHERS
+                                       for a in c["argv"][1:] + c["stdin"]] + assigns
+               for t in re.findall(r"[^\s'\"();=:,`]+", re.sub(r"^-I", "", w))} if any(
+        shell._kind(c["argv"][0]) not in (None, "awk", "sed") for c in commands) else set()
+
+    def loadable(path):   # importable code outside a scratch dir, or in one the line imports from (or may link)
+        path = posixpath.normpath(path)
+        folder = posixpath.dirname(path)
+        return path.endswith(_IMPORTABLE) and (not _SCRATCH.match(path) or any(c["argv"][0] == "ln" for c in commands)
+                                               or bool({folder, posixpath.dirname(folder)} & reached))
+    if any(_AUTOLOAD.search(p := f.replace("\\", "/")) or loadable(p) or posixpath.dirname(p).rstrip("/") in bins
+           for f in paths):
         tags.append("RUNS_DOWNLOAD:a file a program, shell or later call loads by its name")
     for r in parsed[2]:   # an assignment that names one: BASH_ENV, ENV, PYTHONSTARTUP …
         if "=" in r and downloaded(r.partition("=")[2]):
@@ -1369,7 +1387,7 @@ def _downloads(parsed):
         data = plain and code is not None and _data_only(code, files=True)
         use = named(c) if argv[0] not in _FETCHERS else []
         if code is not None and not use:   # code that names a downloaded file, or imports a downloaded module
-            use = [w for w in re.findall(r"[\w./-]+", code) if downloaded(w)] + [
+            use = [w for w in re.findall(r"[\w./-]+", code) if any(downloaded(w + e) for e in ("",) + _IMPORTABLE)] + [
                 m for m in re.findall(r"\b(?:import|from)\s+(\w+)", code) if downloaded(m + ".py")]
         ran = [f for f in _runs_files(c) if downloaded(f) or fetched(f) or unknown and (f is not c["word"] or "/" in f)]
         harmless = argv[0] in _TAINT_READERS and passes(c) or argv[0] in _TAINT_MOVES or data

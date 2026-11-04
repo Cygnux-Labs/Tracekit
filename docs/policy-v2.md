@@ -211,10 +211,10 @@ a file a command only reads or copies. The tags are not in `target`, so a target
   then copied, moved or unpacked) that a later command runs as a script, a program or by `source`; any script when
   the line can't name the download (`curl -J`, an archive unpacked); any command or assignment that names a
   downloaded file or a copy of it, unless it only prints it to the terminal or a filter, removes, copies or moves it,
-  or is Python inline code read as data; a download written or copied under a name an interpreter, shell or tool loads
-  by itself (code by its extension, as `__init__.py` and `index.js` are, `package.json`, `conftest.py`, a `.pth`, a
-  shell rc or alias file, a tool's config such as `pytest.ini` or a `Makefile`, a git hook) or into a `bin` dir or one
-  the line puts on `PATH`; a `$(curl …)` (or a variable set to one, or a substitution that reads a
+  or is Python inline code read as data; a download written or copied under a name a shell or tool loads by itself
+  (`package.json`, `conftest.py`, a `.pth`, a shell rc or alias file, a tool's config such as `pytest.ini` or a
+  `Makefile`, a git hook), into a `bin` dir or one the line puts on `PATH`, or as importable code (`.py`, `.js`, `.rb`,
+  `.pm` …) anywhere but a scratch dir (`/tmp`, `~/Downloads`) the line doesn't import from; a `$(curl …)` (or a variable set to one, or a substitution that reads a
   downloaded file) as a command's name, in `eval`, `source` or `-c`/`-e` code, in a herestring or pipe into a shell
   or interpreter that reads stdin. And where a download's pipe feeds code that may run or store it (`TK-A046`,
   `PIPED_TO_CODE:`): a later stage that is a shell with `-c` or a script, an interpreter with a script or a module
