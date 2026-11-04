@@ -8,12 +8,11 @@ import io
 import json
 import os
 import socket
-import time
 import unittest
 import uuid
-import zipfile
 from unittest import mock
 
+from factories import BOX, box_runset_bundle
 from test_signer_service import ME, PAY_ASKS, ROOT, SocketSigner, tmpdir
 from tracekit.bundle_v2 import export
 from tracekit.format.canon import event_hash
@@ -21,13 +20,11 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.signer import rpc_schema, service as svc
 from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
-from tracekit.storage.base import registry_tree
 from tracekit.transport import Bound
 from tracekit.verify import protection, summary, v2
 
 DAEMON, OTHER_DAEMON = CallerIdentity("uid", "1001", True), CallerIdentity("uid", "1002", True)
 CLIENT = CallerIdentity("uid", "2000", True)   # an agent outside any box
-BOX = {"id": "b-1", "image_digest": "sha256:" + "a" * 64, "allow": ["claude-code", "anthropic"], "channel": "agent"}
 DAEMONS = {"uid:1001": "firecracker", "uid:1002": "firecracker"}
 _spec = importlib.util.spec_from_file_location("e17_detection", os.path.join(ROOT, "eval", "e17_detection.py"))
 e17 = importlib.util.module_from_spec(_spec)
@@ -36,30 +33,6 @@ _spec.loader.exec_module(e17)
 
 def rid():
     return uuid.uuid4().hex
-
-
-def runset_bundle(d):
-    """(a run-set bundle of a plain run whose registry range also points to an open box run's run.registered, its trust
-    file): the box's label is on a record of a run the bundle doesn't hold (#603's review)."""
-    os.makedirs(d, exist_ok=True)
-    s = svc.SignerService(os.path.join(d, "data"), grace_s=0, fsck_every_s=0,
-                          box_daemons={f"uid:{ME.subject}": "firecracker"})
-    try:
-        s.call(ME, "register_run", {"request_id": rid(), "agent": {"name": "tkbox"}, "box": BOX})   # stays open
-        plain = s.call(ME, "register_run", {"request_id": rid(), "agent": {"name": "plain-agent"}})
-        s.call(ME, "close_run", {"request_id": rid(), "run_id": plain["run_id"], "run_token": plain["run_token"]})
-        s.sweep(time.monotonic() + 1)
-        s.checkpoint()
-        st, out, trust = s.log.storage, os.path.join(d, "plain-runset.tkb"), os.path.join(d, "plain-runset-trust.json")
-        export(st, "default", plain["run_id"], st.checkpoint_latest()[1], out,
-               run_set=(0, st.checkpoint_latest(registry_tree("default"))[0]), tenant_salt=s.log.tenant_salt("default"))
-        with open(trust, "w") as f:
-            json.dump({"logs": [s.vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0}, f)
-    finally:
-        s.close()
-    with zipfile.ZipFile(out) as z:
-        assert b'"box":{"id":"b-1"' in z.read("registry/records.jsonl"), "the range holds no box label"
-    return out, trust
 
 
 class Signer(unittest.TestCase):
@@ -553,7 +526,7 @@ class TestVerifier(unittest.TestCase):
     def test_a_run_set_claims_only_for_the_runs_it_holds(self):
         """#603's review: a run-set's registry records point to other runs' run.registered, labels included. A plain
         run's run-set bundle whose range holds a box run gets no box line: it isn't that run's."""
-        bundle, trust = runset_bundle(tmpdir(self))
+        bundle, trust = box_runset_bundle(tmpdir(self))
         rep, code = v2.verify(bundle, trust)
         self.assertEqual(code, 0, rep.checks)
         self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])

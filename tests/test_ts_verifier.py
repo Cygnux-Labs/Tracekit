@@ -23,7 +23,7 @@ import zipfile
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
-from factories import damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
+from factories import box_runset_bundle, damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
 from tracekit import cli, crypto, gateway  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
@@ -915,8 +915,7 @@ class Agreement(SignerBundles):
     def test_a_run_set_claims_only_for_its_own_runs_in_both(self):
         """#603's review: a box run's label on a run-set's registry record (another run's run.registered) is no claim
         about the bundle's own plain run, in either verifier."""
-        import test_box_channel as box
-        bundle, trust = box.runset_bundle(os.path.join(self.d, f"runset-{uuid.uuid4().hex}"))
+        bundle, trust = box_runset_bundle(os.path.join(self.d, f"runset-{uuid.uuid4().hex}"))
         _, rep = self.agree(bundle, trust)   # the same lines in both
         self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])
 
