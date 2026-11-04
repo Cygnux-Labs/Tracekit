@@ -77,7 +77,10 @@ class TestOpenRun(DevSigner):
         run_id = p.stdout.split()[0]
         self.assertIn("tracekit last --open verifies it as it stands", self.sh("-m", "tracekit", "last", code=1).stderr)
         out = self.sh("-m", "tracekit", "last", "--open").stdout
-        self.assertIn(f"run {run_id} (open-one)\nIntegrity: VERIFIED TO HEAD", out)
+        self.assertIn(f"run {run_id} (open-one)\nVERIFIED SO FAR: ", out)
+        self.assertIn("the run has not ended, so more may follow.\nNOT PROOF AGAINST THE AGENT: ", out)
+        out = self.sh("-m", "tracekit", "last", "--open", "--detail").stdout
+        self.assertIn("\nIntegrity: VERIFIED TO HEAD", out)
         self.assertIn("(open).\nAssurance: dev", out)
 
 
@@ -93,7 +96,8 @@ class TestThreeSteps(DevSigner):
                 if name != "openai":
                     self.assertIn(REFUSED, out[1])
                 p = self.sh("-m", "tracekit", "last")
-                self.assertIn("Integrity: VERIFIED.\nAssurance: dev", p.stdout)
+                self.assertRegex(p.stdout, r"\nVERIFIED: \d+ recorded actions, none changed")
+                self.assertIn("\nNOT PROOF AGAINST THE AGENT: ", p.stdout)   # a dev signer
                 bundle = p.stdout.split("bundle: ", 1)[1].splitlines()[0]
                 self.assertTrue(os.path.isfile(bundle) and os.path.isfile(bundle[:-4] + ".trust.json"))
                 self.assertIn("next: tracekit view --dev", p.stdout)

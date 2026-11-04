@@ -802,7 +802,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                         for r in every)
     against = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
                if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "executed_against_policy"]
-    rep.kids = sorted({str(r.get("kid")) for r in every})   # each record is a dict by now: `against` read every one
+    # read as `against` reads them, which raised first on a malformed record; a tuple, as a kind may be unhashable
+    rep.gaps = sum(r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") not in (*INFO_GAPS,)
+                   for r in every)
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)

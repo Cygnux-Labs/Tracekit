@@ -312,6 +312,8 @@ def main(argv=None):
     p.add_argument("-o", "--out", help="the bundle (default: <run id>.tkb here); its trust config goes next to it")
     p.add_argument("--open", action="store_true", help="the most recent run even if it is still open (a coding "
                    "agent's session run stays open until the session ends), verified up to its last checkpointed record")
+    p.add_argument("--detail", action="store_true", help="print every check, then the Integrity and Assurance lines, "
+                   "as `tracekit verify --detail` does")
 
     p = sub.add_parser("verify", help="verify a .tkb offline")
     p.add_argument("bundle")
@@ -751,7 +753,7 @@ def _run(a):
                               "integrity": integrity, "assurance": assurance, "notes": rep.notes,
                               **({"findings": rep.findings} if getattr(rep, "findings", None) else {})},
                              indent=2))
-        elif a.detail or code == 2:   # an unusable bundle's report is the reason it is one
+        elif a.detail:
             mod.print_report(rep, code)
         else:
             from .verify import summary
@@ -1004,10 +1006,12 @@ def _last(a):
         print(f"tracekit last: cannot pin the dev signer's key: {e}", file=sys.stderr)
         return 1
     rep, code = v2.verify(out, trust)
-    if code:
+    print(f"run {run_id} ({agent})")
+    if a.detail:
         v2.print_report(rep, code)
     else:
-        print(f"run {run_id} ({agent})\nIntegrity: {rep.integrity}.\nAssurance: {rep.assurance}.")
+        from .verify import summary
+        summary(rep, code, rep.integrity, rep.assurance)
     print(f"bundle: {out}\ncheck it again: tracekit verify {_quote(out)} --trust {_quote(trust)}\n"
           "next: tracekit view --dev   (every run, replayed and reviewed)")
     return code

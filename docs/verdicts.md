@@ -1,25 +1,34 @@
 # Reading a v2 verify report
 
-`tracekit verify bundle.tkb --trust trust.json` prints a short result: the verdict, how many events and which keys
-signed them, the warnings by name, and how far the setup protects the record from the agent:
+`tracekit verify bundle.tkb --trust trust.json` (and `tracekit last`, and `tracekit demo`) prints a short result in
+plain words: the verdict on the recorded actions, the warnings by name, and whether the record is proof against the
+agent. A dev signer's bundle:
 
 ```text
-VERIFIED: 11 events, signed by sha256:12cf00a6…, nothing edited or missing.
-Protection: none against the agent. Dev mode: the signer ran as the agent's own user, so the agent could have re-signed this log.
-For real protection, run the signer where the agent can't reach it: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+VERIFIED: 11 recorded actions, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
 ```
 
-A bundle that fails says where it breaks, by the record's log `seq`:
+A signer the agent can't reach says `PROOF AGAINST THE AGENT: the signing key was out of the agent's reach
+(separate-user).`, then whether an independent witness cosigned the log too. It says so only when something outside the
+bundle vouches for the signing key: always for a v2 bundle (your trust file pins it), and for a v1 bundle only with
+`--key` or `--witness`. Without them a v1 bundle prints `NOT SHOWN: nothing outside the bundle vouches for the signing
+key. Pin it with --key, or use a witness.` With several runs, the weakest isolation counts.
+
+"Recorded" matters: a verified bundle shows that what was signed is intact, not that every action was captured. `none
+changed, removed or added` is said only when no check warned; signed gaps, records the signer wrote about what it
+missed or could not check, read `VERIFIED WITH GAPS: 6 recorded actions, none changed after signing; 2 signed gaps
+(...)`. A bundle that fails says where it breaks, by the record's log `seq`, in plain words:
 
 ```text
-TAMPERED at event 4: hash does not match the event.
+TAMPERED at event 4: its content was changed after it was signed.
 Add --detail to see each check.
 ```
 
-`nothing edited or missing` is said only of a `VERIFIED` bundle with no warning; with warnings it says `nothing
-edited` and names them. `Protection` comes from the `isolation` each run's signer recorded: `none against the agent`
-for `same-user` (dev mode); for `separate-user` or `remote`, whether an independent witness cosigned the log too
-(`Assurance: witnessed`). A bundle that can't be checked at all (exit 2) gets the full report.
+`TAMPERED` is for a record that was changed, forged, removed or reordered (`the record before it is missing, extra or
+out of order`); anything else is `FAILED at event n:` or `FAILED:` with the reason in one line. A bundle that can't be
+checked at all (exit 2) says why (`UNUSABLE BUNDLE: ...`), with the commands to run when it needs a newer verifier.
 
 `tracekit verify bundle.tkb --trust trust.json --detail` prints one line per check, then two summary lines, and a third
 when the bundle holds `review` records (signed findings, or reviews imported with no citations). The rest of this page

@@ -299,8 +299,7 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", out)
         self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust, "--detail"))
         said = self.cli("verify", out, "--trust", trust)
-        self.assertTrue(said.startswith("VERIFIED: ") and "\nProtection: none against the agent. Dev mode: " in said,
-                        said)
+        self.assertTrue(said.startswith("VERIFIED: ") and "\nNOT PROOF AGAINST THE AGENT: " in said, said)
         self.assertTrue(self.held())   # the signer kept running throughout
 
     def test_export_says_what_it_wrote_and_the_commands_it_gives_verify_it(self):
@@ -323,7 +322,7 @@ class DevSignerEndToEnd(unittest.TestCase):
                                r"trust\.json\n$")
         trust, verify = [shlex.split(x)[1:] for x in said.splitlines() if x.startswith("  tracekit ")]
         self.cli(*trust)
-        self.assertRegex(self.cli(*verify), r"^VERIFIED: \d+ events, signed by sha256:")
+        self.assertRegex(self.cli(*verify), r"^VERIFIED: \d+ recorded actions, none changed")
         info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "-o", "again.tkb", "--json"))
         self.assertEqual((info["bundle"], info["verifier_min_version"] in said), ("again.tkb", True))
 

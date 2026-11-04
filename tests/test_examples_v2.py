@@ -102,10 +102,11 @@ class DemoServer(unittest.TestCase):
                            timeout=120, cwd=ROOT)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         verified, tampered = p.stdout.split("tamper test")
-        self.assertRegex(verified, r"\nVERIFIED: 11 events, signed by sha256:[0-9a-f]{64}, nothing edited or "
-                                   r"missing\.\nProtection: none against the agent\. Dev mode: ")   # what dev means
+        self.assertIn("\nVERIFIED: 11 recorded actions, none changed, removed or added after signing.\n"
+                      "NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could "
+                      "have rewritten the record.\n", verified)   # what dev mode means
         self.assertNotIn("PASS", verified)
-        self.assertIn("\nTAMPERED at event 4: hash does not match the event.\n", tampered)
+        self.assertIn("\nTAMPERED at event 4: its content was changed after it was signed.\n", tampered)
         self.assertRegex(tampered, r"\ndeleted .+ \(--keep keeps it\)\n$")
 
     def test_detail_prints_every_check_and_keep_says_where_the_files_are(self):

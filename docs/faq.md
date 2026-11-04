@@ -31,8 +31,8 @@ Each limit is mapped to its attacker in the threat models: [laptop](threat-model
 Nothing against the agent itself. The dev signer runs as your user, the same user as the agent, so an agent that can
 run commands can read the signer's key, stop it, or rewrite its store and sign it again. The policy blocks the obvious
 attempts (`TK-D007`) and every record is still signed and chained, so dev mode catches mistakes and accidents and
-gives you real bundles to try the verifier on. Every dev bundle says so: `tracekit verify` prints `Protection: none
-against the agent`, and `--detail` shows `isolation: same-user`, and usually `Assurance: dev` and `approvals: self`.
+gives you real bundles to try the verifier on. Every dev bundle says so: `tracekit verify` prints `NOT PROOF AGAINST
+THE AGENT`, and `--detail` shows `isolation: same-user`, and usually `Assurance: dev` and `approvals: self`.
 Protection against the agent starts with
 [system mode](deploy.md#laptop-system-mode) or a server signer.
 
