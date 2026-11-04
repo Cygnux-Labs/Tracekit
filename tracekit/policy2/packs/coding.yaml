@@ -323,6 +323,14 @@ ask:
     reason: clearing shell history or system logs
     remedy: Have a person approve the held call, or leave shell history and system logs as they are.
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
+  - id: TK-A049
+    class: shell
+    field: effects
+    # Deletion targets are also casefolded; the lazy path prefix keeps the fallback matcher fast.
+    pattern: '^DELETE_TARGET:(?:[^\n]*?[/\\])?(?:\.github[/\\]workflows(?:[/\\]|$)|\.github(?:[/\\]\*?)?$|\.gitlab-ci\.yml$|\.circleci(?:[/\\](?:config\.yml|\*)?)?$|azure-pipelines\.yml$|jenkinsfile$)'
+    reason: deleting a CI workflow or pipeline
+    remedy: Have a person approve the held deletion, or leave the pipeline in place.
+    rationale: Removing a CI pipeline can disable checks; reading and writing workflows remain allowed.
   - id: TK-A029
     class: shell
     field: target
