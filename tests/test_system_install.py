@@ -590,6 +590,8 @@ class ActionInputs(unittest.TestCase):
                 put(os.path.join(repo, name), theirs)
             os.remove(os.path.join(repo, "link.json"))
             os.symlink("new-trust.json", os.path.join(repo, "link.json"))
+            put(os.path.join(repo, "d1", "d2", "keep"), "")
+            os.symlink(os.path.join("d1", "d2"), os.path.join(repo, "lnk"))   # lnk/../../x is repo/x, not ws/x
             for name, data in (("HEAD", "ref: refs/heads/main\n"), ("objects/x", ""), ("refs/x", "")):
                 put(os.path.join(repo, "cfg", name), data)   # cfg/ looks like a bare repository
             git("submodule", "add", "-q", src, "sub")
@@ -603,6 +605,19 @@ class ActionInputs(unittest.TestCase):
             origin, shallow = os.path.join(temp, "origin.git"), os.path.join(ws, "shallow")
             subprocess.run(["git", "clone", "-q", "--bare", repo, origin], check=True)
             subprocess.run(["git", "clone", "-q", "--depth=1", "file://" + origin, shallow], check=True)
+            # pull_request_target: GITHUB_SHA is the base branch's; the workflow checks out the merge ref (depth 1, so
+            # only its parent lines show it has the head) or a commit made on top of it (whose history does)
+            head = git("rev-parse", "HEAD")
+            merge = git("commit-tree", "HEAD^{tree}", "-p", base, "-p", head, "-m", "merge")
+            git("update-ref", "refs/heads/pull-merge", merge)
+            git("update-ref", "refs/heads/pull-child", git("commit-tree", "HEAD^{tree}", "-p", merge, "-m", "on top"))
+            target = dict(pr, GITHUB_SHA=base, TK_HEAD_SHA=head)
+            for name, depth in (("pull-merge", ["--depth=1"]), ("pull-child", [])):
+                subprocess.run(["git", "clone", "-q", *depth, "--branch", name, "file://" + repo,
+                                os.path.join(ws, name)], check=True)
+                out = verify("run.tkb", trust="trust.json", cwd=os.path.join(ws, name), env=target)
+                self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
+                self.assertIn("checkpoint", json.loads(out.stdout)["failures"])
             for cwd in (repo, shallow):
                 out = verify("run.tkb", trust="trust.json", cwd=cwd, env=pr)   # the base commit's, fetched if shallow
                 self.assertEqual(out.returncode, 1, out.stdout + out.stderr)
@@ -616,7 +631,8 @@ class ActionInputs(unittest.TestCase):
                                     env=pr).returncode, 0)
             put(os.path.join(ws, "loose.json"), theirs)
             put(os.path.join(repo, "untracked.json"), theirs)
-            for kw, why in (({"trust": "link.json"}, "is a symlink"),
+            for kw, why in (({"trust": "lnk/../../new-trust.json"}, "without `..`"),
+                            ({"trust": "link.json"}, "is a symlink"),
                             ({"trust": "cfg/trust.json"}, "in no git checkout"),   # git won't take cfg/ for a repo
                             ({"trust": "sub/trust.json"}, "in a submodule"),
                             ({"trust": os.path.join(ws, "loose.json")}, "in no git checkout"),

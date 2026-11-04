@@ -63,8 +63,9 @@ runs:
         TK_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
         # On a pull request, a trust, key or witness file in $GITHUB_WORKSPACE is the pull request's to change unless it
-        # is in another checkout there: one in the pull request's own checkout (a work tree at its merge or head commit)
-        # is read from its base commit, by the path as given; a symlink, a submodule or no checkout at all is refused.
+        # is in another checkout there: one in the pull request's own checkout (a work tree at its merge or head commit,
+        # or with its head in it) is read from its base commit, by the path as given; a `..`, a symlink, a submodule or
+        # no checkout at all is refused.
         from_base() {
           [ -n "$TK_BASE_SHA" ] || { printf '%s\n' "$2"; return; }
           python -I - "$@" <<'PY'
@@ -78,6 +79,8 @@ runs:
         def refuse(msg):
             print(f"::error::{kind} {path}: {msg}")
             sys.exit(1)
+        if ".." in path.replace(os.sep, "/").split("/"):   # resolved after a symlink, `..` can leave the workspace
+            refuse("give the path without `..` components")
         given = os.path.abspath(path)
         inside = lambda p, w: p == w or p.startswith(w + os.sep)
         root = next((w for w in (os.path.abspath(ws), os.path.realpath(ws)) if ws and inside(given, w)), "")
@@ -96,7 +99,12 @@ runs:
         top, head, parent = (r.stdout.decode().splitlines() + ["", "", ""])[:3]
         if r.returncode:
             refuse("it is in $GITHUB_WORKSPACE but in no git checkout there: keep it outside $GITHUB_WORKSPACE")
-        if head not in (os.environ.get("GITHUB_SHA"), os.environ.get("TK_HEAD_SHA")):
+        pr_head = os.environ.get("TK_HEAD_SHA", "")
+        commit = git(top, "cat-file", "commit", "HEAD").stdout.decode().split("\n\n", 1)[0].splitlines()
+        # the pull request's: at its merge or head commit, or one that has its head in it (a pull_request_target
+        # workflow's checkout of the merge ref; a shallow one keeps the parent lines but not the history)
+        if not (head in (os.environ.get("GITHUB_SHA"), pr_head) or pr_head and (f"parent {pr_head}" in commit
+                or git(top, "merge-base", "--is-ancestor", pr_head, "HEAD").returncode == 0)):
             if parent:
                 refuse("it is in a submodule, which the pull request can point at other files")
             print(path)   # another checkout in the workspace (of a trust repository, say): as given

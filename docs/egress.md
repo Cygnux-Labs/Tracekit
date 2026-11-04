@@ -211,8 +211,8 @@ status rests on posture. The verifier prints it as a `coverage matrix` line and 
   DNS (port 53, so a local DNS stub resolves nothing for it): its outside traffic goes through the observer,
   attributed by uid, or nowhere, except what another loopback service, or a resolver daemon over a Unix socket
   (systemd-resolved over D-Bus and varlink, nscd, avahi), sends on for it (see
-  [limits](limits.md#egress-observation-12)). Re-running `init` restarts the firewall unit, so an earlier install gets
-  the current rule. A stopped observer leaves the agent's
+  [limits](limits.md#egress-observation-12)). Re-running `init` reloads the firewall unit, so an earlier install gets
+  the current rule: it is rebuilt behind a reject of the agent's uid, removed once the rule is whole. A stopped observer leaves the agent's
   traffic blocked, never unobserved. `sudo /opt/tracekit/bin/python -I -m tracekit uninstall --v2` removes the rule, the units and the settings. Needs
   iptables with the owner match. Laptops without it are `reported`.
 

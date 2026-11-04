@@ -288,9 +288,20 @@ class InstallAndUninstall(unittest.TestCase):
         for proto in ("udp", "tcp"):   # DNS to a loopback stub is refused before loopback is let through (#588)
             self.assertLess(wall.index(f"$$t -A TRACEKIT-EGRESS -p {proto} --dport 53 -j REJECT"),
                             wall.index("$$t -A TRACEKIT-EGRESS -o lo -j RETURN"))
-        for verb in ("enable", "restart"):   # an active firewall unit from an earlier install gets the new rule (#588)
-            self.assertIn(["systemctl", verb, install.V2_EGRESS, install.EGRESS_FIREWALL],
-                          [c.args[0] for c in run.call_args_list])
+        # an active firewall unit from an earlier install gets the current rule, rebuilt under its hold (#588)
+        lines = dict(line.split("=", 1) for line in wall.splitlines() if line.startswith("Exec"))
+        self.assertEqual(lines["ExecReload"], lines["ExecStart"])
+        hold = install.FIREWALL_HOLD.format(uid=AGENT.pw_uid)
+        steps = [f"-I OUTPUT {hold} && ", "-F TRACEKIT-EGRESS", "-A TRACEKIT-EGRESS -j REJECT",
+                 f"-I OUTPUT -m owner --uid-owner {AGENT.pw_uid} -j TRACEKIT-EGRESS", f"-D OUTPUT {hold}"]
+        at = [lines["ExecStart"].index(s) for s in steps]
+        self.assertEqual(at, sorted(at))
+        self.assertIn(f"-D OUTPUT {hold}", lines["ExecStop"])
+        cmds = [c.args[0] for c in run.call_args_list]
+        self.assertIn(["systemctl", "enable", install.V2_EGRESS, install.EGRESS_FIREWALL], cmds)
+        self.assertIn(["systemctl", "restart", install.V2_EGRESS], cmds)
+        self.assertIn(["systemctl", "reload-or-restart", install.EGRESS_FIREWALL], cmds)
+        self.assertFalse([c for c in cmds if c[:2] == ["systemctl", "restart"] and install.EGRESS_FIREWALL in c])
         proxy = {"HTTPS_PROXY": "http://127.0.0.1:3128", "HTTP_PROXY": "http://127.0.0.1:3128"}
         self.assertEqual(hooks.call_args.kwargs["signer"], {"TRACEKIT_SIGNER": sock, **proxy})
         sc = sys_cfg.call_args.args[0]
@@ -633,8 +644,9 @@ print(json.dumps({f"{k} {h}:{p}": reach(socket.SOCK_DGRAM if k == "udp" else soc
                                                                                   "ip6tables"))),
                      "Linux with unshare, ip and iptables: the firewall unit's rule applied in a network namespace")
 class EgressFirewallLive(unittest.TestCase):
-    """The firewall unit's own ExecStart, run as uid 0 (the agent here) in a new network namespace (and a new user
-    namespace unless run as root): loopback is reachable, DNS to a loopback stub is not (#588)."""
+    """The firewall unit's own ExecStart, then its ExecReload, run as uid 0 (the agent here) in a new network namespace
+    (and a new user namespace unless run as root): loopback is reachable, DNS to a loopback stub is not, and the chain is
+    only ever rebuilt behind the hold (#588)."""
 
     def test_the_agent_reaches_loopback_but_not_a_dns_stub(self):
         env = dict(os.environ, PATH=os.environ.get("PATH", "") + ":/usr/sbin:/sbin")
@@ -642,14 +654,32 @@ class EgressFirewallLive(unittest.TestCase):
         if subprocess.run(ns + ["iptables -L -n && ip6tables -L -n"], env=env, capture_output=True).returncode:
             self.skipTest("this kernel or host does not allow iptables in an unprivileged network namespace")
         unit = install.FIREWALL_UNIT_TEXT.format(agent="agent", uid=0)
-        start = unit.split("ExecStart=/bin/sh -c '", 1)[1].split("\nExecStop=", 1)[0]
-        rule = start.replace("\\\n", " ").rstrip().removesuffix("'").replace("$$", "$")
-        out = subprocess.run(ns + ['ip link set lo up && /bin/sh -c "$1" && exec "$2" -I -c "$3"', "sh", rule,
+        sh = {k: v.removeprefix("/bin/sh -c '").removesuffix("'").replace("$$", "$")
+              for k, v in (line.split("=", 1) for line in unit.splitlines() if line.startswith("Exec"))}
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for name in ("iptables", "ip6tables"):   # each records OUTPUT as it is when the chain is flushed
+            real = shutil.which(name, path=env["PATH"])
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                f.write(f'#!/bin/sh\ncase " $* " in *" -F TRACEKIT-EGRESS "*) {real} -S OUTPUT >> {d}/flush;; esac\n'
+                        f'exec {real} "$@"\n')
+            os.chmod(os.path.join(d, name), 0o755)
+        out = subprocess.run(ns + ['ip link set lo up && export PATH="$3:$PATH" && /bin/sh -c "$1" && /bin/sh -c "$2" '
+                                   '&& iptables -S OUTPUT > "$3/after" && ip6tables -S OUTPUT >> "$3/after" '
+                                   '&& exec "$4" -I -c "$5"', "sh", sh["ExecStart"], sh["ExecReload"], d,
                                    sys.executable, REACH], env=env, capture_output=True, text=True)
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertEqual(json.loads(out.stdout), {"udp 127.0.0.53:53": False, "tcp 127.0.0.53:53": False,
                                                   "udp ::1:53": False, "udp 127.0.0.1:5353": True,
                                                   "tcp 127.0.0.1:3128": True})
+        with open(os.path.join(d, "flush"), encoding="utf-8") as f:
+            at_flush = [[r for r in s.splitlines() if r.startswith("-A")] for s in f.read().split("-P OUTPUT")[1:]]
+        self.assertEqual(len(at_flush), 4)   # start and reload, IPv4 and IPv6
+        self.assertTrue(all("tracekit-egress-hold" in rules[0] for rules in at_flush), at_flush)
+        with open(os.path.join(d, "after"), encoding="utf-8") as f:
+            after = f.read()
+        self.assertNotIn("tracekit-egress-hold", after)
+        self.assertEqual(after.count("-j TRACEKIT-EGRESS"), 2)
 
 
 @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
