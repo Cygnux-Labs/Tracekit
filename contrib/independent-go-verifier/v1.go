@@ -357,8 +357,13 @@ func VerifyV1(bundle, key, witness []byte) Verification {
 	if len(records) == 0 {
 		fail("chain intact", "empty ledger")
 	}
-	if r, ok := manifest["seq_range"].([]any); ok && len(r) == 2 && len(records) > 0 {
-		if n, ok := r[1].(json.Number); !ok || string(n) != fmt.Sprint(len(records)-1) {
+	// the range ends at the highest seq present, as the reference reads it: a record deleted or repeated fails the chain
+	if r, ok := manifest["seq_range"].([]any); ok && len(r) == 2 && len(hashes) > 0 {
+		last := uint64(0)
+		for seq := range hashes {
+			last = max(last, seq)
+		}
+		if n, ok := r[1].(json.Number); !ok || string(n) != fmt.Sprint(last) {
 			fail("manifest range", "manifest sequence range mismatch")
 		}
 	}

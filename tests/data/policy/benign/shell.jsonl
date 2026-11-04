@@ -244,3 +244,9 @@
 {"tool": "Bash", "args": {"command": "docker compose down"}, "expect": "allow", "note": "compose down without removing volumes"}
 {"tool": "Bash", "args": {"command": "docker image prune -af"}, "expect": "allow", "note": "pruning unused images, not volumes"}
 {"tool": "Bash", "args": {"command": "actionlint .github/workflows/ci.yml"}, "expect": "allow", "note": "lint a workflow"}
+{"tool": "Bash", "args": {"command": "npx prisma migrate dev --name init"}, "expect": "allow", "note": "apply a migration to the dev database"}
+{"tool": "Bash", "args": {"command": "rails db:seed"}, "expect": "allow", "note": "seed the database"}
+{"tool": "Bash", "args": {"command": "supabase db diff"}, "expect": "allow", "note": "diff the local database against the migrations"}
+{"tool": "Bash", "args": {"command": "git commit -m 'stop running rails db:drop in CI'"}, "expect": "allow", "note": "a commit message that names a reset command"}
+{"tool": "Bash", "args": {"command": "php artisan migrate"}, "expect": "allow", "note": "apply Laravel's migrations"}
+{"tool": "Bash", "args": {"command": "mix ecto.migrate"}, "expect": "allow", "note": "apply Ecto's migrations"}

@@ -31,6 +31,7 @@ experimental.
 | `tracekit graph`: graph and report built from v2 bundles | [graph](graph.md) |
 | `tracekit report`: a week of a signer's store on one page, as text or JSON | [viewer](viewer.md#weekly-report) |
 | `tracekit audit`: Claude Code transcripts replayed through the policy, read-only and not a record | [audit](audit.md) |
+| Model receipts: the coding-agent hooks' receipts of the weights files a call wrote, and `tracekit verify-model` | [coding agents](coding-agents.md#weights-files-a-call-wrote) |
 | Detection and containment: sequences and limits, holds, quarantine, suspensions, incidents, the webhook outbox | [incidents](incidents.md), [webhooks](webhooks.md) |
 | Argument provenance (`untrusted`, `from_untrusted`) | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 | Readable reasoning: what the model said, recorded by the transcript tailer, the coding-agent hooks, the framework integrations and the LLM gateway | [reasoning](reasoning.md) |

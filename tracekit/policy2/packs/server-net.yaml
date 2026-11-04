@@ -54,8 +54,8 @@ deny:
 
 ask:
   - id: TK-P003
-    # data sent (a method other than GET or HEAD, a body, or typing and uploads in a browser) to a host that only
-    # untrusted content (`untrusted` tools' results, observed untrusted input) brought into the run
+    # data sent (a method other than GET or HEAD, a body or a query, or typing and uploads in a browser) to a host
+    # that only untrusted content (`untrusted` tools' results, observed untrusted input) brought into the run
     field: sends_to
     pattern: '.'
     from: untrusted

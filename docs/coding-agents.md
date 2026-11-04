@@ -9,6 +9,7 @@ tracekit init --dev --v2 --agent gemini     # ~/.gemini/settings.json
 tracekit init --dev --v2 --agent qwen       # ~/.qwen/settings.json
 tracekit init --dev --v2 --agent droid      # ~/.factory/hooks.json
 tracekit init --dev --v2 --agent opencode   # $XDG_CONFIG_HOME (or ~/.config)/opencode/plugin/tracekit.js; system mode: the agent's ~/.config
+tracekit init --dev --v2 --agent kilo       # $XDG_CONFIG_HOME (or ~/.config)/kilo/plugin/tracekit.js; --project: .kilo/plugin/tracekit.js; system mode: the agent's ~/.config
 tracekit init --dev --v2 --agent goose      # ~/.agents/plugins/tracekit/hooks/hooks.json (plus plugin.json beside it)
 tracekit init --dev --v2 --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
 tracekit init --dev --v2 --agent crush      # $CRUSH_GLOBAL_CONFIG, else $XDG_CONFIG_HOME (or ~/.config)/crush: crush.json; --project: ./crush.json
@@ -26,7 +27,7 @@ edit or turn off) is for Claude Code only, and init refuses it with these agents
 `--v2` and write the same files:
 
 ```bash
-tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, goose, antigravity, crush
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
@@ -47,7 +48,16 @@ backup is written first, and running it twice changes nothing. For Droid it writ
 the legacy `.factory/hooks/hooks.json` exists, init refuses to proceed until you save once in Droid's `/hooks` UI to migrate
 it. For OpenCode it writes its own `tracekit.js` local
 plugin and refuses to overwrite a file it did not install (in `plugin/`, which every OpenCode 1.x loads; 1.0 doesn't
-read `plugins/`). For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
+read `plugins/`). Kilo Code is built on OpenCode and loads the same plugin, so for Kilo init writes that plugin to
+Kilo's own `plugin/` folder (Kilo doesn't read OpenCode's). This was run with the Kilo CLI 7.8.18 on Linux; Kilo's docs
+say its VS Code extension loads the same plugins, but that hasn't been tried. Kilo's built-in tools are OpenCode's, with
+the same names and arguments; of its own tools, `background_process` (it runs its `command`) is decided as `Bash`,
+`notebook_read` and `send_file` as `Read` and `notebook_edit` as `NotebookEdit`, each on its `path`, and
+`generate_image` as `Write` on the `path` it writes, or, given an `image` it reads and sends to the image provider, as
+a `Read` of that file and the `path`. The hook blocks
+`notebook_execute`, which runs a notebook cell whose code no rule has read (VS Code only, with
+`experimental.native_notebook_tools`). Kilo's other tools pass through under their own names
+([limits](limits.md#signer-and-capture)); everything below about OpenCode's plugin holds for Kilo. For goose it writes its own plugin directory (`plugin.json` plus `hooks/hooks.json`) and refuses
 to install into a plugin whose `plugin.json` is not Tracekit's. A goose rule carries no matcher (goose silently skips
 a rule whose matcher is a bare `*`, which is an invalid regex); the PreToolUse action carries `timeout: 600` and
 `on_failure: block`, the post-tool actions `timeout: 30`. For Antigravity CLI it adds a hook named `tracekit` to agy's `hooks.json` ([below](#antigravity-cli)). Every v1 hook calls `python -I -m tracekit.agent_hooks <agent>` (OpenCode's plugin and Antigravity CLI's commands add the event),
@@ -63,8 +73,10 @@ payload and event names are already Claude Code's (`hook_event_name`, `session_i
 `grep` -> `Grep`, `glob` -> `Glob` (`lsp_rename`, `ls`, `grep` and `glob` are decided on the `path` they read, never a
 `file_path` sent beside it), `fetch` -> `WebFetch`, `download` -> `Write` (the file it creates is what the file rules
 decide; its URL meets no fetch rule), and `mcp_<server>_<tool>` -> `mcp__<server>_<tool>`, whose results are
-untrusted. That joined name doesn't split the server from the tool: the shipped packs' MCP rules read it too, but a
-rule of your own written for `mcp__<server>__<tool>` doesn't match it ([limits](limits.md)). Crush runs no hooks
+untrusted. That joined name doesn't split the server from the tool: the signer tries each `_` (up to eight) as the
+server's end, so the shipped packs' MCP rules and `mcp:<server>/<tool>` mappings read it, and holds it as an unknown
+tool on the server packs, but a rule of your own written for `mcp__<server>__<tool>` doesn't match it
+([limits](limits.md)). Crush runs no hooks
 inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself; set
 `"options": {"disabled_tools": ["agent", "agentic_fetch"]}` in `crush.json` so Crush doesn't offer them. It denies
 Docker MCP Gateway's `code-mode` tools too (`mcp_<server>_code-mode` and the `code-mode-<name>` tools it makes), whose
@@ -88,9 +100,9 @@ installer, not yet in a live Crush session.
 |---|---|---|---|---|---|---|---|
 | Hook events used | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | preToolUse, postToolUse, postToolUseFailure, beforeSubmitPrompt, sessionStart, sessionEnd | BeforeTool, AfterTool, BeforeAgent, SessionStart, SessionEnd | tool.execute.before, tool.execute.after | PreToolUse, PostToolUse, PostToolUseFailure | PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd |
 | Run id | `session_id` | `conversation_id` | `session_id` | `sessionID` | `session_id` | `session_id` | `session_id` |
-| Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) | exit 2 + a reason on stderr, stdout empty (a stray stdout line reads as no decision to goose) | exit 2 + a reason on stderr (Qwen Code ignores stdout at exit 2 and sends stderr to the model); nothing on stdout | exit 2 + a reason on stderr and `hookSpecificOutput.permissionDecision: "deny"` |
+| Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) | exit 2 + a reason on stderr, stdout empty (a stray stdout line reads as no decision to goose) | exit 2 + a reason on stderr (Qwen Code ignores stdout at exit 2 and sends stderr to the model); nothing on stdout; on Windows the command ends in `; exit $LASTEXITCODE`, since PowerShell turns 2 into 1 | exit 2 + a reason on stderr and `hookSpecificOutput.permissionDecision: "deny"` |
 | Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` | `tool_call_id`, from the harness | `tool_use_id`, from the harness | none in documented stdin: paired by tool and arguments, first in first out |
-| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`; current Codex sends no hook for it, so what is typed into a running command isn't decided: [limits](limits.md#signer-and-capture)); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; every path the input names is decided (`file_path`, `path`, `target_file`, `filePath`: Cursor doesn't document which its tools read); `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` and `read_many_files` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `glob`, `search_file_content`, `list_directory`, `web_fetch`, `google_web_search`; every path a file tool reads is decided, under each release's name for it (`file_path`, `absolute_path`, `dir_path`, `path`, and `read_many_files`' `paths` and `include`); `web_fetch` is decided on every URL its prompt names (`urls`) and on a `url` beside it | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental; OpenCode 1.x before 1.4 only: later releases and OpenCode 2 have none) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools | `shell` → `Bash`; `write` → `Write` (path: `path`); `edit` → `Edit` (path: `path`); `tree` → `LS` (path: `path`); `read_image` → `Read` (path: `source`, not `path`); `<extension>__<tool>` → `mcp__<extension>__<tool>`; other names pass through unchanged, which the policy treats as unknown tools | `run_shell_command` and `monitor` → `Bash`; `read_file` → `Read` (path: `file_path`, `absolute_path` before 0.13); `write_file` → `Write`; `edit` (and Gemini's `replace`) → `Edit`; `notebook_edit` → `NotebookEdit` (path: `notebook_path`); `grep_search` → `Grep`; `glob`, `list_directory`, `web_fetch`, `web_search`, `todo_write`; `agent` → `Task`; any other tool, MCP tools included, under its own name; file paths as for Gemini CLI; `web_fetch` is decided on its `url` and also on every URL its prompt names (Qwen Code fetches only the `url`) | `Execute` → `Bash`; `Create` → `Write`; `ApplyPatch` → `Edit` (`input`: complete patch; `paths`: all file headers); `FetchUrl` → `WebFetch`; other names, including `mcp__server__tool`, pass through |
+| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`; current Codex sends no hook for it, so what is typed into a running command isn't decided: [limits](limits.md#signer-and-capture)); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; every path the input names is decided (`file_path`, `path`, `target_file`, `filePath`: Cursor doesn't document which its tools read); `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` and `read_many_files` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `grep_search` (`search_file_content` in older releases) → `Grep`; `glob`, `list_directory`, `web_fetch`, `google_web_search`; MCP tools, which Gemini CLI names `mcp_<server>_<tool>`, → `mcp__<server>_<tool>`; every path a file tool reads is decided, under each release's name for it (`file_path`, `absolute_path`, `dir_path`, `path`, and `read_many_files`' `paths` and `include`); `web_fetch` is decided on every URL its prompt names (`urls`) and on a `url` beside it | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental; OpenCode 1.x before 1.4 only: later releases and OpenCode 2 have none) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools | `shell` → `Bash`; `write` → `Write` (path: `path`); `edit` → `Edit` (path: `path`); `tree` → `LS` (path: `path`); `read_image` → `Read` (path: `source`, not `path`); `<extension>__<tool>` → `mcp__<extension>__<tool>`; other names pass through unchanged, which the policy treats as unknown tools | `run_shell_command` and `monitor` → `Bash`; `read_file` → `Read` (path: `file_path`, `absolute_path` before 0.13); `write_file` → `Write`; `edit` (and Gemini's `replace`) → `Edit`; `notebook_edit` → `NotebookEdit` (path: `notebook_path`); `grep_search` → `Grep`; `glob`, `list_directory`, `web_fetch`, `web_search`, `todo_write`; `agent` → `Task`; any other tool, MCP tools included, under its own name; file paths as for Gemini CLI; `web_fetch` is decided on its `url` and also on every URL its prompt names (Qwen Code fetches only the `url`) | `Execute` → `Bash`; `Create` → `Write`; `ApplyPatch` → `Edit` (`input`: complete patch; `paths`: all file headers); `FetchUrl` → `WebFetch`; other names, including `mcp__server__tool`, pass through |
 
 What is the same as Claude Code: the policy gate runs before the tool (deny blocks; ask blocks the call until someone
 approves it from another terminal, then the agent's retry runs: [held calls](#held-calls-approve-then-retry)), events
@@ -104,8 +116,10 @@ need an update here. Qwen Code's are from its [hooks documentation](https://qwen
 it sends Claude Code's payloads and event names (with `tool_use_id`), reads exit 2 as a block, takes hook timeouts in
 milliseconds (versions since September 2026 in seconds, but 1000 or more still as milliseconds; 60 s unless set; `init` writes 600000, 600 s
 either way, for `PreToolUse`, so a person has time to approve a held call), and
-runs a project's hooks only in a trusted folder. On Windows it runs hooks under `cmd.exe`, so the interpreter path
-stays quoted when it contains spaces, as for Droid.
+runs a project's hooks only in a trusted folder. On Windows it runs a hook under cmd.exe or Git Bash, by how it was
+started, unless the hook names its `"shell"`: `init` writes `"shell": "powershell"` and the command in PowerShell's
+form, as for Codex and Gemini CLI, ending in `; exit $LASTEXITCODE` so that a block's exit 2 gets through PowerShell
+(a `PreToolUse` hook whose Python didn't run or failed exits 2, so the call is blocked).
 
 A call on several files (a patch's `paths`, the files of a Gemini CLI or Qwen Code `read_many_files`) or URLs (a
 `web_fetch`'s `urls`) is decided on each: a rule that matches any of them applies.
@@ -171,8 +185,9 @@ The same call a third time, or one with other arguments, is held again, with a n
 held again if the agent tries it again, and the block says so first among its reasons (`Why: a person rejected this
 exact call (apr-…, by uid:501); ask them before trying again; …`), so the agent asks you. In Claude Code a Bash
 call's arguments include its free-text `description`, which the model rewords on a retry: a retry of a call you
-approved that differs only there runs under your approval, recorded with the approved arguments, description included
-([approve, then retry](approvals.md#approve-then-retry)); one that differs in any other key is held again.
+approved that differs only there runs under your approval, recorded with the approved arguments, description included,
+unless another wording of it was rejected ([approve, then retry](approvals.md#approve-then-retry)); one that differs
+in any other key is held again.
 The agent can't approve its own call: the policy denies the command when the agent runs it (`TK-D012`), and in system
 mode the signer refuses its user.
 
@@ -338,6 +353,50 @@ Without anything else installed, the signer turns what it saw and then never hea
   holds it, is left for the signer's idle close, its tail unproven.
 
 The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can't be used with the Claude Code hooks: they record a digest of each tool's raw output, not what the model is sent, so every result would mismatch ([gateway](gateway.md#verified-tool-results)).
+
+### Weights files a call wrote
+
+When a Write, Edit, MultiEdit, NotebookEdit or Bash call that succeeds (the names every harness's hook gives its
+write and shell tools) writes a model weights file (`.safetensors`, `.gguf`, `.pt`, `.pth`, `.ckpt`), the hook (Claude
+Code's and each harness's above) hashes it after the call and puts the receipt in the call's result, next to the
+result's digest: the file's sha256 and size and, for `.safetensors`, a sha256 of each tensor (its dtype and shape, then
+its bytes) and one of the header's metadata. A call writes what the policy reads it writing: a write tool's path, or a
+Bash command's write targets (a redirection, a `cp` or `mv` destination, ...). A path the hook would have to guess is
+refused: one starting with `~`; every path of a command line in which `cp`, `mv`, `install` or `ln` has `-t` (in a
+cluster too, `-vt`), `git`, `env`, `make` or `tar` has `-C`, `sudo` has `-D`, or one of them has `--target-directory`,
+`--directory` or `--chdir` or a prefix of one that GNU accepts (`env --ch=sub`); every path of a command line that runs
+`ssh`, `chroot`, `nsenter`, `unshare` or `firejail`; every path of a call whose write may land after the hook reads (a
+Bash call `run_in_background` or with a lone `&`, input typed into another session, Qwen Code's `monitor`,
+`systemd-run`, `setsid -f`, `at`); and a relative one in a command that changes directory (`cd`, `pushd`, `popd`, `git
+--work-tree`, or a shell call's own working directory: `dir_path`, `directory`, `working_directory`, `workdir`, agy's
+`Cwd`, Crush's `working_dir`). The hook hashes for at most 10 seconds per call; a receipt it can't finish, or any it
+can't read, is recorded with its
+reason, and the call's result is recorded either way.
+
+The hook runs as the agent's user, so each receipt (`reported_by: hook`) is the agent side's record, not something the
+signer saw. The `model_receipts` key is the hook's on those five tools' results: it removes one it didn't set. Every
+other tool's result is recorded as the tool returned it, and `verify-model` counts a receipt only in the result of one
+of the five tools whose recorded arguments name a file the hook hashes, so a receipt in an MCP or web tool's output is
+never counted.
+
+The signer commits to the result as to any other, so a bundle holds only that commitment. `tracekit verify-model`
+verifies the bundle, reads the run's results back from the signer's content vault (the dev signer keeps them for 7
+days), checks each against its record's commitment, then compares two files with the receipt:
+
+```
+$ tracekit verify-model before.safetensors model.safetensors --bundle $RUN.tkb --run $RUN --trust $RUN.trust.json
+bundle: verified, run tk-0f3a...
+receipt: /work/model.safetensors, hashed after tool call toolu_01 (run_seq 7, ok: true), recorded by the agent-side hook
+NEW model.safetensors: matches the recorded receipt (sha256:5c1e...)
+OLD -> NEW: the file differs; 1 of 3 tensors differ (dtype, shape or bytes); the metadata is the same
+  changed: model.layers.0.mlp.down_proj.weight
+```
+
+It exits 0 only when the bundle verifies and NEW matches the recorded receipt, and 2 when the bundle doesn't verify. A
+signer it can't reach, content the signer didn't keep, or an identity without the `content_read` grant is said as such
+(exit 1); content that doesn't open its record's commitment is an evidence alert (exit 4). The receipt reaches the
+signer in clear: its vault holds the file's path, hashes and tensor names
+([limits](limits.md#model-receipts-tracekit-verify-model)).
 
 ## Antigravity CLI
 

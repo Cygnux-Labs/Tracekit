@@ -275,6 +275,10 @@ test("zip reader: stored and deflated entries, and every refusal within the bund
     /Bad CRC-32 for file 'a'/);
   // a size that lies low stops the inflate there; the CRC then catches it
   await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(100), method: 8, usize: 10 }])), /Bad CRC-32 for file 'a'/);
+  // ...also with the size and CRC-32 of the bytes up to it: the inflate reads a byte past the stated size
+  const crc10 = Buffer.from(zip([{ name: "a", data: "x".repeat(10) }])).readUInt32LE(14);
+  await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(100), method: 8, usize: 10, crc: crc10 }])),
+    /Bad CRC-32 for file 'a'/);
 });
 
 test("a bundle of tiny lines is refused before one is parsed, with no trust config too", () => {

@@ -6,11 +6,12 @@
 # TK-N002, for one). docs/policy-v2.md lists every rule.
 #
 # TK-S001 and TK-S004 match each call's `target`: what it acts on (a path, a URL, a command's argv, redirections and
-# assignments, attachments, an MCP tool's arguments), not what it carries (file content, a commit message, the pattern
-# grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
+# assignments, attachments, an MCP tool's arguments, each path in them also normalised), not what it carries (file
+# content, a commit message, the pattern grep searches for, an MCP tool's title, body, message or content, a search
+# tool's query). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-14'
+version: '2026.10-server-16'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -35,29 +36,38 @@ deny:
     # private keys and the token formats of AWS, GitHub, GitLab, Slack, Stripe, Anthropic, OpenAI, Google, npm, JWTs,
     # and URLs with a password in them (a scheme of at most 64 characters: an unbounded one was rescanned from each
     # word on the fallback engine)
-    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]{0,63}://[^/\s:@"]*:[^/\s@"]+@'
+    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]{0,63}://[^/\s:@"]*:[^/\s@"]+@'
     reason: a secret in the arguments
     remedy: Take the credential out of the call; the tool reads it from the deployment's configuration or secret store.
     rationale: A credential in a tool call is on its way somewhere it should not be, and lands in the evidence log too; tools should get their credentials from the deployment, not from the model.
   - id: TK-S003
     class: shell
     field: line
-    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]{0,63}://[^/\s:@"]*:[^/\s@"]+@'
+    pattern: '-----BEGIN [A-Z ]*PRIVATE KEY( BLOCK)?-----|\b(AKIA|ASIA)[0-9A-Z]{16}\b|\bgh[pousr]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{22,}|\bglpat-[A-Za-z0-9_-]{20}|\bxox[abprs]-[A-Za-z0-9-]{10,}|\b[rs]k_live_[A-Za-z0-9]{16,}|\bsk-ant-[A-Za-z0-9_-]{20,}|\bsk-(proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|\bAIza[0-9A-Za-z_-]{35}|\bnpm_[A-Za-z0-9]{36}\b|\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|\b[A-Za-z][A-Za-z0-9+.-]{0,63}://[^/\s:@"]*:[^/\s@"]+@'
     reason: a secret in a shell command
     remedy: Take the secret out of the command and read it from an environment variable the deployment sets.
     rationale: TK-S002 for the whole command line, where a secret can sit in a VAR= prefix, a redirection or a heredoc.
   - id: TK-S004
     field: target
-    pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/([Aa]ccess[Tt]okens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9]+($|[^.a-z0-9_])|/proc/(self|[0-9]+)/environ\b'
+    # a private key in .ssh is id_ and a name, `_` and `-` in it too (id_rsa_work, id_ed25519_sk), with no `.` after it:
+    # id_rsa.pub and id_rsa-cert.pub are public (and id_rsa.old isn't read)
+    pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/([Aa]ccess[Tt]okens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9_-]*[a-z0-9_]($|[^.a-z0-9_-])|/proc/(self|thread-self|[0-9]+)(/task/[0-9]+)?/environ\b'
     reason: reading or touching a credentials file
     remedy: Leave credential files unread and use the access the deployment gives the tool; a person allows a path by redefining TK-S004 in their policy.
     rationale: Cloud, cluster, registry and database credentials and the service account token on a server are the keys to everything else; the agent's tools get access through the deployment, not these files.
   - id: TK-S006
     class: shell
     # options that make a non-shell command run another command (tar's long options also as a unique prefix, as GNU
-    # tar and bsdtar take them, and -I in a cluster); git config keys in any case, and every alias (a
-    # `!` alias runs a shell command, any alias can rename a subcommand the shell rules stop)
-    pattern: '^tar( -?[A-Za-z]*I|.*? (--to-c[a-z]*|--checkpoint-(a[a-z]*)?[= ]exec|--use(-[a-z-]*)?[= ]|-[A-Za-z]*I))|^git .*?(-c ([^ =]*?\.)?([Ss][Ss][Hh][Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Pp][Aa][Gg][Ee][Rr]|[Ee][Dd][Ii][Tt][Oo][Rr]|[Ff][Ss][Mm][Oo][Nn][Ii][Tt][Oo][Rr]|[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]|[Aa][Ss][Kk][Pp][Aa][Ss][Ss]|[Gg][Ii][Tt][Pp][Rr][Oo][Xx][Yy]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Ee][Xx][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Tt][Ee][Xx][Tt][Cc][Oo][Nn][Vv]|[Dd][Rr][Ii][Vv][Ee][Rr]|[Cc][Ll][Ee][Aa][Nn]|[Ss][Mm][Uu][Dd][Gg][Ee]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss]|[Hh][Ee][Ll][Pp][Ee][Rr]|[Rr][Ee][Cc][Ee][Ii][Vv][Ee][Pp][Aa][Cc][Kk]|[Uu][Pp][Ll][Oo][Aa][Dd][Pp][Aa][Cc][Kk]|[Pp][Aa][Cc][Kk][Oo][Bb][Jj][Ee][Cc][Tt][Ss][Hh][Oo][Oo][Kk]|[Dd][Ii][Ff][Ff][Ff][Ii][Ll][Tt][Ee][Rr])=|-c ([Aa][Ll][Ii][Aa][Ss]|[Pp][Aa][Gg][Ee][Rr])\.|--config-env|--upload-pack|--receive-pack|--exec=|ext::)|^ssh .*?(ProxyCommand|LocalCommand|PermitLocalCommand)|^scp .*?-S |^zip .*?(-TT|--unzip-command)|^rsync .*?--rsync-path|^(vim?|nvim|view|ex|less|man) .*?(-c ?|\+)[: ]*(([rw][a-z]* *)?!|call +system)'
+    # tar and bsdtar take them, and -I in a cluster); git config keys in any case (any key ending in cmd or command,
+    # difftool.x.cmd and gpg.ssh.defaultKeyCommand among them, and a `!` submodule update), and every alias (a `!` alias
+    # runs a shell command, any alias can rename a subcommand the shell rules stop); ssh's keywords in any case after
+    # -o, for scp, sftp and an rsync -e too; scp's and sftp's -S; rsync's -e and man's -P naming a shell or an
+    # interpreter (man's pager runs through sh: a ;, &, |, <, >, backquote or $( in it too); vim's ex commands after
+    # -c, --cmd or + that run one (!, a range's ! filter, silent !, :r !, :w !, call system, python, lua, perl, ruby,
+    # tcl and :terminal)
+    # lean: rsync's -e and man's -P are read for their first 128 characters, so the fallback engine stays linear, and
+    # another program they name (`rsync -e ./x`) isn't denied; read the whole value if a longer one shows up
+    pattern: '^tar( -?[A-Za-z]*I|.*? (--to-c[a-z]*|--checkpoint-(a[a-z]*)?[= ]exec|--use(-[a-z-]*)?[= ]|-[A-Za-z]*I))|^git .*?(-c ([^ =]*?\.)?([A-Za-z]*([Cc][Mm][Dd]|[Cc][Oo][Mm][Mm][Aa][Nn][Dd])|[Pp][Aa][Gg][Ee][Rr]|[Ee][Dd][Ii][Tt][Oo][Rr]|[Ff][Ss][Mm][Oo][Nn][Ii][Tt][Oo][Rr]|[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]|[Aa][Ss][Kk][Pp][Aa][Ss][Ss]|[Gg][Ii][Tt][Pp][Rr][Oo][Xx][Yy]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Ee][Xx][Tt][Ee][Rr][Nn][Aa][Ll]|[Tt][Ee][Xx][Tt][Cc][Oo][Nn][Vv]|[Dd][Rr][Ii][Vv][Ee][Rr]|[Cc][Ll][Ee][Aa][Nn]|[Ss][Mm][Uu][Dd][Gg][Ee]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss]|[Hh][Ee][Ll][Pp][Ee][Rr]|[Rr][Ee][Cc][Ee][Ii][Vv][Ee][Pp][Aa][Cc][Kk]|[Uu][Pp][Ll][Oo][Aa][Dd][Pp][Aa][Cc][Kk]|[Pp][Aa][Cc][Kk][Oo][Bb][Jj][Ee][Cc][Tt][Ss][Hh][Oo][Oo][Kk]|[Dd][Ii][Ff][Ff][Ff][Ii][Ll][Tt][Ee][Rr])=|-c ([^ =]*?\.)?[Uu][Pp][Dd][Aa][Tt][Ee]=!|-c ([Aa][Ll][Ii][Aa][Ss]|[Pp][Aa][Gg][Ee][Rr])\.|--config-env|--upload-pack|--receive-pack|--exec=|ext::)|^(ssh|scp|sftp|rsync) (.*? )?-[A-Za-z0-9]*o ?([Pp][Rr][Oo][Xx][Yy]|[Ll][Oo][Cc][Aa][Ll]|[Pp][Ee][Rr][Mm][Ii][Tt][Ll][Oo][Cc][Aa][Ll]|[Kk][Nn][Oo][Ww][Nn][Hh][Oo][Ss][Tt][Ss])[Cc][Oo][Mm][Mm][Aa][Nn][Dd][ =]|^(scp|sftp) (.*? )?-[A-Za-z0-9]*S|^zip .*?(-TT|--unzip-command)|^rsync .*?--rsync-path|^rsync (.*? )?(-[A-Za-z0-9]*e ?|--rsh[ =])([^ ]{0,128}/)?(sh|bash|zsh|dash|ksh|python[0-9.]*|perl|ruby|node|env)( |$)|^man (.*? )?(-[A-Za-z]*P ?|--pager[ =])(([^ ]{0,128}/)?(sh|bash|zsh|dash|ksh|python[0-9.]*|perl|ruby|node|env)( |$)|[^ ]{0,128}([;&|<>`]|\$\())|^(vim?|nvim|view|ex|less|man) .*?(-c ?|--cmd ?|\+)[: ]*(sil[a-z]*(! *| +))?[%.$0-9,]*(([rw][a-z]* *)?!|call +system|(py[a-z0-9]*|lua[a-z]*|perl[a-z]*|ruby[a-z]*|tcl[a-z]*|ter[a-z]*)( |!|$))'
     reason: running a command through another command's options
     remedy: Run the program directly, where the shell rules see it, not through a tar, git, ssh, zip, rsync or vim option that starts it.
     rationale: tar, git, ssh, zip, rsync and vim options that run a program are a way to run what the shell rules would stop.
@@ -71,10 +81,26 @@ ask:
     rationale: An A2A call crosses an agent boundary; a pair rule makes its intended counterpart explicit.
   - id: TK-S010
     class: mcp
-    pattern: '"(command|cmd|script|shell_command)":["\[]'
+    # a command argument in any case, one command or a list of them, anywhere in the call (Command, commands)
+    pattern: '"([Cc][Oo][Mm][Mm][Aa][Nn][Dd][Ss]?|[Cc][Mm][Dd][Ss]?|[Ss][Cc][Rr][Ii][Pp][Tt]|[Ss][Hh][Ee][Ll][Ll]_[Cc][Oo][Mm][Mm][Aa][Nn][Dd])":["\[]'
     reason: a command through an MCP tool
     remedy: Have a person approve the held call, or use a tool whose class the policy's rules cover (a shell tool) instead of a command through MCP.
     rationale: An MCP tool that takes a command (exec in a pod or container, a remote shell) runs it outside the shell rules; a person checks it.
+  - id: TK-S012
+    class: mcp
+    # TK-S010 for code runners, notebooks and processes: an MCP tool whose name has a word for running code, a cell or a
+    # shell (run, exec, execute, eval, interpret, repl, kernel, notebook, cell, code, python, javascript, shell,
+    # terminal; snake_case, kebab-case or camelCase, as `mcp:<server>/<tool>`, `mcp__<server>__<tool>` or Crush's
+    # joined `mcp__<server>_<tool>`) or that ends in `process`, called with the code, a cell's source or a process's
+    # input (code, python_code, source, cell_source, cell_content, input), or an argv list (args, argv). Those keys are
+    # read only in such tools: a translation's `source`, a promo `code` or a form's `input` elsewhere isn't held.
+    # lean: a run-named tool that isn't a runner (run_report with a `source`) is held too; name the deployment's own
+    # runners in a rule of its own if that holds too much
+    tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])([Rr]un|[Ee]xec|[Ee]xecute|[Ee]val|[Ee]valuate|[Ii]nterpret|[Rr]epl|REPL|[Kk]ernel|[Nn]otebook|[Cc]ells?|[Cc]ode|[Pp]ython|[Jj]ava[Ss]cript|[Ss]hell|[Tt]erminal)([_A-Z-].*)?|mcp(:[^/]+/|__.*[_-])[^_/-]*[a-z0-9](Run|Exec|Execute|Eval|Evaluate|Interpret|Repl|REPL|Kernel|Notebook|Cells?|Code|Python|Java[Ss]cript|Shell|Terminal)([_A-Z-].*)?|mcp(:[^/]+/|__).*([_-]|[a-z0-9])[Pp]rocess'
+    pattern: '"(code|python_code|source|cell_source|cell_content|input)":["\[]|"(args|argv)":\['
+    reason: code or input through an MCP tool that runs it
+    remedy: Have a person approve the held call, or run the code through a tool whose class the policy's rules cover (a shell tool).
+    rationale: A code interpreter, notebook or process tool runs what it is given outside the shell rules; a person checks it.
 
 # Detection (signer/detect.py), all in shadow: incidents are recorded, nothing is held. The labels come from
 # coding.yaml: secrets_access (TK-F005), destructive (TK-F003), egress (TK-F012 a URL, TK-F013 a network command).
