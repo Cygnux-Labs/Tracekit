@@ -289,7 +289,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     `downloads`: the line may download (_may_download), so a function on it isn't read (_Parser.define)."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
-           "unresolved": set(), "called": set(), "exported": set(), "ifs_named": _names_ifs(command),
+           "unresolved": set(), "uncalled": {}, "exported": set(), "ifs_named": _names_ifs(command),
            "downloads": downloads or bool(_DOWNLOADS.search(command)), "decoded": set(), "command_names_mutable": False,
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
@@ -341,17 +341,18 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     top = _Parser(command, ctx, [])
     try:
         top.script()
-        # a function the line defines and doesn't call, or exports, runs where the policy doesn't see it (a later call
-        # in a shell that persists, any bash child): its body is read as if it ran, and it is held
-        for name, bodies in list(ctx["functions"].items()):
-            if name not in ctx["called"] or name in ctx["exported"]:
-                for body in bodies:
-                    first = len(ctx["cmds"])
-                    p = _Parser(body, ctx, [f"function {name} (defined)"])
-                    p.known = {}
-                    p.script()
-                    for c in ctx["cmds"][first:first + 1]:
-                        c["opaque"] = True
+        # a function the line defines and doesn't call after (a definition after its name's last call too), or
+        # exports, runs where the policy doesn't see it (a later call in a shell that persists, any bash child): its
+        # body is read as if it ran, and it is held
+        held = [(name, body) for name, bodies in ctx["functions"].items()
+                for body in (bodies if name in ctx["exported"] else ctx["uncalled"].get(name, []))]
+        for name, body in held:
+            first = len(ctx["cmds"])
+            p = _Parser(body, ctx, [f"function {name} (defined)"])
+            p.known = {}
+            p.script()
+            for c in ctx["cmds"][first:first + 1]:
+                c["opaque"] = True
     except ParseError as e:
         e.at = top.i   # where the line stops being readable: the words before it may still be (engine._plain)
         raise
@@ -396,7 +397,7 @@ def analyse_argv(argv, readings=True, work=None, downloads=False):
     """analyse() for a command given as an argv list, run without a shell."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
-           "unresolved": set(), "called": set(), "exported": set(), "ifs_named": False,
+           "unresolved": set(), "uncalled": {}, "exported": set(), "ifs_named": False,
            "downloads": downloads or any(_DOWNLOADS.search(a) for a in argv), "decoded": set(),
            "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False, "brace": MAX_BRACE,
@@ -1129,7 +1130,7 @@ class _Parser:
         dry = _Parser(self.s, {**self.ctx, "cmds": [], "lines": [], "refs": [], "written": [], "kept": [],
                                "kept_batches": [], "always_cut": [], "cut": [], "steps": [], "nested": set(),
                                "redefined": set(self.ctx["redefined"]), "functions": dict(self.ctx["functions"]),
-                               "calling": [], "work": [0]}, self.via)
+                               "uncalled": {}, "calling": [], "work": [0]}, self.via)
         dry.i, dry.known = start, {}
         while True:
             dry.pipeline()
@@ -1145,6 +1146,7 @@ class _Parser:
         self.i = dry.i
         self.charge(self.i - start)
         self.ctx["functions"].setdefault(name, []).append(self.s[start:self.i])
+        self.ctx["uncalled"].setdefault(name, []).append(self.s[start:self.i])
         self.ctx["redefined"].add(name)
 
     def stable(self):
@@ -1159,7 +1161,7 @@ class _Parser:
         variables are the body's. A call within its own body (recursion) or past 8 calls deep is unreadable (opaque)."""
         calling = self.ctx["calling"]
         if "trap" not in via:   # a trap's call runs later, when the shell (which may persist) may hold another body
-            self.ctx["called"].add(name)
+            self.ctx["uncalled"].pop(name, None)
         if name in calling or len(calling) >= 8:
             cmd["opaque"] = True
             return
