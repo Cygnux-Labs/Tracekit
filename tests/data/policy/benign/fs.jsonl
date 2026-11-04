@@ -55,3 +55,7 @@
 {"tool": "Read", "args": {"file_path": "/repo/Cookies"}, "expect": "allow", "note": "ordinary project file named Cookies"}
 {"tool": "Read", "args": {"file_path": "/home/app/.qwen/settings.json"}, "expect": "allow", "note": "reading Qwen Code's settings"}
 {"tool": "Write", "args": {"file_path": "/app/config/qwen-settings.json", "content": "{}"}, "expect": "allow", "note": "ordinary file named like Qwen Code's settings"}
+{"tool": "Write", "args": {"file_path": ".github/workflows/test.yml", "content": "name: Test\non: [push, pull_request]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n      - run: npm test\n"}, "expect": "allow", "note": "ordinary CI workflow"}
+{"tool": "Write", "args": {"file_path": ".github/workflows/publish.yml", "content": "steps:\n  - run: npm publish\n    env:\n      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"}, "expect": "allow", "note": "publish with a secret in the environment"}
+{"tool": "Write", "args": {"file_path": ".github/workflows/ci.yml", "content": "steps:\n  - run: curl -fsSL https://example.com/install.sh -o install.sh\n"}, "expect": "allow", "note": "download in workflow"}
+{"tool": "Read", "args": {"file_path": ".github/dependabot.yml"}, "expect": "allow", "note": "read dependency configuration"}
