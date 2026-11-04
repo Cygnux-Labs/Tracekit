@@ -301,9 +301,10 @@ variable on a line that names `IFS` (where bash splits a value can't be told). A
 (`f() { …; }`, `function f { …; }`) is read where it is called, its body with the call's words as `$1` … and `"$@"`
 (a call in its own body is opaque; a function named `cd`, `export`, `unset` or `command_not_found_handle` makes the
 line unreadable); one the line doesn't call, or exports (`export -f`), is read as if it ran and held, as a shell that
-persists or a bash child may run it later; every arm of a `case` is read; `bash --version` and `--help` run no
+persists or a bash child may run it later; on a line that names `curl` or `wget`, a function makes the line
+unreadable, as before (`TK-D002` reads that line's text); every arm of a `case` is read; `bash --version` and `--help` run no
 script. The decision's `unread`
-says why a command is held (`function`, `name`, `pattern`, `input`, `foreign`, `syntax`), and the signer gives that cause's own
+says why a command is held (`function`, `download`, `name`, `pattern`, `input`, `foreign`, `syntax`), and the signer gives that cause's own
 reason and remedy.
 
 **Paths:** a `\` is a `/` and `C:/…` is absolute (the agent may run on Windows). An absolute path without `..` is

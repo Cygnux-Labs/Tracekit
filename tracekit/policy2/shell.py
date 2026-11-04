@@ -30,7 +30,7 @@ import shlex
 
 
 class ParseError(ValueError):
-    pass
+    cause = "syntax"   # the TK-SHELL-PARSE cause it gives (compile.ENGINE_REASONS)
 
 
 class _Expansion(str):
@@ -194,6 +194,8 @@ _BRACKET = re.compile(r"\[([!^]?)(\]?[^]]*)\]")
 _PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*|[1-9])\}?")
 # what bash splits or globs in an unquoted expansion's value (IFS as bash sets it)
 _SPLIT_OR_GLOB = re.compile(r"[ \t\n*?[]")
+# a line that may download (TK-D002's curl or wget, in any case): a function there isn't read (_Parser.define)
+_DOWNLOADS = re.compile(r"(?i)curl|wget")
 # a function definition where a command starts: `name()` or `function name [()]` (its body follows, _Parser.define)
 _FUNCTION = re.compile(r"function[ \t]+([A-Za-z_][\w.:-]*)[ \t]*(?:\([ \t]*\))?|([A-Za-z_][\w.:-]*)[ \t]*\([ \t]*\)")
 # names a function can't take here: bash's reserved words, and the builtins whose meaning this parser relies on to know
@@ -287,7 +289,7 @@ def analyse(command, persistent_target=None, readings=True, work=None):
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
            "unresolved": set(), "called": set(), "exported": set(), "ifs_named": _names_ifs(command),
-           "command_names_mutable": False,
+           "downloads": bool(_DOWNLOADS.search(command)), "command_names_mutable": False,
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
            "brace": min(MAX_BRACE, (64 << 10) - len(command)),   # what brace expansions may still add
@@ -392,7 +394,7 @@ def analyse_argv(argv, readings=True, work=None):
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
            "unresolved": set(), "called": set(), "exported": set(), "ifs_named": False,
-           "command_names_mutable": False,
+           "downloads": any(_DOWNLOADS.search(a) for a in argv), "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False, "brace": MAX_BRACE,
            "readings": readings, "nested": set()}
     words = list(argv)
@@ -1101,6 +1103,10 @@ class _Parser:
         copying command (echo, cat …) is no longer one that only copies text (track_redefinitions)."""
         if name in _UNREAD_FUNCTIONS:
             raise ParseError(f"a function named {name} is not supported")
+        if self.ctx["downloads"]:   # held as 1.5.3 held every function: TK-D002 reads the line's text, body before call
+            e = ParseError("a function on a line that downloads is not read")
+            e.cause = "download"
+            raise e
         self.i = at
         self.gap()
         if self.peek() not in ("{", "("):

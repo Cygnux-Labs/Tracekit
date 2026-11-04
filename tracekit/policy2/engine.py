@@ -202,7 +202,7 @@ class Engine:
                 held = next((c for c in parsed[0] if c["opaque"] and not _SCHEDULED.intersection(c["via"])), None)
                 if unread or held:
                     hits[on_parse_error].append("TK-SHELL-PARSE")
-                    cause = "syntax" if unread else _unread_cause(held)
+                    cause = unread or _unread_cause(held)
         # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
@@ -274,15 +274,15 @@ class Engine:
         return out
 
     def _parse(self, args, command, readings=True):
-        """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; whether it can't).
-        `readings`: False reads the command only as written (shell.analyse)."""
+        """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
+        ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse)."""
         target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
             if self._persistent_targets else None
         try:
-            return _shell(args, target, readings), False
+            return _shell(args, target, readings), None
         except shell.ParseError as e:
             return (_plain(command, getattr(e, "at", 0), readings, target) if isinstance(command, str) else
-                    _plain(canonical(command), 0, readings, target)), True
+                    _plain(canonical(command), 0, readings, target)), e.cause
 
     @staticmethod
     def _subjects(cls, field, args, fields, parsed, split=False):
