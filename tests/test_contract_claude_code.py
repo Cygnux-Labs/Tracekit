@@ -126,7 +126,7 @@ class RetryDriver(Driver):
         ac.RAN.clear()
         self.pending = (tool, args, tcid)
         self.pre = {"out": self.hook("PreToolUse", tcid, tool, args), "said": self.stdout.getvalue()}
-        held = re.match(r"\[tracekit\] held for approval (\S+) ", self.pre["out"][1])
+        held = re.match(r"\[tracekit\] HELD, nothing ran: (\S+) ", self.pre["out"][1])
         return dict(self.finish(), approval_id=held and held[1])
 
     def call(self, tool, args, tcid="call-1", mode="sync"):
@@ -232,7 +232,10 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
             with failing(method, exc):
                 code, err = self.pre("pay", ac.PAY, tcid=method)
             self.assertEqual(code, 2, method)
-            self.assertIn("not approved", err)
+            # #587: no approval to name when none was requested, and the outcome, not a hook error
+            self.assertRegex(err, r"\[tracekit\] NOT APPROVED, nothing ran(: apr-\S+)? \(\S+\): "
+                                  + ("RPCError" if method == "approval_request" else "SignerUnavailable"))
+            self.assertNotIn("hook error", err)
 
     def test_an_approved_call_blocks_when_its_consume_fails(self):
         self.set_fail_modes({"default": "open"})
@@ -247,7 +250,7 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
         with mock.patch.object(Client, "call", call):
             code, err = self.pre("pay", ac.PAY)
         self.assertEqual(code, 2)
-        self.assertIn("Held by tracekit policy: approval_consume failed: gone", err)   # blocked, with the reason
+        self.assertIn("[tracekit] BLOCKED, nothing ran.\nWhy: approval_consume failed: gone\n", err)   # with the reason
 
     def test_parallel_hooks_reach_the_signer_in_order(self):
         self.assertEqual(self.d.hook("SessionStart", None, None, None)[0], 0)

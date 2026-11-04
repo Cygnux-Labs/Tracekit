@@ -13,7 +13,7 @@
               "args": {"CommandLine": "mkdir -p /tmp/x", "BypassSandbox": true, "toolSummary": "Directory creation",
                        "command": "mkdir -p /tmp/x", "dangerouslyDisableSandbox": true}}},
  {"name": "write_to_file denied, decided on TargetFile not a decoy file_path", "event": "PreToolUse", "decision": "deny",
-  "exit": 0, "stdout": {"decision": "deny", "reason": "Blocked by tracekit policy: R-1"},
+  "exit": 0, "stdout": {"decision": "deny", "reason": "[tracekit] BLOCKED, nothing ran, and no one can approve it (R-1).\nAgent: tell the person what you were doing and why it was blocked. Never hide what a call runs to get past the policy: every call is signed and kept."},
   "payload": {"toolCall": {"name": "write_to_file", "args": {"TargetFile": "/w/.env", "CodeContent": "A=1",
                                                              "file_path": "/w/notes.txt"}},
               "stepIdx": 4, "conversationId": "ag-1", "workspacePaths": ["/w"]},
