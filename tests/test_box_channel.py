@@ -525,15 +525,21 @@ class TestVerifier(unittest.TestCase):
 
     def test_a_run_set_claims_only_for_the_runs_it_holds(self):
         """#603's review: a run-set's registry records point to other runs' run.registered, labels included. A plain
-        run's run-set bundle whose range holds a box run gets no box line: it isn't that run's."""
-        bundle, trust = box_runset_bundle(tmpdir(self))
-        rep, code = v2.verify(bundle, trust)
-        self.assertEqual(code, 0, rep.checks)
-        self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])
-        said = io.StringIO()
-        summary(rep, code, rep.integrity, rep.assurance, said)
-        self.assertNotIn("BOXED", said.getvalue())
-        self.assertIn("\nNOT PROOF AGAINST THE AGENT: ", said.getvalue())   # the plain run's own: same-user
+        run's run-set bundle whose range holds a box run gets no box line: it isn't that run's. Its protection lines are
+        the ones the same run gets exported alone (whatever this platform's signer recorded for it)."""
+        bundle, alone, trust = box_runset_bundle(tmpdir(self))
+        lines = []
+        for path in (bundle, alone):
+            rep, code = v2.verify(path, trust)
+            self.assertEqual(code, 0, rep.checks)
+            self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])
+            said = io.StringIO()
+            summary(rep, code, rep.integrity, rep.assurance, said)
+            self.assertNotIn("BOXED", said.getvalue())
+            lines.append(protection(rep, rep.assurance, False))
+            self.assertTrue(set(lines[-1]) <= set(said.getvalue().splitlines()), said.getvalue())
+        self.assertEqual(lines[0], lines[1])
+        self.assertFalse(any(x.startswith("PROOF") for x in lines[0]), lines[0])   # a dev run: never proof
 
     def test_a_mixed_bundle_never_gets_the_general_claim(self):
         lines = ["PROOF AGAINST THE BOXED AGENT (micro-VM): ..."]

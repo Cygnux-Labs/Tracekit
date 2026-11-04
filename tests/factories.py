@@ -60,8 +60,9 @@ BOX = {"id": "b-1", "image_digest": "sha256:" + "a" * 64, "allow": ["claude-code
 
 
 def box_runset_bundle(d):
-    """(a run-set bundle of a plain run whose registry range also points to an open box run's run.registered, its trust
-    file): the box's label is on a record of a run the bundle doesn't hold (#603's review)."""
+    """(a run-set bundle of a plain run whose registry range also points to an open box run's run.registered, the
+    plain run's bundle alone, their trust file): the box's label is on a record of a run the bundle doesn't hold (#603's
+    review)."""
     from tracekit.bundle_v2 import export
     from tracekit.identity.base import CallerIdentity
     from tracekit.signer import service as svc
@@ -81,13 +82,15 @@ def box_runset_bundle(d):
         st, out, trust = s.log.storage, os.path.join(d, "plain-runset.tkb"), os.path.join(d, "plain-runset-trust.json")
         export(st, "default", plain["run_id"], st.checkpoint_latest()[1], out,
                run_set=(0, st.checkpoint_latest(registry_tree("default"))[0]), tenant_salt=s.log.tenant_salt("default"))
+        alone = os.path.join(d, "plain.tkb")
+        export(st, "default", plain["run_id"], st.checkpoint_latest()[1], alone)
         with open(trust, "w") as f:
             json.dump({"logs": [s.vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0}, f)
     finally:
         s.close()
     with zipfile.ZipFile(out) as z:
         assert b'"box":{"id":"b-1"' in z.read("registry/records.jsonl"), "the range holds no box label"
-    return out, trust
+    return out, alone, trust
 
 
 def unverified_bundles(test):
