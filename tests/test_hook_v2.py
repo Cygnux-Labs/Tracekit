@@ -1296,7 +1296,7 @@ class HeldCalls(unittest.TestCase):
         msg = json.loads(p.stdout)["agent_message"]
         self.assertLessEqual(len(msg), 500)
         self.assertIn("set the variable to plain text earlier on the line", msg)
-        for tid, readable in (("t2", "git status"), ("t3", "g=git; $g status")):   # those ways: read, checked, run
+        for tid, readable in (("t2", "git status"), ("t3", "g=/usr/bin/git; $g status")):   # read, checked, run
             code, _, err = self.pre(readable, tid)
             self.assertEqual(code, 0, (readable, err))
 

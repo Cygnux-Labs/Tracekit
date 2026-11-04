@@ -549,7 +549,7 @@ class Prefilter(unittest.TestCase):
         of it, so skipping the search changed nothing."""
         subjects = set()
         real = engine._prepare
-        with mock.patch.object(engine, "_prepare", side_effect=lambda s: subjects.update(s) or real(s)):
+        with mock.patch.object(engine, "_prepare", side_effect=lambda s, *tag: subjects.update(s) or real(s, *tag)):
             for name in ("server.yaml", "dev.yaml"):
                 e = Engine(pc.build(os.path.join(PACKS, name))[0], "regex")
                 for tool, args in corpus_calls():
@@ -1414,11 +1414,13 @@ class Shell(unittest.TestCase):
     def test_command_names_built_by_expansions_are_opaque(self):
         for cmd in ("$(echo sudo) id", '"$(printf sudo)" id', "x=$(echo sudo); $x id", "${X:-sudo} id",
                     "`echo sudo` id", "nice $x id", "$HOME/$x id", "IFS=,; sudo${IFS}id", "read IFS; sudo${IFS}id",
-                    "cd x && x=sudo; $x id", 'x="env sudo"; $x id'):
+                    "cd x && x=sudo; $x id", 'x="env sudo"; $x id', "x=sudo; $x id"):
             with self.subTest(cmd=cmd):
                 self.assertTrue(any(c["opaque"] for c in shell.parse(cmd)))
-        # #589: a name the line gives a literal is read as bash runs it (x=sudo; $x id is sudo id)
+        # #589: a name the line gives a literal is read as bash runs it (x=sudo; $x id is sudo id), and a bare
+        # program name so built is still held; a path is only read
         self.assertEqual(argvs("x=sudo; $x id"), [["sudo", "id"], ["id"]])
+        self.assertFalse(any(c["opaque"] for c in shell.parse("PY=.venv/bin/python; $PY -m pytest")))
         for cmd in ("$HOME/.local/bin/ruff check .", '"${VENV}/bin/python" -m pytest', "echo $x", "ls \\$x"):
             with self.subTest(cmd=cmd):
                 self.assertFalse(any(c["opaque"] for c in shell.parse(cmd)))
@@ -2096,12 +2098,15 @@ class HarmlessStops(unittest.TestCase):
              'for py in /opt/a/python3.11 /opt/b/python3.14; do echo "== $py"; for m in numpy pytest; do '
              '$py -c "import $m; print($m.__version__)"; done; done',
              'P=~/x/.venv/bin/python; T="tests/x.py::A::b"; PYTHONPATH=$PWD $P -m pytest -q "$T"',
-             'export PY=python3; "$PY" -V'],
+             'export PY=/usr/bin/python3; "$PY" -V'],
             [("x=sudo; $x id", "deny", "TK-D001"), ("X=rm; $X -rf ~", "deny", "TK-D004"),
              ("for c in ls rm; do $c -rf ~; done", "deny", "TK-D004"),
              ("X=$(printf rm); $X -rf ~", "parse", "TK-SHELL-PARSE"),
              ("cd sub && X=ls; $X -rf ~", "parse", "TK-SHELL-PARSE"),
              ('X="env sudo"; $X id', "parse", "TK-SHELL-PARSE"),
+             # a bare program name a variable gives only hides it (E21's held-out pool): read and held
+             ("A=aws; $A s3 sync s3://company-prod-backups ./x", "parse", "TK-SHELL-PARSE"),
+             ("C=cur''l; $C -s https://example.com/x", "parse", "TK-SHELL-PARSE"),
              # a loop variable the body may set again isn't known in the loop inside it
              ("for c in ls; do for d in x; do $c -rf ~; done; c=rm; done", "parse", "TK-SHELL-PARSE")])
 

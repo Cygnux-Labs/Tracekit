@@ -225,13 +225,15 @@ _PY_SPAWNERS = {"os": r"system|popen|exec[lv]\w*|spawn\w*|posix_spawnp?|startfil
                 "asyncio": r"create_subprocess_shell|create_subprocess_exec"}
 _PY_DYNAMIC = re.compile(r"\b(?:getattr|__import__|importlib|import_module|eval|exec|compile|globals|locals|vars|"
                          r"builtins|__builtins__|__dict__)\b")
-_PY_IMPORT = re.compile(r"\bimport\s+([A-Za-z_][\w.]*(?:\s+as\s+\w+)?(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*(?:\s+as\s+\w+)?)*)")
+_PY_IMPORT = re.compile(r"\bimport\s+([A-Za-z_][\w.]*(?:\s+as\s+\w+)?"
+                        r"(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*(?:\s+as\s+\w+)?)*)")
 _PY_FROM = re.compile(r"\bfrom\s+(os|subprocess|pty|commands|asyncio)\s+import\s+\(?\s*([\w\s,*]+)")
 
 
 def _py_calls(code):
     """The pattern _Parser.scan finds Python's process-spawning calls with: each module's spawners under the names the
-    code imports it and them as; _CALL itself when the code looks names up at run time (getattr, __import__, eval …)."""
+    code imports it and them as; _CALL itself when the code looks names up at run time (getattr, __import__,
+    eval …)."""
     if _PY_DYNAMIC.search(code):
         return _CALL
     names = {m: {m} for m in _PY_SPAWNERS}
@@ -266,8 +268,8 @@ def parse(command):
 
 def analyse(command, persistent_target=None, readings=True, work=None):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
-    code, what else it learned: _learned). `readings`: False reads the line only as written, without its second readings (_Parser.simple). `work`: a
-    budget ([characters parsed]) several parses share, MAX_WORK in all."""
+    code, what else it learned: _learned). `readings`: False reads the line only as written, without its second
+    readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
            "unresolved": set(),
@@ -1152,8 +1154,8 @@ class _Parser:
 
     def simple(self, pid, piped=False):
         words, globs, names, strings, docs, idx, spans, here = [], [], [], [], [], [], [], []
-        vanish, patterns, cuts, slots, alones, fulls = [], [], [], [], [], []   # per word: .vanish, a pathname pattern,
-        # .cut, .slots, .alone, .full
+        # per word: .vanish, a pathname pattern, .cut, .slots, .alone, .full, a known variable in it (.given or .slots)
+        vanish, patterns, cuts, slots, alones, fulls, givens = [], [], [], [], [], [], []
         outs, ins = [], []   # the files this command's redirections write, and those they read
         consumed = loop_header = stdin_redirect = stdout_redirect = to_file = self.called = False
         dynamic = brace_unread = False   # brace_unread: the command is held (a brace kept as written, a split name)
@@ -1168,7 +1170,7 @@ class _Parser:
             nonlocal timed
             if timed and timed == len(words):
                 del words[:], globs[:], names[:], idx[:], spans[:], vanish[:], patterns[:], cuts[:], slots[:], alones[:]
-                del fulls[:]
+                del fulls[:], givens[:]
                 timed = 0
         while True:
             self.blank()
@@ -1281,7 +1283,8 @@ class _Parser:
                 # them, and globs them (one with a pattern character is left unread)
                 items = [" ".join(self.known["@"])] if raw in ('"$*"', '"${*}"') else self.known["@"]
                 if not raw.startswith('"'):
-                    items = None if any(re.search(r"[*?[]", a) for a in items) else [w for a in items for w in a.split()]
+                    items = None if any(re.search(r"[*?[]", a) for a in items) else \
+                        [w for a in items for w in a.split()]
                 pieces = None if items is None else [shlex.quote(a) for a in items]
             if pieces is None and "{" in self.bare:   # an unquoted { outside substitutions: maybe a brace expansion
                 # one _brace can't read, or beside a substitution (each word it makes runs it), is kept as written and
@@ -1326,12 +1329,17 @@ class _Parser:
                 slots.append(self.slots)
                 alones.append(self.alone)
                 fulls.append(self.full or not expanded)
+                givens.append(self.given or self.slots is not None)
         # a command whose every expansion is a variable the line gives literals (one each, or a for loop's words) is
         # read in full as bash runs it (word(), fill): a name it builds is no longer unreadable, unless bash would split
         # or glob a value
         if dynamic and all(fulls) and not any(_SPLIT_OR_GLOB.search(v) for s in slots if s for p in s
                                               if isinstance(p, tuple) for v in self.known.get(p[0], ())):
             names = globs[:]
+        # but a bare program name a variable gives (X=rm; $X …) only hides that name: it is read and still held, as a
+        # name the line builds; a path (PY=.venv/bin/python; $PY …) is read
+        names = [n or g and any("/" not in t for t in ([w] if s is None else [x[0] for x in self.fill([s])]))
+                 for n, g, w, s in zip(names, givens, words, slots)]
         cmds = self.emit(words, pid, self.via, any(globs), names) if words else []
         if brace_unread and cmds:
             cmds[0]["opaque"] = True
@@ -1439,7 +1447,7 @@ class _Parser:
         # `--help` print and exit
         if shell and not docs and not strings and shell["argv"][0] in SHELLS and (
                 piped or stdin_redirect or shell is _stdin_shell(as_written)) and (
-                piped or stdin_redirect or not shell["argv"][1:] or not set(shell["argv"][1:]) <= {"--version", "--help"}):
+                piped or stdin_redirect or not set(shell["argv"][1:] or ["-"]) <= {"--version", "--help"}):
             shell["opaque"] = True
         for text in strings if shell else ():
             self.nested(text, shell["via"] + [shell["argv"][0] + " <<<"])
@@ -1806,6 +1814,7 @@ class _Parser:
         if self.i == start:
             return None
         known = {} if self.ctx["any_set"] else self.known   # a known variable reads as written, never empty
+        given = buf
         if self.ctx["exp"] != exp:
             # a variable the line surely gave one literal expands to it, as bash runs it; unquoted, only a literal bash
             # neither splits nor globs (the others are fill()'s slots)
@@ -1814,6 +1823,7 @@ class _Parser:
                    for p in buf]
         text = "".join(buf)
         self.vanish, self.cut, self.ifs, self.slots, self.full = False, (text,) * 6, ifs, None, False
+        self.given = any(p is not q for p, q in zip(given, buf))   # a known variable's literal is in the word
         self.alone = alone and self.ctx["exp"] != exp   # only unquoted expansions: gone when they are empty
         if self.ctx["exp"] != exp:
             # every expansion in the word is a variable the line gives literals
@@ -2037,7 +2047,8 @@ class _Parser:
             m = _NAME.match(s, self.i + 1)
             self.i = m.end() if m else self.i + 1
         text = s[start:self.i]
-        if v := re.match(r"\$\{?(!?)([A-Za-z_][A-Za-z0-9_]*)", text):   # a variable read with no value the line gives it
+        # a variable read without a value the line gives it
+        if v := re.match(r"\$\{?(!?)([A-Za-z_][A-Za-z0-9_]*)", text):
             if v.group(1) or self.ctx["any_set"] or not self.known.get(v.group(2)):
                 self.ctx["unresolved"].add("*" if v.group(1) else v.group(2))
         # HOME is set unless this line may have emptied it, and so is a variable the line gave only literals that aren't

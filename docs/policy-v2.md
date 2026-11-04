@@ -187,10 +187,30 @@ paths (also after `--`), the paths its `-path`, `-ipath`, `-wholename`, `-iwhole
 time or inside code it runs (an `rm`, `unlink`, `shred`, `truncate`, `tee`, `cp`, `mv`, `install` or `ln` with a `$`
 or backtick operand, `rm "$f"`, but not `sed -i`, `perl -i` or `dd of=`; or `xargs`, `parallel`, `docker`, `podman`,
 `kubectl`, `ssh` or an interpreter such as `perl -e` or `python -c` whose words hold `rm`, `unlink`, `truncate`,
-`shred`, `mv`, `tee`, `dd`, `ln`, `sed`, `perl`, `find` or `>`), each argument of every command in the call (on any of
+`shred`, `mv`, `tee`, `dd`, `ln`, `sed`, `perl`, `find` or `>`; Python code the line shows, its `-c` code, heredoc or a
+script the line wrote, only when that code also writes a file, spawns a process or runs text: an `if n > 1` is no
+write), each argument of every command in the call (on any of
 its lines) is also a `MAY_WRITE:word` subject, which only `TK-D008` reads, and so is the link `ln`, `cp -s` or
 `cp -l` makes (a later write through it writes the file it points at). A rule on `effects` can tell a destination from
 a file a command only reads or copies. The tags are not in `target`, so a target rule reads the same subjects as before `effects` existed.
+
+- `tracekit` (shell): what a command does to Tracekit's own files and signer, each a tagged subject (`TK-D007`).
+  `ACT:` what a command acts on or runs: its words (data words aside) and stdin, the files redirections write, the
+  files `effects` names, assignments and heredoc programs. `READ:` what a command that only reads names (`ls`, `cat`,
+  `head`, `grep`, `rg`, `find` without an action, `sed` with a script that only prints or substitutes, `diff`, `stat`,
+  `pgrep` …), the files a redirection reads, a `cd` where every command only reads, and an assignment the line uses
+  only in those (none on a line that may set or export variables). `DEEP:` what a reader reads all of (`grep -r`,
+  `rg`, a pattern). `SIGNER_MODULE:` an `ACT:` text that names `tracekit.signer`, `tracekit.daemon` or
+  `tracekit.proxy`, so a rule can deny only code that also names a live location's function.
+- `downloads` (shell): the `code` subjects, and where downloaded bytes run (`TK-D002`, `RUNS_DOWNLOAD:` and the
+  command): a file a `curl` or `wget` wrote (`-o`, `-O`, a redirection, a later pipeline stage's redirection or `tee`;
+  then copied, moved or unpacked) that a later command runs as a script, a program or by `source`; any script when
+  the line can't name the download (`curl -J`, an archive unpacked); a `$(curl …)` (or a variable set to one) as a
+  command's name, in `eval`, `source` or `-c`/`-e` code, or piped into a shell that reads stdin. And where a download's
+  pipe feeds code that may run or store it (`TK-A046`, `PIPED_TO_CODE:`): a later stage that is a shell with `-c` or
+  a script, an interpreter with a script or a module (`python3 -m json.tool` aside), or with inline code; Python's
+  only with an exec-style call, an unpickler, a spawner or a file write. A tagged subject's tag doesn't count toward
+  its size.
 
 - `host`: the URL's host as a browser reads it (`host:port/path` without a scheme is http; controls, tabs and newlines dropped, `view-source:` and `blob:`
   peeled, `\` as `/`, any number of slashes after the scheme, the host after the last `@`), percent-decoded, NFKC
@@ -275,7 +295,15 @@ stopped in, parsed, and on its text split at `;`, `&`, `|` and newlines into bla
 an unreadable word or on plain words stands. A command it cannot parse, or one that
 is opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a
 literal name is fine), a shell or interpreter reading its program from a pipe or file, `xargs -I` putting its input
-into a script or command name, sed's `s///e`.
+into a script or command name, sed's `s///e`. A command name a variable gives is read with the literal the line
+surely gives it (`PY=.venv/bin/python; $PY -m pytest`, a for loop's words), and isn't opaque when it is a path; a
+bare program name a variable gives (`X=rm; $X …`) only hides that name, so it is read and still held. A value from a
+substitution, the environment or an assignment that may not run (`cd x && PY=…; $PY`) stays opaque. A shell function
+(`f() { …; }`, `function f { …; }`) is read where it is called, its body with the call's words as `$1` … and `"$@"`
+(a call in its own body is opaque; a function named `cd`, `export`, `unset` or `command_not_found_handle` makes the
+line unreadable); every arm of a `case` is read; `bash --version` and `--help` run no script. The decision's `unread`
+says why a command is held (`name`, `pattern`, `input`, `foreign`, `syntax`), and the signer gives that cause's own
+reason and remedy.
 
 **Paths:** a `\` is a `/` and `C:/…` is absolute (the agent may run on Windows). An absolute path without `..` is
 normalised. A relative path, or one with a `..` a symlink could redirect, is unverifiable, so the rule matches its
