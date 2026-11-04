@@ -173,9 +173,10 @@ class SystemModeUsesOpt(unittest.TestCase):
         init.assert_not_called()
         self.assertIn("--managed-only goes with --managed", err.getvalue())
 
-    def test_antigravity_crush_and_kilo_are_refused_in_v1_system_mode(self):
-        """The v1 system signer installs Claude Code's hooks only: agy's, Crush's and Kilo's would never be installed."""
-        for agent in ("antigravity", "crush", "kilo"):
+    def test_antigravity_crush_kilo_and_devin_are_refused_in_v1_system_mode(self):
+        """The v1 system signer installs Claude Code's hooks only: agy's, Crush's, Kilo's and Devin's would never be
+        installed."""
+        for agent in ("antigravity", "crush", "kilo", "devin"):
             with self.subTest(agent=agent), mock.patch.object(install, "init_system") as init, \
                     contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(cli.main(["init", "--user", "agent", "--agent", agent]), 2)

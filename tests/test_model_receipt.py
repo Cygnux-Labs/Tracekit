@@ -456,6 +456,10 @@ class HookRecords(Base):
             "hook_event_name": "PostToolUse", "conversationId": "c1", "stepIdx": 3,
             "toolCall": {"name": "manage_task", "args": {"Action": "send_input", "Input": cp}}})
         self.assertEqual((q["tool_name"], q["later"]), ("Bash", True))
+        # Devin's write_to_process types into a shell it started earlier, as Codex's write_stdin does
+        q = agent_hooks.normalise("devin", {"hook_event_name": "PreToolUse", "session_id": "s-devin",
+                                            "tool_name": "write_to_process", "tool_input": {"shell_id": "main", "input": cp}})
+        self.assertEqual((q["tool_name"], q["later"]), ("Bash", True))
 
     def test_a_call_that_failed_gets_no_receipts(self):
         """Review of 6b0a568e: a failed, interrupted or is_error call got receipts too."""
