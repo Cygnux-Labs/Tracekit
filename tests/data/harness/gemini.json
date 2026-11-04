@@ -11,7 +11,7 @@
                "tool_input": {"file_path": "/home/u/.bashrc", "content": "x"}},
    "decision": "deny",
    "request": {"tool": "Write", "tool_call_id": null, "args": {"file_path": "/home/u/.bashrc", "content": "x"}},
-   "exit": 2, "stdout": {"decision": "deny", "reason": "Blocked by tracekit policy: R-1"}},
+   "exit": 2, "stdout": {"decision": "deny", "reason": "[tracekit] BLOCKED, nothing ran, and no one can approve it (R-1).\nAgent: tell the person what you were doing and why it was blocked. Never hide what a call runs to get past the policy: every call is signed and kept."}},
   {"name": "read of several files held and approved",
    "payload": {"session_id": "ge-1", "cwd": "/w", "hook_event_name": "BeforeTool", "tool_name": "read_many_files",
                "tool_input": {"paths": ["a.md", "b.md"]}},

@@ -4322,20 +4322,22 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual((rec["nondeterministic"], rec["reasons"]), (True, [d["reason"]]))
 
     def test_a_denial_says_what_to_do(self):
-        # each rule's remedy follows the reasons, once; a deny rule with no reason gives its label, a flag's label is no
-        # reason (a flagged call runs); the signed record names the rules only
+        # each rule's remedy follows the reasons, once, after ". Instead: " (#587: the hook shows it as a line of its
+        # own); a deny rule with no reason gives its label, a flag's label is no reason (a flagged call runs); the
+        # signed record names the rules only
         self.open(Engine({"tools": {"Bash": "shell"}, "deny": [
             {"id": "X-1", "class": "shell", "pattern": "^rm ", "reason": "deleting", "remedy": "Move it to the trash."},
             {"id": "X-2", "class": "shell", "pattern": " -rf", "reason": "recursively", "remedy": "Move it to the trash."},
             {"id": "X-4", "class": "shell", "pattern": " build$", "label": "the build"}],
             "flag": [{"id": "X-3", "class": "shell", "pattern": "^rm ", "label": "destructive"}]}))
         d = self.decide("Bash", {"command": "rm -rf build"})
-        self.assertEqual((d["decision"], d["reason"]), ("deny", "deleting; recursively; the build. Move it to the trash."))
+        self.assertEqual((d["decision"], d["reason"]),
+                         ("deny", "deleting; recursively; the build. Instead: Move it to the trash."))
         [rec] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
         self.assertNotIn("reasons", rec)
         self.open(svc.load_policy(os.path.join(PACKS, "coding.yaml")))
         d = self.decide("Bash", {"command": "git push --force"}, tcid="tc-2")
-        self.assertEqual(d["reason"], "force push. Push without --force, --mirror or a + refspec (rebase "
+        self.assertEqual(d["reason"], "force push. Instead: Push without --force, --mirror or a + refspec (rebase "
                                       "onto the remote branch, or push a new branch); a person rewrites shared history "
                                       "themselves.")
 
@@ -4343,10 +4345,10 @@ class SignerPolicy(unittest.TestCase):
         self.open(svc.load_policy(os.path.join(PACKS, "coding.yaml")))
         d = self.decide("Bash", {"command": "stripe refunds create --charge=ch_3FAKE"})
         self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-A043"]))
-        self.assertEqual(d["reason"], "moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check "
-                                      "the amount, currency and payee in the command or the file it sends before "
-                                      "approving it; a refund with no amount refunds in full, and a confirm, capture or "
-                                      "pay moves the amount set earlier.")
+        self.assertEqual(d["reason"], "moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). "
+                                      "Instead: Check the amount, currency and payee in the command or the file it "
+                                      "sends before approving it; a refund with no amount refunds in full, and a "
+                                      "confirm, capture or pay moves the amount set earlier.")
 
     def test_every_decide_gets_a_fresh_decision_id_consumed_once(self):
         args = {"command": "ls"}

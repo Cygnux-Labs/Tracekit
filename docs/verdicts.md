@@ -35,8 +35,17 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 The composite action can verify v2 bundles against a pinned trust config. Pass its path with `trust`; the file must be
 available to the workflow. Get the trust file from the sender directly, not from the pull request or the
 `<run>.trust.json` file that `tracekit last` writes next to the bundle. A trust file in the repository is only as
-trusted as the commit it's read from: on `pull_request` the pull request's author can change it, so run the check on
-`push` to a protected branch, or keep the trust file outside the repository. The default `require-anchor: true`
+trusted as the commit it's read from, so on a pull request the action reads a `trust`, `key` or `witness: file:` file
+in the pull request's checkout (at its merge or head commit, or one with its head in it, such as a `pull_request_target`
+checkout of the merge ref) from its base commit, by the path as given, fetching the commit when the checkout is
+shallow. The step fails for a file that isn't at the base commit (one the pull request adds, or one the workflow wrote
+into the checkout), a path with `..` or through a symlink, a file in a submodule, a file in `$GITHUB_WORKSPACE` outside any git
+checkout, and a `witness: git:` path that is the pull request's checkout. Files outside `$GITHUB_WORKSPACE` (write the
+workflow's own to `$RUNNER_TEMP`), and those in another checkout there, are used as given. The step's Python and pip
+run isolated from the checkout. On `pull_request` GitHub runs the workflow file as the pull request has it, so its
+author can still change the
+step itself: make the check a required workflow in a repository ruleset, or have CODEOWNERS review
+`.github/workflows/` ([limits](limits.md#evidence-and-verification)). The default `require-anchor: true`
 accepts a v2 bundle only when verification with that trust config succeeds. For v1 bundles, continue to pass `key` or
 `witness`; the action checks the v1 `trust root` result.
 

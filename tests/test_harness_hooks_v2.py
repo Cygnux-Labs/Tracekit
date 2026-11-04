@@ -275,7 +275,10 @@ class Mapping(HarnessCase):
                     "conversationId": "ag-pair", "workspacePaths": ["/w"]}
         self.decision = "deny"
         code, out, err = self.hook("antigravity", pre(3, "ls"), "PreToolUse")
-        self.assertEqual((code, json.loads(out)), (0, {"decision": "deny", "reason": "Blocked by tracekit policy: R-1"}))
+        self.assertEqual((code, json.loads(out)), (0, {"decision": "deny", "reason": "[tracekit] BLOCKED, nothing ran, "
+                                                       "and no one can approve it (R-1).\nAgent: tell the person what "
+                                                       "you were doing and why it was blocked. Never hide what a call "
+                                                       "runs to get past the policy: every call is signed and kept."}))
         self.decision = "allow"
         for step, cmd in ((4, "ls"), (4, "pwd"), (5, "ls")):
             self.assertEqual(self.hook("antigravity", pre(step, cmd), "PreToolUse")[:2], (0, '{"decision": "allow"}'))
@@ -525,8 +528,8 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
         aid = err.split()[4]
         self.assertRegex(json.loads(out)["reason"],   # what Gemini CLI shows the person and the model
-                         rf"\(TK-A004(; TK-F\d+)*\): a person lets it run with `tracekit approvals( --signer \S+)? approve {aid}`"
-                         ", then asks the agent to try the same call again")
+                         rf"\(TK-A004(, TK-F\d+)*\), expires \d\d:\d\d UTC\.\nPerson: .*; allow once with "
+                         rf"`tracekit approvals( --signer \S+)? approve {aid}`;")
         pre["tool_input"]["additional_permissions"] = {"network": False}
         self.assertEqual(self.hook("gemini", pre)[0], 0)
 
@@ -541,12 +544,13 @@ class OnTheDevPolicy(HarnessCase):
             with self.subTest(name=name):
                 code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
                 self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
-                self.assertIn("Blocked by tracekit policy", json.loads(out)["reason"])
+                self.assertTrue(json.loads(out)["reason"].startswith("[tracekit] BLOCKED, nothing ran, and no one "
+                                                                     "can approve it (TK-D"), out)
         cmd = {"CommandLine": "mkdir -p /tmp/x", "BypassSandbox": True}
         code, out, err = self.hook("antigravity", pre(3, "run_command", cmd), "PreToolUse")   # held: blocked at once
         self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
-        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\): a person lets it run with `tracekit approvals "
-                                                    r"(--signer \S+ )?approve apr-")
+        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\), expires \d\d:\d\d UTC\.\nPerson: look with "
+                                                    r"`tracekit approvals (--signer \S+ )?show apr-")
         self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
                          (0, '{"decision": "allow"}'))
 
@@ -1518,9 +1522,10 @@ class VersionNotice(HarnessCase):
     def test_a_blocked_call_carries_no_notice_and_the_next_call_let_through_does(self):
         self.decision = "deny"
         code, out, err = self.pre("t1")
-        self.assertEqual((code, out), (2, ""))
-        self.assertIn("Blocked by tracekit policy", err)
-        self.assertNotIn("older than", err)
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("[tracekit] BLOCKED, nothing ran"), err)
+        self.assertEqual(json.loads(out)["systemMessage"], err.strip())   # the block's own JSON (#587), no notice
+        self.assertNotIn("older than", err + out)
         self.decision = "allow"
         self.assertIn("older than this hook's", json.loads(self.pre("t2")[1])["systemMessage"])
 

@@ -332,7 +332,7 @@ from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog
                                       cooldown_key, degrade, epoch, final_run, owner, person_only_keys, ran, salt_label,
                                       skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
-from tracekit.signer.rpc_schema import REQUESTS, RPCError
+from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
@@ -1974,18 +1974,19 @@ class SignerService:
             return d, False, d["rule_ids"]
 
     def _reasons(self, ids, unread=None):
-        """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then their
-        remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed
-        ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520), for
-        TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs, so
-        its label is no reason it was denied or held."""
+        """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
+        INSTEAD their remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its
+        fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
+        for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
+        so its label is no reason it was denied or held."""
         engine_reasons = {**policy_compile.ENGINE_REASONS}
         if cause := engine_reasons["TK-SHELL-PARSE"]["causes"].get(unread):
             engine_reasons["TK-SHELL-PARSE"] = cause
         by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
-        return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]
+        instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
+        return (why + INSTEAD * bool(why and instead) + instead)[:1024]
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""
@@ -4169,13 +4170,13 @@ class SignerService:
 
     def _pcm_write(self, identity, method, req, key, data, out, check=None):
         """`out` with the run_seq of ext record `data` (digests and ids, never args) in run `key`; refused in a
-        held or quarantined run (no new authority leaves it while a person looks), or when `check(run)` raises on the
-        writer."""
+        held or quarantined run (no new authority leaves it while a person looks), or when `check(tx, run)` raises on
+        the writer."""
         def fn(tx, run):
             if run.get("quarantined") or run.get("held"):
                 raise RPCError("forbidden", self._why_contained(run))
             if check:
-                check(run)
+                check(tx, run)
             return {**out, "run_seq": tx.emit(run, "ext", data, request_id=req["request_id"])}
         return self.log.submit(identity, method, req, fn, key)
 
@@ -4196,7 +4197,7 @@ class SignerService:
     def _pcm_grant(self, identity, req):
         """A root grant of exactly the args of the run's `pcm.grant` call, from its consumed approval: by a person
         approvals.persons names, not self-approved, by neither the run's agent nor the grant's subject, before the call
-        completes; it expires within MAX_GRANT_S."""
+        completes, once per approval; it expires within MAX_GRANT_S."""
         key, agent = self._pcm_agent(identity, req)
         if self.approvals is None:   # without it any identity of the run's tenant may answer, and none is a person
             raise RPCError("forbidden", "a root grant needs signer.yaml's approvals, which names the people who answer")
@@ -4222,10 +4223,9 @@ class SignerService:
             if not answer.get("person"):
                 raise RPCError("forbidden", "a root grant needs the approval of a person signer.yaml's "
                                             f"approvals.persons names: {a['answered']['by'][:256]} maps to none")
-            # lean: until the call completes, each pcm_grant mints another grant of this approval (the same but for
-            # ts); record the grants per approval if that matters
-            if ran(a)[2] not in run["decisions"]:   # its tool.result is written
-                raise RPCError("forbidden", "the pcm.grant call completed: this approval already issued its grant")
+            if a.get("granted") or ran(a)[2] not in run["decisions"]:   # its grant or its tool.result is written
+                raise RPCError("forbidden", "this approval already issued its grant, or its pcm.grant call completed: "
+                                            "one grant per approval")
             return aid, a
         rid = (identity.scheme, identity.subject, req["request_id"])
         # read on the writer, so the grant is signed off it; the writer checks it all again (a retry: its cached grant)
@@ -4238,9 +4238,11 @@ class SignerService:
             "subject": args["subject"], "intent": args["intent"], "caveats": args.get("caveats", []),
             "expires_at": args["expires_at"], "delegable": args["delegable"], "parent": None})
 
-        def check(run):
-            if approved(run)[0] != aid:
+        def check(tx, run):
+            now_aid, now_a = approved(run)
+            if now_aid != aid:
                 raise RPCError("unavailable", "the approval changed while its grant was signed: ask again")
+            tx.set(now_a, "granted", True)   # in the write of its pcm.grant record: one grant per approval
         return self._pcm_write(identity, "pcm_grant", req, key, {
             "name": "pcm.grant", "grant": grant and event_hash(grant), "subject": args["subject"],
             "intent": args["intent"], "approval_id": aid}, {"grant": grant}, check)

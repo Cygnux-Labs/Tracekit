@@ -531,6 +531,7 @@ class Tee(io.StringIO):
 
 
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
+STOPPED_LINES = ("Why: ", "Instead: ", "Person: ", "Agent: ")   # how the lines after a stop's first go on (stopped)
 PAIRED = ("gemini", "droid", "antigravity", "devin")   # the harnesses whose call ids _paired_ids makes
 
 
@@ -709,11 +710,14 @@ def _exit(harness, code, is_pre):
 
 
 def _reply(harness, stdout, allowed, msg, is_pre):
-    # a block message in at most 500 characters. Its last line is the hook's outcome (after a waiting line): it goes
-    # first. A held call's names its rule ids and the approve and reject commands before its reasons, so a longer one
-    # loses the end of its reasons, marked
-    *before, last = msg.split("\n")
-    msg = "\n".join([last, *before])
+    # a block message in at most 500 characters. The hook's outcome, its last line and the lines that go on from it
+    # (claude_code.stopped's), goes first (before a waiting line), and in it the person's commands right after its first
+    # line, which names the rule ids: a longer one loses the end of its reasons and of the agent's line, marked
+    lines = msg.split("\n")
+    start = max((i for i, x in enumerate(lines) if not x.startswith(STOPPED_LINES)), default=0)
+    head, *rest = lines[start:]
+    rest = sorted(rest, key=lambda x: not x.startswith("Person: "))   # stable: the rest keep their order
+    msg = "\n".join([head, *rest, *lines[:start]])
     msg = msg if len(msg) <= 500 else msg[:499] + "…"
     if harness == "cursor":
         if is_pre:

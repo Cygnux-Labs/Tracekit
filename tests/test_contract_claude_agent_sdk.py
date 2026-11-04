@@ -177,7 +177,7 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
         with mock.patch.object(cas, "APPROVAL_WAIT_S", 0.3):
             out = self.d.call("pay", ac.PAY)
             out = out if out["approval_id"] is None else self.d.resume()
-        self.refused(out, "R-PAY not approved: requested")
+        self.refused(out, "not approved: requested; R-PAY (approval apr-")   # #587: with the approval id
 
     def test_signer_unreachable_follows_the_fail_mode(self):
         down = Client(os.path.join(ac.tmpdir(self), "none.sock"))

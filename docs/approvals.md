@@ -26,9 +26,11 @@ retry of the same call after a person approved it ([approve, then retry](#approv
 3. An approver answers from another terminal:
 
    ```sh
-   tracekit approvals list                 # pending and recent approvals you may see
-   tracekit approvals show apr-…           # the signer's copy of the arguments, in full
-   tracekit approvals list --json          # all pages as one JSON array; [] when empty
+   tracekit approvals list                 # those you may see: waiting ones first, newest first, with what each runs
+   tracekit approvals list --all           # the expired ones too
+   tracekit approvals show apr-…           # why, what to do instead, the answer commands, the arguments in full
+   tracekit view --approval apr-…          # the link that opens the held call in the viewer
+   tracekit approvals list --json          # all pages as one JSON array, every approval; [] when empty
    tracekit approvals show apr-… --json    # redacted arguments decoded in one JSON object, no pager
    tracekit approvals approve apr-… --reason "checked the target"
    tracekit approvals reject apr-…
@@ -116,7 +118,7 @@ them, so the record is the call that was approved, description included; Claude 
 it, the same command with only its caption reworded (the hook returns no `updatedInput`, which could change how Claude
 Code asks you). One of them rejected: the signer keeps no copy of a rejected call's arguments and doesn't say which
 answer came last, so the retry is decided as the model sent it and held, and the first reason after `Why:` in its block
-(`[tracekit] held for approval …`) is `a person rejected this command (with another description) as apr-…`, adding
+(`[tracekit] HELD, nothing ran: apr-…`) is `a person rejected this command (with another description) as apr-…`, adding
 `, and it was approved (with another description) as apr-…` when one was. Each `(with another description)` is left
 out where that wording is the retry's own, and a retry exactly as rejected, never approved, gets the signer's own
 reason (`a person rejected this exact call …`). One the hook can't read (a signer whose `authorize` doesn't grant it
