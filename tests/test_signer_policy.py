@@ -792,6 +792,64 @@ class CodingPack(unittest.TestCase):
                         if cmd in held:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_resetting_a_database_through_a_framework_asks_in_every_pack(self):
+        """TK-A055: the commands web frameworks and ORMs use to wipe a database are held for a person, as `dropdb` and a
+        client's DROP are; migrating, seeding, diffing and printing a flush's SQL are not. None of them was seen."""
+        held = [
+            "prisma migrate reset", "prisma migrate reset --force", "npx prisma migrate reset", "npx prisma migrate reset --force --skip-seed",
+            "npx --yes prisma@5.22.0 migrate reset", "npx -p prisma prisma migrate reset", "pnpm dlx prisma migrate reset",
+            "pnpm exec prisma migrate reset", "pnpm prisma migrate reset", "yarn prisma migrate reset", "bunx prisma migrate reset",
+            "bun x prisma migrate reset", "npm exec -- prisma migrate reset", "npx prisma@latest migrate reset",
+            "prisma db push --force-reset", "npx prisma db push --force-reset --skip-generate",
+            "npx prisma db push --accept-data-loss --force-reset", "pnpm dlx prisma db push --force-reset",
+            "bundle exec rails db:drop", "bundle exec rails db:reset", "bundle exec rake db:drop", "rails db:drop", "rails db:reset",
+            "rake db:reset", "bin/rails db:drop", "./bin/rails db:reset", "rails db:drop:all", "rails db:reset:primary", "rails db:migrate:reset", "bundle exec rake db:migrate:reset",
+            "rails db:purge", "rails db:purge:all", "rails db:truncate_all", "bundle exec rails db:truncate_all", "rails db:seed:replant", "bundle exec rake db:seed:replant",
+            "python manage.py flush", "python3 manage.py flush --no-input", "python3 backend/manage.py flush", "./manage.py flush",
+            "python -X dev manage.py flush", "py manage.py flush", "python3.12 manage.py flush", "python3 -m django flush",
+            "django-admin flush", "django-admin flush --settings=app.settings",
+            "sequelize db:drop", "npx sequelize db:drop", "npx sequelize-cli db:drop", "pnpm dlx sequelize-cli db:drop",
+            "yarn sequelize-cli db:drop", "bunx sequelize-cli db:drop",
+            "php artisan migrate:fresh", "php artisan migrate:fresh --seed", "php artisan migrate:reset", "php artisan migrate:refresh --seed", "php artisan db:wipe", "php8.3 artisan db:wipe --force",
+            "php -d memory_limit=-1 artisan migrate:fresh", "./artisan migrate:fresh", "sail artisan migrate:fresh",
+            "typeorm schema:drop", "npx typeorm schema:drop", "pnpm dlx typeorm schema:drop", "typeorm-ts-node-commonjs schema:drop -d src/data-source.ts",
+            "npx typeorm-ts-node-esm schema:drop", "supabase db reset", "supabase db reset --linked", "npx supabase db reset", "bunx supabase@latest db reset",
+            "pnpm dlx supabase db reset", "mix ecto.drop", "mix ecto.reset", "mix ecto.reset --quiet",
+            "dotnet ef database drop", "dotnet ef database drop --force", "dotnet-ef database drop",
+            # help for a command with more words than the exemption allows, and a name before the flag
+            "bundle exec rails db:drop --help", "dotnet ef database drop --help", "npx prisma migrate reset -h",
+            # Phoenix's ecto.reset alias passes its arguments to ecto.setup only: ecto.drop runs without --help
+            "mix ecto.reset --help", "mix ecto.reset -h",
+            "bundle exec bin/rails db:drop", "bundle exec ./bin/rake db:reset",
+            # a wrapper, a nested shell and a command among others
+            "sudo bundle exec rails db:reset", "bash -c 'npx prisma migrate reset --force'", "cd app && python3 manage.py flush"]
+        routine = [
+            "prisma migrate dev", "prisma migrate deploy", "prisma migrate status", "prisma db push", "npx prisma db push --accept-data-loss", "prisma generate",
+            "npx prisma migrate dev --name init", "npx prisma db seed", "pnpm dlx prisma studio",
+            "rails db:migrate", "rails db:seed", "rails db:setup", "rails db:migrate:status", "rails db:migrate:up", "rails server",
+            "bundle exec rails db:create", "bundle exec rake db:schema:dump", "rake routes", "rails dbconsole",
+            "python manage.py migrate", "python3 manage.py runserver", "python3 manage.py sqlflush", "python3 manage.py flushsessions",
+            "python manage.py makemigrations", "django-admin startproject site", "python3 -m django --version",
+            "sequelize db:migrate", "npx sequelize-cli db:seed:all", "sequelize db:create",
+            "php artisan migrate", "php artisan db:seed", "php artisan migrate:status", "php artisan migrate:rollback",
+            "php artisan serve", "php -v", "typeorm migration:run", "npx typeorm migration:revert", "npx typeorm schema:log", "sail artisan migrate",
+            "supabase db diff", "supabase db push", "supabase db pull", "supabase start", "npx supabase db lint",
+            "mix ecto.migrate", "mix ecto.create", "mix ecto.setup", "mix phx.server", "mix test",
+            "dotnet ef migrations add Init", "dotnet ef database update", "dotnet ef migrations list", "dotnet build",
+            # asking for help runs nothing
+            "prisma migrate reset --help", "prisma migrate reset -h", "rails db:drop --help", "supabase db reset --help",
+            "php artisan db:wipe --help",
+            "echo rails db:drop", "grep -rn 'db:reset' config", "git commit -m 'npx prisma migrate reset in CI'"]
+        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
+            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
+                for cmd in held + routine:
+                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                        d = e.decide("Bash", {"command": cmd})
+                        self.assertEqual("TK-A055" in d["rule_ids"], cmd in held, d)
+                        if cmd in held:
+                            self.assertIn(d["verdict"], ("ask", "deny"), d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
@@ -1281,6 +1339,28 @@ class CodingPack(unittest.TestCase):
             # a line the parser can't read is still held (TK-SHELL-PARSE)
             self.assertIn(e.decide("Bash", {"command": "rm ~/.claude/projects/p/a.jsonl; echo '"})["verdict"],
                           ("ask", "deny"))
+
+    def test_kilo_codes_config_and_data_folders_are_opencodes_under_its_names(self):
+        """#551's review: Kilo Code keeps OpenCode's layout under its own names. Its plugin folder (Tracekit's hook is
+        in it), project config and data folder were none of the rules' paths, so deleting Tracekit's plugin went
+        unflagged and its sessions unprotected."""
+        for pack, engine, e in self.every_pack():
+            for command in ("rm ~/.config/kilo/plugin/tracekit.js", "echo x > .kilo/plugin/x.js", "rm -rf .kilocode",
+                            "echo '{}' > kilo.json", "sed -i s/a/b/ kilo.jsonc"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for path in ("/home/u/.config/kilo/plugin/tracekit.js", "/w/.kilo/plugin/x.js", "/w/kilo.json"):
+                with self.subTest(pack=pack, engine=engine, path=path):
+                    self.assertIn("TK-F009", e.decide("Write", {"file_path": path, "content": "x"})["rule_ids"])
+            for command in ("rm ~/.local/share/kilo/kilo.db", "echo x > ~/.local/share/kilo/storage/message/s/m.json",
+                            "rm -rf ~/.local/share/kilo"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    d = e.decide("Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-D008" in d["rule_ids"]), ("deny", True), d)
+            d = e.decide("Write", {"file_path": "/home/u/.local/share/kilo/storage/session/s.json", "content": "x"})
+            self.assertEqual((d["verdict"], "TK-D009" in d["rule_ids"]), ("deny", True), d)
+            d = e.decide("Bash", {"command": "echo x > ~/.local/share/kilo/log/a.txt"})   # its logs aren't sessions
+            self.assertNotIn("TK-D008", d["rule_ids"])
 
     def test_transcript_rule_holds_deletes_of_the_folders_that_hold_transcripts(self):
         """Deleting ~/.claude, ~/.codex, ~/.gemini or OpenCode's data folder (or a folder above it in the home)
@@ -3685,6 +3765,7 @@ class PackReading(unittest.TestCase):
 
     def test_a_pgp_private_key_block_is_a_secret(self):
         # the 1.5.3 sweep: OpenPGP armour ends its header in KEY BLOCK
+        # agent-flow:allow-secret: the armour's header line alone, no key
         armour = "-----BEGIN PGP PRIVATE KEY BLOCK-----"
         self.rule_on_server("TK-S003", [("Bash", {"command": f"echo '{armour}' > k"})])
         self.rule_on_server("TK-S002", [("mcp:notes/save", {"text": armour})])

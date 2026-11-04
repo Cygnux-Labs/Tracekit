@@ -1,10 +1,11 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid, Antigravity CLI and Crush, on the
-Claude Code pipeline.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI and
+Crush, on the Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
     tracekit init --dev --agent gemini       # ~/.gemini/settings.json
     tracekit init --dev --agent opencode     # ~/.config/opencode/plugin/tracekit.js
+    tracekit init --dev --agent kilo         # ~/.config/kilo/plugin/tracekit.js (project: .kilo/plugin/tracekit.js)
     tracekit init --dev --agent goose        # ~/.agents/plugins/tracekit/hooks/hooks.json
     tracekit init --dev --agent qwen         # ~/.qwen/settings.json
     tracekit init --dev --agent droid        # ~/.factory/hooks.json
@@ -38,6 +39,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
             WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
+    Kilo    OpenCode's tools, names and arguments, and OpenCode's plugin; its own background_process, notebook_read,
+            notebook_edit, send_file, generate_image -> Bash, Read, NotebookEdit, Read, Write (decided on their `path`;
+            generate_image with an `image` as a Read of it and the `path`); notebook_execute is blocked in the hook
     Crush   bash, view, write, edit, multiedit, lsp_replace_symbol, lsp_rename, ls, grep, glob, fetch, download,
             mcp_<server>_<tool>
             -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
@@ -65,8 +69,8 @@ from .locking import lock_file, unlock_file
 from .policy2.classes import PATH_KEYS, first
 
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
-AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "goose": "goose",
-               "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush"}
+AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
+               "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -95,6 +99,10 @@ OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edi
 # `source`, not `path`: a decoy `path` beside it must not move the decision)
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
+# harness tools mapped to Bash whose effect comes after their post-tool hook: input typed into another running session
+# (Codex's write_stdin, agy's manage_task send_input) or a command left running (Qwen Code's monitor); normalise marks
+# their payload `later`, and the hook takes no receipt of what they write (tracekit.model_receipt)
+LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
@@ -124,6 +132,17 @@ PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to)
 OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path"}
 # OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
 OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
+# Kilo Code is built on OpenCode and loads the same plugin. Its tools are OpenCode's, with the same names and arguments,
+# plus its own; those that run a command or read or write a file are mapped here (packages/opencode/src/kilocode/tool)
+KILO_TOOLS = {**OPENCODE_TOOLS, "background_process": "Bash", "notebook_read": "Read", "notebook_edit": "NotebookEdit",
+              "send_file": "Read", "generate_image": "Write"}
+KILO_PATH_ARG = {**OPENCODE_PATH_ARG, **dict.fromkeys(("notebook_read", "notebook_edit", "send_file", "generate_image"),
+                                                      "path")}
+# Kilo's notebook_execute (VS Code, experimental.native_notebook_tools) runs a cell in the live kernel: the cell's code
+# is in the notebook, not the call, so no rule reads it, and the hook blocks the tool (kilocode/tool/notebook-host.ts)
+KILO_BLOCKED = ("notebook_execute",)
+# the harnesses that load Tracekit's OpenCode plugin: their tool names and the argument each file tool reads
+PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_TOOLS, KILO_PATH_ARG)}
 JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
 
 
@@ -216,11 +235,21 @@ def tool(harness, name, ti):
                 if urls != [ti["url"]]:
                     ti["urls"] = urls
         return mapped, ti
-    if harness == "opencode":
+    if harness in PLUGIN_TOOLS:
+        tools, path_arg = PLUGIN_TOOLS[harness]
         # the path the tool itself reads decides, never another path key the model sent beside it (OpenCode drops
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
-        if name in OPENCODE_PATH_ARG:
-            ti["file_path"] = ti.get(OPENCODE_PATH_ARG[name])
+        if name in path_arg:
+            ti["file_path"] = ti.get(path_arg[name])
+        if harness == "kilo" and name == "notebook_edit":   # v1 decides a NotebookEdit on its notebook_path
+            ti["notebook_path"] = ti["file_path"]
+        if harness == "kilo" and name == "generate_image":
+            ti["paths"] = []   # a `paths` sent beside it is dropped, as Kilo drops it
+            if isinstance(ti.get("image"), str):   # its `image`, an existing file, is read and sent to the image
+                # provider: decided as a Read of it, with the `path` it writes (Kilo gives that an image extension)
+                ti["file_path"] = ti["image"]
+                ti["paths"] = [ti["image"]] + [ti["path"]] * isinstance(ti.get("path"), str)
+                return "Read", ti
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
@@ -228,7 +257,7 @@ def tool(harness, name, ti):
                      for g in dict.fromkeys((f, f.split(":")[0]))]
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
-        return OPENCODE_TOOLS.get(name, name), ti
+        return tools.get(name, name), ti
     if harness == "goose":
         if name == "read_image":
             # decided by scheme, as goose's url::Url::parse reads the source: tabs and newlines dropped, outer spaces and
@@ -322,7 +351,7 @@ def normalise(harness, p):
         out["hook_event_name"] = m[ev]
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
-            out["tool_use_id"] = p.get("tool_use_id")
+            out["tool_use_id"], out["later"] = p.get("tool_use_id"), (harness, p.get("tool_name")) in LATER
             if harness == "droid":   # Droid's documented stdin carries no call id
                 out["tool_use_id"] = out["session_id"] and _paired_ids(
                     harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
@@ -382,7 +411,7 @@ def normalise(harness, p):
         if ev == "SessionEnd":
             return dict(out, hook_event_name="SessionEnd", reason=p.get("reason") or "session end")
         return None
-    if harness == "opencode":
+    if harness in PLUGIN_TOOLS:
         out["session_id"] = p.get("session_id")
         if ev in ("tool.execute.before", "tool.execute.after"):
             out["hook_event_name"] = "PreToolUse" if ev == "tool.execute.before" else "PostToolUse"
@@ -420,6 +449,7 @@ def normalise(harness, p):
         sid, step = p.get("conversationId"), p.get("stepIdx")
         out.update(cwd=(p.get("workspacePaths") or [None])[0], transcript_path=p.get("transcriptPath"),
                    model=p.get("modelName"), session_id=sid, hook_event_name=ev, tool_name=name, tool_input=ti,
+                   later=(harness, raw.casefold()) in LATER,
                    tool_use_id=sid and type(step) is int and _paired_ids(
                        harness, sid, f"{step}|{raw}", ti, "pre" if ev == "PreToolUse" else "post"))
         if ev == "PostToolUse" and p.get("error"):
@@ -491,6 +521,11 @@ def _blocked_tool(harness, tool_name, raw=""):
     if harness == "goose" and name in GOOSE_CODE_MODE:
         return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
+    if harness == "kilo" and tool_name in KILO_BLOCKED:
+        return (f"Blocked by Tracekit: Kilo's {tool_name} runs a notebook cell in the live kernel, and the cell's code "
+                "isn't in the call, so Tracekit can't decide what it runs. It is on only with "
+                '"experimental": {"native_notebook_tools": true} in kilo.json; leave that off and run code through '
+                "bash instead.")
     if harness != "crush":
         return None
     if tool_name.casefold() in CRUSH_SUBAGENTS:   # as its argument names, Crush may match a tool's name ignoring case
@@ -638,6 +673,7 @@ def config_path(harness, project=None, home=None):
     base = project or home or os.path.expanduser("~")
     codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
         else os.path.join(base, ".codex")
+    xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
     return {"codex": os.path.join(codex, "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
@@ -646,14 +682,16 @@ def config_path(harness, project=None, home=None):
             "antigravity": os.path.join(base, ".agents", "hooks.json") if project else
                            os.path.join(base, ".gemini", "config", "hooks.json"),
             "opencode": os.path.join(base, ".opencode", "plugin", "tracekit.js") if project else
-                        os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
-                                     os.path.join(base, ".config"), "opencode", "plugin", "tracekit.js"),
+                        os.path.join(xdg, "opencode", "plugin", "tracekit.js"),
+            # Kilo reads the plugin/ folder of each of its config directories: a project's .kilo (or .kilocode), and
+            # $XDG_CONFIG_HOME (else ~/.config)/kilo; not OpenCode's (packages/opencode/src/config/paths.ts)
+            "kilo": os.path.join(base, ".kilo", "plugin", "tracekit.js") if project else
+                    os.path.join(xdg, "kilo", "plugin", "tracekit.js"),
             # Crush reads ./crush.json in a project, else its GlobalConfig(): $CRUSH_GLOBAL_CONFIG/crush.json, or
             # $XDG_CONFIG_HOME (else ~/.config; Windows %USERPROFILE%\.config)/crush/crush.json
             "crush": os.path.join(base, "crush.json") if project else
                      os.path.join((None if home else os.environ.get("CRUSH_GLOBAL_CONFIG")) or
-                                  os.path.join((None if home else os.environ.get("XDG_CONFIG_HOME")) or
-                                               os.path.join(base, ".config"), "crush"), "crush.json")}[harness]
+                                  os.path.join(xdg, "crush"), "crush.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -772,19 +810,22 @@ def _version(cmd):
     return "v2" if V2_MODULE in cmd else "v1" if "tracekit.agent_hooks" in cmd else None
 
 
-OPENCODE_MARKER = "// Installed by Tracekit; tracekit uninstall --agent opencode removes this file."
+def _plugin_marker(harness):
+    return f"// Installed by Tracekit; tracekit uninstall --agent {harness} removes this file."
 
 
-def _opencode_plugin(python, v2):
-    """The local OpenCode plugin. OpenCode runs plugins with Bun and awaits a before hook, so the hook's process,
-    spawned without blocking OpenCode's event loop (parallel calls are decided at once), holds the call until Tracekit
-    allows or denies it (or a person approves it); one that doesn't answer in time is killed and its call blocked. Each
-    event's command names the event, and runs the hook as install._hook_command does (python, or this interpreter)."""
+def _opencode_plugin(python, v2, harness="opencode"):
+    """The local OpenCode plugin (Kilo's too: harness). OpenCode runs plugins with Bun and awaits a before hook, so the
+    hook's process, spawned without blocking OpenCode's event loop (parallel calls are decided at once), holds the call
+    until Tracekit allows or denies it (or a person approves it); one that doesn't answer in time is killed and its call
+    blocked. Each event's command names the event, and runs the hook as install._hook_command does (python, or this
+    interpreter)."""
     from .install import _dev_hook_argv
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
-    commands = {ev: [python, "-I", "-m", module, "opencode", ev] if python else
-                _dev_hook_argv(module, "entry", ("opencode", ev)) for ev in ("tool.execute.before", "tool.execute.after")}
-    return f'''{OPENCODE_MARKER}
+    commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
+                _dev_hook_argv(module, "entry", (harness, ev)) for ev in ("tool.execute.before", "tool.execute.after")}
+    agent, config = ("Kilo Code", "kilo.json") if harness == "kilo" else ("OpenCode", "opencode.json")
+    return f'''{_plugin_marker(harness)}
 const commands = {json.dumps(commands)};
 // above the most a hook takes to answer, a held call's approval wait included (Tracekit's APPROVAL_WAIT_S), as the
 // other coding agents' pre-tool timeout: a hook still running then hung, so it is killed and its call blocked
@@ -814,7 +855,7 @@ async function tracekit(event, input, toolInput, toolResponse) {{
     return killed ? {{ code: 1, message: `[tracekit] the hook did not answer in ${{KILL_MS / 1000}} s: stopped` }}
       : {{ code: hook.exitCode, message: message.trim() }};
   }} catch (error) {{
-    return {{ code: 1, message: `[tracekit] OpenCode hook error (${{error}})` }};
+    return {{ code: 1, message: `[tracekit] hook error (${{error}})` }};
   }} finally {{
     clearTimeout(timer);
   }}
@@ -823,8 +864,8 @@ async function tracekit(event, input, toolInput, toolResponse) {{
 export const TracekitPlugin = async ({{ directory }}) => ({{
   "tool.execute.before": async (input, output) => {{
     if (input.tool === "batch") {{   // OpenCode runs the calls inside a batch with no plugin hooks
-      throw new Error("Blocked by Tracekit: OpenCode's experimental batch tool runs its calls without plugin hooks, " +
-        "so Tracekit can't decide them. Turn it off (experimental.batch_tool in opencode.json) and make each call itself.");
+      throw new Error("Blocked by Tracekit: {agent}'s experimental batch tool runs its calls without plugin hooks, " +
+        "so Tracekit can't decide them. Turn it off (experimental.batch_tool in {config}) and make each call itself.");
     }}
     const result = await tracekit("tool.execute.before", {{ ...input, cwd: directory }}, output.args);
     if (result.code !== 0) {{   // blocked (2), or the hook could not decide the call: it doesn't run
@@ -839,8 +880,8 @@ export const TracekitPlugin = async ({{ directory }}) => ({{
 '''
 
 
-def _install_opencode(path, uninstall=False, v2=False, python=None):
-    """Install one owned local plugin without overwriting an OpenCode plugin that is not Tracekit's."""
+def _install_opencode(path, uninstall=False, v2=False, python=None, harness="opencode"):
+    """Install one owned local plugin without overwriting an OpenCode (or Kilo) plugin that is not Tracekit's."""
     from .deploy import files
     from .install import SettingsError
     path = os.path.abspath(path)
@@ -856,10 +897,10 @@ def _install_opencode(path, uninstall=False, v2=False, python=None):
                 text = raw.decode("utf-8") if raw is not None else ""
             except UnicodeDecodeError as e:
                 raise SettingsError(f"{path} is not UTF-8; Tracekit did not change it.") from e
-            if raw is not None and OPENCODE_MARKER not in text:
+            if raw is not None and _plugin_marker(harness) not in text:
                 raise SettingsError(f"{path} is not Tracekit's plugin; Tracekit did not change it.")
             old = _version(text)
-            plugin = None if uninstall else _opencode_plugin(python, v2).encode("utf-8")
+            plugin = None if uninstall else _opencode_plugin(python, v2, harness).encode("utf-8")
             if raw not in (None, plugin):
                 files.backup(d, name, raw)
             if uninstall:
@@ -900,15 +941,19 @@ def _command(harness, ev, v2, python):
                       (harness, ev) if v2 or harness == "antigravity" else (harness,), python, ev in PRE,
                       harness == "antigravity")
     # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
-    # isn't found or the session has no single local environment). PowerShell runs a quoted program path only
-    # through its call operator, which cmd.exe can't parse: an interpreter path that needs no quotes goes bare,
-    # which both run
-    # assume Droid runs hooks under cmd.exe; Qwen Code does, so a path that needs quotes keeps cmd.exe's form there,
-    # and one that doesn't goes bare, which either shell runs. goose (sh -c) and Crush keep _hook_command's form
+    # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
+    # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
+    # can't parse: an interpreter path that needs no quotes goes bare, which both run
+    # assume Droid runs hooks under cmd.exe. goose (sh -c) and Crush keep _hook_command's form
     if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
-    return m.group(1) + c[m.end():] if m else c if harness == "qwen" else f"& {c}"
+    c = m.group(1) + c[m.end():] if m else f"& {c}"
+    # Windows PowerShell hands a native exit 2 back as 1, and Qwen Code blocks a call only at 2; a PreToolUse hook whose
+    # Python didn't run or failed exits 2 ($LASTEXITCODE isn't enough: the profile Qwen Code doesn't skip may set it)
+    if harness != "qwen":
+        return c
+    return c + ("; if ($?) { exit $LASTEXITCODE } else { exit 2 }" if ev in PRE else "; exit $LASTEXITCODE")
 
 
 def _merge(hooks, path, events, entry, uninstall, flat=False):
@@ -1040,8 +1085,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
     from .install import SettingsError, _atomic_write_json, _backup_changed
     path = path or config_path(harness, project)
-    if harness == "opencode":
-        return _install_opencode(path, uninstall, v2, python)
+    if harness in PLUGIN_TOOLS:
+        return _install_opencode(path, uninstall, v2, python, harness)
     if harness == "goose":
         return _install_goose(path, uninstall, v2, python)
     if harness == "crush":
@@ -1087,6 +1132,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             # ms for Gemini CLI; newer Qwen Code reads seconds, but 1000 or more still as ms, so 600 s in both
             if harness in ("gemini", "qwen"):   # holds wait for approval (Qwen Code's default is 60 s)
                 h.update(name="tracekit", timeout=600_000 if ev in PRE else 30_000)
+                if harness == "qwen" and os.name == "nt":
+                    # Qwen Code otherwise runs it under cmd.exe or Git Bash, by how it was started; Node's quoting
+                    # of the command for cmd.exe leaves a quoted program path it can't run
+                    h["shell"] = "powershell"
             else:
                 h["timeout"] = 600 if ev == "PreToolUse" else 30
             return {"matcher": "*", "hooks": [h]} if ev in tools else {"hooks": [h]}
@@ -1150,6 +1199,8 @@ def stdin_text():
 def entry(harness=None, event=None):
     """event: the hook event the command names (OpenCode's plugin does), or None."""
     harness = harness or (sys.argv[1] if len(sys.argv) > 1 else "")
+    if harness.endswith(";"):   # Qwen Code before 0.15.0 runs the Windows command under cmd.exe, which hands PowerShell's
+        harness, event = harness[:-1], None   # tail (_command) to the hook as arguments: `qwen;`, then the tail's words
     if harness not in HARNESSES:
         closed = H.fail_closed()
         print(f"usage: python -m tracekit.agent_hooks {{{'|'.join(HARNESSES)}}} [EVENT]; "

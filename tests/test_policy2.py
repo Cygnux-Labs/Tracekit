@@ -844,6 +844,12 @@ def machine_scale():
     return min(4.0, max(1.0, min(Speed().search(rx, s, 2.5) for _ in range(3)) / Speed.REF_S))
 
 
+# a parse-budget test's limit on one decision, times machine_scale: these time Python parsing, which a busy runner slows
+# more than machine_scale's regex search shows (CI's 3.12 Linux runner took 1.08 s at scale 1.64 on a loop a laptop
+# decides in 0.3 s). The blowups they catch took 3.6 s or more on a laptop.
+PARSE_S = 1.5
+
+
 def argvs(command):
     return [c["argv"] for c in shell.parse(command)]
 
@@ -1303,7 +1309,7 @@ class Shell(unittest.TestCase):
                 d = e.decide("Bash", {"command": cmd})
                 # ~0.2 s on a laptop; the budget follows the machine, as the pattern budgets do (#518): CI's 3.9 Linux
                 # runner took 0.58 s on one that takes a laptop 0.06 s
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * scale, (cmd[:40], e.engine))
+                self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * scale, (cmd[:40], e.engine))
                 self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
 
     def test_literal_values_and_bracket_patterns_stay_within_the_parse_budget(self):
@@ -1318,9 +1324,21 @@ class Shell(unittest.TestCase):
                 start = time.perf_counter()
                 e.decide("Bash", {"command": cmd})
                 # ~0.3 s on a laptop; the budget follows the machine, as the pattern budgets do (#518)
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * machine_scale(), (cmd[:30], e.engine))
+                self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), (cmd[:30], e.engine))
         cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
         self.assertEqual(Engine(pol).decide("Bash", {"command": cmd})["verdict"], "allow")
+
+    def test_a_loop_over_a_thousand_files_decides_within_the_parse_budget(self):
+        """A loop over 1,000 file names, read once for each, took 31 ms to decide in 1.5.3 (1.5.2, which read none:
+        3.4 ms): each reading's commands were copied into a new list, and each word read a character at a time (#575)."""
+        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
+        for e in (Engine(pol), Engine(pol, "regex")):
+            start = time.perf_counter()
+            d = e.decide("Bash", {"command": cmd})
+            # ~25 ms on a laptop
+            self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), e.engine)
+            self.assertEqual(d["verdict"], "allow")
 
     def test_redirections_to_bracket_patterns_decide_within_the_budget(self):
         """63 KiB of `>>a[bc][de][fg][hi]N` took 5 s to decide (1.5.2: 0.1 s): each pattern's 16 names were made
@@ -1337,7 +1355,7 @@ class Shell(unittest.TestCase):
                 start = time.perf_counter()
                 d = e.decide("Bash", {"command": cmd})
                 # ~0.25 s on a laptop (1.5.2 took 5 s before its fix); the budget follows the machine (#518)
-                self.assertLess(time.perf_counter() - start, 0.5 * SLOWER * machine_scale(), (pack, e.engine))
+                self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), (pack, e.engine))
                 self.assertIn(d["verdict"], ("ask", "deny"), (pack, e.engine))
 
     def test_an_assignment_is_read_within_its_word(self):
@@ -1435,6 +1453,25 @@ class Shell(unittest.TestCase):
                 self.assertTrue(any(c["opaque"] for c in shell.parse(cmd)))
         self.assertFalse(any(c["opaque"] for c in shell.parse("find . -name '*.py' | xargs -I{} wc -l {}")))
 
+    def test_xargs_inserting_into_a_wrapper_decides(self):
+        """The review of #575: `xargs -I{} exec sh -c '{}'` left a command's opaque None (exec is neither a shell nor
+        an interpreter), and decide raised a TypeError, which the signer denies as TK-ENGINE-ERROR (1.5.3 too)."""
+        cmd = "echo 'sudo id' | xargs -I{} exec sh -c  '{}';"
+        self.assertTrue(all(c["opaque"] in (True, False) for c in shell.parse(cmd)))
+        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        for e in (Engine(pol), Engine(pol, "regex")):
+            self.assertIn(e.decide("Bash", {"command": cmd})["verdict"], ("ask", "deny"), e.engine)
+
+    def test_a_write_target_whose_dot_part_ends_in_a_newline_is_still_read_normalised(self):
+        """The review of #575: the precheck before a target's path is normalised missed a word whose `.` part ends in
+        a newline, which _DOTTED reads (its `$` matches before a last newline), and TK-A013's ask became an allow."""
+        for cmd in ("cp -t '.git/modules/a://b/hooks/.\n' x", "cp -t '.git/modules/a://b/hooks/.\n' x y"):
+            for pack in ("dev.yaml", "coding.yaml", "server.yaml", "strict.yaml"):
+                pol = pc.build(os.path.join(PACKS, pack))[0]
+                for e in (Engine(pol), Engine(pol, "regex")):
+                    with self.subTest(cmd=cmd, pack=pack, engine=e.engine):
+                        self.assertIn("TK-A013", e.decide("Bash", {"command": cmd})["rule_ids"])
+
     def test_scheduling_and_session_wrappers_are_followed(self):
         for cmd in ("taskset 1 sudo id", "taskset -c 0-3 sudo id", "chrt -f 1 sudo id", "unbuffer sudo id",
                     "parallel sudo ::: id", "parallel -j 2 'sudo {}' ::: id", "fakeroot -- sudo id",
@@ -1497,7 +1534,7 @@ class TimedAndBraced(unittest.TestCase):
     def test_a_deny_corpus_command_timed_as_a_group_is_decided_at_least_as_strictly(self):
         e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0])
         rank = ("allow", "flag", "ask", "deny").index
-        with open(os.path.join(CORPUS, "deny", "shell.jsonl")) as f:
+        with open(os.path.join(CORPUS, "deny", "shell.jsonl"), encoding="utf-8") as f:
             for row in map(json.loads, f):
                 cmd = row["args"].get("command")
                 if not isinstance(cmd, str) or "<<" in cmd:   # a heredoc's terminator line can't take the `; }`
@@ -1560,7 +1597,7 @@ class TimedAndBraced(unittest.TestCase):
         for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
             for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     for row in map(json.loads, f):
                         cmd = row["args"].get("command")
                         # (an argument after a command can change what it runs: python3 <<<"code" 1 2 runs the file 1)
@@ -1771,7 +1808,7 @@ class TimedAndBraced(unittest.TestCase):
             self.assertEqual(e.decide("Bash", {"command": "rm -rf $X/"})["verdict"],
                              "deny" if pack == "strict.yaml" else "ask", pack)
             for path in glob.glob(os.path.join(CORPUS, "deny", "*.jsonl")):
-                with open(path) as f:
+                with open(path, encoding="utf-8") as f:
                     for row in map(json.loads, f):
                         cmd = row["args"].get("command")
                         if not isinstance(cmd, str) or "\n" in cmd:
