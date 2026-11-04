@@ -195,17 +195,17 @@ def _skew(client, sid):
     return notice
 
 
-def stopped(head, reason=None, person=None):
+def stopped(head, reason=None, person=None, agent=None):
     """What a call Tracekit stopped tells its agent and person, in every harness (each delivers it its own way: _block
     for Claude Code, agent_hooks._reply for the others): `head` (with _rules), the signer's `reason` (Why) and, after
-    its INSTEAD, what to do instead; then `person`, the commands that answer a held call, and what the agent does: with
-    `person`, pass them on and, once approved, make the identical call again; without, tell the person."""
+    its INSTEAD, what to do instead; then `person`, the commands that answer a held call, and what the agent does
+    (`agent`, else: with `person`, pass them on and, once approved, make the identical call again; without, tell the
+    person). An Instead step may be the person's (check the payee before approving): the agent takes only its own."""
     why, _, instead = (reason or "").partition(INSTEAD)
-    take = "take the Instead step and say you did" if instead else ""
-    agent = ("tell the person what this call was for and pass on these commands, then wait for their answer; a "
-             "subagent puts them in its final report. Once it is approved, make the identical call again."
-             + (f" Or {take}." if take else "") if person else
-             "tell the person what you were doing and why it was blocked" + (f", or {take}." if take else "."))
+    agent = (agent or ("tell the person what this call was for and pass on these commands, then wait for their "
+                       "answer; a subagent puts them in its final report. Once it is approved, make the identical call "
+                       "again." if person else "tell the person what you were doing and why it was blocked.")) + (
+        " If the Instead line is a step you can take yourself, you may take it and say so." if instead else "")
     return "\n".join([f"[tracekit] {head}", *([f"Why: {why}"] if why else []),
                       *([f"Instead: {instead}"] if instead else []), *([f"Person: {person}"] if person else []),
                       f"Agent: {agent} Never hide what a call runs to get past the policy: every call is signed and "
@@ -617,7 +617,9 @@ def _pre(client, p, sid, tid):
             expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
             if waited.get("reason"):   # an agent approver's approval in its veto delay: approved, it may run after it
                 return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])} is {waited['reason']}, then "
-                                      "make the identical call again.", reason, look + "."))
+                                      "make the identical call again.", reason, look + ".",
+                                      "wait as the first line says, then make the identical call again; if it is "
+                                      "held again, tell the person and pass on what it says."))
             return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])}"
                                   + (f", expires {expires}." if expires else "."), reason,
                                   f"{look}; allow once with `{bang}{cmd} approve {aid}`; refuse with "

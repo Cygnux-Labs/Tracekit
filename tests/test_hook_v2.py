@@ -39,12 +39,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOK = install._hook_command(install.V2_HOOK).replace(" -I ", " -I -X faulthandler ", 1)
 # what the agent reads it does after a hold's commands, and after a block (claude_code.stopped), when the reason has
 # an Instead step
+OWN_STEP = ("If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs "
+            "to get past the policy: every call is signed and kept.")
 HELD_AGENT = ("tell the person what this call was for and pass on these commands, then wait for their answer; a "
-              "subagent puts them in its final report. Once it is approved, make the identical call again. Or take the "
-              "Instead step and say you did. Never hide what a call runs to get past the policy: every call is signed "
-              "and kept.")
-BLOCKED_AGENT = ("tell the person what you were doing and why it was blocked, or take the Instead step and say you did. "
-                 "Never hide what a call runs to get past the policy: every call is signed and kept.")
+              "subagent puts them in its final report. Once it is approved, make the identical call again. " + OWN_STEP)
+BLOCKED_AGENT = "tell the person what you were doing and why it was blocked. " + OWN_STEP
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
@@ -1720,12 +1719,16 @@ class HoldLine(unittest.TestCase):
         veto = "approved by an agent approver; people may still revoke it, so wait 42 s"
         held = ["[tracekit] HELD, nothing ran: apr-1 (TK-A003) is approved by an agent approver; people may still "
                 "revoke it, so wait 42 s, then make the identical call again.", "Why: x",
-                "Person: look with `! tracekit approvals show apr-1`."]   # no approve command: it is approved
+                "Person: look with `! tracekit approvals show apr-1`.",   # no approve command: it is approved
+                # #587 review: not "wait for their answer", which the person has no answer to give
+                "Agent: wait as the first line says, then make the identical call again; if it is held again, tell the "
+                "person and pass on what it says. Never hide what a call runs to get past the policy: every call is "
+                "signed and kept."]
         code, lines, out = self.pre("x", wait="", veto=veto)
-        self.assertEqual((code, lines[:3]), (2, held))
+        self.assertEqual((code, lines), (2, held))
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"], "\n".join(lines))
         code, lines, _ = self.pre("x", wait="0.2", veto=veto)   # a wait that ended inside the delay
-        self.assertEqual((code, lines[-4:-1]), (2, held))
+        self.assertEqual((code, lines[-4:]), (2, held))
 
     def test_a_named_signers_commands_are_for_the_persons_own_terminal(self):
         """Review of #520: Claude Code runs a `!` line as the session's OS user; with a named signer (system mode, a

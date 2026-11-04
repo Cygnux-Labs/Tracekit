@@ -203,7 +203,7 @@ Code also a `systemMessage`, which it shows you, and the deny reason, which the 
 Why: uploading to cloud storage
 Instead: Have a person approve the held call, or write the files locally and let a person upload them.
 Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
-Agent: tell the person what this call was for and pass on these commands, then wait for their answer; a subagent puts them in its final report. Once it is approved, make the identical call again. Or take the Instead step and say you did. Never hide what a call runs to get past the policy: every call is signed and kept.
+Agent: tell the person what this call was for and pass on these commands, then wait for their answer; a subagent puts them in its final report. Once it is approved, make the identical call again. If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs to get past the policy: every call is signed and kept.
 ```
 
 A call the policy denies says so, in the same form, with no commands: no one can approve it.
@@ -212,7 +212,7 @@ A call the policy denies says so, in the same form, with no commands: no one can
 [tracekit] BLOCKED, nothing ran, and no one can approve it (TK-D005, TK-F005).
 Why: writing to a credentials file
 Instead: Write a template with placeholders (.env.example) instead; a person fills in the real credentials file.
-Agent: tell the person what you were doing and why it was blocked, or take the Instead step and say you did. Never hide what a call runs to get past the policy: every call is signed and kept.
+Agent: tell the person what you were doing and why it was blocked. If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs to get past the policy: every call is signed and kept.
 ```
 
 `tracekit approvals show apr-…` prints why and what to do instead, when it expires, the commands that answer it, and
