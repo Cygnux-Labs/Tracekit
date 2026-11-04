@@ -51,8 +51,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                      "remedy": "Write out the commands it would run."},
                            "function": {"reason": "it defines a shell function it doesn't call, or exports one",
                                         "remedy": "Call the function on the same line, or run its commands directly."},
-                           "download": {"reason": "it defines a shell function on a line that downloads",
-                                        "remedy": "Write out the commands the function runs."},
+                           "download": {"reason": "it defines a shell function on a line that may download",
+                                        "remedy": "Write out the commands the function runs, each program named "
+                                                  "plainly."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",

@@ -282,14 +282,15 @@ def parse(command):
     return analyse(command)[0]
 
 
-def analyse(command, persistent_target=None, readings=True, work=None):
+def analyse(command, persistent_target=None, readings=True, work=None, downloads=False):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code, what else it learned: _learned). `readings`: False reads the line only as written, without its second
-    readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all."""
+    readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all.
+    `downloads`: the line may download (_may_download), so a function on it isn't read (_Parser.define)."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
            "unresolved": set(), "called": set(), "exported": set(), "ifs_named": _names_ifs(command),
-           "downloads": bool(_DOWNLOADS.search(command)), "command_names_mutable": False,
+           "downloads": downloads or bool(_DOWNLOADS.search(command)), "decoded": set(), "command_names_mutable": False,
            "pipes": 0, "depth": 0, "work": [0] if work is None else work, "exp": 0,
            "persistent_target": persistent_target, "any_set": False,
            "brace": min(MAX_BRACE, (64 << 10) - len(command)),   # what brace expansions may still add
@@ -354,6 +355,8 @@ def analyse(command, persistent_target=None, readings=True, work=None):
     except ParseError as e:
         e.at = top.i   # where the line stops being readable: the words before it may still be (engine._plain)
         raise
+    if ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
+        return analyse(command, persistent_target, readings, work, downloads=True)
     ctx["cut"] += ctx["always_cut"]
     active = False
     for step in reversed(ctx["steps"]):
@@ -389,18 +392,28 @@ def _learned(ctx):
             "any_set": ctx["any_set"]}
 
 
-def analyse_argv(argv, readings=True, work=None):
+def analyse_argv(argv, readings=True, work=None, downloads=False):
     """analyse() for a command given as an argv list, run without a shell."""
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
            "unresolved": set(), "called": set(), "exported": set(), "ifs_named": False,
-           "downloads": any(_DOWNLOADS.search(a) for a in argv), "command_names_mutable": False,
+           "downloads": downloads or any(_DOWNLOADS.search(a) for a in argv), "decoded": set(),
+           "command_names_mutable": False,
            "pipes": 1, "depth": 0, "work": [0] if work is None else work, "exp": 0, "any_set": False, "brace": MAX_BRACE,
            "readings": readings, "nested": set()}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
+    if ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
+        return analyse_argv(argv, readings, work, downloads=True)
     return (ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"],
             [x for x in lines + ctx["kept"] if x], _learned(ctx))
+
+
+def _may_download(ctx):
+    """Whether a parsed line may download (so its functions aren't read: TK-D002 reads its text, where a body comes
+    before the download): a command on it is curl or wget, or has the name of a word the line didn't write plainly
+    (quotes, an escape or an expansion made it: c''url, $'\\x63url', $X''rl), which may hide one."""
+    return any(c["argv"][0] in ("curl", "wget") or c["argv"][0] in ctx["decoded"] for c in ctx["cmds"])
 
 
 def _git_env_alias(word):
@@ -1273,6 +1286,8 @@ class _Parser:
                 continue
             start = self.i
             text, raw, g, expanded = self.word()
+            if raw != text:   # quotes, an escape or an expansion made it: a command of this name may hide its name
+                self.ctx["decoded"].add(_lower_name(text.rsplit("/", 1)[-1] or text))
             if raw != self.s[start:self.i] and self.peek() in ("<", ">") and re.fullmatch(r"\d+|\{\w+\}", raw):
                 raise ParseError("a backslash-newline inside a redirection is not supported")   # bash reads 2\⏎> as 2>
             self.out.append(text)
