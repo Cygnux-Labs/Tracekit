@@ -213,6 +213,10 @@ class Report:
     def __init__(self):
         self.checks, self.failures, self.warnings, self.notes = [], [], [], []
         self.assurance = None
+        # for the short result (tracekit.verify.summary): records checked, the tool calls they name, signed gap records
+        # of what was missed, (v2) of calls that ran or were imported against the signer's decision, a run-set's
+        # informational tenant-level gaps by kind, and each run's signer_isolation; never read by a check
+        self.events, self.calls, self.gaps, self.mismatches, self.info, self.isolation = None, None, 0, 0, {}, {}
 
     def check(self, name, ok, detail="", problems=None, warn=False):
         self.checks.append({"check": name, "status": "pass" if ok else ("warn" if warn else "fail"), "detail": detail,
@@ -328,6 +332,7 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
         except ValueError:
             rec = None
         recs.append(rec if isinstance(rec, dict) else None)
+    rep.events = len(recs)
 
     # 1. chain intact
     probs, prev, expect, events = [], GENESIS, 0, []
@@ -394,7 +399,9 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     if isinstance(seq_range, list) and len(seq_range) == 2 and seqs and seq_range[1] != seqs[-1]:
         rep.check("manifest range", False, "", [f"manifest says the bundle ends at seq {seq_range[1]} but the last record is {seqs[-1]}"])
     sel = [e for e in events if e.get("run_id") in sel_runs]
+    rep.calls = sum(e.get("type") == "tool.call" for e in sel)
     cg = [e for e in events if e.get("type") == "capture.gap" and (e.get("run_id") in sel_runs or e.get("run_id") == "_signer")]
+    rep.gaps = len(cg)
     rep.check("capture gaps", not cg, "no capture.gap events" if not cg else "",
               [f"seq {e['seq']}: {e['data'].get('reason')}" for e in cg][:20], warn=True)
     # 0.2.1: writes the signer refused for these runs (e.g. another user writing into the run) are evidence too

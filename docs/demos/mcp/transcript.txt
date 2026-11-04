@@ -4,7 +4,7 @@ tracekit_demo_denied: error: Tool call blocked by policy: TK-DEMO-DENY, TK-F006
 tracekit_demo_ask: ran once approved
 approved: apr-2ca4008eb886901475d69028b0add3b2 (self-approved: dev mode only)
 
-$ tracekit verify c4975e394b192855ae624f30486dc911.tkb --trust trust.json
+$ tracekit verify c4975e394b192855ae624f30486dc911.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/03ed775211ddd7eed68062a41cb615b9 at tree size 12, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required

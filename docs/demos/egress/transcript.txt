@@ -2,7 +2,7 @@ $ python examples/v2/demos/egress.py
 Bash './install.sh': allow
   the script fetched http://localhost:64027/pkg: installed 1 package
 
-$ tracekit verify dcafdeb28f19ca89dfba93e569adb58c.tkb --trust trust.json
+$ tracekit verify dcafdeb28f19ca89dfba93e569adb58c.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/269b34ede66e0e3783ec3ce59d78c644 at tree size 9, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
