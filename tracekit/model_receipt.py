@@ -86,9 +86,10 @@ def _named(tool, args, later=False):
         s = constraints.shell(args)
         paths = s["paths"]
         # a shell tool's own working directory, not the hook's cwd: Gemini CLI's and Qwen Code's dir_path (directory
-        # in older releases), Cursor's working_directory, Codex's workdir
-        s["cd"] = s["cd"] or any(isinstance(args.get(k), str) for k in ("dir_path", "directory", "working_directory",
-                                                                        "workdir"))
+        # in older releases), Cursor's working_directory, Codex's workdir, agy's Cwd (agy reads names in any case),
+        # Crush's working_dir; any value, as the harness may read one that isn't a string
+        s["cd"] = s["cd"] or any(k.casefold() in ("dir_path", "directory", "working_directory", "workdir", "cwd",
+                                                  "working_dir") and v is not None for k, v in args.items())
         later = later or any(BACKGROUND.search(v) for k in SHELL_KEYS for v in (
             args[k] if isinstance(args.get(k), list) else [args.get(k)]) if isinstance(v, str))
     else:

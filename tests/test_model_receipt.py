@@ -301,12 +301,17 @@ class Receipts(Base):
 
     def test_a_relative_path_of_a_shell_with_its_own_dir_path_is_refused(self):
         """Gemini CLI's and Qwen Code's shell runs in its dir_path (directory in older releases), Cursor's in its
-        working_directory, Codex's in its workdir, so a relative path there is no file of the hook's cwd; an absolute
-        one still is."""
-        for key in ("dir_path", "directory", "working_directory", "workdir"):
+        working_directory, Codex's in its workdir, agy's in its Cwd (in any case), Crush's in its working_dir, so a
+        relative path there is no file of the hook's cwd; an absolute one still is. The review of #570: agy's and
+        Crush's names were missing, and a value that isn't a string was read as none."""
+        for key in ("dir_path", "directory", "working_directory", "workdir", "Cwd", "cwd", "CWD", "working_dir"):
             self.assertEqual(model_receipt.receipts("Bash", {"command": "cp a model.safetensors", key: "sub"},
                                                     self.d)[0]["refused"],
                              "a path relative to a directory the command changed to", key)
+        for value in (["sub"], 5):
+            self.assertEqual(model_receipt.receipts("Bash", {"command": "cp a model.safetensors", "workdir": value},
+                                                    self.d)[0]["refused"],
+                             "a path relative to a directory the command changed to", value)
             self.assertEqual(model_receipt.receipts("Bash", {"command": f"cp a {shlex.quote(self.w)}", key: "sub"},
                                                     self.d),
                              [dict(receipt(self.w), reported_by="hook")], key)
