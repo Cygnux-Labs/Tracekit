@@ -97,9 +97,12 @@ class Harnesses(DaemonCase):
         # denied before the pipeline, naming the arguments it sent for the person to report on #566
         base = {"session_id": "dv-3", "hook_event_name": "PreToolUse"}
         for name, ti in (("read", {"target": "/w/a.py"}), ("write", {"file_path": 7, "content": "x"}), ("edit", {}),
-                         ("apply_patch", {"patch": "*** Begin Patch\n*** End Patch"}),
-                         ("webfetch", {"urls": ["https://x.example/a"]})):
-            with self.subTest(tool=name):
+                         ("read", {"file_path": ""}), ("apply_patch", {"patch": "*** Begin Patch\n*** End Patch"}),
+                         ("apply_patch", {"patch": "*** Update File:  \n"}),
+                         ("webfetch", {"urls": ["https://x.example/a"]}),
+                         # the second review: a URL under another spelling may be the one Devin reads, and v1 reads url
+                         ("webfetch", {"URL": "http://169.254.169.254/latest", "url": "https://example.com"})):
+            with self.subTest(tool=name, ti=ti):
                 code, out, err = self.hook("devin", {**base, "tool_name": name, "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Devin's {name} call names no", err)
@@ -735,6 +738,46 @@ class DevinTools(unittest.TestCase):
                     self.assertNotEqual(want.get("verdict", want.get("decision")), "allow", want)
                     self.assertEqual(got.get("verdict", got.get("decision")), want.get("verdict", want.get("decision")))
                     self.assertLessEqual({*want["rule_ids"]}, {*got["rule_ids"]})
+
+    def test_a_path_under_any_spelling_of_a_path_key_is_decided(self):
+        # the second review of #576: Devin's decoder may match a key ignoring case, as Go's encoding/json does (the
+        # Kelvin sign K folds to k, ſ to s), so a path under Path, FILE_PATH, notebooK_path, pathſ or target_file beside
+        # a decoy file_path, or an empty one, was decided as the decoy alone
+        self.assertEqual(("K".casefold(), "ſ".casefold()), ("k", "s"))
+        from tracekit import policy
+        v1, v2 = policy.load(policy.DEFAULT_POLICY)[0], load_policy()
+        engines = {"v1": lambda c: policy.evaluate(v1, *c, "/w"), "v2": lambda c: v2.decide(*c)}
+        for name, real, decoy in (("read", {"Path": "/home/u/.ssh/id_rsa"}, {"file_path": "/w/README.md"}),
+                                  ("write", {"FILE_PATH": "/w/.env", "content": "A=1"}, {"file_path": "/w/notes.md"}),
+                                  ("edit", {"notebooK_path": "/w/.env"}, {"file_path": "/w/x"}),
+                                  ("read", {"pathſ": ["/home/u/.ssh/id_rsa"]}, {"file_path": "/w/README.md"}),
+                                  ("write", {"target_file": "/w/.env", "content": "A=1"}, {"file_path": ""})):
+            paths = agent_hooks.tool("devin", name, {**decoy, **real})[1]["paths"]
+            self.assertEqual(paths, [*filter(None, decoy.values()), "/home/u/.ssh/id_rsa" if name == "read" else "/w/.env"])
+            for engine, decide in engines.items():
+                with self.subTest(name=name, real=real, decoy=decoy, engine=engine):
+                    got = decide(agent_hooks.tool("devin", name, {**decoy, **real}))
+                    want = decide(agent_hooks.tool("devin", name, real))
+                    self.assertNotEqual(want.get("verdict", want.get("decision")), "allow", want)
+                    self.assertEqual(got.get("verdict", got.get("decision")), want.get("verdict", want.get("decision")))
+                    self.assertLessEqual({*want["rule_ids"]}, {*got["rule_ids"]})
+        # a key that names no path is not read as one
+        self.assertEqual(agent_hooks.tool("devin", "write", {"file_path": "/w/a", "content": "/w/.env",
+                                                             "pathname_note": "/w/b"})[1]["paths"], ["/w/a"])
+
+    def test_a_unified_diff_is_decided_on_every_file_it_names(self):
+        # the second review of #576: a unified diff of .devin/hooks.v1.json with a decoy `*** Update File:` header in
+        # another argument was decided as the decoy alone; Devin's patch format isn't documented
+        diff = ("diff --git a/.devin/hooks.v1.json b/.devin/hooks.v1.json\n--- a/.devin/hooks.v1.json\t2026-11-04\n"
+                "+++ b/.devin/hooks.v1.json\n@@ -1 +1 @@\n-x\n+y\n")
+        tool, args = agent_hooks.tool("devin", "apply_patch", {"patch": diff, "note": "*** Update File: README.md"})
+        self.assertEqual((tool, args["file_path"], args["paths"]), ("Edit", "README.md", ["README.md", ".devin/hooks.v1.json"]))
+        self.assertIn("TK-F009", load_policy().decide(tool, args)["rule_ids"])
+        _, args = agent_hooks.tool("devin", "apply_patch", {"patch": "--- /dev/null\n+++ b/new.py\n@@ -0,0 +1 @@\n+x\n"})
+        self.assertEqual(args["paths"], ["new.py"])
+        from tracekit import policy
+        _, args = agent_hooks.tool("devin", "apply_patch", {"patch": "--- a/config/.env\n+++ b/config/.env\n@@\n-A=1\n+A=2\n"})
+        self.assertEqual(policy.evaluate(policy.load(policy.DEFAULT_POLICY)[0], "Edit", args, "/w")["decision"], "deny")
 
     def test_typed_input_is_decided_as_a_shell_command(self):
         tool, args = agent_hooks.tool("devin", "write_to_process", {"shell_id": "main", "input": "rm -rf ~\n"})

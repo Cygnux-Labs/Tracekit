@@ -50,10 +50,11 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             agent, agentic_fetch and Docker MCP Gateway's code-mode tools are denied in the hook (the calls they make
             run no hooks), and so is a built-in tool's input with argument names Crush may read otherwise
     Devin   exec, write_to_process, read, write, edit, apply_patch, grep, glob, webfetch, mcp__s__t
-            -> Bash, Bash (command = all its text), Read, Write, Edit (every path under file_path, notebook_path, path
-            and paths), Edit (all patch file headers in paths), Grep, Glob, WebFetch, mcp__s__t (its payload is Claude
-            Code's shape); a read, write, edit, apply_patch or webfetch with nothing to decide it on is denied in the
-            hook; init turns off its reading of Claude Code's hooks, which would decide each call a second time
+            -> Bash, Bash (command = all its text), Read, Write, Edit (every path under a key ending in path, paths or
+            file, case and _ ignored), Edit (all patch and diff file headers in paths), Grep, Glob, WebFetch, mcp__s__t
+            (its payload is Claude Code's shape); a read, write, edit, apply_patch or webfetch with nothing to decide
+            it on, or a url spelled other than `url`, is denied in the hook; init turns off its reading of Claude
+            Code's hooks, which would decide each call a second time
 
 What each harness exposes decides what Tracekit can see: Gemini CLI, Droid and Devin do not give tool calls an id, so
 pre and post events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments);
@@ -130,15 +131,23 @@ CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit",
                "fetch": "WebFetch", "download": "Write"}
 CRUSH_PATH_TOOLS = ("lsp_rename", "ls", "grep", "glob")   # they read `path`, the directory they search, not `file_path`
 # Devin's tools (docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks): its payload and event names are Claude Code's.
-# lean: only exec's input (command, shell_id) is documented; read, write and edit are decided on every path under the
-# keys the policy reads, write_to_process on all its text, until a recorded session names their fields
+# lean: only exec's input (command, shell_id) is documented; read, write and edit are decided on every path under a
+# key that may name one, apply_patch on every file a patch or diff header names, write_to_process on all its text,
+# until a recorded session names their fields
 DEVIN_TOOLS = {"exec": "Bash", "write_to_process": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
                "apply_patch": "Edit", "grep": "Grep", "glob": "Glob", "webfetch": "WebFetch"}
 DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
+# a key Devin's read, write or edit may read its path from. Devin is closed source, and its decoder may match a key
+# ignoring case, as Go's encoding/json does (K and ſ fold to k and s; so does str.casefold): the key casefolded and
+# without `_` ends in path, paths or file
+DEVIN_PATH_KEY = re.compile(r"(?:path|paths|file)$")
+# a unified diff's file names: --- a/x and +++ b/x (up to a tab), and diff --git a/x b/x
+DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+))$", re.M)
 # what each of these Devin tools is decided on: a call that sends none of it is denied in the hook (_blocked)
-DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"), "path under file_path, notebook_path, path or paths"),
-                    "apply_patch": "file header (*** Add File:, *** Update File: or *** Delete File:)",
-                    "webfetch": "url"}
+DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
+                                    "path under a key ending in path, paths or file (case and _ ignored)"),
+                    "apply_patch": "file header (*** Add, Update or Delete File:, or a diff's ---, +++ or diff --git)",
+                    "webfetch": "url under one key spelled url"}
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -186,11 +195,18 @@ def tool(harness, name, ti):
     if harness in ("droid", "devin"):
         files = None
         if name == ("ApplyPatch" if harness == "droid" else "apply_patch"):   # every file a patch header names,
-            files = [f.strip() for f in PATCH_FILE.findall("\n".join(_strings(ti)))]   # whichever argument holds it
+            text = "\n".join(_strings(ti))   # whichever argument holds it
+            files = [f.strip() for f in PATCH_FILE.findall(text)]
+            if harness == "devin":   # its patch format isn't documented: a unified diff's files are decided too
+                files = list(dict.fromkeys(files + [re.sub(r"^[ab]/", "", f) for a, b in DIFF_FILE.findall(text)
+                                                    for f in ([a.strip()] if a else b.split())
+                                                    if f not in ("", "/dev/null")]))
         elif harness == "devin" and name in ("read", "write", "edit"):
-            # every path under a key the policy reads (v2 decides the first path key and `paths`, v1 `file_path` and
-            # `paths`), so a decoy `file_path` beside the path Devin's tool reads never replaces it
-            files = list(dict.fromkeys(f for k in (*PATH_KEYS, "paths") for f in _strings(ti.get(k))))
+            # every path under a key Devin's tool may read (v2 decides the first path key and `paths`, v1 `file_path`
+            # and `paths`), so a decoy `file_path` beside the path the tool reads never replaces it
+            files = list(dict.fromkeys(f for k in (*PATH_KEYS, "paths", *ti)
+                                       if DEVIN_PATH_KEY.search(k.casefold().replace("_", ""))
+                                       for f in _strings(ti.get(k)) if f))
         elif harness == "devin" and name == "write_to_process":   # input typed into a running exec shell
             ti["command"] = "\n".join(_strings(ti))
         if files is not None:
@@ -611,7 +627,9 @@ def _blocked(harness, p, raw=""):
     if harness == "devin" and name in DEVIN_DECIDED_ON:   # Devin documents none of these tools' arguments: one sent
         # under a name Tracekit doesn't read would leave the call decided on nothing
         ti = tool(harness, name, p.get("tool_input"))[1]
-        if not isinstance(ti.get("url" if name == "webfetch" else "file_path"), str):
+        v = ti.get("url" if name == "webfetch" else "file_path")
+        # a url under another spelling (URL) may be the one Devin's decoder reads, and v1 decides `url` alone
+        if not (isinstance(v, str) and v) or name == "webfetch" and [k for k in ti if k.casefold() == "url"] != ["url"]:
             sent = ", ".join(map(str, _input(p.get("tool_input"))))[:200] or "none"
             return (f"Blocked by Tracekit: Devin's {name} call names no {DEVIN_DECIDED_ON[name]}, which Tracekit "
                     f"decides it on, so it can't decide this call (its arguments: {sent}). Devin doesn't document "
