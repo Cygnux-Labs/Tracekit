@@ -528,6 +528,7 @@ def _run(a):
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"v2 {a.agent} hooks:", path or "not installed")
+            print(install.DEV_MODE_LINE)
             if summary:
                 print(agent_hooks.reasoning_line(*summary))
             if path:
@@ -544,6 +545,7 @@ def _run(a):
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"dev signer running (same-user): {cfg['socket']}")
+            print(install.DEV_MODE_LINE)
             print(f"{a.agent} hooks:", path or "not installed")
             if path and a.agent == "codex":
                 print(agent_hooks.codex_trust_line())
@@ -584,6 +586,7 @@ def _run(a):
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1
                 print("v2 hooks:", hooks or "not installed")
+                print(install.DEV_MODE_LINE)
                 if hooks and not a.no_thinking_summaries:
                     print(install.thinking_line(hooks, on))
                 if hooks:
@@ -598,6 +601,7 @@ def _run(a):
             if a.proxy:
                 print(f"model proxy: {cfg['proxy_url']} (ANTHROPIC_BASE_URL set in {hooks or 'no settings file'})")
             print(f"dev signer running (same-user): {cfg['socket']}")
+            print(install.DEV_MODE_LINE)
             print("hooks:", hooks or "not installed")
             return 0
         if a.agent in ("antigravity", "crush", "kilo", "devin"):   # the v1 system signer installs Claude Code's hooks only
@@ -622,9 +626,12 @@ def _run(a):
     if a.cmd == "status":
         from . import install
         from .sdk import autospawn
-        print(json.dumps({**install.status(), "signer_v2": autospawn.status()}, indent=2))
+        st, v2 = install.status(), autospawn.status()
+        dev = (st["client_config"] or {}).get("mode") == "dev" or v2.get("dev")
+        print(json.dumps({**st, "signer_v2": v2, **({"dev_mode": install.DEV_MODE_LINE} if dev else {})}, indent=2))
         return 0
     if a.cmd == "up":
+        from . import install
         from .sdk import autospawn
         if not _signer_extra():
             return 2
@@ -638,6 +645,7 @@ def _run(a):
             print(json.dumps(hello))
         else:
             print(f"dev signer {hello['version']} running (pid {hello['pid']})" if hello else "dev signer starting")
+            print(install.DEV_MODE_LINE)
         return 0
     if a.cmd == "down":
         from .sdk import autospawn

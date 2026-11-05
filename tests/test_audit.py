@@ -57,6 +57,19 @@ class TestAudit(unittest.TestCase):
         self.assertNotIn("text", report["calls"][0])   # the command text only with --show
         self.assertIn("not a signed record", report["disclaimer"])
 
+    def test_held_calls_a_day_and_where_the_answers_are(self):
+        _write_jsonl(self.root / "proj" / "s.jsonl", [
+            _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=2),
+            _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=1),
+            _call("Bash", {"command": "ls -la"})])
+        report = audit.audit(str(self.root), since="4d")
+        self.assertEqual(report["holds_a_day"], 0.5)   # two holds in four days
+        _, out, _ = _run(str(self.root), "--since", "4d")
+        self.assertIn("  held calls a day: 0.5. Who answered them, and how fast, is in the signed approval records: "
+                      "tracekit report\n", out)
+        _write_jsonl(self.root / "proj" / "s.jsonl", [_call("Bash", {"command": "ls -la"})])
+        self.assertNotIn("held calls a day", _run(str(self.root))[1])   # none held
+
     def test_a_subagents_calls_count_under_its_session(self):
         _write_jsonl(self.root / "proj" / "s1.jsonl", [_call("Bash", {"command": "ls"})])
         _write_jsonl(self.root / "proj" / "s1" / "subagents" / "agent-a.jsonl", [_call("Bash", {"command": "ls"})])

@@ -476,6 +476,24 @@ blocked keeps its approval `requested`, for the agent's [retry](#approve-then-re
 timeout is paused. The signer's copy of the arguments is deleted once the approval is consumed, rejected, expired or
 abandoned.
 
+## How much oversight is real
+
+An approval nobody reads is no oversight. `tracekit report` shows, under Holds, what the signed approval records say
+about the window it covers:
+
+- holds a day;
+- the share of held calls a person approved, rejected, or left unanswered (expired or abandoned). An answer from an
+  [agent approver](#agent-approvers) is model output and is counted apart, never as a person's;
+- the median and 90th-percentile time from hold to a first answer;
+- approvals answered in under 2 seconds, which were likely not read.
+
+With 20 or more holds and no rejection, it adds one line: approvals may not be read. Run `tracekit audit` to find the
+calls that keep being held, and decide whether they should be allowed, denied or narrowed by a rule.
+
+`tracekit audit` replays transcripts, which hold no signed approvals, so it can't say who answered. It shows only the
+held calls a day, as a replay against today's policy, and points to `tracekit report` for the answers. `--json` carries
+the same numbers (`holds.oversight` in the report, `holds_a_day` in the audit).
+
 ## Where this is tested
 
 `tests/test_signer_approvals.py` (replay, edited arguments, another run's approval, resume without a human, retries,

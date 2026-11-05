@@ -801,6 +801,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     else:
         add("D-PROCESS-BOUNDARY", False, "dev signer: it runs as your user, so the agent could rewrite its log "
             "(dev assurance)", "use system mode where the agent must not reach the signer: " + REINIT, bad=WARN)
+        add("D-DEV-MODE", False, install.DEV_MODE_LINE, "", bad=WARN)
 
     acl = "Windows controls access with ACLs, which doctor doesn't read: check that only the signer's user can read it"
     try:

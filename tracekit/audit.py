@@ -164,7 +164,10 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
         finally:
             f.close()
 
+    times = [datetime.fromisoformat(c["time"]).timestamp() for c in calls if c["time"]]
+    span = now - since_ts if since else max(times) - min(times) if times else 0
     report = {
+        "holds_a_day": round(counts["ask"] * 86400 / span, 1) if span >= 1 else None,
         "disclaimer": "a replay against today's policy, not a signed record",
         "policy": policy_path or DEFAULT_POLICY,
         "policy_hash": engine.policy_hash,
@@ -203,6 +206,9 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
     ]
     for v in ("deny", "ask", "flag", "allow"):
         lines.append(f"  {v}: {n.get(v, 0)}")
+    if n.get("ask") and report["holds_a_day"] is not None:
+        lines.append(f"  held calls a day: {report['holds_a_day']:g}. Who answered them, and how fast, is in the signed "
+                     "approval records: tracekit report")
     if report["by_rule"]:
         lines.append("")
         lines.append("by rule:")

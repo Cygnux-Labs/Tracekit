@@ -26,9 +26,11 @@ import collections
 import datetime
 import glob
 import json
+import math
 import os
 import re
 import shlex
+import statistics
 import sys
 import tempfile
 import time
@@ -50,6 +52,8 @@ from .why.signed import EvidenceAlert
 
 DECISIONS = ("allow", "flag", "ask", "deny")
 EXAMPLES = 2   # calls kept per rule
+FAST_S = 2   # an approval answered sooner than this was likely not read
+UNREAD_HOLDS = 20   # holds with no rejection before the report says approvals may not be read
 FLAGS_SHOWN = 6   # flag rules the text lists; --json has them all
 CALL_WIDTH = 72   # characters of a call's arguments shown
 TOP_GAPS = 3   # runs named under the gaps
@@ -177,9 +181,30 @@ def _tally(key, records, tr, rules, unread):
             held.setdefault(d.get("tool_use_id"), (ts_seconds(e["ts"]), d.get("tool"), x))
         elif t == "approval" and d.get("decision") in ("approve", "reject") and d.get("tool_use_id") in held:
             asked, tool, _ = held[d["tool_use_id"]]
-            waits.setdefault(d["tool_use_id"], {"seconds": round(ts_seconds(e["ts"]) - asked), "tool": tool,
-                                                "run_id": key[1]})
+            took = ts_seconds(e["ts"]) - asked
+            waits.setdefault(d["tool_use_id"], {"seconds": round(took), "took": took, "tool": tool, "run_id": key[1],
+                                                "approved": d["decision"] == "approve",
+                                                "agent": d.get("approver_kind") == "agent"})
     return held, list(waits.values())
+
+
+def _oversight(holds, waits, span):
+    """How much of the holds a person answered, from the signed approval records: holds a day; the holds whose first
+    answer was a person's approval or rejection, and the rest, left unanswered (an approval that expired or was
+    abandoned after an answer still counts as answered). An agent approver's answer is model output, counted apart and
+    as no person's. First answers took (median and 90th percentile, nearest rank) and the approvals answered under
+    FAST_S, which were likely unread."""
+    total = sum(holds.values())
+    people = [w for w in waits if not w["agent"]]
+    approved = sum(w["approved"] for w in people)
+    by_agent = len(waits) - len(people)
+    took = sorted(w["took"] for w in waits)
+    return {"total": total, "per_day": round(total * 86400 / max(span, 1), 1),
+            "approved": approved, "rejected": len(people) - approved, "by_agent": by_agent,
+            "unanswered": max(total - len(waits), 0),
+            "median_s": statistics.median(took) if took else None,
+            "p90_s": took[math.ceil(0.9 * len(took)) - 1] if took else None,
+            "fast_approvals": sum(w["approved"] and w["took"] < FAST_S for w in people)}
 
 
 def _answer(a):
@@ -311,6 +336,7 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
             "holds": {"total": sum(totals["holds"].values()), "outcomes": dict(totals["holds"].most_common()),
                       "retries": totals["retries"]["n"],
                       "answered_by": dict(totals["answered"].most_common()),
+                      "oversight": _oversight(totals["holds"], waits, until - since),
                       "longest_wait": max(waits, key=lambda w: w["seconds"], default=None),
                       "examples": {o: example(*hold_examples[o]) for o, _ in totals["holds"].most_common()
                                    if o in hold_examples}},
@@ -334,6 +360,23 @@ def _when(iso):
 
 def _wait(s):
     return f"{s // 3600}h {s % 3600 // 60}m" if s >= 3600 else f"{s // 60}m {s % 60}s" if s >= 60 else f"{s}s"
+
+
+def _oversight_lines(o):
+    """The oversight lines of the Holds section: what share of the holds a person answered and how fast."""
+    pct = lambda n: f"{n:,} ({round(100 * n / o['total'])}%)"   # noqa: E731
+    out = [f"  oversight: {o['per_day']:g} holds a day; a person approved {pct(o['approved'])}, rejected "
+           f"{pct(o['rejected'])}, left {pct(o['unanswered'])} unanswered (expired or abandoned)"]
+    if o["by_agent"]:
+        out.append(f"  and {o['by_agent']:,} answered by an agent approver (model output, no person's)")
+    if o["median_s"] is not None:
+        out.append(f"  time from hold to answer: median {_wait(round(o['median_s']))}, 90th percentile "
+                   f"{_wait(round(o['p90_s']))}; {o['fast_approvals']:,} approval{'s' * (o['fast_approvals'] != 1)} "
+                   f"answered in under {FAST_S}s (likely unread)")
+    if o["total"] >= UNREAD_HOLDS and not o["rejected"]:
+        out.append(f"  No person rejected any of {o['total']:,} holds, so approvals may not be read. Run "
+                   "tracekit audit to find the calls that keep being held.")
+    return out
 
 
 def _days(seconds):
@@ -368,6 +411,7 @@ def text(rep, config=None, data_dir=None):
         if holds["longest_wait"]:
             lw = holds["longest_wait"]
             out.append(f"  longest wait for an answer: {_wait(lw['seconds'])} ({lw['tool']}, run {lw['run_id']})")
+        out += _oversight_lines(holds["oversight"])
         out += [f"  e.g. {o}: {x['call']}  (run {x['run_id']})" for o, x in holds["examples"].items()]
     for dec, title in (("deny", "Denied"), ("flag", "Flagged")):
         mine, flags = [g for g in rep["rules"] if g["decision"] == dec and g["why"]], dec == "flag"

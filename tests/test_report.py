@@ -312,6 +312,42 @@ class WeeklyReport(unittest.TestCase):
         self.assertIn("Note: 1 denied call cites a policy this report can't read", page)
         self.assertIn("Note: 2 flagged calls cite a policy this report can't read", page)
 
+    def test_oversight_counts_what_a_person_answered_and_how_fast(self):
+        rep = self.build(since=self.cut, until=self.cut + 86400)   # a one-day window: the holds a day are its holds
+        o = rep["holds"]["oversight"]
+        self.assertEqual((o["total"], o["per_day"], o["approved"], o["rejected"], o["unanswered"], o["by_agent"]),
+                         (3, 3, 1, 1, 1, 0))
+        self.assertEqual(o["fast_approvals"], 1)   # answered in the test's own time: well under 2 s
+        self.assertLess(o["median_s"], weekly.FAST_S)
+        self.assertLessEqual(o["median_s"], o["p90_s"])
+        page = weekly.text(rep)
+        self.assertIn("  oversight: 3 holds a day; a person approved 1 (33%), rejected 1 (33%), left 1 (33%) "
+                      "unanswered (expired or abandoned)\n", page + "\n")
+        self.assertIn("answered in under 2s (likely unread)", page)
+        self.assertNotIn("approvals may not be read", page)   # 3 holds, one rejected
+
+    def test_twenty_holds_with_no_rejection_say_approvals_may_not_be_read(self):
+        time.sleep(0.05)
+        since = time.time()
+        time.sleep(0.05)
+        b = self.client.run(agent="claude-code")
+        for i in range(weekly.UNREAD_HOLDS):
+            self.assertEqual(b.decide(f"m{i}", "pay", {"cents": 100 + i})["decision"], "ask")
+            aid = b.call("approval_request", tool_call_id=f"m{i}")["approval_id"]
+            self.client.call("approval_decide", {"approval_id": aid, "decision": "approve"})
+        b.close()   # no call used the approvals: they expire with the run, answered all the same
+        storage = self.service.log.storage
+        self.assertTrue(wait_for(lambda: list(storage.iter_run("default", b.run_id))[-1]["event"]["type"] ==
+                                 "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+        rep = self.build(since=since)
+        self.assertEqual(rep["holds"]["outcomes"], {"expired": 20})
+        o = rep["holds"]["oversight"]
+        self.assertEqual((o["total"], o["approved"], o["rejected"], o["unanswered"]), (20, 20, 0, 0))
+        warning = ("  No person rejected any of 20 holds, so approvals may not be read. Run tracekit audit to find the "
+                   "calls that keep being held.")
+        self.assertIn(warning + "\n", weekly.text(rep) + "\n")
+        self.assertNotIn("approvals may not be read", weekly.text(self.build()))   # the fixture's rejection is in this one
+
     def test_holds_are_what_became_of_them_and_answers_are_of_holds_in_the_window(self):
         """A hold kept its first answer, so an approval whose use was refused (other arguments) read approved; and an
         answer in the window to a hold asked before it was counted under answered by, though Holds didn't count it."""
