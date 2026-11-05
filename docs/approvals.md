@@ -481,18 +481,21 @@ abandoned.
 An approval nobody reads is no oversight. `tracekit report` shows, under Holds, what the signed approval records say
 about the window it covers:
 
-- holds a day;
-- the share of held calls a person approved, rejected, or left unanswered (expired or abandoned). An answer from an
-  [agent approver](#agent-approvers) is model output and is counted apart, never as a person's;
-- the median and 90th-percentile time from hold to a first answer;
+- holds a day (under a day of records, the count over the window, not a rate scaled up from it);
+- the share of held calls a person approved, rejected, or left with no answer (expired, abandoned or still waiting).
+  An answer from an [agent approver](#agent-approvers) is model output, and one the run's own user gave to its own
+  call (the only kind a dev signer, or any signer with no `approvals` config, takes: the agent runs as that user) is
+  no check by another person. Both are counted apart and never as a person's;
+- the median and 90th-percentile time from hold to a person's first answer;
 - approvals answered in under 2 seconds, which were likely not read.
 
-With 20 or more holds and no rejection, it adds one line: approvals may not be read. Run `tracekit audit` to find the
-calls that keep being held, and decide whether they should be allowed, denied or narrowed by a rule.
+With 20 or more approvals by a person and no rejection, it adds one line: approvals may not be read. Run
+`tracekit audit` to find the calls that keep being held, and decide whether they should be allowed, denied or narrowed
+by a rule.
 
 `tracekit audit` replays transcripts, which hold no signed approvals, so it can't say who answered. It shows only the
-held calls a day, as a replay against today's policy, and points to `tracekit report` for the answers. `--json` carries
-the same numbers (`holds.oversight` in the report, `holds_a_day` in the audit).
+held calls a day (or the count over the window when it is under a day), as a replay against today's policy, and points
+to `tracekit report` for the answers. `--json` carries the same numbers (`holds.oversight` in the report, `holds_a_day` in the audit).
 
 ## Where this is tested
 

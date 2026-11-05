@@ -65,10 +65,19 @@ class TestAudit(unittest.TestCase):
         report = audit.audit(str(self.root), since="4d")
         self.assertEqual(report["holds_a_day"], 0.5)   # two holds in four days
         _, out, _ = _run(str(self.root), "--since", "4d")
-        self.assertIn("  held calls a day: 0.5. Who answered them, and how fast, is in the signed approval records: "
+        self.assertIn("  held calls: 0.5 a day. Who answered them, and how fast, is in the signed approval records: "
                       "tracekit report\n", out)
         _write_jsonl(self.root / "proj" / "s.jsonl", [_call("Bash", {"command": "ls -la"})])
-        self.assertNotIn("held calls a day", _run(str(self.root))[1])   # none held
+        self.assertNotIn("held calls:", _run(str(self.root))[1])   # none held
+
+    def test_under_a_day_the_count_is_over_the_window_not_a_daily_rate(self):
+        _write_jsonl(self.root / "proj" / "s.jsonl", [
+            _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=0.1),
+            _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=0.1)])
+        report = audit.audit(str(self.root), since="3h")
+        self.assertIsNone(report["holds_a_day"])
+        _, out, _ = _run(str(self.root), "--since", "3h")
+        self.assertRegex(out, r"  held calls: 2 in 3h 0m\. Who answered")
 
     def test_a_subagents_calls_count_under_its_session(self):
         _write_jsonl(self.root / "proj" / "s1.jsonl", [_call("Bash", {"command": "ls"})])

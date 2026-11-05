@@ -312,19 +312,23 @@ class WeeklyReport(unittest.TestCase):
         self.assertIn("Note: 1 denied call cites a policy this report can't read", page)
         self.assertIn("Note: 2 flagged calls cite a policy this report can't read", page)
 
-    def test_oversight_counts_what_a_person_answered_and_how_fast(self):
-        rep = self.build(since=self.cut, until=self.cut + 86400)   # a one-day window: the holds a day are its holds
+    def test_oversight_counts_self_approval_apart_and_scales_nothing_up(self):
+        # the fixture's signer lets a run's own user answer: its approval is no person's, its rejection is
+        rep = self.build(since=self.cut, until=self.cut + 2 * 86400)
         o = rep["holds"]["oversight"]
-        self.assertEqual((o["total"], o["per_day"], o["approved"], o["rejected"], o["unanswered"], o["by_agent"]),
-                         (3, 3, 1, 1, 1, 0))
-        self.assertEqual(o["fast_approvals"], 1)   # answered in the test's own time: well under 2 s
-        self.assertLess(o["median_s"], weekly.FAST_S)
-        self.assertLessEqual(o["median_s"], o["p90_s"])
+        self.assertEqual((o["total"], o["approved"], o["rejected"], o["self_approved"], o["by_agent"], o["unanswered"]),
+                         (3, 0, 1, 1, 0, 1))
+        self.assertEqual(o["fast_approvals"], 0)   # the only approval is the self-approval
+        self.assertGreater(o["span_s"], 86400)
+        self.assertLess(o["per_day"], 3)   # three holds over about two days, not three a day
         page = weekly.text(rep)
-        self.assertIn("  oversight: 3 holds a day; a person approved 1 (33%), rejected 1 (33%), left 1 (33%) "
-                      "unanswered (expired or abandoned)\n", page + "\n")
-        self.assertIn("answered in under 2s (likely unread)", page)
-        self.assertNotIn("approvals may not be read", page)   # 3 holds, one rejected
+        self.assertIn("a person approved 0 (0%), rejected 1 (33%); 1 (33%) with no answer "
+                      "(expired, abandoned or still waiting)\n", page + "\n")
+        self.assertIn("  self-approved 1 (the run's own user, which the agent can be: not a person's check)\n",
+                      page + "\n")
+        short = self.build()   # minutes of window: the count over it, no daily rate
+        self.assertIsNone(short["holds"]["oversight"]["per_day"])
+        self.assertRegex(weekly.text(short), r"oversight: 3 in \d+m \d+s; a person approved 0")
 
     def test_twenty_holds_with_no_rejection_say_approvals_may_not_be_read(self):
         time.sleep(0.05)
@@ -342,11 +346,24 @@ class WeeklyReport(unittest.TestCase):
         rep = self.build(since=since)
         self.assertEqual(rep["holds"]["outcomes"], {"expired": 20})
         o = rep["holds"]["oversight"]
-        self.assertEqual((o["total"], o["approved"], o["rejected"], o["unanswered"]), (20, 20, 0, 0))
-        warning = ("  No person rejected any of 20 holds, so approvals may not be read. Run tracekit audit to find the "
-                   "calls that keep being held.")
-        self.assertIn(warning + "\n", weekly.text(rep) + "\n")
-        self.assertNotIn("approvals may not be read", weekly.text(self.build()))   # the fixture's rejection is in this one
+        # the signer here lets the run's own user answer, which no person's check: none of the 20 is a person's
+        self.assertEqual((o["total"], o["approved"], o["self_approved"], o["rejected"], o["unanswered"]),
+                         (20, 0, 20, 0, 0))
+        self.assertNotIn("approvals may not be read", weekly.text(rep))
+        self.assertIn("  self-approved 20 (the run's own user", weekly.text(rep))
+
+    def test_the_warning_needs_twenty_approvals_by_a_person_and_no_rejection(self):
+        base = {"total": 25, "span_s": 0, "per_day": None, "approved": 20, "rejected": 0, "self_approved": 0,
+                "by_agent": 0, "unanswered": 5, "median_s": 3, "p90_s": 9, "fast_approvals": 0}
+        said = lambda **kw: any("approvals may not be read" in x for x in   # noqa: E731
+                                weekly._oversight_lines({**base, **kw}))
+        self.assertTrue(said())
+        self.assertIn("  A person approved all 20 answered holds and rejected none, so approvals may not be read. Run "
+                      "tracekit audit to find the calls that keep being held.", weekly._oversight_lines(base))
+        self.assertFalse(said(approved=19))
+        self.assertFalse(said(rejected=1))
+        self.assertFalse(said(approved=0, self_approved=25, unanswered=0))   # 25 holds, none a person's approval
+        self.assertFalse(said(approved=0, total=25, unanswered=25))   # 25 holds, no answer at all
 
     def test_holds_are_what_became_of_them_and_answers_are_of_holds_in_the_window(self):
         """A hold kept its first answer, so an approval whose use was refused (other arguments) read approved; and an
@@ -621,6 +638,52 @@ class WeeklyReport(unittest.TestCase):
                          (1, f"tracekit report: no dev signer data dir at {nope} yet: start the dev signer once "
                              "(tracekit up)"))
         self.assertFalse(os.path.exists(nope))
+
+
+def _hold_and_answer(tcid, held_at, answered_at, **answer):
+    """The records of one hold and its first answer, as the signer writes them."""
+    def rec(ts, type, **data):
+        return {"event": {"ts": ts, "type": type, "data": data}}
+    return [rec(held_at, "policy.decision", decision="ask", tool_use_id=tcid, tool="pay"),
+            rec(answered_at, "approval", tool_use_id=tcid, **answer)]
+
+
+class Oversight(unittest.TestCase):
+    """Who answered each hold and how fast, from the records alone."""
+
+    def oversight(self, *answers):
+        records = [r for i, (took, answer) in enumerate(answers) for r in _hold_and_answer(
+            f"t{i}", "2026-11-05T10:00:00Z", "2026-11-05T10:00:%06.3fZ" % took, **answer)]
+        held, waits = weekly._tally(("default", "r"), records, None, {}, collections.Counter())
+        self.assertEqual(len(held), len(answers))
+        return weekly._oversight(collections.Counter({"approved": len(answers)}), waits, 3600)
+
+    def test_each_kind_of_answer_is_counted_apart(self):
+        o = self.oversight((9, {"decision": "approve", "approver": "uid:1"}),
+                           (4, {"decision": "reject", "approver": "uid:1"}),
+                           (1, {"decision": "approve", "approver": "uid:2", "self_approved": True}),
+                           (0.5, {"decision": "approve", "approver": "m", "approver_kind": "agent"}))
+        self.assertEqual((o["approved"], o["rejected"], o["self_approved"], o["by_agent"], o["unanswered"]),
+                         (1, 1, 1, 1, 0))
+        # a person's times alone: the self-approval at 1 s and the agent's at 0.5 s are in neither
+        self.assertEqual((o["median_s"], o["p90_s"], o["fast_approvals"]), (6.5, 9, 0))
+
+    def test_a_rejection_by_the_requester_is_a_persons(self):
+        o = self.oversight((3, {"decision": "reject", "approver": "uid:1", "self_approved": True}))
+        self.assertEqual((o["rejected"], o["self_approved"]), (1, 0))
+
+    def test_an_approval_under_two_seconds_is_fast_and_one_at_two_and_a_half_is_not(self):
+        o = self.oversight((1.5, {"decision": "approve", "approver": "uid:1"}),
+                           (2.5, {"decision": "approve", "approver": "uid:1"}))
+        self.assertEqual(o["fast_approvals"], 1)
+
+    def test_a_hold_with_no_answer_is_unanswered(self):
+        records = _hold_and_answer("a", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z", decision="approve",
+                                   approver="uid:1") + _hold_and_answer("b", "2026-11-05T10:00:00Z",
+                                                                         "2026-11-05T10:00:04Z", decision="timeout")
+        _, waits = weekly._tally(("default", "r"), records, None, {}, collections.Counter())
+        o = weekly._oversight(collections.Counter({"approved": 1, "expired": 1}), waits, 100)
+        self.assertEqual((o["approved"], o["unanswered"]), (1, 1))
 
 
 class Window(unittest.TestCase):

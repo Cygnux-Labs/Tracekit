@@ -566,6 +566,7 @@ def _run(a):
                           f"runs them "
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
                           f"/plugin disable {plugin_key}, then run init again")
+                    print(install.DEV_MODE_LINE)
                     if not a.no_thinking_summaries:
                         try:
                             print(install.thinking_line(hooks, install.thinking_on(hooks)))
@@ -627,7 +628,12 @@ def _run(a):
         from . import install
         from .sdk import autospawn
         st, v2 = install.status(), autospawn.status()
-        dev = (st["client_config"] or {}).get("mode") == "dev" or v2.get("dev")
+        from . import client
+        try:   # a root-owned config is system mode: the signer isn't the same user's
+            system = client.system_config()
+        except client.SystemConfigError:
+            system = True
+        dev = (st["client_config"] or {}).get("mode") == "dev" or v2.get("dev") and not system
         print(json.dumps({**st, "signer_v2": v2, **({"dev_mode": install.DEV_MODE_LINE} if dev else {})}, indent=2))
         return 0
     if a.cmd == "up":

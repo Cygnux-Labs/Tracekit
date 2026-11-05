@@ -57,17 +57,35 @@ class DevModeLine(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertEqual(out.count(LINE), 1)
 
-    def test_doctor_says_it_once_beside_the_process_boundary_check(self):
+    def test_init_dev_v2_with_the_plugin_enabled_says_it_too(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.object(cli, "_signer_extra", return_value=True), \
+                mock.patch.object(install, "plugin_enabled", return_value=("settings.json", "tracekit@x")), \
+                mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d,
+                                             "TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}):
+            code, out = run(["init", "--dev", "--v2", "--no-thinking-summaries"])
+        self.assertEqual(code, 0)
+        self.assertIn("v2 hooks: not installed: the Tracekit Claude Code plugin", out)
+        self.assertEqual(out.count(LINE), 1)
+
+    def test_doctor_says_it_once_as_the_process_boundary_check(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         os.chmod(d, 0o700)
         got = doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none"))
-        ids = [r["id"] for r in got]
-        self.assertEqual(ids[ids.index("D-PROCESS-BOUNDARY") + 1], "D-DEV-MODE")
-        self.assertEqual([r["detail"] for r in got].count(LINE), 1)
+        self.assertEqual([r["status"] for r in got if r["id"] == "D-PROCESS-BOUNDARY"], ["warn"])
+        self.assertEqual([r["id"] for r in got if r["detail"] == LINE], ["D-PROCESS-BOUNDARY"])
+
+    def status(self, dev, system):
+        with mock.patch.object(install, "status", return_value={"client_config": None}), \
+                mock.patch.object(autospawn, "status", return_value={"socket": "s", "dev": dev}), \
+                mock.patch("tracekit.client.system_config", return_value=system):
+            return json.loads(run(["status"])[1]).get("dev_mode")
 
     def test_status_says_it_for_a_dev_signer_and_not_for_a_system_one(self):
-        for dev, want in ((True, LINE), (False, None)):
-            with self.subTest(dev=dev), mock.patch.object(install, "status", return_value={"client_config": None}), \
-                    mock.patch.object(autospawn, "status", return_value={"socket": "s", "dev": dev}):
-                self.assertEqual(json.loads(run(["status"])[1]).get("dev_mode"), want)
+        self.assertEqual(self.status(True, None), LINE)
+        self.assertIsNone(self.status(False, None))
+
+    def test_status_does_not_say_it_on_a_v1_system_mode_host(self):
+        self.assertIsNone(self.status(True, {"socket": "system.sock"}))
