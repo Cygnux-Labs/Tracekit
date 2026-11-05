@@ -16,7 +16,6 @@ import uuid
 import zipfile
 import zlib
 from concurrent.futures import ProcessPoolExecutor
-from datetime import datetime, timezone
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -54,7 +53,7 @@ def v2rec(seq, typ, data, run="r1", **top):
 
 def iso(t):
     """Epoch seconds as a transcript writes its times (UTC, Z)."""
-    return datetime.fromtimestamp(t, timezone.utc).isoformat().replace("+00:00", "Z")
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def cc_assistant(mid, t, read=0, write=0, life="5m", new=0, out=200, tools=(), model="claude-opus-5-5"):
