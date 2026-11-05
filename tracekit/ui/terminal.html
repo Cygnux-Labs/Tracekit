@@ -4023,6 +4023,8 @@
     // TIPS: what the store's signed records and Claude Code's transcripts say each step cost, and the three tips
     function renderTipsPage() {
       if (PAGE !== "tips") return;
+      // only with the token (a sign-in's 403 would end the page's session): a link may open TIPS on any viewer
+      if (!TIPSON) return put("tipsp", `<div class="empty">No tips here: they need tracekit view on a signer's store, opened with the link it printed.</div>`);
       if (!TIPS && !TIPSERR) {
         if (!TIPSASKED) loadTips();
         return put("tipsp", `<div class="empty">Reading the signed records and Claude Code's transcripts…</div>`);

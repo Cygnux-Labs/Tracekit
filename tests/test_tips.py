@@ -213,6 +213,19 @@ class Sources(unittest.TestCase):
                                   for p in (path, old)})
         self.assertEqual(out["sources"]["transcripts"]["files"], 1)
 
+    def test_a_transcript_line_with_odd_types_is_read_as_nothing_odd(self):
+        """A transcript is the agent's to write: a model or tool_use_id that isn't a string raised (an unhashable key,
+        fnmatch on a dict) and took the TIPS page down."""
+        root = tmp(self)
+        odd = cc_assistant("m1", T0 + 1, write=10)
+        odd["message"]["model"] = {"name": "x"}
+        write_jsonl(os.path.join(root, "p", "s.jsonl"), [
+            cc_assistant("m0", T0, write=10, tools=[("toolu_1", "Bash", {"command": ["ls"]})]), odd,
+            {"type": "user", "timestamp": "2026-10-10T00:00:00Z", "message": {"content": [
+                {"type": "tool_result", "tool_use_id": {"x": 1}}, {"type": "tool_result", "tool_use_id": "toolu_1"}]}}])
+        out = tips.build([], root, NOW)
+        self.assertEqual(out["sources"]["transcripts"]["steps"], 2)
+
     def test_with_nothing_to_read_every_tip_says_why(self):
         out = tips.build([], None, NOW)
         self.assertEqual([t["ok"] for t in out["tips"]], [False, False, False])
@@ -272,6 +285,18 @@ class Page(unittest.TestCase):
         self.assertIn(f'<polyline class="tact" points="52.0,{y(100)} 658.0,{y(200)}"/>', svg)
         self.assertIn(f'<polyline class="tsim" points="52.0,{y(100)} 658.0,{y(50)}"/>', svg)
         self.assertIn("compacted itself at 200 tokens", svg)
+
+    def test_the_page_asks_for_tips_only_when_its_snapshot_says_it_has_them(self):
+        """A link opened TIPS on a sign-in's page: its /api/tips 403 would end the page's session."""
+        out = json.loads(page_js(["esc", "renderTipsPage"], """
+            let PAGE = "tips", TIPSON = false, TIPS = null, TIPSERR = "", TIPSASKED = false, tipsKey = null, asked = 0, html = "";
+            const loadTips = () => { asked++; }, put = (id, h) => { html = h; };
+            renderTipsPage(); const off = [asked, html];
+            TIPSON = true; renderTipsPage();
+            process.stdout.write(JSON.stringify([off, asked]));"""))
+        self.assertEqual(out[0][0], 0)
+        self.assertIn("No tips here", out[0][1])
+        self.assertEqual(out[1], 1)
 
     def test_a_tip_without_enough_data_says_why_and_a_tip_with_it_gives_its_fix_to_copy(self):
         out = json.loads(page_js(self.NAMES, """process.stdout.write(JSON.stringify([

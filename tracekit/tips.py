@@ -85,8 +85,8 @@ def _input_usd(s, r):
     return (s["in"] * r["input"] + s["cr"] * r["cache_read"]) / 1e6 + _write_usd(s, r)
 
 
-def _step(t, mid, model):
-    return {"t": t, "t1": t, "id": mid, "model": model, "in": 0, "out": 0, "cr": 0, "w5": 0, "w1h": 0, "w": 0,
+def _step(t, mid, model):   # a transcript is the agent's to write: a model that isn't a name is none
+    return {"t": t, "t1": t, "id": mid, "model": model if isinstance(model, str) else None, "in": 0, "out": 0, "cr": 0, "w5": 0, "w1h": 0, "w": 0,
             "lat": None, "calls": []}
 
 
@@ -189,7 +189,8 @@ def read_transcripts(root, since, skip=()):
                     last_user = None
                 elif e.get("type") == "user":
                     for b in blocks:
-                        c = calls.get(b.get("tool_use_id")) if b.get("type") == "tool_result" else None
+                        tid = b.get("tool_use_id")
+                        c = calls.get(tid) if b.get("type") == "tool_result" and isinstance(tid, str) else None
                         if c and c["t1"] is None:
                             c["t1"] = t
                     last_user = t
