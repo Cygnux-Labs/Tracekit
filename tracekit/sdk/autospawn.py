@@ -364,8 +364,8 @@ def status():
         # (a runtime dir refused for its owner or mode keeps that error)
         unstarted = dev and not isinstance(e, Incompatible) and (
             isinstance(e, FileNotFoundError) or path is not None and not os.path.exists(path))
-        return {"socket": path, "running": isinstance(e, Incompatible),
+        return {"socket": path, "dev": dev, "running": isinstance(e, Incompatible),
                 "error": "not started: the dev signer starts at an agent's first call, or with `tracekit up`"
                 if unstarted else str(e)}
     sock.close()
-    return {"socket": path, "running": True, **hello}
+    return {"socket": path, "dev": dev, "running": True, **hello}
