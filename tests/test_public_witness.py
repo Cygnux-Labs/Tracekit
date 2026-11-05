@@ -473,6 +473,22 @@ class OptIn(unittest.TestCase):
                 self.assertEqual(cli.main(argv), 2)
                 self.assertIn("--no-witness and --public-witness go with --v2, one at a time", err.getvalue())
 
+    def test_system_modes_no_witness_is_kept_by_every_later_init(self):
+        """A second `sudo tracekit init --v2` without --no-witness wrote `witnesses: ["public"]` again."""
+        marker = os.path.join(self.dir, "no-witness")
+
+        def write(path, data):
+            with open(path, "wb") as f:
+                f.write(data)
+        with mock.patch.object(install, "V2_NO_WITNESS", marker), mock.patch.object(install, "_write_root_file", write):
+            self.assertIsNone(install.system_witness(None))   # nothing chosen: the default
+            self.assertIs(install.system_witness(False), False)
+            self.assertTrue(os.path.isfile(marker))
+            self.assertIs(install.system_witness(None), False)   # a later init keeps it
+            self.assertIs(install.system_witness(True), True)   # until --public-witness
+            self.assertFalse(os.path.exists(marker))
+            self.assertIsNone(install.system_witness(None))
+
     @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
     def test_init_v2_writes_the_shortcut(self):
         """Once the witness is configured, by default; never with --no-witness, nor while it is not."""

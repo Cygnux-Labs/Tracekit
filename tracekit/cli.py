@@ -597,8 +597,9 @@ def _run(a):
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
             from . import public_witness
-            if a.no_witness or not public_witness.configured():
-                print(public_witness.LOST if a.no_witness else public_witness.NOT_CONFIGURED)
+            off = os.path.exists(install.V2_NO_WITNESS)   # this init's --no-witness, or an earlier one's, kept
+            if off or not public_witness.configured():
+                print(public_witness.LOST if off else public_witness.NOT_CONFIGURED)
             if settings:
                 print(guidance())
             if settings and a.agent == "codex":

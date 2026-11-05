@@ -102,6 +102,7 @@ SYS_USER_DARWIN = "_tracekit"  # macOS system accounts are underscore-prefixed
 V2_USER, V2_USER_DARWIN = "tracekit-signer", "_tracekit_signer"
 V2_DATA = "/var/lib/tracekit-signer"   # keys and log: 0700, owned by the signer's user
 V2_CONFIG = "/etc/tracekit/signer.yaml"
+V2_NO_WITNESS = "/etc/tracekit/no-witness"   # `init --v2 --no-witness`, kept by later inits until --public-witness
 V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
 # the transcript tailer (tracekit.tailer): its own user, which reads the agent's transcripts through an ACL; the agent
 # starts it through sudo, and the signer lets its uid make only the calls of TAILER_METHODS
@@ -1494,6 +1495,22 @@ def v2_plist(user):
         "StandardErrorPath": os.path.join(V2_DATA, "signer.log")})
 
 
+def system_witness(public_witness):
+    """Whether system mode's signer.yaml lists the public witness, for init_system_v2's `public_witness`: True clears an
+    earlier --no-witness, False records it in V2_NO_WITNESS, and None keeps what that records (off), else the default
+    (v2_signer_yaml's None: once the witness is configured)."""
+    if public_witness is False:
+        _write_root_file(V2_NO_WITNESS, b"no-witness\n")
+    elif public_witness:
+        try:
+            os.remove(V2_NO_WITNESS)
+        except FileNotFoundError:
+            pass
+    elif os.path.exists(V2_NO_WITNESS):
+        return False
+    return public_witness
+
+
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
                    experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=None,
                    egress=False, thinking=True, managed=False, managed_only=False):
@@ -1564,7 +1581,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     sock = os.path.join(run_dir, "signer.sock")
     observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
     _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
-                                                public_witness, observer and observer.pw_uid).encode())
+                                                system_witness(public_witness), observer and observer.pw_uid).encode())
     proxy = {"HTTPS_PROXY": f"http://{EGRESS_LISTEN}", "HTTP_PROXY": f"http://{EGRESS_LISTEN}"} if egress else {}
     if egress:   # attribution by the agent's uid, read from /proc: no token in the proxy URL
         _write_root_file(EGRESS_CONFIG, (f"# written by `tracekit init --v2 --egress`\nlisten: {json.dumps(EGRESS_LISTEN)}"
@@ -1735,7 +1752,7 @@ def uninstall_system_v2(purge=False):
         removed += [client.SYSTEM_CONFIG, OPT]
     removed += [V2_CONFIG, TAILER_SUDOERS, EGRESS_CONFIG]
     if purge:
-        removed.append(V2_DATA)
+        removed += [V2_DATA, V2_NO_WITNESS]
     for p in removed:
         if os.path.isdir(p) and not os.path.islink(p):
             shutil.rmtree(p)

@@ -159,11 +159,13 @@ or `tracekit init --v2 --user AGENT --public-witness` run as root (v2
 [system mode](deploy.md#laptop-system-mode)). `public` expands to the witness's URL and
 cosignature vkey from `tracekit/public_witness.py`, with class `public`. Once both are set, system init writes it
 without the flag, and the dev signer uses it too; in system mode `--public-witness` fails while they are empty.
-`--no-witness` opts out: system init leaves `witnesses` out of signer.yaml, and `tracekit init --dev --v2 --no-witness`
-or `tracekit up --no-witness` leaves a `no-witness` file in the dev data dir, which later inits keep and say so; only
-`tracekit init --dev --v2 --public-witness` turns the witness back on. A change reaches the dev signer when it next starts:
-`tracekit up --replace` restarts it, and `tracekit up --wait` then says what the running signer uses. A signer that sends a chosen `origin` (anything but its random default) to the public witness
-warns at start: the origin would tell Cygnux whose log it is.
+`--no-witness` opts out: system init leaves `witnesses` out of signer.yaml and records the choice in
+`/etc/tracekit/no-witness`, and `tracekit init --dev --v2 --no-witness` or `tracekit up --no-witness` leaves a
+`no-witness` file in the dev data dir. Later inits keep the opt-out and say so; only an init with `--public-witness`
+turns the witness back on (`uninstall --purge` forgets it). A change reaches the dev signer when it next starts:
+`tracekit up --replace` restarts it, and `tracekit up --wait` then says what the running signer uses. A signer that
+sends a chosen `origin` (anything but its random default) to the public witness warns at start: the origin would tell
+Cygnux whose log it is.
 
 - **First use.** The witness does not know a new log: it answers `404`, and the signer registers the log (its origin
   and log vkey, proved by a checkpoint signed with that key), then resends. The record log and each tenant's registry
