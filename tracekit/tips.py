@@ -289,9 +289,22 @@ def _dur(s, down=False):
 
 
 def _shown(path):
-    """A path as the page shows it: under the home folder as ~/..."""
-    home = os.path.expanduser("~")
-    return "~" + path[len(home):] if path == home or path.startswith(home.rstrip(os.sep) + os.sep) else path
+    """A path as the page shows it: under the home folder (expanduser's, as audit.default_root finds it) as ~/..., with
+    forward slashes on every OS. Home is looked for among the real path's folders as the same folder (samefile: device
+    and inode), so a symlink (macOS's /var), a Windows short name (RUNNER~1) or another case of it still counts, on a
+    filesystem that ignores case as well as on Windows."""
+    home, cur, rest = os.path.expanduser("~"), os.path.realpath(path), []
+    while True:
+        try:
+            if os.path.samefile(cur, home):
+                return "~" + "".join("/" + x for x in reversed(rest))
+        except OSError:   # a folder that can't be read, or no home: not under it
+            pass
+        up = os.path.dirname(cur)
+        if up == cur:
+            return path
+        rest.append(os.path.basename(cur))
+        cur = up
 
 
 def _money(v):

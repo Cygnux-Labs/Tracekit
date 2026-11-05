@@ -458,12 +458,22 @@ class Sources(unittest.TestCase):
                          ["45 s", "5 min 29 s", "8 min", "42 min", "1 h", "1 h 5 min", "2 h"])
 
     def test_the_transcripts_folder_under_home_reads_as_tilde(self):
+        """On Windows the folder stayed a full path: expanduser reads USERPROFILE, not HOME, and a temp folder comes
+        back as a short name (C:\\Users\\RUNNER~1\\...) that a plain prefix check doesn't match to the long one."""
         root = tmp(self)
-        os.makedirs(os.path.join(root, ".claude", "projects"))
-        with mock.patch.dict(os.environ, {"HOME": root}):
-            self.assertEqual(tips.build([], os.path.join(root, ".claude", "projects"), NOW)["root"], "~/.claude/projects")
-        self.assertEqual(tips._shown("/srv/transcripts"), "/srv/transcripts")
-        self.assertEqual(tips._shown(root + "x/p"), root + "x/p")   # a sibling of home is not under it
+        projects = os.path.join(root, ".claude", "projects")
+        os.makedirs(projects)
+        homes = {"home": root, "home through ..": os.path.join(root, ".claude", ".."),
+                 "home with a trailing separator": root + os.sep}
+        if os.path.isdir(root.swapcase()) and root.swapcase() != root:   # a case-insensitive filesystem (Windows, macOS)
+            homes["home in another case"] = root.swapcase()
+        for name, home in homes.items():
+            with self.subTest(name), mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}):
+                self.assertEqual(tips.build([], projects, NOW)["root"], "~/.claude/projects")
+                self.assertEqual(tips._shown(root), "~")
+        with mock.patch.dict(os.environ, {"HOME": root, "USERPROFILE": root}):
+            for elsewhere in (os.path.join(tmp(self), "transcripts"), root + "x" + os.sep + "p"):   # a sibling too
+                self.assertEqual(tips._shown(elsewhere), elsewhere)
 
     def test_with_nothing_to_read_every_tip_says_why(self):
         out = tips.build([], None, NOW)
