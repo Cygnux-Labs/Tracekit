@@ -732,12 +732,12 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                     if (pin["vkey"], c["serial"]) in revocations:
                         revoked[k["kid"]] = revocations[(pin["vkey"], c["serial"])]
                 declared[k["kid"]] = {"spki": der, "from": e["seq"], "until": None}
-        check_record(r, keys_at(e["seq"]) + [k["spki"] for k in declared.values()], key_problems)
-        if e["type"] == "key.retire":
+        if e["type"] == "key.retire":   # first: a key.retire is a record too, valid only under a key valid at its seq
             if e["data"]["kid"] not in timeline:
                 key_problems.append(f"seq {e['seq']}: retires an unknown key")
             else:
                 timeline[e["data"]["kid"]]["until"] = e["data"]["last_seq"]
+        check_record(r, keys_at(e["seq"]) + [k["spki"] for k in declared.values()], key_problems)
         timeline.update(declared)
 
     # the runs: one, or with a run-set any number; each in one file or in parts

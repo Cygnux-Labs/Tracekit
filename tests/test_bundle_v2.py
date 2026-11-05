@@ -791,6 +791,32 @@ class TestVerifyV2(Case):
         rep, code = self.verify(out)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
 
+    @unverified_bundles
+    def test_a_key_retire_is_a_record_valid_only_under_a_key_valid_at_its_seq(self):
+        """format-v2.md §4: a key.retire signed by the key it retires, after that key's last_seq, fails keys."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.add("key.retire", {"kid": crypto.spki_kid(spki(KEY1)), "last_seq": log.store.tree.size - 1},
+                run="signer", key=KEY1)
+        log.key = KEY2
+        log.epoch(KEY2)
+        log.final()
+        out = os.path.join(self.d, "k.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.failures), (1, ["keys"]), rep.checks)
+        self.assertIn("seq 2: signed by key", str(rep.checks))
+
+    def test_a_record_whose_v_is_written_2_0_is_not_a_v2_record(self):
+        """format-v2.md §4: v is the integer 2; §3: an integer is a token with no fraction or exponent."""
+        _, out = self.honest()
+        bad = self.mutate(out, edit=lambda files, m: files.update({k: v.replace(b'"v":2,', b'"v":2.0,', 1)
+                                                                   for k, v in files.items() if k.startswith("runs/")}))
+        rep, code = self.verify(bad)
+        self.assertEqual((code, rep.failures), (1, ["signatures"]), rep.checks)
+        self.assertIn("not a v2 record", str(rep.checks))
+
     def test_manifest_is_only_an_index(self):
         _, out = self.honest()
         self.assert_fails(self.mutate(out, edit=lambda files, m: files.update({"policies/x.json": b"{}"})), "manifest")
