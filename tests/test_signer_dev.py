@@ -163,6 +163,38 @@ class DevSignerEndToEnd(unittest.TestCase):
         lock_file(locks[1], blocking=False)
         self.assertFalse(autospawn._theirs(self.run_dir))   # this HOME's: replaced as before
 
+    def test_init_strict_makes_the_dev_signer_decide_with_the_earlier_rules(self):
+        """#604: the dev signer decides with the default, which holds a push (TK-A056), until `tracekit init --dev --v2
+        --strict` restarts it on strict mode's pack, which only flags one; a plain init leaves strict mode on, and
+        doctor names the mode that decides."""
+        def push():
+            c = Client()
+            try:
+                with c.run("e2e") as run:
+                    d = run.decide("c1", "Bash", {"command": "git push origin main"})
+                return d["decision"], d["rule_ids"], c.hello["pid"]
+            finally:
+                c.close()
+
+        def mode():
+            from tracekit import doctor
+            with mock.patch.object(doctor, "_dev_settings", return_value=None):
+                return next(r["detail"] for r in doctor.collect() if r["id"] == "D-POLICY-ENGINE")
+
+        decision, rules, before = push()
+        self.assertEqual((decision, rules[0]), ("ask", "TK-A056"))
+        self.assertTrue(mode().startswith("default mode (every call is recorded"), mode())
+        out = self.cli("init", "--dev", "--v2", "--no-hooks", "--strict")
+        self.assertIn(f"policy: strict mode, the rules as they were before the default (a push or a settings change is "
+                      f"flagged, not held); a person deletes {os.path.join(autospawn.data_dir(), service.POLICY_MODE)}",
+                      out)
+        decision, rules, after = push()
+        self.assertEqual((decision, rules), ("allow", ["TK-F004"]))
+        self.assertNotEqual(before, after)   # init stopped the default's signer; this call started a strict one
+        self.assertTrue(mode().startswith("strict mode (the rules as they were before the default"), mode())
+        self.cli("init", "--dev", "--v2", "--no-hooks")
+        self.assertEqual(service.dev_policy(autospawn.data_dir()), service.STRICT_POLICY)
+
     def test_the_dev_signer_keeps_each_calls_arguments_for_its_user(self):
         """`tracekit view --dev` showed "no rule matched" for every allowed call: the dev signer kept no content. It
         keeps each call's redacted arguments and lets its own user read them; TRACEKIT_DEV_CONTENT=0 keeps none."""

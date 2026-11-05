@@ -341,7 +341,10 @@ from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_
 from tracekit.transport import answering_hello, hello
 from tracekit.wiki import wiki_url
 
-DEFAULT_POLICY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs", "dev.yaml")
+PACKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs")
+# the default asks a person only for the short list of costly actions; strict mode keeps the rules as they were (#604)
+DEFAULT_POLICY, STRICT_POLICY = os.path.join(PACKS, "default.yaml"), os.path.join(PACKS, "dev.yaml")
+POLICY_MODE = "policy_mode"   # in the dev signer's data dir once `tracekit init --strict` ran
 APPROVAL_TTL_S = 3600
 DECISION_TTL_S = 300
 REFUSAL_WINDOW_S = 60
@@ -427,6 +430,17 @@ COOLDOWN_S = 3600   # respond.cooldown_s default: how long new runs of a held ow
 MAX_UNMATCHED = 1 << 16   # (decision, result digest) pairs remembered as not matching; forgotten all at once past it
 # lean: a fixed cap on a PCM grant's life, as v0 has no revocation; make it a config key when deployments need others
 MAX_GRANT_S = 86400
+
+
+def dev_policy(data_dir):
+    """The dev signer's policy file: STRICT_POLICY once `tracekit init --strict` wrote `strict` to POLICY_MODE in
+    `data_dir`, else DEFAULT_POLICY, which holds a push and a harness settings change that strict mode only flags: a
+    mode file that is gone, unreadable or says anything else is the default, so a broken switch never holds less."""
+    try:
+        with open(os.path.join(data_dir, POLICY_MODE), encoding="utf-8") as f:
+            return STRICT_POLICY if f.read(64).strip() == "strict" else DEFAULT_POLICY
+    except (OSError, ValueError):   # missing, a directory, unreadable, not UTF-8
+        return DEFAULT_POLICY
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -4991,7 +5005,8 @@ def _serve_dev():
     logkey.harden()
 
     def open_handler():   # the user may sign findings about their own runs: they read self-asserted (docs/verdicts.md)
-        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
+        service = SignerService(dev_data_dir(), load_policy(dev_policy(dev_data_dir())), isolation="same-user",
+                                fsck_every_s=0, analyzers=[_dev_identity()],
                                 grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
         return service.handle_frame, service.close
     stacks = None

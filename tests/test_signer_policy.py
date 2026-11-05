@@ -67,8 +67,8 @@ class Packs(unittest.TestCase):
         coding = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
         self.assertEqual([r["id"] for sec in pc.SECTIONS for r in coding.get(sec, []) if f"`{r['id']}`" not in docs], [])
 
-    def test_dev_default_is_the_coding_pack_plus_the_demo_deny(self):
-        dev, coding = pc.build(svc.DEFAULT_POLICY)[0], pc.build(os.path.join(PACKS, "coding.yaml"))[0]
+    def test_strict_mode_is_the_coding_pack_plus_the_demo_deny(self):
+        dev, coding = pc.build(svc.STRICT_POLICY)[0], pc.build(os.path.join(PACKS, "coding.yaml"))[0]
         self.assertEqual(dev["extends"], pc.policy_hash(coding))
         self.assertEqual([r["id"] for r in dev["deny"]], [r["id"] for r in coding["deny"]] + ["TK-DEMO-DENY"])
         self.assertEqual(dev["unknown_tools"], "flag")
@@ -87,11 +87,12 @@ class Packs(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
     def test_re2_and_regex_decide_identically_on_the_packs(self):
-        pol = pc.build(svc.DEFAULT_POLICY)[0]
-        a, b = Engine(pol, "re2"), Engine(pol, "regex")
-        for tool, args in [g[:2] for g in GAPS] + SELF_PROTECTION + BENIGN + [("mcp__s__t", {"q": "x"}), ("Foo", {})]:
-            with self.subTest(tool=tool, args=str(args)[:60]):
-                self.assertEqual({**a.decide(tool, args), "engine": None}, {**b.decide(tool, args), "engine": None})
+        for pack in (svc.DEFAULT_POLICY, svc.STRICT_POLICY):
+            pol = pc.build(pack)[0]
+            a, b = Engine(pol, "re2"), Engine(pol, "regex")
+            for tool, args in [g[:2] for g in GAPS] + SELF_PROTECTION + BENIGN + [("mcp__s__t", {"q": "x"}), ("Foo", {})]:
+                with self.subTest(pack=pack, tool=tool, args=str(args)[:60]):
+                    self.assertEqual({**a.decide(tool, args), "engine": None}, {**b.decide(tool, args), "engine": None})
 
     def test_paths_are_normalised_and_unverifiable_ones_keep_their_suffix(self):
         self.assertEqual(classes.fs_path("/p//./src/../.env"), ".env")   # `..`: a symlink could redirect it
@@ -103,8 +104,143 @@ class Packs(unittest.TestCase):
         self.assertEqual(classes.extract("mcp", "mcp__github__create_issue", {})["server"], "github")
 
 
+class DefaultAndStrict(unittest.TestCase):
+    """#604: the default (default.yaml) asks a person only for the short list of costly or security-relevant actions;
+    strict mode (dev.yaml, `tracekit init --strict`) keeps the rules as they were."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.default, cls.strict = (pc.build(p)[0] for p in (svc.DEFAULT_POLICY, svc.STRICT_POLICY))
+        cls.engines = {name: [Engine(pol, b) for b in (("re2", "regex") if HAVE_RE2 else ("regex",))]
+                       for name, pol in (("default", cls.default), ("strict", cls.strict))}
+
+    def verdicts(self, mode, cases, want, rule=None):
+        for tool, args in cases:
+            for e in self.engines[mode]:
+                with self.subTest(mode=mode, engine=e.engine, tool=tool, args=str(args)[:80]):
+                    d = e.decide(tool, args)
+                    self.assertIn(d["verdict"], (want,) if isinstance(want, str) else want, d)
+                    if rule:
+                        self.assertIn(rule, d["rule_ids"])
+
+    def test_the_default_stops_every_call_strict_mode_stops(self):
+        """Each deny and ask rule of strict mode is the default's too, unchanged and in the same section, and every
+        other setting is the same (TK-SHELL-PARSE asks in both), so no call strict mode stops runs in the default. The
+        default only adds asks: TK-A056, TK-A057, and TK-F009 and TK-F015, which keep strict mode's patterns."""
+        def rules(pol):
+            return {r["id"]: (sec, r) for sec in pc.SECTIONS for r in pol[sec]}
+        default, strict = rules(self.default), rules(self.strict)
+        for rid, (sec, r) in strict.items():
+            if sec != "flag":
+                self.assertEqual(default.get(rid), (sec, r), rid)
+        self.assertEqual({rid for rid in default if default[rid] != strict.get(rid)},
+                         {"TK-A056", "TK-A057", "TK-F009", "TK-F015"})
+        self.assertEqual({rid: default[rid][0] for rid in ("TK-A056", "TK-A057")}, {"TK-A056": "ask", "TK-A057": "ask"})
+        for rid in ("TK-F009", "TK-F015"):
+            self.assertEqual(default[rid][0], "ask")
+            self.assertEqual({k: v for k, v in default[rid][1].items() if k not in ("reason", "remedy", "rationale")},
+                             strict[rid][1])
+        for key in (set(self.default) | set(self.strict)) - set(pc.SECTIONS) - {"version", "description", "extends"}:
+            self.assertEqual(self.default.get(key), self.strict.get(key), key)
+        self.assertEqual(self.default.get("on_parse_error", "ask"), "ask")
+
+    def test_every_rule_the_default_stops_with_is_in_the_short_list_table(self):
+        with open(os.path.join(os.path.dirname(__file__), "..", "docs", "policy-v2.md"), encoding="utf-8") as f:
+            docs = f.read()
+        table = docs[docs.index("### Default and strict"):docs.index("`coding.yaml` rules (see the file")]
+        self.assertEqual([r["id"] for sec in ("deny", "ask") for r in self.default[sec] if f"`{r['id']}`" not in table],
+                         [])
+
+    def test_the_default_holds_a_push_publish_or_deploy(self):
+        """The study's needed stops 17 and 44 were branch pushes the dev pack only flagged (TK-F004); the default
+        holds every push, publish and deploy in TK-F004's list, in any spelling the parser resolves, and leaves the
+        rest of that list (installs, reset --hard, clean, docker run) and text that only names a push flagged."""
+        held = ["git add a && git commit -m x && git push -q origin agent/issue-150-release",
+                'pkill -f "next start -p 3107"; git add v.mp4 && git push -q origin site-box-demo',
+                "git -C x push", "env git push", "/usr/bin/git push origin x", "sh -c 'git push'", "GIT push origin x",
+                "g''it pu\"\"sh origin x", "nohup git push origin x &", "xargs -n1 git push origin < b.txt",
+                "git -c http.extraheader=x --no-pager push origin x", "git push --dry-run", "git push --tags",
+                "npm publish", "yarn npm publish", "pnpm -r publish", "bun publish", "uv publish", "poetry publish --build",
+                "cargo publish", "gem push x.gem", "twine upload dist/*", "docker push x", "docker image push x",
+                "podman --log-level debug push x", "helm push c.tgz oci://r", "helm upgrade --install a b",
+                "helm -n ns install a b", "terraform -chdir=x apply", "tofu apply -auto-approve", "pulumi up --yes",
+                "kubectl -n ns apply -f x", "kubectl --context=x delete pod y"]
+        self.verdicts("default", [("Bash", {"command": c}) for c in held], "ask", "TK-A056")
+        self.verdicts("strict", [("Bash", {"command": c}) for c in held[2:]], ("flag", "allow"))
+        self.verdicts("default", [("Bash", {"command": c}) for c in (
+            "git commit -m 'git push later'", "echo git push", "npm install", "pip install x", "git reset --hard",
+            "git clean -fd", "docker run x")], "flag")
+        self.verdicts("default", [("Bash", {"command": c}) for c in (
+            "git status", "git pushx", "git log push", "helm template a b")], "allow")
+
+    def test_the_default_holds_a_change_to_the_harness_settings(self):
+        """Changing the guardrails is on the short list: a write to the agent harness's settings, hooks or plugins
+        (TK-F009 for the file tools, TK-F015 for the shell; a project's .claude/settings.json with disableAllHooks
+        among them) waits for a person, where the dev pack only flagged it. Reading them, the agent's memory notes and
+        a file in one of Claude Code's worktrees are not held."""
+        off = '{"disableAllHooks": true}'
+        files = [("Write", {"file_path": "/w/p/.claude/settings.json", "content": off}),
+                 ("Edit", {"file_path": ".claude/settings.json", "old_string": '"hooks": {', "new_string": off}),
+                 ("Write", {"file_path": "/Users/u/.claude/settings.local.json", "content": off}),
+                 ("Write", {"file_path": "/w/p/.codex/hooks.json", "content": "{}"}),
+                 ("Edit", {"file_path": "/w/p/.cursor/hooks.json", "old_string": "a", "new_string": "b"})]
+        shell = [f"cat > .claude/settings.json <<'EOF'\n{off}\nEOF", f"echo '{off}' > ~/.claude/settings.json",
+                 "jq '.disableAllHooks=true' .claude/settings.json > t && mv t .claude/settings.json",
+                 "sed -i '' 's/PreToolUse/Off/' .claude/settings.json", "rm -rf .claude/settings.json",
+                 "cp /tmp/x .gemini/settings.json"]
+        self.verdicts("default", files, "ask", "TK-F009")
+        self.verdicts("default", [("Bash", {"command": c}) for c in shell], "ask", "TK-F015")
+        self.verdicts("strict", files + [("Bash", {"command": c}) for c in shell], "flag")
+        self.verdicts("default", [("Read", {"file_path": ".claude/settings.json"}),
+                                  ("Bash", {"command": "cat .claude/settings.json"}),
+                                  ("Write", {"file_path": "/Users/u/.claude/projects/p/memory/note.md", "content": "x"}),
+                                  ("Write", {"file_path": "/w/p/.claude/worktrees/w1/src/a.py", "content": "x"})],
+                      "allow")
+
+    def test_the_agent_cannot_switch_the_mode(self):
+        """Strict mode drops the default's holds on a push and a harness settings change, so the agent's own `tracekit
+        init` (--strict, and --no-hooks, which takes Tracekit's hooks out) waits for a person in the default
+        (TK-A057); and the mode file in the dev signer's data dir is Tracekit's own, which both modes deny the agent
+        writing or deleting."""
+        self.verdicts("default", [("Bash", {"command": c}) for c in (
+            "tracekit init --dev --v2 --strict", "tracekit init --dev --v2 --no-hooks", "tracekit init --dev --v2",
+            "python -m tracekit init --dev --v2 --strict", "python3 -I -m tracekit.cli init --dev --v2",
+            "/opt/tracekit/bin/python -m tracekit -- init --v2 --strict", "sh -c 'tracekit init --strict'")],
+                      "ask", "TK-A057")
+        self.verdicts("default", [("Bash", {"command": c}) for c in (
+            "tracekit doctor", "tracekit initx", "tracekit witness init", "echo tracekit init --strict")], "allow")
+        for mode in ("default", "strict"):
+            for d in ("~/Library/Application Support/tracekit/data", "~/.local/share/tracekit"):
+                path = f"{d}/{svc.POLICY_MODE}"
+                self.verdicts(mode, [("Bash", {"command": f"rm '{path}'"}),
+                                     ("Bash", {"command": f"echo strict > '{path}'"}),
+                                     ("Write", {"file_path": path.replace("~", "/Users/u"), "content": "strict"})],
+                              "deny")
+
+    def test_only_a_readable_strict_mode_file_is_strict(self):
+        """Strict mode holds less than the default, so a mode file that is gone, empty, unreadable or says anything
+        else is the default: a broken switch never holds less."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        mode = os.path.join(d, svc.POLICY_MODE)
+        self.assertEqual(svc.dev_policy(d), svc.DEFAULT_POLICY)
+        with open(mode, "w") as f:
+            f.write("strict\n")
+        self.assertEqual(svc.dev_policy(d), svc.STRICT_POLICY)
+        for text in ("", "default\n", "strictly\n", "\xff"):
+            with self.subTest(text=text), open(mode, "w", encoding="latin-1") as f:
+                f.write(text)
+            self.assertEqual(svc.dev_policy(d), svc.DEFAULT_POLICY)
+        os.unlink(mode)
+        os.mkdir(mode)
+        self.assertEqual(svc.dev_policy(d), svc.DEFAULT_POLICY)
+        os.rmdir(mode)
+        os.symlink(os.path.join(d, "gone"), mode)
+        self.assertEqual(svc.dev_policy(d), svc.DEFAULT_POLICY)
+
+
 # the rules this change added to the coding pack
-NEW_RULES = {"TK-D020", "TK-D021", "TK-A020", "TK-A021", "TK-A022", "TK-A023", "TK-A024", "TK-A025", "TK-A026",
+NEW_RULES ={"TK-D020", "TK-D021", "TK-A020", "TK-A021", "TK-A022", "TK-A023", "TK-A024", "TK-A025", "TK-A026",
              "TK-A027", "TK-A028", "TK-A029", "TK-A030"}
 
 class CodingPack(unittest.TestCase):
@@ -124,7 +260,7 @@ class CodingPack(unittest.TestCase):
         """(pack, engine name, engine) for each shipped pack on each engine, built once per run: a decision doesn't
         change an engine, and building the eight took about a second a time (#500)."""
         return tuple((pack, engine, Engine(pc.build(os.path.join(PACKS, pack))[0], engine))
-                     for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml")
+                     for pack in ("coding.yaml", "dev.yaml", "default.yaml", "server.yaml", "strict.yaml")
                      for engine in (("re2", "regex") if HAVE_RE2 else ("regex",)))
 
     def test_deleting_ci_pipeline_files_asks(self):
@@ -3482,7 +3618,7 @@ class PackReading(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
-        cls.dev = Engine(pc.build(svc.DEFAULT_POLICY)[0], "regex")
+        cls.dev = Engine(pc.build(svc.STRICT_POLICY)[0], "regex")
 
     def check(self, engine, cases, want):
         for tool, args in cases:

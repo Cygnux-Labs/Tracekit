@@ -24,7 +24,7 @@ sh deploy/docker/smoke.sh     # build, run, decide a call over the socket, check
 The example config runs the server policy pack, `policy: /etc/tracekit/packs/server.yaml` (unmapped tools wait for
 an approval; [policy-v2.md](policy-v2.md#packs-shipped)). To run your own, mount it as `/etc/tracekit/policy.yaml`,
 start it with `extends: packs/server.yaml` to keep the server rules, and set `policy: /etc/tracekit/policy.yaml`.
-Without `policy:` the signer falls back to the laptop `dev.yaml` pack: never leave it out on a server.
+Without `policy:` the signer falls back to the laptop `default.yaml` pack: never leave it out on a server.
 
 Ports: 8443 (the `http` listener, central) and 9464 (metrics; the `HEALTHCHECK` reads `/metrics` there, so keep a
 `metrics` section in signer.yaml). Run it with `--read-only --cap-drop ALL --security-opt no-new-privileges`.

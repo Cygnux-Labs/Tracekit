@@ -163,6 +163,23 @@ class Compile(unittest.TestCase):
         self.assertEqual((errs, [r["id"] for r in pol["deny"]]), ([], ["A1"]))
         self.assertIn("extends must be a relative path", "\n".join(self.errors(f"extends: [b.yaml, {a}]\n")))
 
+    def test_a_rule_named_by_id_alone_moves_the_parents_rule(self):
+        """#604: the default pack re-tiers a parent's rule by its id, keeping its pattern; its own keys win, and a
+        flag keeps no remedy or approval (a flagged call runs). An id no parent has is an error, not a no-op."""
+        self.write("base.yaml", "tools:\n  Bash: shell\nask:\n  - {id: A1, class: shell, pattern: '^rm\\b', reason: r, "
+                                "remedy: Ask a person., approval: {passkey: required}}\nflag:\n  - {id: F1, class: shell, "
+                                "pattern: '^git push', label: side_effect}\n")
+        pol, errs = pc.build(self.write("p.yaml", "extends: base.yaml\nask:\n  - {id: F1, reason: a push, remedy: "
+                                                  "Have a person approve it.}\nflag:\n  - {id: A1}\n"))
+        self.assertEqual(errs, [])
+        self.assertEqual(pol["ask"], [{"id": "F1", "class": "shell", "pattern": "^git push", "label": "side_effect",
+                                       "reason": "a push", "remedy": "Have a person approve it."}])
+        self.assertEqual(pol["flag"], [{"id": "A1", "class": "shell", "pattern": "^rm\\b", "reason": "r"}])
+        e = Engine(pol, "regex")
+        self.assertEqual([e.decide("Bash", {"command": c})["verdict"] for c in ("git push", "rm x")], ["ask", "flag"])
+        self.assertIn("rule needs a string id and pattern, or the id of a rule in a pack it extends",
+                      "\n".join(self.errors("extends: base.yaml\nask:\n  - {id: NOPE}\n")))
+
     def test_extends_loop_through_dot_path(self):
         self.assertIn("extends loop", "\n".join(self.errors("extends: ./p.yaml\n")))
 
@@ -809,6 +826,19 @@ class Speed(unittest.TestCase):
                 # 64 KiB of one-word lines is ~0.4 s on a laptop under Python 3.9, nearly all the parse; the budget
                 # follows the machine, as the pattern budgets do (#518): CI's Linux runner took 2.03 s under 3.9
                 self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
+
+    def test_the_defaults_push_and_init_holds_decide_before_the_fallback_deadline(self):
+        """#604: TK-A056 reads up to eight options before a push, publish or deploy verb, and TK-A057 up to eight before
+        `-m tracekit`, each with a value or not; the default decides adversarial argv as fast as the dev pack."""
+        e = Engine(pc.build(os.path.join(PACKS, "default.yaml"))[0], "regex")
+        n, scale = MAX_SUBJECT - 200, machine_scale()
+        for head in ("git push", "pnpm -r", "kubectl", "helm", "terraform", "python -m tracekit", "docker"):
+            for f in self.FILLERS + (" -x y", " publish", " push", " init"):
+                with self.subTest(head=head, filler=f):
+                    start = time.perf_counter()
+                    d = e.decide("Bash", {"command": head + f * (n // len(f))})
+                    self.assertNotIn("nondeterministic", d)
+                    self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
 
     def test_the_corpus_decides_within_budget(self):
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
@@ -2044,8 +2074,8 @@ class HarmlessStops(unittest.TestCase):
     def check(self, allowed, stopped):
         """`allowed`: commands no deny or ask rule of the dev or server pack stops (the strict pack holds network
         calls and environment changes for themselves); `stopped`: (command, the verdict, a rule id it names) in
-        every pack."""
-        for pack, backend in itertools.product(("dev.yaml", "server.yaml", "strict.yaml"), BACKENDS):
+        every pack (the default, #604, too)."""
+        for pack, backend in itertools.product(("default.yaml", "dev.yaml", "server.yaml", "strict.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
             for cmd in allowed if pack != "strict.yaml" else ():
                 with self.subTest(pack=pack, backend=backend, cmd=cmd):
@@ -2718,8 +2748,9 @@ class HarmlessStops(unittest.TestCase):
         endpoint.json, the client and v1 signer homes, /etc/tracekit's secrets; signer code beyond its
         read-only parts; a variable read through on a line that sets IFS; a download run after a copy, by
         find -exec, xargs, python -m or a herestring; Python run by modules off TK-A046's safe list; a
-        function defined and never called; Python writes to a transcript TK-D008 didn't read as writes."""
-        for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
+        function defined and never called; Python writes to a transcript TK-D008 didn't read as writes. Each also
+        stops in the default (#604)."""
+        for pack, backend in itertools.product(("default.yaml", "dev.yaml", "server.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
             for cmd, verdict in self.REVIEW:
                 with self.subTest(pack=pack, backend=backend, cmd=cmd):

@@ -1,0 +1,54 @@
+# The signer's default for coding agents (#604): every call is decided, signed and recorded, and a person is asked
+# only for a short list of costly or security-relevant actions: spending money; deleting data outside the project or
+# on remotes; a push, publish, deploy or merge to a shared place; reading, writing or sending secrets or credentials;
+# running downloaded code; changing the guardrails (Git hooks, Tracekit, the agent harness's settings, hooks and
+# sandbox); and a shell line the policy can't read (TK-SHELL-PARSE). Everything else is recorded and flagged.
+#
+# Composed from dev.yaml, strict mode (`tracekit init --strict`), which keeps the rules as they were before #604. Each
+# of dev.yaml's deny and ask rules is on the short list, so each keeps its action here
+# (docs/policy-v2.md#default-and-strict maps them). This pack adds asks dev.yaml doesn't have: a push, publish or deploy (TK-A056), a change to the
+# agent harness's settings, hooks or plugins (TK-F009 and TK-F015, which a rule given by id alone takes from dev.yaml,
+# where they only flag), and Tracekit's own setup run from the agent's session (TK-A057). So strict mode stops no call
+# the default doesn't: switching to it drops these holds, which is why TK-A057 holds `tracekit init --strict`.
+
+extends: dev.yaml
+version: '2026.11-default-1'
+description: coding agents (the default) - every call recorded; a person approves only the short list of costly actions
+
+ask:
+  - id: TK-A056
+    class: shell
+    # each command's argv (wrappers, paths and the program name's case resolved), as TK-D003 and TK-A002 read `push`:
+    # a git push after up to eight global options (a branch, a tag or a mirror, a dry run too: `-o` takes the next
+    # word as its value); publishing a package (npm, pnpm, yarn or bun publish, yarn's `npm publish`, uv, poetry or
+    # cargo publish, gem push, twine upload); pushing an image or a chart (docker or podman push and image push, helm
+    # push); deploying (terraform or tofu apply, pulumi up, helm install or upgrade, kubectl apply or delete). Up to
+    # eight options, each with a value, before the verb. TK-F004 still flags the rest of its list (installs, reset
+    # --hard, clean, docker run).
+    # lean: the push, publish and deploy commands of TK-F004's list only; another deploy CLI (vercel, fly deploy, gh
+    # release create) is recorded, not held; add its verb here when one is in use
+    pattern: '^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}push(?: |$)|(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$))'
+    reason: a push, publish or deploy to a shared place
+    remedy: Have a person approve the held call, or leave the push, publish or deploy for a person to run.
+    rationale: A push, a published package and a deploy reach other people and systems; a person confirms what leaves the laptop.
+  - id: TK-A057
+    class: shell
+    # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit
+    # init`, which rewrites Tracekit's hooks (--no-hooks takes them out) and its policy mode (--strict drops this
+    # pack's holds on pushes and harness settings)
+    # lean: `tracekit init --help` is held too: the joined argv can't tell a last word `--help` from a quoted value
+    # ending in ` --help`, with which init still runs; exempt it if the engine ever matches argv word by word
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? init( |$)'
+    reason: running Tracekit's setup from the agent's session
+    remedy: Have a person run tracekit init from their own terminal; it changes Tracekit's hooks and policy mode.
+    rationale: Init rewrites the hooks that record the agent and the mode that decides its calls; a person confirms it.
+  # dev.yaml's harness settings flags, held here: the agent harness's settings, hooks, plugins and MCP servers (a
+  # project's .claude/settings.json and its disableAllHooks among them)
+  - id: TK-F009
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: These files decide which hooks run, Tracekit's among them, and what the agent may do without asking.
+  - id: TK-F015
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: TK-F009 for the shell.

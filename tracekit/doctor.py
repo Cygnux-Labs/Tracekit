@@ -104,10 +104,11 @@ def collect(config=None, issuer_key=None):
         return out
     from . import agent_hooks
     from .sdk import autospawn
-    from .signer.service import dev_content
+    from .signer.service import dev_content, dev_policy
     project = os.path.join(os.getcwd(), ".claude")
     mine, harnesses = client.client_config(), _dev_harnesses()
-    rows = v2_checks({"data_dir": autospawn.data_dir(), "content": dev_content().get("content")}, "dev",
+    rows = v2_checks({"data_dir": autospawn.data_dir(), "content": dev_content().get("content"),
+                      "policy": dev_policy(autospawn.data_dir())}, "dev",
                      settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=harnesses,
                      no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
@@ -1067,9 +1068,17 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         bad = trusted_file(policy)
         add("D-POLICY-TRUST", not bad, bad or f"{policy} is root-owned", "make the policy and its directories "
             "root-owned and not group/world-writable, or set policy: in signer.yaml to such a file")
+    # which mode decides, by the shipped pack's name (system mode's policy is /opt's copy of it)
+    mode = next((m for m, p in (("default mode", service.DEFAULT_POLICY), ("strict mode", service.STRICT_POLICY))
+                 if os.path.realpath(policy).replace(os.sep, "/").endswith("/policy2/packs/" + os.path.basename(p))),
+                "a policy of its own")
+    mode += {"default mode": " (every call is recorded; a person approves only the short list of costly or "
+                             "security-relevant actions)",
+             "strict mode": " (the rules as they were before the default: a push or a settings change is flagged, "
+                            "not held)"}.get(mode, "")
     try:
         # lean: loads the policy with this process's Python; check the signer venv's engine if they ever differ
-        add("D-POLICY-ENGINE", True, f"{policy} loads on {service.load_policy(policy).engine}", "")
+        add("D-POLICY-ENGINE", True, f"{mode}: {policy} loads on {service.load_policy(policy).engine}", "")
     except ImportError as e:
         add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:

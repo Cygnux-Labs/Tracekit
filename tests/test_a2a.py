@@ -720,7 +720,8 @@ class Policy(unittest.TestCase):
 
     def test_every_pack_a_signer_runs_maps_a2a_calls_to_the_a2a_class(self):
         packs = os.path.join(os.path.dirname(policy_compile.__file__), "packs")
-        whole = {"coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"}   # coding.yaml maps a2a:*; the rest extend it
+        # coding.yaml maps a2a:*; the rest extend it
+        whole = {"coding.yaml", "default.yaml", "dev.yaml", "server.yaml", "strict.yaml"}
         parts = {"browser.yaml", "server-cloud.yaml", "server-comms.yaml", "server-data.yaml", "server-net.yaml"}
         self.assertEqual(set(os.listdir(packs)), whole | parts)   # a new pack is one or the other (server.yaml's parts)
         for name in sorted(whole):
