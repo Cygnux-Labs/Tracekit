@@ -2605,6 +2605,32 @@ class CodingPack(unittest.TestCase):
             "aws securityhub disable-security-hub", "aws securityhub disable-security-hub --region eu-west-1",
             "aws accessanalyzer delete-analyzer --analyzer-name org-analyzer",
             "aws access-analyzer delete-analyzer --analyzer-name org-analyzer",
+            # #539: switching GuardDuty or a trail off by an option, archiving findings as they arrive, and the delivery
+            # channel, standards, DNS query logs and the organization (an option as any unique prefix, as aws reads it)
+            "aws guardduty update-detector --detector-id 12abc34d567e8fa901bc2d34e56789f0 --no-enable",
+            "aws guardduty update-detector --no-enable --detector-id d", "aws guardduty update-detector --detector-id d --no-en",
+            "aws guardduty update-detector --detector-id d --features Name=S3_DATA_EVENTS,Status=DISABLED",
+            "aws guardduty update-detector --detector-id d --features '[{\"Name\":\"S3_DATA_EVENTS\",\"Status\":\"DISABLED\"}]'",
+            "aws guardduty update-detector --detector-id d --features '[{\"Name\": \"EKS_AUDIT_LOGS\", \"Status\": \"DISABLED\"}]'",
+            # #581 review: JSON with its own spacing, two spaces between members or pretty-printed over lines
+            "aws guardduty update-detector --detector-id d --features '[{\"Name\": \"EKS_AUDIT_LOGS\",  \"Status\": \"DISABLED\"}]'",
+            "aws guardduty update-detector --detector-id d --features '[\n  {\n    \"Name\": \"S3_DATA_EVENTS\",\n"
+            "    \"Status\": \"DISABLED\"\n  }\n]'",
+            "aws guardduty create-filter --detector-id d --name f --action ARCHIVE",
+            "aws guardduty create-filter --detector-id d --name f --action=ARCHIVE --finding-criteria file://c.json",
+            "aws guardduty update-filter --detector-id d --filter-name f --action ARCHIVE",
+            "aws guardduty update-filter --detector-id d --filter-name f --act ARCHIVE",
+            "aws cloudtrail update-trail --name t --s3-bucket-name other-bucket", "aws cloudtrail update-trail --name t --s3-b=x",
+            "aws cloudtrail update-trail --name t --no-is-multi-region-trail",
+            "aws cloudtrail update-trail --name t --no-is-organization-trail",
+            "aws cloudtrail update-trail --name t --no-enable-log-file-validation",
+            "aws cloudtrail update-trail --name t --no-include-global-service-events",
+            "aws configservice delete-delivery-channel --delivery-channel-name default",
+            "aws config delete-delivery-channel --delivery-channel-name default",
+            "aws securityhub batch-disable-standards --standards-subscription-arns arn:aws:securityhub:::subscription/cis",
+            "aws route53resolver delete-resolver-query-log-config --resolver-query-log-config-id rqlc-123",
+            "aws route53resolver disassociate-resolver-query-log-config --resolver-query-log-config-id r --resource-id vpc-1",
+            "aws organizations leave-organization",
             # a global option before the service or after the command, a wrapper, a path and a command among others
             "aws --profile prod --region us-east-1 cloudtrail stop-logging --name t",
             "aws cloudtrail stop-logging --name t --region us-east-1 --profile prod",
@@ -2622,6 +2648,22 @@ class CodingPack(unittest.TestCase):
             "aws configservice start-configuration-recorder --configuration-recorder-name default",
             "aws securityhub describe-hub", "aws securityhub enable-security-hub", "aws securityhub get-findings",
             "aws accessanalyzer list-analyzers", "aws accessanalyzer create-analyzer --analyzer-name a --type ACCOUNT",
+            "aws guardduty update-detector --detector-id d --enable",
+            "aws guardduty update-detector --detector-id d --features Name=S3_DATA_EVENTS,Status=ENABLED",
+            "aws guardduty update-detector --detector-id d --features '[{\"Name\":\"S3_DATA_EVENTS\",\"Status\":\"ENABLED\"}]'",
+            "aws guardduty update-detector --detector-id d --finding-publishing-frequency SIX_HOURS",
+            "aws guardduty create-filter --detector-id d --name f --action NOOP",
+            "aws guardduty update-filter --detector-id d --filter-name f --action NOOP --description ARCHIVE",
+            "aws cloudtrail update-trail --name t --enable-log-file-validation",
+            "aws cloudtrail update-trail --name t --s3-key-prefix prefix/",
+            "aws cloudtrail update-trail --name t --is-multi-region-trail --include-global-service-events",
+            "aws configservice describe-delivery-channels", "aws configservice put-delivery-channel --delivery-channel file://c.json",
+            "aws securityhub get-enabled-standards",
+            "aws securityhub batch-enable-standards --standards-subscription-requests StandardsArn=x",
+            "aws route53resolver list-resolver-query-log-configs",
+            "aws route53resolver associate-resolver-query-log-config --resolver-query-log-config-id r --resource-id vpc-1",
+            "aws organizations describe-organization", "aws organizations list-accounts",
+            "echo aws guardduty update-detector --detector-id d --no-enable",
             "echo aws cloudtrail stop-logging", "git commit -m 'aws cloudtrail stop-logging'",
             "grep -rn 'securityhub disable-security-hub' docs"]
         for pack, engine, e in self.every_pack():
@@ -2633,10 +2675,11 @@ class CodingPack(unittest.TestCase):
                     self.assertEqual("TK-C010" in d["rule_ids"], cmd in held, d)
                     if cmd in held:
                         self.assertIn(d["verdict"], ("ask", "deny"), d)
-                    # over MCP a CLI line counts only when it starts with the program
+                    # over MCP a CLI line counts only when it starts with the program; an escaped tab separates words
                     for tool in ("mcp:aws/call_aws", "mcp__aws-api__call_aws") if cmd.startswith("aws ") else ():
-                        d = e.decide(tool, {"cli_command": cmd})
-                        self.assertEqual("TK-C010" in d["rule_ids"], cmd in held, (tool, d))
+                        for text in (cmd, cmd.replace(" ", "\t")):
+                            d = e.decide(tool, {"cli_command": text})
+                            self.assertEqual("TK-C010" in d["rule_ids"], cmd in held, (tool, text, d))
 
     def test_a_call_over_64_kib_is_not_held_by_the_secret_rules(self):
         # a rule on every MCP call would make each of these ask (TK-OVERSIZE); only a tool the rule is for may
