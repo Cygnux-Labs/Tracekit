@@ -23,7 +23,7 @@ from unittest import mock
 import pytest
 
 import test_signer_service as ts
-from factories import wait_for
+from factories import v2rec, wait_for
 from test_observe_render import XSS, script_of, unescaped
 from test_sensor import SENSOR
 from tracekit import cli, findings_v2, observe, view
@@ -66,12 +66,6 @@ def page_js(names, script):
 
 
 UNCHANGED = {"update.return_value": False, "changed.return_value": [], "differs": []}   # a store only appended to
-
-
-def v2rec(seq, typ, data, run="r1", **top):
-    return {"event": {"seq": seq, "run_seq": seq, "run_id": run, "agent_id": "main", "type": typ, "data": data,
-                      "ts": f"2026-10-10T17:00:{seq:02d}.000000Z", "prev_hash": "sha256:p", **top},
-            "hash": f"sha256:{seq}"}
 
 
 class Translate(unittest.TestCase):
