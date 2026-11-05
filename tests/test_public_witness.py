@@ -412,6 +412,16 @@ class OptIn(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "origin: the public witness takes origins shaped host/path"):
             svc.load_config(self.cfg)
 
+    def test_a_chosen_origin_sent_to_the_public_witness_is_warned_about(self):
+        cfg = svc.load_config(self.cfg)   # origin: tracekit.example.org/log/public
+        self.assertIn(f"origin {ORIGIN} goes to the public witness", public_witness.named_origin(cfg))
+        own = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
+               "class": "customer"}
+        for quiet in ({**cfg, "origin": None}, {**cfg, "origin": "tracekit.local/" + "0f" * 16}, {**cfg, "witnesses": [own]}):
+            self.assertIsNone(public_witness.named_origin(quiet))
+        with mock.patch.object(public_witness, "URL", ""):
+            self.assertIsNone(public_witness.named_origin(cfg))
+
     def test_no_witness_goes_with_v2_and_not_with_public_witness(self):
         for argv in (["init", "--no-witness"], ["init", "--v2", "--user", "agent", "--public-witness", "--no-witness"]):
             with self.subTest(argv), contextlib.redirect_stderr(io.StringIO()) as err:

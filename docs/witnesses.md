@@ -141,11 +141,12 @@ cosigned; whether the agent could reach the signer is each run's `signer_isolati
 
 ## The public witness
 
-Tracekit's public C2SP tlog-witness can give a team `Assurance: witnessed` without running its own witness. It is not
-deployed or configured today: `URL` and `VKEY` in `tracekit/public_witness.py` are empty. Therefore no signer is
-anchored by default, despite the opt-in/default-on behavior the code supports once these constants are populated.
-`tracekit init --v2` and `tracekit doctor` report `NOT_CONFIGURED`; v2 bundles without another pinned independent
-witness or anchor report `NOT ANCHORED`. See [deployment steps](public-witness.md).
+Cygnux's free public C2SP tlog-witness gives a team `Assurance: witnessed` without running a witness of its own. Once
+it is deployed, every v2 signer uses it by default. It is not deployed yet: `URL` and `VKEY` in
+`tracekit/public_witness.py` are empty, so nothing is anchored by default. Until then `tracekit init --v2`, `tracekit up
+--wait` and `tracekit doctor` say `not anchored yet`, and verify says `NOT ANCHORED` for a bundle no other pinned
+independent witness or anchor cosigned. [What the public witness sees](public-witness-privacy.md) lists exactly what it
+gets; [deploying it](public-witness.md) is for its operator.
 
 ```yaml
 # signer.yaml
@@ -154,10 +155,12 @@ witnesses: [public]          # or, with your own witnesses: [public, {url: ..., 
 
 or `tracekit init --v2 --user AGENT --public-witness` run as root (v2
 [system mode](deploy.md#laptop-system-mode)). `public` expands to the witness's URL and
-cosignature vkey from `tracekit/public_witness.py`, with class `public`. System init writes it by default only when
-both constants are configured; `--public-witness` is the strict form and fails when they are empty. Dev signers also
-use it when configured; `tracekit init --dev --v2 --no-witness` persists an opt-out. Until the constants are set,
-nothing is anchored by default.
+cosignature vkey from `tracekit/public_witness.py`, with class `public`. Once both are set, system init writes it
+without the flag, and the dev signer uses it too; `--public-witness` is the strict form, which fails while they are
+empty. `--no-witness` opts out: system init leaves `witnesses` out of signer.yaml, and `tracekit init --dev --v2
+--no-witness` or `tracekit up --no-witness` leaves a `no-witness` file in the dev data dir, which `init --dev --v2`
+without the flag removes. A signer that sends a chosen `origin` (anything but its random default) to the public witness
+warns at start: the origin would tell Cygnux whose log it is.
 
 - **First use.** The witness does not know a new log: it answers `404`, and the signer registers the log (its origin
   and log vkey, proved by a checkpoint signed with that key), then resends. The record log and each tenant's registry
@@ -172,9 +175,10 @@ nothing is anchored by default.
   then holds nothing from before: its protection starts again from that checkpoint.
 - **Pinning.** `tracekit signer trust` pins the witness's vkey with class `public`.
 - **What it sees.** Checkpoints only: each log's origin and log vkey, tree sizes and root hashes, the log's signature,
-  and when they arrive, so how often and how fast each log grows (docs/privacy.md). Never records or content. It
-  keeps, per origin, the key, the latest cosigned size and root and the last cosigning time; `GET /stats` publishes
-  only counts (distinct origins cosigned in the last 7 days and per ISO week), which is how Cygnux counts adoption.
+  and when they arrive, so how often and how fast each log grows ([what it sees](public-witness-privacy.md)). Never
+  records or content. It keeps, per origin, the key, the latest cosigned size and root and the last cosigning time;
+  `GET /stats` publishes only counts (distinct origins cosigned in the last 7 days and per ISO week), which is how
+  Cygnux counts adoption.
 - **What it tells anyone.** Without any key: whether an origin is registered (`/register` and `add-checkpoint` answer
   differently), and, to anyone holding one of a log's older checkpoint notes (from any bundle), the log's current size
   (the `409` answer names it).

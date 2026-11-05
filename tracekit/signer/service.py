@@ -5392,6 +5392,9 @@ def main(argv=None):
         if extra:
             print(f"tracekit: the signer's {', '.join(extra)} setting(s) are experimental: they work and are tested, "
                   f"but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
+        named = public_witness.named_origin(cfg)
+        if named:
+            print(f"tracekit: warning: {named}", file=sys.stderr)
     try:
         service = open_service(cfg)
     except BlockingIOError as e:
