@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:201a34248b1fe711b5f68e84d8e62da86ed0d91d8d5292d81b40d327dba4f222",
+  "policy_hash": "sha256:0d12760881f1512a856bb5e4e54e56bc487eb0ed2713dbf2a0696e369ffd094a",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -12,9 +12,9 @@
       "fp": 0
     },
     "cloud": {
-      "deny": 147,
-      "caught": 147,
-      "benign": 122,
+      "deny": 163,
+      "caught": 163,
+      "benign": 134,
       "fp": 0
     },
     "email": {
@@ -263,6 +263,22 @@
     "deny/cloud:145": "ask TK-C010",
     "deny/cloud:146": "ask TK-C010",
     "deny/cloud:147": "ask TK-C010 TK-F006",
+    "deny/cloud:148": "ask TK-C010",
+    "deny/cloud:149": "ask TK-C010",
+    "deny/cloud:150": "ask TK-C010",
+    "deny/cloud:151": "ask TK-C010",
+    "deny/cloud:152": "ask TK-C010",
+    "deny/cloud:153": "ask TK-C010",
+    "deny/cloud:154": "ask TK-C010",
+    "deny/cloud:155": "ask TK-C010",
+    "deny/cloud:156": "ask TK-C010",
+    "deny/cloud:157": "ask TK-C010 TK-F006",
+    "deny/cloud:158": "ask TK-C010",
+    "deny/cloud:159": "ask TK-C010",
+    "deny/cloud:160": "ask TK-C010",
+    "deny/cloud:161": "ask TK-C010",
+    "deny/cloud:162": "ask TK-C010",
+    "deny/cloud:163": "ask TK-C010",
     "deny/email:1": "ask TK-M003",
     "deny/email:2": "ask TK-M003",
     "deny/email:3": "ask TK-M003",
@@ -1031,6 +1047,18 @@
     "benign/cloud:120": "allow",
     "benign/cloud:121": "allow",
     "benign/cloud:122": "allow",
+    "benign/cloud:123": "allow",
+    "benign/cloud:124": "allow",
+    "benign/cloud:125": "allow",
+    "benign/cloud:126": "allow",
+    "benign/cloud:127": "allow",
+    "benign/cloud:128": "allow",
+    "benign/cloud:129": "allow",
+    "benign/cloud:130": "allow",
+    "benign/cloud:131": "allow",
+    "benign/cloud:132": "allow",
+    "benign/cloud:133": "allow",
+    "benign/cloud:134": "allow",
     "benign/email:1": "allow",
     "benign/email:2": "allow",
     "benign/email:3": "allow",
@@ -1740,6 +1768,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.00117096018735363,
+  "benign_fp_rate": 0.0011547344110854503,
   "ok": true
 }
