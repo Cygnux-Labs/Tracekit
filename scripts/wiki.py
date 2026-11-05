@@ -29,6 +29,7 @@ REPO = "https://github.com/Cygnux-Labs/Tracekit"
 EXCLUDED = {
     "RELEASING.md": "the maintainers' release procedure",
     "launch-checklist.md": "the 1.0 launch's internal checklist",
+    "principled-policy.md": "a design proposal; nothing in it is built",
 }
 # the sidebar: docs paths in order; a glob adds the pages it matches that no earlier entry placed, sorted
 SECTIONS = [
