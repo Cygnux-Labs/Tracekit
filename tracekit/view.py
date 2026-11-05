@@ -1832,6 +1832,11 @@ def main(argv=None):
         print(f"tracekit view: --approval takes an approval id (apr- and 32 hex digits), not {a.approval!r}",
               file=sys.stderr)
         return 2
+    transcripts = a.transcripts and os.path.abspath(os.path.expanduser(a.transcripts))
+    if transcripts and not os.path.isdir(transcripts):
+        print(f"tracekit view: --transcripts {transcripts}: no such folder (Claude Code keeps its transcripts in "
+              "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
+        return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
     from .cli import experimental
     if a.why:
@@ -1894,7 +1899,7 @@ def main(argv=None):
             if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
                 from . import audit, tips
                 feed.tips = tips.Page(functools.partial(shown, feed),
-                                      a.transcripts or (audit.default_root() if dev else None))
+                                      transcripts or (audit.default_root() if dev else None))
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None

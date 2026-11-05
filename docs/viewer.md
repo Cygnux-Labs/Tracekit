@@ -346,24 +346,29 @@ confirmed it says "caused".
 ### TIPS
 
 **TIPS** reads the last 7 days and says what each step of your coding agents cost and how to cut it. Each tip is a
-card: one plain statement; its evidence, a chart drawn to scale or a table; what it saves in dollars and time, with
-**THE ARITHMETIC** one click away; and the fix, with **COPY** where it is a command or a line to paste.
+card: one plain statement; its evidence, a chart drawn to scale or a table; what it would have saved in dollars and
+time, an estimate, with **THE ARITHMETIC** one click away; and the fix, with **COPY** where it is a command or a line
+to paste.
 
 | Tip | Evidence | Fix |
 |---|---|---|
-| 1 · CONTEXT | every step re-reads the whole context: each main session's context at every step as it ran, and replayed on the same growth compacting at a lower point (the largest of 100k to 500k tokens that keeps 80% of the best saving); the right axis is what re-reading that much context costs a step | `/compact` at each task boundary and at that point |
-| 2 · CACHE | each wait that outlived the prompt cache (5 minutes in a subagent, 1 hour in the main session: each cache write records which) on a timeline, with what the step after it paid to write its whole context again; the waits by cause; subagent steps by the wait before them, and how many rebuilt | a line for `AGENTS.md`: keep each blocking call under 4.5 minutes and poll in bounded loops |
-| 3 · HOLDS NOBODY ANSWERED | held calls answered and not, in the main session and in subagents, how long they blocked the agent, and the rules behind the ones nobody answered | `unset TRACEKIT_APPROVAL_WAIT` when they waited; otherwise the rule's remedy and `tracekit approvals list` |
+| 1 · CONTEXT | every step sends the whole context again: each main session's context at every step as it ran, and replayed on the same growth compacting at a lower point (the largest of 100k to 500k tokens that keeps 80% of the best saving), each replayed step keeping its real cache behaviour (a rebuild after idle time, or a call with no cache, re-pays its whole replayed context); the right axis is what that much context cost a step, at the session's own average | Claude Code: `/compact` at each task boundary and at that point. Another agent: trim or summarise the history it sends there, and turn on prompt caching first when most of it goes uncached |
+| 2 · CACHE | each wait that outlived the prompt cache on a timeline, with what the step after it paid to write its whole context again; the waits by cause; subagent steps by the wait before them, and how many rebuilt. Each cache write records whether it lasts 5 minutes or 1 hour, counted from the start of the request that last read or wrote it, so a wait runs from one request's start to the next's. A wait for a person (an answered hold, a question) or an idle one is drawn but not counted | a line for `AGENTS.md`: keep each blocking call under the cache's lifetime less 30 s and poll in bounded loops, with the lifetimes the writes showed |
+| 3 · HOLDS NOBODY ANSWERED | held calls answered and not, in the main session and in subagents, how long they blocked the agent, and the rules behind the ones nobody answered | when they waited: remove `TRACEKIT_APPROVAL_WAIT` from the `env` block of Claude Code's settings (or unset it), then restart the agent; otherwise the rule's remedy and `tracekit approvals list` |
 
 Token counts come from signed records where they carry them (a `model.exchange` response's `usage`: the LLM gateway's,
 an SDK integration's). Claude Code's transcript tailer records no usage, so for Claude Code the viewer reads its
 transcripts, read-only, as `tracekit audit` reads them: `--transcripts DIR`, by default with the dev store
-`$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A message both hold counts once, from the record. Holds come
-only from signed records; a transcript adds how long each blocked the agent and whether it ran in a subagent. Each card
-names its source, and the page's first line says what it read. Dollars are Anthropic's list prices, dated in
-`tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. A tip without enough
-data says so and why. Like the verdicts, the tips are operator-side, not evidence. Its limits are in
-[limits](limits.md#viewer).
+`$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A signed run the transcripts also hold counts once, from the
+transcripts: it is matched by a tool_use id, or by identical token counts within 5 minutes (the gateway signs each
+exchange under an id of its own, and a message without tool calls has no tool_use id). The page's first line says how
+many signed steps that was. Holds come only from signed records; a transcript adds how long each blocked the agent and
+whether it ran in a subagent. Each card names every source it mixes, and the page's first line says what it read; the
+tips list sessions from every project under the transcripts folder. Dollars are Anthropic's list prices, dated in
+`tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit, and a model with no
+price gets token counts and a note. A tip without enough data says so and why. The page is worked out again at most
+once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
+are in [limits](limits.md#viewer).
 
 ### A v1 bundle
 
@@ -431,7 +436,7 @@ instead; `?token=` on an `/api/` path is refused (401), so the token never sits 
 | `/api/stream?from=N` | `text/event-stream`: one `data:` line per record from index `N` on, as they are recorded |
 | `/api/rows?tenant=T&run=R` | `{rows}`: one run's rows from its bundle as verified (exported from the store, verified, then translated), for a run whose records left the live view (the page asks for it when you select such a run); checked again only once the run's own records grow, refused (404) once the viewer's own re-check fails the run, and answered 503 with `Retry-After` while two other runs are being checked (only a check reads the store; a run the viewer hasn't verified yet is 404); an OIDC session reads its tenant's runs only |
 | `/api/why/workspace`, `/api/why/runs/<id>` | the why logs, with `--why` ([below](#why)) |
-| `/api/tips` | the TIPS page ([above](#tips)): what was read, the window, the price table's date and the three tips; the token only, never an OIDC session (it reads local transcripts and every tenant's runs), worked out again at most once a minute |
+| `/api/tips` | the TIPS page ([above](#tips)): what was read, the window, the price table's date and the three tips; the token only, never an OIDC session (it reads local transcripts and every tenant's runs), worked out again at most once a minute, or now with `?fresh=1` |
 
 The run pages and their API (`/runs`, `/api/runs`, `/api/run`, `/api/bundle`) are the central viewer's, served only
 with `view.logs` ([below](#pages-and-api)).

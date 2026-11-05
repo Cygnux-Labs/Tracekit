@@ -3175,6 +3175,24 @@
 
     /* phones: every page stacks, a tape row is a two-line card, nothing scrolls the page sideways */
     @media (max-width:700px) {
+      .tbars {
+        grid-template-columns: minmax(0, 1fr)
+      }
+
+      .tbars>.dim {
+        margin-bottom: 6px
+      }
+
+      .tcard table.wt th,
+      .tcard table.wt td {
+        white-space: normal;
+        overflow-wrap: anywhere
+      }
+
+      .tchart text {
+        font-size: 17px
+      }
+
       .rviews {
         flex-wrap: wrap
       }
@@ -3948,9 +3966,9 @@
     /* ---------------- TIPS: what each step cost, and how to cut it (tracekit/tips.py, over /api/tips) ---------------- */
     // TIPSON: the server has tips (its snapshot says so, to the token); TIPS: its answer, asked for when the page opens
     let TIPSON = false, TIPS = null, TIPSERR = "", TIPSASKED = false, tipsKey = null;
-    async function loadTips() {
+    async function loadTips(fresh) {   // fresh: READ AGAIN, worked out again now rather than the minute-old answer
       TIPSASKED = true; TIPSERR = "";
-      try { TIPS = await getJSON("api/tips"); } catch (e) { TIPSERR = e.message || String(e); }
+      try { TIPS = await getJSON("api/tips" + (fresh ? "?fresh=1" : "")); } catch (e) { TIPSERR = e.message || String(e); }
       schedule();
     }
     // an axis's ticks from 0 to hi: about n, each step 1, 2, 2.5 or 5 times a power of ten
@@ -3969,10 +3987,12 @@
       return m < 60 ? m + " min" : Math.floor(m / 60) + " h" + (m % 60 ? " " + (m % 60) + " min" : "");
     }
     const tipTok = n => n >= 1e6 ? +(n / 1e6).toFixed(2) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(Math.round(n));
-    const tipUsd = v => v == null ? "–" : v >= 100 ? "$" + Math.round(v).toLocaleString("en-US") : v >= 1 ? "$" + v.toFixed(2) : "$" + v.toFixed(v >= 0.01 ? 3 : 4);
+    // dollars: whole from $100, cents from $0.10, else two significant digits; a negative sum is what it costs more
+    const tipUsd = v => v == null ? "–" : v < 0 ? "costs " + tipUsd(-v) + " more" : v === 0 ? "$0" : v < 0.0001 ? "under $0.0001"
+      : v < 0.1 ? "$" + +v.toPrecision(2) : v < 100 ? "$" + v.toFixed(2) : "$" + Math.round(v).toLocaleString("en-US");
     // tip 1: the session's context at each step as it ran (amber; the area under it is what re-reading it cost) and
     // replayed compacting at the cap (green); the cap dashed, and each compaction it made itself (cyan). Both axes are
-    // one scale: the right one is the left in dollars a step pays to re-read that much context
+    // one scale: the right one is the left in dollars a step pays for that much context, at the session's own average
     function contextChart(c) {
       const W = 720, H = 230, L = 52, R = 62, T = 14, B = 26, top = Math.max(...c.actual, ...c.replay, c.cap) * 1.08;
       const X = i => L + (W - L - R) * (c.n > 1 ? i / (c.n - 1) : 0), Y = v => H - B - (H - B - T) * v / top, f = v => v.toFixed(1);
@@ -3994,7 +4014,7 @@
       return `<svg class="tchart" viewBox="0 0 ${esc(W)} ${esc(H)}" role="img" aria-label="${esc(`${t.waits.length} waits that outlived the prompt cache, by when they began and what the rebuild after each cost`)}">`
         + tipTicks(top).map(v => `<line class="tgrid" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(v)))}" y2="${esc(f(Y(v)))}"/><text x="${esc(L - 6)}" y="${esc(f(Y(v) + 3))}" text-anchor="end">${esc(tipUsd(v))}</text>`).join("")
         + [0, .25, .5, .75, 1].map(k => `<text x="${esc(f(X(t0 + k * span)))}" y="${esc(H - B + 14)}" text-anchor="${esc(k ? k === 1 ? "end" : "middle" : "start")}">${esc(lab(t0 + k * span))}</text>`).join("")
-        + [...t.waits].sort((a, b) => a.fix - b.fix).map(w => `<line class="tstem${w.fix ? "" : " tidle"}" x1="${esc(f(X(w.t)))}" x2="${esc(f(X(w.t)))}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(w.usd)))}"/><circle class="tdot${w.fix ? "" : " tidle"}" cx="${esc(f(X(w.t)))}" cy="${esc(f(Y(w.usd)))}" r="3.5"><title>${esc(`${fmtD(w.t)} ${fmtT(w.t)} ${TZ} · ${w.agent} · waited ${tipDur(w.s)} (its cache lasts ${w.life / 60} min) · wrote ${tipTok(w.tokens)} tokens again: ${tipUsd(w.usd)}${w.fix ? ` (polling: ${tipUsd(w.alt)})` : ""} · ${w.cause}`)}</title></circle>`).join("")
+        + [...t.waits].sort((a, b) => a.fix - b.fix).map(w => `<line class="tstem${w.fix ? "" : " tidle"}" x1="${esc(f(X(w.t)))}" x2="${esc(f(X(w.t)))}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(w.usd)))}"/><circle class="tdot${w.fix ? "" : " tidle"}" cx="${esc(f(X(w.t)))}" cy="${esc(f(Y(w.usd)))}" r="3.5"><title>${esc(`${fmtD(w.t)} ${fmtT(w.t)} ${TZ} · ${w.agent} · waited ${tipDur(w.s)} (its cache lasts ${tipDur(w.life)}) · wrote ${tipTok(w.tokens)} tokens again: ${tipUsd(w.usd)}${w.fix ? ` (polling: ${tipUsd(w.alt)})` : ""} · ${w.cause}`)}</title></circle>`).join("")
         + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="${esc(L - 6)}" y="${esc(T - 4)}" text-anchor="end">REBUILD</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">${esc(TZ)}</text></svg>`;
     }
     const tipBar = (rows, key) => `<div class="tbars">` + rows.map(([label, parts, text]) => `<span>${esc(label)}</span><div class="tbar">` + parts.map(([w, cls, title]) => `<span class="${esc(cls)}" style="width:${esc((100 * w).toFixed(2))}%" title="${esc(title)}"></span>`).join("") + `</div><span class="dim">${esc(text)}</span>`).join("") + `</div>` + (key || "");
@@ -4003,11 +4023,11 @@
       + tipBar(t.bins.map(b => [b.label, [[b.rebuilt / b.n, "", `${b.rebuilt} rebuilt`]], `${b.rebuilt.toLocaleString("en-US")} of ${b.n.toLocaleString("en-US")} (${(100 * b.rebuilt / b.n).toFixed(b.rebuilt && b.rebuilt < b.n / 100 ? 1 : 0)}%)`])) : "";
     function tipEvidence(t) {
       if (t.id === "context") return `<div class="tkey"><span><i style="--c:var(--amber)"></i>context as it ran</span><span><i style="--c:var(--green)"></i>replayed, compacting at ${esc(tipTok(t.cap))}</span><span><i class="tdash" style="--c:var(--green)"></i>the compaction point</span>${t.chart.marks.length ? "<span><b>▼</b> where it compacted itself</span>" : ""}</div>`
-        + contextChart(t.chart) + `<details class="tmore"><summary>OTHER COMPACTION POINTS</summary><table class="wt"><thead><tr><th>COMPACT AT</th><th>COMPACTIONS</th><th>SAVES</th></tr></thead><tbody>`
+        + contextChart(t.chart) + `<details class="tmore"><summary>OTHER COMPACTION POINTS</summary><table class="wt"><thead><tr><th>COMPACT AT</th><th>COMPACTIONS</th><th>WOULD SAVE</th></tr></thead><tbody>`
         + t.caps.map(c => `<tr${c.cap === t.cap ? ' class="on"' : ""}><td>${esc(tipTok(c.cap))}</td><td>${esc(c.compactions.toLocaleString("en-US"))}</td><td>${esc(tipUsd(c.usd))}</td></tr>`).join("") + `</tbody></table></details>`;
       if (t.id === "cache") return `<div class="tkey"><span><i style="--c:var(--amber)"></i>blocked on a call: a bounded poll keeps the cache</span><span><i style="--c:var(--faint)"></i>idle: a person away, a subagent resumed later</span></div>`
         + cacheChart(t) + (t.causes.length ? `<table class="wt"><thead><tr><th>BLOCKED ON</th><th>WAITS</th><th>TIME</th><th>REBUILDS COST</th><th>POLLING INSTEAD</th></tr></thead><tbody>`
-          + t.causes.slice(0, 6).map(c => `<tr><td>${esc(c.cause)}</td><td>${esc(c.n)}</td><td>${esc(tipDur(c.hours * 3600))}</td><td>${esc(tipUsd(c.usd))}</td><td>${esc(tipUsd(c.alt))}</td></tr>`).join("")
+          + t.causes.slice(0, 6).map(c => `<tr><td>${esc(c.cause)}</td><td>${esc(c.n)}</td><td>${esc(tipDur(c.s))}</td><td>${esc(tipUsd(c.usd))}</td><td>${esc(tipUsd(c.alt))}</td></tr>`).join("")
           + `</tbody></table>` + (t.causes.length > 6 ? `<div class="dim">${esc(`and ${plural(t.causes.length - 6, "more cause")}: ${t.causes.slice(6).map(c => c.cause).join(", ")}`)}</div>` : "") : "") + tipBins(t);
       const most = Math.max(...t.where.map(w => w.answered + w.open));
       return tipBar(t.where.map(w => [w.where.toUpperCase(), [[w.answered / most, "tok", "answered"], [w.open / most, "", "nobody answered"]],
@@ -4016,14 +4036,13 @@
         + (t.rules.length ? `<table class="wt"><thead><tr><th>RULE</th><th>NOBODY ANSWERED</th><th>WHY IT HOLDS</th></tr></thead><tbody>` + t.rules.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.n)}</td><td>${esc(r.reason)}</td></tr>`).join("") + `</tbody></table>` : "");
     }
     const TIPNAME = { context: "CONTEXT", cache: "CACHE", holds: "HOLDS NOBODY ANSWERED" };
-    const TIPFROM = { signed: "signed records", transcripts: "Claude Code's transcripts, read-only", "signed + transcripts": "signed records, timed by Claude Code's transcripts" };
-    const TIPTIME = { context: "steps above the cap answered slower", cache: "a wait stays a wait: only a held call that fails at once gives its time back", holds: "the agent sat blocked on calls nobody answered" };
+    const TIPTIME = { context: "larger contexts answered slower here, but that is a correlation, not a saving", cache: "a wait stays a wait: only a held call that fails at once gives its time back", holds: "the agent sat blocked on calls nobody answered" };
     function tipCard(t, i, days) {
-      const head = `<div class="tsrc">TIP ${esc(i + 1)} · ${esc(TIPNAME[t.id] || t.id)}` + (t.source ? " · from " + esc(TIPFROM[t.source] || t.source) : "") + `</div>`;
+      const head = `<div class="tsrc">TIP ${esc(i + 1)} · ${esc(TIPNAME[t.id] || t.id)}` + (t.from ? " · from " + esc(t.from) : "") + `</div>`;
       if (!t.ok) return `<section class="tcard tno">` + head + `<div class="tst">${esc(t.why || "Not enough data to say.")}</div>` + (t.id === "cache" ? tipBins(t) : "") + `</section>`;
       const sv = t.saving || {};
       return `<section class="tcard">` + head + `<h3>${esc(t.title)}</h3><div class="tst">${esc(t.line)}</div>` + tipEvidence(t)
-        + `<div class="tsave">` + (sv.usd != null ? `<span>SAVES<b class="${sv.usd > 0 ? "" : "tzero"}">${esc(tipUsd(sv.usd))}</b>${esc(`in ${plural(days, "day")}` + (sv.pct ? `, ${sv.pct}% of these sessions' input side` : ""))}</span>` : "")
+        + `<div class="tsave">` + (sv.usd != null ? `<span>WOULD HAVE SAVED<b class="${sv.usd >= 0.005 ? "" : "tzero"}">${esc(sv.usd >= 0.005 ? "about " + tipUsd(sv.usd) : "nothing")}</b>${esc(`in ${plural(days, "day")}, an estimate` + (sv.pct > 0 ? `: ${sv.pct}% of these sessions' input side` : ""))}</span>` : "")
         + `<span>TIME<b class="${sv.minutes ? "" : "tzero"}">${esc(sv.minutes == null ? "not measured" : sv.minutes ? "about " + tipDur(sv.minutes * 60) : "none")}</b>${esc(TIPTIME[t.id] || "")}</span></div>`
         + `<details class="tmath"><summary>THE ARITHMETIC</summary><ol>` + t.math.map(m => `<li>${esc(m)}</li>`).join("") + `</ol></details>`
         + (t.fix ? `<div class="tfix"><div class="tsrc">THE FIX</div><div>${esc(t.fix.text)}${t.id === "holds" ? ' <button type="button" class="cp" data-page="approvals">APPROVALS</button>' : ""}</div>` + (t.fix.copy ? `<div><code class="shell">${esc(t.fix.copy)}</code>` + cp(t.fix.copy) + `</div>` : "") + `</div>` : "") + `</section>`;
@@ -4041,8 +4060,11 @@
       if (tipsKey === TIPS) return;
       tipsKey = TIPS;
       const s = TIPS.sources, [w0, w1] = TIPS.window, days = Math.round((w1 - w0) / 86400), tr = s.transcripts;
+      const also = s.signed.also || {};
       put("tipsp", `<div class="tips"><div class="tread">READ: ${esc(plural(s.signed.records, "signed record"))} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
+        + esc(also.steps ? ` · ${plural(also.steps, "more signed model step")} of ${plural(also.runs, "run")} the transcripts also hold, counted once, from them` : "")
         + esc(TIPS.root ? ` · Claude Code's transcripts in ${TIPS.root}, read-only: ${plural(tr.files, "file")}, ${plural(tr.steps, "step")}` + (tr.unreadable ? `, ${tr.unreadable} unreadable` : "")
+          + "; the tips list sessions from every project under that folder"
           : " · no transcripts read: start tracekit view with --transcripts DIR (with --dev it reads Claude Code's own)")
         + esc(` · the last ${plural(days, "day")}, to ${fmtD(w1)} ${fmtT(w1)} ${TZ} · dollars at Anthropic's list prices of ${TIPS.prices}: a subscription bills none of them, but the same tokens fill its usage limit.`)
         + ` <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>` + TIPS.tips.map((t, i) => tipCard(t, i, days)).join("") + `</div>`);
@@ -6804,7 +6826,7 @@
       if (t.dataset.inmore) { INFLMORE.has(t.dataset.inmore) ? INFLMORE.delete(t.dataset.inmore) : INFLMORE.add(t.dataset.inmore); wvKey = ""; return schedule(); }
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
-      if (t.dataset.tipsre !== undefined) { TIPS = null; TIPSERR = ""; TIPSASKED = false; tipsKey = null; return schedule(); }
+      if (t.dataset.tipsre !== undefined) { TIPS = null; TIPSERR = ""; tipsKey = null; loadTips(true); return schedule(); }
       if (t.dataset.rv) { show(t.dataset.rv); wvKey = ""; return schedule(); }
       if (t.dataset.openrun) { setScope(t.dataset.openrun); show("calls"); return schedule(); }
       if (t.dataset.ptab) { PERM.tab = t.dataset.ptab; PERM.page = 0; return schedule(); }

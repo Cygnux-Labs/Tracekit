@@ -2,18 +2,22 @@
 
 Three tips, each worked out from what the agents' own records show, over the last WINDOW_S:
 
-1. context: every step re-reads the agent's whole context. Each long agent's real context growth is replayed with an
-   earlier compaction point, which says what compacting there would have cost instead.
-2. cache: a wait longer than the prompt cache lasts (each cache write says whether it lasts 5 minutes or 1 hour) makes
-   the next step write the whole context again; bounded polls would have kept the cache.
-3. holds: calls held for a person that nobody answered, where they ran (the main session or a subagent nobody watches)
-   and how long they blocked the agent.
+1. context: every step sends the agent's whole context again. Each long main session's real context growth is
+   replayed with an earlier compaction point, each step keeping its real cache behaviour, which estimates what
+   compacting there would have cost instead.
+2. cache: a wait longer than the prompt cache lasts (each cache write says whether it lasts 5 minutes or 1 hour,
+   counted from the start of the request that last read or wrote it) makes the next step write the whole context
+   again; bounded polls would have kept the cache.
+3. holds: calls held for a person that nobody answered, where they ran (the main session or a subagent) and how long
+   they blocked the agent.
 
 Token counts come from signed records where those carry them (a model.exchange response's `usage`: the LLM gateway's,
-an SDK integration's) and otherwise from Claude Code's transcripts, read-only as `tracekit audit` reads them (the
-transcript tailer's records carry no usage). A message both hold counts once, from the signed record. Holds come only
-from signed records; a transcript adds how long each one blocked the agent, joined by its tool_use_id. Every number
-says its source. Dollars are Anthropic's list prices (PRICES), not what a subscription bills. No network, no model.
+an SDK integration's) and from Claude Code's transcripts, read-only as `tracekit audit` reads them (the transcript
+tailer's records carry no usage). A signed run the transcripts also hold counts once, from the transcripts: matched by
+a tool_use id, or by identical token counts within MATCH_S (the gateway signs each exchange under an id of its own,
+and a message without tool calls has no tool_use id). Holds come only from signed records; a transcript adds how long
+each one blocked the agent and where it ran, joined by its tool_use_id. Each tip names every source it mixes. Dollars
+are Anthropic's list prices (PRICES), not what a subscription bills. No network, no model.
 """
 import collections
 import json
@@ -57,16 +61,13 @@ REBUILT = 0.5   # a step that wrote at least half its context to cache rebuilt i
 MIN_CTX = 20_000   # smaller contexts cost too little to be worth a tip
 POLL_OUT = 200   # output tokens of one poll step
 MARGIN = 30   # a bounded poll returns this many seconds before the cache would expire
+MATCH_S = 300   # a signed step and a transcript step with the same token counts this close are one message
 POINTS = 300   # most points a chart's series sends to the page
 LIFE = {"5m": 300, "1h": 3600}
 POLLS = {"sleep", "until", "while", "watch"}
 KEYWORDS = {"for", "if", "case", "select", "function", "do", "then"}
 BUILDS = {"pytest", "make", "npm", "npx", "tox", "cargo", "go", "gradle", "mvn"}
 PERSON = {"AskUserQuestion", "ExitPlanMode"}   # tools that wait for a person's answer: no poll keeps that cache
-
-
-def _rate(model):
-    return _RATES.rate(model)
 
 
 def _ctx(s):
@@ -83,6 +84,12 @@ def _write_usd(s, r):   # a write whose lifetime no record says is priced as the
 
 def _input_usd(s, r):
     return (s["in"] * r["input"] + s["cr"] * r["cache_read"]) / 1e6 + _write_usd(s, r)
+
+
+def _start(s):
+    """When a step's request started: its first line's time less its latency (the line before it, a tool result or a
+    prompt), else its first line's time."""
+    return s["t"] - s["lat"] if s["lat"] is not None else s["t"]
 
 
 def _step(t, mid, model):   # a transcript is the agent's to write: a model that isn't a name is none
@@ -132,18 +139,21 @@ def signed_steps(rows, since):
                                              + (f" · subagent {str(sub)[:8]}" if sub else ""), "steps": []})
         s = _step(r["ts"], (r.get("v2") or {}).get("exchange_id"), r.get("model"))
         s.update({"in": _int(u.get("input_tokens")) or 0, "out": _int(u.get("output_tokens")) or 0,
-                  "cr": _int(u.get("cache_read_input_tokens")) or 0, "w": _int(u.get("cache_creation_input_tokens")) or 0})
+                  "cr": _int(u.get("cache_read_input_tokens")) or 0, "w": _int(u.get("cache_creation_input_tokens")) or 0,
+                  "calls": [i for i in (r.get("v2") or {}).get("tool_ids") or () if isinstance(i, str)]})
         a["steps"].append(s)
     for a in agents.values():
         a["steps"].sort(key=lambda s: s["t"])
     return agents
 
 
-def read_transcripts(root, since, skip=()):
+def read_transcripts(root, since):
     """Claude Code's transcripts under root, read-only (audit's walk: no symlink followed, nothing written), from
     `since` on -> (agents, calls, files read, unreadable): one agent per transcript file (a session's main file, or one
-    of its subagents'), each step a message (by id: a resumed session's file repeats its earlier ones, counted once;
-    ids in `skip` a signed record holds); calls: tool_use id -> {id, agent, tool, family, t0, t1}."""
+    of its subagents'), each step a message (by id: a resumed session's file repeats its earlier ones, counted once);
+    calls: tool_use id -> {id, agent, tool, family, t0, t1}."""
+    # lean: every transcript written in the window is read again each time the page is worked out (a 983 MB folder took
+    # 6.7 s and 370 MB); keep each file's offset and fold in only its new lines if a team's week outgrows that
     agents, calls, seen, unreadable, files = {}, {}, set(), [], 0
     for path, session in _iter_transcripts(root, unreadable):
         try:
@@ -169,7 +179,7 @@ def read_transcripts(root, since, skip=()):
                 blocks = [b for b in m.get("content") or () if isinstance(b, dict)] if isinstance(m.get("content"), list) else []
                 if e.get("type") == "assistant":
                     mid = m.get("id")
-                    if not isinstance(mid, str) or not isinstance(m.get("usage"), dict) or mid in skip or \
+                    if not isinstance(mid, str) or not isinstance(m.get("usage"), dict) or \
                             (mid in seen and mid not in mine) or m.get("model") == "<synthetic>":   # an error's stand-in
                         continue
                     s = mine.get(mid)
@@ -233,19 +243,27 @@ def _series(values, n=POINTS):
 def replay(steps, cap, post, r, w_rate):
     """The input side of `steps` (USD) had the agent compacted whenever its context passed `cap`: each step adds the
     tokens it really added (after a real compaction, its growth from `post`); a compaction drops the context to `post`
-    and costs a summary call (the context re-read, SUMMARY tokens written) and a cache write of what is left. ->
-    (USD, compactions, the context of each step)."""
+    and costs a summary call (the context re-read, SUMMARY tokens written) and a cache write of what is left (`w_rate`
+    USD per million). Each other step keeps its real cache behaviour: one that sent at least REBUILT of its context
+    fresh (a cache rebuild, or a call with no cache; not the step after a real compaction) re-pays the whole replayed
+    context as it paid its own; any other reads from cache what it did not send fresh. So a cap above every context
+    replays the real cost. -> (USD, compactions, the context of each step)."""
     usd, cur = _input_usd(steps[0], r), _ctx(steps[0])
     prev, n, ctx = cur, 0, [cur]
     for s in steps[1:]:
-        real = _ctx(s)
-        new = max(0, real - prev if real >= DROP * prev else real - post)
-        prev, cur = real, cur + new
+        real, fresh = _ctx(s), s["in"] + _writes(s)
+        compacted = real < DROP * prev
+        delta = max(0, real - post) if compacted else real - prev
+        prev, cur = real, max(0, cur + delta)
         if cur > cap:
-            usd += (cur * r["cache_read"] + SUMMARY * r["output"]) / 1e6 + post * w_rate / 1e6
+            usd += (cur * r["cache_read"] + SUMMARY * r["output"] + post * w_rate) / 1e6
             cur, n = post, n + 1
+        elif compacted:   # the replay didn't compact here: it reads its context and adds what the step added
+            usd += ((cur - delta) * r["cache_read"] + delta * w_rate) / 1e6
+        elif real and fresh >= REBUILT * real:
+            usd += _input_usd(s, r) * cur / real
         else:
-            usd += ((cur - new) * r["cache_read"] + new * w_rate) / 1e6
+            usd += (max(0, cur - fresh) * r["cache_read"] + s["in"] * r["input"]) / 1e6 + _write_usd(s, r)
         ctx.append(cur)
     return usd, n, ctx
 
@@ -269,15 +287,35 @@ def _shown(path):
 
 
 def _money(v):
-    return f"${v:,.2f}" if v < 100 else f"${v:,.0f}"
+    """Dollars as the page writes them (its tipUsd): whole dollars from $100, cents from $0.10, else two significant
+    digits; a negative sum is what it costs more."""
+    if v < 0:
+        return f"costs {_money(-v)} more"
+    if v == 0:
+        return "$0"
+    if v < 0.0001:
+        return "under $0.0001"
+    return f"${v:.2g}" if v < 0.1 else f"${v:,.2f}" if v < 100 else f"${v:,.0f}"
+
+
+def _about(v):
+    """An estimated saving in words: about $X, or nothing (and what it would cost more)."""
+    return f"about {_money(v)}" if v >= 0.005 else "nothing" + (f": it would cost {_money(-v)} more" if v < 0 else "")
 
 
 def _k(n):
     return f"{n / 1000:,.0f}k"
 
 
+FROM = {"signed": "signed records", "transcripts": "Claude Code's transcripts (read-only)"}
+
+
+def _from(kinds):
+    return " and ".join(FROM[k] for k in ("signed", "transcripts") if k in kinds)
+
+
 def context_tip(agents):
-    """Tip 1: what compacting earlier would have saved, replayed on each long main session's real context growth."""
+    """Tip 1: what compacting earlier would have cost, replayed on each long main session's real context growth."""
     tip = {"id": "context", "ok": False}
     mains = [a for a in agents if a["kind"] == "main"]   # a subagent can't be told to compact
     long = [a for a in mains if len(a["steps"]) >= MIN_STEPS]
@@ -290,7 +328,7 @@ def context_tip(agents):
     rows, unpriced = [], set()
     for a in long:
         model = collections.Counter(s["model"] for s in a["steps"]).most_common(1)[0][0]
-        r = _rate(model)
+        r = _RATES.rate(model)
         if r is None:
             unpriced.add(str(model))
             continue
@@ -301,8 +339,9 @@ def context_tip(agents):
         writes = sum(_writes(s) for s in steps)
         w_rate = sum(_write_usd(s, r) for s in steps) * 1e6 / writes if writes else r["cache_write"]
         actual = sum(_input_usd(s, r) for s in steps)
-        rows.append({"a": a, "r": r, "model": model, "ctx": ctx, "steps": steps, "drops": drops, "post": post, "actual": actual,
-                     "replays": {cap: replay(steps, cap, post, r, w_rate) for cap in CAPS if cap < max(ctx)}})
+        rows.append({"a": a, "r": r, "model": model, "ctx": ctx, "steps": steps, "drops": drops, "post": post,
+                     "actual": actual, "replays": {cap: replay(steps, cap, post, r, w_rate) for cap in CAPS
+                                                   if cap < max(ctx)}})
     if not rows:
         tip["why"] = f"No price for {', '.join(sorted(unpriced))}: the tips price Anthropic's models only (tracekit/tips.py)."
         return tip
@@ -310,67 +349,82 @@ def context_tip(agents):
     best = max(saved.values())
     if best <= 0.01:
         peak = max(max(x["ctx"]) for x in rows)
-        tip["why"] = (f"No main session's context grew past {_k(CAPS[0])} tokens (the largest reached {_k(peak)}): compacting "
-                      "earlier would save nothing worth a change." if peak <= CAPS[0] else
+        tip["why"] = (f"No main session's context grew past {_k(CAPS[0])} tokens (the largest reached {_k(peak)}): "
+                      "compacting earlier would save nothing worth a change." if peak <= CAPS[0] else
                       "Compacting earlier would not have cost less here: the replay saves nothing.")
         return tip
     cap = max(c for c in CAPS if saved[c] >= NEAR_BEST * best)
     top = max(rows, key=lambda x: x["actual"] - x["replays"].get(cap, (x["actual"],))[0])
-    a, r, ctx = top["a"], top["r"], top["ctx"]
+    a, r, ctx, steps = top["a"], top["r"], top["ctx"], top["steps"]
     usd, n, sim = top["replays"][cap]
     med = statistics.median(ctx)
     at = statistics.median(ctx[i - 1] for i in top["drops"]) if top["drops"] else None
     total = sum(x["actual"] for x in rows)
-    # time: how much longer a step took to answer above the cap than below it, on this agent's own steps
-    lat = [(c, s["lat"]) for c, s in zip(ctx, top["steps"]) if s["lat"] is not None and 0 < s["lat"] < 600]
+    per = top["actual"] * 1e6 / sum(ctx)   # what one token of context cost this session a step, on average
+    claude = a["source"] == "transcripts"
+    uncached = sum(s["in"] for s in steps) / max(1, sum(ctx))
+    # a correlation, not a saving: how much slower a step answered above the cap than below it here
+    lat = [(c, s["lat"]) for c, s in zip(ctx, steps) if s["lat"] is not None and 0 < s["lat"] < 600]
     above, below = [d for c, d in lat if c > cap], [d for c, d in lat if c <= cap]
     slower = statistics.median(above) - statistics.median(below) if len(above) >= 10 and len(below) >= 10 else None
-    minutes = round(max(0.0, slower) * len(above) / 60) if slower is not None else None
     x, act = _series(ctx)
-    tip.update(ok=True, source=a["source"], cap=cap, agent=a["label"],
-               title=f"Compact at about {_k(cap)} tokens" + (f", not at {_k(at)}" if at else ""),
-               line=(f"Every step re-reads the whole context. {a['label']}'s median step re-read {_k(med)} tokens: "
-                     f"{_money(med * r['cache_read'] / 1e6)} before it did anything."),
+    tip.update(ok=True, cap=cap, agent=a["label"], **{"from": _from({x["a"]["source"] for x in rows})},
+               title=f"{'Compact' if claude else 'Trim the history it sends'} at about {_k(cap)} tokens"
+               + (f", not at {_k(at)}" if at else ""),
+               line=(f"Every step sends the whole context again. {a['label']}'s median step carried {_k(med)} tokens "
+                     f"of it: {_money(statistics.median(_input_usd(s, r) for s in steps))} before it did anything."),
                saving={"usd": round(saved[cap], 2), "pct": round(100 * saved[cap] / total) if total else 0,
-                       "minutes": minutes},
+                       "minutes": None},
                caps=[{"cap": c, "usd": round(saved[c], 2), "compactions": sum(x["replays"][c][1] for x in rows
                                                                                 if c in x["replays"])}
                      for c in CAPS if any(c in x["replays"] for x in rows)],
                chart={"x": x, "actual": act, "replay": _series(sim)[1], "n": len(ctx), "cap": cap,
-                      "marks": [[i, ctx[i - 1]] for i in top["drops"]], "read": r["cache_read"]},
+                      "marks": [[i, ctx[i - 1]] for i in top["drops"]], "read": round(per, 4)},
                math=[f"{a['label']} ({top['model']}): {len(ctx):,} steps; its context was {_k(med)} tokens at the "
                      f"median and {_k(max(ctx))} at most; it compacted {len(top['drops'])} times"
                      + (f", at a median {_k(at)}, down to {_k(top['post'])}." if at else "."),
-                     f"Re-reading the context is a cache read at ${r['cache_read']}/M tokens: {_k(med)} x "
-                     f"${r['cache_read']}/M = {_money(med * r['cache_read'] / 1e6)} a step at the median.",
-                     f"Its input side as it ran (re-reads, cache writes, uncached input): {_money(top['actual'])}.",
+                     f"Its input side as it ran (context read from cache, written to it, or sent uncached): "
+                     f"{_money(top['actual'])}, {_money(per)} per million tokens of context a step on average (the "
+                     "chart's right axis).",
                      f"Replayed on the same growth, compacting whenever it passed {_k(cap)}: {n} compactions, each down "
                      f"to {_k(top['post'])}, one summary call ({_k(SUMMARY)} output tokens at ${r['output']}/M plus a "
-                     f"re-read) and a cache write of what is left: {_money(usd)}.",
-                     f"Saved: {_money(top['actual'])} - {_money(usd)} = {_money(top['actual'] - usd)}; across the "
-                     f"{len(rows)} main session{'s' * (len(rows) != 1)} of {MIN_STEPS}+ steps, {_money(saved[cap])} of "
-                     f"{_money(total)} ({round(100 * saved[cap] / total) if total else 0}%).",
+                     "re-read) and a cache write of what is left. Every other step keeps its real cache behaviour (a "
+                     f"rebuild after idle time, or a call with no cache, re-pays its whole replayed context): "
+                     f"{_money(usd)}.",
+                     f"Would have saved: {_money(top['actual'])} - {_money(usd)} = {_about(top['actual'] - usd)}; "
+                     f"across the {len(rows)} main session{'s' * (len(rows) != 1)} of {MIN_STEPS}+ steps, "
+                     f"{_about(saved[cap])} of {_money(total)}.",
                      f"{_k(cap)} is the largest compaction point that keeps {round(100 * NEAR_BEST)}% of the best "
                      "saving tried: compacting more often saves a little more and loses more detail.",
-                     "Not counted: work redone when a summary drops a detail."
-                     + (f" Time: above {_k(cap)} a step took a median {slower:.1f} s longer to answer, "
-                        f"{len(above):,} steps." if slower is not None else " Time: not measured (too few timed steps).")]
-               + ([f"No price for {', '.join(sorted(unpriced))}: those agents are left out."] if unpriced else []),
+                     "An estimate: not counted is work redone when a summary drops a detail. Time isn't counted either"
+                     + (f": above {_k(cap)} a step answered a median {slower:.1f} s slower here, a correlation, not a "
+                        "measured saving." if slower is not None else ".")]
+               + ([f"No price for {', '.join(sorted(unpriced))}: those sessions are left out."] if unpriced else []),
                fix={"text": f"Run /compact with a one-line focus at each task boundary (a PR merged, a release tagged), "
                             f"and at about {_k(cap)} tokens; start a new session for unrelated work.",
-                    "copy": "/compact keep the open task, its files and the decisions made"})
+                    "copy": "/compact keep the open task, its files and the decisions made"} if claude else
+               {"text": (f"Most of what this agent sends ({round(100 * uncached)}%) goes uncached: mark the stable "
+                         "start of each request for prompt caching first, which cuts more than compaction. "
+                         if uncached > REBUILT else "")
+                + f"Trim or summarise the history it sends once it passes about {_k(cap)} tokens (its framework's "
+                  "compaction or memory setting).", "copy": None})
     return tip
 
 
-def cache_tip(agents, calls, held=()):
+def cache_tip(agents, calls, held=(), asked=()):
     """Tip 2: steps that wrote their whole context again because the wait before them outlived the prompt cache, and
-    what bounded polls would have cost instead."""
+    what bounded polls would have cost instead. A wait runs from one request's start to the next's: a cache entry lives
+    from the start of the request that last read or wrote it. `held`: the calls held for a person nobody answered (they
+    could fail at once), `asked`: the ones a person answered (a wait for a person, as idle time is)."""
     tip = {"id": "cache", "ok": False}
-    waits, bins, unknown, unpriced = [], collections.Counter(), 0, set()
+    waits, bins, unknown, unpriced, lives, kinds = [], collections.Counter(), 0, set(), collections.defaultdict(set), set()
     edges = ((240, "under 4 min"), (300, "4 to 5 min"), (360, "5 to 6 min"), (600, "6 to 10 min"), (math.inf, "over 10 min"))
     for a in agents:
         known = sum(s["w1h"] for s in a["steps"]), sum(s["w5"] for s in a["steps"])
         default = LIFE["1h"] if known[0] > known[1] else LIFE["5m"] if known[1] else None
+        if default:
+            lives[a["kind"]].add(default)
+            kinds.add(a["source"])
         for p, s in zip(a["steps"], a["steps"][1:]):
             ctx = _ctx(s)
             if ctx < MIN_CTX:
@@ -379,20 +433,22 @@ def cache_tip(agents, calls, held=()):
             if life is None:
                 unknown += 1
                 continue
-            gap, rebuilt = s["t"] - p["t1"], _writes(s) >= REBUILT * ctx
+            gap, rebuilt = _start(s) - _start(p), _writes(s) >= REBUILT * ctx
             if life == LIFE["5m"]:
                 label = next(lbl for edge, lbl in edges if gap < edge)
                 bins[label, 0] += 1
                 bins[label, 1] += rebuilt
             if gap <= life or not rebuilt:
                 continue
-            r = _rate(s["model"])
+            r = _RATES.rate(s["model"])
             if r is None:
                 unpriced.add(str(s["model"]))
                 continue
             done = [c for c in (calls.get(i) for i in p["calls"]) if c and c["t1"] is not None]
             c = max(done, key=lambda c: c["t1"] - c["t0"], default=None)
-            blocked = c is not None and c["t1"] - c["t0"] > life and c["tool"] not in PERSON
+            person = c is not None and (c["tool"] in PERSON or c["id"] in asked)
+            # blocked on the call: it took most of the wait, and the next request went as soon as it returned
+            blocked = c is not None and not person and c["t1"] - c["t0"] >= gap / 2 and _start(s) - c["t1"] <= MARGIN
             now = _write_usd(s, r)
             if blocked and c["id"] in held:   # a hold that fails fast keeps no one waiting
                 alt = ctx * r["cache_read"] / 1e6
@@ -400,17 +456,18 @@ def cache_tip(agents, calls, held=()):
                 polls = math.ceil(gap / (life - MARGIN)) - 1
                 alt = (polls * (ctx * r["cache_read"] + POLL_OUT * r["output"]) + ctx * r["cache_read"]) / 1e6
             fix = blocked and alt < now
-            waits.append({"t": p["t1"], "s": round(gap), "usd": round(now, 4), "alt": round(alt, 4), "tokens": _writes(s),
-                          "agent": a["label"], "kind": a["kind"], "life": life, "fix": fix,
+            waits.append({"t": _start(p), "s": round(gap), "usd": round(now, 4), "alt": round(alt, 4),
+                          "tokens": _writes(s), "agent": a["label"], "kind": a["kind"], "life": life, "fix": fix,
                           "cause": ("a call held for a person" if c["id"] in held else c["family"]) if fix else
-                          "idle: waiting for a person" if a["kind"] == "main" or c and c["tool"] in PERSON else
+                          "idle: waiting for a person" if a["kind"] == "main" or person else
                           "idle: resumed after it handed back"})
     tip["bins"] = [{"label": lbl, "n": bins[lbl, 0], "rebuilt": bins[lbl, 1]} for _, lbl in edges if bins[lbl, 0]]
+    noprice = [f"No price for {', '.join(sorted(unpriced))}: their rebuilds are left out."] if unpriced else []
     if not waits:
         tip["why"] = ("No step records how long its cache lasts: the tip reads that from Claude Code's transcripts "
                       "(each write says 5 minutes or 1 hour)." if unknown and not tip["bins"] else
-                      "No wait outlived the prompt cache: no step had to write its whole context again."
-                      + (f" No price for {', '.join(sorted(unpriced))}." if unpriced else ""))
+                      "No wait outlived the prompt cache: no step had to write its whole context again.") \
+            + ("" if not noprice else " " + noprice[0])
         return tip
     fix = [w for w in waits if w["fix"]]
     causes = collections.defaultdict(lambda: [0, 0, 0.0, 0.0])
@@ -421,12 +478,15 @@ def cache_tip(agents, calls, held=()):
         k[2] += w["usd"]
         k[3] += w["alt"]
     now, alt = sum(w["usd"] for w in fix), sum(w["alt"] for w in fix)
-    lives = sorted({w["life"] for w in fix}) or [LIFE["5m"]]
+    short = min({w["life"] for w in fix} or {LIFE["5m"]})
     sub = [w for w in fix if w["kind"] == "subagent"]
     big = max(fix, key=lambda w: w["usd"], default=None)
     idle = len(waits) - len(fix)
-    tip.update(ok=True, source="transcripts",
-               title=(f"Keep each blocking call under {(lives[0] - MARGIN) / 60:g} minutes"
+    # what the writes showed, never a guess: "5 min in subagents, 1 h in main sessions"
+    seen = ", ".join(f"{' or '.join(_dur(x) for x in sorted(lives[k]))} in {w}" for k, w in
+                     (("subagent", "subagents"), ("main", "main sessions")) if lives[k])
+    tip.update(ok=True, **{"from": _from(kinds)},
+               title=(f"Keep each blocking call under {_dur(short - MARGIN)}"
                       + (" in a subagent" if sub and len(sub) == len(fix) else "")) if fix else
                "Every cache rebuild here followed idle time, not a blocking call",
                line=(f"{len(fix)} wait{'s' * (len(fix) != 1)} outlived the prompt cache while the agent was blocked on a "
@@ -436,26 +496,27 @@ def cache_tip(agents, calls, held=()):
                saving={"usd": round(now - alt, 2), "minutes": round(sum(w["s"] for w in fix
                                                                         if w["cause"] == "a call held for a person") / 60)},
                waits=sorted(waits, key=lambda w: -w["usd"])[:500],
-               causes=[{"cause": k, "n": v[0], "hours": round(v[1] / 3600, 2), "usd": round(v[2], 2),
-                        "alt": round(v[3], 2)} for k, v in sorted(causes.items(), key=lambda kv: -kv[1][2])],
+               causes=[{"cause": k, "n": v[0], "s": v[1], "usd": round(v[2], 2), "alt": round(v[3], 2)}
+                       for k, v in sorted(causes.items(), key=lambda kv: -kv[1][2])],
                window=[min(w["t"] for w in waits), max(w["t"] + w["s"] for w in waits)],
-               math=["Each cache write records how long it lasts: 5 minutes (ephemeral_5m) or 1 hour (ephemeral_1h). "
-                     "Claude Code's subagents write 5-minute entries, its main session 1-hour ones.",
+               math=[f"Each cache write records how long it lasts (ephemeral_5m or ephemeral_1h); here the cache lasted "
+                     f"{seen}. It counts from the start of the request that last read or wrote the entry, so each wait "
+                     "runs from one request's start to the next's.",
                      "A step that wrote at least half its context to cache after a wait longer than that rebuilt it: "
-                     f"{len(waits)} did, {len(fix)} while blocked on a call that outlived the cache, {idle} after "
-                     "sitting idle (a person away, a subagent resumed later), which no poll would have kept."]
+                     f"{len(waits)} did, {len(fix)} while blocked on a call, {idle} after sitting idle (a person "
+                     "away or answering, a subagent resumed later), which no poll would have kept."]
                + ([f"The largest: {big['agent']} waited {_dur(big['s'])}, then wrote "
                    f"{_k(big['tokens'])} tokens to cache: {_money(big['usd'])}.",
-                   f"Polling instead, each wait split into calls of at most {(lives[0] - MARGIN) / 60:g} minutes: every "
-                   f"extra poll re-reads the context (a cache read) and writes about {POLL_OUT} output tokens; a held "
-                   "call that fails at once waits not at all.",
-                   f"Saved: {_money(now)} - {_money(alt)} = {_money(now - alt)}."] if fix else [])
+                   f"Polling instead, each wait split into calls of at most {_dur(short - MARGIN)}: every extra poll "
+                   f"re-reads the context (a cache read) and writes about {POLL_OUT} output tokens; a held call nobody "
+                   "answered could fail at once and wait not at all.",
+                   f"Would have saved: {_money(now)} - {_money(alt)} = {_about(now - alt)}, an estimate."] if fix else [])
                + (["Steps without a recorded cache lifetime (signed records hold none) are left out: "
-                   f"{unknown}."] if unknown else []),
+                   f"{unknown}."] if unknown else []) + noprice,
                fix={"text": "Add a line to the agent's instructions (AGENTS.md or CLAUDE.md):",
-                    "copy": f"- Keep each blocking call under {(lives[0] - MARGIN) / 60:g} minutes: the prompt cache "
-                            "expires after 5 idle minutes in a subagent (1 hour in the main session) and the next step "
-                            "re-pays the whole context. Poll in bounded loops "
+                    "copy": f"- Keep each blocking call under {_dur(short - MARGIN)}: the prompt cache here lasted "
+                            f"{seen}, counted from the start of the request that last read or wrote it, and the step "
+                            "after it expires re-pays the whole context. Poll in bounded loops "
                             "(`for i in $(seq 1 25); do <check> && break; sleep 10; done`), or run a long wait in the "
                             "background and act on its notification."} if fix else None)
     return tip
@@ -490,11 +551,10 @@ def holds_tip(holds, calls, signed):
     blocked = sum(waited.get(h["id"], 0) for h in open_)
     sub_open = sum(h["sub"] for h in open_)
     top = rules.most_common(1)[0][0] if rules else None
-    long_wait = blocked > 60
-    tip.update(ok=True, source="signed" + (" + transcripts" if waited else ""),
+    tip.update(ok=True, **{"from": _from({"signed"} | ({"transcripts"} if waited else set()))},
                title=(f"{len(open_)} held call{'s' * (len(open_) != 1)} nobody answered"
-                      + (f", {sub_open} in subagents nobody watches" if sub_open else "")) if open_ else
-               "Every held call was answered",
+                      + (f", {sub_open} of them in {'a subagent' if sub_open == 1 else 'subagents'}" if sub_open else ""))
+               if open_ else "Every held call was answered",
                line=(f"Tracekit held {len(holds)} call{'s' * (len(holds) != 1)} for a person; {len(open_)} never got an "
                      "answer" + (f" and blocked the agent for {_dur(blocked)} in all." if waited else
                                  ", and the agent went on without them.") if open_ else
@@ -512,9 +572,12 @@ def holds_tip(holds, calls, signed):
                   if waited else "Time blocked: no transcript holds these calls, so how long each one waited isn't known.",
                   "Where each ran: the transcript that holds its call (a subagent's file), else the record's agent; a "
                   "Claude Code run's records decide a subagent's calls under the session's run."],
-               fix={"text": "A held call's hook waits for an answer only with TRACEKIT_APPROVAL_WAIT set, and nobody "
-                            "answers in a subagent: unset it where agents run unwatched, and answer from APPROVALS.",
-                    "copy": "unset TRACEKIT_APPROVAL_WAIT"} if long_wait else
+               fix={"text": "A held call's hook waits for an answer only while TRACEKIT_APPROVAL_WAIT is set. Where "
+                            "nobody is there to answer, remove it: delete its line from the env block of Claude Code's "
+                            "settings (~/.claude/settings.json, or the project's .claude/settings.json), or unset it in "
+                            "the shell that starts the agent, then restart the agent, as a running session keeps the "
+                            "value it started with. Answer the rest from APPROVALS.",
+                    "copy": "unset TRACEKIT_APPROVAL_WAIT"} if blocked > 60 else
                {"text": (f"{top} held {rules[top]} of them" + (f": {words[top]['remedy']}" if words[top].get("remedy")
                                                                else f" ({words[top].get('reason') or 'its rule'}).")
                          + " See each one waiting, with the commands that answer it:") if top else
@@ -522,39 +585,57 @@ def holds_tip(holds, calls, signed):
     return tip
 
 
+def _same(signed, agents, calls):
+    """The keys of the signed runs Claude Code's transcripts also hold: one of their messages shares a tool_use id with
+    a transcript, or its token counts with a transcript message within MATCH_S (the gateway signs each exchange under
+    an id of its own, and a message without tool calls has no tool_use id to join on)."""
+    counts = collections.defaultdict(list)
+    for a in agents.values():
+        for s in a["steps"]:
+            counts[s["in"], s["out"], s["cr"], _writes(s)].append(s["t"])
+    return {k for k, a in signed.items() for s in a["steps"]
+            if any(i in calls for i in s["calls"])
+            or any(abs(t - s["t"]) <= MATCH_S for t in counts.get((s["in"], s["out"], s["cr"], s["w"]), ()))}
+
+
 def build(rows, root=None, now=None):
-    """The TIPS page's data: what was read (`sources`), the window, the price table's date and the three tips."""
+    """The TIPS page's data: what was read (`sources`), the window, the price table's date and the three tips. A signed
+    run the transcripts also hold counts once, from the transcripts (`sources.signed.also`)."""
     now = time.time() if now is None else now
     since = now - WINDOW_S
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
-    skip = {s["id"] for a in signed.values() for s in a["steps"] if s["id"]}
-    agents, calls, files, unreadable = read_transcripts(root, since, skip) if root and os.path.isdir(root) else \
+    agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
+    same = _same(signed, agents, calls)
+    also = {"runs": len(same), "steps": sum(len(signed[k]["steps"]) for k in same)}
+    signed = {k: a for k, a in signed.items() if k not in same}
     holds = held_calls(rows, since)
     every = list(signed.values()) + list(agents.values())
     return {"window": [since, now], "prices": PRICES["as_of"],
             "root": _shown(root) if root and os.path.isdir(root) else None,
             "sources": {"signed": {"agents": len(signed), "steps": sum(len(a["steps"]) for a in signed.values()),
-                                   "records": sum(r.get("tk_seq") is not None for r in rows),
+                                   "also": also, "records": sum(r.get("tk_seq") is not None for r in rows),
                                    "holds": len(holds)},
                         "transcripts": {"files": files, "agents": len(agents), "unreadable": len(unreadable),
                                         "steps": sum(len(a["steps"]) for a in agents.values())}},
-            "tips": [context_tip(every), cache_tip(every, calls, {h["id"] for h in holds}),
+            "tips": [context_tip(every), cache_tip(every, calls, {h["id"] for h in holds if h["answered"] is None},
+                                                   {h["id"] for h in holds if h["answered"] is not None}),
                      holds_tip(holds, calls, bool(rows))]}
 
 
 class Page:
     """/api/tips' answer: build() over `rows()` (the viewer's rows) and the transcripts under `root`, worked out again
-    at most once every `ttl` seconds, one request at a time (a week of transcripts takes seconds to read)."""
+    at most once every `ttl` seconds unless asked `fresh` (READ AGAIN), one request at a time (a week of transcripts
+    takes seconds to read)."""
 
     def __init__(self, rows, root, ttl=60):
         self.rows, self.root, self.ttl = rows, root, ttl
         self.lock, self.at, self.body = threading.Lock(), 0.0, None
 
-    def __call__(self):
+    def __call__(self, fresh=False):
         with self.lock:
-            if self.body is None or time.monotonic() - self.at > self.ttl:
+            if fresh or self.body is None or time.monotonic() - self.at > self.ttl:
                 self.body = json.dumps(build(self.rows(), self.root), ensure_ascii=False)
                 self.at = time.monotonic()
             return self.body
