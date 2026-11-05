@@ -46,6 +46,7 @@ import posixpath
 import re
 import urllib.parse
 
+from .constraints import LATER_RUNS
 from .findings import WRITE_TOOLS
 from .findings_effects import ALL, FETCH, GRACE_S, KINDS, MAX_CITES, _kinds, _t, _under
 from .policy2 import shell
@@ -56,7 +57,8 @@ CHECKS = (RULE,)
 SEVERITIES = {RULE: "high"}
 WORKSPACE = "/workspace"   # where Box mounts the workspace copy inside a box (its proto.DefaultWorkspacePath)
 SHELLS = frozenset(t for t, k in KINDS.items() if k == ALL)
-DETACHERS = frozenset(("setsid", "disown", "coproc"))   # a command that detaches what it runs (coproc: \coproc)
+# a command that detaches what it runs (coproc: \coproc), or runs it after the line returns (systemd-run, at, batch)
+DETACHERS = frozenset(("setsid", "disown", "coproc")) | LATER_RUNS
 WHATWG_PART = re.compile(r"0x[0-9a-f]*|[0-9]+")
 WHY = {RULE: ("the agent's own records of its calls (sent from inside the box, where it can skip or forge them) and "
               "the box's door records (decided on the host, outside its reach) disagree: the agent did something it "
@@ -230,9 +232,9 @@ def _background(args):
 def _detaches(cmd):
     """Whether shell command `cmd` may leave a process running past its end, as the policy engine's shell parser
     (policy2.shell: bash's quoting, heredocs, comments, `sh -c` strings, wrappers) reads it: a command it runs in the
-    background (`&`, also in a subshell or an `sh -c` string), or one that detaches by itself (setsid, disown, coproc,
-    `tmux ... -d`, `screen -d...`); nohup alone runs in the foreground. True when the parser can't read the line (coproc
-    as bash's keyword among it)."""
+    background (`&`, also after a block or an and-or list, in a subshell or an `sh -c` string), or one that detaches
+    by itself (setsid, disown, coproc, systemd-run, at, batch, `tmux ... -d`, `screen -d...`); nohup alone runs in the
+    foreground. True when the parser can't read the line (coproc as bash's keyword among it)."""
     try:
         cmds = shell.parse(cmd)
     except shell.ParseError:

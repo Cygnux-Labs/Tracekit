@@ -448,7 +448,11 @@ class Background(Base):
                     "cat > start.sh <<'EOF'\nnpm run dev\nEOF\nbash -c './start.sh &'",
                     "cat > a.txt <<EOF\nhi\nEOF\ntmux new -d -s dev 'npm start'", 'grep -q x <<< "$v"\ncoproc cat',
                     "cd app # into the app\nbash -c 'npm start &'", "make # build it\ntmux new -d -s dev 'npm run dev'",
-                    "npm run dev \\\n&", "echo a\\\\&", "\\coproc cat", "time coproc cat", "builtin coproc cat"):
+                    "npm run dev \\\n&", "echo a\\\\&", "\\coproc cat", "time coproc cat", "builtin coproc cat",
+                    # #608's review: a block or an and-or list sent to the background; what runs after the line
+                    "{ npm run dev; } &", "while true; do curl -s https://example.com/health; sleep 30; done &",
+                    "if true; then npm run dev; fi &", "a && b &", "curl -s https://example.com && x=1 &",
+                    "systemd-run --user npm start", "echo 'npm start' | at now + 1 minute", "batch < jobs.txt"):
             with self.subTest(cmd):
                 self.assertTrue(findings_box._detaches(cmd))
         for cmd in ("make && make test", "cmd 2>&1", "cmd &> log", "cmd |& tee log", "cat <&3", "echo 'a & b'",
@@ -469,6 +473,9 @@ class Background(Base):
         for cmd, found in (("cat > notes.txt <<EOF\nstarting the dev server\nEOF\ntmux new -d -s dev 'npm run dev'", 0),
                            ("cat > start.sh <<'EOF'\nnpm run dev\nEOF\nchmod +x start.sh\nbash -c './start.sh &'", 0),
                            ("cd app # the web app\nbash -c 'npm run dev > dev.log 2>&1 &'", 0),
+                           ("{ npm run dev; } &", 0), ("if true; then npm run dev; fi &", 0),   # #608's review
+                           ("while true; do curl -s https://telemetry.nextjs.org/health; sleep 30; done &", 0),
+                           ("npm ci && npm run dev &", 0),
                            ("git commit -qm'fix a & b'", 1)):   # nothing left running: the later connection is found
             with self.subTest(cmd):
                 d = tempfile.mkdtemp()

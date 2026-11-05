@@ -986,7 +986,17 @@ class Shell(unittest.TestCase):
                               ("sh -c 'npm start &'", ["npm"]), ("(a; b) &", ["a", "b"]), ("nohup a &", ["nohup", "a"]),
                               ("cat <<EOF\nx &\nEOF\nb &", ["b"]), ("a # c &\nb", []), ("npm run dev \\\n&", ["npm"]),
                               ('echo "&"', []), ("git commit -qm'a & b'", []), ("a && b", []), ("a &> f", []),
-                              ("a |& b", []), ("echo $'a & b'", []), ("sh -c 'npm start' &", ["sh", "npm"])):
+                              ("a |& b", []), ("echo $'a & b'", []), ("sh -c 'npm start' &", ["sh", "npm"]),
+                              # #608's review: a block or an and-or list sent to the background, from its start
+                              ("{ npm run dev; } &", ["npm"]),
+                              ("while true; do curl -s https://example.com/health; sleep 30; done &",
+                               ["true", "curl", "sleep"]),
+                              ("if true; then npm run dev; fi &", ["true", "npm"]), ("for f in 1 2; do a; done &", ["a"]),
+                              ("case x in y) a;; esac &", ["a"]), ("x; { a; b; } &", ["a", "b"]),
+                              ("{ a; } && c &", ["a", "c"]), ("x || { a; } | b &", ["x", "a", "b"]),
+                              ("a && b &", ["a", "b"]), ("curl -s https://example.com && x=1 &", ["curl"]),
+                              ("a; b &", ["b"]), ("{ a & b; }", ["a"]), ("if a; then b; fi; c", []),
+                              ("{ a; }; c &", ["c"])):
             with self.subTest(command):
                 self.assertEqual(background(command), want)
 
