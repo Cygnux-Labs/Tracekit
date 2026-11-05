@@ -189,9 +189,9 @@ MENTIONS = {"force push": ("force",), "recursive delete": ("delet", "remov", "rm
 # --------------------------------------------------------------------------- commands
 SEPARATORS = frozenset((";", ";;", "&&", "||", "|", "|&", "&", "(", ")"))
 PREFIXES = frozenset(("sudo", "doas", "env", "time", "nice", "nohup", "command", "exec", "npx", "bunx", "pnpx",
-                      "timeout", "stdbuf", "xargs"))
+                      "dlx", "timeout", "stdbuf", "xargs"))
 RUNNERS = {"uv": "run", "poetry": "run", "pipenv": "run", "pdm": "run", "hatch": "run", "rye": "run",
-           "bundle": "exec", "npm": "exec"}
+           "bundle": "exec", "npm": "exec", "pnpm": "exec", "yarn": "exec"}
 PYTHONS = re.compile(r"python(?:3(?:\.\d+)?)?|py|pypy3?")
 TEST_PROGS = frozenset(("pytest", "py.test", "jest", "vitest", "mocha", "rspec", "tox", "nox", "phpunit", "ctest",
                         "ava", "karma", "nose2", "trial", "behave", "cucumber", "unittest"))
@@ -350,6 +350,8 @@ def _argv(words):
                 i += 1
         elif RUNNERS.get(base) and i + 1 < len(words) and words[i + 1] == RUNNERS[base]:
             i += 2
+        elif base in ("pnpm", "yarn") and i + 1 < len(words) and words[i + 1] == "dlx":
+            i += 2
         else:
             break
     if i >= len(words):
@@ -397,11 +399,21 @@ def command_facts(cmd):
         if added:
             acts.append(("install", f"added {', '.join(added[:3])}", set(added), set(added)))
         if prog in TEST_PROGS or prog == "playwright" and sub == "test":
-            fams.add("test")
+           fams.add("test")
+        elif prog in ("rails", "rake", "hatch", "flutter", "dart") and sub in ("test", "spec"):
+           fams.add("test")
+        elif prog == "php" and sub == "artisan" and nxt == "test":
+           fams.add("test")
+        elif PYTHONS.fullmatch(prog) and sub == "manage.py" and nxt == "test":
+           fams.add("test")
         elif prog in JS:
-            if sub in ("test", "t") or sub == "run" and nxt.startswith("test"):
+            if sub.startswith("test") or sub in ("t", "jest", "vitest") or sub == "run" and nxt.startswith("test"):
                 fams.add("test")
-            elif sub == "run" and nxt in ("build", "compile"):
+            elif sub in TEST_PROGS:
+                fams.add("test")
+            elif sub in LINT_PROGS or sub in ("lint", "typecheck", "type-check", "check"):
+                fams.add("lint")
+            elif sub in ("build", "compile") or sub == "run" and nxt in ("build", "compile"):
                 fams.add("build")
             elif sub == "run" and nxt in ("lint", "typecheck", "type-check", "check"):
                 fams.add("lint")

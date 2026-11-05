@@ -590,6 +590,34 @@ class WordLists(unittest.TestCase):
                 self.assertTrue(findings_text.failure(out))
         self.assertEqual([findings_text.command_facts(c)[0] for c in ("npx mocha", "ssh build-host ls")],
                          [{"test"}, {"network"}])
+    def test_common_package_manager_and_framework_test_commands(self):
+        commands = (
+            "pnpm test:unit",
+            "yarn jest",
+            "pnpm exec vitest run",
+            "yarn exec jest",
+            "pnpm dlx vitest run",
+            "yarn dlx jest",
+            "python manage.py test",
+            "rails test",
+            "bin/rails test",
+            "rake test",
+            "rake spec",
+            "bundle exec rake spec",
+            "php artisan test",
+            "hatch test",
+            "flutter test",
+            "dart test",
+        )
+
+        for cmd in commands:
+            with self.subTest(cmd=cmd):
+                self.assertIn("test", findings_text.command_facts(cmd)[0])
+        self.assertIn("lint", findings_text.command_facts("pnpm lint")[0])
+        self.assertNotIn("test", findings_text.command_facts("pnpm lint")[0])
+
+        self.assertIn("build", findings_text.command_facts("yarn build")[0])
+        self.assertNotIn("test", findings_text.command_facts("yarn build")[0])
 
 
 class ShellComments(unittest.TestCase):
