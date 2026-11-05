@@ -29,18 +29,22 @@ def guidance():
             f"at {wiki_url('docs/coding-agents.md', 'when-tracekit-stops-a-call')} into its CLAUDE.md or AGENTS.md")
 
 
-def _dev_key_fingerprint(data_dir):
-    """The SHA-256 of the dev signer's log key (`tracekit verify` prints it for the key a trust file pins), made here
-    when no signer made it yet, so init can print the key the signer will use without opening its store."""
+def _dev_key_fingerprint(data_dir, make=True):
+    """The SHA-256 of the dev signer's log key (`tracekit verify` prints it for the key a trust file pins). With `make`
+    (init) it is made when no signer made it yet, so init can print the key the signer will use without opening its
+    store; without (up), a key not there is a FileNotFoundError and nothing is written."""
     import hashlib
     from . import crypto
     from .signer import service
     path = os.path.join(data_dir, "keys", "log.key")
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    if make:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
     try:
         with open(path, "rb") as f:
             secret = f.read()
     except FileNotFoundError:
+        if not make:
+            raise
         secret = crypto.generate()[0]
         try:
             service._write_new(path, secret)
@@ -65,13 +69,13 @@ def _witnessed(data_dir):
     return got if sizes else None
 
 
-def _dev_anchoring(data_dir):
-    """The lines `init --dev --v2` and `up --wait` print: the dev signer's log key, and whether a witness anchors its
-    log as the signer last started (_witnessed), with what a change needs to apply."""
+def _dev_anchoring(data_dir, make=True):
+    """The lines `init --dev --v2` and `up --wait` print: the dev signer's log key (made by init only: `make`), and
+    whether a witness anchors its log as the signer last started (_witnessed), with what a change needs to apply."""
     from . import public_witness
     from .signer.service import NO_WITNESS
     try:
-        key = f"log key SHA-256 fingerprint: {_dev_key_fingerprint(data_dir)}"
+        key = f"log key SHA-256 fingerprint: {_dev_key_fingerprint(data_dir, make)}"
     except (OSError, ValueError):
         key = "start the signer with `tracekit up --wait` to see its log key"
     heard, name = _witnessed(data_dir), public_witness.VKEY.split("+")[0]
@@ -735,7 +739,7 @@ def _run(a):
         from . import public_witness
         if not _signer_extra():
             return 2
-        from .signer.service import dev_data_dir, set_dev_witness
+        from .signer.service import set_dev_witness
         if a.no_witness:
             set_dev_witness(True)
         if a.replace or a.no_witness:
@@ -749,8 +753,8 @@ def _run(a):
         else:
             print(f"dev signer {hello['version']} running (pid {hello['pid']})" if hello else "dev signer starting")
             print(install.DEV_MODE_LINE)
-            if a.wait:
-                print(*_dev_anchoring(dev_data_dir()), sep="\n")
+            if a.wait:   # the data dir a client takes the signer's from (its hello's): read, nothing made there
+                print(*_dev_anchoring(autospawn.data_dir(), make=False), sep="\n")
             elif a.no_witness:
                 print(public_witness.LOST)
         return 0

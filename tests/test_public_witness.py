@@ -17,6 +17,7 @@ from test_signer_service import ME, tmpdir
 from test_witness_publish import signed_note
 from tracekit import cli, crypto, install, merkle, public_witness, view
 from tracekit import public_witness_server as pws
+from tracekit.sdk import autospawn
 from tracekit.format import checkpoint, registry
 from tracekit.signer import service as svc
 from tracekit.storage.base import RECORDS, registry_tree
@@ -427,6 +428,35 @@ class OptIn(unittest.TestCase):
         with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
             f.write("{}")   # restarted: off
         self.assertEqual(cli._dev_anchoring(data)[1], public_witness.LOST)
+
+    def test_up_reads_the_dev_data_dir_and_makes_nothing_there(self):
+        """`tracekit up --wait` made the dev data dir and a log key in it whichever signer answered: on a CI runner, in
+        the real home (tests/test_sdk_client.py's fake signer)."""
+        home = os.path.join(self.dir, "home")
+        env = {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+               "LOCALAPPDATA": os.path.join(home, "data")}
+
+        def up():
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["up", "--wait"]), 0)
+            return out.getvalue().splitlines()[2:]   # after the running and dev-mode lines
+        with mock.patch.dict(os.environ, env), mock.patch.object(cli, "_signer_extra", return_value=True), \
+                mock.patch.object(autospawn, "ensure", return_value=(mock.Mock(), None, {"version": "9", "pid": 1})):
+            data = autospawn.data_dir()
+            self.assertEqual(up(), ["start the signer with `tracekit up --wait` to see its log key",
+                                    "public witness: on from the dev signer's next start"])
+            self.assertFalse(os.path.exists(data))
+            secret = crypto.generate()[0]
+            os.makedirs(os.path.join(data, "keys"))
+            with open(os.path.join(data, "keys", "log.key"), "wb") as f:
+                f.write(secret)
+            with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
+                json.dump({NAME: 3}, f)
+            before = sorted(os.listdir(data))
+            self.assertEqual(up(), [
+                f"log key SHA-256 fingerprint: {hashlib.sha256(crypto.public_from_secret(secret)).hexdigest()}",
+                "anchored: the public witness held this log at size 3 when the dev signer started"])
+            self.assertEqual(sorted(os.listdir(data)), before)
 
     def test_a_witnessed_file_that_is_not_one_is_never_printed(self):
         data = os.path.join(self.dir, "dev")
