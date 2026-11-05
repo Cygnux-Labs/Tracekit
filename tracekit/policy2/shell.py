@@ -1060,6 +1060,8 @@ class _Parser:
         """Commands up to `end`: None (the text's end), ")" or "esac" (a case arm's ;;, ;&, ;;& or the esac)."""
         self.enter()
         arm, start = end == "esac", None   # start: where the commands of the and-or list being read begin
+        # a list nested in a pipeline (a subshell, a case arm) leaves the enclosing list's and-or state as it found it
+        enclosing = self.list_start, self.closed
         while True:
             self.gap()
             if not self.peek() or self.peek() == ")" or arm and (self.at(";;") or self.at(";&") or
@@ -1093,6 +1095,7 @@ class _Parser:
         if (self.peek() == ")") != (end == ")"):
             raise ParseError("unmatched )" if end is None else "missing )")
         self.i += end == ")"
+        self.list_start, self.closed = enclosing
         self.leave()
 
     def case(self):

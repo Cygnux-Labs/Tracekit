@@ -996,7 +996,13 @@ class Shell(unittest.TestCase):
                               ("{ a; } && c &", ["a", "c"]), ("x || { a; } | b &", ["x", "a", "b"]),
                               ("a && b &", ["a", "b"]), ("curl -s https://example.com && x=1 &", ["curl"]),
                               ("a; b &", ["b"]), ("{ a & b; }", ["a"]), ("if a; then b; fi; c", []),
-                              ("{ a; }; c &", ["c"])):
+                              ("{ a; }; c &", ["c"]),
+                              # a subshell or case arms in the same pipeline as a block: a nested list keeps the
+                              # enclosing and-or list's state
+                              ("{ npm run dev; } | (x=1) &", ["npm"]),
+                              ("{ npm run dev; } | case q in y) x=1;; esac &", ["npm"]),
+                              ("{ a; } | (x) &", ["a", "x"]), ("a && (x) | { b; } &", ["a", "x", "b"]),
+                              ("a && case q in y) x;; esac | { b; } &", ["a", "x", "b"])):
             with self.subTest(command):
                 self.assertEqual(background(command), want)
 

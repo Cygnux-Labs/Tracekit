@@ -452,7 +452,8 @@ class Background(Base):
                     # #608's review: a block or an and-or list sent to the background; what runs after the line
                     "{ npm run dev; } &", "while true; do curl -s https://example.com/health; sleep 30; done &",
                     "if true; then npm run dev; fi &", "a && b &", "curl -s https://example.com && x=1 &",
-                    "systemd-run --user npm start", "echo 'npm start' | at now + 1 minute", "batch < jobs.txt"):
+                    "systemd-run --user npm start", "echo 'npm start' | at now + 1 minute", "batch < jobs.txt",
+                    "{ npm run dev; } | (x=1) &", "{ npm run dev; } | case q in y) x=1;; esac &"):
             with self.subTest(cmd):
                 self.assertTrue(findings_box._detaches(cmd))
         for cmd in ("make && make test", "cmd 2>&1", "cmd &> log", "cmd |& tee log", "cat <&3", "echo 'a & b'",
