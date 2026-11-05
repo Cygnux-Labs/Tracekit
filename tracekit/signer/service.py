@@ -58,6 +58,8 @@ signer.yaml:
                                              # recorded source gateway (tier T2, naming the gateway in `via`); a
                                              # call a gateway decided takes its later steps from it alone (_hold)
     gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
+    box_daemons: {"uid:1001": firecracker}   # Tracekit Box daemons (uid: the Unix socket) -> their engine: their box
+                                             # runs (register_run `box`) and boxes' agent channels (below)
     posture: {network: enforced, tool_calls: enforced}   # the deployment as the operator asserts it (run.registered
                                              # records it with gateway_mandatory, never attested): the agent reaches
                                              # the outside only through the egress proxy, and acts only through the
@@ -247,6 +249,16 @@ list, show and resolve incidents, hold, quarantine and resume runs, pause the re
 a resolve or resume needs a person who is not the runs' owner, principal or requester. The state is rebuilt from the
 records (pipeline.contain_state). Incident records reach webhooks through a durable outbox (webhook.Outbox).
 
+Tracekit Box (docs/limits.md#tracekit-box-experimental; Box's docs/agent-channel.md): a `box_daemons` identity
+registers a box's run with `box` (and no `parent`), which run.registered records as a signer-written `ext.box` {id,
+image_digest, allow, engine (from box_daemons, never a request), channel}; no request carries `ext`. `channel_open` on
+a connection of the daemon's own, naming that run while it is open, makes the connection's later frames
+(transport.Bound) the box's identity `box:<uid>/<box id>`: in the box run's tenant, granted CHANNEL_METHODS only, the
+owner (quotas, request ids, cooldowns, approvals it sees) of each run it registers, each a child of the box run (no
+`parent` taken) carrying its ext.box. Such a run's run.registered names the daemon's identity, as the transport
+established it (the format's identity schemes are closed), and isolation unknown; replay gives a labelled run with
+parent_run the box's owner. No config entry names a `box:` identity; suspending the daemon stops its channels too.
+
 Principal (04-design §2.2): register_run's `principal` is app-asserted (principal_attested: false); its
 `principal_token`, an end user's token that the `oidc` issuers (http.oidc) verify, records that user's person id with
 principal_attested: true. The token itself is never recorded.
@@ -338,7 +350,7 @@ from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, reg
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
-from tracekit.transport import answering_hello, hello
+from tracekit.transport import Bound, answering_hello, hello
 from tracekit.wiki import wiki_url
 
 PACKS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs")
@@ -378,11 +390,17 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
                "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s",
-               "verify_tool_results"}
+               "verify_tool_results", "box_daemons"}
 # signer.yaml sections whose features are experimental (docs/support.md)
 EXPERIMENTAL_KEYS = ("http", "storage", "tenants", "multi_tenant_apps", "gateways", "witnesses", "anchors", "record_key",
                      "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions", "verify_tool_results",
-                     "importers")
+                     "importers", "box_daemons")
+# lean: Box's one engine; add the next one here and in the verifiers' ENGINES when Box has it
+ENGINES = ("firecracker",)
+# what a box's agent channel may call (its coding agent's hooks and transcript tailer), whatever the config grants
+CHANNEL_METHODS = frozenset({"register_run", "decide", "complete", "observe", "model_event", "state_write",
+                             "approval_request", "approval_wait", "approval_consume", "approval_get",
+                             "approval_abandon", "constraint_add", "close_run", "tailer_lost", "status"})
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn", "agents", "ttl_s",
                  "agent_consume_s", "agent_timeout_s"}
 # agent approvers (docs/approvals.md#agent-approvers): what an identity in approvals.agents may call, given an authorize
@@ -416,9 +434,10 @@ DEFAULT_GRANTS = frozenset({
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
-# heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's
+# heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's;
+# channel_open: a box_daemons identity's alone, whatever `authorize` lists
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
-                           "approval_agents", "tailer_heartbeat", "observe_effect"}) | OPERATOR
+                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open"}) | OPERATOR
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
 CONTENT_SWEEP_S = 3600.0
@@ -721,7 +740,7 @@ class SignerService:
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
                  content=None, gateway_wait_s=GATEWAY_WAIT_S, suspensions=None, posture=None,
-                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None):
+                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None, box_daemons=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -745,7 +764,13 @@ class SignerService:
         `webhooks`: the `webhook` config section as webhook.load gives it ({url, events, secret, format?}).
         `content`: the `content` config section (the content vault; see the module docstring), or None (off).
         `suspensions`: the shared suspension list's path (default data_dir/suspensions.json).
-        `posture` ({network, tool_calls}), `observe_grace_s` and `verify_tool_results`: see the config keys."""
+        `posture` ({network, tool_calls}), `observe_grace_s` and `verify_tool_results`: see the config keys.
+        `box_daemons`: Tracekit Box daemon identity (uid:<n>) -> its engine (see the module docstring)."""
+        self.box_daemons = dict(box_daemons or {})
+        if not all(isinstance(k, str) and re.fullmatch(r"uid:[0-9]+", k) and v in ENGINES
+                   for k, v in self.box_daemons.items()):
+            raise ValueError("box_daemons maps a Tracekit Box daemon's uid (uid:<n>: it connects over the Unix socket) "
+                             f"to its engine, one of {', '.join(ENGINES)}")
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -800,6 +825,12 @@ class SignerService:
                 and isinstance(hb.get("helper", ""), str) and isinstance(hb.get("required", []), list)):
             raise ValueError("harness_binding takes helper (a socket path), required (identities) and harnesses "
                              "(name -> an absolute executable path, or {exe, script})")
+        named = [*(tenants or ()), *(authorize or ()), *gateways, *multi_tenant_apps, *migrators, *analyzers,
+                 *importers, *hb.get("required", ()),
+                 *(k for t in ("approvers", "break_glass", "persons", "agents") for k in (approvals or {}).get(t, ()))]
+        if any(str(k).startswith("box:") for k in named):
+            raise ValueError("a box: identity is a box's agent channel, which gets only the channel's methods "
+                             "(channel_open): no other config entry names one")
         try:
             self._decision_keys = {k: crypto.spki(base64.b64decode(v, validate=True))
                                    for k, v in (decision_keys or {}).items()}
@@ -1115,6 +1146,8 @@ class SignerService:
             self._grant(identity, CONTENT_READ if method == "content_get" else method)
             if method not in OPERATOR or not self._in(self._break_glass, identity):   # break-glass can always unsuspend
                 self._check_suspended(identity)
+            if identity.scheme == "box":   # a box's channel stops with its daemon
+                self._check_suspended(identity.claims["daemon"])
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
                 raise RPCError("invalid_request", "; ".join(errs))
@@ -1141,6 +1174,10 @@ class SignerService:
         granted = {m for g in found for m in g}
         if not found and not self._is_agent(identity):   # unconfigured: a uid or the dev token (scoped by DevToken)
             granted = DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
+        if identity.scheme == "box":   # a box's agent channel, whatever the config says
+            granted = CHANNEL_METHODS
+        elif method == "channel_open":   # a Box daemon's, never an authorize grant
+            granted = {method} if subject(identity) in self.box_daemons else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
 
@@ -1730,6 +1767,9 @@ class SignerService:
         if key not in self.log.runs:
             raise RPCError("unknown_run", req["run_id"])
         self.tokens.verify(req["run_token"], tenant, req["run_id"], identity)
+        run = self.log.runs[key]   # a box's channel: only its own box run's runs (another box run may reuse the box id)
+        if identity.scheme == "box" and not run["final"] and run.get("session") != identity.claims["run"]:
+            raise RPCError("run_token_invalid", "run token belongs to another box run's channel")
         if gw is None:
             self._check_harness(identity, key)
             if key in self._beats and self._tailer(identity):   # any call of a watched run's tailer shows it alive
@@ -1794,7 +1834,10 @@ class SignerService:
         agent-eligible approvals of its tenant."""
         if self._is_agent(identity):
             return bool((a.get("agent") or {}).get("eligible")) and a["run_key"][0] == self._tenant_of(identity)
-        if owner(identity) == self.log.runs[a["run_key"]]["owner"] or self._in(self._break_glass, identity):
+        run = self.log.runs[a["run_key"]]
+        if identity.scheme == "box":   # a box's agent channel sees its own box run's runs' approvals only
+            return owner(identity) == run["owner"] and run.get("session") == identity.claims["run"]
+        if owner(identity) == run["owner"] or self._in(self._break_glass, identity):
             return True
         return (self.approvals is None or self._in(self._approvers, identity)
                 or any(ON_BEHALF in (lookup(self.authorize, k) or ()) for k in keys(identity))) and \
@@ -2212,8 +2255,8 @@ class SignerService:
 
     def _tenant_of(self, identity):
         """The identity's tenant: `tenants`, else the tenant its named token was issued for (or its OIDC issuer's
-        tenant claim), else the default."""
-        token = identity.claims.get("tenant") if identity.scheme in ("token", "oidc") else None
+        tenant claim, or a box channel's box run's), else the default."""
+        token = identity.claims.get("tenant") if identity.scheme in ("token", "oidc", "box") else None
         return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token or self.tenant
 
     def _certified(self, tenant):
@@ -2583,9 +2626,15 @@ class SignerService:
     def _register_run(self, identity, req):
         sub = subject(identity)
         for field, allowed in (("tenant", self.multi_tenant_apps), ("source", self.migrators),
-                               ("analyzes", self.analyzers), ("replay_of", self.analyzers)):
+                               ("analyzes", self.analyzers), ("replay_of", self.analyzers), ("box", self.box_daemons)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
+        boxed = identity.scheme == "box"   # a box's agent channel: each run it registers is a child of its box run
+        if boxed and "parent" in req:
+            raise RPCError("forbidden", "a box's agent channel registers each run as a child of its box run: send no "
+                                        "`parent`")
+        if "box" in req and "parent" in req:   # a labelled run with parent_run is a channel's (pipeline replay)
+            raise RPCError("invalid_request", "a box run has no `parent`")
         if ("replay_of" in req) != ("investigation" in req):
             raise RPCError("invalid_request", "a replay run names both `replay_of` and `investigation`")
         harness = None
@@ -2608,8 +2657,8 @@ class SignerService:
         run_id = req.get("run_id") or self.id_prefix + secrets.token_hex(16)
         if not run_id.startswith(self.id_prefix):
             raise RPCError("invalid_request", f"this signer's run ids start with {self.id_prefix!r}")
-        parent = req.get("parent")
-        if parent:   # the caller holds the parent run's token, for a run of the same tenant
+        parent = {"run_id": identity.claims["run"]} if boxed else req.get("parent")
+        if parent and not boxed:   # the caller holds the parent run's token, for a run of the same tenant
             try:
                 self.tokens.verify(parent["run_token"], tenant, parent["run_id"], identity)
             except RPCError as e:
@@ -2641,6 +2690,8 @@ class SignerService:
             up = parent and self.log.runs.get((tenant, parent["run_id"]))
             if parent and not up:
                 raise RPCError("unknown_run", f"{parent['run_id']}: register the child run on its parent's signer")
+            if boxed and up["closed"]:
+                raise RPCError("run_closed", f"box run {parent['run_id']} is closed: its box is stopping")
             if up and up["final"]:
                 raise RPCError("run_closed", f"parent run {parent['run_id']} is final: start the child run from an "
                                              "open run, or without `parent`")
@@ -2678,8 +2729,11 @@ class SignerService:
             if principal is not None:
                 out["principal"] = top["principal"] = principal
                 tx.set(run, "principal", principal)
-            data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
-                    "identity": _recorded(identity)}
+            # a box channel's run records the identity its transport established, the daemon's (a closed format field),
+            # and its box in ext.box; its isolation is unknown, whatever this signer's own: no general claim covers it
+            data = {"agent": req["agent"], "fail_modes": self.fail_modes,
+                    "signer_isolation": "unknown" if boxed else self.isolation or self._isolation(identity),
+                    "identity": _recorded(identity.claims["daemon"] if boxed else identity)}
             data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
             if up:
                 data.update(parent_run=parent["run_id"], session=run["session"])
@@ -2689,6 +2743,11 @@ class SignerService:
                 data["posture"] = {**self.posture, "attested": False}
             if imported:
                 data["fidelity"], top["tier"] = "none", "T3"
+            # the box label: the daemon's account of its box with the engine its config names, or its box run's
+            label = dict(req["box"], engine=self.box_daemons[sub]) if "box" in req else up.get("box") if boxed else None
+            if label:
+                tx.set(run, "box", label)
+                top["ext"] = {"box": label}
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             # evasion: a new run of a held owner and principal, or of a held parent run, starts held
             now = _iso(time.time())
@@ -3036,6 +3095,9 @@ class SignerService:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
         if len(subject(identity)) > 256:   # each of its records names it in full (`via`)
             raise RPCError("forbidden", f"{subject(identity)[:64]}...: a gateway's identity is at most 256 characters")
+        if req["caller"].startswith("box:"):
+            raise RPCError("forbidden", "a box's agent channel calls on its own connection only, never through a "
+                                        "gateway")
         gw, identity = identity, CallerIdentity(*req["caller"].split(":", 1), True)
         self._grant(identity, method)
         self._check_suspended(identity)
@@ -4321,6 +4383,19 @@ class SignerService:
             return {"checkpoint": note, "records": records, "pending": pending}
         return self.log.write(read)
 
+    def _channel_open(self, identity, req):
+        """A box_daemons identity names its own open box run: the rest of this connection is the box's agent channel,
+        box:<uid>/<the box id the run's label holds> (transport.Bound), in the box run's tenant."""
+        key = self._authorize(identity, req)   # the daemon's token for the run: the run is its own
+        run = self.log.runs[key]
+        if run["closed"]:
+            raise RPCError("run_closed", f"{key[1]}: a box's channel opens only while its box run is open")
+        if not run.get("box"):
+            raise RPCError("invalid_request", f"{key[1]} is not a box run: register it with `box`")
+        box = CallerIdentity("box", f"{identity.subject}/{run['box']['id']}", True,
+                             {"tenant": key[0], "run": key[1], "daemon": identity})
+        return Bound({"identity": subject(box)}, box)
+
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},
                 "identity": {"scheme": identity.scheme, "subject": identity.subject[:256], "attested": identity.attested},
@@ -4851,7 +4926,7 @@ def open_service(cfg, **kw):
                          route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
                          content=cfg.get("content"), gateway_wait_s=float(cfg.get("gateway_wait_s", GATEWAY_WAIT_S)),
                          posture=cfg.get("posture"), observe_grace_s=float(cfg.get("observe_grace_s", OBSERVE_GRACE_S)),
-                         verify_tool_results=cfg.get("verify_tool_results"),
+                         verify_tool_results=cfg.get("verify_tool_results"), box_daemons=cfg.get("box_daemons"),
                          **kw)
 
 
