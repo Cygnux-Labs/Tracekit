@@ -367,8 +367,8 @@ of the signed records it read: the viewer's live view, its newest 50,000 rows, w
 days. Holds come only from signed records; a transcript adds how long each blocked the agent and
 whether it ran in a subagent. Each card names every source it mixes, and the page's first line says what it read; the
 tips list sessions from every project under the transcripts folder. Dollars are Anthropic's list prices, dated in
-`tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit, and a model with no
-price gets token counts and a note. A tip without enough data says so and why. The page is worked out again at most
+`tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. The sessions of a model with
+no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most
 once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
 are in [limits](limits.md#viewer).
 

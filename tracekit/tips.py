@@ -35,7 +35,7 @@ from .usage import Prices, _int
 # Anthropic's list prices, USD per million tokens, as of 2026-11-05: https://platform.claude.com/docs/en/about-claude/pricing
 # Cache writes cost 1.25x input for the 5-minute lifetime and 2x for 1 hour; reads 0.1x input, except where shown:
 # https://platform.claude.com/docs/en/build-with-claude/prompt-caching. A model matches by its exact name, then by the
-# longest glob (usage.Prices.rate); a model with no row gets token counts, never a guessed price.
+# longest glob (usage.Prices.rate); a model with no row is left out with a note naming it, never given a guessed price.
 # lean: Haiku 5.5's row is its price for prompts up to 100K tokens ($0.50 / $2.50 beyond); split the row by prompt size
 # if Haiku agents with longer prompts show up
 _OPUS4 = {"input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10}
@@ -243,8 +243,10 @@ def _series(values, n=POINTS):
 def replay(steps, cap, post, r, w_rate):
     """The input side of `steps` (USD) had the agent compacted whenever its context passed `cap`: each step adds the
     tokens it really added (after a real compaction, its growth from `post`); a compaction drops the context to `post`
-    and costs a summary call (the context re-read, SUMMARY tokens written) and a cache write of what is left (`w_rate`
-    USD per million). Each other step keeps its real cache behaviour: one that sent at least REBUILT of its context
+    and costs a summary call and a cache write of what is left (`w_rate` USD per million). The summary call sends the
+    context: what was cached at the step's re-read price and the step's new part at `w_rate`, or, when the step was a
+    rebuild (its cache had expired), all of it at the step's own price per token; and it writes SUMMARY tokens. Each
+    other step keeps its real cache behaviour: one that sent at least REBUILT of its context
     fresh (a cache rebuild, or a call with no cache; not the step after a real compaction) re-pays the whole replayed
     context as it paid its own; any other reads from cache what it did not send fresh. A context that shrinks by less
     than half (an agent trimming itself, cleared tool results) shrinks the replay's by the same share. A re-read is
@@ -258,12 +260,15 @@ def replay(steps, cap, post, r, w_rate):
         nxt = cur + max(0, real - post) if compacted else cur + real - prev if real >= prev else cur * real / prev
         delta, prev, cur = nxt - cur, real, max(0, nxt)
         reread = r["cache_read"] if s["cr"] else r["input"]
+        rebuild = real and not compacted and fresh >= REBUILT * real
         if cur > cap:
-            usd += (cur * reread + SUMMARY * r["output"] + post * w_rate) / 1e6
+            sent = cur * _input_usd(s, r) * 1e6 / real if rebuild else \
+                (cur - max(0, delta)) * reread + max(0, delta) * w_rate
+            usd += (sent + SUMMARY * r["output"] + post * w_rate) / 1e6
             cur, n = post, n + 1
         elif compacted:   # the replay didn't compact here: it reads its context and adds what the step added
             usd += ((cur - delta) * reread + delta * w_rate) / 1e6
-        elif real and fresh >= REBUILT * real:
+        elif rebuild:
             usd += _input_usd(s, r) * cur / real
         else:
             usd += (max(0, cur - fresh) * r["cache_read"] + s["in"] * r["input"]) / 1e6 + _write_usd(s, r)
@@ -439,7 +444,7 @@ def cache_tip(agents, calls, held=(), asked=()):
                 unknown += 1
                 continue
             gap, rebuilt = _start(s) - _start(p), _writes(s) >= REBUILT * ctx
-            if life == LIFE["5m"]:
+            if life == LIFE["5m"] and a["kind"] == "subagent":   # the bins are subagent steps, as they say
                 label = next(lbl for edge, lbl in edges if gap < edge)
                 bins[label, 0] += 1
                 bins[label, 1] += rebuilt
@@ -469,10 +474,10 @@ def cache_tip(agents, calls, held=(), asked=()):
     tip["bins"] = [{"label": lbl, "n": bins[lbl, 0], "rebuilt": bins[lbl, 1]} for _, lbl in edges if bins[lbl, 0]]
     noprice = [f"No price for {', '.join(sorted(unpriced))}: their rebuilds are left out."] if unpriced else []
     if not waits:
-        tip["why"] = ("No step records how long its cache lasts: the tip reads that from Claude Code's transcripts "
-                      "(each write says 5 minutes or 1 hour)." if unknown and not tip["bins"] else
-                      "No wait outlived the prompt cache: no step had to write its whole context again.") \
-            + ("" if not noprice else " " + noprice[0])
+        tip["why"] = noprice[0] if noprice else \
+            "No step records how long its cache lasts: the tip reads that from Claude Code's transcripts (each write " \
+            "says 5 minutes or 1 hour)." if unknown and not tip["bins"] else \
+            "No wait outlived the prompt cache: no step had to write its whole context again."
         return tip
     fix = [w for w in waits if w["fix"]]
     causes = collections.defaultdict(lambda: [0, 0, 0.0, 0.0])
@@ -583,8 +588,10 @@ def holds_tip(holds, calls, signed):
                             "project's .claude/settings.json or .claude/settings.local.json; the command below edits "
                             "~/.claude/settings.json (with jq). Unset it too in the shell that starts the agent, then restart the agent: "
                             "a running session keeps the value it started with. Answer the rest from APPROVALS.",
+                    # written back through the path: a symlinked settings.json stays a link, and the file its mode
                     "copy": "jq 'del(.env.TRACEKIT_APPROVAL_WAIT)' ~/.claude/settings.json > ~/.claude/settings.json.new "
-                            "&& mv ~/.claude/settings.json.new ~/.claude/settings.json"} if blocked > 60 else
+                            "&& cat ~/.claude/settings.json.new > ~/.claude/settings.json && rm "
+                            "~/.claude/settings.json.new"} if blocked > 60 else
                {"text": (f"{top} held {rules[top]} of them" + (f": {words[top]['remedy']}" if words[top].get("remedy")
                                                                else f" ({words[top].get('reason') or 'its rule'}).")
                          + " See each one waiting, with the commands that answer it:") if top else

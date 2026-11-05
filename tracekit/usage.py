@@ -36,7 +36,7 @@ def _int(v):
         return None
     try:
         n = int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: a JSON number past a float (1e999 reads as inf)
         return None
     return n if 0 <= n < 10 ** 12 else None
 

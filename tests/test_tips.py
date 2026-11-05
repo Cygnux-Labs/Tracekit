@@ -89,9 +89,9 @@ class Context(unittest.TestCase):
             cc_assistant("m2", T0 + 2, read=200_000, write=100_000, life="1h")])
         steps = tips.read_transcripts(root, 0)[0]["s1"]["steps"]
         usd, n, ctx = tips.replay(steps, 150_000, 50_000, OPUS, OPUS["cache_write_1h"])
-        # 0.80 the first write; at 200k past the cap: a summary call (200k read, 20k written) and 50k written again;
-        # then 100k more: 50k read, 100k written
-        self.assertAlmostEqual(usd, 0.8 + (0.04 + 0.4 + 0.4) + (0.01 + 0.8))
+        # 0.80 the first write; at 200k past the cap: a summary call (the 100k it had cached read, the step's 100k new
+        # written, 20k out) and 50k written again; then 100k more: 50k read, 100k written
+        self.assertAlmostEqual(usd, 0.8 + (0.02 + 0.8 + 0.4 + 0.4) + (0.01 + 0.8))
         self.assertEqual((n, ctx), (1, [100_000, 50_000, 150_000]))
 
     def test_a_long_main_session_gets_the_point_to_compact_at_and_what_it_saves(self):
@@ -151,6 +151,35 @@ class Context(unittest.TestCase):
             ctx = new
         t = tips.build([x for r in recs for x in tr.feed(r)], None, NOW)["tips"][0]
         self.assertTrue(not t["ok"] or t["saving"]["usd"] <= 0, t.get("saving"))
+
+    def by_hand(self, *steps):
+        out = []
+        for i, kw in enumerate(steps):
+            out.append(tips._step(T0 + i, f"m{i}", "claude-opus-5-5"))
+            out[-1].update(kw)
+        return out
+
+    def test_the_summary_call_writes_the_steps_new_tokens_it_never_had_cached(self):
+        """The summary call's whole context was priced as a cache read, the step's 30k new tokens too, which were never
+        cached: the replay cost $1.734 and the saving was overstated."""
+        steps = self.by_hand({"w1h": 40_000}, *({"cr": 40_000 + 30_000 * (i - 1), "w1h": 30_000} for i in range(1, 5)))
+        usd, n, ctx = tips.replay(steps, 100_000, 30_000, OPUS, OPUS["cache_write_1h"])
+        # 40k, 70k and 100k as they ran (0.32, 0.248, 0.254); at 130k past the cap a summary call reads the 100k it had
+        # cached and writes the step's 30k at the 1-hour rate, writes 20k out, and 30k is written again (0.9); then
+        # 60k: 30k read, 30k written (0.246)
+        self.assertAlmostEqual(usd, 0.32 + 0.248 + 0.254 + (100_000 * 0.2 + 30_000 * 8 + 400_000 + 30_000 * 8) / 1e6 + 0.246)
+        self.assertGreaterEqual(usd, 1.848)   # the reviewer's paper answer, its new part sent uncached: never a larger saving
+        self.assertEqual((n, ctx), (1, [40_000, 70_000, 100_000, 30_000, 60_000]))
+
+    def test_a_summary_call_after_the_cache_expired_pays_as_the_step_did(self):
+        """A step that rebuilt its cache (10k read, 110k written after an idle wait) crossed the cap: its summary call
+        read 120k from a cache that had expired, at $0.20/M, and the replay cost $1.036."""
+        steps = self.by_hand({"w5": 60_000}, {"cr": 60_000, "w5": 30_000}, {"cr": 10_000, "w5": 110_000})
+        usd = tips.replay(steps, 100_000, 30_000, OPUS, OPUS["cache_write"])[0]
+        # 0.30 and 0.162 as they ran; past the cap the summary call sends its 120k as the step paid for it (0.552), writes
+        # 20k out (0.40) and 30k is written again (0.15)
+        self.assertAlmostEqual(usd, 0.3 + 0.162 + 0.552 + 0.4 + 0.15)
+        self.assertGreaterEqual(usd, 1.492)   # the reviewer's paper answer, at the input price
 
     def test_a_replay_of_an_uncached_agent_pays_its_re_reads_as_input(self):
         steps = [dict(tips._step(T0 + i, f"x{i}", "claude-opus-5-5"), **{"in": c}) for i, c in
@@ -236,6 +265,12 @@ class Cache(unittest.TestCase):
         # one more poll, then the step reads the 200k it had and writes its 12k at the 5-minute rate
         self.assertEqual((w["usd"], w["alt"]), (1.06, round((200_000 * 0.2 + 200 * 20 + 200_000 * 0.2 + 12_000 * 5) / 1e6, 4)))
 
+    def test_the_wait_bins_count_subagent_steps_only(self):
+        """The bins said subagent steps but counted a main session's too (an API-key session writes 5-minute entries)."""
+        t = self.build([cc_assistant("m0", T0, write=50_000), cc_assistant("m1", T0 + 10, read=50_000, write=1_000)],
+                       sub=False)
+        self.assertEqual(t["bins"], [])
+
     def test_the_rewrite_after_a_compaction_is_not_a_wait(self):
         t = self.build([
             cc_assistant("m0", T0, read=700_000, write=10_000, tools=[("toolu_t", "Bash", {"command": "make test"})]),
@@ -275,7 +310,7 @@ class Cache(unittest.TestCase):
     def test_a_rebuild_of_a_model_without_a_price_says_so(self):
         t = self.build([cc_assistant("m0", T0, write=200_000, model="gpt-9", tools=[("toolu_s", "Bash", {"command": "sleep 400"})]),
                         cc_result("toolu_s", T0 + 400), cc_assistant("m1", T0 + 405, write=200_000, model="gpt-9")])
-        self.assertIn("No price for gpt-9: their rebuilds are left out.", t["why"])
+        self.assertEqual(t["why"], "No price for gpt-9: their rebuilds are left out.")   # not "no wait outlived" too
 
     def test_idle_time_is_shown_but_no_poll_is_counted_for_it(self):
         t = self.build([cc_assistant("m0", T0, write=100_000, life="1h"),
@@ -328,8 +363,10 @@ class Holds(unittest.TestCase):
                                        "remedy": ""}])
         self.assertEqual(t["saving"], {"usd": None, "minutes": 8})
         # it waited and nobody answered: the edit that takes the wait out of Claude Code's settings
+        # written back through the path, so a symlinked settings.json stays a link and the file keeps its mode
         self.assertEqual(t["fix"]["copy"], "jq 'del(.env.TRACEKIT_APPROVAL_WAIT)' ~/.claude/settings.json > "
-                                           "~/.claude/settings.json.new && mv ~/.claude/settings.json.new ~/.claude/settings.json")
+                                           "~/.claude/settings.json.new && cat ~/.claude/settings.json.new > "
+                                           "~/.claude/settings.json && rm ~/.claude/settings.json.new")
         for where in ("$CLAUDE_CONFIG_DIR/settings.json", ".claude/settings.local.json", "restart the agent"):
             self.assertIn(where, t["fix"]["text"])
         self.assertIn("a person answered in a median 4 s", " ".join(t["math"]))
@@ -409,8 +446,11 @@ class Sources(unittest.TestCase):
             cc_assistant("m0", T0, write=10, tools=[("toolu_1", "Bash", {"command": ["ls"]})]), odd,
             {"type": "user", "timestamp": "2026-10-10T00:00:00Z", "message": {"content": [
                 {"type": "tool_result", "tool_use_id": {"x": 1}}, {"type": "tool_result", "tool_use_id": "toolu_1"}]}}])
+        with open(os.path.join(root, "p", "s.jsonl"), "a") as f:   # a count past a float: 1e999 reads as inf
+            f.write('{"type": "assistant", "timestamp": "%s", "message": {"id": "m2", "model": "claude-opus-5-5", '
+                    '"content": [], "usage": {"input_tokens": 5, "output_tokens": 1e999}}}\n' % iso(T0 + 2))
         out = tips.build([], root, NOW)
-        self.assertEqual(out["sources"]["transcripts"]["steps"], 2)
+        self.assertEqual(out["sources"]["transcripts"]["steps"], 3)
 
     def test_durations_read_as_plain_words(self):
         """A wait read 5m29s and a saving 8m00: words a person reads at a glance, with seconds only under 10 minutes."""
