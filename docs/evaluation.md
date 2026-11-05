@@ -531,9 +531,10 @@ The recorded results, measured after those rule changes on a pool that is no lon
 | strict | 284 / 420 (67.6%) | 152 (36.2%) | 44 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
-destructive 16 of 36, defence evasion 14 of 30, supply chain 15 of 27; strongest: database 32 of
-32, Kubernetes 23 of 27. By evasion, calls with none are caught 153 of 275; quoting 9 of 18, environment prefixes 6 of 14, substitution 38
-of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`). Per category, severity and evasion, and every miss
+destructive 16 of 36, defence evasion 15 of 30, supply chain 15 of 27; strongest: database 32 of
+32, Kubernetes 23 of 27. By evasion, calls with none are caught 153 of 275; quoting 9 of 18, environment prefixes 8 of 14, substitution 40
+of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
+and one that is a bare program name, `K=kubectl; $K …`, is still held: it only hides that name). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
 The blind pools, at publication (blind) and now (after the rules their misses informed), a call caught when it is
@@ -561,9 +562,9 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 122 / 120 | 326 / 382 | 721 / 917 | 5.85 / 6.82 |
-| strict, RE2 / regex | 121 / 118 | 274 / 334 | 597 / 775 | 4.87 / 5.97 |
-| dev, RE2 / regex | 104 / 100 | 273 / 300 | 575 / 576 | 5.0 / 5.42 |
+| default, RE2 / regex | 120 / 119 | 282 / 344 | 706 / 852 | 5.23 / 6.32 |
+| strict, RE2 / regex | 119 / 117 | 259 / 302 | 574 / 747 | 4.72 / 5.49 |
+| dev, RE2 / regex | 107 / 103 | 256 / 283 | 563 / 567 | 4.67 / 5.07 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
