@@ -129,6 +129,11 @@ class V2(tb.Case):
         self.assertEqual(verify(out, "--trust", self.trust), (1, (
             f"FAILED: the witness ({tb.WITNESS}) cosigned a different version of this log: it was changed after the "
             "witness saw it.\nAdd --detail to see each check.\n")))
+        # the check's own words: a witness named witness.… is said once in the report, and --json keeps them as checked
+        self.assertIn(f"[FAIL] checkpoint — bad cosignature from pinned {tb.WITNESS}\n",
+                      verify(out, "--trust", self.trust, "--detail")[1])
+        self.assertEqual([c["detail"] for c in json.loads(verify(out, "--trust", self.trust, "--json")[1])["checks"]
+                          if c["check"] == "checkpoint"], [f"bad cosignature from pinned witness {tb.WITNESS}"])
 
     def test_a_dev_bundle_is_not_proof_against_the_agent_however_it_was_witnessed(self):
         self.assertEqual(verify(self.bundle("same-user"), "--trust", self.trust),
