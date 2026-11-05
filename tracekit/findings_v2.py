@@ -40,6 +40,9 @@ Checks, for each call the run allowed or ran:
           X111..X114 and X120 on the v2 view: tracekit.findings_text
   TK-X206 (high) a kernel sensor's exec, connect or file effect no call explains, and TK-X207 (medium) a call that
           returned ok without the effect it should have had (findings_effects)
+  TK-X212 (high; medium for a fetch with no connection) of a Tracekit Box box run, against the runs of its agent
+          channel: a door event no call of the agent's explains, a fetch the agent said returned ok with no connection
+          through the box's door, or one the door refused (findings_box)
 For each prompt line of the main transcript:
   TK-X208 (high) the run's prompt hook recorded prompts, and none of them is this line's text: a line the harness never
           submitted (an agent can append one to its own transcript). It is no request: it lifts and clears nothing.
@@ -84,7 +87,7 @@ import sys
 import tempfile
 import time
 
-from . import __version__, constraints, findings_effects, findings_text, parsers
+from . import __version__, constraints, findings_box, findings_effects, findings_text, parsers
 from .findings import SEVERITY, WRITE_TOOLS
 from .integrations.claude_code import midline_live, prompt_parts
 from .signer.reconcile import PROVIDER_HOSTS
@@ -102,7 +105,7 @@ EXCERPT = 600
 SHELL_TOOLS = ("Bash", "bash", "shell")
 
 SEVERITIES = {"TK-X201": "info", "TK-X202": "medium", "TK-X203": "high", "TK-X204": "high", "TK-X208": "high",
-              **findings_text.SEVERITIES, **findings_effects.SEVERITIES}
+              **findings_text.SEVERITIES, **findings_effects.SEVERITIES, **findings_box.SEVERITIES}
 WHY = {   # rule -> (why it matters, what to do)
     "TK-X201": ("nothing the model said explains this action, so there is no stated reason to check it against",
                 "read the action and its result; if the model's reasoning was withheld, turn on thinking summaries"),
@@ -119,6 +122,7 @@ WHY = {   # rule -> (why it matters, what to do)
                 "treat the line as the agent's words, not the person's; find what wrote it"),
     **findings_text.WHY,
     **findings_effects.WHY,
+    **findings_box.WHY,
     "TK-X210": ("a reviewer model read the run and found that what was asked, said and done disagree: a model's "
                 "opinion, not proof", "read its explanation against the cited records; it never blocks a call or "
                 "changes the exit code"),
@@ -154,6 +158,7 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
                 "UserPromptSubmit)"),
     **findings_text.REASONS,
     **findings_effects.REASONS,
+    **findings_box.REASONS,
     "no_answer": ("the reviewer model gave no usable answer (an error, a timeout or a refusal)",
                   "check --review-url, its API key and --review-model; the line above names the error"),
     "malformed": ("the reviewer model's answer was not the JSON its schema asks for",
@@ -161,7 +166,8 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "no_findings_run": ("no findings run could be registered to record the reviewer model's call in",
                         "run it as an identity signer.yaml `analyzers` lists, against the signer that holds the run"),
 }
-CHECKS = ("TK-X201", "TK-X202", "TK-X203", "TK-X204", "TK-X208", *findings_text.CHECKS, *findings_effects.CHECKS)
+CHECKS = ("TK-X201", "TK-X202", "TK-X203", "TK-X204", "TK-X208", *findings_text.CHECKS, *findings_effects.CHECKS,
+          *findings_box.CHECKS)
 STOPS = ("budget", "size")   # not checkable because the analysis stopped short: the result is INCOMPLETE
 PROMPT_HOOK = ":UserPromptSubmit"   # an input.observed source: <agent>:UserPromptSubmit, the hook's prompt
 FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorability classes, best first
@@ -931,7 +937,7 @@ def _check(run, out, project, allow, deadline, clock):
 
 
 def analyze(records, content=None, project=None, allow=(), partial=False, budget_s=BUDGET_S, clock=time.monotonic,
-            effects=None):
+            effects=None, others=None):
     """The checks over one run's v2 records. `content(records)`: (run_seq, content, opened) of those of `records` the
     vault holds content for, in run_seq order (why.signed.vault_content), or None (no vault: little is checkable).
     -> the --json shape (docs/findings.md): {"run_id", "agent", "summary": the one line, "findings": [{verdict,
@@ -939,7 +945,9 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
     ("details" per finding, "tiers" per check, "constraints" stated, "prompts": each prompt line confirmed or not,
     "calls": tool_use_id -> the reasoning before it and each check's outcome, "effects": run_seq -> each kernel sensor
     effect's call, "effect_window")}; each {verdict, cites} is what review_finding signs; `effects`:
-    findings_effects.options(). EvidenceAlert (from `content`) when the vault's content does not open its record."""
+    findings_effects.options(); `others`: (run_id -> records of the other runs the source holds, their content as
+    `content` reads it, never through a reviewer's tee), for TK-X212 of a box run (its agent channel's runs), or None.
+    EvidenceAlert (from `content`) when the vault's content does not open its record."""
     run, deadline = _Run(records), clock() + budget_s
     out = {"run_id": run.run_id, "agent": run.agent, "findings": [],
            "shown": {"details": [], "constraints": [], "prompts": [], "calls": {}}}
@@ -962,6 +970,7 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
     cov, forms, observed = _check(run, out, project, allow, deadline, clock)
     findings_text.check(run, content, out, cov, deadline, clock)
     observed(findings_effects.check(run, out, cov, effects, deadline, clock))
+    findings_box.check(run, out, cov, others, effects, deadline, clock)
     out["coverage"] = {"verdict": {
         "kind": "coverage", "rule": "TK-X200", "severity": "info",
         "checks": {r: {"checked": c["checked"], "found": c["found"],
@@ -1045,7 +1054,8 @@ def render(out):
         lines.append("Not checkable (never counted as a pass):")
         for r, why, n in gaps:
             plain, fix = REASONS[why]
-            unit = "prompt line" if r == "TK-X208" else findings_effects.unit(r, why)
+            unit = "prompt line" if r == "TK-X208" else findings_box.unit(why) if r in findings_box.CHECKS else \
+                findings_effects.unit(r, why)
             lines += [f"  {r} for {n} {unit}{'s' * (n != 1)}: {plain}.", f"    To make it checkable: {fix}"]
         lines.append("")
     if out["shown"]["constraints"]:
@@ -1133,7 +1143,8 @@ def main(argv=None):
         "TK-X204 a stated constraint broken, TK-X208 a prompt line the harness never submitted, TK-X205 success "
         "claimed after a failure, TK-X101..X104 claimed actions that never ran, TK-X111..X114 denied actions that "
         "did, TK-X120 a risky action never mentioned, TK-X206 a kernel sensor's effect no call explains, TK-X207 a "
-        "call with no effect; TK-X200 coverage and the monitorability score; with --review, TK-X210 a reviewer "
+        "call with no effect, TK-X212 a Tracekit Box box's door events against its agent's own account (on the box "
+        "run); TK-X200 coverage and the monitorability score; with --review, TK-X210 a reviewer "
         "model's reading, warn only), and sign the findings. Exit 0, 4 when a finding other than TK-X210 is high or "
         "worse, 3 when no finding is but the analysis stopped short of a check (INCOMPLETE: its time budget or size "
         "caps), 2 on an error (findings that could not be signed among them)."))
@@ -1200,6 +1211,8 @@ def main(argv=None):
             store = a.store or dev_data_dir(create=False)
             run_id = a.run or _latest(store)
             records = run_id and import_v2.store_records(store, run_id).get(run_id)
+            box = records and findings_box.label(records)
+            runs = findings_box.store_runs(store, run_id) if box and not box[1] else {}   # a box run's agent runs
         except FileNotFoundError as e:
             print(f"tracekit analyze: {e}", file=sys.stderr)
             return 2
@@ -1237,7 +1250,7 @@ def main(argv=None):
     try:
         try:
             out = analyze(records, rv.tee(content) if rv else content, a.project, a.allow, a.open, a.budget,
-                          effects=findings_effects.from_args(a))
+                          effects=findings_effects.from_args(a), others=(runs, content))
         except EvidenceAlert as e:
             print(f"tracekit analyze: EVIDENCE ALERT: {e}", file=sys.stderr)
             return 4

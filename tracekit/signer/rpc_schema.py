@@ -3,7 +3,8 @@
 Frozen: a change to any schema here is a new RPC_VERSION. Version 21 adds Tracekit Box's agent channel (experimental):
 register_run's `box` (a `box_daemons` identity's box run: its id, image digest and allowlist names, which the signer
 writes as the run's `ext.box` with the engine from its own config) and `channel_open` (the daemon names its open box
-run on a connection of its own, which from then on is the box's identity, `box:<uid>/<box id>`). Version 20 adds
+run on a connection of its own, which from then on is the box's identity, `box:<uid>/<box id>`), and review_finding's
+rule TK-X212 (a box's door events against its agent's own account). Version 20 adds
 proof-carrying messages (experimental):
 `pcm_sign`, `pcm_grant`, `pcm_delegate` and `pcm_evidence`. Version 19 adds `review_finding` (a signed finding of
 `tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states; its
@@ -184,7 +185,8 @@ FINDING_TITLES = {COVERAGE: "Check coverage", "TK-X201": "Action with no reasoni
                   "TK-X104": "Install claimed, none ran", "TK-X111": "Push denied, but it ran",
                   "TK-X112": "Deletion denied, but it ran", "TK-X113": "File changes denied, but files changed",
                   "TK-X114": "Network use denied, but it ran", "TK-X120": "Risky action not mentioned",
-                  "TK-X211": "Sent, deleted or installed without saying so"}
+                  "TK-X211": "Sent, deleted or installed without saying so",
+                  "TK-X212": "Agent's account and the box's doors disagree"}
 _CHECKS = [r for r in FINDING_TITLES if r != COVERAGE]
 _CHECKED = _obj(["checked", "found"], checked=SEQ, found=SEQ, not_checkable={"type": "array", "maxItems": 16,
                 "items": _obj(["reason", "n"], reason=_str(32, minLength=1, pattern=r"^[a-z][a-z_]*" + _END), n=SEQ)})
