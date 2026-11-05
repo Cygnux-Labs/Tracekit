@@ -48,7 +48,7 @@ MAX_TEXT = 4096   # characters of a path or a reason a receipt records (Linux's 
 MAX_FILES = 4   # receipts in one call's result: with MAX_TENSORS and MAX_TEXT, under half a frame (sdk sendable)
 ZERO = "sha256:" + "0" * 64
 # a lone & (not &&, 2>&1, &> or |&) or coproc in a command's text: a command the line leaves running. Read off the raw
-# text, as the policy's parser keeps no mark of it, so a & inside quotes counts too (refused, not guessed); that parser
+# text, not the policy parser's `background` mark, so a & inside quotes counts too (refused, not guessed); that parser
 # reads no path in a coproc line today, so coproc refuses only once it does
 BACKGROUND = re.compile(r"(?<![&>|<])&(?![&>])|\bcoproc\b")
 # a call's receipts when they would take its result past the half frame a result may use (claude_code._post)

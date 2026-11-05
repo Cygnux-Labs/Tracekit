@@ -1566,6 +1566,9 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
         problems.append(f"records after log.closed at seq {closed['seq']}")
     counted = ", ".join(f"{k} {n}" for k, n in sorted(gaps.items()))
     named = "" if tenant is None else f" of tenant {tenant[:64]!r}"
+    # what the range holds, for a reader that needs every run of the tenant (tracekit analyze --v2's TK-X212)
+    rep.run_set = {"from": lo, "registered": set(registered), "open": set(registered) - set(finals)} if not problems \
+        else None
     rep.check("run-set", not problems, f"COMPLETE, {span}{named} ({len(registered)} runs registered, {len(finals)} "
                                        f"final, {len(set(registered) - set(finals))} open"
                                        + (f"; tenant-level gaps: {counted}" if gaps else "") + ")" if not problems else

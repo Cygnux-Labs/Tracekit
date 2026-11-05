@@ -977,6 +977,35 @@ class Shell(unittest.TestCase):
         self.assertEqual([c["glob"] for c in shell.parse("ls []x]; ls x[]")], [True, True, True, True, False])   # ] first
         self.assertIn(["ls", "]"], argvs("ls []x]"))   # is in the set
 
+    def test_a_command_sent_to_the_background(self):
+        """`background` on each command a pipeline ending in `&` runs, nested ones too (tracekit.findings_box reads
+        it); never for a quoted `&`, a heredoc's text, &&, &> or |&."""
+        def background(command):
+            return [c["argv"][0] for c in shell.parse(command) if c.get("background")]
+        for command, want in (("npm run dev &", ["npm"]), ("(npm run dev &)", ["npm"]), ("a | b & c", ["a", "b"]),
+                              ("sh -c 'npm start &'", ["npm"]), ("(a; b) &", ["a", "b"]), ("nohup a &", ["nohup", "a"]),
+                              ("cat <<EOF\nx &\nEOF\nb &", ["b"]), ("a # c &\nb", []), ("npm run dev \\\n&", ["npm"]),
+                              ('echo "&"', []), ("git commit -qm'a & b'", []), ("a && b", []), ("a &> f", []),
+                              ("a |& b", []), ("echo $'a & b'", []), ("sh -c 'npm start' &", ["sh", "npm"]),
+                              # #608's review: a block or an and-or list sent to the background, from its start
+                              ("{ npm run dev; } &", ["npm"]),
+                              ("while true; do curl -s https://example.com/health; sleep 30; done &",
+                               ["true", "curl", "sleep"]),
+                              ("if true; then npm run dev; fi &", ["true", "npm"]), ("for f in 1 2; do a; done &", ["a"]),
+                              ("case x in y) a;; esac &", ["a"]), ("x; { a; b; } &", ["a", "b"]),
+                              ("{ a; } && c &", ["a", "c"]), ("x || { a; } | b &", ["x", "a", "b"]),
+                              ("a && b &", ["a", "b"]), ("curl -s https://example.com && x=1 &", ["curl"]),
+                              ("a; b &", ["b"]), ("{ a & b; }", ["a"]), ("if a; then b; fi; c", []),
+                              ("{ a; }; c &", ["c"]),
+                              # a subshell or case arms in the same pipeline as a block: a nested list keeps the
+                              # enclosing and-or list's state
+                              ("{ npm run dev; } | (x=1) &", ["npm"]),
+                              ("{ npm run dev; } | case q in y) x=1;; esac &", ["npm"]),
+                              ("{ a; } | (x) &", ["a", "x"]), ("a && (x) | { b; } &", ["a", "x", "b"]),
+                              ("a && case q in y) x;; esac | { b; } &", ["a", "x", "b"])):
+            with self.subTest(command):
+                self.assertEqual(background(command), want)
+
     def test_ordinary_commands(self):
         cases = {
             "pytest -q tests/test_policy2.py": [["pytest", "-q", "tests/test_policy2.py"]],
