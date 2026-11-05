@@ -297,7 +297,9 @@ class DevSignerEndToEnd(unittest.TestCase):
         with open(trust) as f:
             self.assertEqual(json.load(f), {"logs": [vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0})
         self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", out)
-        self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust))
+        self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust, "--detail"))
+        said = self.cli("verify", out, "--trust", trust)
+        self.assertTrue(said.startswith("VERIFIED: ") and "\nNOT PROOF AGAINST THE AGENT: " in said, said)
         self.assertTrue(self.held())   # the signer kept running throughout
 
     def test_export_says_what_it_wrote_and_the_commands_it_gives_verify_it(self):
@@ -320,7 +322,7 @@ class DevSignerEndToEnd(unittest.TestCase):
                                r"trust\.json\n$")
         trust, verify = [shlex.split(x)[1:] for x in said.splitlines() if x.startswith("  tracekit ")]
         self.cli(*trust)
-        self.assertIn("Integrity: VERIFIED.", self.cli(*verify))
+        self.assertRegex(self.cli(*verify), r"^VERIFIED: (\d+ tool calls? in )?\d+ signed records, none changed")
         info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "-o", "again.tkb", "--json"))
         self.assertEqual((info["bundle"], info["verifier_min_version"] in said), ("again.tkb", True))
 
@@ -383,12 +385,17 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.cli("export", "--v2", "--run", run.run_id, "--dev", "--with-findings", "-o", bundle)
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
-            self.assertEqual(cli.main(["verify", bundle, "--trust", trust]), 0)
+            self.assertEqual(cli.main(["verify", bundle, "--trust", trust, "--detail"]), 0)
         text = report.getvalue()
         self.assertIn("[WARN] reviews — 2 review(s): 2 self-asserted", text)
         self.assertIn("\nIntegrity: VERIFIED.\nAssurance: dev;", text)
         self.assertTrue(text.endswith("Findings: 1 finding(s) (1 medium) and 1 coverage review(s); 2 self-asserted "
                                       "(an opinion of the run, not its integrity).\n"), text[-300:])
+        short = io.StringIO()
+        with contextlib.redirect_stdout(short):
+            self.assertEqual(cli.main(["verify", bundle, "--trust", trust]), 0)
+        self.assertIn("\nFindings: 1 finding(s) (1 medium) and 1 coverage review(s); 2 self-asserted (an opinion of "
+                      "the run, not its integrity).\nWarnings: ", short.getvalue())
 
     def test_idle_exit(self):
         os.environ["TRACEKIT_DEV_IDLE"] = "1"
@@ -568,7 +575,7 @@ class DevSignerOverTcp(unittest.TestCase):
         out, trust = os.path.join(self.dir, "run.tkb"), os.path.join(self.dir, "trust.json")
         DevSignerEndToEnd.cli(self, "export", "--v2", "--run", run.run_id, "-o", out)   # nudges the signer over TCP
         DevSignerEndToEnd.cli(self, "signer", "trust", "-o", trust)
-        self.assertIn("Integrity: VERIFIED", DevSignerEndToEnd.cli(self, "verify", out, "--trust", trust))
+        self.assertIn("Integrity: VERIFIED", DevSignerEndToEnd.cli(self, "verify", out, "--trust", trust, "--detail"))
         endpoint = os.path.join(self.run_dir, autospawn.ENDPOINT)
         with open(endpoint) as f:
             self.assertEqual(json.load(f)["pid"], c.hello["pid"])

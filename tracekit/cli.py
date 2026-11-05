@@ -22,6 +22,13 @@ def experimental_gate(enabled, what):
     return True
 
 
+def guidance():
+    """The line `tracekit init --v2` prints once it installs hooks: where the agent's instructions for a held or blocked
+    call are (the Claude Code plugin's tracekit-holds skill holds the same lines)."""
+    return ("when Tracekit holds or blocks a call, the agent should tell you and pass on the commands: paste the lines "
+            f"at {wiki_url('docs/coding-agents.md', 'when-tracekit-stops-a-call')} into its CLAUDE.md or AGENTS.md")
+
+
 def experimental(what, help=False):
     """The one line each experimental command or server prints when it starts (docs/support.md); with `help`, the line
     its --help ends with, on stdout."""
@@ -43,7 +50,8 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
               "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli",
-              "report": "report", "audit": "audit"}  # subcommands with their own parsers
+              "report": "report", "audit": "audit",
+              "verify-model": "model_receipt"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
@@ -55,7 +63,7 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
                  "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm",
-                 "report": "tracekit report", "audit": "tracekit audit"}
+                 "report": "tracekit report", "audit": "tracekit audit", "verify-model": "tracekit verify-model"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -247,6 +255,10 @@ def main(argv=None):
     p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
                        "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("verify-model", help="check a model file against the receipt a coding-agent hook recorded when "
+                       "a call wrote it, and name the tensors that changed: `verify-model OLD NEW --bundle B --run R "
+                       "--trust T`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -264,9 +276,12 @@ def main(argv=None):
                        "`approvals slack serve --config slack.yaml`")
     p.add_argument("--signer", help="the signer's Unix socket or tcp://host:port (default: the same-user dev signer)")
     acts = p.add_subparsers(dest="action", required=True)
-    acts.add_parser("list", help="pending and recent approvals").add_argument("--json", action="store_true",
-                                                                            help="print one JSON array")
-    q = acts.add_parser("show", help="one approval, with the signer's copy of the arguments in full")
+    q = acts.add_parser("list", help="approvals, those waiting for an answer first, newest first, each with what its "
+                        "call runs")
+    q.add_argument("--json", action="store_true", help="print one JSON array: every approval, in the signer's order")
+    q.add_argument("--all", action="store_true", help="the expired ones too")
+    q = acts.add_parser("show", help="one approval: why its call was held, what to do instead, the commands that "
+                        "answer it, and the signer's copy of the arguments in full")
     q.add_argument("approval_id")
     q.add_argument("--json", action="store_true", help="print one JSON object without a pager")
     for name in ("approve", "reject"):
@@ -307,6 +322,8 @@ def main(argv=None):
     p.add_argument("-o", "--out", help="the bundle (default: <run id>.tkb here); its trust config goes next to it")
     p.add_argument("--open", action="store_true", help="the most recent run even if it is still open (a coding "
                    "agent's session run stays open until the session ends), verified up to its last checkpointed record")
+    p.add_argument("--detail", action="store_true", help="print every check, then the Integrity and Assurance lines, "
+                   "as `tracekit verify --detail` does")
 
     p = sub.add_parser("verify", help="verify a .tkb offline")
     p.add_argument("bundle")
@@ -320,6 +337,8 @@ def main(argv=None):
                    help="format v2: a report of a monitor the trust config pins (tracekit monitor)")
     p.add_argument("--revocations", action="append", default=[],
                    help="format v2: record-key revocations, JSON lines (an issuer's issuance.jsonl)")
+    p.add_argument("--detail", action="store_true", help="print every check, then the Integrity and Assurance lines "
+                   "(the full report; scripts that read the text use it, or --json)")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint "
@@ -337,7 +356,10 @@ def main(argv=None):
 
     p = sub.add_parser("demo", help="end-to-end demo in a temp folder")
     p.add_argument("--real", action="store_true", help="drive a real `claude -p` session instead of the scripted agent")
-    p.add_argument("--keep", action="store_true")
+    p.add_argument("--keep", action="store_true", help="keep the demo's temp folder (its bundles, trust config and "
+                   "signer data) and print where it is; without it the folder is deleted at the end")
+    p.add_argument("--detail", action="store_true", help="print every check of each verification, as `tracekit verify "
+                   "--detail` does (not with --why)")
     p.add_argument("--server", action="store_true",
                    help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
     p.add_argument("--why", action="store_true",
@@ -411,6 +433,8 @@ def _init_remote_v2(a, url):
     print(f"remote v2 signer configured: {url}; v2 hooks: {hooks or 'not installed'}")
     if hooks and not a.no_thinking_summaries:
         print(install.thinking_line(hooks, on))
+    if hooks:
+        print(guidance())
     print("for SDK clients, set:\n" + "\n".join(f"  export {k}={v}" for k, v in env.items()))
     return 0
 
@@ -487,6 +511,8 @@ def _run(a):
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
+            if settings:
+                print(guidance())
             if settings and a.agent == "codex":
                 import pwd
 
@@ -502,8 +528,11 @@ def _run(a):
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"v2 {a.agent} hooks:", path or "not installed")
+            print(install.DEV_MODE_LINE)
             if summary:
                 print(agent_hooks.reasoning_line(*summary))
+            if path:
+                print(guidance())
             if path and a.agent == "codex":
                 print(agent_hooks.codex_trust_line())
             return 0
@@ -516,6 +545,7 @@ def _run(a):
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"dev signer running (same-user): {cfg['socket']}")
+            print(install.DEV_MODE_LINE)
             print(f"{a.agent} hooks:", path or "not installed")
             if path and a.agent == "codex":
                 print(agent_hooks.codex_trust_line())
@@ -536,6 +566,7 @@ def _run(a):
                           f"runs them "
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
                           f"/plugin disable {plugin_key}, then run init again")
+                    print(install.DEV_MODE_LINE)
                     if not a.no_thinking_summaries:
                         try:
                             print(install.thinking_line(hooks, install.thinking_on(hooks)))
@@ -556,8 +587,11 @@ def _run(a):
                     print(f"tracekit: {e}", file=sys.stderr)
                     return 1
                 print("v2 hooks:", hooks or "not installed")
+                print(install.DEV_MODE_LINE)
                 if hooks and not a.no_thinking_summaries:
                     print(install.thinking_line(hooks, on))
+                if hooks:
+                    print(guidance())
                 return 0
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
@@ -568,9 +602,10 @@ def _run(a):
             if a.proxy:
                 print(f"model proxy: {cfg['proxy_url']} (ANTHROPIC_BASE_URL set in {hooks or 'no settings file'})")
             print(f"dev signer running (same-user): {cfg['socket']}")
+            print(install.DEV_MODE_LINE)
             print("hooks:", hooks or "not installed")
             return 0
-        if a.agent in ("antigravity", "crush"):   # the v1 system signer installs Claude Code's hooks only
+        if a.agent in ("antigravity", "crush", "kilo", "devin"):   # the v1 system signer installs Claude Code's hooks only
             print(f"tracekit: --agent {a.agent} goes with --dev or --v2", file=sys.stderr)
             return 2
         user = a.user or os.environ.get("SUDO_USER") or getpass.getuser()
@@ -592,9 +627,14 @@ def _run(a):
     if a.cmd == "status":
         from . import install
         from .sdk import autospawn
-        print(json.dumps({**install.status(), "signer_v2": autospawn.status()}, indent=2))
+        st, v2 = install.status(), autospawn.status()
+        from . import client
+        system = client.system_config()   # a root-owned config is system mode: the signer isn't the same user's
+        dev = (st["client_config"] or {}).get("mode") == "dev" or v2.get("dev") and not system
+        print(json.dumps({**st, "signer_v2": v2, **({"dev_mode": install.DEV_MODE_LINE} if dev else {})}, indent=2))
         return 0
     if a.cmd == "up":
+        from . import install
         from .sdk import autospawn
         if not _signer_extra():
             return 2
@@ -608,6 +648,7 @@ def _run(a):
             print(json.dumps(hello))
         else:
             print(f"dev signer {hello['version']} running (pid {hello['pid']})" if hello else "dev signer starting")
+            print(install.DEV_MODE_LINE)
         return 0
     if a.cmd == "down":
         from .sdk import autospawn
@@ -741,8 +782,11 @@ def _run(a):
                               "integrity": integrity, "assurance": assurance, "notes": rep.notes,
                               **({"findings": rep.findings} if getattr(rep, "findings", None) else {})},
                              indent=2))
-        else:
+        elif a.detail:
             mod.print_report(rep, code)
+        else:
+            from .verify import summary
+            summary(rep, code, integrity, assurance)
         return code
     if a.cmd == "policy":
         from .policy2 import compile as policy_compile
@@ -790,9 +834,9 @@ def _run(a):
         return demo_why.main(keep=a.keep)
     if a.cmd == "demo" and a.server:
         from . import demo_server
-        return demo_server.main(keep=a.keep)
+        return demo_server.main(keep=a.keep, detail=a.detail)
     if a.cmd == "demo":
-        return demo.main(real=a.real, keep=a.keep, agent=a.agent)
+        return demo.main(real=a.real, keep=a.keep, agent=a.agent, detail=a.detail)
     return 2
 
 
@@ -991,10 +1035,12 @@ def _last(a):
         print(f"tracekit last: cannot pin the dev signer's key: {e}", file=sys.stderr)
         return 1
     rep, code = v2.verify(out, trust)
-    if code:
+    print(f"run {run_id} ({agent})")
+    if a.detail:
         v2.print_report(rep, code)
     else:
-        print(f"run {run_id} ({agent})\nIntegrity: {rep.integrity}.\nAssurance: {rep.assurance}.")
+        from .verify import summary
+        summary(rep, code, rep.integrity, rep.assurance)
     print(f"bundle: {out}\ncheck it again: tracekit verify {_quote(out)} --trust {_quote(trust)}\n"
           "next: tracekit view --dev   (every run, replayed and reviewed)")
     return code
@@ -1035,11 +1081,72 @@ def _self_approved(state, dev):
                "sets approvals: {self_approval: allow}." if dev else ""))
 
 
+def _args(x):
+    """The arguments of approval `x` (approval_get), decoded: None once it is no longer live."""
+    from .format.canon import loads_strict
+    return loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]
+
+
+def _gist(c, aid, n=60):
+    """The call approval `aid` holds, in at most `n` characters: its command, file path or URL, else its arguments as
+    JSON, from the signer's copy; "" when the signer gives none."""
+    from .signer.rpc_schema import RPCError
+    try:
+        args = _args(c.approval_get({"approval_id": aid}))
+    except RPCError:   # answered or gone since it was listed
+        return ""
+    if args is None:
+        return ""
+    v = next((args[k] for k in ("command", "file_path", "path", "url") if isinstance(args, dict)
+              and isinstance(args.get(k), str)), None)
+    text = " ".join((json.dumps(args) if v is None else v).split())
+    return text if len(text) <= n else text[:n - 3] + "..."
+
+
+def _stop_lines(c, x):
+    """What `approvals show` adds to approval `x`: why its call was held and what to do instead (the reasons and
+    remedies of its rules, in the policy whose hash it records: a shipped pack's, or one the dev signer kept), when
+    it expires, the commands that answer it and where the viewer opens it."""
+    import datetime
+
+    from . import view
+    from .integrations.claude_code import approvals_cmd
+    from .policy2.compile import ENGINE_REASONS
+    from .signer.service import dev_data_dir
+    try:
+        kept = None if c.signer else os.path.join(dev_data_dir(create=False), "policies")
+    except FileNotFoundError:
+        kept = None
+    reasons = view.policy_reasons(kept=kept)
+    known = reasons.get(x["policy_hash"], {})
+    flags = {r["id"] for r in reasons.policies.get(x["policy_hash"], {}).get("flag", [])}   # a flagged call runs
+    rules = [(i, known.get(i) or ENGINE_REASONS.get(i) or {"reason": view.ENGINE_RULES.get(i, "")})
+             for i in x["rule_ids"] if i != "TK-UNKNOWN-TOOL" and i not in flags]
+    why = "; ".join(f"{r['reason']} ({i})" for i, r in rules if r.get("reason"))
+    instead = " ".join(dict.fromkeys(r["remedy"] for _, r in rules if r.get("remedy")))
+    try:
+        left = (datetime.datetime.strptime(x["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                .replace(tzinfo=datetime.timezone.utc) - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+        left = f" (in {left // 60:.0f} min)" if left >= 0 else f" ({-left // 60:.0f} min ago)"
+    except ValueError:   # another signer's time format: as it is
+        left = ""
+    cmd = approvals_cmd(c.signer)
+    why = why or ("not on this machine: `tracekit policy compile <file>` prints the reasons of the signer's policy, "
+                  + x["policy_hash"])
+    return [f"why         {why}",
+            *([f"instead     {instead}"] if instead else []),
+            f"expires     {x['expires_at']}{left}",
+            *([f"answer      `{cmd} approve {x['approval_id']}` to allow it once, `{cmd} reject {x['approval_id']}` "
+               "to refuse it" + ("" if c.signer else "; in the agent's Claude Code session, with a leading `! `")]
+              if x["state"] == "requested" else []),
+            f"record      tracekit view --approval {x['approval_id']}"
+            + (" (with the --config or --data-dir of this signer)" if c.signer else "")]
+
+
 def _approvals(a):
     """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
     import pydoc
 
-    from .format.canon import loads_strict
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
     if a.action == "slack":
@@ -1053,16 +1160,23 @@ def _approvals(a):
             while True:
                 page = c.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
                 approvals.extend(page["approvals"])
-                for x in page["approvals"]:
-                    if a.json:
-                        continue
-                    state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
-                    print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
-                          f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
                 if page["next_cursor"] is None:
                     break
+            # the live ones (still waiting for an answer) first, newest first: an approval expires a fixed time after
+            # it was requested; the expired ones only with --all
+            shown = sorted((x for x in approvals if a.all or x["state"] != "expired"),
+                           key=lambda x: (x["state"] == "requested" and not x.get("run_closing"), x["expires_at"]),
+                           reverse=True)
+            for x in [] if a.json else shown:
+                state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
+                print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
+                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}" + (
+                          f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
+                          else ""))
             if a.json:
                 print(json.dumps(approvals))
+            elif len(shown) < len(approvals):
+                print(f"({len(approvals) - len(shown)} expired, not shown: list them with --all)")
             elif not approvals:
                 try:
                     me = "{scheme}:{subject}".format(**c.status({})["identity"])
@@ -1073,14 +1187,14 @@ def _approvals(a):
                       "identities approvals.approvers lists)")
         elif a.action == "show":
             x = c.approval_get({"approval_id": a.approval_id})
-            args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]
+            args = _args(x)
             if a.json:
                 print(json.dumps({**x, "args": args}))
                 return 0
             lines = [f"approval    {x['approval_id']} ({x['state']})", f"tool        {json.dumps(x['tool'])}",
-                     f"rules       {', '.join(x['rule_ids'])}", f"policy      {x['policy_hash']}",
+                     *_stop_lines(c, x), f"rules       {', '.join(x['rule_ids'])}", f"policy      {x['policy_hash']}",
                      f"requester   {json.dumps(x['requester'])}", f"run         {x['run_id']}",
-                     f"call        {x['tool_call_id']} attempt {x['attempt']}", f"expires     {x['expires_at']}",
+                     f"call        {x['tool_call_id']} attempt {x['attempt']}",
                      f"binding     {x['binding_digest']}", "arguments (the signer's copy, in full):",
                      json.dumps(args, indent=2) if x["args"] is not None else "  (deleted: the approval is no longer live)"]
             if "reason" in x:

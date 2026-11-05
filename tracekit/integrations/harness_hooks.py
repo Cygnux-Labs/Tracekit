@@ -1,7 +1,7 @@
-"""Codex CLI, Cursor, Gemini CLI, OpenCode, goose, Qwen Code, Factory Droid, Antigravity CLI and Crush hooks on the v2
-signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush and Devin
+hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|goose|qwen|droid|antigravity|crush EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -27,6 +27,7 @@ never changes a hook's answer: a failure prints a line and the hook goes on.
 import contextlib
 import json
 import os
+import re
 import stat
 import sys
 import warnings
@@ -51,6 +52,12 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         p = json.loads(raw) if raw.strip() else {}
     except (ValueError, RecursionError):   # nested too deep to read
         p = None
+    if event and not re.fullmatch(r"[A-Za-z][\w.]*", event):
+        # not an event's name: cmd.exe hands a PowerShell tail to the hook as arguments (`PreToolUse;`, under Qwen
+        # Code before 0.15.0, which ignores a hook's "shell"). The name it starts with is the installed event, else
+        # the payload's own event decides
+        lead = re.match(r"[A-Za-z][\w.]*", event)
+        event = lead.group() if lead else p.get("hook_event_name") if isinstance(p, dict) else None
     if not isinstance(p, dict) and event:
         pre = event in agent_hooks.PRE
         msg = f"[tracekit] the {event} hook payload is not a JSON object; " + (
@@ -91,7 +98,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
-    if harness in ("qwen", "droid", "antigravity", "crush"):   # lean: their transcript formats are not read; model text goes unrecorded
+    if harness in ("qwen", "droid", "antigravity", "crush", "devin"):   # lean: their transcript formats are not read; model text goes unrecorded
         return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))

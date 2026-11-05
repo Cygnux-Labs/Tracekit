@@ -57,6 +57,16 @@ def new(policy_hash=None, until=None):
     return {"policy": policy_hash, "until": until or 0, "runs": {}, "scopes": {}, "minute": {}}
 
 
+def recorded_owner(e):
+    """The owner of the run whose run.registered is `e`: the identity it records, but box:<uid>/<box id> for a run of a
+    Tracekit Box box's agent channel (ext.box with parent_run), whose record names the daemon (SignerService)."""
+    i, ext = e["data"]["identity"], e.get("ext")
+    box = ext.get("box") if isinstance(ext, dict) else None
+    if isinstance(box, dict) and isinstance(box.get("id"), str) and "parent_run" in e["data"]:
+        return f"box:{i['subject']}/{box['id']}"
+    return f"{i['scheme']}:{i['subject']}"
+
+
 def run_entry(session, owner, principal):
     """A run's state: the ids of its scopes, the asks waiting for an approval, and its incident counts."""
     return {"session": session, "owner": owner, "principal": principal, "pending": {}, "n": {}, "capped": {},
@@ -144,7 +154,7 @@ class Detector:
         typ, d, rk = e["type"], e["data"], f"{e['tenant']}\0{e['run_id']}"
         run, t, fired, view = det["runs"].get(rk), epoch(e["ts"]), [], None
         if typ == "run.registered":
-            owner = "{scheme}:{subject}".format(**d["identity"])
+            owner = recorded_owner(e)
             tx.set(det["runs"], rk, run_entry(d.get("session", e["run_id"]), owner,
                                               e.get("principal") if e.get("principal_attested") else None))
         elif typ == "run.final":

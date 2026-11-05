@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-57'
+version: '2026.10-v2-63'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -128,7 +128,7 @@ deny:
     # its files at run time (xargs rm, rm "$f") or in code it runs (docker exec c sh -c, perl -e, osascript, at from a
     # pipe), or whose commands the parser can't read (| sh, fish -c) with a writer's name or > in it, and a link ln or
     # cp -s/-l makes. Anchored and lazy, so the fallback engine stays linear
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET|MAY_WRITE):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\]opencode[/\\](?:storage(?:[/\\]|$)|opencode[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\]opencode)?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\]opencode)?)[/\\]*\*?$'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET|MAY_WRITE):[\w\W]*?(?:\.claude[/\\]projects|\.codex[/\\]sessions|\.gemini[/\\]tmp|(?:\.local[/\\]share|XDG_DATA_HOME\}?)[/\\](?:opencode|kilo)[/\\](?:storage(?:[/\\]|$)|(?:opencode|kilo)[^/\\]*\.db))|^DELETE_TARGET:(?:(?:~|\$\{?HOME\}?|(?:[a-z]:)?[/\\]+(?:private[/\\]+)?(?:var[/\\]+)?(?:(?:home|users)[/\\]+[^/\\]+|root))[/\\]+(?:\.claude|\.codex|\.gemini|\.local(?:[/\\]share(?:[/\\](?:opencode|kilo))?)?)|\$\{?XDG_DATA_HOME\}?(?:[/\\](?:opencode|kilo))?)[/\\]*\*?$'
     # not Claude Code's memory notes beside its transcripts (a .md file directly in a project's memory/, as TK-D009
     # reads them), which the agent writes and deletes; a link made there (MAY_WRITE) is still held
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
@@ -150,7 +150,7 @@ deny:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode|\.local/share/opencode/storage)/|(^|/)\.local/share/opencode/opencode[^/]*\.db'
+    pattern: '(^|/)(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/(opencode|kilo)|\.local/share/(opencode|kilo)/storage)/|(^|/)\.local/share/(opencode|kilo)/(opencode|kilo)[^/]*\.db'
     # Claude Code keeps the agent's own memory notes beside its transcripts: those it may write
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     reason: writing to the agent harness's transcripts
@@ -160,13 +160,21 @@ deny:
   # --- harness self-protection ---
   - id: TK-D007
     class: shell
-    field: target
-    # the dev signer's data and runtime dirs (signer/service.py dev_data_dir, sdk/autospawn.py runtime_dir) and the
-    # installed package (its policy engine, signer, hooks and packs) too, wherever a command acts on them, a read too:
-    # not in text it only writes into another file (#423). A help or version request is exempt, as `python -m
-    # tracekit.<module> --help` too
-    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
-    unless: '^(?:tracekit|(?:pyw?|pypy|pythonw?)[0-9.]*t? (?:-[^ ]+ +)*-m ?tracekit(?:\.[a-z_.]+)?)(?: [^ ]+)* --help$|^tracekit --version$'
+    field: tracekit
+    # what a command does to Tracekit's own files and signer (engine._tracekit), not where its names appear. ACT (a
+    # command that isn't on the read or list allowlists, or a cd before one) denies on every Tracekit location: the
+    # dev signer's data and runtime dirs (signer/service.py dev_data_dir, sdk/autospawn.py runtime_dir), the system
+    # dirs, the client and v1 signer homes and the installed package; and stopping or starting the signer (kill,
+    # pkill, systemctl, launchctl, `tracekit signer`, `python -m tracekit.signer`). Allowlists (#589), one word each:
+    # a READ (cat, head, tail, grep, sed -n without -i or -I, jq printing to the terminal or a filter) only of the
+    # installed package or /etc/tracekit's client.json and policy files; a DEEP read (grep -r, a pattern, output that
+    # goes on to a file, a substitution, xargs or a loop, a cd before reads) only of the installed package; a LIST
+    # (ls, stat, test, find without an action) of anything but a runtime dir, the homes or a keys dir. Code that
+    # imports the signer's modules acts unless it reaches only the names engine._runs_signer allows. Not text a
+    # command only writes into another file (#423). A help or version request is exempt, as `python -m tracekit.<module>
+    # --help`
+    pattern: '^ACT:[\w\W]*?(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|/etc/tracekit|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client|\btracekitd\b|\btracekit\s+signer\b|-m ?tracekit\.(daemon|proxy|signer)\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit)|^(?:READ|DEEP):[\w\W]*?(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit|/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|/etc/tracekit|(site|dist)-packages[/\\]tracekit([/\\ ]|$)|\.tracekit-signer|\.tracekit-client)|^LIST:[\w\W]*?(?:/run/tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|XDG_RUNTIME_DIR\}?/tracekit|xdg_runtime_dir\}?/tracekit|Library/Application Support/tracekit/run|AppData[/\\]Local[/\\]tracekit[/\\]run|LOCALAPPDATA%?[/\\]?tracekit[/\\]run|localappdata%?[/\\]?tracekit[/\\]run|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekitrun|\.tracekit-signer|\.tracekit-client|(?:/var/lib/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|xdg_data_home\}?/tracekit|AppData[/\\]Local[/\\]tracekit|[A-Za-z]:[A-Za-z0-9._-]*appdatalocaltracekit|LOCALAPPDATA%?[/\\]?tracekit|localappdata%?[/\\]?tracekit)[^\s]*?key)|^SIGNER_MODULE:'
+    unless: '^ACT:(?:tracekit|(?:pyw?|pypy|pythonw?)[0-9.]*t? (?:-[^ ]+ +)*-m ?tracekit(?:\.[a-z_.]+)?)(?: [^ ]+)* --help$|^ACT:tracekit --version$|^READ:(?:[^\s]*(?:site|dist)-packages[/\\]tracekit(?:[/\\][^\s]*)?|(?:/private)?/etc/tracekit[/\\](?:client\.json|policy[\w.-]*\.ya?ml))$|^DEEP:[^\s]*(?:site|dist)-packages[/\\]tracekit(?:[/\\][^\s]*)?$'
     reason: touching Tracekit's own files or signer
     remedy: Leave Tracekit's files, signer and policy alone; a person changes them through the signer's own configuration.
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
@@ -314,6 +322,14 @@ ask:
     reason: clearing shell history or system logs
     remedy: Have a person approve the held call, or leave shell history and system logs as they are.
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.
+  - id: TK-A049
+    class: shell
+    field: effects
+    # Deletion targets are also casefolded; the lazy path prefix keeps the fallback matcher fast.
+    pattern: '^DELETE_TARGET:(?:[^\n]*?[/\\])?(?:\.github[/\\]workflows(?:[/\\]|$)|\.github(?:[/\\]\*?)?$|\.gitlab-ci\.yml$|\.circleci(?:[/\\](?:config\.yml|\*)?)?$|azure-pipelines\.yml$|jenkinsfile$)'
+    reason: deleting a CI workflow or pipeline
+    remedy: Have a person approve the held deletion, or leave the pipeline in place.
+    rationale: Removing a CI pipeline can disable checks; reading and writing workflows remain allowed.
   - id: TK-A029
     class: shell
     field: target
@@ -379,6 +395,28 @@ ask:
     reason: deleting Docker or Podman volumes
     remedy: Wait for a person to approve the held call, or remove containers and images and leave the volumes, where the data lives.
     rationale: A volume usually holds a project's database or cache; deleting it can't be undone, and a person confirms it.
+  - id: TK-A055
+    class: shell
+    # each command's argv, as TK-A048 reads it; a program may carry up to four options before its subcommand where noted
+    # Prisma: `migrate reset` and `db push --force-reset` (bare, or through npx, bunx, pnpm, yarn or npm exec with up to
+    #   four options before the program; an @version too)
+    # Rails: `db:drop`, `db:reset`, `db:purge`, `db:truncate_all`, `db:migrate:reset` and `db:seed:replant` (also `db:drop:all` and the like;
+    #   rails or rake, also after `bundle exec`)
+    # Django: `flush` (`manage.py`, also after python's options, `python -m django` or `django-admin`)
+    # Sequelize: `db:drop` (also `sequelize-cli`, through the launchers as Prisma)
+    # Laravel: `migrate:fresh`, `migrate:reset`, `migrate:refresh` and `db:wipe` (`artisan`, also after php's options or `sail`)
+    # Supabase: `db reset` (through the launchers as Prisma)
+    # TypeORM: `schema:drop` (also `typeorm-ts-node-commonjs` and `-esm`, through the launchers as Prisma)
+    # Ecto: `ecto.drop` and `ecto.reset` (`mix`)
+    # EF Core: `database drop` (`dotnet ef`, `dotnet-ef`)
+    # Migrating, seeding, diffing (`prisma migrate dev`, `rails db:seed`, `supabase db diff`), `manage.py sqlflush` (it
+    # only prints SQL) and text that names a command aren't held, nor is a command that only asks for help: --help or -h
+    # as the last word after the program and at most two short words
+    pattern: '^(?:(?:(?:npx|bunx|bun x|pnpm dlx|pnpm exec|pnpm|yarn dlx|yarn|npm exec) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4})?(?:prisma(?:@[^ ]+)? (?:migrate reset|db push(?: [^ ]+){0,8}? --force-reset)|sequelize(?:-cli)?(?:@[^ ]+)? db:drop|supabase(?:@[^ ]+)? db reset|typeorm(?:-ts-node-(?:commonjs|esm))?(?:@[^ ]+)? schema:drop)|(?:bundle exec (?:[^ ]*/)?)?(?:rails|rake) db:(?:drop|reset|purge|truncate_all|migrate:reset|seed:replant)(?::\w+)*|(?:(?:python[\d.]*|py) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4}(?:(?:[^ ]*/)?manage\.py|-m django)|django-admin|manage\.py) flush|(?:(?:php[\d.]*|sail) (?:-[^ ]+ (?:[^- ][^ ]* )?){0,4})?artisan (?:migrate:(?:fresh|reset|refresh)|db:wipe)|mix ecto\.(?:drop|reset)|dotnet(?: ef|-ef) database drop)(?: |$)'
+    unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} (--help|-h)$'
+    reason: dropping or resetting a database through a framework command
+    remedy: Wait for a person to approve the held call, or reset a disposable copy of the database and leave the real one.
+    rationale: A framework's reset or drop command wipes the database its configuration points at, which may not be a throwaway one; a person confirms it.
   - id: TK-A039
     class: shell
     field: argv
@@ -816,14 +854,21 @@ flag:
     # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
     # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
     # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
-    # home, and ~/.config/crush/. Claude Code keeps its user settings and MCP servers in ~/.claude.json, and its skills
-    # and slash commands (which can run commands with `!` lines) under .claude/ (flagged as the rest of .claude/);
-    # Cursor its MCP servers in .cursor/mcp.json.
+    # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
+    # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin). Claude Code
+    # keeps its user settings and MCP servers in ~/.claude.json, and its skills and slash commands (which can run
+    # commands with `!` lines) under .claude/ (flagged as the rest of .claude/); Cursor its MCP servers in
+    # .cursor/mcp.json.
+    # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
+    # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
+    # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
+    # ~/.config/powershell/, and the machine's in $PSHOME (System32/WindowsPowerShell/v1.0/, PowerShell/7/ and
+    # PowerShell/7-preview/).
     # A file inside one of Claude Code's worktrees (.claude/worktrees/<name>/…) is judged as it is in the worktree: that
     # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
     # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
     # itself, and a name starting with a dot
-    pattern: '(^|/)\.(codex|gemini|opencode|qwen|factory)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|block/goose/config)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)opencode\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|managed-settings|\.mcp\.json'
+    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
     # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     label: harness_config
@@ -833,15 +878,18 @@ flag:
     # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
     # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
     # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
-    # home config is crush.json, .crush.json, crushrc or .crushrc. The agy, goose and Droid paths are TK-F009's, and
-    # a delete of a whole .agents folder (agy's hooks.json with it).
+    # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
+    # (.kilo, .kilocode, ~/.config/kilo, kilo.json). The agy, goose, Droid and Devin paths are TK-F009's, and
+    # a delete of a whole .agents folder (agy's hooks.json with it). PowerShell's profiles are TK-F009's, and $PROFILE
+    # by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other three), in any
+    # case.
     # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
     # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
     # there that can make one (`$`, a backquote, `*`, `?`, `[`, `{`: `x/$D/`, `x/.{.,}/`, `x/.*/`), and when it names
     # only the worktree (`x/`, `x/.`, `x//`).
     # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
     # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|qwen|factory)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|goose|crush)|block[/\\]goose[/\\]config)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|opencode\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$))|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config

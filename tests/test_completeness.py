@@ -124,7 +124,7 @@ class Completeness(unittest.TestCase):
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
             self.assertEqual(cli.main(command.split()[1:]), 0)
-        self.assertIn("Integrity: VERIFIED.", report.getvalue())
+        self.assertTrue(report.getvalue().startswith("VERIFIED: "), report.getvalue())
         with contextlib.redirect_stdout(said):
             cli.main(["export", "--home", self.home, "--run", "r1", "-o", out, "--json"])
         self.assertEqual(json.loads(said.getvalue().split("\n", 3)[3])["runs"], ["r1"])
