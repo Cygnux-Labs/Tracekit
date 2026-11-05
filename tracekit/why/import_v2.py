@@ -107,7 +107,10 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     for r in recs:
         t, d = r["event"]["type"], r["event"]["data"]
         if t == "policy.decision":
+            ap = (calls.get(d["tool_use_id"]) or {}).get("approval")
             calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
+            if d["decision"] != "allow" and (ap or {}).get("decision") == "approve":
+                calls[d["tool_use_id"]]["approval"] = ap   # the agent's retry under its approval, same id (LangGraph)
         elif t == "tool.result" and d["tool_use_id"] in calls:
             calls[d["tool_use_id"]]["result"] = r
         elif t == "approval" and d.get("tool_use_id") in calls:
@@ -254,8 +257,9 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
             ran = t == "tool.result"
             # a call allowed (or approved) that has no result may have run: the signer recorded no outcome. A held call
             # whose retry ran under its approval was blocked at once: the retry is the call that ran (signer _reusable)
+            # A hold nobody has answered yet may still run while its run is open: refused only once the run is final
             ap = call.get("approval") or {}
-            refused = dd["decision"] == "deny" or (dd["decision"] == "ask"
+            refused = dd["decision"] == "deny" or (dd["decision"] == "ask" and (ap or final)
                                                    and (ap.get("decision") != "approve" or "ran_by" in ap))
             if not (ran or refused or final):   # still running, or its result not yet recorded: shown once it is
                 continue

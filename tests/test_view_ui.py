@@ -417,12 +417,12 @@ class WaitingForYou(unittest.TestCase):
 
     def test_a_new_hold_or_high_alert_toasts_as_text_and_the_snapshot_does_not(self):
         needs_node(self)
-        out = json.loads(page_js(["vis", "OPENHOLD", "toastOf"], f"""
+        out = json.loads(page_js(["vis", "OPENHOLD", "tuid", "toastOf"], f"""
             const made = [], box = {{ children: [], prepend(t) {{ this.children.unshift(t); }} }};
             Object.defineProperty(box, "lastChild", {{ get() {{ return {{ remove: () => box.children.pop() }}; }} }});
             const document = {{ createElement: tag => {{ const e = {{ tag, kids: [], dataset: {{}}, append(...k) {{ this.kids.push(...k); }},
                                                                remove() {{}} }}; made.push(e); return e; }} }};
-            const $ = () => box, DESK = () => false, setTimeout = () => {{}};
+            const $ = () => box, DESK = () => false, setTimeout = () => {{}}, S = {{ actions: new Map() }};
             let toasting = false;
             toastOf({json.dumps(hold(1, "c1"))});   // the snapshot: no toast
             toasting = true;
@@ -700,6 +700,69 @@ class AlertGroups(unittest.TestCase):
 
 
 
+class FullPass(unittest.TestCase):
+    """What a pass of every page at desktop and phone width found that a user would see wrong."""
+
+    TAPE = ["esc", "KINDS", "EVWORD", "anyFilter", "kindChips", "reader", "tapeRow", "agentMatch", "rowMatch", "renderTape"]
+
+    def tape(self, kind=""):
+        """DESK's tape (its time, EVT and text cells) of two runs whose rows arrived run by run, and a signer row."""
+        return json.loads(page_js(self.TAPE, f"""
+            const el = {{}}, $ = id => el[id] ??= {{ textContent: "", innerHTML: "" }}, put = (id, h) => {{ $(id).innerHTML = h; }};
+            const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", signer = {{ name: "signer", id: "signer", type: "signer", signer: true }};
+            const a1 = {{ name: "a1", id: "a1", type: "main" }}, a2 = {{ name: "a2", id: "a2", type: "main" }};
+            let F = {{ agent: null, tool: null, file: null, flag: false, find: null, kind: {json.dumps(kind)} || null }}, selected = null;
+            let tapeKey = [], tapeMax = 600, tapeShown = 0, PAGE = "desk", V2 = true, WHY = null; const DROPPED = 0, MAXREC = 50000, TAPE_PAGE = 600;
+            const row = (ts, agent, ev, text) => ({{ ts, agent, ev, text, rec: {{ event: "tk_alert" }} }});
+            const S = {{ recs: [], effects: new Map(), tape: [row(10, a1, "SESS", "start"), row(30, a1, "STATE", "STATE WRITE"),
+                                                      row(20, a2, "SESS", "start"), row(40, a2, "FINDING", "FINDING TK-X208"),
+                                                      row(50, signer, "SIGNER", "CONTENT READ FOR TRACEKIT VIEW")] }};
+            S.tape.forEach((r, i) => r.i = i);
+            renderTape();
+            process.stdout.write(JSON.stringify([[...$("tape").innerHTML.matchAll(/<td class="c-time">(.*?)<\\/td>.*?<td class="c-ev [^"]*">(.*?)<\\/td>/g)].map(m => m[1] + " " + m[2]),
+                                                 $("tapesum").textContent, $("fchips").innerHTML.includes('data-kind="own"')]));"""))
+
+    def test_the_tape_is_newest_first_across_runs_without_the_signers_bookkeeping(self):
+        """DESK's tape said "newest first" but listed the rows of the run that arrived last first, and opened on the
+        viewer's own content reads; its event codes (SESS, STATE, SIGNER, FINDING) meant nothing to a newcomer."""
+        needs_node(self)
+        rows, summary, chip = self.tape()
+        self.assertEqual(rows, ["40 CHECK", "30 NOTE", "20 RUN", "10 RUN"])
+        self.assertEqual(summary, "4 events · newest first")
+        self.assertTrue(chip)
+        self.assertEqual(self.tape("own")[0], ["50 LOG"])   # a filter of their own
+
+    def test_an_alert_group_shows_its_newest_alerts_title(self):
+        """ALERTS titled a group by its key, its numbers made "n": "RUN tracekit/signer · Integrity VERIFIED TO HEAD n"."""
+        needs_node(self)
+        out = page_js(["esc", "srcOf", "SEV_RANK", "alertGroups", "renderAlerts"], """
+            const el = {}, $ = id => el[id] ??= { textContent: "" }, put = (id, h) => { el[id] = { ...$(id), innerHTML: h }; };
+            const PAGE = "desk", scope = null, OPENHOLD = "", whyAlerts = () => [], waiting = () => [], highCount = () => 0, agentMatch = () => true;
+            const fmtT = String, label = a => a.name, plural = (n, w) => `${n} ${w}s`, rec = { rec: { session_id: "signer", tk_seq: 1 } };
+            const S = { alerts: [12, 18].map((n, i) => ({ sev: "info", text: `RUN tracekit/signer · Integrity VERIFIED TO HEAD ${n} (open)`,
+              sub: "dev assurance", ref: rec, ts: i, key: `RUN tracekit/signer · Integrity VERIFIED TO HEAD n (open)`, i })) };
+            renderAlerts(); process.stdout.write(el.alerts.innerHTML);""")
+        self.assertIn("VERIFIED TO HEAD 18 (open)<span class=\"n\">× 2</span>", out)
+        self.assertNotIn("HEAD n", out.split('data-grp="')[1].split('"', 1)[1])   # the key stays the group's id only
+
+    def test_next_gap_with_none_says_so_beside_the_replay_buttons(self):
+        """NEXT GAP on a run with no gaps did nothing a user could see: it wrote in the command bar's placeholder."""
+        needs_node(self)
+        out = page_js(["JUMP", "jump"], """
+            const el = { pos: { textContent: "live" } }, $ = id => el[id];
+            let R = null, rpos = 0, rplay = false; const runRecs = () => [{ v2: { decision: "allow" } }], seekRun = () => { throw "moved"; };
+            jump("gap"); process.stdout.write(el.pos.textContent);""")
+        self.assertEqual(out, "live · no gap in this run")
+
+    def test_an_open_runs_length_runs_to_now(self):
+        """An open run whose last record was its hold read "0s" however long it had waited."""
+        needs_node(self)
+        out = json.loads(page_js(["fmtDur", "runLength"], """
+            const nowTs = () => Date.parse("2026-11-05T06:00:00Z") / 1000, run = state => ({ state, first_ts: "2026-11-05T05:00:00Z", last_ts: "2026-11-05T05:00:00Z" });
+            process.stdout.write(JSON.stringify([runLength(run("open")), runLength(run("final"))]));"""))
+        self.assertEqual(out, ["1.0h", "0s"])
+
+
 class Permissions(unittest.TestCase):
     def test_every_decision_but_a_plain_allow_with_its_outcome_and_who_answered(self):
         """The dev viewer has no approvals page and run reviews listed approvals for 17 of 250 runs with holds."""
@@ -916,6 +979,9 @@ class Evidence(unittest.TestCase):
         self.assertEqual(re.findall(r'<div class="rec( ok)?" data-tkseq="(\d+)"', ok), [(" ok", "5"), (" ok", "6")])
         self.assertIn('<div class="stamp ok">VERIFIED</div>', ok)
         self.assertIn("THE VIEWER'S CHECK, OPERATOR-SIDE: tracekit view exported this run's bundle", ok)
+        # the verdict and its checks first: on a phone the chain (up to WALK_MAX rows) came first and buried them
+        self.assertLess(ok.index('<div class="stamp ok">'), ok.index('<ul class="checks">'))
+        self.assertLess(ok.index('<ul class="checks">'), ok.index("CHAIN · EACH SIGNED RECORD IN ORDER"))
         for text in ('<dl class="kv"><CMDS r1></dl>', "<REVIEW cmds=false>",
                      "Download the bundle and check it with tracekit verify from the signed release: that, not this "
                      "page, is the evidence.", "VERIFIER REPORT · AS THE VIEWER PRINTED IT"):
@@ -1193,7 +1259,7 @@ class GraphGrades(unittest.TestCase):
     def test_an_egress_totals_tape_row_says_whether_it_matched_a_call(self):
         """Its Happened column read NOT JOINED YET for good: the run's analysis joins only a kernel sensor's effects."""
         needs_node(self)
-        out = json.loads(page_js(["esc", "reader", "tapeRow"], """
+        out = json.loads(page_js(["esc", "EVWORD", "reader", "tapeRow"], """
             const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", selected = null, V2 = true;
             const total = seq => ({ ts: 1, i: seq, agent: { name: "signer" }, ev: "EFFECT", text: "EFFECT · net api.example:443",
               rec: { session_id: "r1", v2: { run_seq: seq, effect: { kind: "net", target: "api.example:443", claim: null } } } });
@@ -1585,7 +1651,7 @@ class Horizon(unittest.TestCase):
             const texts = [], ctx = new Proxy({ fillText: (t, x, y) => texts.push([t, x, y]), measureText: t => ({ width: t.length * 6 }) },
                                               { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }) });
             const hud = { offsetLeft: 580, offsetTop: 16, offsetWidth: 202, offsetHeight: 190 }, PAGE = "horizon";
-            const cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [hud] } };
+            const cv = { clientWidth: 800, clientHeight: 600, offsetLeft: 0, offsetTop: 0, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [hud] } };
             const $ = id => id === "hzcv" ? cv : null, window = {}, document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
             const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
             const matchMedia = () => ({ matches: true }), requestAnimationFrame = () => {};
@@ -1713,12 +1779,16 @@ class Horizon(unittest.TestCase):
         self.assertEqual(out["squares"], len(out["numbers"]))
 
     def test_a_phone_shows_the_map_first_with_the_huds_readouts(self):
-        """At 390px the map started below the first screen and the HUD's readouts (egress, restricted, chain) were hidden."""
+        """At 390px the map started below the first screen and the HUD's readouts (egress, restricted, chain) were hidden;
+        then the readouts covered the map's upper half and its rings' names ran together: they go above the map."""
         css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
         self.assertFalse(".hzhud .hztel {\n        display: none" in css)
         phone = css[css.index("/* HORIZON: the map first"):]
         self.assertIn(".hzmain {\n        display: contents\n      }", phone)
-        self.assertIn(".hzstage {\n        order: -1;\n        height: 440px;", phone)
+        self.assertIn(".hzstage {\n        order: -1;\n        height: 560px;", phone)
+        self.assertIn(".hzhud {\n        position: static;", phone)
+        # the readouts' boxes are where the map's names keep off, measured from the canvas, which starts under them
+        self.assertIn("h.offsetLeft - cv.offsetLeft, h.offsetTop - cv.offsetTop", PAGE)
         # the zoom controls on a line of their own under ORBIT/TOP: beside them, at 390px they ran into the mission clock
         self.assertIn('data-hzv="top">TOP</button></span><br><span class="hzvt"><button type="button" data-hzz="in"', PAGE)
 
@@ -1779,7 +1849,7 @@ class HorizonZoom(unittest.TestCase):
                                   { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }),
                                     set: (o, k, v) => { if (k === "filter" && /^blur/.test(v)) blurs++; o[k] = v; return true; } });
             const PAGE = "horizon", window = {}, document = { createElement: () => { made++; return { width: 0, height: 0, getContext: () => ctx }; } };
-            const cv = { clientWidth: 1200, clientHeight: 600, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [] } };
+            const cv = { clientWidth: 1200, clientHeight: 600, offsetLeft: 0, offsetTop: 0, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [] } };
             const matchMedia = () => ({ matches: !motion }), requestAnimationFrame = f => rafs.push(f);
             let $ = id => id === "hzcv" ? cv : null, css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
             const performance = { now: () => 0 };
@@ -2653,7 +2723,7 @@ class PlainPages(unittest.TestCase):
         purpose is the reader's word: another principal's reads that gave it folded under the newest reader's name.
         tracekit report's reads did not fold at all: one row per run per report."""
         needs_node(self)
-        out = json.loads(page_js(["esc", "KINDS", "anyFilter", "kindChips", "reader", "tapeRow", "renderTape"], """
+        out = json.loads(page_js(["esc", "KINDS", "EVWORD", "anyFilter", "kindChips", "reader", "tapeRow", "renderTape"], """
             const el = {}, $ = id => el[id] ??= { textContent: "", innerHTML: "" }, put = (id, h) => { $(id).innerHTML = h; };
             const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", rowMatch = () => true, signer = { name: "signer" };
             const read = (ts, run, n, who = "uid:501") => ({ ts, agent: signer, ev: "SIGNER", text: `CONTENT READ FOR TRACEKIT VIEW · ${who} read ${n} records of run ${run}`,
@@ -2695,10 +2765,11 @@ APPROVALS_FNS = ["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "su
                  "waitingCount", "permOf", "heldRows", "renderApprovalsPage"]
 
 
-def retried(run, final=True, retry=True):
+def retried(run, final=True, retry=True, again="c2"):
     """The page's records (view.Translator's) of a held call c1 a person approved: the hook blocked it at once and the
     agent's retry c2 ran under its approval (signer _reusable: its consume filed under c2); without `retry`, the
-    approval expired unused. An open run also holds c3, requested and not answered."""
+    approval expired unused. An open run also holds c3, requested and not answered. With again="c1" the retry has the
+    held call's own id, as LangGraph's does: its consume names no held call."""
     who = {"scheme": "uid", "subject": "501", "attested": True}
     ask = lambda seq, call: v2rec(seq, "policy.decision", {"tool_use_id": call, "tool": "Bash", "decision": "ask",  # noqa: E731
                                                            "rule_ids": ["TK-A032"]}, run=run)
@@ -2707,8 +2778,8 @@ def retried(run, final=True, retry=True):
                  run=run, tool_call_id="c1"),
            v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": f"apr-{run}", "decision": "approve",
                                  "approver_identity": who}, run=run)]
-    evs += [ask(5, "c2"), v2rec(6, "approval.consumed", {"approval_id": f"apr-{run}"}, run=run, tool_call_id="c2"),
-            v2rec(7, "tool.result", {"tool_use_id": "c2", "ok": True}, run=run, tool_call_id="c2")] if retry else \
+    evs += [ask(5, again), v2rec(6, "approval.consumed", {"approval_id": f"apr-{run}"}, run=run, tool_call_id=again),
+            v2rec(7, "tool.result", {"tool_use_id": again, "ok": True}, run=run, tool_call_id=again)] if retry else \
         [v2rec(5, "approval.expired", {"approval_id": f"apr-{run}"}, run=run)]
     evs += [v2rec(9, "run.final", {"head_run_seq": 9}, run=run)] if final else \
         [ask(10, "c3"), v2rec(11, "approval.request", {"approval_id": f"apr-{run}-3", "binding": {"tool_call_id": "c3"}},
@@ -2753,6 +2824,42 @@ class ApproveThenRetry(unittest.TestCase):
             ["fin", "c1", "all ask approved", "APPROVED · RETRY RAN", "uid:501 (attested)", "c2"]])
         self.assertIn("const held = S.actList.filter(heldCall).length", PAGE)   # DESK's HELD
 
+    def test_a_retry_with_the_held_calls_own_id_is_that_call_on_every_view(self):
+        """LangGraph's retry reuses the held call's id and its consume names no held call: the tape opened a second call
+        for it (NOT ANSWERED, and the approved one never ran), DESK counted 4 calls and 2 holds for 3 calls and 1,
+        PERMISSIONS listed the hold twice, HORIZON drew two moves, and a person's approval set off a HELD toast."""
+        needs_node(self)
+        recs = retried("lg", again="c1")
+        out = json.loads(page_js(["tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended", "heldCall",
+                                  "callState", "ingest", "OPENHOLD", "plural", "runSentence", "permOf", "toastOf"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
+            const sessionOf = r => {{ if (!S.sessions.has(r.session_id)) S.sessions.set(r.session_id, {{ prompts: [], end: null }}); return S.sessions.get(r.session_id); }};
+            const pushTape = r => r, alert = () => {{}}, STOPPED = "", ALL = {json.dumps(recs)};
+            const toasts = [], document = {{ createElement: () => ({{ dataset: {{}}, append() {{}}, remove() {{}} }}) }};
+            const $ = () => ({{ children: toasts, prepend: t => toasts.push(t) }}), DESK = () => null, vis = s => s, setTimeout = () => {{}};
+            let toasting = true;
+            for (const r of ALL) {{ sessionOf(r); if (r.event === "SessionEnd") S.sessions.get(r.session_id).end = r.ts; toastOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify({{
+              calls: S.actList.map(a => [a.id, callState(a)[1], heldCall(a)]),
+              under: S.actList[0].subs.map(s => s.text),
+              sentence: runSentence({{ verdict: "verified" }}),
+              perm: permOf(ALL).map(r => [r.rec.tool_use_id, r.out[1]]),
+              toasts: toasts.length }}));"""))
+        self.assertEqual(out["calls"], [["lg|c1", "APPROVED · RAN", True]])
+        self.assertIn("the agent's retry of this call, under its approval", out["under"])
+        self.assertEqual(out["sentence"], "Verified. 1 call: 1 ran, 0 blocked, 1 held (1 approved).")
+        self.assertEqual(out["perm"], [["c1", "APPROVED · RAN"]])
+        self.assertEqual(out["toasts"], 1)   # the hold's, not the retry's
+        hz = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
+                                 "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map([["lg", {{ id: "lg", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null;
+            const D = hzData();
+            process.stdout.write(JSON.stringify([D.ev.map(e => [e.seq, e.act, e.hold]), D.calls]));"""))
+        self.assertEqual(hz, [[[2, "approved", True]], 1])
+
     def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
         """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an
         APPROVED blocked call; an approval that expired unused read "expired before anyone answered"."""
@@ -2784,7 +2891,7 @@ class ApproveThenRetry(unittest.TestCase):
     def test_a_runs_held_count_is_its_reviews_held_calls(self):
         """RUNS, panel 1, the run header and the review's POLICY counted HELD by decisions: two for one held call."""
         needs_node(self)
-        out = page_js(["esc", "plural", "runHeld", "renderRuns"], """
+        out = page_js(["esc", "plural", "runHeld", "runLength", "renderRuns"], """
             const RUNS = new Map([["r1", { id: "r1", agent: "claude-code", first_ts: "2026-10-29T08:00:00Z", last_ts: "2026-10-29T08:01:00Z",
                                            state: "final", verdict: "verified", decisions: { ask: 2 }, holds: { "approved · ran": 1 } }]]);
             let PAGE = "desk", scope = null; const el = {}, $ = id => el[id] ??= {}, put = (id, h) => { el[id] = { innerHTML: h }; };
@@ -3061,7 +3168,7 @@ class FinalQA(unittest.TestCase):
 
     def test_a_runs_list_says_1_gap_and_1_call(self):
         needs_node(self)
-        out = page_js(["esc", "plural", "runHeld", "renderRuns"], """
+        out = page_js(["esc", "plural", "runHeld", "runLength", "renderRuns"], """
             const RUNS = new Map([["r1", { id: "r1", agent: "coder", first_ts: "2026-10-29T08:00:00Z", last_ts: "2026-10-29T08:01:00Z",
                                            state: "final", verdict: "verified", decisions: { allow: 1 }, gaps: { signer_unavailable: 1 } }]]);
             let PAGE = "desk", scope = null; const el = {}, $ = id => el[id] ??= {}, put = (id, h) => { el[id] = { innerHTML: h }; };

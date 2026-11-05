@@ -21,7 +21,7 @@ from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer.service import DEFAULT_POLICY, SignerService, load_policy, reveal
 from tracekit.verify import v2
 from tracekit.why import import_v2
-from tracekit.why.analysis import alerts
+from tracekit.why.analysis import alerts, timeline
 from tracekit.why.cli import main
 from tracekit.why.core import GENESIS, Runtime, content_hash, event_hash, load_run
 from tracekit.why.graph import build_graph
@@ -159,6 +159,44 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual((acts["c2"]["status"], acts["c2"]["policy"]["approval"]["decision"],
                           acts["c2"]["policy"]["approval"]["retry_of"]), ("ok", "approve", "c1"))
         self.assertEqual([a["title"] for a in alerts(why, build_graph(why)) if "held" in a["title"]], [])
+
+    def test_a_retry_with_the_held_calls_own_id_keeps_its_approval(self):
+        """LangGraph's retry sends the held call again with its id: its decision replaced the call's and dropped the
+        approval, so GRAPH read the approved call that ran "HELD TK-SHELL-PARSE"."""
+        run, cmd = self.client.run("same-id"), {"command": 'echo "again'}
+        self.assertEqual(run.decide("c1", "Bash", cmd)["decision"], "ask")
+        aid = run.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        self.assertEqual(run.decide("c1", "Bash", cmd)["decision"], "ask")
+        self.assertTrue(run.approval_consume("c1", "Bash", cmd, approval_id_hint=aid)["ok"])
+        run.complete("c1")
+        run.close()
+        self.assertTrue(wait_for(lambda: self.records()[run.run_id][-1]["event"]["type"] == "run.final"))
+        why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+        [act] = why.of_type("action")
+        self.assertEqual((act["status"], act["policy"]["approval"]["decision"]), ("ok", "approve"))
+        self.assertEqual([a["title"] for a in alerts(why, build_graph(why)) if "held" in a["title"]], [])
+
+    def test_a_hold_nobody_has_answered_is_refused_only_once_its_run_is_final(self):
+        """While the run waited for a person, its hold came back blocked: WHY alerted HIGH "Bash was held for approval
+        and not approved" for a call the person could still approve."""
+        run = self.client.run("waiting")
+        self.assertEqual(run.decide("c1", "Bash", {"command": 'echo "wait'})["decision"], "ask")
+        run.call("approval_request", tool_call_id="c1")
+
+        def held():
+            why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+            return [a["title"] for a in alerts(why, build_graph(why)) if "held" in a["title"]]
+        self.assertEqual(held(), [])
+        run.close()
+        self.assertTrue(wait_for(lambda: self.records()[run.run_id][-1]["event"]["type"] == "run.final"))
+        self.assertEqual(len(held()), 1)
+
+    def test_the_timeline_says_a_blocked_call_was_blocked(self):
+        """The why timeline said "a ran Bash" of a call the policy blocked."""
+        rows = {r["seq"]: r["text"] for r in timeline(self.why) if r["type"] == "action"}
+        self.assertEqual(rows[self.actions()["sudo rm -rf /"]["seq"]].split("(")[0], "a was blocked from running Bash")
+        self.assertEqual(rows[self.actions()["ls"]["seq"]].split("(")[0], "a ran Bash")
 
     def test_a_deny_comes_back_as_the_blocked_result_and_the_tool_does_not_run(self):
         e = self.actions()["sudo rm -rf /"]
