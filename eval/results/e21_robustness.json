@@ -2007,7 +2007,7 @@
   "engine_mismatches": [],
   "engines": [
     "re2@1.1.20251105",
-    "regex@2026.6.28"
+    "regex@2.5.161"
   ],
   "excluded_rewrites": [
     {
@@ -4137,7 +4137,7 @@
       }
     }
   },
-  "policy_hash": "sha256:d76e332818d71d1594a13d4788e7b745a668a27b7282a0be4046ba0c0ee69337",
+  "policy_hash": "sha256:6fefddc252a43e206c473797540a4bead3b23e716a62d22819aead15f86fec7b",
   "regressions": [],
   "rewrite_missed": [],
   "rewritten_cases": 463,

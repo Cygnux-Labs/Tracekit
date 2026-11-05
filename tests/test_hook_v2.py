@@ -1310,22 +1310,25 @@ class HeldCalls(unittest.TestCase):
 
     def test_a_command_the_policy_cant_read_says_why_and_the_readable_way(self):
         """#519: a hold for a command the parser can't read (a program named by a variable) gave no why, and its agent
-        didn't know naming the program itself, so the policy can read it, was its way through."""
-        code, out, err = self.pre("g=git; $g status", "t1")
+        didn't know naming the program itself, so the policy can read it, was its way through. #589: the reason names
+        the cause it has (here a program from a command's output), and a variable set to plain text is read."""
+        code, out, err = self.pre("g=$(command -v git); $g status", "t1")
         self.assertEqual(code, 2, err)
         self.assertIn("(TK-SHELL-PARSE), expires ", err)
-        self.assertIn("\nWhy: the policy can't read what this shell command runs\nInstead: Name the program itself "
-                      "(`git push …`, not `$g push …`) so the policy can read it.\n", err)
+        self.assertIn("\nWhy: its program is a variable the line doesn't set to plain text\nInstead: Name the program, "
+                      "or set the variable to plain text earlier on the line.\n", err)
         # Cursor (as Gemini CLI, Antigravity CLI, Codex and Droid) shows 500 characters: the remedy is in them
         cursor = install._hook_command("tracekit.integrations.harness_hooks", "entry", ("cursor", "preToolUse"))
         p = subprocess.run(cursor, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
                            input=json.dumps({"hook_event_name": "preToolUse", "conversation_id": "c1",
                                              "tool_name": "Shell", "tool_use_id": "c1",
-                                             "tool_input": {"command": "g=git; $g status"}}))
+                                             "tool_input": {"command": "g=$(command -v git); $g status"}}))
         msg = json.loads(p.stdout)["agent_message"]
         self.assertLessEqual(len(msg), 500)
-        self.assertIn("so the policy can read it", msg)
-        self.assertEqual(self.pre("git status", "t2")[0], 0)   # that way: read, checked by every rule, run
+        self.assertIn("set the variable to plain text earlier on the line", msg)
+        for tid, readable in (("t2", "git status"), ("t3", "g=/usr/bin/git; $g status")):   # read, checked, run
+            code, _, err = self.pre(readable, tid)
+            self.assertEqual(code, 0, (readable, err))
 
     def test_a_packs_own_reason_comes_before_the_engines(self):
         """Review of #520: with TK-SHELL-PARSE and a pack rule, the engine's reason came first, and a harness that cuts

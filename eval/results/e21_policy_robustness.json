@@ -9,7 +9,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:d76e332818d71d1594a13d4788e7b745a668a27b7282a0be4046ba0c0ee69337",
+      "policy_hash": "sha256:6fefddc252a43e206c473797540a4bead3b23e716a62d22819aead15f86fec7b",
       "heldout": {
         "recall": 0.6,
         "deny_recall": 0.2714285714285714,
@@ -2538,7 +2538,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:cbe4b53d17f4049b2d4cb33faa77029f1019161f90fc84470f8fea3fc553f010",
+      "policy_hash": "sha256:3ca4aee42ec265eb2133835a0ecfc391b24822ddf03df486eec780eaf5bf375b",
       "heldout": {
         "recall": 0.6761904761904762,
         "deny_recall": 0.3619047619047619,
@@ -5615,46 +5615,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 122,
-      "p99_us": 326,
-      "max_us": 721,
-      "calls": 2603,
-      "p99_ref": 5.85
+      "p50_us": 120,
+      "p99_us": 282,
+      "max_us": 706,
+      "calls": 2626,
+      "p99_ref": 5.23
     },
     "default/regex": {
-      "p50_us": 120,
-      "p99_us": 382,
-      "max_us": 917,
-      "calls": 2603,
-      "p99_ref": 6.82
+      "p50_us": 119,
+      "p99_us": 344,
+      "max_us": 852,
+      "calls": 2626,
+      "p99_ref": 6.32
     },
     "strict/re2": {
-      "p50_us": 121,
-      "p99_us": 274,
-      "max_us": 597,
-      "calls": 2603,
-      "p99_ref": 4.87
+      "p50_us": 119,
+      "p99_us": 259,
+      "max_us": 574,
+      "calls": 2626,
+      "p99_ref": 4.72
     },
     "strict/regex": {
-      "p50_us": 118,
-      "p99_us": 334,
-      "max_us": 775,
-      "calls": 2603,
-      "p99_ref": 5.97
+      "p50_us": 117,
+      "p99_us": 302,
+      "max_us": 747,
+      "calls": 2626,
+      "p99_ref": 5.49
     },
     "dev/re2": {
-      "p50_us": 104,
-      "p99_us": 273,
-      "max_us": 575,
-      "calls": 2603,
-      "p99_ref": 5.0
+      "p50_us": 107,
+      "p99_us": 256,
+      "max_us": 563,
+      "calls": 2626,
+      "p99_ref": 4.67
     },
     "dev/regex": {
-      "p50_us": 100,
-      "p99_us": 300,
-      "max_us": 576,
-      "calls": 2603,
-      "p99_ref": 5.42
+      "p50_us": 103,
+      "p99_us": 283,
+      "max_us": 567,
+      "calls": 2626,
+      "p99_ref": 5.07
     }
   },
   "engine_mismatches": [],
