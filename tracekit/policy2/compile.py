@@ -312,16 +312,6 @@ def build(path, seen=()):
             errors += perr
             parents.append(parent)
     if parents:
-        # a rule given without a pattern moves the parent's rule of its id into this section: its pattern and the rest
-        # come from the parent, its own keys (a reason, a remedy) win, and a flag keeps no remedy or approval (a
-        # flagged call runs). The default pack re-tiers the dev pack's rules this way (#604)
-        theirs = {r["id"]: r for p in parents for sec in SECTIONS for r in p.get(sec, [])
-                  if isinstance(r, dict) and isinstance(r.get("id"), str)}
-        for sec in SECTIONS:
-            for i, r in enumerate(pol.get(sec, [])):
-                if isinstance(r, dict) and "pattern" not in r and r.get("id") in theirs:
-                    pol[sec][i] = {**{k: v for k, v in theirs[r["id"]].items()
-                                      if sec != "flag" or k not in ("remedy", "approval")}, **r}
         own = {r.get("id") for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict)}
         merged = {k: v for p in parents for k, v in p.items() if k not in SECTIONS + ("extends",)}
         merged.update({k: v for k, v in pol.items() if k not in SECTIONS})
@@ -368,8 +358,7 @@ def _lint(pol, path):
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):
-                errors.append(f"{path}: {sec} rule needs a string id and pattern, or the id of a rule in a pack it "
-                              f"extends: {r!r}")
+                errors.append(f"{path}: {sec} rule needs a string id and pattern: {r!r}")
                 continue
             where = f"{path}: {sec} rule {r['id']}"
             errors += [f"{where}: unknown key {k!r}" for k in sorted(set(r) - RULE_KEYS)]

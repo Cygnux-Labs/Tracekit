@@ -15,7 +15,7 @@ tracekit audit [ROOT] [--policy PATH] [--since 7d] [--show] [--all] [--json | --
 ```
 $ tracekit audit --since 7d --show
 a replay against today's policy, not a signed record
-policy: …/tracekit/policy2/packs/default.yaml (sha256:…)
+policy: …/tracekit/policy2/packs/dev.yaml (sha256:…)
 
 1204 tool calls in 31 sessions since 7d: Tracekit would have denied 2 and held 9 for a person; it would have flagged 57 and allowed 1136.
 …
@@ -32,8 +32,7 @@ denied and held calls (--all for every call):
 
 - `ROOT` defaults to `$CLAUDE_CONFIG_DIR/projects` when `CLAUDE_CONFIG_DIR` is set (Claude Code keeps its config
   there then), else `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
-- `--policy` selects a policy file (default: the dev signer's, `tracekit/policy2/packs/default.yaml`, or `dev.yaml`
-  in [strict mode](policy-v2.md#default-and-strict)).
+- `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
 - `--show` includes each call as an approver sees it: its secrets redacted as the signer redacts them (`.env` content

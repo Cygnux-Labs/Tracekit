@@ -9,9 +9,9 @@ tracekit policy lint my-policy.yaml       # every error at once
 tracekit policy compile my-policy.yaml    # canonical JSON and its policy_hash
 ```
 
-The signer loads `policy:` from `signer.yaml` (YAML or JSON), or `tracekit/policy2/packs/default.yaml` by default, and
-refuses to start on a lint error. `default.yaml` is the laptop pack, and `dev.yaml` the laptop's strict mode
-([default and strict](#default-and-strict)); the server deployments set `policy:` to the server pack. The image links the installed packs at `/etc/tracekit/packs`; its example config runs
+The signer loads `policy:` from `signer.yaml` (YAML or JSON), or `tracekit/policy2/packs/dev.yaml` by default, and
+refuses to start on a lint error. `dev.yaml` is the laptop pack: the server deployments set `policy:` to the server
+pack. The image links the installed packs at `/etc/tracekit/packs`; its example config runs
 `/etc/tracekit/packs/server.yaml`, and the Helm charts and the compose stack mount a `/etc/tracekit/policy.yaml` that
 says `extends: packs/server.yaml` (Helm value `signer.policy`; compose's `policy.yaml`). Replace that file with your
 own policy; `extends` takes relative paths only, so a policy at `/etc/tracekit/policy.yaml` reaches the server pack as
@@ -613,8 +613,7 @@ in a newline), except eight that look for one thing after another with any text 
 | Pack | For | Contents |
 |---|---|---|
 | `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain, srt-proxy's requests (`srt:request`, [sandbox-runtime](integrations/sandbox-runtime.md)), and `a2a:*` to `a2a` for the A2A gateway and `run.transfer`; it has no A2A rules. |
-| `default.yaml` | the signer's default, for coding agents | `dev.yaml` with three more kinds of call held for a person: a push, publish or deploy (`TK-A056`), a change to the agent harness's settings, hooks or plugins (`TK-F009`, `TK-F015`) and the agent's own `tracekit init` (`TK-A057`); [default and strict](#default-and-strict) |
-| `dev.yaml` | strict mode (`tracekit init --strict`): the rules as they were before the default | `coding.yaml` plus `TK-A032`, which holds uploads to cloud storage (`gsutil` and `gcloud storage` cp, mv or rsync to `gs://`, `aws s3` cp, mv or sync to `s3://`, `az storage blob upload`): a coding agent on a laptop rarely writes to a bucket, and the server pack, which extends `coding.yaml`, leaves uploads alone; and `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`) and `TK-DEMO-ASK` (holds `tracekit_demo_ask` for a person), so both are easy to see |
+| `dev.yaml` | the signer's default | `coding.yaml` plus `TK-A032`, which holds uploads to cloud storage (`gsutil` and `gcloud storage` cp, mv or rsync to `gs://`, `aws s3` cp, mv or sync to `s3://`, `az storage blob upload`): a coding agent on a laptop rarely writes to a bucket, and the server pack, which extends `coding.yaml`, leaves uploads alone; and `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`) and `TK-DEMO-ASK` (holds `tracekit_demo_ask` for a person), so both are easy to see |
 | `browser.yaml` | browser agents (Browser Use; Playwright's and Puppeteer's MCP navigation tools, `browser_navigate`, `browser_tab_new` and `puppeteer_navigate`, by their bare names) | local file, `javascript:` and internal-network navigation (addresses and names) denied; uploads, typing outside an allowlist, the agent's own page JavaScript (`evaluate`), and typing or a navigation with a query string to a host from untrusted content, ask; Browser Use's actions are `structured_output` |
 | `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person; detection in shadow: `TK-Q001` a secret read then egress (notify), `TK-L001` a runaway loop and `TK-L002` a delete burst (limits), `executed_against_policy` (notify) |
 | `strict.yaml` | server-hosted agents no call should surprise | `extends: server.yaml`, no new patterns: `TK-F004` (push, publish, install, `docker run`, apply), `TK-F011` (environment changes) and `TK-F013` (network commands) ask instead of flag, and `on_parse_error: deny` |
@@ -622,54 +621,6 @@ in a newline), except eight that look for one thing after another with any text 
 | `server-net.yaml` | HTTP tools | internal addresses; a body sent outside the egress allowlist |
 | `server-cloud.yaml` | cloud CLIs and cloud MCP tools | IAM and access changes denied; resource deletion asks |
 | `server-comms.yaml` | payments, email, chat | moving money, mass email and whole-channel notifications ask |
-
-### Default and strict
-
-The default (`default.yaml`) decides, signs and records every call, and holds for a person only a short list of
-costly or security-relevant actions. Strict mode (`dev.yaml`) is the rules as they were before the default, for
-results that compare with earlier ones (evals); the server packs keep their rules too. Every deny and ask rule of
-strict mode is on the short list, so the default keeps each one's action and relaxes none, and adds holds strict mode
-doesn't have (below): strict mode holds no call the default doesn't. Turn it on with `tracekit init --dev --v2
---strict`, or in system mode `tracekit init --v2 --user AGENT --strict` (or a `policy:` naming
-`…/policy2/packs/dev.yaml`). `tracekit doctor` names the mode that decides (`D-POLICY-ENGINE`).
-
-In dev mode the switch is a file, `policy_mode`, in the dev signer's data dir: `--strict` writes `strict` there and
-stops a running dev signer, so the next call starts one in strict mode. A file that is gone, unreadable or says
-anything else is the default, which holds more. The default holds the agent's own `tracekit init` (`TK-A057`), and both
-modes deny the agent's tools writing or deleting the file (`TK-D007`, `TK-D013`); to go back, a person deletes it and
-runs `tracekit up --replace`.
-
-| Short list | Rules |
-|---|---|
-
-| Short list | Rules |
-|---|---|
-| spending money | `TK-A043`, `TK-A044`, `TK-A045` |
-| deleting data outside the project or on remotes | `TK-D004`, `TK-A001`, `TK-A002`, `TK-A031`, `TK-A039`, `TK-A040`, `TK-A041`, `TK-A042`, `TK-A048`, `TK-A055`; shell history and system logs: `TK-A026`, `TK-A027`, `TK-A029` |
-| a push, publish, deploy or merge to a shared place | `TK-D003`, `TK-A032`, `TK-A033`; and in the default only, `TK-A056` |
-| reading, writing or sending secrets or credentials | `TK-D005`, `TK-D006`, `TK-D010`, `TK-D011`, `TK-D020`, `TK-A020`, `TK-A021`, `TK-A035`, `TK-A036`, `TK-A037`, `TK-A038` |
-| running downloaded code | `TK-D002`, `TK-D021`, `TK-A046`, `TK-A028`; a package source an install trusts: `TK-A024`, `TK-A025`, `TK-A030` |
-| changing the guardrails: Tracekit, hooks, the harness's settings and sandbox, root | `TK-D001`, `TK-D007`, `TK-D008`, `TK-D009`, `TK-D012`, `TK-D013`, `TK-A003`, `TK-A004`, `TK-A010`, `TK-A011`, `TK-A012`, `TK-A013`, `TK-A014`, `TK-A022`, `TK-A023`, `TK-A034`, `TK-A047`, `TK-A049`, `TK-A054`; and in the default only, `TK-A057`, `TK-F009` and `TK-F015` (ask) |
-| a shell line the policy can't read | `TK-SHELL-PARSE` (ask) |
-| the demo tools | `TK-DEMO-DENY`, `TK-DEMO-ASK` |
-
-What the default holds and strict mode doesn't:
-
-- `TK-A056`: a push, publish or deploy, as each command's argv: `git push` after up to eight global options (any
-  branch or tag, a dry run too), `npm`, `pnpm`, `yarn` or `bun publish`, `uv`, `poetry` or `cargo publish`, `gem push`,
-  `twine upload`, `docker` or `podman` (`image`) `push`, `helm install`, `upgrade` or `push`, `terraform` or `tofu
-  apply`, `pulumi up` and `kubectl apply` or `delete`. `TK-F004` still flags the rest of its list: installs, `reset
-  --hard`, `clean`, `docker run`; strict mode flags only that list.
-- `TK-F009` and `TK-F015`: a write to the agent harness's settings, hooks, plugins or MCP servers (a project's
-  `.claude/settings.json` and its `disableAllHooks` among them), by a file tool or the shell; strict mode flags them.
-- `TK-A057`: `tracekit init` from the agent's session (also as `python -m tracekit`), which rewrites Tracekit's hooks
-  (`--no-hooks` takes them out) and its mode (`--strict` drops these holds); strict mode doesn't read it.
-
-Every other rule flags in both: `TK-F004`'s installs, `TK-F005` (any call that names a secret-looking path: a coarse
-label for detection; the secret rules above hold), `TK-F016` and `TK-F017` (a mention of `ANTHROPIC_BASE_URL`, not a
-change; a settings file that sets it is `TK-F009`'s) and the network, destructive, background, MCP and environment
-flags. A pack composes the default the same way: a rule given by its `id` alone takes the parent's rule of that id
-into the section it is listed in (its own `reason` or `remedy` win; a flag keeps no `remedy`).
 
 `coding.yaml` rules (see the file for patterns and rationales):
 

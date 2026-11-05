@@ -118,10 +118,6 @@ def main(argv=None):
     p.add_argument("--approver", help="with --v2, system mode: the user who answers the agent's approvals (default: "
                                       "$SUDO_USER, the admin running init)")
     p.add_argument("--policy", help="with --v2, system mode: the signer's policy file (root-owned; default: its own pack)")
-    p.add_argument("--strict", action="store_true", help="with --v2: strict mode, the policy's rules as they were before "
-                   "the default: a push, publish or deploy and a change to the agent's settings are flagged, where the "
-                   "default holds them for a person; it holds no call the default doesn't "
-                   f"({wiki_url('docs/policy-v2.md', 'default-and-strict')})")
     p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
                                                                  f"the signer's logs ({wiki_url('docs/witnesses.md')}; it sees origins, "
                                                                  "sizes, roots and timing, never content)")
@@ -448,18 +444,7 @@ def _match_pending(pend, prefix):
     return hits
 
 
-def _strict_line(path, pending):
-    """What `tracekit init --strict` says it did (install.strict_dev's result)."""
-    return (f"policy: strict mode, the rules as they were before the default (a push or a settings change is flagged, "
-            f"not held); a person deletes {path} to go back to the default"
-            + ("; restart the dev signer to apply it: tracekit up --replace" if pending else ""))
-
-
 def _run(a):
-    if a.cmd == "init" and a.strict and (a.remote or not a.v2 or a.policy):
-        print("tracekit: --strict goes with --v2 on the signer's own machine, and without --policy, which names the "
-              "policy itself", file=sys.stderr)
-        return 2
     if a.cmd == "init" and a.remote:
         return _init_remote(a)
     if a.cmd == "init":
@@ -517,8 +502,7 @@ def _run(a):
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
                                                         a.allow_privileged, a.agent, a.harness, a.public_witness,
-                                                        a.egress, not a.no_thinking_summaries, a.managed, a.managed_only,
-                                                        strict=a.strict)
+                                                        a.egress, not a.no_thinking_summaries, a.managed, a.managed_only)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -537,8 +521,6 @@ def _run(a):
         if a.dev and a.v2 and a.agent != "claude":
             if not _signer_extra():
                 return 2
-            if a.strict:
-                print(_strict_line(*install.strict_dev()))
             try:
                 path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
                 summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
@@ -575,8 +557,6 @@ def _run(a):
                     return 2
                 from .signer.service import dev_data_dir
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
-                if a.strict:
-                    print(_strict_line(*install.strict_dev()))
                 plugin = hooks and install.plugin_enabled()
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
                     settings_path, plugin_key = plugin

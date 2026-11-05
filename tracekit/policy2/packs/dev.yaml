@@ -1,6 +1,5 @@
-# Strict mode for coding agents (`tracekit init --strict`, #604): the signer's rules as they were before the default,
-# the coding pack plus a visible demo deny and ask, so both are easy to see. They also match an MCP tool of that name (mcp:<server>/<name>),
-# which the coding pack only flags. The signer's default, default.yaml, extends this pack.
+# The signer's default policy: the coding pack plus a visible demo deny and ask, so both are easy to see. They also
+# match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
 extends: coding.yaml
 description: dev default (coding pack, uploads to cloud storage held, a demo deny and a demo ask)
 

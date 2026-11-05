@@ -450,22 +450,6 @@ def user_settings_all():
     return out
 
 
-def strict_dev():
-    """`tracekit init --dev --v2 --strict`: the dev signer decides with strict mode's pack (the rules as they were before
-    the default) from its next start; a running one is stopped, so the next call starts it strict. Returns (mode file,
-    whether a running signer still has to be restarted)."""
-    from .sdk import autospawn
-    from .signer.service import POLICY_MODE, dev_data_dir
-    path = os.path.join(dev_data_dir(), POLICY_MODE)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("strict\n")
-    try:
-        autospawn.down()
-    except (OSError, autospawn.SignerUnavailable):   # a hung one, or a runtime dir no client uses
-        return path, True
-    return path, False
-
-
 def record_hooks_settings(path):
     """Record user settings file `path`, where init put the hooks, as hooks_settings in the client config (its other
     keys stay), as init_dev does for v1: user_settings_all then finds them from a shell without the same
@@ -1508,7 +1492,7 @@ def v2_plist(user):
 
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
                    experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=False,
-                   egress=False, thinking=True, managed=False, managed_only=False, strict=False):
+                   egress=False, thinking=True, managed=False, managed_only=False):
     """`tracekit init --v2 --user AGENT` as root: the v2 signer service as its own user, from the root-owned venv, with
     the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
     different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
@@ -1517,8 +1501,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     thinking: turn Claude Code's thinking summaries (install_hooks), or Codex's reasoning summaries
     (agent_hooks.codex_reasoning), on for AGENT unless its settings set them. managed (`--managed`, Claude Code only):
     the hooks go in Claude Code's admin-managed settings (install_managed), for every user of this machine, and out of
-    the file the last init put them in; managed_only (`--managed-only`) also sets allowManagedHooksOnly. strict
-    (`--strict`): with no `policy`, the venv's strict mode pack (the rules as they were before the default).
+    the file the last init put them in; managed_only (`--managed-only`) also sets allowManagedHooksOnly.
     Returns (socket, settings path or None)."""
     if public_witness:
         from . import public_witness as pw
@@ -1564,9 +1547,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         finally:
             files.close(d)
     _install_venv(requirement, "[signer]")
-    pack = "STRICT_POLICY" if strict else "DEFAULT_POLICY"
     policy = policy or subprocess.run(
-        [OPT_PYTHON, "-I", "-c", f"from tracekit.signer.service import {pack}; print({pack})"],
+        [OPT_PYTHON, "-I", "-c", "from tracekit.signer.service import DEFAULT_POLICY; print(DEFAULT_POLICY)"],
         check=True, capture_output=True, text=True).stdout.strip()
     tailer = _system_user(V2_TAILER_DARWIN if darwin else V2_TAILER, "/var/empty", darwin)
     # the tailer reads Claude Code transcripts only

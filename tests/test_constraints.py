@@ -520,12 +520,8 @@ class Grammar(unittest.TestCase):
 
 
 class Live(Signed):
-    """Live constraints in an in-process signer on strict mode's pack, which allows reads and edits, only flags a push
-    (the default asks for one, TK-A056) and denies touching Tracekit's own files."""
-
-    def setUp(self):
-        super().setUp()
-        self.s.policy = svc.load_policy(svc.STRICT_POLICY)
+    """Live constraints in an in-process signer whose default policy allows reads and edits, asks for a push and
+    denies touching Tracekit's own files."""
 
     def run_(self):
         r = self.register(ME)

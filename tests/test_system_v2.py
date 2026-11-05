@@ -176,12 +176,7 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
                         cmds.index(["systemctl", "restart", "tracekit-signer"]))
 
-    def test_strict_gives_the_signer_strict_modes_pack(self):
-        """#604: `init --v2 --strict` names the venv's strict mode pack (every rule as written) as the signer's
-        policy; without it, the default (init_v2 checks which one it asked for)."""
-        self.init_v2(strict=True)
-
-    def init_v2(self, sudo_why=None, harnesses=(), strict=False):
+    def init_v2(self, sudo_why=None, harnesses=()):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
         v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",
               "tailer": {"user": "stale"}}
@@ -198,11 +193,8 @@ class InstallAndUninstall(unittest.TestCase):
                 mock.patch.object(install, "_tailer_acl", return_value=None) as acl, \
                 mock.patch.object(install, "_tailer_sudo", return_value=sudo_why) as sudo, \
                 mock.patch.object(install, "install_hooks") as hooks:
-            sock, settings = install.init_system_v2("agent", harnesses=harnesses, strict=strict)
+            sock, settings = install.init_system_v2("agent", harnesses=harnesses)
         self.run = run
-        pack = "STRICT_POLICY" if strict else "DEFAULT_POLICY"
-        self.assertIn([install.OPT_PYTHON, "-I", "-c", f"from tracekit.signer.service import {pack}; print({pack})"],
-                      [c.args[0] for c in run.call_args_list])
         self.assertEqual(sock, "/run/tracekit-signer/signer.sock")
         self.assertEqual(settings, "/home/agent/.claude/settings.json")
         venv.assert_called_once_with(None, "[signer]")
@@ -853,18 +845,8 @@ class CliManaged(unittest.TestCase):
         with mock.patch.object(install, "init_system_v2", return_value=("/run/s.sock", "/m.json")) as init, \
                 contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(cli.main(["init", "--v2", "--user", "agent", "--managed", "--managed-only"]), 0)
-        self.assertEqual((init.call_args.args[-2:], init.call_args.kwargs), ((True, True), {"strict": False}))
+        self.assertEqual(init.call_args.args[-2:], (True, True))
         self.assertIn("hooks: /m.json", out.getvalue())
-        with mock.patch.object(install, "init_system_v2", return_value=("/run/s.sock", None)) as init, \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(cli.main(["init", "--v2", "--user", "agent", "--strict"]), 0)
-        self.assertEqual(init.call_args.kwargs, {"strict": True})
-        err = io.StringIO()
-        for argv in (["--strict"], ["--dev", "--strict"], ["--v2", "--user", "agent", "--strict", "--policy", "p.yaml"],
-                     ["--remote", "https://s.example", "--v2", "--strict"]):
-            with self.subTest(argv=argv), contextlib.redirect_stderr(err):
-                self.assertEqual(cli.main(["init", *argv]), 2)
-        self.assertIn("--strict goes with --v2 on the signer's own machine, and without --policy", err.getvalue())
 
     def test_managed_is_refused_with_dev_project_or_another_agent(self):
         from tracekit import cli

@@ -37,7 +37,7 @@ authorize: {"mtls:spiffe://acme.org/tracekit-a2a-gateway": [decide, complete, ap
 
 ## Policy
 
-`coding.yaml` maps `a2a:*` to class `a2a`; `default.yaml`, `dev.yaml`, `server.yaml` and `strict.yaml` extend it. A policy composed only from `server.yaml`'s component packs needs that mapping itself. `server.yaml` and `strict.yaml` ask for every A2A call. To let an approved pair through unattended, a deployment replaces the inherited `TK-S011` ask rule by id with an equivalent route allowlist; a deny rule's `unless` only exempts that deny rule.
+`coding.yaml` maps `a2a:*` to class `a2a`; `dev.yaml`, `server.yaml` and `strict.yaml` extend it. A policy composed only from `server.yaml`'s component packs needs that mapping itself. `server.yaml` and `strict.yaml` ask for every A2A call. To let an approved pair through unattended, a deployment replaces the inherited `TK-S011` ask rule by id with an equivalent route allowlist; a deny rule's `unless` only exempts that deny rule.
 
 | Field | Meaning |
 |---|---|

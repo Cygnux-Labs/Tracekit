@@ -81,7 +81,6 @@ quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
   come from another account: [system mode](../quickstart-v2.md#system-mode-linux-macos-experimental).
 - **Witnesses** cosign the signer's checkpoints from another host, so a rolled-back or forked log shows:
   [witnesses](../witnesses.md). Pin them in the trust config and the report reads `Assurance: witnessed`.
-- **Your own policy**: the dev signer uses the default pack (`tracekit/policy2/packs/default.yaml`: the coding pack
-  and two demo rules, a push or a harness settings change held too), or after `tracekit init --dev --v2 --strict`
-  the rules as they were before it (`dev.yaml`); a configured signer takes `policy:` in `signer.yaml`.
+- **Your own policy**: the dev signer uses the coding pack plus two demo rules (`tracekit/policy2/packs/dev.yaml`); a
+  configured signer takes `policy:` in `signer.yaml`.
 - **Reference**: [the MCP integration](../integrations/mcp.md), with every option and what it doesn't cover.

@@ -20,8 +20,7 @@ from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
 from .report import DECISIONS, _counts, _days, call_text, share_rules, when
-from .sdk.autospawn import data_dir
-from .signer.service import _dotenv, _escaped, _shown, dev_policy, load_policy
+from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
 from .view import ENGINE_RULES
 
 
@@ -93,14 +92,13 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
     Counts malformed lines and unreadable files. Never writes.
     """
     now = time.time()
-    policy_path = policy_path or dev_policy(data_dir())   # the mode the dev signer decides in
     try:
         since_ts = when(since, now) if since else 0.0
     except argparse.ArgumentTypeError as e:   # report's --since type: here an unreadable --since is a ValueError
         raise ValueError(str(e)) from None
     if since_ts >= now:
         raise ValueError(f"--since {since[:40]!r} is not in the past")
-    engine = load_policy(policy_path)
+    engine = load_policy(policy_path or DEFAULT_POLICY)
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
     by_rule: dict[str, int] = {}
@@ -168,7 +166,7 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
 
     report = {
         "disclaimer": "a replay against today's policy, not a signed record",
-        "policy": policy_path,
+        "policy": policy_path or DEFAULT_POLICY,
         "policy_hash": engine.policy_hash,
         "since": since,
         "sessions": len({c["session"] for c in calls}),
@@ -249,8 +247,7 @@ def main(argv=None):
                                  "denied. Read-only, local, and a replay against today's policy, not a signed record.")
     ap.add_argument("root", nargs="?", default=default_root(), help="the transcripts' folder (default: "
                     "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)")
-    ap.add_argument("--policy", help="a policy file (default: the dev signer's, tracekit/policy2/packs/default.yaml, "
-                    "or dev.yaml in strict mode)")
+    ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
     ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
     ap.add_argument("--show", action="store_true", help="also print each call, with secrets redacted")
     ap.add_argument("--all", action="store_true", help="list every call, not only the denied and held ones")
