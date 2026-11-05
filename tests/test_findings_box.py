@@ -372,7 +372,61 @@ class Matching(Base):
         self.assertEqual((self.found(out), self.cov(out)), ([], (4, 0, {})))
         self.assertEqual([findings_box._bare(h) for h in ("1572395042", "0135.0xb8.216.34", "0x5db8d822.",
                                                           "08.1.2.3", "example.123")],
-                         ["93.184.216.34"] * 3 + ["08.1.2.3", "example.123"])
+                         ["93.184.216.34"] * 3 + [None, None])   # a name ending in a number: an address, or no host
+
+    def test_urls_as_node_reads_them(self):   # #608's second review
+        for url, host, dests in (
+                ("https://example.com:8080/x", "example.com", {("example.com", 8080)}),
+                ("http://example.com:8080/x", "example.com", {("example.com", 8080)}),
+                ("https://example.com:443/x", "example.com", {("example.com", 443)}),
+                ("http://example.com:80/x", "example.com", {("example.com", 80), ("example.com", 443)}),
+                ("https://[2001:DB8:0::1]/x", "2001:db8::1", {("2001:db8::1", 443)}),
+                ("https://[::ffff:93.184.216.34]/x", "93.184.216.34", {("93.184.216.34", 443)}),
+                ("https://www.example.com/x", "www.example.com", {("example.com", 443)}),
+                ("https://exfil.example.net\\@docs.python.org/", "exfil.example.net", {("exfil.example.net", 443)}),
+                ("https:///x.example/a", "x.example", {("x.example", 443)}),
+                ("HTTPS:\\\\x.example\\a", "x.example", {("x.example", 443)}),
+                ("https://exfil.example.net:0/", "exfil.example.net", {("exfil.example.net", 0)}),
+                ("https://www.93.184.216.34/", None, set()), ("https://", None, set()),
+                ("https://exfil.example.net:99999/", None, set()), ("//exfil.example.net/x", None, set()),
+                ("exfil.example.net", None, set()), ("ftp://exfil.example.net/x", None, set()), (None, None, set())):
+            with self.subTest(url):
+                self.assertEqual(findings_box._dests(url), (host, dests))
+        self.assertEqual(findings_box._door("https://www.python.org:443"), ("www.python.org", ("python.org", 443)))
+        self.assertEqual(findings_box._door("tcp://example.com:22"), ("example.com", ("example.com", 22)))
+
+    def test_http_to_port_80_upgraded_and_a_www_fetch_of_a_www_host(self):
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 3.0, "WebFetch", {"url": "http://example.com:80/x"})
+        b.door(2.5, "https://example.com:443")
+        b.call(4.0, 5.0, "WebFetch", {"url": "https://www.example.com/x"})
+        b.door(4.2, "https://www.example.com:443")
+        b.door(4.4, "https://example.com:443")
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)), ([], (5, 0, {})))
+
+    def test_a_fetch_of_no_url_node_takes_explains_nothing(self):
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 30.0, "WebFetch", {"url": "https://www.93.184.216.34/"})
+        b.door(3.0, "https://93.184.216.34:443")
+        out = self.analyze()
+        self.assertEqual([d["labels"] for _, d in self.found(out)], [["door_unexplained"]])
+        self.assertEqual(self.cov(out)[2], {"no_url": 1})
+
+    def test_a_connection_only_a_fetch_of_unknown_arguments_could_explain_is_not_checked(self):
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 30.0, "WebFetch", {"url": "https://example.org/"})
+        b.door(10.0, "https://exfil.example.net:443")
+        bundle, trust, box_id, _ = b.bundle(40.0)
+        runs, _, _ = bundle_records(bundle, trust)
+
+        def content(recs):   # the vault kept the box's records, none of the agent's
+            return self.content([r for r in recs if r["event"]["run_id"] == box_id])
+        out = findings_v2.analyze(runs[box_id], content, others=(runs, content, True))
+        self.assertEqual((self.found(out), self.cov(out)[2]), ([], {"no_content": 1, "no_url": 1}))
 
 
 class Background(Base):
@@ -381,11 +435,22 @@ class Background(Base):
     def test_what_a_command_may_leave_running(self):
         for cmd in ("npm run dev &", "(npm run dev > /tmp/dev.log 2>&1 &)", "sleep 1&", "a & b",
                     "bash -c 'npm start &'", 'sh -lc "(x &)"', "tmux new -d -s dev 'npm start'",
-                    "screen -dmS dev npm start", "coproc cat", "nohup x", "setsid x", "x; disown", "echo 'unclosed"):
+                    "screen -dmS dev npm start", "coproc cat", "nohup x", "setsid x", "x; disown", "echo 'unclosed",
+                    # #608's second review: options before -c, nested and wrapped shells, commands on their own line
+                    "bash -o pipefail -c 'npm run dev &'", "sh -e -c 'npm run dev &'", "bash --norc -c 'npm run dev &'",
+                    "bash -c \"sh -c 'npm run dev &'\"", "env -i bash -c 'npm run dev &'",
+                    "sudo -u dev bash -c 'npm run dev &'", "cd app && bash -c '(npm start &)'",
+                    "timeout 10 bash -c 'x &'", "make\nnohup x", "if true; then nohup x; fi", "FOO=1 nohup x",
+                    "$(cmd &)"):
             with self.subTest(cmd):
                 self.assertTrue(findings_box._detaches(cmd))
         for cmd in ("make && make test", "cmd 2>&1", "cmd &> log", "cmd |& tee log", "cat <&3", "echo 'a & b'",
-                    "bash -c 'make && echo ok'", "tmux ls"):
+                    "bash -c 'make && echo ok'", "tmux ls",
+                    # #608's second review: a quoted or escaped `&`, the background words as text
+                    'echo "&"', "echo '&'", "echo '&)'", 'echo "a &"', "echo a\\&", "grep -c '&' f",
+                    "printf '%s\\n' '&'", "echo coproc", "echo 'coproc'", 'echo "coproc cat"', "echo nohup",
+                    "grep -rn setsid .", "echo tmux -d", "echo screen -d", "echo bash -c 'x &'",
+                    "git log --grep=disown", "cat <<EOF\ncoproc\nEOF"):
             with self.subTest(cmd):
                 self.assertFalse(findings_box._detaches(cmd))
 
@@ -533,6 +598,53 @@ class Cli(Base):
                 contextlib.redirect_stderr(err):
             code = findings.main(["--v2", "--dry-run", *args])
         return code, out.getvalue(), err.getvalue()
+
+    def bundle_leaving_open(self, which, end=40.0):
+        """bundle(end), leaving the runs `which(run_id)` picks open: a box stopped mid-session, or still running."""
+        real = self.box.s.call
+
+        def call(who, method, req):
+            return {} if method == "close_run" and which(req.get("run_id")) else real(who, method, req)
+        with mock.patch.object(self.box.s, "call", call):
+            return self.box.bundle(end)
+
+    def test_no_agent_account_only_from_a_source_that_holds_every_run(self):   # #608's second review, F1
+        b = self.box
+        b.command(0.2, 35.0, "claude -p 'fix the bug'")
+        b.door(10.0, "https://exfil.example.net:443")
+        bundle, trust, box_id, _ = b.bundle(40.0)   # a run-set from registry 0, nothing open: the agent registered none
+        _, out, _ = self.cli("--run", box_id, "--bundle", bundle, "--trust", trust)
+        self.assertIn("NO AGENT ACCOUNT", out.splitlines()[0])
+        self.assertIn("TK-X212 for 1 door event: the box ran with its agent channel on, yet its agent registered no "
+                      "run", out)
+
+    def test_a_box_stopped_mid_session_is_no_proof_the_agent_registered_nothing(self):
+        b = self.box
+        b.command(0.2, 35.0, "claude -p 'fix the bug'")
+        b.agent(1.0)
+        b.door(10.0, "https://exfil.example.net:443")
+        bundle, trust, box_id, [agent] = self.bundle_leaving_open(lambda r: r != b.box["handle"]["run_id"])
+        _, out, _ = self.cli("--run", box_id, "--bundle", bundle, "--trust", trust)   # the agent's open run isn't in it
+        self.assertNotIn("NO AGENT ACCOUNT", out)
+        self.assertIn("TK-X212 for 1 door event: no run of the box's agent channel is in what was analysed", out)
+
+    def test_a_live_box_whose_agent_has_not_registered_yet(self):
+        b = self.box
+        b.door(10.0, "https://exfil.example.net:443")
+        _, _, box_id, _ = self.bundle_leaving_open(lambda r: r == b.box["handle"]["run_id"])
+        _, out, _ = self.cli("--run", box_id, "--store", os.path.join(self.d, "data"), "--open")
+        self.assertNotIn("NO AGENT ACCOUNT", out)
+        self.assertIn("TK-X212 for 1 door event: no run of the box's agent channel is in what was analysed", out)
+
+    def test_box_refused_the_agents_registration(self):
+        b = self.box
+        b.command(0.2, 35.0, "claude -p 'fix the bug'")
+        b.observe(1.0, "tkbox.channel", {"refusal": "limit", "method": "register_run", "reason": "too many runs"})
+        b.door(10.0, "https://exfil.example.net:443")
+        bundle, trust, box_id, _ = b.bundle(40.0)
+        _, out, _ = self.cli("--run", box_id, "--bundle", bundle, "--trust", trust)
+        self.assertNotIn("NO AGENT ACCOUNT", out)
+        self.assertIn("TK-X212 for 1 door event: no run of the box's agent channel is in what was analysed", out)
 
     def test_a_box_run_from_a_run_set_bundle_or_the_store(self):
         b = self.box

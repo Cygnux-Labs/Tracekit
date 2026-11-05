@@ -11,8 +11,8 @@ Bash decision; tkbox.box records name the workspace copied into the box's /works
 model calls on an inspected connection, tkbox.egress the refusals Box made itself (sent later, with no time of their
 own) and tkbox.gap the records Box lost. All runs' records carry the signer's clock. A call's window runs from its
 decision to its result + grace (findings_effects' --effect-grace; no skew: one clock). A fetch matches a connection to
-its URL's host, a leading www. aside (Claude Code's WebFetch follows a redirect between the two), on its URL's port, or
-on 443 too for plain http (it upgrades http to https).
+its URL's host, a leading www. aside (Claude Code's WebFetch follows a redirect between the two), on its URL's port, and
+on 443 too for plain http to port 80 (it upgrades http to https); the URL read as Node reads a web URL (_dests).
 
 (a) high, a door event no call of the agent's explains:
   - a connection decided in the window of a call whose tool may connect (a shell, an MCP or unknown tool, a fetch tool
@@ -20,9 +20,9 @@ on 443 too for plain http (it upgrades http to https).
     (model_host: the harness's own model calls), while no agent run was open (no_agent_run), when only a call with no
     result could explain it (call_unfinished), in the window of a command Box started that no agent run began in, or
     that shares that start with another (host_command), after a shell call of an open run that may have left a process
-    running (background: run_in_background, a lone `&`, nohup, setsid, disown, coproc, tmux -d, screen -d, or a script
-    `sh -c` runs that does; no_content when its command isn't known). A refusal Box made itself has no time of its own:
-    untimed_refusal.
+    running (background: run_in_background, or as _detaches reads its command; no_content when its command isn't
+    known), when only a fetch whose arguments aren't known could explain it (no_content). A refusal Box made itself
+    has no time of its own: untimed_refusal.
   - a file of the box's patch is explained by a write call of the agent's on that path (/workspace/<path>) that did
     not fail. Not checkable: the apply directory isn't the box's workspace, or may be a directory under it (apply_dir);
     a write call's arguments aren't known (no_content) or name no path (no_path); a shell, MCP or other call that
@@ -36,16 +36,18 @@ on 443 too for plain http (it upgrades http to https).
     window, and none earlier could have served it (reused). Not checkable: one of them has no recorded outcome
     (no_outcome).
 A box run with no agent channel run in what was analysed is no_agent_runs for each door event; no_agent_account when
-what was analysed holds every run of the box's tenant and the box's channel was on (the agent registered none); an
-agent channel's run is agent_run for each call: its box run holds the doors.
+the box run is final, its channel was on, what was analysed holds every run of the box's tenant (the store, or a
+run-set from registry 0 with no run open: whole()) and Box refused no register_run on the channel (tkbox.channel):
+the agent registered none. An agent channel's run is agent_run for each call: its box run holds the doors.
 """
 import ipaddress
+import itertools
 import posixpath
 import re
 import urllib.parse
 
 from .findings import WRITE_TOOLS
-from .findings_effects import ALL, FETCH, GRACE_S, KINDS, MAX_CITES, _kinds, _t, _under
+from .findings_effects import ALL, FETCH, GRACE_S, KINDS, MAX_CITES, WRAPPERS, _kinds, _t, _under
 from .findings_text import _Lexer
 from .signer.reconcile import PROVIDER_HOSTS
 
@@ -56,9 +58,13 @@ WORKSPACE = "/workspace"   # where Box mounts the workspace copy inside a box (i
 SHELLS = frozenset(t for t, k in KINDS.items() if k == ALL)
 BACKGROUND = frozenset(("nohup", "setsid", "disown", "coproc"))
 SCRIPT_SHELLS = frozenset(("sh", "bash", "dash", "zsh", "ksh"))
+SCRIPT_FLAG = re.compile(r"-[a-z]*c[a-z]*")   # -c, -lc, -ec: the next word is the script
+KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))   # a command follows them
+ARG_FLAGS = frozenset(("-u", "-g", "-n", "-C"))   # a wrapper's options that take a value (sudo -u, nice -n, env -C)
 PUNCT = frozenset("();<>|&")   # the lexer's punctuation characters
 LONE_AMP = re.compile(r"(?<![&<>|])&(?![&>])")   # `&` that sends to the background: not &&, >&, <&, &> or |&
 WHATWG_PART = re.compile(r"0x[0-9a-f]*|[0-9]+")
+RUN_SET_WHOLE = re.compile(r"COMPLETE, registry 0\.\.\d+\b.*\(\d+ runs registered, \d+ final, 0 open[;)]")
 WHY = {RULE: ("the agent's own records of its calls (sent from inside the box, where it can skip or forge them) and "
               "the box's door records (decided on the host, outside its reach) disagree: the agent did something it "
               "didn't record, or recorded something the door didn't see",
@@ -135,6 +141,12 @@ def store_runs(data_dir, box_run):
         r.close()
 
 
+def whole(checks):
+    """Whether a verified bundle's checks (verify.v2's Report.checks) show a run-set that holds every run of its
+    tenant: its registry range starts at 0 and no run registered in it is still open (a run-set bundles final runs)."""
+    return any(c["check"] == "run-set" and c["status"] == "pass" and RUN_SET_WHOLE.match(c["detail"]) for c in checks)
+
+
 def _ipv4(h):
     """Host `h` as the dotted quad a WHATWG URL parser (Node's: Claude Code's) makes of a number form (0x5db8d822,
     1572395042, 0135.0xb8.216.34), or None when it is no such form."""
@@ -163,23 +175,44 @@ def _bare(h):
         return None
     try:
         ip = ipaddress.ip_address(h)
-    except ValueError:
-        return _ipv4(h) or h
+    except ValueError:   # a name that ends in a number is an IPv4 address, or no host (as WHATWG reads it)
+        return _ipv4(h) if WHATWG_PART.fullmatch(h.split(".")[-1]) else h
     return str(ip.ipv4_mapped or ip) if ip.version == 6 else str(ip)
 
 
-def _dests(url):
-    """(host, {(site, port)}) of a URL: the host as _bare gives it (None when it names none Box sees), and the
-    connections a fetch of it may make, each its host with a leading www. dropped (Claude Code's WebFetch follows a
-    redirect that only adds or drops it, on the same protocol and port) and the URL's port, else its scheme's, and 443
-    too for plain http (Claude Code's WebFetch upgrades it to https)."""
+def _site(h):
+    """Host `h` with a leading www. dropped: Claude Code's WebFetch follows a redirect that only adds or drops it (on
+    the same protocol and port). An address never starts with www. once _bare has read it."""
+    return h[4:] if h.startswith("www.") else h
+
+
+def _door(url):
+    """(host, (site, port) or None) of a connection Box's door names, "<scheme>://<host>:<port>"."""
     try:
         u = urllib.parse.urlsplit(url)
         h, port = _bare(u.hostname), u.port
     except (TypeError, ValueError, AttributeError):
+        return None, None
+    return h, (_site(h), port) if h and port is not None else None
+
+
+def _dests(url):
+    """(host, {(site, port)}) of a fetch's URL as a WHATWG parser (Node's) reads a web URL (tabs and newlines dropped,
+    outer spaces and controls trimmed, a backslash a slash, any slashes after http: or https: its authority's): the host
+    as _bare gives it (None when it names none), and the connections a fetch of it may make: its site on the URL's
+    port, else its scheme's, and on 443 too for plain http to port 80 (Claude Code's WebFetch upgrades it to https)."""
+    url = re.sub(r"[\t\n\r]", "", url).strip("".join(map(chr, range(33)))) if isinstance(url, str) else ""
+    m = re.match(r"(?i)(https?):[/\\]*", url)
+    if not m:
         return None, set()
-    ports = {port} if port else {"https": {443}, "http": {80, 443}}.get(u.scheme, set())
-    return h, {(h[4:] if h.startswith("www.") else h, p) for p in ports} if h else set()
+    scheme = m.group(1).lower()
+    try:
+        u = urllib.parse.urlsplit(f"{scheme}://" + url[m.end():].replace("\\", "/"))
+        h, port = _bare(u.hostname), u.port
+    except ValueError:   # a port past 65535
+        return None, set()
+    p = port if port is not None else {"https": 443, "http": 80}[scheme]
+    return h, {(_site(h), q) for q in ({p, 443} if scheme == "http" and p == 80 else {p})} if h else set()
 
 
 def _arg(c, *keys):
@@ -198,24 +231,56 @@ def _background(args):
     return _detaches(args["command"]) if isinstance(args.get("command"), str) else None
 
 
+def _unquote(w):
+    return w[1:-1] if len(w) > 1 and w[0] == w[-1] and w[0] in "'\"" else w
+
+
 def _detaches(cmd, depth=0):
-    """Whether shell command `cmd` may leave a process running past its end, as far as a lexer can tell: a lone `&` in
-    a token of punctuation (`cmd &`, `(cmd &)`; never &&, >&, &> or |&), nohup, setsid, disown or coproc, `tmux ... -d`,
-    `screen -d...`, or a script `sh -c` (bash, dash, zsh, ksh) runs that does; True when it can't be read."""
+    """Whether shell command `cmd` may leave a process running past its end, as far as a lexer that keeps quoting can
+    tell: a lone `&` outside quotes (`cmd &`, `(cmd &)`; never &&, >&, &>, |& or an escaped \\&), or a command (the
+    first word of a simple command, past assignments, keywords, wrappers and their options) that is nohup, setsid,
+    disown or coproc, `tmux ... -d`, `screen -d...`, or a shell running a script with -c past its options (`bash -o
+    pipefail -c`, `sh -e -c`, `bash --norc -c`) that does; True when it can't be read. Outside a heredoc, whose lines
+    are text, a newline ends a command."""
+    lines = "<<" not in cmd
     try:
-        lex = _Lexer(cmd[:1 << 16], posix=True, punctuation_chars=True)
+        lex = _Lexer(cmd[:1 << 16], posix=False, punctuation_chars="();<>|&" + "\n" * lines)
         lex.whitespace_split = True
+        if lines:
+            lex.whitespace = " \t\r"
         words = list(lex)
     except ValueError:   # a quote that never closes
         return True
+    first, wrapped, skip = True, False, False
     for i, w in enumerate(words):
-        if set(w) <= PUNCT and LONE_AMP.search(w) or w in BACKGROUND:
+        if set(w) <= PUNCT | {"\n"}:
+            if LONE_AMP.search(w) and not (i and words[i - 1].endswith("\\")):
+                return True
+            if set(w) & set("<>"):   # a redirection: its target is no command
+                skip = True
+            else:
+                first, wrapped = True, False
+            continue
+        if skip or not first:
+            skip = False
+            continue
+        name = posixpath.basename(_unquote(w))
+        if name in BACKGROUND:
             return True
-        if posixpath.basename(w) in ("tmux", "screen") and any(x[:1] == "-" and "d" in x for x in words[i + 1:]):
+        if name in KEYWORDS or name in WRAPPERS or "=" in w[1:] and w[0] not in "'\"" or wrapped and (
+                w[:1] in "-+" or w[:1].isdigit()):   # FOO=1 cmd, then cmd, sudo -u dev cmd, timeout 10 cmd
+            wrapped, skip = wrapped or name in WRAPPERS, wrapped and w in ARG_FLAGS
+            continue
+        first = False
+        rest = list(itertools.takewhile(lambda x: not set(x) <= PUNCT | {"\n"}, words[i + 1:]))
+        if name in ("tmux", "screen") and any(x[:1] == "-" and "d" in x for x in rest):
             return True
-        if posixpath.basename(w) in SCRIPT_SHELLS and re.fullmatch(r"-[a-z]*c[a-z]*", (words[i + 1:] or [""])[0]) \
-                and len(words) > i + 2 and depth < 4 and _detaches(words[i + 2], depth + 1):
-            return True
+        if name in SCRIPT_SHELLS and depth < 4:
+            j = 0
+            while j < len(rest) and rest[j][:1] in "-+" and not SCRIPT_FLAG.fullmatch(rest[j]):
+                j += 2 if rest[j] in ("-o", "+o", "-O", "+O") else 1
+            if j + 1 < len(rest) and SCRIPT_FLAG.fullmatch(rest[j]) and _detaches(_unquote(rest[j + 1]), depth + 1):
+                return True
     return False
 
 
@@ -294,16 +359,13 @@ def check(run, out, cov, others, opts, deadline, clock):
         return clock() > deadline
 
     # the box run: its doors and what Box observed
-    door = {"tkbox.box", "tkbox.model.call", "tkbox.egress", "tkbox.gap"}
+    door = {"tkbox.box", "tkbox.model.call", "tkbox.egress", "tkbox.gap", "tkbox.channel"}
     bodies, done = _bodies(run.records, lambda r: r["event"]["type"] == "policy.decision" and r["event"]["data"].get(
         "tool") in ("WebFetch", "Write") or r["event"]["type"] == "input.observed" and r["event"]["data"].get(
         "source") in door, content, late)
     doors = _calls(run.records, bodies)
-    conns = []
-    for d in doors:
-        if d["tool"] == "WebFetch":   # Box's door URL names one host and port
-            h, dests = _dests(_arg(d, "url"))
-            conns.append({**d, "host": h, "dest": next(iter(dests), None)})
+    conns = [{**d, "host": h, "dest": dest} for d in doors if d["tool"] == "WebFetch"
+             for h, dest in [_door(_arg(d, "url"))]]
     writes = [d for d in doors if d["tool"] == "Write"]
     obs = [(r["event"]["data"]["source"], _t(r["event"]["ts"]), bodies.get(r["event"]["run_seq"]))
            for r in run.records if r["event"]["type"] == "input.observed" and r["event"]["data"].get("source") in door]
@@ -319,9 +381,13 @@ def check(run, out, cov, others, opts, deadline, clock):
     # the agent's runs: what it said it did
     kids = {k: v for k, v in ((k, sorted(v, key=lambda r: r["event"]["run_seq"])) for k, v in runs.items())
             if (label(v) or (None, None))[1] == run.run_id}
+    # no agent account: the box ran to its end with the channel on, the source holds every run of the tenant, and Box
+    # refused no register_run on the channel (a refusal with no method, or one lost, may have been one)
+    refused = any(s == "tkbox.channel" and b.get("method") in ("register_run", None)
+                  or s == "tkbox.gap" and b.get("kind") == "tkbox.channel" for s, _, b in obs)
     if not kids:
-        return note("no_agent_account" if whole and lab[0].get("channel") == "agent" else "no_agent_runs",
-                    len(conns) + len(writes))
+        return note("no_agent_account" if whole and run.final and lab[0].get("channel") == "agent" and not refused
+                    else "no_agent_runs", len(conns) + len(writes))
     calls, spans = [], {}
     for rid, recs in sorted(kids.items()):
         got, ok = _bodies(recs, lambda r: r["event"]["type"] == "policy.decision", content, late)
@@ -360,10 +426,13 @@ def check(run, out, cov, others, opts, deadline, clock):
             return "no_agent_run"
         # lean: scans every call per connection; index calls by time (findings_effects._Effects.window) if boxes run
         # thousands of each
-        fits = [c for c in calls if "connect" in _kinds(c["tool"])
-                and (c["tool"] not in FETCH or c["dests"] is None or d["dest"] in c["dests"]) and holds(c, t)]
-        if fits:
-            return "checked" if any(c["t1"] is not None for c in fits) else "call_unfinished"
+        fits = [c for c in calls if "connect" in _kinds(c["tool"]) and holds(c, t)
+                and (c["tool"] not in FETCH or c["dests"] is None or d["dest"] in c["dests"])]
+        known = [c for c in fits if c["tool"] not in FETCH or c["dests"] is not None]
+        if known:
+            return "checked" if any(c["t1"] is not None for c in known) else "call_unfinished"
+        if fits:   # only a fetch whose URL isn't known: it may be the one
+            return missing
         if any(holds(m, t) for m in hosted):
             return "host_command"
         earlier = [c["bg"] for c in calls if c["tool"] in SHELLS and c["t0"] <= t and c["run"] in runs_then]

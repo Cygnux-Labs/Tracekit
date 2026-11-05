@@ -1213,7 +1213,7 @@ def main(argv=None):
             print(f"tracekit analyze: {a.bundle} holds {len(runs)} runs: pass --run", file=sys.stderr)
             return 2
         records = runs.get(run_id)
-        whole = any(c["check"] == "run-set" and c["status"] == "pass" for c in rep.checks)   # every run of the tenant
+        whole = findings_box.whole(rep.checks)   # a run-set from registry 0 with no open run: every run of the tenant
     else:
         try:
             store = a.store or dev_data_dir(create=False)

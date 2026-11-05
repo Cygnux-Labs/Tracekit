@@ -220,12 +220,12 @@ Not checkable is never a pass. Each reason, and the change that makes it checkab
 | `kind_not_recorded` | the sensor recorded no effect of this kind in the run: its policy may not select them | the sample TracingPolicy or Falco rules |
 | `hook_binary` | the only processes that could be the command's ran the same program as Tracekit's hooks (a shell or Python) | Codex: keep `CODEX_TOOL_CALL_ID` in the sensor, so a command's processes name their call |
 | `no_agent_runs` | no run of the box's agent channel is in what was analysed (TK-X212): its runs weren't given (a bundle of the box run alone, the viewer), or the box ran without the channel | analyse the box run from a run-set bundle (`tracekit export --v2 --run-set`) or the signer's store; start the box with its agent channel on |
-| `no_agent_account` | the box ran with its agent channel on, what was analysed holds every run of the box's tenant (a store or a run-set), and the agent registered none: it kept no account at all. The summary line says `NO AGENT ACCOUNT` | treat every door event as unexplained and review them by hand (`tracekit view`, `tkbox events`) |
+| `no_agent_account` | the box run is final and ran with its agent channel on, what was analysed holds every run of the box's tenant (the signer's store, or a run-set bundle from registry 0 with no run still open: a run-set bundles only final runs), Box refused no `register_run` on the channel (`tkbox.channel`), and the agent registered none: it kept no account at all. The summary line says `NO AGENT ACCOUNT`. Anything short of that is `no_agent_runs` | treat every door event as unexplained and review them by hand (`tracekit view`, `tkbox events`) |
 | `agent_run` | the run is a box's agent run: its box run holds the doors | analyse the box run (this run's `parent_run`) |
 | `no_agent_run` | a door event while no agent run of the box was open: before its hooks started, or after it closed its run (which it can do early) | review those door records by hand (`tracekit view`, `tkbox events`) |
 | `model_host` | a connection to a model API host: the harness's own model calls | none; Box records each model call (`tkbox.model.call`) |
 | `host_command` | a command Box started from the host was running (a connection) or ran (a file), other than the one command an agent run began in | run host commands before the agent starts, or in a box of their own |
-| `background` | a shell call earlier in the run may have left a process running (`run_in_background`, a lone `&` as in `cmd &` or `(cmd &)`, nohup, setsid, disown, coproc, `tmux … -d`, `screen -d…`, or a script `sh -c` runs that does) | review that call's command |
+| `background` | a shell call earlier in the run may have left a process running (`run_in_background`; a lone `&` outside quotes, as in `cmd &` or `(cmd &)`; a command, not text, that is nohup, setsid, disown, coproc, `tmux … -d`, `screen -d…`, or a shell running a script with `-c`, past its options, that does) | review that call's command |
 | `untimed_refusal` | a connection Box refused itself, or the record of one Box lost (`tkbox.egress`, `tkbox.gap`): it comes later with no time of its own, so no call can be placed against it | read the box's events (`tkbox events`) |
 | `apply_dir` | the file was applied to another directory than the box's workspace, or may have been applied to one under it (`tkbox apply --dir`) | apply to the box's workspace |
 | `no_path` | a write call of the agent's names no path | review the box's patch (`tkbox diff`) against the agent's calls |
@@ -337,9 +337,10 @@ tracekit analyze --v2 --run BOX --store DATA_DIR
 All runs' records carry the signer's clock, so a call's window is its decision to `--effect-grace` (2 s) after its
 result, with no skew. A fetch matches a connection to its URL's host, a leading `www.` aside (Claude Code's WebFetch
 follows a redirect that only adds or drops it, on the same protocol and port), on its URL's port, and on 443 too for
-plain `http` (WebFetch upgrades it to https); the host is taken as Node sends it (an internationalised name in
-punycode, a number form such as `0x5db8d822` as a dotted address). Each rule is conservative: what can't be told is
-counted not checkable, never a finding.
+plain `http` to port 80 (WebFetch upgrades it to https). The URL is read as Node reads a web URL (a backslash as a
+slash, any slashes after `https:`), and its host as Node sends it (an internationalised name in punycode, a number
+form such as `0x5db8d822` as a dotted address; a name ending in a number that is no address is no URL). Each rule is
+conservative: what can't be told is counted not checkable, never a finding.
 
 1. **A connection no call explains** (high, `door_unexplained`). Explained when it was decided in the window of a
    call whose tool may connect: a shell, an MCP or unknown tool, a fetch it matches, or a fetch whose arguments
@@ -367,9 +368,10 @@ A finding is signed about the box run: it cites the box run's door records (for 
 run's first record after the window: no record before it is a connection to that host), and names the agent's run
 and records in what it prints. A box run's own calls are Box's doors, so the checks of an agent's calls (TK-X201 to
 TK-X208, TK-X211 and v1's text checks) skip them. Analysed on its own, an agent run counts its calls `agent_run`. A box run with no agent runs
-beside it counts its door events `no_agent_runs`, or `no_agent_account` when the source holds every run of the
-tenant and the box's channel was on: the agent registered none, and the summary line says `NO AGENT ACCOUNT`. What it
-can't see: [limits](limits.md#tracekit-box-experimental).
+beside it counts its door events `no_agent_runs`, or `no_agent_account` when the box run is final, its channel was
+on, the source holds every run of the tenant (the store, or a run-set from registry 0 with no run open) and Box refused
+no `register_run`: the agent registered none, and the summary line says `NO AGENT ACCOUNT`. What it can't see:
+[limits](limits.md#tracekit-box-experimental).
 
 ### The `--json` shape
 
