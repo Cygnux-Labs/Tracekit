@@ -165,7 +165,8 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
             f.close()
 
     times = [datetime.fromisoformat(c["time"]).timestamp() for c in calls if c["time"]]
-    span = now - since_ts if since else max(times) - min(times) if times else 0
+    first = min(times, default=None)
+    span = now - max(since_ts, first or since_ts) if since else max(times) - first if times else 0
     report = {
         "span_s": round(span),
         "holds_a_day": round(counts["ask"] * 86400 / span, 1) if span >= 86400 else None,

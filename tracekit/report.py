@@ -185,15 +185,14 @@ def _tally(key, records, tr, rules, unread):
             waits.setdefault(d["tool_use_id"], {"seconds": round(took), "took": took, "tool": tool, "run_id": key[1],
                                                 "approved": d["decision"] == "approve",
                                                 "by": "agent" if d.get("approver_kind") == "agent" else
-                                                "self" if d["decision"] == "approve" and d.get("self_approved")
-                                                else "person"})
+                                                "self" if d.get("self_approved") else "person"})
     return held, list(waits.values())
 
 
 def _oversight(holds, waits, span):
     """How much of the holds a person answered, from the signed approval records. Each hold's first answer is one of:
-    a person's (neither of the next two), the run's own user's approval of its own call (`self`: the agent runs as that
-    user), or an agent approver's (model output); a hold with none is unanswered (expired, abandoned or still waiting),
+    a person's (neither of the next two), the run's own user's answer to its own call (`self`: the agent runs as that
+    user, so its rejection is no more a person's than its approval), or an agent approver's (model output); a hold with none is unanswered (expired, abandoned or still waiting),
     though an approval that expired after an answer still counts as answered. Time to answer (median and 90th
     percentile, nearest rank) and the approvals answered under FAST_S, which were likely unread, are a person's only.
     `span`: the window's seconds from its first record; holds a day only from a day of it."""
@@ -203,7 +202,9 @@ def _oversight(holds, waits, span):
     approved = sum(w["approved"] for w in people)
     return {"total": total, "span_s": round(span), "per_day": round(total * 86400 / span, 1) if span >= 86400 else None,
             "approved": approved, "rejected": len(people) - approved,
-            "self_approved": sum(w["by"] == "self" for w in waits), "by_agent": sum(w["by"] == "agent" for w in waits),
+            "self_answered": {"approved": sum(w["by"] == "self" and w["approved"] for w in waits),
+                              "rejected": sum(w["by"] == "self" and not w["approved"] for w in waits)},
+            "by_agent": sum(w["by"] == "agent" for w in waits),
             "unanswered": total - len(waits),
             "median_s": statistics.median(took) if took else None,
             "p90_s": took[math.ceil(0.9 * len(took)) - 1] if took else None,
@@ -341,7 +342,8 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
                       "retries": totals["retries"]["n"],
                       "answered_by": dict(totals["answered"].most_common()),
                       "oversight": _oversight(totals["holds"], waits, until - max(since, first_ts or until)),
-                      "longest_wait": max(waits, key=lambda w: w["seconds"], default=None),
+                      "longest_wait": max(({k: w[k] for k in ("seconds", "tool", "run_id")} for w in waits),
+                                          key=lambda w: w["seconds"], default=None),
                       "examples": {o: example(*hold_examples[o]) for o, _ in totals["holds"].most_common()
                                    if o in hold_examples}},
             "rules": sorted(rules.values(), key=lambda g: (-g["count"], g["decision"], g["rule"], str(g["why"]))),
@@ -372,9 +374,10 @@ def _oversight_lines(o):
     rate = f"{o['per_day']:g} holds a day" if o["per_day"] is not None else f"{o['total']:,} in {_wait(o['span_s'])}"
     out = [f"  oversight: {rate}; a person approved {pct(o['approved'])}, rejected {pct(o['rejected'])}; "
            f"{pct(o['unanswered'])} with no answer (expired, abandoned or still waiting)"]
-    if o["self_approved"]:
-        out.append(f"  self-approved {o['self_approved']:,} (the run's own user, which the agent can be: not a person's "
-                   "check)")
+    me = o["self_answered"]
+    if me["approved"] or me["rejected"]:
+        out.append(f"  answered by the run's own user (which the agent can be: not a person's check): approved "
+                   f"{me['approved']:,}, rejected {me['rejected']:,}")
     if o["by_agent"]:
         out.append(f"  answered by an agent approver {o['by_agent']:,} (model output, not a person's check)")
     if o["median_s"] is not None:
@@ -382,7 +385,7 @@ def _oversight_lines(o):
                    f"{_wait(round(o['p90_s']))}; {o['fast_approvals']:,} approval{'s' * (o['fast_approvals'] != 1)} "
                    f"answered in under {FAST_S}s (likely unread)")
     if o["approved"] >= UNREAD_HOLDS and not o["rejected"]:
-        out.append(f"  A person approved all {o['approved']:,} answered holds and rejected none, so approvals may not "
+        out.append(f"  A person approved {o['approved']:,} holds and rejected none, so approvals may not "
                    "be read. Run tracekit audit to find the calls that keep being held.")
     return out
 

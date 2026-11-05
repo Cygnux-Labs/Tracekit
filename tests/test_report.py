@@ -313,19 +313,19 @@ class WeeklyReport(unittest.TestCase):
         self.assertIn("Note: 2 flagged calls cite a policy this report can't read", page)
 
     def test_oversight_counts_self_approval_apart_and_scales_nothing_up(self):
-        # the fixture's signer lets a run's own user answer: its approval is no person's, its rejection is
+        # the fixture's signer lets a run's own user answer: neither its approval nor its rejection is a person's
         rep = self.build(since=self.cut, until=self.cut + 2 * 86400)
         o = rep["holds"]["oversight"]
-        self.assertEqual((o["total"], o["approved"], o["rejected"], o["self_approved"], o["by_agent"], o["unanswered"]),
-                         (3, 0, 1, 1, 0, 1))
+        self.assertEqual((o["total"], o["approved"], o["rejected"], o["self_answered"], o["by_agent"], o["unanswered"]),
+                         (3, 0, 0, {"approved": 1, "rejected": 1}, 0, 1))
         self.assertEqual(o["fast_approvals"], 0)   # the only approval is the self-approval
         self.assertGreater(o["span_s"], 86400)
         self.assertLess(o["per_day"], 3)   # three holds over about two days, not three a day
         page = weekly.text(rep)
-        self.assertIn("a person approved 0 (0%), rejected 1 (33%); 1 (33%) with no answer "
+        self.assertIn("a person approved 0 (0%), rejected 0 (0%); 1 (33%) with no answer "
                       "(expired, abandoned or still waiting)\n", page + "\n")
-        self.assertIn("  self-approved 1 (the run's own user, which the agent can be: not a person's check)\n",
-                      page + "\n")
+        self.assertIn("  answered by the run's own user (which the agent can be: not a person's check): approved 1, "
+                      "rejected 1\n", page + "\n")
         short = self.build()   # minutes of window: the count over it, no daily rate
         self.assertIsNone(short["holds"]["oversight"]["per_day"])
         self.assertRegex(weekly.text(short), r"oversight: 3 in \d+m \d+s; a person approved 0")
@@ -347,22 +347,23 @@ class WeeklyReport(unittest.TestCase):
         self.assertEqual(rep["holds"]["outcomes"], {"expired": 20})
         o = rep["holds"]["oversight"]
         # the signer here lets the run's own user answer, which no person's check: none of the 20 is a person's
-        self.assertEqual((o["total"], o["approved"], o["self_approved"], o["rejected"], o["unanswered"]),
-                         (20, 0, 20, 0, 0))
+        self.assertEqual((o["total"], o["approved"], o["self_answered"], o["rejected"], o["unanswered"]),
+                         (20, 0, {"approved": 20, "rejected": 0}, 0, 0))
         self.assertNotIn("approvals may not be read", weekly.text(rep))
-        self.assertIn("  self-approved 20 (the run's own user", weekly.text(rep))
+        self.assertIn("run's own user (which the agent can be: not a person's check): approved 20, rejected 0",
+                      weekly.text(rep))
 
     def test_the_warning_needs_twenty_approvals_by_a_person_and_no_rejection(self):
-        base = {"total": 25, "span_s": 0, "per_day": None, "approved": 20, "rejected": 0, "self_approved": 0,
-                "by_agent": 0, "unanswered": 5, "median_s": 3, "p90_s": 9, "fast_approvals": 0}
+        base = {"total": 25, "span_s": 0, "per_day": None, "approved": 20, "rejected": 0,
+                "self_answered": {"approved": 0, "rejected": 0}, "by_agent": 0, "unanswered": 5, "median_s": 3, "p90_s": 9, "fast_approvals": 0}
         said = lambda **kw: any("approvals may not be read" in x for x in   # noqa: E731
                                 weekly._oversight_lines({**base, **kw}))
         self.assertTrue(said())
-        self.assertIn("  A person approved all 20 answered holds and rejected none, so approvals may not be read. Run "
+        self.assertIn("  A person approved 20 holds and rejected none, so approvals may not be read. Run "
                       "tracekit audit to find the calls that keep being held.", weekly._oversight_lines(base))
         self.assertFalse(said(approved=19))
         self.assertFalse(said(rejected=1))
-        self.assertFalse(said(approved=0, self_approved=25, unanswered=0))   # 25 holds, none a person's approval
+        self.assertFalse(said(approved=0, self_answered={"approved": 25, "rejected": 0}, unanswered=0))   # 25 holds, none a person's approval
         self.assertFalse(said(approved=0, total=25, unanswered=25))   # 25 holds, no answer at all
 
     def test_holds_are_what_became_of_them_and_answers_are_of_holds_in_the_window(self):
@@ -661,16 +662,19 @@ class Oversight(unittest.TestCase):
     def test_each_kind_of_answer_is_counted_apart(self):
         o = self.oversight((9, {"decision": "approve", "approver": "uid:1"}),
                            (4, {"decision": "reject", "approver": "uid:1"}),
+                           (3, {"decision": "reject", "approver": "uid:2", "self_approved": True}),
                            (1, {"decision": "approve", "approver": "uid:2", "self_approved": True}),
                            (0.5, {"decision": "approve", "approver": "m", "approver_kind": "agent"}))
-        self.assertEqual((o["approved"], o["rejected"], o["self_approved"], o["by_agent"], o["unanswered"]),
-                         (1, 1, 1, 1, 0))
-        # a person's times alone: the self-approval at 1 s and the agent's at 0.5 s are in neither
+        self.assertEqual((o["approved"], o["rejected"], o["self_answered"], o["by_agent"], o["unanswered"]),
+                         (1, 1, {"approved": 1, "rejected": 1}, 1, 0))
+        # a person's times alone: the run's own user's at 1 s and 3 s and the agent's at 0.5 s are in none
         self.assertEqual((o["median_s"], o["p90_s"], o["fast_approvals"]), (6.5, 9, 0))
 
-    def test_a_rejection_by_the_requester_is_a_persons(self):
-        o = self.oversight((3, {"decision": "reject", "approver": "uid:1", "self_approved": True}))
-        self.assertEqual((o["rejected"], o["self_approved"]), (1, 0))
+    def test_a_rejection_by_the_requester_is_no_persons_and_cannot_silence_the_warning(self):
+        o = self.oversight((3, {"decision": "reject", "approver": "uid:1", "self_approved": True}),
+                           *[(5, {"decision": "approve", "approver": "uid:1"})] * weekly.UNREAD_HOLDS)
+        self.assertEqual((o["rejected"], o["self_answered"]), (0, {"approved": 0, "rejected": 1}))
+        self.assertTrue(any("approvals may not be read" in x for x in weekly._oversight_lines(o)))
 
     def test_an_approval_under_two_seconds_is_fast_and_one_at_two_and_a_half_is_not(self):
         o = self.oversight((1.5, {"decision": "approve", "approver": "uid:1"}),

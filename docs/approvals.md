@@ -484,8 +484,8 @@ about the window it covers:
 - holds a day (under a day of records, the count over the window, not a rate scaled up from it);
 - the share of held calls a person approved, rejected, or left with no answer (expired, abandoned or still waiting).
   An answer from an [agent approver](#agent-approvers) is model output, and one the run's own user gave to its own
-  call (the only kind a dev signer, or any signer with no `approvals` config, takes: the agent runs as that user) is
-  no check by another person. Both are counted apart and never as a person's;
+  call (the only kind a dev signer takes: the agent runs as that user), approved or rejected, is no check by another
+  person. Both are counted apart and never as a person's;
 - the median and 90th-percentile time from hold to a person's first answer;
 - approvals answered in under 2 seconds, which were likely not read.
 

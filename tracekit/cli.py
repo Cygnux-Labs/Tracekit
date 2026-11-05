@@ -629,10 +629,7 @@ def _run(a):
         from .sdk import autospawn
         st, v2 = install.status(), autospawn.status()
         from . import client
-        try:   # a root-owned config is system mode: the signer isn't the same user's
-            system = client.system_config()
-        except client.SystemConfigError:
-            system = True
+        system = client.system_config()   # a root-owned config is system mode: the signer isn't the same user's
         dev = (st["client_config"] or {}).get("mode") == "dev" or v2.get("dev") and not system
         print(json.dumps({**st, "signer_v2": v2, **({"dev_mode": install.DEV_MODE_LINE} if dev else {})}, indent=2))
         return 0
