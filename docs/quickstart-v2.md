@@ -31,6 +31,9 @@ venv the agent already has. pipx and `uv tool` give you the `tracekit` command
 then run from that install), but nothing your agent can import. The command and the SDK can come from two installs:
 both use the same dev signer. Keep them at the same version.
 
+`tracekit help` lists every command, grouped by what you'd use it for, and the features that aren't commands of their
+own; `tracekit help <command>` shows a command's options.
+
 ### Upgrading
 
 `pip install -U tracekit-ai` upgrades the environment you run it in. Two other places can keep the old version, and

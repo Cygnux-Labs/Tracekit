@@ -101,10 +101,89 @@ def main(argv=None):
             return run(args[1:])
         finally:
             experimental(_EXPERIMENTAL[args[0]], help=True)
+    ap, sub = _parser()
+    a = ap.parse_args(argv)
+    try:
+        if a.cmd in (None, "help"):
+            return _help(ap, sub, getattr(a, "command", None))
+        return _run(a)
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
+    except BrokenPipeError:
+        return 0
+    except SystemExit:
+        raise
+    except Exception as e:  # a CLI should print a reason, not a traceback; TRACEKIT_DEBUG=1 restores it
+        if os.environ.get("TRACEKIT_DEBUG") == "1":
+            raise
+        print(f"tracekit: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+# `tracekit help` and a bare `tracekit`: each command under what a person runs it for (tests/test_cli.py checks that
+# every command is in exactly one group), then what Tracekit does that is not a command of its own
+_GROUPS = (
+    ("Start here", "init up down status doctor demo"),
+    ("See what agents did", "view last report audit why graph cost analyze observe"),
+    ("Approvals", "approvals pending approve reject"),
+    ("Evidence", "export verify verify-model pcm"),
+    ("Policy", "policy"),
+    ("Run it on a server", "signer deploy issuer monitor reviewer witness public-witness daemon ingest"),
+    ("Record model, tool and network traffic", "gateway executor mcp-gateway a2a-gateway egress proxy"),
+    ("Connect other tools", "follow srt-decider openshell-middleware ext-mcp sensor otel"),
+    ("Maintenance", "migrate uninstall"),
+)
+_FEATURES = (
+    ("Witnesses and anchoring: other parties cosign the signer's log, and Rekor and RFC 3161 timestamps anchor it "
+     "(the free public witness is not deployed yet)", wiki_url("docs/witnesses.md")),
+    ("Tracekit Box, a separate program: runs an agent in its own micro-VM whose only ways out are decided and signed",
+     "https://github.com/Cygnux-Labs/Tracekit-box"),
+    ("SDKs and integrations: tracekit.instrument() and the Python SDK, the TypeScript SDK, framework integrations "
+     "and coding-agent hooks", wiki_url("docs/integrations.md")),
+)
+
+
+def _help(ap, sub, name):
+    """`tracekit help NAME` is `tracekit NAME --help`; without NAME, every command in its group, each with its own help
+    up to where its usage starts, then the features."""
+    import textwrap
+    if name in sub.choices:
+        return main([name, "--help"])
+    if name:
+        print(f"tracekit help: no command named {name!r}; the commands are:\n"
+              + textwrap.fill(", ".join(sorted(sub.choices)), 80, initial_indent="  ", subsequent_indent="  ",
+                              break_on_hyphens=False), file=sys.stderr)
+        return 2
+    helps = {x.dest: x.help for x in sub._choices_actions}
+    lines = [f"tracekit {__version__}: {ap.description}"]
+    for title, names in _GROUPS:
+        lines += ["", title]
+        for n in names.split():
+            text = re.split(r"; |: `", helps[n])[0]
+            if n in _EXPERIMENTAL and "experimental" not in text:
+                text += " (experimental)"
+            first = f"  {n:<14}  "
+            if len(first) > 18:   # a name longer than the column gets a line of its own
+                lines.append(first.rstrip())
+                first = " " * 18
+            lines.append(textwrap.fill(text, 80, initial_indent=first, subsequent_indent=" " * 18,
+                                       break_on_hyphens=False))
+    lines += ["", "Also in Tracekit"]
+    for text, url in _FEATURES:
+        lines += [textwrap.fill(text, 80, initial_indent="  ", subsequent_indent="  "), f"    {url}"]
+    print("\n".join(lines + ["", "`tracekit help <command>` shows a command's options."]))
+    return 0
+
+
+def _parser():
+    """tracekit's argument parser and its subcommands."""
     ap = argparse.ArgumentParser(prog="tracekit", description="Tamper-evident records of what AI agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
-    sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
+    sub = ap.add_subparsers(dest="cmd", metavar="command")
 
+    p = sub.add_parser("help", help="every command, grouped by what it is for; `help COMMAND` shows its options")
+    p.add_argument("command", nargs="?")
     p = sub.add_parser("init", help="install the signer and Claude Code hooks")
     p.add_argument("--remote", metavar="URL", help="agent on another machine: with --v2, send to this signer's HTTPS "
                                                    f"transport; without, to the deprecated ingest gateway ({wiki_url('docs/remote-ingest.md')})")
@@ -366,22 +445,7 @@ def main(argv=None):
                    help="`tracekit why` on the signer: a 3-agent desk, a held email, its cause found and cited")
     p.add_argument("--agent", default="claude", choices=demo.AGENTS,
                    help="send the scripted run as this coding agent's own hook payloads (default: claude)")
-
-    a = ap.parse_args(argv)
-    try:
-        return _run(a)
-    except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
-        return 130
-    except BrokenPipeError:
-        return 0
-    except SystemExit:
-        raise
-    except Exception as e:  # a CLI should print a reason, not a traceback; TRACEKIT_DEBUG=1 restores it
-        if os.environ.get("TRACEKIT_DEBUG") == "1":
-            raise
-        print(f"tracekit: {type(e).__name__}: {e}", file=sys.stderr)
-        return 1
+    return ap, sub
 
 
 def _init_remote(a):
