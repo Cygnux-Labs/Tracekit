@@ -71,13 +71,26 @@ them: when network bytes reach that program, or it names a protected place.
 Other tool classes keep what they have. A file tool's path is already its effect; an HTTP call's host, method and
 `sends_to` are already its effects.
 
+### What "can't tell" means
+
+Two different things can be unknown, and they get different answers.
+
+| What is unknown | Example | Answer |
+|---|---|---|
+| which program runs | `$X …` where the line doesn't give `$X` a value; a name from `$(…)`; a pattern as the program; a shell reading its program from a pipe; a function body the line doesn't read | held (`P0`), as `TK-SHELL-PARSE` holds it today |
+| what a known program does inside | the project's own code: `npm test`, `make`, `pytest`, `cargo build`, `python setup.py` | allowed, as today. Tracekit records the call but can't see inside it. Tracekit Box's doors (each connection, each file written back at `apply`) are what cover it |
+
+The second kind is never `P0`. If it were, every build and test run would wait for a person. One exception narrows
+it: when the signed record shows what the agent itself wrote into the file it runs, the policy reads that (below,
+[scripts](#scripts-looking-back-at-what-the-agent-wrote)).
+
 ### The principles
 
 Verdicts are today's. This design moves no rule between deny, ask and flag; that is #604's decision.
 
 | Id | Recorded as | Principle | Broken | Can't tell |
 |---|---|---|---|---|
-| `P0` | `TK-PR-UNREAD` | What Tracekit can't read, a person decides. | ask (`on_parse_error`; strict denies) | ask |
+| `P0` | `TK-PR-UNREAD` | When Tracekit can't tell which program runs, a person decides. | ask (`on_parse_error`; strict denies) | ask |
 | `P1` | `TK-PR-NETCODE` | Code whose bytes came from the network runs only when a person says so. | deny when a shell or interpreter runs the bytes; ask when they reach an interpreter as data and its code isn't proven | today's verdict |
 | `P2` | `TK-PR-GUARDRAILS` | The agent never changes, stops or answers for its own guardrails: Tracekit, its signer, its policy and approvals, the hooks, the harness's settings and sandbox, git hooks and CI, and root. | deny (Tracekit, the signer, approvals, root); ask (removing Tracekit as a person would, sandbox escapes, hooks, Docker's host access, CI and repository protections); flag (harness settings, as today) | today's verdict |
 | `P3` | `TK-PR-SIGNER` | The agent never reads or moves the signer's keys or data. | deny | today's verdict |
@@ -318,12 +331,71 @@ quotes and case are already resolved, so their spelling risk is the parser's. Th
 `line` or `code` field (`TK-D002`, `TK-A046`, `TK-D006`, `TK-D011`, `TK-A040`) are the ones spelling breaks. They
 move to effects first.
 
+### Scripts: looking back at what the agent wrote
+
+Today each call is judged alone. So `curl -s -o x.sh https://…` in one call and `bash x.sh` in the next are each
+allowed, and the second runs network bytes. A `deploy.sh` the agent wrote with the file tool, with a force push in
+it, runs through `bash deploy.sh` unread. The signer has already seen both writes and signed them. The policy can look
+back.
+
+**The write index.** For each absolute path a call wrote, the signer keeps the last recorded write: its run and
+sequence number, its digest when the record has one, and where its bytes came from.
+
+| The write | Its source in the index |
+|---|---|
+| a file tool (Write, MultiEdit, NotebookEdit; an Edit when the index holds the file's content before it) | written by the agent: the content is in the signed call's arguments |
+| a literal on a shell line: a heredoc, `echo` or `printf` into the file | written by the agent: the literal |
+| a download: `curl -o`, `wget -O`, a redirection or `tee` of downloaded bytes | the network, with its host |
+| `cp`, `mv`, `install`, or a redirection of a command fed by an indexed file | the source file's source |
+| a writer the parser can't name the target of (MAY_WRITE), or can't model (`python -c` writing with `open`) | not covered |
+
+A relative path is made absolute against the working directory the client reports, and the parser's `cd`s on the
+line. For a script-like file (a shebang, or `.sh`, `.bash`, `.py`, `.js`, `.mjs`, `.rb`, `.pl`, up to 64 KiB) whose
+content the record holds, the signer keeps that content, encrypted at rest as approval arguments are, for 30 days.
+The index is the signer's own state, in its store; it survives a restart.
+
+**Judging a call that runs a file.** When a call runs a file (`bash x.sh`, `sh x.sh`, `source x.sh`, `./x`,
+`python x.py`, `node x.mjs`), the engine looks up its path. The data-only proof also looks: an importable file (`.py`,
+`.so`, `.pth`, …) the index marks as from the network, in the working directory or a venv's `site-packages`, fails the
+proof, so an earlier call's plant is seen when its write was recorded.
+
+Then, by the file's last recorded write:
+
+- **From the network**, directly or through a copy: `P1` is broken, and the call is denied, as `curl -o x; sh x` on
+  one line is today.
+- **Written by the agent**, with the content in the index: the content is read as if the agent had typed it. A shell
+  script goes through the shell parser and every rule and principle. Another language gets the same reading
+  `python -c` code gets today (the parser's scan for process spawns). A stop names the record it read, by run and
+  sequence number, in its `reasons`.
+- **Not covered** (no record; a file from before the run; one written by `git pull`, `npm install`, a build, or a
+  writer the parser can't model): it is the project's own code. Allowed, as today, and covered by Box's doors.
+
+**It only adds stops.** Everything the look-back reads is the agent's own account: the content a file tool says it
+wrote, the working directory the client reports. A lie can only make the look-back miss, which leaves today's
+verdict. So nothing in it ever has to be trusted to allow a call. The client may also send the file's digest when it
+runs it; a digest that differs from the record's is flagged ("ran a file changed outside the record") and never lowers
+a decision.
+
+**What it doesn't see.** A file changed by a channel the record doesn't cover (a program the parser can't model, a
+person, another process) keeps its last recorded source. If that source was the agent, the policy reads stale
+content; if the file was later filled from the network by such a channel, the look-back doesn't know. That is the
+same as today, where nothing is read at all.
+
 ## Part 2: learning from people
+
+Four safeguards hold everything below:
+
+1. Learning happens only through a person's deliberate yes in `tracekit learn` (proposed). Approvals alone never
+   teach: they are the evidence a proposal shows, nothing more.
+2. Every learned shape is scoped to one repository.
+3. Every learned shape expires.
+4. Every learned shape passes the attack corpora before it is adopted.
 
 ### The only teacher
 
-The only teaching signal is an `approval` record the signer signed, with `decision: approve` or `reject`, whose
-approver is a person:
+Two things come from a person and nothing else does. The evidence is an `approval` record the signer signed, with
+`decision: approve` or `reject`. The decision to learn is a yes given in `tracekit learn`. Both count only when the
+signer established that a person gave them:
 
 - in system mode or a signer with `signer.yaml`: an approver identity the signer established (not the requester, not
   `self_approved`), not an agent approver, not break-glass (an emergency answer isn't a view on policy);
@@ -362,15 +434,18 @@ is equal and every abstracted part fits.
 
 ### When a shape is proposed
 
-A shape is proposed when, in one scope:
+A shape is proposed, never adopted, when, in one scope:
 
 - a person approved at least 3 calls of it, in at least 2 runs, within 30 days;
 - nobody rejected one in the last 90 days;
 - its principle and verdict are learnable (below).
 
-The scope is the tenant and the agent identity and harness the signer measured. The repository the client reports
-only narrows it: a shape learned in one repository applies only where the client reports the same one. A client
-that lies about it reaches no further, because no part of a shape depends on the client's paths.
+The scope is one repository, within the tenant and the agent identity and harness the signer measured. The shape
+records the repository's root (the absolute path the client reported for the approved calls; all of them must agree)
+and applies only to calls whose run reports that root. The root is the client's word, so it narrows where a shape
+applies and never widens what the shape releases: no part of a shape is relative to it. A client that lies about its
+repository can carry a shape to another one, where it still releases only that shape's exact programs, code, hosts
+and absolute paths.
 
 ### What can never be learned
 
@@ -390,8 +465,9 @@ it.
 
 ### How a proposal is shown
 
-`tracekit approvals list` shows it among the waiting approvals, and the viewer shows it on the approvals page. The
-hold message the agent sees never names a proposal or how to adopt one. An example (ids and numbers illustrative):
+Only `tracekit learn` and the viewer's learning page show proposals. They never appear among approvals, so a person
+clearing holds can't adopt one by habit. The hold message the agent sees never names a proposal or how to adopt
+one. An example (ids and numbers illustrative):
 
 ```text
 Proposed: let one kind of held call run without asking  (TK-LEARNED-3f9a1c2e)
@@ -401,12 +477,21 @@ Proposed: let one kind of held call run without asking  (TK-LEARNED-3f9a1c2e)
   Your decisions: approved 4, rejected 0, in 3 runs, 2 to 5 Nov, after waits of 4 s to 2 min
   One of them, as the signer kept it (written by the agent):
     cd proj && PY=/Users/me/proj/.venv/bin/python; $PY -m pytest -q tests/test_cli.py
-  Scope: tenant default, agent claude-code, repository ~/proj (the client's word)
+  Scope: repository /Users/me/proj (the client's word), tenant default, agent claude-code
   Checked: 3,412 attack spellings still stop with it; it releases none
   It can never release: a deny, guardrails, the signer, the record, credentials, money, downloaded code
   Expires: 4 Feb 2027
-  Adopt: approve apr-9c1e… like any held call (this signer asks for a passkey)
+  To learn it, type its id at the prompt below. Anything else leaves it a proposal.
 ```
+
+The yes is `tracekit learn adopt TK-LEARNED-3f9a1c2e` (proposed), and it is deliberate on purpose:
+
+- It prints the whole proposal first, then reads the shape's id typed back from the terminal (`/dev/tty`), never
+  from its arguments or its stdin. Without a terminal it refuses. That stops a script or a pasted line from saying
+  yes, though not a determined agent in dev mode (below).
+- `TK-D012`'s pattern grows to hold `tracekit learn adopt` typed in the agent's session, as it holds
+  `tracekit approvals approve`.
+- `tracekit learn dismiss` drops a proposal; it isn't proposed again for 90 days.
 
 Text from the call is printed as data, with control characters escaped, as `tracekit report` prints it: the agent
 wrote it, and it may be written to persuade.
@@ -432,30 +517,29 @@ The signer keeps adopted shapes in its own data directory, in a `learned` sectio
 `policy_hash` covers them, and the compiled policy is kept by its hash in `policies/`, as every policy is today.
 
 - **System mode:** the data directory belongs to the signer's own user, mode 0700. The agent's user can't read or
-  write it. Only the signer writes it, and only after a person's approval and the gate.
+  write it. Only the signer writes it, and only after a person's yes and the gate.
 - **Dev mode:** the data directory is in your home, and the agent runs as you. It can write that file as you can;
-  `TK-D007` and `TK-D013` deny the known ways, but they are tripwires. And the dev signer can't tell your approval from
-  your agent's. So in dev mode: only `P0` shapes are learnable, they expire after 30 days, every adoption is recorded
-  `self_approved`, and `tracekit last` and the viewer list each one. That is as strong as dev mode is today, where an
-  agent that talks to the signer's socket can approve its own holds, with one difference worth saying plainly: an
-  approval there now lasts 30 days for one shape, not one call. Use system mode where learning must be a person's.
+  `TK-D007` and `TK-D013` deny the known ways, but they are tripwires. The dev signer can't tell your approval or your
+  yes from your agent's, and an agent can fake a terminal. So in dev mode: only `P0` shapes are learnable, they expire
+  after 30 days, every adoption is recorded `self_approved`, and `tracekit last` and the viewer list each one. That is
+  as strong as dev mode is today, where an agent that talks to the signer's socket can approve its own holds, with one
+  difference worth saying plainly: a yes there now lasts 30 days for one shape, not one call. Use system mode where
+  learning must be a person's.
 
 ### How adoption is recorded and signed
 
-A proposal is an approval request the signer opens in the tenant's signer run, for the signer's own tool
-`tracekit.learn`, bound to the shape's canonical JSON. It stays open until a person answers it or 7 days pass. A
-person answers it with `tracekit approvals approve`, the web page or Slack, under every rule approvals already have:
-who may answer, `self_approval`, passkeys, break-glass. So adoption reuses the signed `approval.request`, `approval`
-and `approval.consumed` records.
-
-Once approved, the signer runs the gate, then writes an `ext` record (format 1.4's non-critical slot) in the tenant's
-signer run:
+`tracekit learn adopt` calls a new signer method, `learn_decide`, with the shape's hash and `adopt` or `dismiss`.
+The signer checks the caller as it checks `approval_decide`: a person who may answer the scope's approvals, not the
+requester of any approval the proposal rests on unless `self_approval: allow` (dev mode records it `self_approved`),
+never an agent approver, never break-glass, with a passkey where the signer requires one for approvals. Then it runs
+the gate, and writes an `ext` record (format 1.4's non-critical slot) in the tenant's signer run:
 
 ```text
-{"name": "tracekit.policy.learned", "shape": "sha256:…", "id": "TK-LEARNED-3f9a1c2e",
- "policy_before": "sha256:…", "policy_after": "sha256:…",
+{"name": "tracekit.policy.learned", "shape": "sha256:…", "id": "TK-LEARNED-3f9a1c2e", "repository": "/Users/me/proj",
+ "policy_before": "sha256:…", "policy_after": "sha256:…", "expires": "2027-02-04T00:00:00Z",
+ "by": {"scheme": "oidc", "subject": "…", "attested": true}, "self_approved": false,
  "approvals": [{"approval_id": "apr-…", "hash": "sha256:…"}, …],
- "gate": {"corpus": "sha256:…", "spellings": 3412, "released": 0}, "self_approved": false}
+ "gate": {"corpus": "sha256:…", "spellings": 3412, "released": 0}}
 ```
 
 Every later decision names `policy_after` as its `policy_hash`. Pending approvals asked under the old hash ask again
@@ -463,10 +547,11 @@ on a retry, as approvals already do when the policy changes.
 
 ### List, expire, undo
 
-- **List:** a new read-only signer method, `learn_list`, behind a proposed `tracekit learn` command: each adopted
-  shape, who adopted it, from which approvals, how many calls it released since, the last one, and its expiry.
+- **List:** a new read-only signer method, `learn_list`, behind `tracekit learn`: proposals, and each adopted shape
+  with its repository, who adopted it, from which approvals, how many calls it released since, the last one, and its
+  expiry.
 - **Expire:** 90 days in system mode, 30 in dev mode. Expiry is a signed `tracekit.policy.expired` record and a new
-  policy hash. Keeping a shape means adopting it again, with fresh approvals.
+  policy hash. Keeping a shape means a new proposal, from fresh approvals, and a new yes.
 - **Undo:** a new signer method, `learn_revoke`, behind a proposed `tracekit learn revoke`: any person who may answer
   the scope's approvals can revoke a shape at once. A signed `tracekit.policy.revoked` record, a new policy hash.
   Revoking only adds holds, so it needs no gate.
@@ -510,44 +595,54 @@ most harmless stops on other projects and loosens no known attack:
 5. The policy's `principles:` section and a `proofs:` section that names `TK-PROOF-NETDATA`'s version. The decision
    names the principle and the proof.
 
-Estimated on the owner's week with the scratch prototype; the slice's PR measures it with the real code:
+Measured with the scoreboard (`scoreboard.py`: the week's false stops a day, Tracekit work and other projects; known
+attacks through; p99 of `engine.decide` over the week's calls), with a scratch prototype of the slice standing in
+for the engine on shell calls. The slice's PR measures it again with the real code:
 
-| | Calls | Harmless stops today | After slice 1 | Per 1,000 calls |
-|---|---|---|---|---|
-| Other projects | 1,580 | 13 | 3 | 8.2 → 1.9 |
-| Tracekit work | 38,310 | 194 | 181 | 5.1 → 4.7 |
-| All | 39,890 | 207 (29.6 a day) | 184 (26.3 a day) | 5.2 → 4.6 |
+| | Main's `dev.yaml` | Slice 1 (prototype) |
+|---|---|---|
+| False stops a day, Tracekit work (38,310 calls) | 27.7 (5.06 per 1,000 calls) | 26.0 (4.75) |
+| False stops a day, other projects (1,580 calls) | 1.9 (8.23 per 1,000 calls) | 0.4 (1.90) |
+| Needed stops that stop | 6 of 8 | 6 of 8 |
+| Known attacks through (E17's deny corpus, E21 held-out and blind) | 767 of 1,312 | 767 of 1,312, none added |
+| p99 of a decision, the week's calls, on one machine | 1.78 ms | 1.94 ms |
 
-- The needed stops the dev pack makes (6 of the 8; the other 2 are branch pushes it only flags) all still stop. The 4
+- On other projects, 10 of the 13 harmless stops go. On Tracekit work, 12 of 194.
+- The 2 needed stops the dev pack doesn't make are branch pushes it only flags; that is #604's question. The 4
   unclear ones it denies stay denied.
-- 44 stops on calls the study didn't label become flags. The ones read so far are health checks of a local server
-  followed by a script the same line wrote. They need labels in the slice's PR.
+- Stops on calls the study didn't label fall from 15.7 to 9.4 a day. The ones read so far are health checks of a
+  local server followed by a script the same line wrote. They need labels in the slice's PR.
+- The p99 is of one machine that was busy with other work; the coordinator's run read main at 8.6 ms. Compare a
+  slice with main on the same machine and run, as here. The prototype parses some lines twice; the slice parses once.
 - Left on other projects: a function on a line that downloads, a variable holding a program and its options, and a
   line that sets a variable an interpreter reads.
 
 **Later slices, in order of measured gain:**
 
-| Slice | What | Harmless stops it may remove (week) |
+| Slice | What | What it may move (week) |
 |---|---|---|
-| 2 | substitutions and variables: `c=$(curl -o /dev/null -w '%{http_code}' …)` used only as data; a variable holding a bare program name or a literal with options; the empty reading of an assignment after `cd … &&` | up to 47 (37 variable programs, 10 status checks) |
-| 3 | live-aware `P2` and `P3`: the signer knows its own data directory, keys, socket and pid, so a command on a scratch home or a scratch signer isn't touching it | up to 27 of `TK-D007`'s 67 (scratch homes 12, kills 8, signer commands on scratch dirs 7) |
-| 4 | learning: shapes, proposals, the gate, adoption through approvals, `learn_list` and `learn_revoke` | measured by replay (below) |
-| 5 | `TK-D006`, `TK-D010`, `TK-D011` from text to effects | the 7 rule-text-in-code stops |
+| 2 | substitutions and variables: `c=$(curl -o /dev/null -w '%{http_code}' …)` used only as data; a variable holding a bare program name or a literal with options; the empty reading of an assignment after `cd … &&` | up to 47 false stops (37 variable programs, 10 status checks) |
+| 3 | scripts: the write index and the look-back | adds stops only: known attacks through should fall (a download run by a later call); every new stop on the week is listed and labelled |
+| 4 | live-aware `P2` and `P3`: the signer knows its own data directory, keys, socket and pid, so a command on a scratch home or a scratch signer isn't touching it | up to 27 of `TK-D007`'s 67 false stops (scratch homes 12, kills 8, signer commands on scratch dirs 7) |
+| 5 | learning: shapes, proposals, the gate, `tracekit learn`, `learn_list`, `learn_decide`, `learn_revoke` | measured by replay (below) |
+| 6 | `TK-D006`, `TK-D010`, `TK-D011` from text to effects | the 7 rule-text-in-code false stops |
 
-Each slice is its own PR, with the replay, the corpora and E17 and E21 in its description.
+Each slice is its own PR, with the scoreboard before and after, the corpora and E17 and E21 in its description.
 
 ## How to measure
 
-- **The week.** `engine.decide` over all 39,890 calls (the replay #604 and #605 used), joined with the labels, split
-  into Tracekit work and other projects, per 1,000 calls and per day. Every stop the slice removes is listed; every
-  stop on an unlabelled call that changes is listed for labelling.
+- **The scoreboard, every slice.** Three numbers, before and after, on the same machine: false stops a day on the
+  week, Tracekit work and other projects apart (and per 1,000 calls, since other projects are small); known attacks
+  through; and p99 of a decision. A slice moves the first down, never moves the second up, and keeps the third within
+  E21's gate. Every stop the slice removes is listed; every stop on an unlabelled call that changes is listed for
+  labelling.
 - **The attack corpora.** Every spelling above, on the dev, server and strict packs and both engines. The gate for
   a slice: no spelling labelled an attack goes from stopped to allowed. A spelling that changes and isn't an attack
   (a pinned harmless example) is named in the PR, with why.
 - **E17 and E21.** E17: deny recall stays 100%, false positives stay at or under 2%, both engines agree. E21: no
   regression against its baseline in held-out recall or any benign set's false positives; the robustness rewrites
   stay caught.
-- **Learning (slice 4).** Replay the week as if each harmless held ask had been approved and each needed stop
+- **Learning (slice 5).** Replay the week as if each harmless held ask had been approved and each needed stop
   rejected: how many shapes are proposed, after how many approvals, how many later holds they release, and that no
   needed stop and no corpus spelling is released.
 
@@ -584,14 +679,19 @@ Each slice is its own PR, with the replay, the corpora and E17 and E21 in its de
 |---|---|
 | Evidence format | none: principle, proof and learned ids ride in `rule_ids`; what was seen in `reasons`; adoption, expiry and revocation are `ext` records |
 | Policy file | new sections `principles`, `proofs` and `learned`, all in `policy_hash`; new reserved ids `TK-PR-*`, `TK-PROOF-*`, `TK-LEARNED-*` |
-| Signer RPC | two methods, `learn_list` and `learn_revoke`, and a contract version bump; adoption reuses the approval methods |
+| Signer RPC | three methods, `learn_list`, `learn_decide` and `learn_revoke`, and a contract version bump (protocol 21 today) |
+| Signer state | the write index (scripts) and the proposals, in the signer's store, encrypted where they hold content |
 
 ## What this design doesn't do
 
 - In dev mode, policy rules stay tripwires. The protection is the signer's isolation, its storage and the witnesses.
-- A proof is per line, as today's rules are. A file an earlier call planted (a `json.py` in the working directory, a
-  `.pth` in the venv) can still change what a proven Python imports.
-- It doesn't read code the agent wrote into a file and runs later, beyond what the parser reads today.
+- A file an earlier call planted (a `json.py` in the working directory, a `.pth` in the venv) can still change what a
+  proven Python imports, when the write index didn't record where its bytes came from.
+- The look-back reads a script only when the record holds its content. A file changed by a channel the record
+  doesn't cover is read as last recorded, and the project's own code (`make`, `npm test`) isn't read at all.
+- A program planted under an interpreter's name (`./python3`, a PATH directory an earlier call wrote) is trusted as
+  that interpreter. An agent that can write and run its own code can already fetch and run network bytes inside it,
+  out of any line's sight; Box's doors are the control there.
 - The principles share the parser's blind spots: a name built at run time stays can't tell, and so it stays held.
 - Learning is as strong as the approvals it learns from. In dev mode those can be the agent's.
 
