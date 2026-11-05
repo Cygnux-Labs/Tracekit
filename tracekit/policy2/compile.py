@@ -85,7 +85,7 @@ BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access",
-                     "tracekit"},
+                     "tracekit", "push"},
            "fs": {"path", "op", "content_digest"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
@@ -93,7 +93,7 @@ CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_inde
            "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},
            "a2a": {"sender", "receiver", "route", "skills", "kinds", "hosts", "size", "modality", "projector",
                    "weights"},
-           "app": set(), "unknown": set()}
+           "app": set(), "unknown": set(), "harness": set()}
 for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}

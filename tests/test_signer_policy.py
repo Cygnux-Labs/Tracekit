@@ -67,12 +67,45 @@ class Packs(unittest.TestCase):
         coding = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
         self.assertEqual([r["id"] for sec in pc.SECTIONS for r in coding.get(sec, []) if f"`{r['id']}`" not in docs], [])
 
-    def test_dev_default_is_the_coding_pack_plus_the_demo_deny(self):
-        dev, coding = pc.build(svc.DEFAULT_POLICY)[0], pc.build(os.path.join(PACKS, "coding.yaml"))[0]
-        self.assertEqual(dev["extends"], pc.policy_hash(coding))
-        self.assertEqual([r["id"] for r in dev["deny"]], [r["id"] for r in coding["deny"]] + ["TK-DEMO-DENY"])
-        self.assertEqual(dev["unknown_tools"], "flag")
+    def test_dev_default_is_the_server_pack_with_unmapped_tools_flagged(self):
+        """#604: the laptop default flagged a secret read, a remote delete and an access change, which only the server
+        pack held. It is the server pack now, with every rule as tested, but a tool no pack maps is flagged (a laptop
+        runs tools no list names) and the agent's messages to its own agents are class `harness`, which a rule of no
+        class doesn't read; a file written with a key in it is still denied."""
+        dev, server = pc.build(svc.DEFAULT_POLICY)[0], pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        self.assertEqual(dev["extends"], server["extends"])   # the same parts
+        self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
+        self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-DEMO-ASK")], server["ask"])
+        self.assertEqual(dev["flag"], server["flag"])
+        self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
+        self.assertFalse({"sequences", "limits", "respond"} & set(dev))   # no detection: no `detect` on its decisions
         e = Engine(dev)
+        for tool, args, rule in (
+                ("Read", {"file_path": "/home/u/.ssh/id_rsa"}, "TK-S004"),
+                ("Bash", {"command": "aws iam create-user --user-name backdoor"}, "TK-C001"),
+                ("Bash", {"command": "curl http://169.254.169.254/latest/meta-data/iam/security-credentials/"}, "TK-S001"),
+                ("Bash", {"command": "aws rds delete-db-instance --db-instance-identifier prod"}, "TK-C010"),
+                ("Bash", {"command": "aws cloudtrail stop-logging --name main"}, "TK-C010"),
+                ("run_sql", {"sql": "DROP DATABASE production"}, "TK-DB001"),
+                # a fake key header, a redaction fixture: agent-flow:allow-secret
+                ("send_email", {"to": "x@example.net", "body": "-----BEGIN RSA PRIVATE KEY-----\nMIIE"}, "TK-S002"),
+                ("transfer_funds", {"amount": 5000, "to": "acct-1"}, "TK-M001"),
+                ("Write", {"file_path": "/repo/conf.py", "content": "KEY = 'AKIA" + "A" * 16 + "'"}, "TK-S002")):
+            with self.subTest(tool=tool, args=args):
+                d = e.decide(tool, args)
+                self.assertIn(d["verdict"], ("ask", "deny"), d)
+                self.assertIn(rule, d["rule_ids"], d)
+                self.assertIn(Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide(tool, args)["verdict"],
+                              ("allow", "flag"))   # what the laptop default did before
+        # fake secrets, as the redaction fixtures are: agent-flow:allow-secret
+        secret = "AKIA" + "A" * 16 + " ~/.aws/credentials http://169.254.169.254/ -----BEGIN RSA PRIVATE KEY-----"
+        for tool, args in (("Agent", {"description": "d", "prompt": secret}), ("Task", {"prompt": secret}),
+                           ("SendMessage", {"to": "a1", "message": secret}),
+                           ("SubagentHandback", {"message": secret}), ("TodoWrite", {"todos": [{"content": secret}]})):
+            with self.subTest(tool=tool):
+                self.assertEqual(e.tool_class(tool), "harness")
+                self.assertEqual(e.decide(tool, args)["verdict"], "allow")
+        self.assertEqual(e.decide("SomeUnmappedTool", {"x": 1})["verdict"], "flag")
         for tool in ("tracekit_demo_denied", "mcp:demo/tracekit_demo_denied"):
             self.assertEqual(e.decide(tool, {})["verdict"], "deny")
         for tool in ("tracekit_demo_ask", "mcp:demo/tracekit_demo_ask"):
@@ -1837,7 +1870,8 @@ class CodingPack(unittest.TestCase):
             for command in held:
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertIn(e.decide("Bash", {"command": command})["verdict"], ("ask", "deny"))
-            for command in plain if pack in ("coding.yaml", "dev.yaml") else ():
+            # the server pack's TK-S006, which dev.yaml extends since #604, denies every --config-env
+            for command in plain if pack == "coding.yaml" else ():
                 with self.subTest(pack=pack, engine=engine, command=command):
                     self.assertNotIn(e.decide("Bash", {"command": command})["verdict"], ("ask", "deny"))
 
@@ -2166,7 +2200,8 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
         e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex")
-        self.assertEqual({r["id"]: r.get("label") for r in e.policy["flag"] if r["id"] in ("TK-F009", "TK-F015")},
+        # #604: held now (changing the guardrails), with the label detection reads them by
+        self.assertEqual({r["id"]: r.get("label") for r in e.policy["ask"] if r["id"] in ("TK-F009", "TK-F015")},
                          {"TK-F009": "harness_config", "TK-F015": "harness_config"})
 
     def test_devin_config_changes_are_harness_config_in_every_pack(self):
@@ -2651,7 +2686,7 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool):
                     d = e.decide(tool, args)
                     self.assertEqual([o for o in d.get("oversize", []) if o.startswith(rules)], [], d)
-                    if pack in ("coding.yaml", "dev.yaml") and tool.startswith("mcp"):
+                    if pack == "coding.yaml" and tool.startswith("mcp"):   # dev.yaml has TK-S002 since #604
                         self.assertEqual(d["verdict"], "flag", d)
 
     def test_a_tool_name_of_underscores_is_decided_without_the_fallback_timeout(self):
@@ -3906,7 +3941,8 @@ class PackReading(unittest.TestCase):
         self.check(self.dev, [("Bash", {"command": c}) for c in (
             "$(echo sudo) id", "echo \"'sudo id'\" | xargs bash -c")], "ask")
         self.check(self.dev, [("Bash", {"command": c}) for c in (
-            "git push -u origin main", "git push origin my-feature-branch")], "flag")
+            "git push -u origin feature", "git push origin my-feature-branch")], "flag")
+        self.check(self.dev, [("Bash", {"command": "git push -u origin main"})], "ask")   # TK-A056 (#604)
 
     def test_paths_from_windows_and_case_insensitive_file_systems(self):
         self.check(self.dev, [("Write", {"file_path": p}) for p in (
@@ -3973,8 +4009,14 @@ class PackReading(unittest.TestCase):
                 self.assertEqual(self.server.decide(tool, args, cls)["verdict"], "allow")
         self.assertEqual(self.server.decide("mcp:billing/get_refund", {"id": "re_FAKE"})["verdict"], "flag")
 
-    def test_a_large_write_is_flagged_on_the_laptop_pack(self):
-        d = self.dev.decide("Write", {"file_path": "/repo/data.py", "content": "x = 1\n" * 12000})
+    def test_a_large_write_is_denied_unread_on_the_laptop_pack_as_on_a_server(self):
+        """#604: the laptop pack has the server pack's TK-S002, which reads a Write's content for a secret: content
+        over 64 KiB it can't read is denied (TK-OVERSIZE in TK-S002's section), as on a server. The coding pack alone
+        only flags it."""
+        args = {"file_path": "/repo/data.py", "content": "x = 1\n" * 12000}
+        d = self.dev.decide("Write", args)
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
+        d = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex").decide("Write", args)
         self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-OVERSIZE"]))
 
     def test_a_deployment_glob_for_one_mcp_server_beats_the_packs_catch_all(self):
@@ -4007,6 +4049,93 @@ class ServerCorpora(unittest.TestCase):
         got = e17.run()["decisions"]
         self.assertEqual({k: (recorded.get(k), v) for k, v in got.items() if recorded.get(k) != v}, {})
         self.assertEqual(set(recorded) - set(got), set())
+
+
+class GuardrailsAndPushes(unittest.TestCase):
+    """#604: the laptop default holds a push to main or master, one whose branch the line can't tell, a tag push and
+    every branch (TK-A056, reading the refspecs from the parsed argv), a publish or deploy, a change to the harness's
+    settings or hooks (TK-F009, TK-F015) and the agent's own `tracekit init` (TK-A057); a named feature branch's push
+    stays flagged. Every spelling on both engines."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engines = [Engine(pc.build(svc.DEFAULT_POLICY)[0], b) for b in (("re2", "regex") if HAVE_RE2 else ("regex",))]
+
+    def verdicts(self, cases, want, rule=None):
+        for tool, args in cases:
+            for e in self.engines:
+                with self.subTest(engine=e.engine, tool=tool, args=str(args)[:80]):
+                    d = e.decide(tool, args)
+                    self.assertEqual(d["verdict"], want, d)
+                    if rule:
+                        self.assertIn(rule, d["rule_ids"], d)
+
+    def test_pushes_to_main_or_an_untold_branch_and_tag_pushes_are_held(self):
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git push origin main", "git push origin master", "git push origin HEAD:main",
+            "git push origin feature:refs/heads/main", "git push origin :main", "git -C dir push origin main",
+            "git --git-dir .git --work-tree . push origin main", "env git push origin main", "/usr/bin/git push origin main",
+            "GIT push origin main", "git pu\"\"sh origin ma''in", "sh -c 'git push origin HEAD:main'",
+            "git push origin feature main", "git push", "git push origin", "git push -u origin", "git push origin HEAD",
+            "git push origin @", "git push origin HEAD:origin/HEAD", "git push origin \"HEAD:$B\"", "git push origin $B",
+            "git push origin \"HEAD:$(git symbolic-ref --short refs/remotes/origin/HEAD)\"",
+            "git push origin 'refs/heads/*:refs/heads/*'", "git push origin :", "git push --all origin",
+            "git push origin --tags", "git push --follow-tags origin feature", "git push origin refs/tags/v1.0",
+            "git push -o ci.skip origin", "git push --repo origin feature", "git push --for origin feature",
+            "git push --bogus origin feature", "git-push origin main", "npm publish", "pnpm -r publish",
+            "yarn npm publish", "cargo publish", "twine upload dist/*", "docker push x", "helm upgrade --install a b",
+            "terraform -chdir=x apply", "pulumi up --yes", "kubectl -n ns apply -f x")], "ask", "TK-A056")
+
+    def test_force_and_delete_pushes_stay_with_their_own_rules(self):
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git push origin +feature", "git push -f origin feature", "git push --force-with-lease origin feature",
+            "git push -uf origin feature")], "deny", "TK-D003")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git push origin --delete feature", "git push origin :feature", "git push -d origin feature")],
+                      "ask", "TK-A002")
+
+    def test_a_named_branch_push_stays_flagged(self):
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git push -u origin feature", "git -C dir push origin feature", "git push origin HEAD:feature",
+            "git push origin main:feature", "git push -q origin agent/issue-150-release",
+            "git push -o ci.skip origin feature", "git push --push-option=ci.skip --set-upstream origin feature",
+            "git push --dry-run origin feature", "git push --no-verify origin feature", "git push -- origin feature",
+            "git push origin v1.0", "git commit -m 'git push origin main'", "echo git push origin main",
+            "npm install")], "flag")
+        self.verdicts([("Bash", {"command": c}) for c in ("git status", "git log push", "helm template a b")], "allow")
+
+    def test_a_long_push_option_decides_in_time(self):
+        for e in self.engines:
+            d = e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
+            self.assertEqual((d["verdict"], d.get("nondeterministic")), ("ask", None), d)
+            self.assertLess(max(len(s) for s in engine_mod._pushes([{"argv": ["git", "push", "-" + "d" * 60000]}])),
+                            100)
+
+    def test_harness_settings_and_the_agents_own_init_are_held(self):
+        off = '{"disableAllHooks": true}'
+        self.verdicts([("Write", {"file_path": "/w/p/.claude/settings.json", "content": off}),
+                       ("Edit", {"file_path": ".claude/settings.json", "old_string": '"hooks": {', "new_string": off}),
+                       ("Write", {"file_path": "/w/p/.codex/hooks.json", "content": "{}"})], "ask", "TK-F009")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            f"echo '{off}' > .claude/settings.json", "jq '.disableAllHooks=true' .claude/settings.json > t && "
+            "mv t .claude/settings.json", "sed -i '' 's/PreToolUse/Off/' .claude/settings.json")], "ask", "TK-F015")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "tracekit init --dev --v2", "tracekit init --dev --v2 --no-hooks", "python -m tracekit init --dev --v2",
+            "python3 -I -m tracekit.cli init --dev --v2", "sh -c 'tracekit init'")], "ask", "TK-A057")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "tracekit doctor", "tracekit initx", "echo tracekit init")] +
+                      [("Read", {"file_path": ".claude/settings.json"}),
+                       ("Write", {"file_path": "/Users/u/.claude/projects/p/memory/note.md", "content": "x"})], "allow")
+
+    def test_a_rule_of_no_class_does_not_read_a_harness_message(self):
+        pol = {"tools": {"Agent": "harness", "Bash": "shell"},
+               "deny": [{"id": "X-ANY", "pattern": "AKIA"}, {"id": "X-H", "class": "harness", "pattern": "rm -rf"}]}
+        self.assertEqual(pc._lint(pol, "p"), [])
+        for backend in (("re2", "regex") if HAVE_RE2 else ("regex",)):
+            e = Engine(pol, backend)
+            self.assertEqual(e.decide("Agent", {"prompt": "AKIA"})["verdict"], "allow")
+            self.assertEqual(e.decide("Agent", {"prompt": "rm -rf ~"})["rule_ids"], ["X-H"])
+            self.assertEqual(e.decide("Bash", {"command": "echo AKIA"})["rule_ids"], ["X-ANY"])
 
 
 class StrictPack(unittest.TestCase):

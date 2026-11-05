@@ -1,7 +1,25 @@
-# The signer's default policy: the coding pack plus a visible demo deny and ask, so both are easy to see. They also
-# match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
-extends: coding.yaml
-description: dev default (coding pack, uploads to cloud storage held, a demo deny and a demo ask)
+# The signer's default policy, for coding agents on a laptop: the server pack's tested rules, from the packs it is
+# composed of (the coding, browser, data, network, cloud, comms and core packs: secrets, credentials files and the
+# cloud metadata service among them), so a secret read or sent, a remote delete, an access or audit-logging change
+# and money moved are held or denied here too (#604); plus a visible demo deny and ask, so both are easy to see. They
+# also match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
+#
+# Three things differ from the server pack. Its shadow detection isn't here. A tool no pack maps is flagged, not
+# held: a laptop runs tools and MCP servers no list names. And the coding agent's messages to its own agents (Claude Code's Agent and Task prompts,
+# SendMessage to a teammate, a subagent's SubagentHandback report, its TodoWrite list) are class `harness`, which a rule of no class doesn't read: such a
+# message acts on nothing, and the calls the other agent makes from it are each decided on their own, so a secret's
+# name in a prompt isn't a secret sent anywhere. Write and Edit are not exempt: a file written with a key in it is.
+extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
+          server-core.yaml]
+description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
+unknown_tools: flag
+
+tools:
+  Agent: harness             # Claude Code: a subagent's prompt
+  Task: harness              # Claude Code's earlier name for Agent
+  SendMessage: harness       # Claude Code: a message to a teammate or a running subagent
+  SubagentHandback: harness  # Claude Code: a subagent's report to the agent that started it
+  TodoWrite: harness         # Claude Code: the agent's own todo list
 
 deny:
   - id: TK-DEMO-DENY
@@ -24,6 +42,25 @@ ask:
     reason: uploading to cloud storage
     remedy: Have a person approve the held call, or write the files locally and let a person upload them.
     rationale: A bucket can hold production data or serve the public; a person confirms what a coding agent writes there.
+  - id: TK-A056
+    class: shell
+    field: push
+    # here, not in the coding pack, as TK-A032: the server pack extends the coding pack, and a server agent's deploy
+    # is often its job (E17's benign corpus has them). Each command's argv, a git push read for where it goes
+    # (engine._git_push): `PUSH:<why>` for a push to main or master (`main`, `HEAD:main`, `refs/heads/master`), to a
+    # branch the line can't tell (no refspec, so push.default picks; HEAD, @ or origin/HEAD; an expansion or a
+    # pattern), of tags (--tags, --follow-tags, a refs/tags/ refspec) or of every branch (--all, --mirror). A force
+    # push is TK-D003's deny and a delete push TK-A002's ask. A push of named branches other than main and master stays
+    # flagged (TK-F004). Any other command is its argv: publishing a package (npm, pnpm, yarn or bun publish, yarn's
+    # `npm publish`, uv, poetry or cargo publish, gem push, twine upload), pushing an image or a chart (docker or podman
+    # push and image push, helm push) or deploying (terraform or tofu apply, pulumi up, helm install or upgrade,
+    # kubectl apply or delete), each after up to eight options with a value or not.
+    # lean: TK-F004's publish and deploy commands only; another deploy CLI (vercel, fly deploy, gh release create) is
+    # recorded, not held; add its verb here when one is in use
+    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)'
+    reason: a push to the default branch or of tags, or a publish or deploy
+    remedy: Have a person approve the held call, or push a named feature branch and leave the merge or release to a person.
+    rationale: These reach a shared branch, a registry or a running system, where others build, install or deploy from them; a person confirms each one.
   - id: TK-DEMO-ASK
     tool: '(mcp:[^/]+/)?tracekit_demo_ask'
     pattern: '^'

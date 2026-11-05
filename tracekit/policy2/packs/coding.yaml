@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-62'
+version: '2026.11-v2-63'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -253,6 +253,16 @@ ask:
     reason: removing or stopping Tracekit
     remedy: Have a person approve the held call if they mean to remove or stop Tracekit; the agent's own work has no need to.
     rationale: Uninstalling Tracekit's hooks, package or plugin, or stopping its signer, ends the record of what the agent does next; a person confirms it, where a deny would leave a person working through the agent no way to.
+  - id: TK-A057
+    class: shell
+    # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit
+    # init` run by the agent, which rewrites Tracekit's hooks (`--no-hooks` takes them out of the agent's settings)
+    # lean: `tracekit init --help` is held too: the joined argv can't tell a last word `--help` from a quoted value
+    # ending in ` --help`, with which init still runs; exempt it if the engine ever matches argv word by word
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? init( |$)'
+    reason: running Tracekit's setup from the agent's session
+    remedy: Have a person run tracekit init from their own terminal; it changes Tracekit's hooks.
+    rationale: Init rewrites the hooks that record the agent; a person confirms it, as for removing Tracekit (TK-A054).
   - id: TK-A020
     class: fs
     tool: Read|Grep
@@ -768,6 +778,61 @@ ask:
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
 
+  # --- the agent harness's settings: held, as changing the guardrails (#604)
+  - id: TK-F009
+    class: fs
+    tool: Write|Edit|MultiEdit
+    field: path
+    # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
+    # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
+    # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
+    # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
+    # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
+    # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin). Claude Code
+    # keeps its user settings and MCP servers in ~/.claude.json, and its skills and slash commands (which can run
+    # commands with `!` lines) under .claude/ (flagged as the rest of .claude/); Cursor its MCP servers in
+    # .cursor/mcp.json.
+    # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
+    # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
+    # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
+    # ~/.config/powershell/, and the machine's in $PSHOME (System32/WindowsPowerShell/v1.0/, PowerShell/7/ and
+    # PowerShell/7-preview/).
+    # A file inside one of Claude Code's worktrees (.claude/worktrees/<name>/…) is judged as it is in the worktree: that
+    # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
+    # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
+    # itself, and a name starting with a dot
+    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
+    # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
+    unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: These files decide which hooks run, Tracekit's among them, and what the agent may do without asking.
+  - id: TK-F015
+    class: shell
+    field: effects
+    # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
+    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
+    # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
+    # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
+    # (.kilo, .kilocode, ~/.config/kilo, kilo.json). The agy, goose, Droid and Devin paths are TK-F009's, and
+    # a delete of a whole .agents folder (agy's hooks.json with it). PowerShell's profiles are TK-F009's, and $PROFILE
+    # by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other three), in any
+    # case.
+    # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
+    # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
+    # there that can make one (`$`, a backquote, `*`, `?`, `[`, `{`: `x/$D/`, `x/.{.,}/`, `x/.*/`), and when it names
+    # only the worktree (`x/`, `x/.`, `x//`).
+    # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
+    # bounded and the fallback engine linear; read deeper if a real worktree nests further
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    # Claude Code's memory notes, as TK-D008 reads them
+    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: TK-F009 for the shell.
+
 flag:
   - id: TK-F001
     class: shell
@@ -823,53 +888,6 @@ flag:
     field: run_in_background
     pattern: '^[Tt][Rr][Uu][Ee]$'
     label: background_spawn
-  - id: TK-F009
-    class: fs
-    tool: Write|Edit|MultiEdit
-    field: path
-    # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
-    # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
-    # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
-    # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
-    # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
-    # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin). Claude Code
-    # keeps its user settings and MCP servers in ~/.claude.json, and its skills and slash commands (which can run
-    # commands with `!` lines) under .claude/ (flagged as the rest of .claude/); Cursor its MCP servers in
-    # .cursor/mcp.json.
-    # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
-    # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
-    # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
-    # ~/.config/powershell/, and the machine's in $PSHOME (System32/WindowsPowerShell/v1.0/, PowerShell/7/ and
-    # PowerShell/7-preview/).
-    # A file inside one of Claude Code's worktrees (.claude/worktrees/<name>/…) is judged as it is in the worktree: that
-    # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
-    # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
-    # itself, and a name starting with a dot
-    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
-    # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
-    unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
-    label: harness_config
-  - id: TK-F015
-    class: shell
-    field: effects
-    # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
-    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
-    # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
-    # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
-    # (.kilo, .kilocode, ~/.config/kilo, kilo.json). The agy, goose, Droid and Devin paths are TK-F009's, and
-    # a delete of a whole .agents folder (agy's hooks.json with it). PowerShell's profiles are TK-F009's, and $PROFILE
-    # by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other three), in any
-    # case.
-    # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
-    # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
-    # there that can make one (`$`, a backquote, `*`, `?`, `[`, `{`: `x/$D/`, `x/.{.,}/`, `x/.*/`), and when it names
-    # only the worktree (`x/`, `x/.`, `x//`).
-    # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
-    # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin)(?:[/\\]|$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?\.agents[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
-    # Claude Code's memory notes, as TK-D008 reads them
-    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
-    label: harness_config
   - id: TK-F016
     class: fs
     tool: Write|Edit|MultiEdit

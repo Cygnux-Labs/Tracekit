@@ -207,7 +207,9 @@ class Engine:
         name, memo = _text(tool), {}
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
-            self._of[cls] = [x for x in self.rules if x[1].get("class", cls) == cls]
+            # but `harness`'s (a subagent's prompt, a message to a teammate, a todo list), which acts on nothing: the
+            # calls it leads to are decided as their own, so a rule of no class doesn't read the text it carries
+            self._of[cls] = [x for x in self.rules if x[1].get("class", None if cls == "harness" else cls) == cls]
 
         def hit(entry, parsed, memo, oversize):
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
@@ -311,6 +313,8 @@ class Engine:
             return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
             return _container_host_access(parsed[0])
+        if cls == "shell" and field == "push":
+            return _pushes(parsed[0])
         if cls == "sql" and field == "code":
             return fields.get("code", [])
         if cls == "shell" and field == "code":
@@ -643,7 +647,101 @@ def _container_host_access(commands):
     return []
 
 
-_HISTORY = (".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")
+# git's own options before its command that take the next word as their value (git -C dir push); the rest are flags
+_GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"}
+# git push's long options (git push -h), each with what it means here: a reason to hold the push, "value" (it takes
+# the next word unless given with `=`), or "" (neither). git reads a unique prefix of one as it, and so does _pushes.
+# A force (-f, --force, --force-with-lease, a +refspec) is TK-D003's deny and a delete (-d, --delete, --prune, a
+# :refspec) TK-A002's ask, so they give no reason here: a denied force push isn't also told to wait for approval
+_PUSH_LONG = {"all": "all", "branches": "all", "mirror": "all", "delete": "", "prune": "", "tags": "tags",
+              "follow-tags": "tags", "force": "", "force-with-lease": "", "force-if-includes": "",
+              "repo": "value", "recurse-submodules": "value", "receive-pack": "value", "exec": "value",
+              "push-option": "value", "verbose": "", "quiet": "", "dry-run": "", "porcelain": "", "thin": "",
+              "set-upstream": "", "progress": "", "verify": "", "no-verify": "", "signed": "", "atomic": "",
+              "ipv4": "", "ipv6": ""}
+_PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6": ""}   # and -o VALUE
+
+
+def _git_push(argv):
+    """Why a git push (also git-push; after git's own options, `git -C dir push`) needs a person, from its argv as
+    the parser read it: a list of `PUSH:<why> <word>`, empty for a push of named branches other than main and master;
+    None for any other command. Held: a target of main or master (`main`, `HEAD:main`, `refs/heads/master`, `:main`);
+    one the line can't tell (no refspec, so push.default picks; HEAD, @ or origin/HEAD; an expansion or a pattern);
+    tags (--tags, --follow-tags, a refs/tags/ refspec); every branch (--all, --mirror, the `:` refspec); an option
+    git doesn't take, or an ambiguous prefix, which git refuses. A force or a delete is another rule's (_PUSH_LONG).
+    lean: a git alias (`git p`) or `git subtree push` isn't read, as TK-D003 doesn't read them; nor a tag pushed by its
+    bare name (`git push origin v1.0`), which reads as a branch"""
+    name = argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe") if argv else ""
+    if name == "git":
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            i += 2 if argv[i] in _GIT_VALUED else 1
+        if argv[i:i + 1] != ["push"]:
+            return None
+        words = argv[i + 1:]
+    elif name == "git-push":
+        words = argv[1:]
+    else:
+        return None
+    why, positional, i = [], [], 0
+    while i < len(words):
+        w = words[i]
+        i += 1
+        if w == "--":
+            positional += words[i:]
+            break
+        if w.startswith("--"):
+            opt, eq, _ = w[2:].partition("=")
+            names = [opt] if opt in _PUSH_LONG or opt.startswith("no-") else [n for n in _PUSH_LONG if n.startswith(opt)]
+            if len(names) != 1:
+                why.append("unknown " + w)
+                continue
+            kind = "" if names[0].startswith("no-") and names[0] != "no-verify" else _PUSH_LONG[names[0]]
+            if kind == "value":
+                i += not eq
+            elif kind:
+                why.append(f"{kind} {w}")
+        elif w.startswith("-") and len(w) > 1:
+            kinds = set()
+            for j, c in enumerate(w[1:], 1):
+                if c == "o":   # -o takes the rest of the word, or the next one
+                    i += j == len(w) - 1
+                    break
+                kinds.add(_PUSH_SHORT.get(c, "unknown"))
+                if c not in _PUSH_SHORT:
+                    break
+            why += [f"{k} {w}" for k in sorted(kinds - {""})]
+        else:
+            positional.append(w)
+    refspecs = positional[1:]   # the first is the repository
+    if not refspecs:
+        why.append("unknown no refspec")
+    for r in refspecs:
+        spec = r[1:] if r.startswith("+") else r
+        src, colon, dst = spec.partition(":")
+        target = (dst if colon else src).removeprefix("refs/heads/")
+        if spec == ":":
+            why.append("all " + r)
+        if "refs/tags/" in spec:
+            why.append("tags " + r)
+        elif target in ("main", "master"):
+            why.append("default " + r)
+        elif not target or target in ("HEAD", "@") or target.endswith("/HEAD") or any(c in target for c in "$`*?[{"):
+            why.append("unknown " + r)
+    return ["PUSH:" + w[:64] for w in why]   # what matters is the reason; a word is cut, so a subject stays short
+
+
+def _pushes(commands):
+    """Each command's argv, as the `argv` field reads it, but a git push as what makes it need a person (_git_push):
+    one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master."""
+    out = []
+    for command in commands:
+        push = _git_push(command["argv"])
+        out += [" ".join(command["argv"])] if push is None else push
+    return out
+
+
+_HISTORY =(".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")
 
 
 def _log_or_history(path):
