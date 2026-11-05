@@ -1,13 +1,13 @@
 // A Mastra workflow whose tool calls go through Tracekit: each call is decided by the signer first, a held call
 // suspends its step until a person answers, and resuming passes the approval id to approval_consume. Offline: the
 // model is a script of the calls it asks for, and the tool only pretends to run them. Steps in README.md.
-import { Mastra } from "@mastra/core";
-import { InMemoryStore } from "@mastra/core/storage";
-import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
 import { Client, digest } from "../../dist/v2/client.js";
 
-process.env.MASTRA_TELEMETRY_DISABLED = "1";   // offline: Mastra reads it at each event, so nothing is sent to Mastra
+process.env.MASTRA_TELEMETRY_DISABLED = "1";   // set before Mastra loads (static imports run first), so it sends nothing
+const { Mastra } = await import("@mastra/core");
+const { InMemoryStore } = await import("@mastra/core/storage");
+const { createStep, createWorkflow } = await import("@mastra/core/workflows");
 
 const MODEL = [   // what a model would ask for, one tool call at a time
   { id: "call-1", tool: "Bash", args: { command: "ls infra" } },             // allowed
@@ -41,7 +41,7 @@ const tool = createStep({
     // 3. allowed, or resumed with the approval id: the call runs only if the signer's approval_consume agrees
     const consumed = await run.call("approval_consume", { tool_call_id: c.id, tool: c.tool, args: c.args,
       args_source: "parsed", ...(resumeData ? { approval_id_hint: resumeData.approvalId } : {}) });
-    if (!consumed.ok) return done(`not run (${consumed.reason ?? consumed.rule_ids.join(", ")})`);
+    if (!consumed.ok) return done(`not run (${consumed.reason ?? ((consumed.rule_ids ?? []).join(", ") || "refused")})`);
     const out = "(pretend) ran it";
     await run.complete(c.id, "ok", { result: digest(out) });
     return done(out);
