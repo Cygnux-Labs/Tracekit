@@ -591,7 +591,8 @@ Patterns must mean the same to RE2 (`google-re2`, used when installed) and to th
 
 `$` means end of text and `\s` excludes `\v`, as in RE2. The fallback engine backtracks, so a large subject can be
 slow where RE2 is linear, and so can a short one under a repeat of overlapping alternatives (`secret(.|\s)*key`):
-all matches of one decision share 1 s, and when it runs out the decision denies with the rule that was matching,
+all matches of one decision share 1 s (reading the call, its parse and subjects, doesn't spend it, so a slow machine
+decides as a fast one does), and when it runs out the decision denies with the rule that was matching,
 leaves the remaining rules out and is marked `nondeterministic: true`. RE2 never times out, so on such a subject the
 two engines can decide differently; install `google-re2` on the signer.
 

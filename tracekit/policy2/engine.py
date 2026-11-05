@@ -41,7 +41,9 @@ REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one d
 
 def _backend(name):
     """Return (engine id, compile(pattern, anycase=False), match(compiled, text, full, deadline)); only the fallback
-    uses the deadline (time.monotonic())."""
+    uses the deadline: [seconds left], which the matches of one decision (or bounds check) share and each spends by
+    the time it takes. Reading the call (its parse, its subjects) is the same on either engine and bounded by the
+    64 KiB input: a slow machine's reading doesn't spend it."""
     if name != "regex":
         try:
             import re2
@@ -55,10 +57,15 @@ def _backend(name):
             return (f"re2@{version('google-re2')}", lambda p, anycase=False: re2.compile("(?i)" * anycase + p, opts),
                     lambda c, s, full, deadline: (c.fullmatch if full else c.search)(s))
     import regex
+
+    def match(c, s, full, deadline):
+        start = time.perf_counter()
+        try:
+            return (c.fullmatch if full else c.search)(s, timeout=max(deadline[0], 1e-6))
+        finally:
+            deadline[0] -= time.perf_counter() - start
     return (f"regex@{regex.__version__}", lambda p, anycase=False: regex.compile(
-                translate(p), regex.ASCII | regex.V0 | regex.IGNORECASE * anycase),
-            lambda c, s, full, deadline: (c.fullmatch if full else c.search)(
-                s, timeout=max(deadline - time.monotonic(), 1e-6)))
+                translate(p), regex.ASCII | regex.V0 | regex.IGNORECASE * anycase), match)
 
 
 class Engine:
@@ -95,7 +102,7 @@ class Engine:
         the field's JSON type (the string "100", 1e2, 99.9 and true are no integer); a list passes when it has
         elements and every one does, and an integer list's total is within `max`; no two alias arguments (amount and
         amount_cents) at once; the arguments fit in AGENT_ARGS_MAX. A pattern matches the whole value; TimeoutError
-        past `deadline` (time.monotonic())."""
+        once its matches spend `deadline` (_backend)."""
         fields = rule["approval"]["agent"]["allow"]["fields"]
         if not isinstance(args, dict):
             return [("the arguments are an object", False)]
@@ -156,7 +163,7 @@ class Engine:
     def reads(self, tool, cls=None):
         """{section: [rule ids]} decide() reads for a call of `tool` (`cls` overrides its class, as for decide): those
         of no class or of that class whose tool pattern takes its name (the viewer's WHY THIS DECISION)."""
-        cls, name, deadline = cls or self.tool_class(tool), _text(tool), time.monotonic() + REGEX_TIMEOUT_S
+        cls, name, deadline = cls or self.tool_class(tool), _text(tool), [REGEX_TIMEOUT_S]
         low, out = name.lower(), {sec: [] for sec in SECTIONS}
         for sec, rule, tool_re, *_, tool_lits in self.rules:
             if rule.get("class", cls) == cls and self._named(tool_re, tool_lits, name, low, deadline):
@@ -202,8 +209,9 @@ class Engine:
                 if unread or held:
                     hits[on_parse_error].append("TK-SHELL-PARSE")
                     cause = unread or _unread_cause(held)
-        # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
-        nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
+        # the fallback's time is its matches' (_backend), not the parse's or the subjects', which are the same on either
+        # engine and bounded by MAX_WORK (a few times the 64 KiB input)
+        nondeterministic, deadline = False, [REGEX_TIMEOUT_S]
         name, memo = _text(tool), {}
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class

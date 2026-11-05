@@ -404,16 +404,22 @@ class Engines(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 1)   # ten rules took 0.2 s each when every match had its own timeout
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S0"], True))
 
-    def test_the_shell_parse_is_not_charged_to_the_fallback_time(self):
+    def test_reading_the_call_is_not_charged_to_the_fallback_time(self):
         """The fallback's time started before the shell parse: on a slow CPU, 64 KiB of one-word lines (0.4 s to parse
-        on a laptop) spent it before the first match and denied, marked nondeterministic. The parse is bounded by the
-        64 KiB input, not by this deadline."""
-        e = Engine({"tools": {"Bash": "shell"}, "flag": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
-        parse = engine._shell
-        with mock.patch.object(engine, "REGEX_TIMEOUT_S", 0.2), \
-                mock.patch.object(engine, "_shell", lambda *a: (time.sleep(0.3), parse(*a))[1]):
-            d = e.decide("Bash", {"command": "rm x"})
-        self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("flag", ["S"], None))
+        on a laptop) spent it before the first match and denied, marked nondeterministic. Started after the parse, it
+        still ran while the engine built the subjects (each command's targets, effects, Tracekit's own words: 140 ms of
+        those lines on a laptop, against 7 ms of matches) and parsed a second reading: CI's py3.13 Linux runner spent
+        it all there and denied the same lines. Reading the call is bounded by the 64 KiB input; only the matches spend
+        this time."""
+        e = Engine({"tools": {"Bash": "shell"}, "deny": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
+        # _shell: the parse, and the second reading's of a deny with a $; _prepare: each field's subjects
+        for name in ("_shell", "_prepare"):
+            read = getattr(engine, name)
+            with self.subTest(name):
+                with mock.patch.object(engine, "REGEX_TIMEOUT_S", 0.2), \
+                        mock.patch.object(engine, name, lambda *a, read=read: (time.sleep(0.3), read(*a))[1]):
+                    d = e.decide("Bash", {"command": 'rm "$D"'})
+                self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S"], None))
 
     def test_a_redirection_to_a_lone_surrogate_is_decided_on_both_engines(self):
         """An ASCII command whose $'…' makes a lone surrogate, as a redirection's target, reached the persistent-target
