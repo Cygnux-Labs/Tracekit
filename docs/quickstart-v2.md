@@ -58,16 +58,86 @@ A hook whose signer runs another version says so too, once per session, with the
 import tracekit; tracekit.instrument()     # the first line, before your agent builds its agents, tools or sessions
 ```
 
-Then run your agent as usual. `instrument()` registers a run with the signer and closes it when the process exits. It
-wires every framework it finds installed: OpenAI Agents SDK tools, LangGraph / LangChain `ToolNode`s (which
-`create_agent` builds), Claude Agent SDK hooks, MCP `ClientSession.call_tool`, Browser Use's `Tools` (which an `Agent`
-builds), CrewAI's tool hooks, Pydantic AI `Agent`s (the `Tracekit` capability), and the OpenAI, Anthropic and Google Gen AI clients' model calls. Each tool call is decided by the signer
-before it runs (`allow`, `deny`, `ask`) and recorded after. A denied call reaches the model as a refusal and the agent
-goes on. Each model response is committed to and, with the signer's content vault on (the dev signer keeps it), kept
-in the vault, so `tracekit analyze --v2` can read what the model said before and after each call ([findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)).
-Calling it again returns the same run. With none of these installed it warns and does nothing. TypeScript:
-`const tk = await instrument()` from `@cygnuxlabs/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents
-JS) to the framework.
+Then run your agent as usual. You don't start anything: the first call starts a dev signer in the background.
+`instrument()` records only the frameworks it finds installed: OpenAI Agents SDK tools, LangGraph / LangChain
+`ToolNode`s (which `create_agent` builds), Claude Agent SDK hooks, MCP `ClientSession.call_tool`, Browser Use's
+`Tools`, CrewAI's tool hooks, Pydantic AI `Agent`s, and the OpenAI, Anthropic and Google Gen AI clients' model calls.
+With none of them installed it warns and records nothing: record your agent's calls yourself
+([a custom agent](quickstarts/custom.md)).
+
+Each tool call is decided before it runs (`allow`, `deny` or `ask`) and recorded after. A denied call reaches the model
+as a refusal and the agent goes on. A held call (`ask`) waits for a person: run `tracekit approvals list` in another
+terminal to see it, and `tracekit approvals approve <id>` to let it run once ([approve from another
+terminal](#approve-from-another-terminal)). While it waits, an SDK agent prints nothing: it just seems to stop.
+
+Claude Code: `tracekit init --dev --v2` instead ([the Claude Code quickstart](quickstarts/claude-code.md)).
+TypeScript: `const tk = await instrument()` from `@cygnuxlabs/tracekit`, then pass `tk.ai` (Vercel AI SDK) or
+`tk.agents` (OpenAI Agents JS) to the framework. A server that handles many conversations, how each framework waits
+for an approval and where the signer listens: [deeper](#deeper-drive-the-signer-yourself).
+
+## 3. See it verified
+
+```sh
+tracekit last
+```
+
+```text
+run 40c7ee89ae9eaec8f8eb8556b32fdc9d (my-agent)
+VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+bundle: /home/me/project/40c7ee89ae9eaec8f8eb8556b32fdc9d.tkb
+check it again: tracekit verify 40c7....tkb --trust 40c7....trust.json
+next: tracekit view --dev   (every run, replayed and reviewed)
+```
+
+`tracekit last` finds the dev signer's most recent finished run, exports it, writes a trust config that pins the dev
+signer's log key next to the bundle, and verifies the bundle. `-o PATH` writes the bundle elsewhere. The report is
+explained [below](#export-and-verify-by-hand). `tracekit view --dev` lists each run with its verdict, and replays and
+reviews one ([viewer.md](viewer.md#laptop-viewer)). `tracekit status` says what is set up and where.
+
+Per framework, the same three steps with a 10-line example: [LangChain / LangGraph](quickstarts/langchain.md),
+[OpenAI Agents SDK](quickstarts/openai-agents.md), [Claude Agent SDK](quickstarts/claude-agent-sdk.md),
+[MCP client](quickstarts/mcp.md), [Claude Code](quickstarts/claude-code.md), [a custom agent](quickstarts/custom.md).
+
+## First-run errors
+
+| You see | What to do |
+|---|---|
+| `tracekit.instrument(): no signer answering at ...; dev auto-spawn is off while TRACEKIT_SIGNER is set` | Start the signer `TRACEKIT_SIGNER` names, or unset it for a same-user dev signer. |
+| `tracekit.instrument(): ...; system mode: start the system signer` | `sudo /opt/tracekit/bin/python -I -m tracekit doctor` says what is wrong with the system signer. |
+| `the Tracekit signer X (pid N, protocol [a, b]) ... cannot serve this client` | A dev signer from a newer Tracekit version is running (an older one is replaced on its own): `tracekit up --replace` stops it and starts this one. A signer you run yourself (`TRACEKIT_SIGNER`, system mode) that is older than this client: upgrade the signer first. From the TypeScript SDK, an older `tracekit` on your PATH starts an older signer: `pip install -U tracekit-ai`. |
+| `tracekit last: the newer run ID (agent) is still open` | The agent is still running, or was killed before it closed its run. End it and run `tracekit last` again; meanwhile it shows the run before. |
+| `tracekit last: no runs in the dev signer's store` | `instrument()` records only the frameworks it lists, and warns when it finds none of them: for another agent, record its calls as [the custom quickstart](quickstarts/custom.md) shows. Claude Code: start a new session after `tracekit init --dev --v2`. |
+| `tracekit.instrument(): <framework> <version> not wired ... Tracekit is tested with ...` | Install the versions it names, or wire that adapter by hand as its quickstart shows. |
+| `the v2 signer needs its policy engine ... pip install tracekit-ai` | A `--no-deps` install verifies but can't sign: install with its dependencies. |
+| A path with spaces (Windows profiles, macOS `Application Support`) | Paste the commands `tracekit last` prints as they are: their paths are quoted for your shell. |
+
+## Remove it
+
+```sh
+tracekit uninstall     # Claude Code's hooks; --agent NAME for another coding agent's
+```
+
+It removes Tracekit's hooks and keeps your other settings (a settings file init made, with nothing else in it, is
+deleted). Then it lists what it kept: the dev signer's keys and signed runs, Tracekit's client config and the dev
+signer's runtime dir, with the commands that delete them and Tracekit too, for example on Linux:
+
+```text
+kept:
+  /home/me/.local/share/tracekit  (the dev signer's keys and signed runs: a bundle you exported verifies without them)
+  /home/me/.tracekit-client  (Tracekit's client config)
+to delete these and Tracekit too:
+  tracekit down
+  rm -rf /home/me/.local/share/tracekit /home/me/.tracekit-client
+  /home/me/.venv/bin/python -m pip uninstall tracekit-ai
+```
+
+## Deeper: drive the signer yourself
+
+What `instrument()` and `tracekit last` do, by hand and in more detail: a server with a run per conversation, how each
+framework waits for an approval, where the signer listens, and a scripted agent with the approval step a framework's
+own control flow needs.
 
 ### A server: a run per conversation
 
@@ -124,6 +194,8 @@ agent's retry of the same call runs once you approved it ([held calls](coding-ag
 | Vercel AI SDK (TS, `tk.ai`) | the SDK's own tool approval | none of its own | `approvalResponses(parts)`, pushed to `messages`, resumes it; a call not approved throws |
 | `tracekit.why` runtime | timed wait in `act()` | `approval_wait_s`, 300 s | an error result; retrying the same call in the same run reuses the approval |
 
+### Where the signer runs
+
 You don't start anything yourself. The first client that needs a signer starts one in the background and later
 clients reuse it (`tracekit up` / `tracekit down` do the same by hand). The signer's keys and store live in your user's
 data dir, one per `HOME`. It listens on a Unix socket in a private runtime dir; where two of your `HOME`s share that
@@ -133,49 +205,6 @@ them at 104 bytes) gives way to a short private dir of its own, `/tmp/tk-<uid>.<
 names. On Windows it listens on a loopback TCP port instead,
 and publishes the port and a token in `%LOCALAPPDATA%\tracekit\run\endpoint.json`, which only you can read. Each side
 proves it holds the token before any request is answered.
-
-## 3. See it verified
-
-```sh
-tracekit last
-```
-
-```text
-run 40c7ee89ae9eaec8f8eb8556b32fdc9d (my-agent)
-VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
-NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
-To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
-bundle: /home/me/project/40c7ee89ae9eaec8f8eb8556b32fdc9d.tkb
-check it again: tracekit verify 40c7....tkb --trust 40c7....trust.json
-next: tracekit view --dev   (every run, replayed and reviewed)
-```
-
-`tracekit last` finds the dev signer's most recent finished run, exports it, writes a trust config that pins the dev
-signer's log key next to the bundle, and verifies the bundle. `-o PATH` writes the bundle elsewhere. The report is
-explained [below](#export-and-verify-by-hand). `tracekit view --dev` lists each run with its verdict, and replays and
-reviews one ([viewer.md](viewer.md#laptop-viewer)).
-
-Per framework, the same three steps with a 10-line example: [LangChain / LangGraph](quickstarts/langchain.md),
-[OpenAI Agents SDK](quickstarts/openai-agents.md), [Claude Agent SDK](quickstarts/claude-agent-sdk.md),
-[MCP client](quickstarts/mcp.md), [a custom agent](quickstarts/custom.md).
-
-## First-run errors
-
-| You see | What to do |
-|---|---|
-| `tracekit.instrument(): no signer answering at ...; dev auto-spawn is off while TRACEKIT_SIGNER is set` | Start the signer `TRACEKIT_SIGNER` names, or unset it for a same-user dev signer. |
-| `tracekit.instrument(): ...; system mode: start the system signer` | `sudo /opt/tracekit/bin/python -I -m tracekit doctor` says what is wrong with the system signer. |
-| `the Tracekit signer X (pid N, protocol [a, b]) ... cannot serve this client` | A dev signer from a newer Tracekit version is running (an older one is replaced on its own): `tracekit up --replace` stops it and starts this one. A signer you run yourself (`TRACEKIT_SIGNER`, system mode) that is older than this client: upgrade the signer first. From the TypeScript SDK, an older `tracekit` on your PATH starts an older signer: `pip install -U tracekit-ai`. |
-| `tracekit last: the newer run ID (agent) is still open` | The agent is still running, or was killed before it closed its run. End it and run `tracekit last` again; meanwhile it shows the run before. |
-| `tracekit last: no runs in the dev signer's store` | Add `import tracekit; tracekit.instrument()` to your agent and run it first. |
-| `tracekit.instrument(): <framework> <version> not wired ... Tracekit is tested with ...` | Install the versions it names, or wire that adapter by hand as its quickstart shows. |
-| `the v2 signer needs its policy engine ... pip install tracekit-ai` | A `--no-deps` install verifies but can't sign: install with its dependencies. |
-| A path with spaces (Windows profiles, macOS `Application Support`) | Paste the commands `tracekit last` prints as they are: their paths are quoted for your shell. |
-
-## Deeper: drive the signer yourself
-
-The rest of this page does by hand what `instrument()` and `tracekit last` do, with the approval step a framework's
-own control flow needs.
 
 ### A scripted agent
 
@@ -195,9 +224,11 @@ with Client().run(agent="quickstart") as run:
     d = run.decide("call-3", "Bash", held)                          # ask: a command the signer can't parse waits for a human
     aid = run.call("approval_request", tool_call_id="call-3")["approval_id"]
     print("approve with: tracekit approvals approve", aid)
-    if run.call("approval_wait", approval_id=aid, timeout_ms=300000)["state"] == "approved" and \
-            run.approval_consume("call-3", "Bash", held, approval_id_hint=aid)["ok"]:
+    state = run.call("approval_wait", approval_id=aid, timeout_ms=300000)["state"]   # waits up to 5 minutes
+    if state == "approved" and run.approval_consume("call-3", "Bash", held, approval_id_hint=aid)["ok"]:
         run.complete("call-3")                                      # run it only now, with exactly those arguments
+    else:                                                           # still "requested": nobody answered in time
+        print("call-3 not run:", "no answer within 5 minutes" if state == "requested" else state)
     print("run", run.run_id)
 ```
 
@@ -210,7 +241,11 @@ decision then names the arguments whose values only untrusted content brought in
 ([provenance](policy-v2.md#provenance-untrusted-and-from-untrusted)). Send the task as `trusted` from your app, not
 from the agent.
 
-Claude Code: `tracekit init --dev --v2` wires its hooks to the same signer (`python -I -m tracekit.integrations.claude_code`).
+Claude Code: `tracekit init --dev --v2` wires its hooks to the same signer ([the Claude Code
+quickstart](quickstarts/claude-code.md)). Each hook command is plain text in `~/.claude/settings.json`: the Python
+init ran with, then `-I -m tracekit.integrations.claude_code <event>`; from a source checkout or a `pip install
+--user`, `-I -c` with a one-line import that puts that directory first on the path, then the directory (and a
+checkout's branch) and the event as quoted arguments.
 
 `tracekit demo --server` runs the whole loop in a temp dir, with a test witness's cosignature and a tampered copy that
 fails. A deployment for server-hosted agents: [deploy.md](deploy.md).

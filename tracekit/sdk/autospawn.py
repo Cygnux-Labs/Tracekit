@@ -121,6 +121,21 @@ def _theirs(d):
     return not _ours(ep["data_dir"]) if "data_dir" in ep else not _held(os.path.join(data_dir(), "store", "lock"))
 
 
+def own_runtime_dirs():
+    """The runtime dirs that exist and hold this HOME's dev signer's files (`tracekit uninstall` names them): the
+    per-user one, unless the endpoint.json in it names another HOME's data dir, and this data dir's sibling of it."""
+    try:
+        d = runtime_dir(create=False)
+    except (OSError, SignerUnavailable):
+        return []
+    try:
+        with open(os.path.join(d, ENDPOINT)) as f:
+            mine = _ours(json.load(f).get("data_dir", data_dir()))
+    except (OSError, ValueError, AttributeError):   # none (no signer ran there) or unreadable: nobody else's either
+        mine = True
+    return [x for x in [d] * mine + [_side(d)] if os.path.isdir(x)]
+
+
 def signer_dir(create=True):
     """The runtime dir of this HOME's dev signer: the per-user one, or its sibling (_side) while this data dir's
     signer runs there or the per-user one's serves another data dir."""

@@ -16,6 +16,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -33,14 +34,20 @@ from .harness_helper import HELPER_CAPS, trusted_file
 from .deploy import files
 from .wiki import wiki_url
 
-OK, WARN, FAIL = "ok", "warn", "fail"
+OK, INFO, WARN, FAIL = "ok", "info", "warn", "fail"   # info: what this setup doesn't have, said once, not a fault
 NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", "fuse", "fuseblk", "9p", "macfuse",
               "osxfuse"}
 MAX_SKEW_S = 300
 # system mode's init from a root-owned clone of the release, as the plugin and CI run it: it works on every Python,
-# whether or not /opt/tracekit exists or can be trusted (docs/deploy.md also gives the routes through /opt's venv)
-REINIT = ("from a root-owned clone of the release (docs/deploy.md#laptop-system-mode), sudo /usr/bin/python3 -m tracekit "
-          "init --v2 --user <agent-user>" + (" --experimental-macos" if sys.platform == "darwin" else ""))
+# whether or not /opt/tracekit exists or can be trusted (docs/deploy.md also gives the routes through /opt's venv).
+# The Python is doctor's own when only root can change it (init refuses any other), and not /opt's venv, which init
+# can't run from on 3.9 or 3.10; else the system one
+_PY = sys.executable if sys.executable and not sys.executable.startswith(install.OPT + os.sep) \
+    and trusted_file(sys.executable) is None else "/usr/bin/python3"
+REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
+          f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
+          + (" --experimental-macos" if sys.platform == "darwin" else ""))
+DEV_INFO = {"D-WITNESS-CONFIGURED"}   # what the dev signer can't have: info in the dev profile, not a warning
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
 FAIL_CLOSED = "call blocked (fail-closed)"   # the pre-tool wrapper's words (install._blocking); before 1.3 every event's
 # wrapper had them, so a hook that couldn't run blocked a prompt or a tool result too (D-HOOKS-EVENT warns)
@@ -61,14 +68,21 @@ def report(results, as_json=False):
         print(json.dumps(results, indent=2))
     else:
         for r in results:
-            print(f"{'ok' if r['status'] == OK else r['status'].upper():<6}{r['detail']}  ({r['id']})"
+            print(f"{r['status'] if r['status'] in (OK, INFO) else r['status'].upper():<6}{r['detail']}  ({r['id']})"
                   + (f"\n      fix: {r['fix']}" if r["fix"] else ""))
     return 1 if any(r["status"] == FAIL for r in results) else 0
 
 
 def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
     if not (k8s or manifests):
-        return report(collect(config, issuer_key), as_json)
+        rows = collect(config, issuer_key)
+        code = report(rows, as_json)
+        # the dev profile's own warning (D-PROCESS-BOUNDARY: it runs as you) and nothing else: say it is healthy
+        if not as_json and any(r["detail"] == install.DEV_MODE_LINE for r in rows) and \
+                all(r["status"] in (OK, INFO) or r["id"] == "D-PROCESS-BOUNDARY" for r in rows):
+            print("dev setup OK: everything checks out for dev mode, which records but does not guard "
+                  "(D-PROCESS-BOUNDARY)")
+        return code
     out = k8s_checks(*load_manifests(manifests)) if manifests else in_pod()
     return report(out + (v2_checks(config, issuer_key=issuer_key) if config else []), as_json)
 
@@ -252,8 +266,10 @@ def _probe_target(argv):
     """(interpreter, the directory a -c hook puts first on sys.path (install._dev_hook_argv's `r`: a working tree) or
     None) of the hook `argv`; ValueError for a path that isn't absolute, which would resolve against doctor's working
     directory, or one the hook's code can't decode."""
+    # the tree is the code's first argument; in a hook an earlier init wrote, it is base64 in the code
     m = argv[2] == "-c" and re.search(r"b64decode\('([A-Za-z0-9+/=]*)'\)", argv[3])
-    tree = base64.b64decode(m.group(1)).decode("utf-8") if m else None
+    tree = base64.b64decode(m.group(1)).decode("utf-8") if m else \
+        argv[4] if argv[2] == "-c" and argv[3].startswith("import sys; r = sys.argv[1];") and len(argv) > 4 else None
     for what, p in (("an interpreter", argv[0]), ("a path", tree)):
         if p is not None and not (p.isprintable() and os.path.isabs(p)):
             raise ValueError(f"{what} that isn't an absolute path ({p[:128]!r})")
@@ -762,7 +778,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     sev = FAIL if prod else WARN
 
     def add(id, ok, detail, fix, bad=FAIL):
-        out.append(result(id, OK if ok else bad, detail, fix))
+        out.append(result(id, OK if ok else INFO if not prod and id in DEV_INFO else bad, detail, fix))
 
     if isinstance(config, dict):
         cfg = config
@@ -945,6 +961,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", True, others, "")
         elif hooks is not None and no_hooks and not any(hooks.values()):
             add("D-HOOKS-PRESENT", True, chosen, "")
+        elif hooks is not None and not prod and not any(hooks.values()) and not shutil.which("claude") \
+                and not os.path.isdir(os.path.dirname(install.user_settings())):   # no Claude Code here to hook
+            add("D-HOOKS-PRESENT", False, "no Claude Code here (no claude on PATH, no "
+                f"{os.path.dirname(install.user_settings())}), so no hooks: runs that SDK clients send "
+                "(tracekit.instrument()) are still recorded", f"once Claude Code is installed: {hook_fix}", bad=INFO)
         elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
             own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
@@ -1013,7 +1034,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                                                f'set "{install.THINKING}": true in {settings} ({hook_fix} does)')
                     + ", and for headless runs pass `claude -p --thinking-display summarized`", bad=WARN)
             if signer:
-                env = (_json(settings) or {}).get("env")
+                env = _setting(settings, "env")   # none when uninstall deleted the file init made
                 env = env.get("TRACEKIT_SIGNER") if isinstance(env, dict) else None
                 add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",

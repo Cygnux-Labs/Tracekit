@@ -716,7 +716,7 @@ class TestCli(unittest.TestCase):
         self.assertEqual(shown.returncode, 0, shown.stderr)
         self.assertIn("\nwhy         moving money (a Stripe, PayPal or Square charge, payout, transfer or refund) "
                       "(TK-A043)\ninstead     Check the amount, currency and payee", shown.stdout)
-        self.assertRegex(shown.stdout, r"\nexpires     \S+Z \(in 5\d min\)\n")
+        self.assertRegex(shown.stdout, r"\nexpires     \d\d:\d\d UTC \(in 5\d min\)\n")
         self.assertIn(f"\nanswer      `tracekit approvals --signer {sock} approve {aids[1]}` to allow it once, "
                       f"`tracekit approvals --signer {sock} reject {aids[1]}` to refuse it\n", shown.stdout)
         self.assertIn(f"\nrecord      tracekit view --approval {aids[1]} (with the --config or --data-dir of this "
@@ -816,6 +816,54 @@ class TestCliDevSigner(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(cli.main(["approvals", "list"]), 0)
         self.assertIn(f"{aid}  consumed", buf.getvalue())
+
+
+class TestFirstDayCli(unittest.TestCase):
+    """What a new user's walkthrough found: `approvals show` gave TK-SHELL-PARSE's general reason where the hook gave
+    the cause's own, offered Claude Code's `! ` to runs that aren't Claude Code's, and `tracekit pending` failed with
+    "signer unavailable" with held v2 calls and no v1 signer."""
+
+    def setUp(self):
+        self.run_dir = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.addCleanup(shutil.rmtree, self.run_dir, True)
+        os.chmod(self.run_dir, 0o700)
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.run_dir,
+                                           "XDG_DATA_HOME": os.path.join(self.run_dir, "none"),
+                                           "HOME": os.path.join(self.run_dir, "home")})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def lines(self, command, run_id="run-1"):
+        from tracekit.policy2 import compile as pc
+        pol, _ = pc.build(os.path.join(ts.ROOT, "tracekit", "policy2", "packs", "dev.yaml"))
+        x = {"approval_id": "apr-" + "1" * 32, "state": "requested", "run_id": run_id, "tool": "Bash",
+             "rule_ids": ["TK-SHELL-PARSE"], "policy_hash": pc.policy_hash(pol), "args_source": "parsed",
+             "args": {"command": command}, "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z",
+                                                                       time.gmtime(time.time() + 3600))}
+        return cli._stop_lines(mock.Mock(signer=None), x)
+
+    def test_show_gives_the_cause_the_hook_gives(self):
+        self.assertEqual(self.lines('echo "unterminated')[:2], [
+            "why         a quote on the line is never closed (TK-SHELL-PARSE)", "instead     Close the quote."])
+        self.assertTrue(self.lines("X=$(printf ls); $X")[0].startswith(
+            "why         its program is a variable the line doesn't set to plain text (TK-SHELL-PARSE)"))
+        self.assertRegex(self.lines("ls x 'y")[2], r"^expires     \d\d:\d\d UTC \(in (59|60) min\)$")
+
+    def test_the_bang_hint_is_for_claude_code_runs_only(self):
+        answer = next(line for line in self.lines('echo "x') if line.startswith("answer"))
+        self.assertNotIn("! ", answer)   # an SDK agent's run: no Claude Code session to paste it into
+        with open(os.path.join(self.run_dir, "claude-code-" + "a" * 64 + ".json"), "w") as f:
+            json.dump({"run_id": "run-1", "run_token": "t"}, f)   # the v2 hook's session state
+        answer = next(line for line in self.lines('echo "x') if line.startswith("answer"))
+        self.assertTrue(answer.endswith("; in the agent's Claude Code session, with a leading `! `"), answer)
+
+    def test_pending_without_a_v1_signer_lists_the_v2_signers_held_calls(self):
+        from tracekit import client
+        with mock.patch.object(client, "DEFAULT_SOCKET", os.path.join(self.run_dir, "no-tracekitd.sock")), \
+                mock.patch.object(client, "socket_path", return_value=client.DEFAULT_SOCKET), \
+                mock.patch.object(cli, "_approvals", return_value=0) as v2:
+            self.assertEqual(cli.main(["pending"]), 0)
+        self.assertEqual((v2.call_args[0][0].action, v2.call_args[0][0].signer), ("list", None))
 
 
 if __name__ == "__main__":

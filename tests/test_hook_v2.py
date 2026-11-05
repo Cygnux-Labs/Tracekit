@@ -23,6 +23,7 @@ import adapter_contract as ac
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
 from tracekit import cli, install, privacy
 from tracekit.bundle_v2 import export
+from tracekit.client import client_home
 from tracekit.format.canon import event_hash
 from tracekit.format import checkpoint
 from tracekit.format.checkpoint import ED25519
@@ -1492,6 +1493,34 @@ class InitV2(unittest.TestCase):
         with open(settings) as f:
             self.assertEqual(json.load(f), {"enabledPlugins": {install.PLUGIN: True}})
 
+    def test_uninstall_deletes_the_settings_file_init_made_and_says_what_it_keeps(self):
+        """A new user's uninstall left a settings.json holding `{}` that init had made, and didn't say that the dev
+        signer's keys and runs and the client config stay, nor how to delete them and Tracekit."""
+        settings = os.path.join(self.home, ".claude", "settings.json")
+        self.assertEqual(self.init("--dev", "--v2")[0], 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["uninstall"]), 0)
+        self.assertFalse(os.path.exists(settings))
+        lines = out.getvalue().splitlines()
+        data = autospawn.data_dir()
+        self.assertIn(f"  {data}  (the dev signer's keys and signed runs: a bundle you exported verifies without "
+                      "them)", lines)
+        self.assertIn(f"  {client_home()}  (Tracekit's client config)", lines)
+        gone = [os.path.dirname(data) if sys.platform == "darwin" else data, client_home()]
+        self.assertEqual(lines[-4:-2], ["to delete these and Tracekit too:", "  tracekit down"])
+        if os.name != "nt":   # the runtime dir too, where one exists
+            self.assertEqual(shlex.split(lines[-2])[:2 + len(gone)], ["rm", "-rf", *gone])
+        self.assertTrue(lines[-1].endswith(" uninstall tracekit-ai"), lines[-1])
+        os.makedirs(os.path.dirname(settings), exist_ok=True)   # a file that was there before init stays
+        with open(settings, "w") as f:
+            f.write("{}")
+        self.assertEqual(self.init("--dev", "--v2", "--no-thinking-summaries")[0], 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["uninstall"]), 0)
+        with open(settings) as f:
+            self.assertEqual(json.load(f), {})
+
     def test_uninstall_leaves_a_persons_own_thinking_setting(self):
         settings = os.path.join(self.home, "settings.json")
         for before in ({}, {install.THINKING: True}, {install.THINKING: False}):
@@ -1546,7 +1575,12 @@ class InitV2(unittest.TestCase):
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
         # #587: init gave the agent nothing on what to do when a call is stopped; it points to the lines that do
         self.assertIn("\n" + cli.guidance() + "\n", self.out)
-        self.assertIn("/wiki/Coding-Agents#when-tracekit-stops-a-call into its CLAUDE.md or AGENTS.md", cli.guidance())
+        # the first-day walkthrough: that anchor wasn't on the published wiki yet; the plugin's skill file is on GitHub
+        self.assertIn(f"{cli.HOLDS_SKILL} into its CLAUDE.md or AGENTS.md", cli.guidance())
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, cli.HOLDS_SKILL.split("/blob/main/")[1])))
+        # and what to do next: a new session, the `!` line a hold shows, the viewer
+        self.assertIn("\n" + cli.next_step() + "\n", self.out)
+        self.assertIn("! tracekit approvals approve <id>", cli.next_step())
 
     def test_the_agent_guidance_init_points_to_is_the_plugins_skill(self):
         """#587: one wording of what an agent does when Tracekit stops its call, in the docs init points to and in the

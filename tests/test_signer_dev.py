@@ -143,7 +143,7 @@ class DevSignerEndToEnd(unittest.TestCase):
             again = Client()
             self.addCleanup(again.close)
             self.assertEqual(self.one_run(again), pid)
-            self.assertEqual(json.loads(self.cli("status"))["signer_v2"]["socket"], os.path.join(short, autospawn.SOCK))
+            self.assertEqual(json.loads(self.cli("status", "--json"))["signer_v2"]["socket"], os.path.join(short, autospawn.SOCK))
         self.assertNotEqual(autospawn.runtime_dir(), short)   # another dir's is never this one
         near = "/tmp/" + "s" * (103 - len("/tmp/") - len("/" + autospawn.SOCK))   # its socket path fits, a side dir's not
         self.assertEqual(autospawn._short(near), near)
@@ -322,7 +322,7 @@ class DevSignerEndToEnd(unittest.TestCase):
                                r"trust\.json\n$")
         trust, verify = [shlex.split(x)[1:] for x in said.splitlines() if x.startswith("  tracekit ")]
         self.cli(*trust)
-        self.assertRegex(self.cli(*verify), r"^VERIFIED: (\d+ tool calls? in )?\d+ signed records, none changed")
+        self.assertRegex(self.cli(*verify), r"^VERIFIED: (\d+ tool calls? in |no tool calls recorded; )?\d+ signed records, none changed")
         info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "-o", "again.tkb", "--json"))
         self.assertEqual((info["bundle"], info["verifier_min_version"] in said), ("again.tkb", True))
 
@@ -439,6 +439,21 @@ class SpawnAndStatus(unittest.TestCase):
         self.addCleanup(env.stop)
         os.environ.pop("TRACEKIT_SIGNER", None)
 
+    def test_uninstall_names_only_this_homes_runtime_dirs(self):
+        """A first-day run of `tracekit uninstall` from a second HOME named the per-user runtime dir another HOME's
+        live signer used, in the `rm -rf` it prints: it names that dir only when it isn't another data dir's, and
+        this data dir's own sibling of it."""
+        self.assertEqual(autospawn.own_runtime_dirs(), [])   # none made yet
+        os.makedirs(self.run_dir, 0o700)
+        self.assertEqual(autospawn.own_runtime_dirs(), [self.run_dir])
+        with open(os.path.join(self.run_dir, autospawn.ENDPOINT), "w") as f:
+            json.dump({"data_dir": os.path.join(self.dir, "another-home-data")}, f)
+        self.assertEqual(autospawn.own_runtime_dirs(), [])
+        side = autospawn._side(self.run_dir)
+        os.makedirs(side, 0o700)
+        self.addCleanup(shutil.rmtree, side, True)
+        self.assertEqual(autospawn.own_runtime_dirs(), [side])
+
     def test_signer_starts_in_the_private_runtime_dir_with_cwd_off_sys_path(self):
         os.makedirs(self.run_dir, 0o700)
         with mock.patch.object(autospawn.subprocess, "Popen") as popen:
@@ -500,7 +515,7 @@ class SpawnAndStatus(unittest.TestCase):
 
     def test_status_creates_nothing(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(cli.main(["status"]), 0)
+            self.assertEqual(cli.main(["status", "--json"]), 0)
         self.assertFalse(json.loads(out.getvalue())["signer_v2"]["running"])
         self.assertFalse(os.path.exists(self.run_dir))
 

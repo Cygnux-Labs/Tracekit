@@ -259,8 +259,7 @@ class TestCli(unittest.TestCase):
             with open(settings) as f:
                 self.assertNotIn("TRACEKIT_SIGNER_CA", json.load(f)["env"])
             self.assertEqual(cli.main(["uninstall", "--project"]), 0)
-        with open(settings) as f:
-            self.assertNotIn("env", json.load(f))
+        self.assertFalse(os.path.exists(settings))   # init made it: no env, and no file
 
 
 if __name__ == "__main__":

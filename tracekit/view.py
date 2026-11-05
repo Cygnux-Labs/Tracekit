@@ -104,8 +104,8 @@ BUNDLES_MAX = 64 << 20   # bytes of the runs not final the viewer keeps to check
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
 STREAMS, STREAMS_PER_IP = 256, 64   # a team may share one address
-DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer runs as the same user as the dev signer "
-            "and proves only that the records match that key")
+DEV_NOTE = ("each run is checked against the key this store names, so it shows the records weren't changed after "
+            "signing, not that the agent couldn't have signed them: in dev mode it runs as you, as the signer does")
 STORED_NOTE = ("trust pins the log vkey this store holds and proves only that the records match that key; pin the "
                "signer's with --log-vkey")
 OPERATOR_SIDE = "operator-side view — re-verify with the signed release for evidence"
@@ -367,7 +367,8 @@ def policy_reasons(paths=(), kept=None):
         if os.path.basename(p) == hashlib.sha256(data).hexdigest() + ".json":
             out.policies["sha256:" + os.path.basename(p)[:-5]] = json.loads(data)
     for h, pol in out.policies.items():
-        out[h] = {r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
+        out[h] = {r["id"]: {"reason": r.get("reason") or (r.get("label") or "").replace("_", " "),   # side effect
+                            **{k: r[k] for k in ("remedy",) if k in r}}
                   for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out
 
@@ -1801,8 +1802,9 @@ def main(argv=None):
                    help="the v1 signer's ledger (tracekitd; HOME default: the client config's signer home)")
     g.add_argument("--bundle", help="a v1 .tkb bundle, verified first (refused when it fails)")
     ap.add_argument("--log-vkey", help="pin this log vkey (`tracekit signer vkey`) instead of the one the store names")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=7778)
+    ap.add_argument("--host", default="127.0.0.1", help="the address to serve on (default 127.0.0.1: this machine "
+                                                        "only; another one needs --tls-cert and --tls-key)")
+    ap.add_argument("--port", type=int, default=7778, help="the port to serve on (default 7778; 0: any free one)")
     ap.add_argument("--tls-cert", help="PEM certificate: serve HTTPS (required beyond loopback)")
     ap.add_argument("--tls-key", help="PEM private key of --tls-cert")
     ap.add_argument("--insecure-http", action="store_true", help="serve plain HTTP beyond loopback anyway")
@@ -1814,8 +1816,8 @@ def main(argv=None):
                     help="a bearer token /v1/ingest takes for why logs, and nothing else (repeatable; default: the "
                          "viewer's token)")
     ap.add_argument("--webhook", help="POST each new high why alert here as JSON (Slack-compatible)")
-    ap.add_argument("--approval", metavar="ID", help="print the link that opens the call approval ID held "
-                                                     "(`tracekit approvals show ID` names it)")
+    ap.add_argument("--approval", metavar="ID", help="start the viewer and print a link that opens the call approval "
+                                                     "ID held (`tracekit approvals show ID` names it)")
     a = ap.parse_args(argv)
     if a.approval and not re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval):
         print(f"tracekit view: --approval takes an approval id (apr- and 32 hex digits), not {a.approval!r}",
@@ -1889,16 +1891,18 @@ def main(argv=None):
         print(f"tracekit view: {e}", file=sys.stderr)
         return 1
     scheme = "https" if tls else "http"
-    print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
+    # a link a person can click: an any-address bind is reached on this machine at its loopback address
+    host = {"0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1"}.get(a.host, a.host)
+    print(f"tracekit view on {scheme}://{f'[{host}]' if ':' in host else host}:{srv.server_address[1]}/"
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
-          + (f"#approval={a.approval}" if a.approval else "")
-          + (f"  ({len(runs.logs)} Postgres logs, read-only)" if runs else
-             f"  (bundle: {a.bundle}, verified, read-only)" if a.bundle else
-             f"  (ledger: {feed.path}, read-only)" if v1 else f"  (why logs alone: {why.root})" if alone else
-             f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
+          + (f"#approval={a.approval}" if a.approval else "") + "  (open it in a browser; Ctrl-C stops the viewer)\n"
+          + (f"  reading {len(runs.logs)} Postgres logs, read-only" if runs else
+             f"  reading the bundle {a.bundle}, verified, read-only" if a.bundle else
+             f"  reading the ledger {feed.path}, read-only" if v1 else f"  reading why logs alone: {why.root}" if alone
+             else f"  reading the store {feed.store}, read-only; {feed.note}"), flush=True)
     if why and mirror:
         why.watch()
-        print("  graphs: each verified run, imported from the store (read-only) into a temp dir", flush=True)
+        print("  graphs: each verified run is drawn as a graph too, from a copy in a temp dir", flush=True)
     elif why:
         why.watch()
         print(f"  why logs: {why.root}; FIND THE CAUSE and RUN TEST "

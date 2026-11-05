@@ -523,7 +523,7 @@ class ClaudeConfigDir(unittest.TestCase):
                 with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(doctor._dev_settings(), settings)
                     self.assertEqual(install.uninstall(), settings)
-                self.assertEqual(install.read_json(settings).get("hooks"), None)
+                self.assertFalse(os.path.exists(settings))   # init made it, and nothing else is in it
 
     def test_hooks_are_found_and_removed_with_or_without_claude_config_dir(self):
         for installed_with, removed_with in ((True, False), (False, True)):
@@ -545,7 +545,7 @@ class ClaudeConfigDir(unittest.TestCase):
                         os.environ.pop("CLAUDE_CONFIG_DIR", None)
                     self.assertIn(path, [h["settings"] for h in install._installed_hooks()])
                     self.assertEqual(install.uninstall(), path)   # it named files it never found
-                    self.assertEqual(install._hook_summary(install.read_json(path)), install._hook_summary({}))
+                    self.assertFalse(os.path.exists(path))   # install_hooks made it: no hooks, and no file
 
 
 if __name__ == "__main__":

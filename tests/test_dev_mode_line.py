@@ -13,8 +13,9 @@ from unittest import mock
 from tracekit import cli, doctor, install
 from tracekit.sdk import autospawn
 
-LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. "
-        "For protection, use system mode or Box.")
+LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. To guard, run the signer "
+        "as another user (system mode: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) or the agent in Tracekit "
+        "Box, a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
 
 
 def run(argv):
@@ -81,7 +82,18 @@ class DevModeLine(unittest.TestCase):
         with mock.patch.object(install, "status", return_value={"client_config": None}), \
                 mock.patch.object(autospawn, "status", return_value={"socket": "s", "dev": dev}), \
                 mock.patch("tracekit.client.system_config", return_value=system):
-            return json.loads(run(["status"])[1]).get("dev_mode")
+            return json.loads(run(["status", "--json"])[1]).get("dev_mode")
+
+    def test_status_prints_a_summary_and_json_only_with_json(self):
+        """A new user's `tracekit status` printed a page of JSON; it prints what it found in lines, --json the JSON."""
+        hello = {"socket": "s.sock", "dev": True, "running": True, "version": "9", "pid": 7, "data_dir": "/d"}
+        with mock.patch.object(install, "status", return_value={"client_config": None, "hooks": [], "signer": None}), \
+                mock.patch.object(autospawn, "status", return_value=hello), \
+                mock.patch("tracekit.client.system_config", return_value=None):
+            self.assertEqual(run(["status"]), (0, "\n".join([
+                "signer      dev signer 9, running (pid 7), socket s.sock", "data        /d (its keys and signed runs)",
+                "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them", LINE,
+                "(tracekit status --json prints all of it)", ""])))
 
     def test_status_says_it_for_a_dev_signer_and_not_for_a_system_one(self):
         self.assertEqual(self.status(True, None), LINE)

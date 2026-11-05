@@ -80,7 +80,7 @@ Integrity: FAILED.
 
 ```console
 $ tracekit view --dev
-tracekit view on http://127.0.0.1:7778/?token=<token>
+tracekit view on http://127.0.0.1:7778/?token=<token>  (open it in a browser; Ctrl-C stops the viewer)
 ```
 
 Every run, each verified, every call with its decision:

@@ -26,7 +26,20 @@ def guidance():
     """The line `tracekit init --v2` prints once it installs hooks: where the agent's instructions for a held or blocked
     call are (the Claude Code plugin's tracekit-holds skill holds the same lines)."""
     return ("when Tracekit holds or blocks a call, the agent should tell you and pass on the commands: paste the lines "
-            f"at {wiki_url('docs/coding-agents.md', 'when-tracekit-stops-a-call')} into its CLAUDE.md or AGENTS.md")
+            f"at {HOLDS_SKILL} into its CLAUDE.md or AGENTS.md")
+
+
+# the lines guidance() names, in the Claude Code plugin's tracekit-holds skill
+HOLDS_SKILL = "https://github.com/Cygnux-Labs/Tracekit/blob/main/plugin/skills/tracekit-holds/SKILL.md"
+
+
+def next_step():
+    """The line `tracekit init --dev --v2` ends with once it wired Claude Code's hooks: what to do now."""
+    import shutil
+    return (("next: install Claude Code (no `claude` on PATH yet), then start a session" if not shutil.which("claude")
+             else "next: start a new Claude Code session (one already open doesn't load the hooks)")
+            + ". A call the policy holds shows a `! tracekit approvals approve <id>` line: paste it into that session "
+              "to allow the call once, then ask the agent to retry it. See every run: tracekit view --dev")
 
 
 def experimental(what, help=False):
@@ -238,12 +251,13 @@ def _parser():
                                              "enclave attestation, KMS key metadata); its hash is signed into checkpoints and "
                                              "exports carry it")
 
-    sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
-    p = sub.add_parser("up", help="find or start the same-user v2 dev signer")
+    p = sub.add_parser("status", help="what is set up here: hooks, signer, policy, capture sources")
+    p.add_argument("--json", action="store_true", help="print everything it found as one JSON object")
+    p = sub.add_parser("up", help="start the local signer (dev mode), or find the running one")
     p.add_argument("--wait", action="store_true", help="return once it answers")
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
-    sub.add_parser("down", help="stop the same-user v2 dev signer")
+    sub.add_parser("down", help="stop the local signer (dev mode)")
     p = sub.add_parser("doctor", help=f"check this setup (v1/v2 system mode, the dev signer); {wiki_url('docs/doctor.md')}")
     p.add_argument("--json", action="store_true", help="print [{id, status, detail, fix}]")
     p.add_argument("--config", help="check the v2 signer of this signer.yaml")
@@ -251,13 +265,15 @@ def _parser():
     p.add_argument("--manifests", metavar="DIR", help="with --k8s: check these rendered manifests instead")
     p.add_argument("--issuer-key", metavar="KEY_ID", help="the record key issuer's KMS key: the signer must not sign "
                    "with it")
-    p = sub.add_parser("uninstall", help="remove hooks (the ledger is kept)")
+    p = sub.add_parser("uninstall", help="remove Tracekit's hooks (your signed runs and keys stay: it says where, and "
+                                         "how to delete them too)")
     p.add_argument("--project", action="store_true")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
     p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude")
 
-    p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
+    p = sub.add_parser("ingest", help="remote ingestion gateway (experimental): `ingest token NAME` / `ingest serve`",
+                       add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger "
                        "(--v2: check a v2 run's request, reasoning and actions)", add_help=False)
@@ -311,9 +327,10 @@ def _parser():
     p = sub.add_parser("follow", help="follow agentsh's audit log into the v2 signer as it is written: "
                        "`follow agentsh --log PATH`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
+    p = sub.add_parser("otel", help="OpenTelemetry receiver (experimental): `otel serve` records agent spans sent over "
+                                    "OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("daemon", help="run tracekitd in the foreground")
+    p = sub.add_parser("daemon", help="run the v1 signer, tracekitd, in the foreground (experimental)")
     p.add_argument("--home")
     p = sub.add_parser("proxy", help="run the model proxy in the foreground (experimental)")
     p.add_argument("--home")
@@ -321,7 +338,8 @@ def _parser():
     p.add_argument("--port", type=int)
     p.add_argument("--upstream")
 
-    p = sub.add_parser("observe", help="now part of `tracekit view --ledger`: the v1 ledger or a bundle (read-only web UI)")
+    p = sub.add_parser("observe", help="the old name of `tracekit view --ledger`: the v1 ledger or a v1 bundle in a "
+                                       "read-only web page")
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("view", help="the viewer: the v2 signer's runs, each verified; --why DIR, --ledger, --bundle (read-only web UI)")
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -420,9 +438,9 @@ def _parser():
                    "(the full report; scripts that read the text use it, or --json)")
     p.add_argument("--json", action="store_true")
 
-    p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint "
-                                      "FILE`; `policy backtest --policy P (--store DIR | --bundle B...)` prints the "
-                                      "incidents its detection would open")
+    p = sub.add_parser("policy", help="check a v2 policy and try it on past runs: `policy compile FILE` prints "
+                                      "canonical JSON and its hash; `policy lint FILE`; `policy backtest --policy P "
+                                      "(--store DIR | --bundle B...)` prints the incidents its detection would open")
     p.add_argument("action", choices=("compile", "lint", "backtest"))
     p.add_argument("file", nargs="?")
     p.add_argument("--policy", help="backtest: the policy file")
@@ -656,6 +674,7 @@ def _run(a):
                     print(install.thinking_line(hooks, on))
                 if hooks:
                     print(guidance())
+                    print(next_step())
                 return 0
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
@@ -695,7 +714,11 @@ def _run(a):
         from . import client
         system = client.system_config()   # a root-owned config is system mode: the signer isn't the same user's
         dev = (st["client_config"] or {}).get("mode") == "dev" or v2.get("dev") and not system
-        print(json.dumps({**st, "signer_v2": v2, **({"dev_mode": install.DEV_MODE_LINE} if dev else {})}, indent=2))
+        if a.json:
+            print(json.dumps({**st, "signer_v2": v2, **({"dev_mode": install.DEV_MODE_LINE} if dev else {})}, indent=2))
+            return 0
+        print(*_status_lines(st, v2), *([install.DEV_MODE_LINE] if dev else []),
+              "(tracekit status --json prints all of it)", sep="\n")
         return 0
     if a.cmd == "up":
         from . import install
@@ -736,6 +759,8 @@ def _run(a):
         return 0
     if a.cmd == "uninstall" and a.agent != "claude":
         agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # it says what it removed
+        for line in [] if a.project else _kept():
+            print(line)
         return 0
     if a.cmd == "uninstall":
         from . import install
@@ -745,6 +770,8 @@ def _run(a):
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
             return 1
+        for line in [] if a.project else _kept():
+            print(line)
         return 0
     if a.cmd == "daemon":
         from . import daemon
@@ -761,6 +788,9 @@ def _run(a):
         return _approvals(argparse.Namespace(action=a.cmd, approval_id=a.approval_id, signer=None, reason=None))
     if a.cmd in ("pending", "approve", "reject"):
         from . import client
+        if a.cmd == "pending" and client.socket_path() == client.DEFAULT_SOCKET \
+                and not os.path.exists(client.DEFAULT_SOCKET):   # no v1 signer here: the v2 signer's held calls
+            return _approvals(argparse.Namespace(action="list", signer=None, json=False, all=False))
         try:
             pend = client.rpc({"op": "approval_list"}).get("pending", [])
             if a.cmd == "pending":
@@ -902,6 +932,49 @@ def _run(a):
     if a.cmd == "demo":
         return demo.main(real=a.real, keep=a.keep, agent=a.agent, detail=a.detail)
     return 2
+
+
+def _kept():
+    """What `tracekit uninstall` leaves in place (the dev signer's keys and signed runs, the client config, the dev
+    signer's runtime dir, a v1 dev signer's home), each that exists, and the commands that delete them and Tracekit."""
+    from . import client
+    from .sdk import autospawn
+    data = autospawn.data_dir()
+    where = [(data, "the dev signer's keys and signed runs: a bundle you exported verifies without them"),
+             (client.client_home(), "Tracekit's client config"),
+             (client.client_config().get("signer_home"), "the v1 dev signer's home"),
+             *[(d, "the dev signer's runtime dir") for d in autospawn.own_runtime_dirs()]]
+    where = [(d, what) for d, what in where if d and os.path.isdir(d)]
+    if not where:
+        return []
+    paths = [d for d, _ in where]
+    up = os.path.dirname(data)
+    if sys.platform == "darwin":   # data/ and run/ in Tracekit's own Application Support dir (autospawn.data_dir)
+        paths = [up] + [d for d in paths if not d.startswith(up + os.sep)]
+    pip = ("uv tool uninstall" if re.search(r"[/\\]uv[/\\]tools[/\\]", sys.executable) else   # as claude_code.upgrade
+           "pipx uninstall" if re.search(r"[/\\]pipx[/\\]venvs[/\\]", sys.executable) else
+           f"{_quote(sys.executable)} -m pip uninstall")
+    remove = (f"Remove-Item -Recurse -Force {', '.join(map(_quote, paths))}" if os.name == "nt"
+              else f"rm -rf {' '.join(map(_quote, paths))}")
+    return (["kept:"] + [f"  {d}  ({what})" for d, what in where]
+            + ["to delete these and Tracekit too:", "  tracekit down", f"  {remove}", f"  {pip} tracekit-ai"])
+
+
+def _status_lines(st, v2):
+    """`tracekit status` for a person: the v2 signer (install.status's and autospawn.status's findings), where its
+    keys and runs are, the hooks, then a v1 signer and proxy when there is one."""
+    name = "dev signer" if v2.get("dev") else "signer"
+    lines = [f"signer      {name} {v2['version']}, running (pid {v2['pid']}), socket {v2['socket']}" if "version" in v2
+             else f"signer      {name}: {v2.get('error') or 'running'}"]
+    if v2.get("data_dir"):
+        lines.append(f"data        {v2['data_dir']} (its keys and signed runs)")
+    lines += [f"hooks       {' and '.join(h['versions'])} hooks in {h['settings']} ({len(h['events'])} events)"
+              for h in st["hooks"]] or ["hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"]
+    if st.get("signer"):
+        lines.append(f"v1 signer   {st['signer'].get('error') or 'answering'}")
+    if st.get("proxy"):
+        lines.append(f"proxy       {st['proxy']['url']}: {'reachable' if st['proxy']['reachable'] else 'unreachable'}")
+    return lines
 
 
 def _signer_extra():
@@ -1048,7 +1121,7 @@ def _last(a):
     from .verify import v2
     from .view import write_trust
     from .sdk.autospawn import data_dir
-    deadline = time.monotonic() + LAST_WAIT_S
+    deadline, waiting = time.monotonic() + LAST_WAIT_S, False
     store = os.path.join(data_dir(), "store")   # named when there is none yet
     try:
         cfg = signer_config(None)
@@ -1067,6 +1140,10 @@ def _last(a):
                 r.close()
             if not (runs and runs[0][1] == "run.closing" and time.monotonic() < deadline):
                 break
+            if not waiting:
+                print(f"tracekit last: run {runs[0][0][1]} ({runs[0][2]}) just closed; waiting up to {LAST_WAIT_S:g} s "
+                      "while the signer finalises it", file=sys.stderr)
+                waiting = True
             time.sleep(0.25)   # the signer finalises a closed run once its grace window has passed
     except FileNotFoundError:
         runs = []
@@ -1084,8 +1161,11 @@ def _last(a):
     pick = runs if a.open else final
     if not pick:
         if not runs:
-            print(f"tracekit last: no runs in the dev signer's store ({store}) yet: add `import tracekit; "
-                  "tracekit.instrument()` to your agent and run it", file=sys.stderr)
+            print(f"tracekit last: no runs in the dev signer's store ({store}) yet. `tracekit.instrument()` records "
+                  "only the frameworks it lists, and says so when it finds none of them "
+                  f"({wiki_url('docs/quickstart-v2.md', '2-one-line-in-your-agent')}); for any other agent, record "
+                  f"its calls as {wiki_url('docs/quickstarts/custom.md')} shows. Claude Code: a session started after "
+                  "`tracekit init --dev --v2` records its calls.", file=sys.stderr)
         return 1
     (tenant, run_id), _, agent = pick[0]
     out = os.path.abspath(a.out or f"{run_id}.tkb")
@@ -1171,11 +1251,10 @@ def _stop_lines(c, x):
     """What `approvals show` adds to approval `x`: why its call was held and what to do instead (the reasons and
     remedies of its rules, in the policy whose hash it records: a shipped pack's, or one the dev signer kept), when
     it expires, the commands that answer it and where the viewer opens it."""
-    import datetime
-
     from . import view
-    from .integrations.claude_code import approvals_cmd
+    from .integrations.claude_code import approvals_cmd, expires
     from .policy2.compile import ENGINE_REASONS
+    from .policy2.engine import Engine
     from .signer.service import dev_data_dir
     try:
         kept = None if c.signer else os.path.join(dev_data_dir(create=False), "policies")
@@ -1183,34 +1262,60 @@ def _stop_lines(c, x):
         kept = None
     reasons = view.policy_reasons(kept=kept)
     known = reasons.get(x["policy_hash"], {})
-    flags = {r["id"] for r in reasons.policies.get(x["policy_hash"], {}).get("flag", [])}   # a flagged call runs
-    rules = [(i, known.get(i) or ENGINE_REASONS.get(i) or {"reason": view.ENGINE_RULES.get(i, "")})
+    pol = reasons.policies.get(x["policy_hash"], {})
+    flags = {r["id"] for r in pol.get("flag", [])}   # a flagged call runs
+    engine = dict(ENGINE_REASONS)
+    if "TK-SHELL-PARSE" in x["rule_ids"] and pol and x["args"] is not None:
+        # the cause the signer gave the hook (its decision's `unread`), from the same engine on the signer's copy
+        try:
+            cause = Engine(pol).decide(x["tool"], _args(x)).get("unread")
+        except Exception:   # as the signer's _evaluate: an engine error here leaves the general reason
+            cause = None
+        engine["TK-SHELL-PARSE"] = ENGINE_REASONS["TK-SHELL-PARSE"]["causes"].get(cause) or engine["TK-SHELL-PARSE"]
+    rules = [(i, known.get(i) or engine.get(i) or {"reason": view.ENGINE_RULES.get(i, "")})
              for i in x["rule_ids"] if i != "TK-UNKNOWN-TOOL" and i not in flags]
     why = "; ".join(f"{r['reason']} ({i})" for i, r in rules if r.get("reason"))
     instead = " ".join(dict.fromkeys(r["remedy"] for _, r in rules if r.get("remedy")))
-    try:
-        left = (datetime.datetime.strptime(x["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
-                .replace(tzinfo=datetime.timezone.utc) - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-        left = f" (in {left // 60:.0f} min)" if left >= 0 else f" ({-left // 60:.0f} min ago)"
-    except ValueError:   # another signer's time format: as it is
-        left = ""
     cmd = approvals_cmd(c.signer)
     why = why or ("not on this machine: `tracekit policy compile <file>` prints the reasons of the signer's policy, "
                   + x["policy_hash"])
+    # Claude Code runs a `!` line in the session as its OS user: the person's, with the dev signer (as the hook says)
+    bang = not c.signer and _claude_code_run(x["run_id"])
     return [f"why         {why}",
             *([f"instead     {instead}"] if instead else []),
-            f"expires     {x['expires_at']}{left}",
+            f"expires     {expires(x['expires_at']) or x['expires_at']}",
             *([f"answer      `{cmd} approve {x['approval_id']}` to allow it once, `{cmd} reject {x['approval_id']}` "
-               "to refuse it" + ("" if c.signer else "; in the agent's Claude Code session, with a leading `! `")]
+               "to refuse it" + ("; in the agent's Claude Code session, with a leading `! `" if bang else "")]
               if x["state"] == "requested" else []),
             f"record      tracekit view --approval {x['approval_id']}"
             + (" (with the --config or --data-dir of this signer)" if c.signer else "")]
+
+
+def _claude_code_run(run_id):
+    """Whether run `run_id` is a Claude Code session's on this machine: the v2 hook keeps each session's run in its
+    state in the dev signer's runtime dir (integrations.claude_code._state)."""
+    import glob
+
+    from .sdk import autospawn
+    try:
+        d = autospawn.runtime_dir(create=False)
+    except (OSError, autospawn.SignerUnavailable):
+        return False
+    for f in glob.glob(os.path.join(glob.escape(d), "claude-code-*.json")):
+        try:
+            with open(f, encoding="utf-8") as fh:
+                if json.load(fh).get("run_id") == run_id:
+                    return True
+        except (OSError, ValueError, AttributeError):   # one a hook is replacing, or not a state file
+            continue
+    return False
 
 
 def _approvals(a):
     """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
     import pydoc
 
+    from .integrations.claude_code import expires
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
     if a.action == "slack":
@@ -1234,7 +1339,7 @@ def _approvals(a):
             for x in [] if a.json else shown:
                 state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
                 print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
-                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}" + (
+                      f"rules={','.join(x['rule_ids'])}  expires {expires(x['expires_at']) or x['expires_at']}" + (
                           f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
                           else ""))
             if a.json:

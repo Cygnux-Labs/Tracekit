@@ -48,6 +48,31 @@ class IsolatedCommand(unittest.TestCase):
 
 
 @unittest.skipIf(os.name == "nt", "the fail-closed wrapper is POSIX shell")
+class ClearText(unittest.TestCase):
+    """The hook command init wrote from a working tree (or a --user install) carried the tree's path and branch in
+    base64, which reads as malware to a security reviewer: they are plain, quoted arguments now, and the hook runs as
+    before from a path with spaces and quotes."""
+
+    def test_the_command_names_its_tree_in_clear_text_and_runs_from_any_path(self):
+        from tracekit import doctor
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        tree = os.path.join(d, "it's a \"tree\" $HOME")
+        os.makedirs(os.path.join(tree, "tracekit", "integrations"))
+        for name in ("__init__.py", os.path.join("integrations", "__init__.py")):
+            open(os.path.join(tree, "tracekit", name), "w").close()
+        with open(os.path.join(tree, "tracekit", "integrations", "claude_code.py"), "w") as f:
+            f.write("import sys\ndef _entry(event):\n    print('ran', event, sys.argv[1:])\n    return 0\n")
+        with mock.patch.object(install, "ROOT", tree), mock.patch("importlib.util.find_spec", return_value=None):
+            cmd = install._hook_command(install.V2_HOOK, args=("PreToolUse",))
+        self.assertNotIn("base64", cmd)
+        self.assertIn("from tracekit.integrations.claude_code import _entry", cmd)
+        p = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, timeout=60)
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, f"ran PreToolUse {[tree, 'PreToolUse']}"), p.stderr)
+        self.assertEqual(doctor._probe_target(doctor._hook_argv(cmd)), (sys.executable, tree))   # D-VERSIONS' probe
+
+
+@unittest.skipIf(os.name == "nt", "the fail-closed wrapper is POSIX shell")
 class WorkingTree(unittest.TestCase):
     """A dev hook imports Tracekit from the working tree init ran in (#427): a branch switch or rebase there that
     leaves code which won't import says which tree, what it is on now and what to run, and still blocks the call."""
