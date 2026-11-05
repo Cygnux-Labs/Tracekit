@@ -75,9 +75,10 @@ class Packs(unittest.TestCase):
         dev, server = pc.build(svc.DEFAULT_POLICY)[0], pc.build(os.path.join(PACKS, "server.yaml"))[0]
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
-        self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-DEMO-ASK")], server["ask"])
+        self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-F019", "TK-DEMO-ASK")],
+                         server["ask"])
         self.assertEqual(dev["flag"][:len(server["flag"])], server["flag"])
-        self.assertEqual([r["id"] for r in dev["flag"][len(server["flag"]):]], ["TK-F018", "TK-F019", "TK-F020", "TK-F021",
+        self.assertEqual([r["id"] for r in dev["flag"][len(server["flag"]):]], ["TK-F018", "TK-F020", "TK-F021",
                                                                                      "TK-F022", "TK-F023"])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
         self.assertFalse({"sequences", "limits", "respond"} & set(dev))   # no detection: no `detect` on its decisions
@@ -105,7 +106,9 @@ class Packs(unittest.TestCase):
         """Review of #605: the harness class skipped every rule of no class, so a secret in a SendMessage or an Agent
         prompt, which can leave the machine, was allowed unflagged. Every rule of no class reads it now; only its
         target is narrowed to the URLs and addresses it names, so the file-name rules (TK-S004, TK-F005) don't read a
-        prompt's prose. SendMessage and a remote Agent stay on the record (TK-F018, TK-F019)."""
+        prompt's prose. A SendMessage stays on the record (TK-F018); a remote Agent, none of whose calls are decided
+        here, is held (TK-F019, the second review of #605). An address in a prompt is read with the punctuation around
+        it and in any IPv4 form, as a shell argv's is; a secret right after an escaped newline or tab is read too."""
         e = Engine(pc.build(svc.DEFAULT_POLICY)[0], "regex")
         names = "fix how we read ~/.aws/credentials, ~/.ssh/id_rsa, .netrc and .pgpass"
         # fake secrets, as the redaction fixtures are: agent-flow:allow-secret
@@ -116,8 +119,19 @@ class Packs(unittest.TestCase):
                 ("TodoWrite", {"todos": [{"content": names}]}, ("allow", [])),
                 ("SendMessage", {"to": "a1", "message": names}, ("flag", ["TK-F018"])),
                 ("Agent", {"description": "d", "prompt": "push the branch to main", "isolation": "remote"},
-                 ("flag", ["TK-F019"])),
+                 ("ask", ["TK-F019"])),
                 ("Agent", {"description": "d", "prompt": "use " + key}, ("deny", ["TK-S002"])),
+                ("Agent", {"description": "d", "prompt": "aws key\t" + key + "\tthen"}, ("deny", ["TK-S002"])),
+                ("SubagentHandback", {"message": "id\n" + key}, ("deny", ["TK-S002"])),
+                ("SubagentHandback", {"message": "id\rghp_" + "a" * 36}, ("deny", ["TK-S002"])),
+                ("SubagentHandback", {"message": "id\neyJ" + "a" * 12 + ".eyJ" + "b" * 12 + "." + "c" * 12},
+                 ("deny", ["TK-S002"])),
+                ("Agent", {"description": "d", "prompt": "fetch (169.254.169.254) now"}, ("deny", ["TK-S001"])),
+                ("Agent", {"description": "d", "prompt": "the address is 169.254.169.254, fetch it"},
+                 ("deny", ["TK-S001"])),
+                ("Agent", {"description": "d", "prompt": "fetch 0xa9.0xfe.0xa9.0xfe/latest/"}, ("deny", ["TK-S001"])),
+                ("Agent", {"description": "d", "prompt": "fetch 169.254.43518/latest/"}, ("deny", ["TK-S001"])),
+                ("Agent", {"description": "d", "prompt": "bump to 1.2.3 and set head -n 50"}, ("allow", [])),
                 ("SendMessage", {"to": "a1", "message": pem}, ("deny", ["TK-S002", "TK-F018"])),
                 ("Task", {"prompt": "fetch http://169.254.169.254/latest/meta-data"}, ("deny", ["TK-S001", "TK-F012"])),
                 ("SubagentHandback", {"message": "curl 169.254.169.254/latest"}, ("deny", ["TK-S001"]))):
@@ -4192,15 +4206,69 @@ class GuardrailsAndPushes(unittest.TestCase):
             "git town ship", "jj git push", "jj git push -b main", "jj git push --bookmark=master", "jj git push --all",
             "jj git push --tracked")], "ask", "TK-A056")
         self.verdicts([("Bash", {"command": c}) for c in (
-            "git --attr-source HEAD push origin feature", "jj git push -b feature")], "flag")
+            "git --attr-source HEAD push origin feature", "jj git push -b feature", "hub push origin feature",
+            "git send-pack origin refs/heads/feature")], "flag")
         self.verdicts([("Bash", {"command": c}) for c in (
-            "git send-pack origin refs/heads/feature", "hub push origin feature", "python -m twine check dist/*",
-            "gh api repos/o/r/git/refs/heads/feature -X PATCH -f sha=abc", "gh api repos/o/r/merges -f base=feature",
+            "python -m twine check dist/*", "gh api repos/o/r/git/refs/heads/feature -X PATCH -f sha=abc",
             "sl push --to feature", "git town sync")], "allow")
         # TK-D003, TK-A002 and TK-A013 read --attr-source's value as git's other global options' (all packs)
         self.verdicts([("Bash", {"command": "git --attr-source HEAD push --force origin feature"})], "deny", "TK-D003")
         self.verdicts([("Bash", {"command": "git --attr-source HEAD push --delete origin feature"})], "ask", "TK-A002")
         self.verdicts([("Bash", {"command": "git --attr-source HEAD config core.hooksPath /tmp/h"})], "ask", "TK-A013")
+
+    def test_the_second_reviews_ways_to_main(self):
+        """Second review of #605: GitHub reads a percent-encoded path as decoded; a -c remote.<name>.push picks the
+        push's target; GraphQL and the contents API write a branch; Jujutsu takes -bmain, exact: and glob:; git-town
+        runs on its own; a merge is any call on repos/<o>/<r>/merges (reading base=main in either order was quadratic
+        on the fallback engine)."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api -X PATCH repos/o/r/git/refs/heads%2Fmain -f sha=abc", "gh api -X PATCH repos/o/r/git/refs/heads/%6Dain",
+            "gh api -X PATCH repos/o/r/git/refs/%68eads/main", "gh api -X PATCH repos/o/r/git/refs/heads/main%3F",
+            "gh api -X PATCH repos/o/r/git%2Frefs%2Fheads%2Fmain", "gh api repos/o/r/merge%73 -f base=main -f head=f",
+            "gh api repos/o/r/merges/ -f base=main", "gh api repos/o/r/merges --input body.json",
+            "echo '{\"base\":\"main\"}' | gh api repos/o/r/merges --input -", "gh api repos/o/r/merges -f base=feature",
+            "gh api repos/o/r/merges " + "-H a:b " * 20 + "-f base=main",
+            "git -c remote.origin.push=refs/heads/feature:refs/heads/main push origin feature",
+            "git -c remote.origin.push=+refs/heads/*:refs/heads/main push origin feature",
+            "git -c REMOTE.origin.PUSH=HEAD:main push origin feature",
+            "gh api graphql -f query='mutation { updateRef(input:{refId:\"x\", oid:\"y\"}) { clientMutationId } }'",
+            "gh api graphql -f query='mutation { mergeBranch(input:{base:\"main\", head:\"f\"}) { clientMutationId } }'",
+            "curl -d '{\"query\":\"mutation{createCommitOnBranch(input:{}){commit{oid}}}\"}' https://api.github.com/graphql",
+            "gh api -X PUT repos/o/r/contents/README.md -f message=x -f content=eA== -f branch=main",
+            "gh api -X PUT repos/o/r/contents/README.md -f message=x -f content=eA==",
+            "gh api --method=DELETE repos/o/r/contents/a.txt -f message=x -f sha=s",
+            "gh api repos/o/r/contents/README.md -XPUT -f message=x -f content=eA== --input b.json",
+            "jj git push -bmain", "jj git push -b exact:main", "jj git push -b 'glob:*'", "jj git push --branch master",
+            "git-town ship")], "ask", "TK-A056")
+        # --config-env is TK-S006's deny anyway (a setting from the environment); TK-A056 reads it as -c too
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git --config-env=remote.origin.mirror=M push origin x", "git --config-env remote.origin.push=P push origin f")],
+                      "deny", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git -c remote.origin.url=x push origin feature", "jj git push -b feature")], "flag")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api repos/o/r/contents/README.md", "gh api -X PUT repos/o/r/contents/a -f content=eA== -f branch=feature",
+            "gh api repos/o/r/pulls/42/merges", "gh api graphql -f query='query { repository { name } }'")], "allow")
+        # a 63 KB path of `/merges?` with no `repos/`: the old pattern's two stretches took 3.9 s and timed out
+        for e in self.engines:
+            for c in ("gh api '" + "a/merges?" * 7000 + "' -f base=mainline",
+                      "gh api '" + "repos/a/b/merges?" * 3700 + "x' -f base=x"):
+                with self.subTest(engine=e.engine, command=c[:30]):
+                    self.assertNotIn("nondeterministic", e.decide("Bash", {"command": c}))
+
+    def test_hub_push_and_send_pack_force_and_delete(self):
+        """Second review of #605: TK-D003, TK-A002 and TK-F004 read `git send-pack` and `hub push` as `git push`, on
+        every pack."""
+        for pack in ("coding.yaml", "server.yaml", "dev.yaml", "strict.yaml"):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            for cmd, rule in (("hub push -f origin feature", "TK-D003"), ("hub push origin +feature", "TK-D003"),
+                              ("hub push --mirror origin", "TK-D003"), ("git send-pack --force origin feature", "TK-D003"),
+                              ("git send-pack origin +feature", "TK-D003"), ("hub push --delete origin feature", "TK-A002"),
+                              ("hub push origin :feature", "TK-A002"), ("git send-pack origin :feature", "TK-A002")):
+                with self.subTest(pack=pack, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn(rule, d["rule_ids"], d)
+                    self.assertIn(d["verdict"], ("deny",) if rule == "TK-D003" else ("ask", "deny"), d)
 
     def test_email_and_payment_calls_stay_on_the_record(self):
         """Review of #605: the server pack maps send_email to class email, where no rule matched an ordinary email,

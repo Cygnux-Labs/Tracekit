@@ -9,6 +9,7 @@ import posixpath
 import re
 import time
 import unicodedata
+from urllib.parse import unquote
 
 from . import classes, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, translate
@@ -27,6 +28,7 @@ _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 28
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
 # too much
 _BARE_TARGET = re.compile(r"http://[1-9][0-9]*(\.[0-9]+){3}/")
+_PROSE_SPLIT = re.compile(r"[\s()<>{}\[\],;'\"`|]+")   # a message's words: `(169.254.169.254)`, `169.254.169.254,`
 _SCHEDULED = {"trap", "at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's `via` for code run later
 # what every second reading of a line starts from (shell.analyse's `readings`): an expansion or substitution read as
 # empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
@@ -342,7 +344,8 @@ class Engine:
         writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
         mcp: the whole call without the text it only carries (_acted_on), each string in it with a `/` or `\\` also
         read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call;
-        harness (a coding agent's message to its own agents): only the URLs and bare network addresses in it, so the
+        harness (a coding agent's message to its own agents): only the URLs and bare network addresses in it (its words
+        split at spaces and punctuation, a bare IPv4 address also read as its canonical host, as a shell argv's is), so the
         rules that read a target for file names (TK-S004, TK-F005) don't read a prompt's prose as a file it opens. Each
         URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal, hex, octal or IPv6
         form reads as the address it is: of mcp, app and unknown tools, each URL in a string of what they act on."""
@@ -375,8 +378,11 @@ class Engine:
         if cls == "harness":   # a message to the agent's own agents: the addresses it names, not its file names
             strings = _strings(args)
             urls = [u for s in strings for u in _URL.findall(s)]
-            bare = [w for s in strings for w in s.split() if _BARE_ADDRESS.match(w)]
-            return list(dict.fromkeys(urls + [t for t in map(classes.url_target, urls) if t] + bare))
+            bare = list(dict.fromkeys(w for s in strings for w in _PROSE_SPLIT.split(s) if _BARE_ADDRESS.match(w)))
+            # a bare address's canonical host, without a scheme: TK-S001 reads it, and TK-F012 (egress, `://`) doesn't
+            # flag prose that only names a version (1.2.3 reads as an address)
+            hosts = [t[7:-1] for t in (classes.url_target("http://" + w) for w in bare) if t and _BARE_TARGET.fullmatch(t)]
+            return list(dict.fromkeys(urls + [t for t in map(classes.url_target, urls) if t] + bare + hosts))
         if cls not in ("mcp", "app", "unknown"):
             return []
         tool = fields.get("tool")
@@ -671,6 +677,12 @@ _PUSH_LONG = {"all": "all", "branches": "all", "mirror": "all", "delete": "", "p
               "set-upstream": "", "progress": "", "verify": "", "no-verify": "", "signed": "", "atomic": "",
               "ipv4": "", "ipv6": ""}
 _PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6": ""}   # and -o VALUE
+_REMOTE_PUSH = re.compile(r"remote\..+\.(?:push|mirror)")   # a config key, casefolded (its remote name keeps case)
+# gh api's method (-X PUT, -XPUT, --method PUT, --method=PUT), a branch field (-f branch=x, --field=branch=x) and the
+# contents API's path. lean: a method in a short-option cluster (-iXPUT) isn't read; read it if one is in use
+_GH_METHOD = re.compile(r"(?:-X|--method=?|--request=?)(.*)", re.S)
+_GH_BRANCH = re.compile(r"(?:-[fF]|--(?:raw-)?field=)?branch=(.*)", re.S)
+_GH_CONTENTS = re.compile(r"/?repos/[^/]+/[^/]+/contents/")
 
 
 def _git_push(argv):
@@ -679,16 +691,22 @@ def _git_push(argv):
     own options, `git -C dir push`), `git send-pack`, which names its refs as push does, `hub push` (hub runs git) and
     git-push or git-send-pack themselves. Held: a target of main or master (`main`, `HEAD:main`, `refs/heads/master`,
     `heads/main`, `:main`); one the line can't tell (no refspec, so push.default picks; HEAD, @ or origin/HEAD; an
-    expansion or a pattern); tags (--tags, --follow-tags, a refs/tags/ or tags/ refspec, `tag <name>`); every branch
-    (--all, --mirror, the `:` refspec); an option push doesn't take, or an ambiguous prefix, which git refuses
-    (send-pack's --stdin, whose refs come from its input, among them). A force or a delete is another rule's
-    (_PUSH_LONG).
+    expansion or a pattern, or a remote's push or mirror setting given with -c or --config-env); tags (--tags,
+    --follow-tags, a refs/tags/ or tags/ refspec, `tag <name>`); every branch (--all, --mirror, the `:` refspec); an
+    option push doesn't take, or an ambiguous prefix, which git refuses (send-pack's --stdin, whose refs come from its
+    input, among them). A force or a delete is another rule's (_PUSH_LONG).
     lean: a git alias (`git p`) or `git subtree push` isn't read, as TK-D003 doesn't read them; nor a tag pushed by its
     bare name (`git push origin v1.0`), which reads as a branch"""
-    name = argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe") if argv else ""
+    name = _program(argv)
+    why = []
     if name in ("git", "hub"):
         i = 1
         while i < len(argv) and argv[i].startswith("-"):
+            # a remote's push or mirror setting given for this run (`-c remote.origin.push=HEAD:main`) picks the target
+            value = argv[i + 1] if argv[i] in ("-c", "--config-env") and i + 1 < len(argv) else \
+                argv[i].removeprefix("--config-env=") if argv[i].startswith("--config-env=") else None
+            if value is not None and _REMOTE_PUSH.fullmatch(value.partition("=")[0].casefold()):
+                why.append("unknown " + value)
             i += 2 if argv[i] in _GIT_VALUED else 1
         if argv[i:i + 1] not in (["push"], ["send-pack"]):
             return None
@@ -697,7 +715,7 @@ def _git_push(argv):
         words = argv[1:]
     else:
         return None
-    why, positional, i = [], [], 0
+    positional, i = [], 0
     while i < len(words):
         w = words[i]
         i += 1
@@ -751,14 +769,43 @@ def _git_push(argv):
     return ["PUSH:" + w[:64] for w in why]   # what matters is the reason; a word is cut, so a subject stays short
 
 
+def _gh_api(argv):
+    """A gh or hub api call's argv percent-decoded, as GitHub reads its path (`git/refs/heads%2Fmain`), and
+    `PUSH:contents` when it puts or deletes a repository's file (repos/<o>/<r>/contents/…), which commits to the
+    default branch unless a branch field names another (one in an --input file isn't read, so that is held too)."""
+    words = [unquote(w) for w in argv]
+    method, branch = "", ""
+    for i, w in enumerate(words[2:], 2):
+        m = _GH_METHOD.fullmatch(w)
+        if m:
+            method = m[1] or (words[i + 1] if i + 1 < len(words) else "")
+        m = _GH_BRANCH.fullmatch(w)
+        if m:
+            branch = m[1]
+    out = [" ".join(words)]
+    if method.upper() in ("PUT", "DELETE") and branch.removeprefix("refs/heads/") in ("", "main", "master") and any(
+            _GH_CONTENTS.match(w) for w in words[2:]):
+        out.append("PUSH:contents " + method)
+    return out
+
+
 def _pushes(commands):
     """Each command's argv, as the `argv` field reads it, but a git push as what makes it need a person (_git_push):
-    one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master."""
+    one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master; a gh or hub
+    api call also percent-decoded (_gh_api)."""
     out = []
     for command in commands:
-        push = _git_push(command["argv"])
-        out += [" ".join(command["argv"])] if push is None else push
+        argv = command["argv"]
+        push = _git_push(argv)
+        out += push if push is not None else [" ".join(argv)]
+        if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
+            out += [s for s in _gh_api(argv) if s not in out]
     return out
+
+
+def _program(argv):
+    """The program an argv runs, by its file name, casefolded and without .exe."""
+    return argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe") if argv else ""
 
 
 _HISTORY = (".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")
