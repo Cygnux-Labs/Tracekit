@@ -250,6 +250,24 @@ def replay(steps, cap, post, r, w_rate):
     return usd, n, ctx
 
 
+def _dur(s):
+    """A duration in plain words, as the page writes one (its tipDur): "45 s", "5 min 29 s" (under 10 minutes, where the
+    seconds still matter), "42 min", "1 h 5 min"."""
+    s = round(s)
+    if s < 60:
+        return f"{s} s"
+    if s < 600:
+        return f"{s // 60} min" + (f" {s % 60} s" if s % 60 else "")
+    m = round(s / 60)
+    return f"{m} min" if m < 60 else f"{m // 60} h" + (f" {m % 60} min" if m % 60 else "")
+
+
+def _shown(path):
+    """A path as the page shows it: under the home folder as ~/..."""
+    home = os.path.expanduser("~")
+    return "~" + path[len(home):] if path == home or path.startswith(home.rstrip(os.sep) + os.sep) else path
+
+
 def _money(v):
     return f"${v:,.2f}" if v < 100 else f"${v:,.0f}"
 
@@ -335,7 +353,7 @@ def context_tip(agents):
                      f"{_k(cap)} is the largest compaction point that keeps {round(100 * NEAR_BEST)}% of the best "
                      "saving tried: compacting more often saves a little more and loses more detail.",
                      "Not counted: work redone when a summary drops a detail."
-                     + (f" Time: above {_k(cap)} a step took a median {slower:.1f}s longer to answer, "
+                     + (f" Time: above {_k(cap)} a step took a median {slower:.1f} s longer to answer, "
                         f"{len(above):,} steps." if slower is not None else " Time: not measured (too few timed steps).")]
                + ([f"No price for {', '.join(sorted(unpriced))}: those agents are left out."] if unpriced else []),
                fix={"text": f"Run /compact with a one-line focus at each task boundary (a PR merged, a release tagged), "
@@ -426,7 +444,7 @@ def cache_tip(agents, calls, held=()):
                      "A step that wrote at least half its context to cache after a wait longer than that rebuilt it: "
                      f"{len(waits)} did, {len(fix)} while blocked on a call that outlived the cache, {idle} after "
                      "sitting idle (a person away, a subagent resumed later), which no poll would have kept."]
-               + ([f"The largest: {big['agent']} waited {big['s'] // 60}m{big['s'] % 60:02d}s, then wrote "
+               + ([f"The largest: {big['agent']} waited {_dur(big['s'])}, then wrote "
                    f"{_k(big['tokens'])} tokens to cache: {_money(big['usd'])}.",
                    f"Polling instead, each wait split into calls of at most {(lives[0] - MARGIN) / 60:g} minutes: every "
                    f"extra poll re-reads the context (a cache read) and writes about {POLL_OUT} output tokens; a held "
@@ -478,7 +496,7 @@ def holds_tip(holds, calls, signed):
                       + (f", {sub_open} in subagents nobody watches" if sub_open else "")) if open_ else
                "Every held call was answered",
                line=(f"Tracekit held {len(holds)} call{'s' * (len(holds) != 1)} for a person; {len(open_)} never got an "
-                     "answer" + (f" and blocked the agent for {round(blocked / 60)} min in all." if waited else
+                     "answer" + (f" and blocked the agent for {_dur(blocked)} in all." if waited else
                                  ", and the agent went on without them.") if open_ else
                      f"Tracekit held {len(holds)} call{'s' * (len(holds) != 1)} for a person and each was answered."),
                saving={"usd": None, "minutes": round(blocked / 60) if waited else None},
@@ -487,10 +505,10 @@ def holds_tip(holds, calls, signed):
                       for i, n in rules.most_common(6)],
                math=[f"Held calls: {len(holds)} signed decisions `ask` in the window; {len(holds) - len(open_)} answered "
                      f"(a signed approval or rejection), {len(open_)} never."]
-               + ([f"In the main session a person answered in a median {statistics.median(answered):.0f}s "
+               + ([f"In the main session a person answered in a median {_dur(statistics.median(answered))} "
                    f"({len(answered)} answered)."] if answered else [])
                + [f"Time blocked: each held call's tool_use to its tool_result in the transcript, joined by tool_use_id: "
-                  f"{len(waited)} of {len(holds)} joined; {round(blocked / 60)} min on the ones nobody answered."
+                  f"{len(waited)} of {len(holds)} joined; {_dur(blocked)} on the ones nobody answered."
                   if waited else "Time blocked: no transcript holds these calls, so how long each one waited isn't known.",
                   "Where each ran: the transcript that holds its call (a subagent's file), else the record's agent; a "
                   "Claude Code run's records decide a subagent's calls under the session's run."],
@@ -515,7 +533,8 @@ def build(rows, root=None, now=None):
         ({}, {}, 0, [])
     holds = held_calls(rows, since)
     every = list(signed.values()) + list(agents.values())
-    return {"window": [since, now], "prices": PRICES["as_of"], "root": root if root and os.path.isdir(root) else None,
+    return {"window": [since, now], "prices": PRICES["as_of"],
+            "root": _shown(root) if root and os.path.isdir(root) else None,
             "sources": {"signed": {"agents": len(signed), "steps": sum(len(a["steps"]) for a in signed.values()),
                                    "records": sum(r.get("tk_seq") is not None for r in rows),
                                    "holds": len(holds)},

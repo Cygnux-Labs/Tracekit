@@ -176,7 +176,9 @@ class Holds(unittest.TestCase):
                                        "remedy": ""}])
         self.assertEqual(t["saving"], {"usd": None, "minutes": 8})
         self.assertEqual(t["fix"]["copy"], "unset TRACEKIT_APPROVAL_WAIT")   # it waited: nobody answers there
-        self.assertIn("a person answered in a median 4s", " ".join(t["math"]))
+        self.assertIn("a person answered in a median 4 s", " ".join(t["math"]))
+        self.assertIn("8 min on the ones nobody answered", " ".join(t["math"]))
+        self.assertTrue(t["line"].endswith("blocked the agent for 8 min in all."), t["line"])
 
     def test_without_a_transcript_the_wait_is_not_known_and_the_rule_is_named(self):
         t = tips.build(rows(*self.RECS), None, NOW)["tips"][2]
@@ -226,6 +228,19 @@ class Sources(unittest.TestCase):
         out = tips.build([], root, NOW)
         self.assertEqual(out["sources"]["transcripts"]["steps"], 2)
 
+    def test_durations_read_as_plain_words(self):
+        """A wait read 5m29s and a saving 8m00: words a person reads at a glance, with seconds only under 10 minutes."""
+        self.assertEqual([tips._dur(s) for s in (45, 329, 480, 2520, 3600, 3900, 7200)],
+                         ["45 s", "5 min 29 s", "8 min", "42 min", "1 h", "1 h 5 min", "2 h"])
+
+    def test_the_transcripts_folder_under_home_reads_as_tilde(self):
+        root = tmp(self)
+        os.makedirs(os.path.join(root, ".claude", "projects"))
+        with mock.patch.dict(os.environ, {"HOME": root}):
+            self.assertEqual(tips.build([], os.path.join(root, ".claude", "projects"), NOW)["root"], "~/.claude/projects")
+        self.assertEqual(tips._shown("/srv/transcripts"), "/srv/transcripts")
+        self.assertEqual(tips._shown(root + "x/p"), root + "x/p")   # a sibling of home is not under it
+
     def test_with_nothing_to_read_every_tip_says_why(self):
         out = tips.build([], None, NOW)
         self.assertEqual([t["ok"] for t in out["tips"]], [False, False, False])
@@ -267,7 +282,7 @@ class Api(unittest.TestCase):
 
 
 class Page(unittest.TestCase):
-    NAMES = ["esc", "fmtT", "fmtD", "fmtDur", "TZ", "plural", "cp", "tipTicks", "tipTok", "tipUsd", "contextChart",
+    NAMES = ["esc", "fmtT", "fmtD", "tipDur", "TZ", "plural", "cp", "tipTicks", "tipTok", "tipUsd", "contextChart",
              "cacheChart", "tipBar", "tipBins", "tipEvidence", "TIPNAME", "TIPFROM", "TIPTIME", "tipCard"]
 
     def setUp(self):
@@ -285,6 +300,18 @@ class Page(unittest.TestCase):
         self.assertIn(f'<polyline class="tact" points="52.0,{y(100)} 658.0,{y(200)}"/>', svg)
         self.assertIn(f'<polyline class="tsim" points="52.0,{y(100)} 658.0,{y(50)}"/>', svg)
         self.assertIn("compacted itself at 200 tokens", svg)
+
+    def test_the_page_writes_durations_in_plain_words(self):
+        out = json.loads(page_js(self.NAMES, """process.stdout.write(JSON.stringify([
+            [45, 329, 480, 2520, 3600, 3900, 7200].map(tipDur),
+            [8, 42, 65].map(m => tipCard({id: "holds", ok: true, source: "signed", title: "t", line: "l", rules: [],
+              where: [{where: "subagents", answered: 0, open: 1, blocked_s: m * 60, joined: 1}],
+              saving: {usd: null, minutes: m}, math: [], fix: null}, 2, 7))]))"""))
+        self.assertEqual(out[0], ["45 s", "5 min 29 s", "8 min", "42 min", "1 h", "1 h 5 min", "2 h"])
+        for card, words in zip(out[1], ("8 min", "42 min", "1 h 5 min")):
+            self.assertIn(f"about {words}</b>", card)
+            self.assertIn(f"blocked {words}", card)
+            self.assertNotRegex(card, r"\d+m\d\d")
 
     def test_the_page_asks_for_tips_only_when_its_snapshot_says_it_has_them(self):
         """A link opened TIPS on a sign-in's page: its /api/tips 403 would end the page's session."""

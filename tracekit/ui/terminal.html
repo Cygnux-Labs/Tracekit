@@ -3960,6 +3960,14 @@
       for (let k = 0; k * step <= hi * 1.0001; k++) out.push(+(k * step).toPrecision(12));
       return out;
     }
+    // a duration in plain words: "45 s", "5 min 29 s" (under 10 minutes, where the seconds still matter), "42 min", "1 h 5 min"
+    function tipDur(s) {
+      s = Math.round(s);
+      if (s < 60) return s + " s";
+      if (s < 600) return Math.floor(s / 60) + " min" + (s % 60 ? " " + (s % 60) + " s" : "");
+      const m = Math.round(s / 60);
+      return m < 60 ? m + " min" : Math.floor(m / 60) + " h" + (m % 60 ? " " + (m % 60) + " min" : "");
+    }
     const tipTok = n => n >= 1e6 ? +(n / 1e6).toFixed(2) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(Math.round(n));
     const tipUsd = v => v == null ? "–" : v >= 100 ? "$" + Math.round(v).toLocaleString("en-US") : v >= 1 ? "$" + v.toFixed(2) : "$" + v.toFixed(v >= 0.01 ? 3 : 4);
     // tip 1: the session's context at each step as it ran (amber; the area under it is what re-reading it cost) and
@@ -3986,7 +3994,7 @@
       return `<svg class="tchart" viewBox="0 0 ${esc(W)} ${esc(H)}" role="img" aria-label="${esc(`${t.waits.length} waits that outlived the prompt cache, by when they began and what the rebuild after each cost`)}">`
         + tipTicks(top).map(v => `<line class="tgrid" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(v)))}" y2="${esc(f(Y(v)))}"/><text x="${esc(L - 6)}" y="${esc(f(Y(v) + 3))}" text-anchor="end">${esc(tipUsd(v))}</text>`).join("")
         + [0, .25, .5, .75, 1].map(k => `<text x="${esc(f(X(t0 + k * span)))}" y="${esc(H - B + 14)}" text-anchor="${esc(k ? k === 1 ? "end" : "middle" : "start")}">${esc(lab(t0 + k * span))}</text>`).join("")
-        + [...t.waits].sort((a, b) => a.fix - b.fix).map(w => `<line class="tstem${w.fix ? "" : " tidle"}" x1="${esc(f(X(w.t)))}" x2="${esc(f(X(w.t)))}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(w.usd)))}"/><circle class="tdot${w.fix ? "" : " tidle"}" cx="${esc(f(X(w.t)))}" cy="${esc(f(Y(w.usd)))}" r="3.5"><title>${esc(`${fmtD(w.t)} ${fmtT(w.t)} ${TZ} · ${w.agent} · waited ${fmtDur(w.s)} (its cache lasts ${w.life / 60} min) · wrote ${tipTok(w.tokens)} tokens again: ${tipUsd(w.usd)}${w.fix ? ` (polling: ${tipUsd(w.alt)})` : ""} · ${w.cause}`)}</title></circle>`).join("")
+        + [...t.waits].sort((a, b) => a.fix - b.fix).map(w => `<line class="tstem${w.fix ? "" : " tidle"}" x1="${esc(f(X(w.t)))}" x2="${esc(f(X(w.t)))}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(w.usd)))}"/><circle class="tdot${w.fix ? "" : " tidle"}" cx="${esc(f(X(w.t)))}" cy="${esc(f(Y(w.usd)))}" r="3.5"><title>${esc(`${fmtD(w.t)} ${fmtT(w.t)} ${TZ} · ${w.agent} · waited ${tipDur(w.s)} (its cache lasts ${w.life / 60} min) · wrote ${tipTok(w.tokens)} tokens again: ${tipUsd(w.usd)}${w.fix ? ` (polling: ${tipUsd(w.alt)})` : ""} · ${w.cause}`)}</title></circle>`).join("")
         + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="${esc(L - 6)}" y="${esc(T - 4)}" text-anchor="end">REBUILD</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">${esc(TZ)}</text></svg>`;
     }
     const tipBar = (rows, key) => `<div class="tbars">` + rows.map(([label, parts, text]) => `<span>${esc(label)}</span><div class="tbar">` + parts.map(([w, cls, title]) => `<span class="${esc(cls)}" style="width:${esc((100 * w).toFixed(2))}%" title="${esc(title)}"></span>`).join("") + `</div><span class="dim">${esc(text)}</span>`).join("") + `</div>` + (key || "");
@@ -3999,11 +4007,11 @@
         + t.caps.map(c => `<tr${c.cap === t.cap ? ' class="on"' : ""}><td>${esc(tipTok(c.cap))}</td><td>${esc(c.compactions.toLocaleString("en-US"))}</td><td>${esc(tipUsd(c.usd))}</td></tr>`).join("") + `</tbody></table></details>`;
       if (t.id === "cache") return `<div class="tkey"><span><i style="--c:var(--amber)"></i>blocked on a call: a bounded poll keeps the cache</span><span><i style="--c:var(--faint)"></i>idle: a person away, a subagent resumed later</span></div>`
         + cacheChart(t) + (t.causes.length ? `<table class="wt"><thead><tr><th>BLOCKED ON</th><th>WAITS</th><th>TIME</th><th>REBUILDS COST</th><th>POLLING INSTEAD</th></tr></thead><tbody>`
-          + t.causes.slice(0, 6).map(c => `<tr><td>${esc(c.cause)}</td><td>${esc(c.n)}</td><td>${esc(fmtDur(c.hours * 3600))}</td><td>${esc(tipUsd(c.usd))}</td><td>${esc(tipUsd(c.alt))}</td></tr>`).join("")
+          + t.causes.slice(0, 6).map(c => `<tr><td>${esc(c.cause)}</td><td>${esc(c.n)}</td><td>${esc(tipDur(c.hours * 3600))}</td><td>${esc(tipUsd(c.usd))}</td><td>${esc(tipUsd(c.alt))}</td></tr>`).join("")
           + `</tbody></table>` + (t.causes.length > 6 ? `<div class="dim">${esc(`and ${plural(t.causes.length - 6, "more cause")}: ${t.causes.slice(6).map(c => c.cause).join(", ")}`)}</div>` : "") : "") + tipBins(t);
       const most = Math.max(...t.where.map(w => w.answered + w.open));
       return tipBar(t.where.map(w => [w.where.toUpperCase(), [[w.answered / most, "tok", "answered"], [w.open / most, "", "nobody answered"]],
-        `${w.answered} answered · ${w.open} nobody answered` + (w.joined ? ` · blocked ${fmtDur(w.blocked_s)}` : "")]),
+        `${w.answered} answered · ${w.open} nobody answered` + (w.joined ? ` · blocked ${tipDur(w.blocked_s)}` : "")]),
         `<div class="tkey"><span><i style="--c:var(--green)"></i>answered</span><span><i style="--c:var(--amber)"></i>nobody answered</span></div>`)
         + (t.rules.length ? `<table class="wt"><thead><tr><th>RULE</th><th>NOBODY ANSWERED</th><th>WHY IT HOLDS</th></tr></thead><tbody>` + t.rules.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.n)}</td><td>${esc(r.reason)}</td></tr>`).join("") + `</tbody></table>` : "");
     }
@@ -4016,7 +4024,7 @@
       const sv = t.saving || {};
       return `<section class="tcard">` + head + `<h3>${esc(t.title)}</h3><div class="tst">${esc(t.line)}</div>` + tipEvidence(t)
         + `<div class="tsave">` + (sv.usd != null ? `<span>SAVES<b class="${sv.usd > 0 ? "" : "tzero"}">${esc(tipUsd(sv.usd))}</b>${esc(`in ${plural(days, "day")}` + (sv.pct ? `, ${sv.pct}% of these sessions' input side` : ""))}</span>` : "")
-        + `<span>TIME<b class="${sv.minutes ? "" : "tzero"}">${esc(sv.minutes == null ? "not measured" : sv.minutes ? "about " + fmtDur(sv.minutes * 60) : "none")}</b>${esc(TIPTIME[t.id] || "")}</span></div>`
+        + `<span>TIME<b class="${sv.minutes ? "" : "tzero"}">${esc(sv.minutes == null ? "not measured" : sv.minutes ? "about " + tipDur(sv.minutes * 60) : "none")}</b>${esc(TIPTIME[t.id] || "")}</span></div>`
         + `<details class="tmath"><summary>THE ARITHMETIC</summary><ol>` + t.math.map(m => `<li>${esc(m)}</li>`).join("") + `</ol></details>`
         + (t.fix ? `<div class="tfix"><div class="tsrc">THE FIX</div><div>${esc(t.fix.text)}${t.id === "holds" ? ' <button type="button" class="cp" data-page="approvals">APPROVALS</button>' : ""}</div>` + (t.fix.copy ? `<div><code class="shell">${esc(t.fix.copy)}</code>` + cp(t.fix.copy) + `</div>` : "") + `</div>` : "") + `</section>`;
     }
