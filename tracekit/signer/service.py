@@ -575,13 +575,18 @@ def _snapshot_key(keys):
 
 def _secret(path, make, size=32):
     """The `size`-byte secret in `path`, created (0600) on first use. Called under the storage lock, so never by two
-    signers. A file of another size stops the start: a key is never used cut short."""
+    signers (dev init makes keys/log.key outside it, so one made meanwhile is used). A file of another size stops the
+    start: a key is never used cut short."""
     try:
         with open(path, "rb") as f:
             data = f.read()
     except FileNotFoundError:
         data = make()
-        _write_new(path, data)
+        try:
+            _write_new(path, data)
+        except FileExistsError:   # made meanwhile, whole (linked once written): `tracekit init --dev --v2`'s log key
+            with open(path, "rb") as f:
+                data = f.read()
     if len(data) != size:
         raise ValueError(f"{path} holds {len(data)} bytes, not a {size}-byte key: restore it from a backup")
     logkey.mlock(data)
@@ -1112,7 +1117,7 @@ class SignerService:
         for t in asks:   # one that has not answered by then counts as no answer
             t.join(max(0.0, end - time.monotonic()))
         heads = list(heads)   # a late answer goes to the list the threads hold, not this copy
-        files.write(self.data_dir, WITNESSED, json.dumps({name: h[0] for name, h in heads}).encode("ascii"), 0o644)
+        files.write_json(os.path.join(self.data_dir, WITNESSED), {name: h[0] for name, h in heads}, 0o644)
         if not heads:
             self.log.write(lambda tx: tx.gap("degraded_unanchored", "no configured witness answered at startup"))
             return
@@ -4872,7 +4877,8 @@ def open_dev():
     """Construct the same-user signer with its default public witness and short startup allowance."""
     data_dir = dev_data_dir()
     return SignerService(data_dir, isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
-                         witnesses=dev_witnesses(data_dir), witness_start_s=DEV_WITNESS_START_S,
+                         witnesses=[TlogWitness(w["url"], w["vkey"]) for w in dev_witnesses(data_dir)],
+                         witness_start_s=DEV_WITNESS_START_S,
                          grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
 
 

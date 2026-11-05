@@ -644,13 +644,14 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     except checkpoint.NoteError as e:
         rep.check("checkpoint", False, str(e))
         return
-    key = next((k for k in trust["logs"] if checkpoint.parse_vkey(k)[0] == origin), None)
-    rep.log_fingerprint = hashlib.sha256(checkpoint.parse_vkey(key)[3]).hexdigest() if key else None
+    key = next((k for k in trust["logs"] if checkpoint.parse_vkey(k)[0::2] == (origin, checkpoint.ED25519)), None)
+    rep.log_fingerprint = key and hashlib.sha256(checkpoint.parse_vkey(key)[3]).hexdigest()   # as `init` prints it
     rep.check("checkpoint", size == proofs["tree_size"], f"{origin} at tree size {size}, signed by its pinned log key"
               + ("" if size == proofs["tree_size"] else ", but the proofs are for another tree size"))
     rep.check("witness quorum", len(cosigs) >= trust["witnesses_required"],
               f"{len(cosigs)} pinned cosignature(s), {trust['witnesses_required']} required")
     anchors = _anchor(rep, files, trust, files[name], origin, size)
+    rep.not_anchored = _level(cosigs, witnesses, trust, anchors) != "witnessed"   # whatever the run's approvals
     monitored = _monitor(rep, trust, monitor_reports, origin, size, root)
 
     def included(record):

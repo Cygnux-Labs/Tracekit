@@ -597,7 +597,8 @@ class OnTheDevPolicy(HarnessCase):
 class Installer(unittest.TestCase):
     def setUp(self):
         home = ac.tmpdir(self)
-        env = mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data")})
+        env = mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                           "LOCALAPPDATA": os.path.join(home, "data")})   # init makes the dev log key
         env.start()
         self.addCleanup(env.stop)
         agent = mock.patch.object(claude_code, "AGENT", claude_code.AGENT)   # the in-process hooks below set it
@@ -629,7 +630,7 @@ class Installer(unittest.TestCase):
                                                                                (harness, ev))
                                                     for ev in ("tool.execute.before", "tool.execute.after")})
                         again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
-                        self.assertIn(f"v2 {harness} hooks: {path}", again)
+                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
                         code, out = self.cli("uninstall", "--agent", harness, "--project")
                         self.assertEqual(code, 0)
                         self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
@@ -656,7 +657,7 @@ class Installer(unittest.TestCase):
                         self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                         self.assertIn(harness_hooks.__name__, cmd)
                         again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
-                        self.assertIn(f"v2 {harness} hooks: {path}", again)   # idempotent: nothing replaced
+                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")   # idempotent: nothing replaced
                         code, out = self.cli("uninstall", "--agent", harness, "--project")
                         self.assertEqual(code, 0)
                         self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
@@ -684,7 +685,7 @@ class Installer(unittest.TestCase):
                         self.assertEqual({ev for ev, hs in blob["hooks"].items() for h in hs if h["failClosed"]},
                                          {"preToolUse"})
                     again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
-                    self.assertIn(f"v2 {harness} hooks: {path}", again)   # idempotent: nothing replaced
+                    self.assertEqual(again[0], f"v2 {harness} hooks: {path}")   # idempotent: nothing replaced
                     if harness == "codex":   # init turned Codex's reasoning summaries on, once
                         self.assertNotIn("set by init", again[1])
                     code, out = self.cli("uninstall", "--agent", harness, "--project")
@@ -934,7 +935,8 @@ class CodexReasoningSummary(unittest.TestCase):
     def setUp(self):
         self.d = ac.tmpdir(self)
         self.home = ac.tmpdir(self)
-        env = mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": os.path.join(self.home, "data")})
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": os.path.join(self.home, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.home, "data")})   # init makes the dev log key
         env.start()
         self.addCleanup(env.stop)
         self.hooks = os.path.join(self.d, ".codex", "hooks.json")

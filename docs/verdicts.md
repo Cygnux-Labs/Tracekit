@@ -8,13 +8,20 @@ record is proof against the agent. A dev signer's bundle:
 VERIFIED: 3 tool calls in 11 signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could rewrite it unseen (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: <64 hex digits>.
 ```
 
 A signer the agent can't reach says `PROOF AGAINST THE AGENT: the signing key was out of the agent's reach
-(separate-user).`, then whether an independent witness cosigned the log too. It says so only when something outside the
-bundle vouches for the signing key: always for a v2 bundle (your trust file pins it), and for a v1 bundle only with
-`--key` or `--witness`. Without them a v1 bundle prints `NOT SHOWN: nothing outside the bundle vouches for the signing
-key. Pin it with --key, or use a witness.` With several runs, the weakest isolation counts.
+(separate-user).`, then `An independent witness cosigned the log too.` when one did. It says so only when something
+outside the bundle vouches for the signing key: always for a v2 bundle (your trust file pins it), and for a v1 bundle
+only with `--key` or `--witness`. Without them a v1 bundle prints `NOT SHOWN: nothing outside the bundle vouches for the
+signing key. Pin it with --key, or use a witness.` With several runs, the weakest isolation counts.
+
+A v2 bundle that no pinned independent witness or Rekor anchor cosigned also says `NOT ANCHORED`: whoever holds the log
+key could rewrite the log and re-sign it, and the bundle would still verify ([witnesses](witnesses.md)). The last line
+is the SHA-256 of the pinned log key, the same fingerprint `tracekit init --dev --v2` and `tracekit up --wait` print, so
+you can check the trust file pins the key you expect.
 
 The counts are of what was signed: the tool calls the records name, in that many signed records. A verified bundle shows
 that what was signed is intact, not that every call was captured. `none changed, removed or added` is said only when no

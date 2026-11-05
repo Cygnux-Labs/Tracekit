@@ -362,9 +362,9 @@ class OptIn(unittest.TestCase):
 
     def test_the_shortcut_and_init_error_clearly_until_deployed(self):
         with mock.patch.object(public_witness, "URL", ""):
-            with self.assertRaisesRegex(ValueError, "witnesses: public: the public witness isn't configured yet"):
+            with self.assertRaisesRegex(ValueError, "witnesses: public: the public witness is not deployed yet"):
                 svc.load_config(self.cfg)
-            with self.assertRaisesRegex(SystemExit, "--public-witness: the public witness isn't configured yet"):
+            with self.assertRaisesRegex(SystemExit, "--public-witness: the public witness is not deployed yet"):
                 install.init_system_v2("agent", public_witness=True)
 
     def test_dev_witness_defaults_on_and_the_marker_disables_it(self):
@@ -379,6 +379,23 @@ class OptIn(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(data, svc.NO_WITNESS)))
         self.assertEqual(len(svc.dev_witnesses(data)), 1)
 
+    def test_the_dev_signer_is_cosigned_by_the_public_witness_by_default(self):
+        """The dev signer gets the witness's client, as a signer.yaml's signer does, not its signer.yaml entry."""
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        with mock.patch.object(svc, "dev_data_dir", return_value=data):
+            s = svc.open_dev()
+        self.addCleanup(s.close)
+        with open(os.path.join(data, svc.WITNESSED), encoding="ascii") as f:
+            self.assertEqual(json.load(f), {NAME: 0})   # it answered at start: a new log, registered then
+        self.assertEqual(cli._dev_anchoring(data)[1], "public witness: on (at the signer's last start it held this log "
+                                                      "at size 0)")
+        s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        s.checkpoint()
+        self.assertTrue(wait_for(lambda: f"— {NAME} " in (s.log.storage.checkpoint_latest(RECORDS) or (0, ""))[1], 5))
+        svc.set_dev_witness(True, data)
+        self.assertEqual(cli._dev_anchoring(data)[1], public_witness.LOST)
+
     def test_dev_signer_config_and_startup_status_use_the_same_witness_setting(self):
         data = os.path.join(self.dir, "dev")
         os.makedirs(data)
@@ -386,7 +403,8 @@ class OptIn(unittest.TestCase):
             self.assertEqual(svc.signer_config(None)["witnesses"][0]["vkey"], public_witness.VKEY)
         with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
             json.dump({public_witness.VKEY.split("+")[0]: 7}, f)
-        self.assertEqual(cli._dev_witness_status(data), "public witness: cosigned through size 7")
+        self.assertEqual(cli._dev_anchoring(data)[1], "public witness: on (at the signer's last start it held this log "
+                                                      "at size 7)")
 
     def test_the_shortcut_refuses_an_origin_the_witness_does_not_take(self):
         with open(self.cfg, "w") as f:
@@ -394,14 +412,24 @@ class OptIn(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "origin: the public witness takes origins shaped host/path"):
             svc.load_config(self.cfg)
 
+    def test_no_witness_goes_with_v2_and_not_with_public_witness(self):
+        for argv in (["init", "--no-witness"], ["init", "--v2", "--user", "agent", "--public-witness", "--no-witness"]):
+            with self.subTest(argv), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(cli.main(argv), 2)
+                self.assertIn("--no-witness goes with --v2, without --public-witness", err.getvalue())
+
     @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
     def test_init_v2_writes_the_shortcut(self):
+        """Once the witness is configured, by default; never with --no-witness, nor while it is not."""
         import types
         agent = types.SimpleNamespace(pw_uid=64101, pw_gid=64101, pw_name="agent", pw_dir="/home/agent")
         with open(self.cfg, "w") as f:
             f.write(install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102))
         self.assertEqual(svc.load_config(self.cfg)["witnesses"][0]["class"], "public")
-        self.assertEqual(svc.load_config(self.cfg)["witnesses"][0]["class"], "public")
+        self.assertNotIn("witnesses", install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102,
+                                                             public_witness=False))
+        with mock.patch.object(public_witness, "URL", ""):
+            self.assertNotIn("witnesses", install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102))
 
 
 if __name__ == "__main__":

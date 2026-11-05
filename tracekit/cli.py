@@ -29,23 +29,9 @@ def guidance():
             f"at {wiki_url('docs/coding-agents.md', 'when-tracekit-stops-a-call')} into its CLAUDE.md or AGENTS.md")
 
 
-def _dev_witness_status(data_dir):
-    from . import public_witness
-    from .signer.service import WITNESSED, NO_WITNESS
-    if os.path.exists(os.path.join(data_dir, NO_WITNESS)):
-        return public_witness.LOST
-    if not public_witness.configured():
-        return public_witness.NOT_CONFIGURED
-    try:
-        with open(os.path.join(data_dir, WITNESSED), encoding="ascii") as f:
-            heard = json.load(f)
-    except (OSError, ValueError):
-        heard = {}
-    name = public_witness.entry()["vkey"].split("+")[0]
-    return f"public witness: cosigned through size {heard[name]}" if name in heard else "public witness: not yet answered"
-
-
 def _dev_key_fingerprint(data_dir):
+    """The SHA-256 of the dev signer's log key (`tracekit verify` prints it for the key a trust file pins), made here
+    when no signer made it yet, so init can print the key the signer will use without opening its store."""
     import hashlib
     from . import crypto
     from .signer import service
@@ -63,19 +49,38 @@ def _dev_key_fingerprint(data_dir):
                 secret = f.read()
     if len(secret) != 32:
         raise ValueError(f"{path} is not a 32-byte log key")
-    public = crypto.public_from_secret(secret)
-    return f"SHA-256 fingerprint: {hashlib.sha256(public).hexdigest()}"
+    return hashlib.sha256(crypto.public_from_secret(secret)).hexdigest()
+
+
+def _dev_anchoring(data_dir):
+    """The lines `init --dev --v2` and `up --wait` print: the dev signer's log key, and whether a witness anchors its
+    log (data_dir/witnessed.json: what each witness held at the signer's last start)."""
+    from . import public_witness
+    from .signer.service import WITNESSED, NO_WITNESS
+    try:
+        key = f"log key SHA-256 fingerprint: {_dev_key_fingerprint(data_dir)}"
+    except (OSError, ValueError):
+        key = "start the signer with `tracekit up --wait` to see its log key"
+    if os.path.exists(os.path.join(data_dir, NO_WITNESS)):
+        return [key, public_witness.LOST]
+    if not public_witness.configured():
+        return [key, public_witness.NOT_CONFIGURED]
+    try:
+        with open(os.path.join(data_dir, WITNESSED), encoding="ascii") as f:
+            heard = json.load(f)
+    except (OSError, ValueError):
+        heard = {}
+    name = public_witness.VKEY.split("+")[0]
+    return [key, f"public witness: on (at the signer's last start it held this log at size {heard[name]})"
+            if name in heard else "public witness: on (it has not answered the signer yet)"]
 
 
 def _init_dev_witness(disabled):
+    """`tracekit init --dev --v2`: set or clear the dev signer's witness opt-out; returns _dev_anchoring's lines."""
     from .signer.service import dev_data_dir, set_dev_witness
     data_dir = dev_data_dir()
     set_dev_witness(disabled, data_dir)
-    try:
-        print(_dev_key_fingerprint(data_dir))
-    except (OSError, ValueError):
-        print("start the signer with `tracekit up` to see its key")
-    return _dev_witness_status(data_dir)
+    return _dev_anchoring(data_dir)
 
 
 def experimental(what, help=False):
@@ -170,7 +175,9 @@ def main(argv=None):
     p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
                                                                  f"the signer's logs ({wiki_url('docs/witnesses.md')}; it sees origins, "
                                                                  "sizes, roots and timing, never content)")
-    p.add_argument("--no-witness", action="store_true", help="with --v2 --dev: disable the configured public witness")
+    p.add_argument("--no-witness", action="store_true", help="with --v2: no public witness, the default once it is "
+                                                             "deployed (whoever holds the signing key can then rewrite "
+                                                             "the log unseen)")
     p.add_argument("--egress", action="store_true", help="with --v2, system mode on Linux: the agent user's outside "
                                                          "traffic only through a local egress observer (an owner-match "
                                                          f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
@@ -212,7 +219,8 @@ def main(argv=None):
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
     p = sub.add_parser("up", help="find or start the same-user v2 dev signer")
     p.add_argument("--wait", action="store_true", help="return once it answers")
-    p.add_argument("--no-witness", action="store_true", help="disable the configured public witness for this dev signer")
+    p.add_argument("--no-witness", action="store_true", help="no public witness for the dev signer (restarts it; "
+                                                             "init --dev --v2 turns it back on)")
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
@@ -541,8 +549,8 @@ def _run(a):
             print("tracekit: --home, --witness, --proxy, --fail-closed and --signer-cmd are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
-        if a.no_witness and not (a.v2 and a.dev):
-            print("tracekit: --no-witness goes with --dev --v2", file=sys.stderr)
+        if a.no_witness and (a.public_witness or not a.v2):
+            print("tracekit: --no-witness goes with --v2, without --public-witness", file=sys.stderr)
             return 2
         if (a.approver or a.policy or a.public_witness or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
             print("tracekit: --approver, --policy, --public-witness, --egress and --harness with --v2 are for --v2 "
@@ -555,7 +563,8 @@ def _run(a):
             try:
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
-                                                        a.allow_privileged, a.agent, a.harness, a.public_witness,
+                                                        a.allow_privileged, a.agent, a.harness,
+                                                        a.public_witness or (False if a.no_witness else None),
                                                         a.egress, not a.no_thinking_summaries, a.managed, a.managed_only)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
@@ -566,8 +575,8 @@ def _run(a):
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
             from . import public_witness
-            if not a.public_witness and not public_witness.configured():
-                print(public_witness.NOT_CONFIGURED)
+            if a.no_witness or not public_witness.configured():
+                print(public_witness.LOST if a.no_witness else public_witness.NOT_CONFIGURED)
             if settings:
                 print(guidance())
             if settings and a.agent == "codex":
@@ -579,7 +588,7 @@ def _run(a):
             if not _signer_extra():
                 return 2
             try:
-                witness_status = _init_dev_witness(a.no_witness)
+                anchoring = _init_dev_witness(a.no_witness)
                 path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
                 summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
             except install.SettingsError as e:
@@ -587,7 +596,7 @@ def _run(a):
                 return 1
             print(f"v2 {a.agent} hooks:", path or "not installed")
             print(install.DEV_MODE_LINE)
-            print(witness_status)
+            print(*anchoring, sep="\n")
             if summary:
                 print(agent_hooks.reasoning_line(*summary))
             if path:
@@ -617,7 +626,7 @@ def _run(a):
                 if not _signer_extra():
                     return 2
                 from .signer.service import dev_data_dir
-                witness_status = _init_dev_witness(a.no_witness)
+                anchoring = _init_dev_witness(a.no_witness)
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
                 plugin = hooks and install.plugin_enabled()
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
@@ -627,7 +636,7 @@ def _run(a):
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
                           f"/plugin disable {plugin_key}, then run init again")
                     print(install.DEV_MODE_LINE)
-                    print(witness_status)
+                    print(*anchoring, sep="\n")
                     if not a.no_thinking_summaries:
                         try:
                             print(install.thinking_line(hooks, install.thinking_on(hooks)))
@@ -649,7 +658,7 @@ def _run(a):
                     return 1
                 print("v2 hooks:", hooks or "not installed")
                 print(install.DEV_MODE_LINE)
-                print(witness_status)
+                print(*anchoring, sep="\n")
                 if hooks and not a.no_thinking_summaries:
                     print(install.thinking_line(hooks, on))
                 if hooks:
@@ -716,9 +725,8 @@ def _run(a):
             print(f"dev signer {hello['version']} running (pid {hello['pid']})" if hello else "dev signer starting")
             print(install.DEV_MODE_LINE)
             if a.wait:
-                print(_dev_witness_status(dev_data_dir()))
-                print(_dev_key_fingerprint(dev_data_dir()))
-            if a.no_witness:
+                print(*_dev_anchoring(dev_data_dir()), sep="\n")
+            elif a.no_witness:
                 print(public_witness.LOST)
         return 0
     if a.cmd == "down":

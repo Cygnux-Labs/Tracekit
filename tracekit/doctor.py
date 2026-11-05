@@ -1096,7 +1096,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
         if prod else (f"the dev witness is disabled: remove {os.path.join(data, service.NO_WITNESS)} or run tracekit init --dev --v2"
                       if os.path.exists(os.path.join(data, service.NO_WITNESS)) else
-                      f"the public witness is not configured: {wiki_url('docs/public-witness.md')}"),
+                      f"the public witness, the dev signer's default, is not deployed yet "
+                      f"({wiki_url('docs/witnesses.md', 'the-public-witness')})"),
         bad=sev)
     if ws:
         operator = all(w["class"] == "operator" for w in ws)

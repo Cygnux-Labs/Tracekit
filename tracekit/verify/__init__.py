@@ -134,11 +134,11 @@ def summary(rep, code, integrity, assurance, stream=None):
         say(f"Note: {INFO.get(kind, f'the signer recorded {kind}')}" + (f" ({n} times)" if n > 1 else "") + ".")
     for line in protection(rep, assurance, unanchored):
         say(line)
-    fingerprint = getattr(rep, "log_fingerprint", None)
-    if fingerprint and not unanchored:
-        say(f"Pinned log key SHA-256 fingerprint: {fingerprint}.")
-    if fingerprint and not unanchored and not str(assurance).startswith("witnessed"):
-        say(f"NOT ANCHORED: pin an independent witness or Rekor anchor ({wiki_url('docs/witnesses.md')}).")
+    if getattr(rep, "not_anchored", False):   # v2: no independent witness or anchor among the pinned ones
+        say("NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could "
+            f"rewrite it unseen ({wiki_url('docs/witnesses.md')}).")
+    if getattr(rep, "log_fingerprint", None):
+        say(f"Pinned log key SHA-256 fingerprint: {rep.log_fingerprint}.")
 
 
 def protection(rep, assurance, unanchored):
@@ -179,7 +179,4 @@ def _general(rep, assurance, unanchored, boxed):
         out.append("But a held call was approved by the agent's own user, so that approval proves nothing.")
     elif assurance.startswith("witnessed"):
         out.append("An independent witness cosigned the log too.")
-    else:
-        out.append("Not proof against whoever runs the signer: no independent witness cosigned the log "
-                   f"({wiki_url('docs/witnesses.md')}).")
     return out

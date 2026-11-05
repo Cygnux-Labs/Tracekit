@@ -20,12 +20,14 @@ from factories import ev, make_signer, rewrite_bundle, run_start, tool_call
 from tracekit import bundle, cli, policy
 from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
-from tracekit.verify import protection, v2
+from tracekit.verify import protection, summary, v2
 from tracekit.wiki import wiki_url
 
 DEV = ("NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the "
        f"record.\nTo make it proof, keep the key away from the agent: {wiki_url('docs/deploy.md')}\n")
 UNANCHORED = "NOT SHOWN: nothing outside the bundle vouches for the signing key. Pin it with --key, or use a witness.\n"
+NOT_ANCHORED = ("NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could "
+                f"rewrite it unseen ({wiki_url('docs/witnesses.md')}).")
 
 
 def verify(*argv):
@@ -70,11 +72,19 @@ class V2(tb.Case):
     def test_without_a_witness_it_says_who_could_still_rewrite_it(self):
         code, out = verify(self.bundle("remote", witnesses=()), "--trust", self.write_trust(0, name="t0.json"))
         self.assertEqual((code, out.splitlines()[1:]), (0, [
-            "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (remote).",
-            "Not proof against whoever runs the signer: no independent witness cosigned the log "
-            f"({wiki_url('docs/witnesses.md')}).",
-            f"Pinned log key SHA-256 fingerprint: {self.fingerprint}.",
-            f"NOT ANCHORED: pin an independent witness or Rekor anchor ({wiki_url('docs/witnesses.md')})."]))
+            "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (remote).", NOT_ANCHORED,
+            f"Pinned log key SHA-256 fingerprint: {self.fingerprint}."]))
+
+    def test_a_self_approval_leaves_a_witnessed_log_anchored(self):
+        """A self-approval makes the assurance dev; the log is no less cosigned, so it is not called NOT ANCHORED."""
+        rep, code = v2.verify(self.bundle("separate-user"), self.trust)
+        self.assertTrue(rep.assurance.startswith("witnessed;"), rep.assurance)
+        out = io.StringIO()
+        summary(rep, code, rep.integrity, "dev" + rep.assurance[len("witnessed"):] + "; approvals: self", out)
+        self.assertEqual(out.getvalue().splitlines()[1:], [
+            "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).",
+            "But a held call was approved by the agent's own user, so that approval proves nothing.",
+            f"Pinned log key SHA-256 fingerprint: {self.fingerprint}."])
 
     def test_a_dev_bundle_is_not_proof_against_the_agent_however_it_was_witnessed(self):
         self.assertEqual(verify(self.bundle("same-user"), "--trust", self.trust),

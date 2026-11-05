@@ -393,6 +393,15 @@ class TestService(unittest.TestCase):
         self.assertEqual([g["data"]["kind"] for g in signed_gaps], ["degraded_unanchored"])
         self.assertTrue(rep.assurance.startswith("dev;"))
 
+    def test_a_key_made_while_the_signer_starts_is_the_one_it_uses(self):
+        """`tracekit init --dev --v2` makes keys/log.key outside the signer's lock, to print its fingerprint."""
+        path = os.path.join(self.dir, "log.key")
+
+        def make():
+            svc._write_new(path, b"\1" * 32)   # init, between the signer's read and its write
+            return b"\2" * 32
+        self.assertEqual(svc._secret(path, make), b"\1" * 32)
+
     def test_quotas_and_refusal_summaries(self):
         s = self.open(limits=Limits(open_runs=1, events_per_s=0.001, burst=3, streams_per_run=1))
         run = self.register(s)
