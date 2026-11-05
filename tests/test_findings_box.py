@@ -557,6 +557,7 @@ class Cli(Base):
                 # a box run's calls are Box's doors: no check of an agent's calls reads them (#608's review)
                 self.assertIn("4 problems (3 high, 1 medium)", out.splitlines()[0])
                 self.assertIn("reasoning readable before 0 of 0 actions", out.splitlines()[0])
+                self.assertNotIn(" for 0 ", out)   # no not-checkable count of nothing
                 self.assertIn("Box's door saw the box connect to collector.example.io 1 time", out)
                 self.assertIn("the box's patch changes .github/workflows/release.yml", out)
                 self.assertIn(f"the agent's WebFetch of pastebin.example.net (run {agent}", out)
