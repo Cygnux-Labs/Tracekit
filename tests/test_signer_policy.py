@@ -208,7 +208,8 @@ class DefaultAndStrict(unittest.TestCase):
             "/opt/tracekit/bin/python -m tracekit -- init --v2 --strict", "sh -c 'tracekit init --strict'")],
                       "ask", "TK-A057")
         self.verdicts("default", [("Bash", {"command": c}) for c in (
-            "tracekit doctor", "tracekit initx", "tracekit witness init", "echo tracekit init --strict")], "allow")
+            "tracekit doctor", "tracekit initx", "tracekit public-witness init", "echo tracekit init --strict")],
+                      "allow")
         for mode in ("default", "strict"):
             for d in ("~/Library/Application Support/tracekit/data", "~/.local/share/tracekit"):
                 path = f"{d}/{svc.POLICY_MODE}"
