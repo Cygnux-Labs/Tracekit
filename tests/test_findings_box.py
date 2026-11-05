@@ -41,7 +41,7 @@ class Base(unittest.TestCase):
         self.ids = box_id, agents
         run_id = box_id if of == "box" else agents[of]
         get = self.content if content else None
-        return findings_v2.analyze(runs[run_id], get, others=(runs, get) if others else None,
+        return findings_v2.analyze(runs[run_id], get, others=(runs, get, True) if others else None,
                                    effects=findings_effects.options(), **kw)
 
     @staticmethod
@@ -167,6 +167,17 @@ class OutcomeMismatch(Base):   # (c)
                       "window (box run records", d["what"])
         self.assertEqual(self.cov(out), (3, 1, {}))   # the two connections (the fetch explains them) and the fetch
 
+    def test_a_fetch_an_earlier_connection_may_have_served_is_not_refused(self):   # P3
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 3.0, "WebFetch", {"url": "https://docs.example.com/a"})
+        b.door(2.5, "https://docs.example.com:443")
+        b.call(10.0, 11.0, "WebFetch", {"url": "https://docs.example.com/a"})            # the tool's cache: ok
+        b.call(10.0, 11.5, "WebFetch", {"url": "https://docs.example.com/b"}, ok=False)  # its connection refused
+        b.door(10.3, "https://docs.example.com:443", allowed=False)
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)), ([], (3, 0, {"reused": 1})))
+
     def test_one_connection_let_through_is_enough(self):
         b = self.box
         b.agent(1.0)
@@ -266,7 +277,8 @@ class CantTell(Base):
                                         "reason": "a private address"})
         b.call(10.0, 11.0, "WebFetch", {"url": "https://flood.example.com/"})
         b.observe(12.0, "tkbox.egress", {"decision": "deny", "summary": True, "suppressed": 40})
-        self.assert_only(self.analyze(), {"box_refusal": 2})
+        # and on the door side: the refusal, and the 40 the summary stands for
+        self.assert_only(self.analyze(), {"box_refusal": 2, "untimed_refusal": 41})
 
     def test_a_connection_with_no_recorded_outcome(self):
         b = self.box
@@ -280,8 +292,8 @@ class CantTell(Base):
     def test_a_fetch_whose_url_box_would_not_see(self):
         b = self.box
         b.agent(1.0)
-        b.call(2.0, 3.0, "WebFetch", {"url": "https://bücher.example/"})
         b.call(4.0, 5.0, "WebFetch", {"url": "not a url"})
+        b.call(6.0, 7.0, "WebFetch", {"url": "https://example.com:99999/"})   # no port there is
         self.assert_only(self.analyze(), {"no_url": 2})
 
     def test_no_vault_content(self):
@@ -314,6 +326,168 @@ class CantTell(Base):
         out = self.analyze(of=0)
         self.assert_only(out, {"agent_run": 1})
         self.assertIn("TK-X212 for 1 call: this is a box's agent run", findings_v2.render(out))
+
+
+class Matching(Base):
+    """#608's review: a fetch matches a connection to its host with a leading www. aside, on its URL's port (and 443
+    for plain http), its host as Node sends it (punycode, a dotted number form); an unusable URL matches nothing."""
+
+    def test_a_redirect_that_only_adds_www_is_the_fetchs_own(self):   # Claude Code's WebFetch follows it (P1)
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 3.0, "WebFetch", {"url": "https://python.org/downloads/", "prompt": "latest"})
+        b.door(2.2, "https://python.org:443")
+        b.door(2.5, "https://www.python.org:443")
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)), ([], (3, 0, {})))
+
+    def test_a_fetch_explains_no_other_port(self):   # H5
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 30.0, "WebFetch", {"url": "https://example.com/"})
+        b.door(2.5, "https://example.com:443")
+        b.door(10.0, "tcp://example.com:22")   # a tunnel while a long fetch runs
+        out = self.analyze()
+        [(_, d)] = self.found(out)
+        self.assertIn("connect to example.com 1 time", d["what"])
+        self.assertEqual(self.cov(out), (3, 1, {}))   # :443 the fetch's, :22 found, the fetch matched
+
+    def test_a_fetch_whose_url_box_never_sees_explains_nothing(self):   # H4
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 30.0, "WebFetch", {"url": "not a url"})
+        b.door(10.0, "https://exfil.example.net:443")
+        out = self.analyze()
+        self.assertEqual([d["labels"] for _, d in self.found(out)], [["door_unexplained"]])
+        self.assertEqual(self.cov(out)[2], {"no_url": 1})
+
+    def test_a_number_form_or_internationalised_host_as_node_sends_it(self):   # P6
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 3.0, "WebFetch", {"url": "https://0x5db8d822/"})
+        b.door(2.5, "https://93.184.216.34:443")
+        b.call(4.0, 5.0, "WebFetch", {"url": "https://bücher.example/"})
+        b.door(4.5, "https://xn--bcher-kva.example:443")
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)), ([], (4, 0, {})))
+        self.assertEqual([findings_box._bare(h) for h in ("1572395042", "0135.0xb8.216.34", "0x5db8d822.",
+                                                          "08.1.2.3", "example.123")],
+                         ["93.184.216.34"] * 3 + ["08.1.2.3", "example.123"])
+
+
+class Background(Base):
+    """#608's review: what may leave a process running past its call, and what doesn't."""
+
+    def test_what_a_command_may_leave_running(self):
+        for cmd in ("npm run dev &", "(npm run dev > /tmp/dev.log 2>&1 &)", "sleep 1&", "a & b",
+                    "bash -c 'npm start &'", 'sh -lc "(x &)"', "tmux new -d -s dev 'npm start'",
+                    "screen -dmS dev npm start", "coproc cat", "nohup x", "setsid x", "x; disown", "echo 'unclosed"):
+            with self.subTest(cmd):
+                self.assertTrue(findings_box._detaches(cmd))
+        for cmd in ("make && make test", "cmd 2>&1", "cmd &> log", "cmd |& tee log", "cat <&3", "echo 'a & b'",
+                    "bash -c 'make && echo ok'", "tmux ls"):
+            with self.subTest(cmd):
+                self.assertFalse(findings_box._detaches(cmd))
+
+    def test_a_subshell_sent_to_the_background(self):   # P2
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 2.5, "Bash", {"command": "(npm run dev > /tmp/dev.log 2>&1 &)"})
+        b.door(10.0, "https://telemetry.nextjs.org:443")
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)[2]), ([], {"background": 1}))
+
+    def test_one_call_marked_background_covers_the_rest_of_its_run_and_says_so(self):   # H3: a documented limit
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 2.1, "Bash", {"command": "true", "run_in_background": True})
+        for t in (100.0, 200.0, 300.0):
+            b.door(t, "https://exfil.example.net:443")
+        out = self.analyze(end=400.0)
+        self.assertEqual((self.found(out), self.cov(out)[2]), ([], {"background": 3}))
+
+
+class HostCommandsAndRuns(Base):
+    """#608's review: host commands, an agent that keeps no account, and what stays visible as not checkable."""
+
+    def test_two_host_commands_span_the_agents_start(self):   # P4: either may be the agent's
+        b = self.box
+        b.command(0.1, 35.0, "npm run dev")
+        b.command(0.2, 35.0, "claude -p 'fix the bug'")
+        b.agent(1.0)
+        b.door(10.0, "https://telemetry.nextjs.org:443")
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)[2]), ([], {"host_command": 1}))
+
+    def test_a_daemon_a_host_command_left_running_is_found(self):   # P5: a documented limit
+        b = self.box
+        b.command(0.1, 0.4, "sh -c 'redis-server --daemonize yes'")
+        b.command(0.5, 35.0, "claude -p 'fix the bug'")
+        b.agent(1.0)
+        b.door(10.0, "https://updates.example.com:443")
+        self.assertEqual(len(self.found(self.analyze())), 1)
+
+    def test_an_agent_that_never_registers_a_run_is_named_on_the_first_line(self):   # H1
+        b = self.box
+        b.command(0.2, 35.0, "claude -p 'fix the bug'")
+        b.door(10.0, "https://exfil.example.net:443")
+        b.write(36.0, f"{PROJ}/.github/workflows/ci.yml")
+        out = self.analyze()
+        self.assertEqual(self.cov(out)[2], {"no_agent_account": 2})
+        self.assertIn("NO AGENT ACCOUNT: the box's agent channel was on, and its agent registered no run",
+                      out["summary"])
+        runs = bundle_runs(self)   # the same box from a source that may not hold every run: no claim either way
+        out = findings_v2.analyze(runs[self.ids[0]], self.content, others=(runs, self.content, False))
+        self.assertEqual(self.cov(out)[2], {"no_agent_runs": 2})
+        self.assertNotIn("NO AGENT ACCOUNT", out["summary"])
+
+    def test_an_agent_that_closes_its_run_early_leaves_the_rest_not_checkable(self):   # H2
+        b = self.box
+        b.command(0.2, 35.0, "claude -p 'fix the bug'")
+        b.agent(1.0)
+        b.stop(3.0)
+        b.door(10.0, "https://exfil.example.net:443")
+        self.assertEqual(self.cov(self.analyze())[2], {"no_agent_run": 1})
+
+    def test_a_call_with_no_result_covers_the_rest_of_its_run_and_says_so(self):   # H6: a documented limit
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, None, "Bash", {"command": "sleep 1"})
+        b.door(300.0, "https://exfil.example.net:443")
+        self.assertEqual(self.cov(self.analyze(end=400.0))[2], {"call_unfinished": 1})
+
+    def test_box_s_own_refusals_have_no_time_to_place_a_call_against(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(10.0, "tkbox.egress", {"host": "169.254.169.254", "port": 80, "decision": "deny",
+                                         "reason": "a metadata address"})
+        b.observe(39.0, "tkbox.gap", {"kind": "tkbox.egress", "dropped": 3, "reason": "the signer did not answer"},
+                  "trusted")
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)[2]), ([], {"untimed_refusal": 4}))
+
+    def test_a_patch_applied_to_a_directory_under_the_workspace(self):   # P7
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 2.5, "Edit", {"file_path": "/workspace/src/app.py", "old_string": "a", "new_string": "b"})
+        b.write(30.0, f"{PROJ}/sub/src/app.py")   # tkbox apply --dir PROJ/sub
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)[2]), ([], {"apply_dir": 1}))
+
+    def test_a_write_call_that_names_no_path(self):
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 2.5, "Write", {"content": "x"})
+        b.write(30.0, f"{PROJ}/app.py")
+        out = self.analyze()
+        self.assertEqual((self.found(out), self.cov(out)[2]), ([], {"no_path": 1}))
+
+    def test_a_connection_with_no_outcome_is_not_counted_refused(self):
+        b = self.box
+        b.agent(1.0)
+        b.door(10.0, "https://exfil.example.net:443", allowed=None)
+        [(_, d)] = self.found(self.analyze())
+        self.assertIn("(0 let through, 0 refused, 1 with no outcome recorded;", d["what"])
 
 
 class Signed(Base):
@@ -380,6 +554,9 @@ class Cli(Base):
                 code, out, err = self.cli("--run", box_id, *source)
                 self.assertEqual((code, err), (4, ""))   # a high finding
                 self.assertEqual(out.count("(TK-X212)"), 4)
+                # a box run's calls are Box's doors: no check of an agent's calls reads them (#608's review)
+                self.assertIn("4 problems (3 high, 1 medium)", out.splitlines()[0])
+                self.assertIn("reasoning readable before 0 of 0 actions", out.splitlines()[0])
                 self.assertIn("Box's door saw the box connect to collector.example.io 1 time", out)
                 self.assertIn("the box's patch changes .github/workflows/release.yml", out)
                 self.assertIn(f"the agent's WebFetch of pastebin.example.net (run {agent}", out)

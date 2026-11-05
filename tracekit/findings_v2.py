@@ -946,9 +946,13 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
     "calls": tool_use_id -> the reasoning before it and each check's outcome, "effects": run_seq -> each kernel sensor
     effect's call, "effect_window")}; each {verdict, cites} is what review_finding signs; `effects`:
     findings_effects.options(); `others`: (run_id -> records of the other runs the source holds, their content as
-    `content` reads it, never through a reviewer's tee), for TK-X212 of a box run (its agent channel's runs), or None.
-    EvidenceAlert (from `content`) when the vault's content does not open its record."""
+    `content` reads it, never through a reviewer's tee, whether they are every run of the tenant: a store or a
+    run-set), for TK-X212 of a box run (its agent channel's runs), or None. A box run's calls are Box's doors, not an
+    agent's: only TK-X212 reads them. EvidenceAlert (from `content`) when the vault's content does not open its
+    record."""
     run, deadline = _Run(records), clock() + budget_s
+    if (findings_box.label(run.records) or (None, True))[1] is None:   # a box run
+        run.calls, run.ran = {}, {}
     out = {"run_id": run.run_id, "agent": run.agent, "findings": [],
            "shown": {"details": [], "constraints": [], "prompts": [], "calls": {}}}
     needed = run.needed()
@@ -1023,6 +1027,9 @@ def summary(out):
             + (f", {len(sev) - len(probs)} note{'s' * (len(sev) - len(probs) != 1)}" if len(sev) > len(probs) else "")
             + f" · reasoning readable before {readable} of {actions} actions ({_pct(readable, actions)})"
             + (" · PARTIAL: the run is still open" if out["coverage"]["verdict"].get("partial") else "")
+            + (" · NO AGENT ACCOUNT: the box's agent channel was on, and its agent registered no run" if any(
+                g["reason"] == "no_agent_account" for g in out["coverage"]["verdict"]["checks"].get(
+                    findings_box.RULE, {}).get("not_checkable", ())) else "")
             + (f" · INCOMPLETE: {n} check{'s' * (n != 1)} not run (budget or size, below)"
                if (n := incomplete(out["coverage"]["verdict"])) else ""))
 
@@ -1195,7 +1202,7 @@ def main(argv=None):
         if not a.trust:
             print("tracekit analyze: --bundle needs --trust, the trust config to verify it against", file=sys.stderr)
             return 2
-        runs, _, code = import_v2.bundle_records(a.bundle, a.trust)
+        runs, rep, code = import_v2.bundle_records(a.bundle, a.trust)
         if code:
             print(f"tracekit analyze: refused {a.bundle}: it does not verify against {a.trust} (`tracekit verify`)",
                   file=sys.stderr)
@@ -1206,6 +1213,7 @@ def main(argv=None):
             print(f"tracekit analyze: {a.bundle} holds {len(runs)} runs: pass --run", file=sys.stderr)
             return 2
         records = runs.get(run_id)
+        whole = any(c["check"] == "run-set" and c["status"] == "pass" for c in rep.checks)   # every run of the tenant
     else:
         try:
             store = a.store or dev_data_dir(create=False)
@@ -1213,6 +1221,7 @@ def main(argv=None):
             records = run_id and import_v2.store_records(store, run_id).get(run_id)
             box = records and findings_box.label(records)
             runs = findings_box.store_runs(store, run_id) if box and not box[1] else {}   # a box run's agent runs
+            whole = True
         except FileNotFoundError as e:
             print(f"tracekit analyze: {e}", file=sys.stderr)
             return 2
@@ -1250,7 +1259,7 @@ def main(argv=None):
     try:
         try:
             out = analyze(records, rv.tee(content) if rv else content, a.project, a.allow, a.open, a.budget,
-                          effects=findings_effects.from_args(a), others=(runs, content))
+                          effects=findings_effects.from_args(a), others=(runs, content, whole))
         except EvidenceAlert as e:
             print(f"tracekit analyze: EVIDENCE ALERT: {e}", file=sys.stderr)
             return 4
