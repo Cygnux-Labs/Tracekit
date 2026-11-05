@@ -565,10 +565,11 @@ class Prefilter(unittest.TestCase):
                                  [])
 
     def test_a_literal_set_says_maybe_wherever_a_scan_does(self):
-        """#605: on RE2 a prefilter of more than eight strings is one search of their alternation (Engine._maybe). It
-        must find one wherever a str scan of each does, or a subject the rule matches would go unsearched: every
-        shipped pack's prefilters, on the corpus's subjects as given and lower-cased, and on random text in mixed case
-        with non-ASCII characters around and inside the strings."""
+        """#605: on RE2 a prefilter of six or more strings is one search of their alternation for a long enough
+        subject (engine._holds). It must find one wherever a str scan of each does, or a subject the rule matches
+        would go unsearched: every shipped pack's prefilters, at any length (the set alone) and at the engine's own
+        length, on the corpus's subjects as given and lower-cased, and on random text in mixed case with non-ASCII
+        characters around and inside the strings."""
         subjects = set()
         real = engine._prepare
         with mock.patch.object(engine, "_prepare", side_effect=lambda s, *tag: subjects.update(s) or real(s, *tag)):
@@ -580,9 +581,11 @@ class Prefilter(unittest.TestCase):
         for name in sorted(os.listdir(PACKS)):
             for backend in BACKENDS:
                 e = Engine(pc.build(os.path.join(PACKS, name))[0], backend)
-                sets = {id(s): s for _, r, *_, lits, tool_lits in e.rules for s in (lits, tool_lits) if s}
+                sets = {id(s): s for *_, s, _ in e.rules if s}
                 deadline = time.monotonic() + 3600
+                self.assertEqual(bool(e._sets), backend == "re2" and any(len(s) >= 6 for s in sets.values()))
                 for strings in sets.values():
+                    rx, at = e._sets.get(id(strings), (None, 0))
                     texts = list(subjects)[:400] + [t.lower() for t in list(subjects)[:400]]
                     for _ in range(40):
                         s = rnd.choice(strings)
@@ -592,8 +595,9 @@ class Prefilter(unittest.TestCase):
                                   "".join(rnd.choice(noise) for _ in range(rnd.randint(0, 6)))
                                   for w in (s, mixed, s[:cut] + rnd.choice(noise) + s[cut:])]
                     with self.subTest(pack=name, backend=backend, strings=strings[:3]):
-                        self.assertEqual([t[:60] for t in texts if any(map(t.__contains__, strings))
-                                          and not e._maybe(strings, t, deadline)], [])
+                        self.assertEqual([t[:60] for t in texts if any(map(t.__contains__, strings)) and not (
+                            engine._holds(strings, rx, 0, t, e._match, deadline) and
+                            engine._holds(strings, rx, at, t, e._match, deadline))], [])
 
     def test_a_long_prefilter_is_one_search_on_re2(self):
         """#605: a prefilter of 80 strings over a 4 KiB command none of them is in took 80 str scans of the command

@@ -78,14 +78,14 @@ class Engine:
                        rx(r, "unless") if "unless" in r else None, literals(r["pattern"]),
                        literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
-        # on RE2, a prefilter of more than _SET_MIN strings is one search of their alternation, compiled as its rule's
-        # pattern is (an a2a rule's in any case), so it finds one wherever a str scan would (_maybe)
+        # on RE2, a pattern's prefilter of six or more strings is one search of their alternation for a subject longer
+        # than _set_from's length, compiled as the rule's pattern is (an a2a rule's in any case), so it finds one
+        # wherever a str scan would (_holds): {id(strings): (compiled, length)}
         self._sets = {}
         if self.engine.startswith("re2@"):
-            for _, r, _, _, _, lits, tool_lits in self.rules:
-                for strings, anycase in ((lits, r.get("class") == "a2a"), (tool_lits, False)):
-                    if strings and len(strings) > _SET_MIN:
-                        self._sets[id(strings)] = compile_(_alternation(strings), anycase)
+            for _, r, _, _, _, lits, _ in self.rules:
+                if lits and (at := _set_from(len(lits))) is not None:
+                    self._sets[id(lits)] = (compile_(_alternation(lits), r.get("class") == "a2a"), at)
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._of = {}
@@ -177,14 +177,8 @@ class Engine:
         """Whether a rule's tool pattern takes the tool `name` (`low`: lower-cased); none takes every name. A name
         holding none of the pattern's literals is not searched: 27 searches of a 48 KiB MCP name of `run_` took the
         fallback engine 0.3 s on a laptop, past its 1 s on CI's macOS runners (#481)."""
-        return tool_re is None or (lits is None or self._maybe(lits, low, deadline)) and self._match(
+        return tool_re is None or (lits is None or any(map(low.__contains__, lits))) and self._match(
             tool_re, name, True, deadline)
-
-    def _maybe(self, lits, text, deadline):
-        """Whether `text` holds one of a prefilter's strings (compile.literals), so its pattern may match: one search
-        of their alternation (self._sets), else one str scan each."""
-        rx = self._sets.get(id(lits))
-        return any(map(text.__contains__, lits)) if rx is None else self._match(rx, text, False, deadline) is not None
 
     def decide(self, tool, args, cls=None, untrusted=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
@@ -222,13 +216,13 @@ class Engine:
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
         low_name = name.lower()
-        if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
-            self._of[cls] = [x for x in self.rules if _reaches(x[1], cls)]
+        if cls not in self._of:   # the rules a class's calls reach (no class or that class), each with its _sets entry
+            self._of[cls] = [x + self._sets.get(id(x[5]), (None, 0)) for x in self.rules if _reaches(x[1], cls)]
 
         def hit(entry, parsed, memo, oversize):
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
             over MAX_SUBJECT), else None; TimeoutError past the deadline."""
-            sec, rule, tool_re, pat, unless, lits, tool_lits = entry
+            sec, rule, tool_re, pat, unless, lits, tool_lits, lits_rx, lits_at = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
             # rules on the same subjects read them once (a shell rule with no field reads argv)
@@ -238,11 +232,12 @@ class Engine:
                 memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]),
                                      _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
-            if lits is None or self._maybe(lits, joined, deadline):
+            if lits is None or _holds(lits, lits_rx, lits_at, joined, self._match, deadline):
                 for subject, low in zip(texts, lows):
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
-                    if (lits is None or len(texts) == 1 or self._maybe(lits, low, deadline)) and self._match(
+                    if (lits is None or len(texts) == 1 or
+                            _holds(lits, lits_rx, lits_at, low, self._match, deadline)) and self._match(
                             pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
@@ -407,10 +402,21 @@ class Engine:
         return list(dict.fromkeys([canonical(call)] + paths + urls))
 
 
-# A prefilter of more strings is one search of their alternation on RE2: about 8 us over 4 KiB however many there
-# are, where a str scan each took 14 us for 8 and 100 us for 76 (TK-C001's); the regex module's alternation is
-# slower than the scans at every size (490 us for 76), so the fallback keeps them (#605)
-_SET_MIN = 8
+def _set_from(n):
+    """The subject length past which one RE2 search of n strings' alternation is cheaper than a str scan for each, or
+    None when it never is (n < 6). Measured on an M-series Mac (#605): a scan costs about 20 ns plus 0.3 ns a
+    character, the search about 790 ns plus 1.56 ns a character (so 76 strings over 4 KiB: 100 us scanning, 8 us
+    searching), whatever n. The regex module's alternation is slower than the scans at every size (490 us for 76),
+    so the fallback engine always scans."""
+    return None if n < 6 else max(0, (790 - 20 * n) * 100 // (30 * n - 156))
+
+
+def _holds(lits, rx, at, text, match, deadline):
+    """Whether `text` holds one of a prefilter's strings (compile.literals), so the rule's pattern may match it: one
+    search of their alternation `rx` when the text is longer than `at`, else a str scan for each."""
+    if rx is None or len(text) <= at:
+        return any(map(text.__contains__, lits))
+    return match(rx, text, False, deadline) is not None
 
 
 def _alternation(strings):
