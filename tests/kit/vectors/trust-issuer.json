@@ -18,8 +18,8 @@
  "witnesses_required": 1,
  "issuers": [
   {
-   "vkey": "issuer.example.org+67c37266+AXWUpbFvLzYbsw6yb8s7aF7ft+M+lN/3AyAcB3EOeJ/M",
-   "issuance_log_vkey": "issuer.example.org/issuance+bdb94a74+AXj6Y0nM78ktBbMgwObMeaVUbjdr7q8tc65g4JLpiuDo"
+   "vkey": "issuer.example.org+ec41c90b+ATQLdo6KwLkMTwfhkjoTpO4195e6/dr3y0sB5tzOZ3R1",
+   "issuance_log_vkey": "issuer.example.org/issuance+ef309e26+AeZqtBZFDSJbteg3+wRy6N0q8r9xOy3juIwnchd42I2X"
   }
  ]
 }

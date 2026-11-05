@@ -231,14 +231,20 @@ def run_set(name, lg, selected=None):
 
 def certified(name):
     """run-a under a record key with an issuer's certificate (docs/issuer.md), and the issuer's pin."""
+    from unittest import mock
+
     import test_issuer as ti
     from tracekit import issuer
+    from tracekit.signer import logkey
+    ca, issuance = (logkey.FileKey(hashlib.sha256(s).digest()) for s in (b"kit issuer", b"kit issuance log"))
     iss = issuer.Issuer(os.path.join(VECTORS, ".stores", "issuer"), ti.NAME, ti.ISSUANCE, ti.scopes(),
-                        [ti.StubWitness()], clock=lambda: ti.T0)
+                        [ti.StubWitness()], ca_key=ca, log_key=issuance, clock=lambda: ti.T0)
     lg = tb.Log(os.path.join(VECTORS, ".stores", "certified"))
     der = crypto.spki(tb.pub(tb.KEY1))
+    with mock.patch.object(issuer.secrets, "token_hex", return_value="5e" * 16):   # the serial: fixed bytes
+        entry = iss.issue(ti.SVC, ti.request(tb.KEY1))
     lg.add("signer.epoch", {"keys": [{"kid": KID1, "alg": "ed25519", "spki": base64.b64encode(der).decode(),
-                                      "cert": iss.issue(ti.SVC, ti.request(tb.KEY1))}]}, run="signer")
+                                      "cert": entry}]}, run="signer")
     lg.register()
     lg.call()
     lg.final()
