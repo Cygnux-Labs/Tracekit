@@ -939,11 +939,18 @@ def _kept():
     signer's runtime dir, a v1 dev signer's home), each that exists, and the commands that delete them and Tracekit."""
     from . import client
     from .sdk import autospawn
+    try:
+        system = client.system_config() is not None
+    except client.SystemConfigError:   # one that can't be read is still system mode's
+        system = True
+    cfg = client.client_config()
     data = autospawn.data_dir()
+    mine, shared = autospawn.own_runtime_dirs()
     where = [(data, "the dev signer's keys and signed runs: a bundle you exported verifies without them"),
              (client.client_home(), "Tracekit's client config"),
-             (client.client_config().get("signer_home"), "the v1 dev signer's home"),
-             *[(d, "the dev signer's runtime dir") for d in autospawn.own_runtime_dirs()]]
+             # as uninstall() stops it: a dev home only, never system mode's signer home (/var/lib/tracekit)
+             (cfg.get("signer_home") if cfg.get("mode") == "dev" and not system else None, "the v1 dev signer's home"),
+             *[(d, "the dev signer's runtime dir") for d in mine]]
     where = [(d, what) for d, what in where if d and os.path.isdir(d)]
     if not where:
         return []
@@ -957,6 +964,8 @@ def _kept():
     remove = (f"Remove-Item -Recurse -Force {', '.join(map(_quote, paths))}" if os.name == "nt"
               else f"rm -rf {' '.join(map(_quote, paths))}")
     return (["kept:"] + [f"  {d}  ({what})" for d, what in where]
+            + [f"  runtime files under {shared} may be shared with another HOME's dev signer: run tracekit down first, "
+               "and delete only what is yours"] * bool(shared)
             + ["to delete these and Tracekit too:", "  tracekit down", f"  {remove}", f"  {pip} tracekit-ai"])
 
 
@@ -968,8 +977,11 @@ def _status_lines(st, v2):
              else f"signer      {name}: {v2.get('error') or 'running'}"]
     if v2.get("data_dir"):
         lines.append(f"data        {v2['data_dir']} (its keys and signed runs)")
-    lines += [f"hooks       {' and '.join(h['versions'])} hooks in {h['settings']} ({len(h['events'])} events)"
-              for h in st["hooks"]] or ["hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"]
+    found = [f"hooks       {' and '.join(h['versions'])} hooks in {h['settings']} ({len(h['events'])} events)"
+             for h in st["hooks"] if h.get("versions")]
+    lines += [f"hooks       {h['settings']} isn't a settings file Tracekit can read, so its hooks are unknown"
+              for h in st["hooks"] if "error" in h]
+    lines += found or ["hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"]
     if st.get("signer"):
         lines.append(f"v1 signer   {st['signer'].get('error') or 'answering'}")
     if st.get("proxy"):
@@ -1247,12 +1259,24 @@ def _gist(c, aid, n=60):
     return text if len(text) <= n else text[:n - 3] + "..."
 
 
+def _expires_left(expires_at):
+    """How long until `expires_at` (or since), as `show` and `list` print it: ` (in 55 min)` or ` (3 min ago)`.
+    Another signer's time format is left as it is."""
+    import datetime
+    try:
+        left = (datetime.datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+                .replace(tzinfo=datetime.timezone.utc) - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+        return f" (in {left // 60:.0f} min)" if left >= 0 else f" ({-left // 60:.0f} min ago)"
+    except ValueError:   # another signer's time format: as it is
+        return ""
+
+
 def _stop_lines(c, x):
     """What `approvals show` adds to approval `x`: why its call was held and what to do instead (the reasons and
     remedies of its rules, in the policy whose hash it records: a shipped pack's, or one the dev signer kept), when
     it expires, the commands that answer it and where the viewer opens it."""
     from . import view
-    from .integrations.claude_code import approvals_cmd, expires
+    from .integrations.claude_code import approvals_cmd
     from .policy2.compile import ENGINE_REASONS
     from .policy2.engine import Engine
     from .signer.service import dev_data_dir
@@ -1283,7 +1307,7 @@ def _stop_lines(c, x):
     bang = not c.signer and _claude_code_run(x["run_id"])
     return [f"why         {why}",
             *([f"instead     {instead}"] if instead else []),
-            f"expires     {expires(x['expires_at']) or x['expires_at']}",
+            f"expires     {x['expires_at']}{_expires_left(x['expires_at'])}",
             *([f"answer      `{cmd} approve {x['approval_id']}` to allow it once, `{cmd} reject {x['approval_id']}` "
                "to refuse it" + ("; in the agent's Claude Code session, with a leading `! `" if bang else "")]
               if x["state"] == "requested" else []),
@@ -1315,7 +1339,6 @@ def _approvals(a):
     """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
     import pydoc
 
-    from .integrations.claude_code import expires
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
     if a.action == "slack":
@@ -1339,7 +1362,7 @@ def _approvals(a):
             for x in [] if a.json else shown:
                 state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
                 print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
-                      f"rules={','.join(x['rule_ids'])}  expires {expires(x['expires_at']) or x['expires_at']}" + (
+                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}{_expires_left(x['expires_at'])}" + (
                           f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
                           else ""))
             if a.json:

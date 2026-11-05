@@ -325,13 +325,16 @@ def _dev_hook_argv(module, func, args):
         installed = False
     if installed:
         return [sys.executable, "-I", "-m", module, *args]
-    # the tree, the branch and the hook's arguments go after the code as plain arguments, quoted for the shell where
-    # the command is written (_dev_hook_command): the code holds no path, so a security reviewer reads it as it runs.
-    # Its strings take the quote Windows' double-quoted -c leaves alone, and that POSIX's single-quoted one needs no
-    # escape for
-    q = "'" if os.name == "nt" else '"'
+    # The tree, its branch and the hook's arguments, in plain text. On POSIX they go after the code as arguments the
+    # shell gets single-quoted (_dev_hook_command). On Windows the harness's shell (Git Bash for Claude Code,
+    # PowerShell, cmd.exe) would expand them there, so they go into the double-quoted code as Python literals with
+    # every character those shells read in double quotes written as an escape (_literal). The code's own strings take
+    # the quote each form leaves alone: ' inside Windows' double quotes, " inside POSIX's single quotes
+    nt = os.name == "nt"
+    q = "'" if nt else '"'
     branch = _branch(ROOT)
-    code = "import sys; r = sys.argv[1]; sys.path.insert(0, r); "
+    tree, was = (_literal(ROOT), branch and _literal(branch)) if nt else ("sys.argv[1]", "sys.argv[2]")
+    code = f"import sys; r = {tree}; sys.path.insert(0, r); "
     if branch:
         # lean: the hooks still run the working tree, so a branch switch there still breaks them and this only says
         # what happened; run them from a copy init makes if switching branches under them keeps happening
@@ -341,7 +344,7 @@ def _dev_hook_argv(module, func, args):
             "" if module in ("tracekit.hook", V2_HOOK) else f" --agent {args[0]}")
         # a lambda: a try statement can't follow `;`, and the command stays one line (Windows); with no git on the
         # hook's PATH, the plain traceback
-        code += ("import os, shlex, shutil, subprocess; w = sys.argv[2]; "
+        code += (f"import os, shlex, shutil, subprocess; w = {was}; "
                  f"n = lambda: subprocess.run([{q}git{q}, {q}-C{q}, r, {q}symbolic-ref{q}, {q}-q{q}, {q}--short{q}, "
                  f"{q}HEAD{q}], capture_output=True, text=True, env={{k: v for k, v in os.environ.items() if not "
                  f"k.startswith({q}GIT_{q})}}).stdout.strip() or {q}a detached HEAD{q}; "
@@ -351,12 +354,21 @@ def _dev_hook_argv(module, func, args):
                  f"if a branch switch broke it, or run {init} again from a Tracekit installed outside a working tree "
                  f"(pip install, not pip install -e){q}, file=sys.stderr) if shutil.which({q}git{q}) else "
                  "sys.__excepthook__(t, e, b); ")
-    rest = 3 if branch else 2
-    call = f"raise SystemExit({func}(*sys.argv[{rest}:]))"
+    call = (f"raise SystemExit({func}({', '.join(map(_literal, args))}))" if nt else
+            f"raise SystemExit({func}(*sys.argv[{3 if branch else 2}:]))")
     if branch:
         call = "sys.excepthook = sys.__excepthook__; " + call
-    return [sys.executable, "-I", "-c", f"{code}from {module} import {func}; {call}", ROOT,
-            *([branch] if branch else []), *args]
+    return [sys.executable, "-I", "-c", f"{code}from {module} import {func}; {call}",
+            *([] if nt else [ROOT, *([branch] if branch else []), *args])]
+
+
+def _literal(text):
+    """`text` as a single-quoted Python literal that reads the same through Git Bash's, PowerShell's and cmd.exe's
+    double quotes: letters, digits and . _ - : / , + = @ and a space as they are, every other character (a quote,
+    $, `, %, !, \\, &, a newline) as its \\x, \\u or \\U escape, whose backslash none of them reads."""
+    return "'" + "".join(c if c.isascii() and (c.isalnum() or c in "._-:/,+=@ ") else
+                         f"\\x{ord(c):02x}" if ord(c) < 0x100 else f"\\u{ord(c):04x}" if ord(c) < 0x10000 else
+                         f"\\U{ord(c):08x}" for c in text) + "'"
 
 
 def _branch(root):
@@ -379,8 +391,8 @@ def _dev_hook_command(module, func, args):
     py = f'"{argv[0]}"' if os.name == "nt" else shlex.quote(argv[0])
     if argv[2] == "-m":
         return " ".join([py, *argv[1:]])
-    if os.name == "nt":
-        return f'{py} -I -c "{argv[3]}" {subprocess.list2cmdline(argv[4:])}'
+    if os.name == "nt":   # the values are in the code (_dev_hook_argv): nothing after it for a shell to read
+        return f'{py} -I -c "{argv[3]}"'
     return f"{py} -I -c {' '.join(map(shlex.quote, argv[3:]))}"
 
 
@@ -1922,7 +1934,7 @@ def _installed_hooks():
             try:
                 s = read_json(p)
                 hooks.append({"settings": p, **_hook_summary(s)})
-            except ValueError:
+            except (ValueError, AttributeError, TypeError):   # not JSON, or JSON that isn't a settings object
                 hooks.append({"settings": p, "error": "unreadable"})
     for p in MANAGED_SETTINGS.values():
         if os.path.exists(p):

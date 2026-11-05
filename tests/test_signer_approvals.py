@@ -716,7 +716,7 @@ class TestCli(unittest.TestCase):
         self.assertEqual(shown.returncode, 0, shown.stderr)
         self.assertIn("\nwhy         moving money (a Stripe, PayPal or Square charge, payout, transfer or refund) "
                       "(TK-A043)\ninstead     Check the amount, currency and payee", shown.stdout)
-        self.assertRegex(shown.stdout, r"\nexpires     \d\d:\d\d UTC \(in 5\d min\)\n")
+        self.assertRegex(shown.stdout, r"\nexpires     \S+Z \(in 5\d min\)\n")
         self.assertIn(f"\nanswer      `tracekit approvals --signer {sock} approve {aids[1]}` to allow it once, "
                       f"`tracekit approvals --signer {sock} reject {aids[1]}` to refuse it\n", shown.stdout)
         self.assertIn(f"\nrecord      tracekit view --approval {aids[1]} (with the --config or --data-dir of this "
@@ -847,7 +847,7 @@ class TestFirstDayCli(unittest.TestCase):
             "why         a quote on the line is never closed (TK-SHELL-PARSE)", "instead     Close the quote."])
         self.assertTrue(self.lines("X=$(printf ls); $X")[0].startswith(
             "why         its program is a variable the line doesn't set to plain text (TK-SHELL-PARSE)"))
-        self.assertRegex(self.lines("ls x 'y")[2], r"^expires     \d\d:\d\d UTC \(in (59|60) min\)$")
+        self.assertRegex(self.lines("ls x 'y")[2], r"^expires     \S+Z \(in 5\d min\)$")
 
     def test_the_bang_hint_is_for_claude_code_runs_only(self):
         answer = next(line for line in self.lines('echo "x') if line.startswith("answer"))

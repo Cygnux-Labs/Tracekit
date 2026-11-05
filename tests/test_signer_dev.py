@@ -441,18 +441,28 @@ class SpawnAndStatus(unittest.TestCase):
 
     def test_uninstall_names_only_this_homes_runtime_dirs(self):
         """A first-day run of `tracekit uninstall` from a second HOME named the per-user runtime dir another HOME's
-        live signer used, in the `rm -rf` it prints: it names that dir only when it isn't another data dir's, and
-        this data dir's own sibling of it."""
-        self.assertEqual(autospawn.own_runtime_dirs(), [])   # none made yet
-        os.makedirs(self.run_dir, 0o700)
-        self.assertEqual(autospawn.own_runtime_dirs(), [self.run_dir])
-        with open(os.path.join(self.run_dir, autospawn.ENDPOINT), "w") as f:
-            json.dump({"data_dir": os.path.join(self.dir, "another-home-data")}, f)
-        self.assertEqual(autospawn.own_runtime_dirs(), [])
-        side = autospawn._side(self.run_dir)
-        os.makedirs(side, 0o700)
-        self.addCleanup(shutil.rmtree, side, True)
-        self.assertEqual(autospawn.own_runtime_dirs(), [side])
+        live signer used, in the `rm -rf` it prints. Review of #628: one with no endpoint.json (its signer stopped)
+        was named too, though two HOMEs share it. It names only dirs provably this HOME's (its own sibling, one inside
+        HOME, one whose endpoint.json names this data dir), and says when the per-user one can't be told."""
+        home = os.path.join(self.dir, "home")
+        os.makedirs(home)
+        with mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data")}):
+            self.assertEqual(autospawn.own_runtime_dirs(), ([], None))   # none made yet
+            os.makedirs(self.run_dir, 0o700)
+            self.assertEqual(autospawn.own_runtime_dirs(), ([], self.run_dir))   # shared, and no endpoint: can't tell
+            for named, want in ((autospawn.data_dir(), ([self.run_dir], None)),
+                                (os.path.join(self.dir, "another-home-data"), ([], None))):
+                with open(os.path.join(self.run_dir, autospawn.ENDPOINT), "w") as f:
+                    json.dump({"data_dir": named}, f)
+                self.assertEqual(autospawn.own_runtime_dirs(), want)
+            side = autospawn._side(self.run_dir)
+            os.makedirs(side, 0o700)
+            self.addCleanup(shutil.rmtree, side, True)
+            self.assertEqual(autospawn.own_runtime_dirs(), ([side], None))
+            inside = os.path.join(home, "run")   # macOS's ~/Library/Application Support/tracekit/run: this HOME's
+            os.makedirs(inside, 0o700)
+            with mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": inside}):
+                self.assertEqual(autospawn.own_runtime_dirs(), ([inside], None))
 
     def test_signer_starts_in_the_private_runtime_dir_with_cwd_off_sys_path(self):
         os.makedirs(self.run_dir, 0o700)

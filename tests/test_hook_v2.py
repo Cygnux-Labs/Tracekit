@@ -1521,6 +1521,24 @@ class InitV2(unittest.TestCase):
         with open(settings) as f:
             self.assertEqual(json.load(f), {})
 
+    def test_uninstall_never_names_system_modes_signer_home(self):
+        """Review of #628: what uninstall keeps named the client config's signer_home in any mode, so on a v1 system
+        mode host it printed `rm -rf … /var/lib/tracekit`, the system signer's ledger and keys. As uninstall() stops
+        it, only a dev mode's home counts, and never under a system config."""
+        from tracekit import client
+        v1 = os.path.join(self.home, "v1-home")
+        os.makedirs(v1)
+        for cfg, system, named in (({"mode": "dev", "signer_home": v1}, None, True),
+                                   ({"mode": "system", "signer_home": v1}, None, False),
+                                   ({"signer_home": v1}, None, False),
+                                   ({"mode": "dev", "signer_home": v1}, {"socket": "/var/lib/tracekit/s.sock"}, False),
+                                   ({"mode": "dev", "signer_home": v1}, client.SystemConfigError("not root's"), False)):
+            with self.subTest(cfg=cfg, system=system), \
+                    mock.patch.object(client, "client_config", return_value=cfg), \
+                    mock.patch.object(client, "system_config", **{"side_effect" if isinstance(system, Exception)
+                                                                   else "return_value": system}):
+                self.assertEqual(any(v1 in line for line in cli._kept()), named)
+
     def test_uninstall_leaves_a_persons_own_thinking_setting(self):
         settings = os.path.join(self.home, "settings.json")
         for before in ({}, {install.THINKING: True}, {install.THINKING: False}):

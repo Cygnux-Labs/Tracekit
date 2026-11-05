@@ -8,6 +8,7 @@ Run it as root for system mode: it then probes the files as the agent's user, in
 
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
+import ast
 import base64
 import errno
 import hashlib
@@ -257,7 +258,7 @@ def _hook_argv(cmd):
                 cmd = list(itertools.takewhile(lambda w: w != ";", lex))
         except (ValueError, AttributeError):
             return None
-        cmd = [w.strip('"') for w in cmd if w != "&"]
+        cmd = [w.strip('"') if os.name == "nt" else w for w in cmd if w != "&"]   # POSIX's split took its quotes off
     ok = len(cmd) > 3 and all(isinstance(w, str) for w in cmd) and cmd[1:3] in (["-I", "-m"], ["-I", "-c"])
     return cmd if ok else None
 
@@ -266,10 +267,15 @@ def _probe_target(argv):
     """(interpreter, the directory a -c hook puts first on sys.path (install._dev_hook_argv's `r`: a working tree) or
     None) of the hook `argv`; ValueError for a path that isn't absolute, which would resolve against doctor's working
     directory, or one the hook's code can't decode."""
-    # the tree is the code's first argument; in a hook an earlier init wrote, it is base64 in the code
+    # the tree: on POSIX the code's first argument, on Windows a literal in the code (install._literal), and in a hook
+    # an earlier init wrote, base64 in the code
     m = argv[2] == "-c" and re.search(r"b64decode\('([A-Za-z0-9+/=]*)'\)", argv[3])
-    tree = base64.b64decode(m.group(1)).decode("utf-8") if m else \
-        argv[4] if argv[2] == "-c" and argv[3].startswith("import sys; r = sys.argv[1];") and len(argv) > 4 else None
+    lit = argv[2] == "-c" and re.match(r"import sys; r = ('[^']*');", argv[3])
+    try:
+        tree = base64.b64decode(m.group(1)).decode("utf-8") if m else ast.literal_eval(lit.group(1)) if lit else \
+            argv[4] if argv[2] == "-c" and argv[3].startswith("import sys; r = sys.argv[1];") and len(argv) > 4 else None
+    except (ValueError, SyntaxError) as e:
+        raise ValueError(f"a path the hook's code can't decode ({e})") from None
     for what, p in (("an interpreter", argv[0]), ("a path", tree)):
         if p is not None and not (p.isprintable() and os.path.isabs(p)):
             raise ValueError(f"{what} that isn't an absolute path ({p[:128]!r})")

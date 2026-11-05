@@ -247,20 +247,6 @@ def _utc(ts):
     return m and f"{m.group(1)} UTC"
 
 
-def expires(ts, now=None):
-    """When an approval expires, as `tracekit approvals list` and `show` say it: _utc's `HH:MM UTC`, then `(in N min)`
-    or `(N min ago)`, in hours or days past two hours; else None. The held message says _utc's alone: a harness cuts
-    it at 500 characters (the remedy must fit), and a transcript keeps it after the minutes have passed."""
-    hhmm = _utc(ts)
-    if not hhmm:
-        return None
-    import calendar
-    left = calendar.timegm(time.strptime(ts[:19], "%Y-%m-%dT%H:%M:%S")) - (time.time() if now is None else now)
-    n = int(abs(left) // 60)   # whole minutes: "in 59 min" for an hour less a second
-    span = f"{n} min" if n < 120 else f"{round(n / 60)} h" if n < 2880 else f"{round(n / 1440)} days"
-    return f"{hhmm} ({f'in {span}' if left >= 0 else f'{span} ago'})"
-
-
 def approval_wait_s():
     """How long a held call's hook waits for its answer before it blocks the call: $TRACEKIT_APPROVAL_WAIT seconds, at
     most APPROVAL_WAIT_S; by default (unset, 0 or not a number) not at all. No harness shows a hook's output while it
@@ -628,14 +614,14 @@ def _pre(client, p, sid, tid):
             # Claude Code runs a `!` line in the session as its OS user: the person, with the dev signer; with a named
             # signer (system mode, a remote one) that user is the agent's, whom the signer refuses: another terminal
             bang = "! " if AGENT == "claude-code" and not client.signer else ""
-            until, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
+            expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
             if waited.get("reason"):   # an agent approver's approval in its veto delay: approved, it may run after it
                 return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])} is {waited['reason']}, then "
                                       "make the identical call again.", reason, look + ".",
                                       "wait as the first line says, then make the identical call again; if it is "
                                       "held again, tell the person and pass on what it says."))
             return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])}"
-                                  + (f", expires {until}." if until else "."), reason,
+                                  + (f", expires {expires}." if expires else "."), reason,
                                   f"{look}; allow once with `{bang}{cmd} approve {aid}`; refuse with "
                                   f"`{bang}{cmd} reject {aid}`."))
         if c is None:   # rejected (and by whom), expired, or the wait failed

@@ -122,18 +122,23 @@ def _theirs(d):
 
 
 def own_runtime_dirs():
-    """The runtime dirs that exist and hold this HOME's dev signer's files (`tracekit uninstall` names them): the
-    per-user one, unless the endpoint.json in it names another HOME's data dir, and this data dir's sibling of it."""
+    """(the runtime dirs that exist and provably hold this HOME's dev signer's files, the per-user one when it exists
+    and that can't be told), for `tracekit uninstall`. Provably: this data dir's own sibling (_side, named after it),
+    and the per-user one when it is inside this HOME or the endpoint.json in it names this data dir. Two HOMEs share
+    the per-user one elsewhere ($XDG_RUNTIME_DIR/tracekit, macOS's /tmp/tk-<uid>), and a stopped signer may leave no
+    endpoint.json: then it is the second, unless its endpoint.json names another HOME's data dir."""
     try:
         d = runtime_dir(create=False)
     except (OSError, SignerUnavailable):
-        return []
+        return [], None
     try:
         with open(os.path.join(d, ENDPOINT)) as f:
-            mine = _ours(json.load(f).get("data_dir", data_dir()))
-    except (OSError, ValueError, AttributeError):   # none (no signer ran there) or unreadable: nobody else's either
-        mine = True
-    return [x for x in [d] * mine + [_side(d)] if os.path.isdir(x)]
+            named = json.load(f)["data_dir"]
+    except (OSError, ValueError, KeyError, TypeError):   # none (no signer runs there now) or unreadable
+        named = None
+    mine = os.path.realpath(d).startswith(os.path.realpath(os.path.expanduser("~")) + os.sep) or \
+        named is not None and _ours(named)
+    return [x for x in [d] * mine + [_side(d)] if os.path.isdir(x)], d if not mine and named is None else None
 
 
 def signer_dir(create=True):

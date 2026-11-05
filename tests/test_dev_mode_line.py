@@ -95,6 +95,25 @@ class DevModeLine(unittest.TestCase):
                 "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them", LINE,
                 "(tracekit status --json prints all of it)", ""])))
 
+    def test_status_reads_any_settings_file_and_says_how_to_add_hooks(self):
+        """Review of #628: a settings file that isn't JSON (or isn't a settings object) crashed `tracekit status` with
+        KeyError: 'versions', and one with no Tracekit hooks printed "(0 events)" instead of how to add them."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        project = os.path.join(d, ".claude")
+        os.makedirs(project)
+        with open(os.path.join(project, "settings.json"), "w") as f:
+            f.write("[]")   # JSON, not a settings object
+        with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "CLAUDE_CONFIG_DIR": ""}), \
+                mock.patch("os.getcwd", return_value=d), \
+                mock.patch.object(install, "MANAGED_SETTINGS", {"linux": os.path.join(d, "none")}):
+            hooks = install._installed_hooks()
+        self.assertEqual(hooks, [{"settings": os.path.join(project, "settings.json"), "error": "unreadable"}])
+        none = {"settings": "b.json", "events": [], "versions": []}
+        self.assertEqual(cli._status_lines({"hooks": hooks + [none]}, {"dev": True, "error": "not started"})[1:], [
+            f"hooks       {hooks[0]['settings']} isn't a settings file Tracekit can read, so its hooks are unknown",
+            "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"])
+
     def test_status_says_it_for_a_dev_signer_and_not_for_a_system_one(self):
         self.assertEqual(self.status(True, None), LINE)
         self.assertIsNone(self.status(False, None))

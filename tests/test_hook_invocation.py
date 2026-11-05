@@ -53,23 +53,66 @@ class ClearText(unittest.TestCase):
     base64, which reads as malware to a security reviewer: they are plain, quoted arguments now, and the hook runs as
     before from a path with spaces and quotes."""
 
-    def test_the_command_names_its_tree_in_clear_text_and_runs_from_any_path(self):
-        from tracekit import doctor
+    def tree(self, name, entry="import sys\ndef _entry(event):\n    print('ran', event, sys.path[0], sys.argv[1:])\n"
+                                    "    return 0\n"):
+        """A directory `name` holding a tracekit package whose v2 hook's _entry is `entry`."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        tree = os.path.join(d, "it's a \"tree\" $HOME")
+        tree = os.path.join(d, name)
         os.makedirs(os.path.join(tree, "tracekit", "integrations"))
-        for name in ("__init__.py", os.path.join("integrations", "__init__.py")):
-            open(os.path.join(tree, "tracekit", name), "w").close()
+        for f in ("__init__.py", os.path.join("integrations", "__init__.py")):
+            open(os.path.join(tree, "tracekit", f), "w").close()
         with open(os.path.join(tree, "tracekit", "integrations", "claude_code.py"), "w") as f:
-            f.write("import sys\ndef _entry(event):\n    print('ran', event, sys.argv[1:])\n    return 0\n")
-        with mock.patch.object(install, "ROOT", tree), mock.patch("importlib.util.find_spec", return_value=None):
+            f.write(entry)
+        return tree
+
+    def test_the_command_names_its_tree_in_clear_text_and_runs_from_any_path(self):
+        """Review of #628: doctor took a `"` off the end of every word of a POSIX command, so a tree whose name ends
+        in one was misread."""
+        from tracekit import doctor
+        for name in ("it's a \"tree\" $HOME", 'ends in a quote "'):
+            tree = self.tree(name)
+            with self.subTest(tree=tree), mock.patch.object(install, "ROOT", tree), \
+                    mock.patch("importlib.util.find_spec", return_value=None):
+                cmd = install._hook_command(install.V2_HOOK, args=("PreToolUse",))
+                self.assertNotIn("base64", cmd)
+                self.assertIn("from tracekit.integrations.claude_code import _entry", cmd)
+                p = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, timeout=60)
+                self.assertEqual((p.returncode, p.stdout.strip()),
+                                 (0, f"ran PreToolUse {tree} {[tree, 'PreToolUse']}"), p.stderr)
+                self.assertEqual(doctor._probe_target(doctor._hook_argv(cmd)), (sys.executable, tree))   # D-VERSIONS
+
+    HOSTILE = "C:\\Users\\O'Brien $(id) `id` %PATH% !x &calc \"q\"\\Tracekit"
+
+    def windows(self, tree, branch):
+        """The hook command init writes on Windows for `tree` on `branch`, and doctor's reading of its tree."""
+        from tracekit import doctor
+        with mock.patch.object(install.os, "name", "nt"), mock.patch.object(install, "ROOT", tree), \
+                mock.patch.object(install, "_branch", return_value=branch), \
+                mock.patch("importlib.util.find_spec", return_value=None):
             cmd = install._hook_command(install.V2_HOOK, args=("PreToolUse",))
+            return cmd, doctor._probe_target(doctor._hook_argv(cmd))[1]
+
+    def test_on_windows_no_shell_expands_the_tree_or_branch_in_the_command(self):
+        """Review of #628: the Windows command passed the tree, branch and event as arguments quoted for the C runtime,
+        which Claude Code's Git Bash (Codex's PowerShell, Droid's cmd.exe) read as shell text: C:\\Users\\me lost its
+        backslashes, O'Brien broke the line, and a branch fix&calc or f$(id) ran a command. They are literals inside
+        the code now, every character a shell reads in double quotes escaped; here under bash, as Git Bash runs it."""
+        branch = "fix&calc$(id)`id`%PATH%'q\"!x"
+        tree = self.tree(self.HOSTILE)
+        cmd, read = self.windows(tree, branch)
+        self.assertEqual(read, tree)   # doctor reads the tree back from the code
         self.assertNotIn("base64", cmd)
-        self.assertIn("from tracekit.integrations.claude_code import _entry", cmd)
-        p = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, timeout=60)
-        self.assertEqual((p.returncode, p.stdout.strip()), (0, f"ran PreToolUse {[tree, 'PreToolUse']}"), p.stderr)
-        self.assertEqual(doctor._probe_target(doctor._hook_argv(cmd)), (sys.executable, tree))   # D-VERSIONS' probe
+        p = subprocess.run(["bash", "-c", cmd], input="{}", capture_output=True, text=True, timeout=60)
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, f"ran PreToolUse {tree} []"), p.stderr)
+        self.assertNotIn("uid=", p.stdout + p.stderr)
+        broken = self.tree(self.HOSTILE, "from tracekit import a_name_this_branch_removed\n")
+        p = subprocess.run(["bash", "-c", self.windows(broken, branch)[0]], input="{}", capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(f"the working tree {broken}, which cannot import it now", p.stderr)
+        self.assertIn(f"was on {branch} when the hooks were installed", p.stderr)
+        self.assertNotIn("uid=", p.stdout + p.stderr)
 
 
 @unittest.skipIf(os.name == "nt", "the fail-closed wrapper is POSIX shell")
