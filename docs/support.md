@@ -47,6 +47,7 @@ experimental.
 | Wassette behind the MCP gateway (its policy rule is tested against a stand-in with Wassette's tool names, not against Wassette in CI) | [Wassette](integrations/wassette.md) |
 | `tracekit follow` (agentsh's audit log) and the signer's `importers` | [agentsh](integrations/agentsh.md) |
 | Verified tool results (signer.yaml `verify_tool_results`) | [gateway](gateway.md#verified-tool-results) |
+| Tracekit Box's agent channel (signer.yaml `box_daemons`, `channel_open`, `ext.box` and verify's `boxed agent` line; tested against a stand-in daemon on the signer's Unix socket, not Tracekit Box itself) | [limits](limits.md#tracekit-box-experimental) |
 | The kernel sensor import (`tracekit sensor import`), Linux: checked against event lines shaped as Tetragon's and Falco's source writes them, not a live sensor | [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md) |
 | OTLP import and export, the v1 OTLP receiver, ingest gateway and model proxy (these three need `--experimental`) | [OpenTelemetry](otel.md) |
 | Witnesses, the public witness, Rekor and RFC 3161 anchors, `tracekit monitor`, the record-key issuer, external and KMS log keys, SLH-DSA hybrid checkpoints | [witnesses](witnesses.md), [monitor](monitor.md), [issuer](issuer.md) |

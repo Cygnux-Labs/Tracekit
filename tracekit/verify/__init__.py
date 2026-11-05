@@ -139,9 +139,17 @@ def summary(rep, code, integrity, assurance, stream=None):
 def protection(rep, assurance, unanchored):
     """Whether the record is proof against the agent: from the isolation the signer recorded for each run (v2) or that
     v1's assurance names, the weakest of them, and only when something outside the bundle vouches for its key (v1: the
-    trust root; v2: always, the trust file). Lines of plain ASCII."""
+    trust root; v2: always, the trust file). A Tracekit Box box's runs (v2's `boxed agent` check) get that check's
+    lines and are never under the general claim: a bundle of them alone gets only those. Lines of plain ASCII."""
+    boxed, said = getattr(rep, "boxed", (0, []))
+    if boxed and boxed >= sum(rep.isolation.values()):
+        return said
+    return _general(rep, assurance, unanchored, boxed) + said
+
+
+def _general(rep, assurance, unanchored, boxed):
     if rep.isolation:
-        iso = set(rep.isolation)
+        iso = set(rep.isolation) | ({"unknown"} if boxed else set())
     elif assurance.startswith("signer_isolation="):   # v1: "signer_isolation=a, b (stamped ...)"
         iso = set(assurance[len("signer_isolation="):].split(" (", 1)[0].split(", "))
     else:

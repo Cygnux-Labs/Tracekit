@@ -72,6 +72,10 @@ export class Report {
   findings: string | null = null;
   /** Checks the bundle needs that this verifier does not implement. */
   unsupported: string[] = [];
+  /** For the box check: the pinned witnesses' cosignatures of the checkpoint, `name (class) at time`, and the seqs of
+   * the bundle's own runs' first records. */
+  anchored: string[] = [];
+  firsts = new Set<J>();
 
   check(check: string, ok: boolean, detail = "", problems: string[] = [], warn = false) {
     this.checks.push({ check, status: ok ? "pass" : warn ? "warn" : "fail", detail, problems });
@@ -656,7 +660,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
-  checkExt(rep, [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
+  rep.anchored = [...cosigs].sort((a, b) => a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)
+    .map(([k, ts]) => `${k.split("+")[0]} (${witnesses.get(k)}) at ${fmt(ts)}`);
+  rep.firsts = new Set(firsts.map((e) => at(e, "seq")));
+  checkExt(rep,[...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
     .values()], get(manifest, "verifier_version"));
 }
 
@@ -706,12 +713,63 @@ function checkOpenshellPolicy(rep: Report, events: J[]) {
     + "recorded").slice(0, 20), true);
 }
 
+/** A Tracekit Box engine, as verify names what its box is (tracekit/signer/service.py ENGINES). */
+const ENGINES: Record<string, string> = { firecracker: "micro-VM" };
+const BOXED = "PROOF AGAINST THE BOXED AGENT";
+const DOORS = "the box's doors (its connections and file writes)";
+
+/**
+ * Whether `e` carries ext.box as the signer writes it: on run.registered only, {id, image_digest, allow, engine,
+ * channel?}, under a Box daemon's identity (a uid): its box run, or with parent_run a run of its box's agent channel.
+ */
+function boxLabel(e: J): boolean {
+  const v = isObj(get(e, "ext")) ? get(e.ext, "box") : null, d = get(e, "data");
+  const i = isObj(d) ? get(d, "identity") : null, keys = isObj(v) ? Object.keys(v) : [];
+  return get(e, "type") === "run.registered" && isObj(v) && isObj(i) && get(i, "scheme") === "uid"
+    && ["id", "image_digest", "allow", "engine"].every((k) => keys.includes(k))
+    && keys.every((k) => ["id", "image_digest", "allow", "engine", "channel"].includes(k))
+    && typeof v.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(v.id) && typeof v.image_digest === "string"
+    && /^sha256:[0-9a-f]{64}$/.test(v.image_digest) && Array.isArray(v.allow)
+    && v.allow.every((a: J) => typeof a === "string") && typeof v.engine === "string"
+    && Object.hasOwn(ENGINES, v.engine) && (!Object.hasOwn(v, "channel") || v.channel === "agent");
+}
+
+/**
+ * ext.box: the label of a Tracekit Box box's run (its daemon's account of the box, with the engine from the signer's
+ * own config) and of each run its agent channel registered (a copy, with parent_run). The signing key was outside that
+ * box, so the runs are proof against the agent in it, and no more: an agent run's records are its own account, the
+ * box's doors held it, and anything running as the daemon's or the signer's user on the host is outside the claim.
+ * Anywhere else, or in another shape, a warning and no claim. Only the bundle's own runs are claimed for
+ * (rep.firsts): a run-set's records of other runs carry their labels too.
+ */
+function checkBox(rep: Report, events: J[]) {
+  const bad = events.filter((e) => !boxLabel(e));
+  if (bad.length) {
+    rep.check("boxed agent", false, `${bad.length} record(s) carry ext.box where or how the signer never writes it: `
+      + "no proof against a boxed agent", bad.map((e) => `seq ${str(get(e, "seq"))}: ext.box is not a box's label on `
+      + "its run.registered").slice(0, 20), true);
+    return;
+  }
+  const good = events.filter((e) => rep.firsts.has(get(e, "seq")));
+  if (!good.length) return;   // labels of runs this bundle doesn't hold
+  const one = good.length === 1, agent = good.some((e) => Object.hasOwn(e.data, "parent_run"));
+  const kinds = [...new Set(good.map((e) => ENGINES[e.ext.box.engine]))].sort(byCodePoint).join(", ");
+  rep.check("boxed agent", true, `${BOXED} (${kinds}): the signing key was outside its box for `
+    + `${one ? "this run" : `these ${good.length} runs`}.`, [one && agent
+    ? `This run's records are the agent's own account of its calls; ${DOORS} are the record of what it could do.`
+    : one ? `This run's records are ${DOORS}, as the Box daemon recorded them.`
+      : `In these runs, the agent's records are its own account of its calls; ${DOORS} are the record of what it `
+        + "could do.",
+  "Before you run anything the box wrote, review it: code you run on this machine can reach the key.",
+  ...rep.anchored.map((a) => `anchored by ${a}`)]);
+}
+
 /**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
  */
 const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended],
-  ["openshell.policy", checkOpenshellPolicy]]);
+  ["openshell.policy", checkOpenshellPolicy], ["box", checkBox]]);
 const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
 /** A run's problems past which its later records go unchecked: forged records cost a verifier little. */
 const RUN_PROBLEMS = 20;

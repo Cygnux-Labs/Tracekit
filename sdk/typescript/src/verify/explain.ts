@@ -261,6 +261,12 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
     warn: "A record carries an OpenShell policy change where or how the signer never writes one. The record verified "
       + "like every other.",
   },
+  "boxed agent": {
+    pass: "Runs of a Tracekit Box box and of its agent: proof against the agent in that box only, whose box never held "
+      + "the signing key. The records are the agent's own account; the box's doors are what held it.",
+    warn: "A record carries a box label where or how the signer never writes one: nothing is claimed about the key. "
+      + "The record verified like every other.",
+  },
   "constraints": {
     pass: "What the person's request said not to do, added while the run was open, and the calls it held.",
     fail: "A call held by a live constraint comes before any constraint in its run, or wasn't held for approval: the "
