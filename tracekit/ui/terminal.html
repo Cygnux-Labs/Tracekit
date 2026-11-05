@@ -3183,7 +3183,10 @@
         margin-bottom: 6px
       }
 
-      .tcard table.wt th,
+      .tcard table.wt th {
+        white-space: normal
+      }
+
       .tcard table.wt td {
         white-space: normal;
         overflow-wrap: anywhere
@@ -4036,14 +4039,14 @@
         + (t.rules.length ? `<table class="wt"><thead><tr><th>RULE</th><th>NOBODY ANSWERED</th><th>WHY IT HOLDS</th></tr></thead><tbody>` + t.rules.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.n)}</td><td>${esc(r.reason)}</td></tr>`).join("") + `</tbody></table>` : "");
     }
     const TIPNAME = { context: "CONTEXT", cache: "CACHE", holds: "HOLDS NOBODY ANSWERED" };
-    const TIPTIME = { context: "larger contexts answered slower here, but that is a correlation, not a saving", cache: "a wait stays a wait: only a held call that fails at once gives its time back", holds: "the agent sat blocked on calls nobody answered" };
+    const TIPTIME = { context: "compaction's effect on time isn't measured", cache: "a wait stays a wait; a held call's waiting time is counted in tip 3", holds: "the agent sat blocked on calls nobody answered" };
     function tipCard(t, i, days) {
       const head = `<div class="tsrc">TIP ${esc(i + 1)} · ${esc(TIPNAME[t.id] || t.id)}` + (t.from ? " · from " + esc(t.from) : "") + `</div>`;
       if (!t.ok) return `<section class="tcard tno">` + head + `<div class="tst">${esc(t.why || "Not enough data to say.")}</div>` + (t.id === "cache" ? tipBins(t) : "") + `</section>`;
       const sv = t.saving || {};
       return `<section class="tcard">` + head + `<h3>${esc(t.title)}</h3><div class="tst">${esc(t.line)}</div>` + tipEvidence(t)
         + `<div class="tsave">` + (sv.usd != null ? `<span>WOULD HAVE SAVED<b class="${sv.usd >= 0.005 ? "" : "tzero"}">${esc(sv.usd >= 0.005 ? "about " + tipUsd(sv.usd) : "nothing")}</b>${esc(`in ${plural(days, "day")}, an estimate` + (sv.pct > 0 ? `: ${sv.pct}% of these sessions' input side` : ""))}</span>` : "")
-        + `<span>TIME<b class="${sv.minutes ? "" : "tzero"}">${esc(sv.minutes == null ? "not measured" : sv.minutes ? "about " + tipDur(sv.minutes * 60) : "none")}</b>${esc(TIPTIME[t.id] || "")}</span></div>`
+        + `<span>TIME<b class="${sv.minutes ? "" : "tzero"}">${esc(sv.minutes == null ? "not measured" : sv.minutes ? "about " + tipDur(sv.minutes * 60) : "none")}</b>${esc(t.id === "context" && t.slower > 0 ? `steps above ${tipTok(t.cap)} answered a median ${t.slower} s slower here, a correlation, not a saving` : TIPTIME[t.id] || "")}</span></div>`
         + `<details class="tmath"><summary>THE ARITHMETIC</summary><ol>` + t.math.map(m => `<li>${esc(m)}</li>`).join("") + `</ol></details>`
         + (t.fix ? `<div class="tfix"><div class="tsrc">THE FIX</div><div>${esc(t.fix.text)}${t.id === "holds" ? ' <button type="button" class="cp" data-page="approvals">APPROVALS</button>' : ""}</div>` + (t.fix.copy ? `<div><code class="shell">${esc(t.fix.copy)}</code>` + cp(t.fix.copy) + `</div>` : "") + `</div>` : "") + `</section>`;
     }
@@ -4061,7 +4064,8 @@
       tipsKey = TIPS;
       const s = TIPS.sources, [w0, w1] = TIPS.window, days = Math.round((w1 - w0) / 86400), tr = s.transcripts;
       const also = s.signed.also || {};
-      put("tipsp", `<div class="tips"><div class="tread">READ: ${esc(plural(s.signed.records, "signed record"))} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
+      const span = s.signed.span ? ` from ${fmtD(s.signed.span[0])} ${fmtT(s.signed.span[0]).slice(0, 5)} to ${fmtD(s.signed.span[1])} ${fmtT(s.signed.span[1]).slice(0, 5)}, the viewer's live view` : "";
+      put("tipsp", `<div class="tips"><div class="tread">READ: ${esc(plural(s.signed.records, "signed record") + span)} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
         + esc(also.steps ? ` · ${plural(also.steps, "more signed model step")} of ${plural(also.runs, "run")} the transcripts also hold, counted once, from them` : "")
         + esc(TIPS.root ? ` · Claude Code's transcripts in ${TIPS.root}, read-only: ${plural(tr.files, "file")}, ${plural(tr.steps, "step")}` + (tr.unreadable ? `, ${tr.unreadable} unreadable` : "")
           + "; the tips list sessions from every project under that folder"

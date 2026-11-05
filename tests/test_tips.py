@@ -137,6 +137,39 @@ class Context(unittest.TestCase):
     def nocache(self):
         return next(iter(tips.signed_steps(uncached(), 0).values()))["steps"]
 
+    def test_an_agent_that_trims_itself_by_under_half_gets_no_saving_from_compacting(self):
+        """A context that shrank by a third (API context editing) was subtracted from the replay's own smaller context:
+        an agent that already trims itself showed $15 that compacting couldn't save."""
+        tr, recs, ctx = view.Translator(), [v2rec(1, "run.registered", {"agent": {"name": "bot"}})], 0
+        for i in range(400):
+            new, read = (40_000, 0) if i == 0 else (100_000, 20_000) if ctx + 4_000 > 150_000 else (ctx + 4_000, ctx)
+            recs.append(v2rec(2 + i, "model.exchange", {"exchange_id": f"x{i}", "phase": "response", "model": "claude-opus-5-5",
+                                                        "upstream": "anthropic", "usage": {
+                                                            "input_tokens": 0, "output_tokens": 300, "cache_read_tokens": read,
+                                                            "cache_write_tokens": new - read}},
+                              ts=f"2026-10-10T{17 + i // 3600:02d}:{(i // 60) % 60:02d}:{i % 60:02d}.000000Z"))
+            ctx = new
+        t = tips.build([x for r in recs for x in tr.feed(r)], None, NOW)["tips"][0]
+        self.assertTrue(not t["ok"] or t["saving"]["usd"] <= 0, t.get("saving"))
+
+    def test_a_replay_of_an_uncached_agent_pays_its_re_reads_as_input(self):
+        steps = [dict(tips._step(T0 + i, f"x{i}", "claude-opus-5-5"), **{"in": c}) for i, c in
+                 enumerate((100_000, 200_000, 300_000))]
+        # 0.40 the first call; past the cap a summary call re-sends 200k at $4/M, writes 20k, and 50k is sent again;
+        # the last call re-sends its replayed 150k, as it sent its own 300k
+        self.assertAlmostEqual(tips.replay(steps, 150_000, 50_000, OPUS, OPUS["input"])[0], 0.4 + (0.8 + 0.4 + 0.2) + 0.6)
+
+    def test_time_is_said_only_when_steps_above_the_cap_were_slower(self):
+        root = tmp(self)
+        lines = []
+        for i, x in enumerate(growing()):   # a reply 2 s after each prompt, however large the context
+            lines += [{"type": "user", "timestamp": iso(T0 + 10 * i - 2), "message": {"role": "user", "content": "go"}}, x]
+        write_jsonl(os.path.join(root, "p", "s.jsonl"), lines)
+        t = tips.build([], root, NOW)["tips"][0]
+        self.assertIsNone(t["slower"])
+        self.assertFalse(any("slower" in m for m in t["math"]))
+        self.assertIn("it compacted 1 time,", t["math"][0])
+
     def test_an_agent_that_is_not_claude_code_gets_its_own_fix(self):
         t = tips.build(uncached(), None, NOW)["tips"][0]
         self.assertTrue(t["ok"], t.get("why"))
@@ -193,6 +226,29 @@ class Cache(unittest.TestCase):
                                      {"label": "6 to 10 min", "n": 1, "rebuilt": 1}])
         self.assertIn("sleep 10", t["fix"]["copy"])
         self.assertNotIn("400", " ".join(c["cause"] for c in t["causes"]))   # a command's family, never its arguments
+
+    def test_polling_still_pays_what_the_step_adds(self):
+        t = self.build([
+            cc_assistant("m0", T0, write=200_000, tools=[("toolu_s", "Bash", {"command": "sleep 400"})]),
+            cc_result("toolu_s", T0 + 400),
+            cc_assistant("m1", T0 + 405, write=212_000)])   # the cache expired, and the step added 12k
+        [w] = t["waits"]
+        # one more poll, then the step reads the 200k it had and writes its 12k at the 5-minute rate
+        self.assertEqual((w["usd"], w["alt"]), (1.06, round((200_000 * 0.2 + 200 * 20 + 200_000 * 0.2 + 12_000 * 5) / 1e6, 4)))
+
+    def test_the_rewrite_after_a_compaction_is_not_a_wait(self):
+        t = self.build([
+            cc_assistant("m0", T0, read=700_000, write=10_000, tools=[("toolu_t", "Bash", {"command": "make test"})]),
+            cc_result("toolu_t", T0 + 400),
+            cc_assistant("m1", T0 + 405, write=70_000)])   # compacted: a tenth of the context, written again
+        self.assertEqual(t.get("waits", []), [])
+
+    def test_a_limit_to_stay_under_is_rounded_down(self):
+        t = self.build([cc_assistant("m0", T0, write=200_000, life="1h", tools=[("toolu_a", "Agent", {})]),
+                        cc_result("toolu_a", T0 + 4000), cc_assistant("m1", T0 + 4005, write=200_000, life="1h")],
+                       sub=False)
+        self.assertEqual(t["title"], "Keep each blocking call under 59 min")   # 1 h less 30 s: never "under 1 h"
+        self.assertEqual([tips._dur(s, down=True) for s in (270, 3570, 3599)], ["4 min 30 s", "59 min", "59 min"])
 
     def test_a_wait_counts_from_the_start_of_the_request_before_it(self):
         """The cache lives from the start of the request that read or wrote it: a step whose model took 250 s and whose
@@ -271,9 +327,11 @@ class Holds(unittest.TestCase):
         self.assertEqual(t["rules"], [{"id": "TK-SHELL-PARSE", "n": 1, "reason": view.ENGINE_RULES["TK-SHELL-PARSE"],
                                        "remedy": ""}])
         self.assertEqual(t["saving"], {"usd": None, "minutes": 8})
-        self.assertEqual(t["fix"]["copy"], "unset TRACEKIT_APPROVAL_WAIT")   # it waited: nobody answered
-        self.assertIn("env block of Claude Code's settings", t["fix"]["text"])   # where init and the docs set it
-        self.assertIn("restart the agent", t["fix"]["text"])
+        # it waited and nobody answered: the edit that takes the wait out of Claude Code's settings
+        self.assertEqual(t["fix"]["copy"], "jq 'del(.env.TRACEKIT_APPROVAL_WAIT)' ~/.claude/settings.json > "
+                                           "~/.claude/settings.json.new && mv ~/.claude/settings.json.new ~/.claude/settings.json")
+        for where in ("$CLAUDE_CONFIG_DIR/settings.json", ".claude/settings.local.json", "restart the agent"):
+            self.assertIn(where, t["fix"]["text"])
         self.assertIn("a person answered in a median 4 s", " ".join(t["math"]))
         self.assertIn("8 min on the ones nobody answered", " ".join(t["math"]))
         self.assertTrue(t["line"].endswith("blocked the agent for 8 min in all."), t["line"])
@@ -311,6 +369,24 @@ class Sources(unittest.TestCase):
                 self.assertEqual((s["steps"], s["also"]), (10, {"runs": 1, "steps": 300}))
                 self.assertEqual(out["tips"][0]["saving"], alone["tips"][0]["saving"])
                 self.assertEqual(out["tips"][0]["from"], "Claude Code's transcripts (read-only)")
+
+    def test_a_signed_step_counts_once_only_when_a_transcript_message_matches_it(self):
+        """One signed step with a transcript message's counts dropped the whole signed run: an SDK agent no transcript
+        holds, and a gateway run's second session the transcripts don't hold, both vanished."""
+        root = tmp(self)
+        write_jsonl(os.path.join(root, "p", "s.jsonl"), growing(n=60))
+        t = datetime(2026, 10, 10, 17, 2, tzinfo=timezone.utc).timestamp()   # another session, the SDK step's counts
+        write_jsonl(os.path.join(root, "p", "other.jsonl"), [cc_assistant("msg_x", t, new=60_000, out=300)])
+        s = tips.build(uncached(), root, NOW)["sources"]["signed"]
+        self.assertEqual((s["steps"], s["also"]), (79, {"runs": 1, "steps": 1}))   # the coincidence takes one step
+        root = tmp(self)
+        a = growing()
+        b = [{**x, "timestamp": iso(T0 + 4000 + 10 * i), "message": {**x["message"], "id": "b" + x["message"]["id"],
+                                                                      "usage": {**x["message"]["usage"], "output_tokens": 210}}}
+             for i, x in enumerate(growing())]
+        write_jsonl(os.path.join(root, "proj-a", "sess-a.jsonl"), a)
+        s = tips.build(exchanges(a + b), root, NOW)["sources"]["signed"]
+        self.assertEqual((s["steps"], s["also"]), (300, {"runs": 1, "steps": 300}))
 
     def test_reading_the_transcripts_changes_nothing_and_skips_what_the_window_leaves_out(self):
         root = tmp(self)
@@ -454,20 +530,34 @@ class Page(unittest.TestCase):
             let PAGE = "tips", TIPSON = true, TIPSERR = "", TIPSASKED = true, tipsKey = null, html = "";
             const put = (id, h) => { html = h; }, $ = () => ({}), loadTips = () => {};
             let TIPS = {window: [0, 7 * 86400], prices: "2026-11-05", root: "~/.claude/projects", tips: [],
-                        sources: {signed: {records: 9, steps: 2, holds: 0, also: {runs: 1, steps: 300}},
+                        sources: {signed: {records: 9, steps: 2, holds: 0, also: {runs: 1, steps: 300}, span: [43200, 86400]},
                                   transcripts: {files: 3, steps: 400, unreadable: 0}}};
             renderTipsPage(); process.stdout.write(html);""")
         self.assertIn("300 more signed model steps of 1 run the transcripts also hold, counted once, from them", out)
         self.assertIn("transcripts in ~/.claude/projects, read-only", out)
         self.assertIn("the tips list sessions from every project under that folder", out)
+        self.assertIn("9 signed records from 1970-01-01", out)   # the live view's span, not the window's
+        self.assertIn("to 1970-01-02", out)
+        self.assertIn("the viewer&#39;s live view", out)
 
     def test_a_phone_stacks_card_3_wraps_its_tables_and_enlarges_the_chart_text(self):
         css = observe.read_text(observe.UI)
         phone = css[css.index("/* phones: every page stacks"):]
-        for rule in (".tbars {\n        grid-template-columns: minmax(0, 1fr)", ".tcard table.wt td {\n        white-space: normal",
+        for rule in (".tbars {\n        grid-template-columns: minmax(0, 1fr)", ".tcard table.wt th {\n        white-space: normal\n",
+                     ".tcard table.wt td {\n        white-space: normal;\n        overflow-wrap: anywhere",
                      ".tchart text {\n        font-size: 17px"):
             with self.subTest(rule=rule):
                 self.assertIn(rule, phone)
+
+    def test_the_context_card_says_steps_were_slower_only_when_they_were(self):
+        card = """tipCard({id: "context", ok: true, from: "f", title: "t", line: "l", cap: 200000, agent: "a", slower: SLOWER,
+                  chart: {x: [0, 1], actual: [1, 3], replay: [1, 2], n: 2, cap: 2, marks: [], read: 0.2}, caps: [],
+                  saving: {usd: 5, pct: 9, minutes: null}, math: [], fix: null}, 0, 7)"""
+        out = json.loads(page_js(self.NAMES, "process.stdout.write(JSON.stringify(["
+                                 + card.replace("SLOWER", "null") + "," + card.replace("SLOWER", "0.6") + "]))"))
+        self.assertNotIn("slower", out[0])
+        self.assertIn("compaction&#39;s effect on time isn&#39;t measured", out[0])
+        self.assertIn("steps above 200k answered a median 0.6 s slower here, a correlation, not a saving", out[1])
 
     def test_the_page_asks_for_tips_only_when_its_snapshot_says_it_has_them(self):
         """A link opened TIPS on a sign-in's page: its /api/tips 403 would end the page's session."""
