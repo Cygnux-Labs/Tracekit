@@ -1,8 +1,8 @@
-"""The Cygnux public witness (tracekit.public_witness_server): every v2 signer's witness by default once URL and VKEY
-below name its deployment (docs/public-witness.md; what it sees: docs/public-witness-privacy.md). Until then both are
-empty and nothing is anchored by default: `tracekit init --v2`, `tracekit up --wait` and `tracekit doctor` say so. Opt
-out with `--no-witness` (init --v2, up); a signer.yaml lists it as `witnesses: [public]`, which `tracekit init --v2`
-writes once it is configured."""
+"""The Cygnux public witness (tracekit.public_witness_server): the dev signer's and system mode's witness by default
+once URL and VKEY below name its deployment (docs/public-witness.md; what it sees: docs/public-witness-privacy.md). A
+signer.yaml lists it as `witnesses: [public]`, which `tracekit init --v2` writes then. Until both are set nothing is
+anchored by default: `tracekit init --v2` and `tracekit up --wait` say so (NOT_CONFIGURED), and doctor's witness check
+fails. `--no-witness` (init --v2, up) opts out until an init with `--public-witness`."""
 import re
 
 from .wiki import wiki_url
@@ -12,10 +12,9 @@ VKEY = ""   # its cosignature vkey, as `tracekit public-witness init` prints it
 ORIGIN = re.compile(r"[a-z0-9]([-.a-z0-9]{0,251}[a-z0-9])?(/[A-Za-z0-9._~-]+)+")   # a log origin it takes: host/path
 ORIGIN_FORMAT = "host/path: a lower-case host and at least one path segment, such as tracekit.example.com/log"
 RANDOM_ORIGIN = re.compile(r"tracekit\.local/[0-9a-f]{32}")   # a signer's default origin: its random log id
-NOT_CONFIGURED = ("not anchored yet: the public witness is not deployed yet (tracekit.public_witness has no URL and "
-                  "vkey)")
-LOST = ("with no witness, whoever holds the signing key can rewrite and re-sign the log unseen, and its bundles verify "
-        "as NOT ANCHORED")
+NOT_CONFIGURED = "not anchored: the public witness isn't deployed yet, so no witness cosigns this log"
+LOST = ("not anchored: --no-witness is on, so whoever holds the signing key can rewrite the log unseen (an init with "
+        "--public-witness turns the public witness back on)")
 
 
 def configured():

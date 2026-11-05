@@ -129,7 +129,8 @@ Startup (04-design §2.6): the storage lock is taken before any socket is touche
 checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint,
 for up to WITNESS_START_S (the dev signer: DEV_WITNESS_START_S, within the time a client waits for it to start). A log a
 witness doesn't know yet registers there (its log key, proved by its signed empty checkpoint): the key's first checkpoint.
-data_dir/witnessed.json maps each witness that answered to the size it holds (0: none yet). A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`, `add_checkpoint` and `latest`), and
+data_dir/witnessed.json, written at every start, maps each configured witness to the size it holds (0: none yet; null:
+no answer), {} with none. A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`, `add_checkpoint` and `latest`), and
 `latest` raises when it is unreachable. A local log behind the witnessed one is a rollback: a signed `trace.tamper{rollback}`, then client writes are refused until it is
 acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the signer runs. The store opens from its
 latest snapshot (written every SNAPSHOT_RECORDS records and on close) and replays only the records after it.
@@ -367,8 +368,8 @@ T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decide
 TICK_S = 1.0
 WITNESS_START_S = 30.0   # start-up: how long the witnesses, asked at once, have to say how far they cosigned
 DEV_WITNESS_START_S = 2.0   # the dev signer's: a client waits 10 s for it to start (autospawn.ensure)
-WITNESSED = "witnessed.json"   # in data_dir: each witness that answered at the last start -> the size it holds
-NO_WITNESS = "no-witness"   # in the dev data dir: `--no-witness` (init --dev --v2, up) turned its witness off
+WITNESSED = "witnessed.json"   # in data_dir, at every start: each configured witness -> the size it holds, or null
+NO_WITNESS = "no-witness"   # in the dev data dir: `--no-witness` (init --dev --v2, up) until init --public-witness
 CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
@@ -1097,27 +1098,30 @@ class SignerService:
                                              f"checkpoint ({size}): rolled back")
 
     def _check_witnesses(self, witnesses, acknowledged, wait_s):
-        if not witnesses:
-            return
-        text, heads = checkpoint.body(self.origin, 0, merkle.root([])), []
+        text, heads, asks = checkpoint.body(self.origin, 0, merkle.root([])), [], []
         try:
-            empty = self._note(text, self.origin)
+            empty = self._note(text, self.origin) if witnesses else None
         except Exception:   # the log key can't sign now (KMS down): no witness can be asked, as when none answers
-            witnesses = ()
+            empty = None
 
         def ask(w):
             try:
                 heads.append((w.name, w.latest(empty, self.vkey)))
             except Exception:   # unreachable or unreadable: counted as no answer
                 pass
-        asks = [threading.Thread(target=ask, args=(w,), name="tracekit-witness-start", daemon=True) for w in witnesses]
+        if empty is not None:
+            asks = [threading.Thread(target=ask, args=(w,), name="tracekit-witness-start", daemon=True)
+                    for w in witnesses]
         for t in asks:
             t.start()
         end = time.monotonic() + wait_s
         for t in asks:   # one that has not answered by then counts as no answer
             t.join(max(0.0, end - time.monotonic()))
         heads = list(heads)   # a late answer goes to the list the threads hold, not this copy
-        files.write_json(os.path.join(self.data_dir, WITNESSED), {name: h[0] for name, h in heads}, 0o644)
+        held = {name: h[0] for name, h in heads}
+        files.write_json(os.path.join(self.data_dir, WITNESSED), {w.name: held.get(w.name) for w in witnesses}, 0o644)
+        if not witnesses:
+            return
         if not heads:
             self.log.write(lambda tx: tx.gap("degraded_unanchored", "no configured witness answered at startup"))
             return

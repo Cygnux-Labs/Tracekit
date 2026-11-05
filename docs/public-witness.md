@@ -4,7 +4,7 @@ This page is for the witness's operator. What the witness receives and keeps, fo
 [what the public witness sees](public-witness-privacy.md).
 
 The public witness is not deployed yet. `URL` and `VKEY` in `tracekit/public_witness.py` are empty, so Tracekit anchors
-nothing by default: `tracekit init --v2` and `tracekit up --wait` say `not anchored yet`, and verify says `NOT ANCHORED`
+nothing by default: `tracekit init --v2` and `tracekit up --wait` say `not anchored`, and verify says `NOT ANCHORED`
 when no other independent witness or anchor cosigned a bundle.
 
 The server is `tracekit public-witness serve` (`tracekit/public_witness_server.py`) behind Caddy, which terminates TLS

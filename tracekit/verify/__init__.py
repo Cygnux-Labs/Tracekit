@@ -33,6 +33,10 @@ CHECKS = {"files match manifest": "a file in the bundle was changed, added or re
           "bundle structure": "the bundle is malformed, so it could not be fully checked",
           "witness quorum": "fewer witnesses cosigned it than your trust file requires",
           "inclusion": "some of its records are not in the signed checkpoint"}
+# a pinned witness's cosignature that doesn't verify over the bundle's checkpoint (checkpoint.open_note): it cosigned
+# another version of the log
+_OTHER_VERSION = re.compile(r"bad cosignature from pinned witness (\S+)")
+CHANGED = "the witness ({}) cosigned a different version of this log: it was changed after the witness saw it"
 # v1's gap checks, in plain words (capture gaps are counted)
 GAPS = {"run boundaries": "the run's start or end is not in the bundle, so actions before or after it may be missing",
         "run completeness": "some of the run's records were left out of the bundle",
@@ -97,6 +101,8 @@ def summary(rep, code, integrity, assurance, stream=None):
             _where(p) for c in failed for p in c["problems"])))
         if at:
             say(f"{'TAMPERED' if not at[0][0] else 'FAILED'} at event {at[0][1]}: {at[0][2]}.")
+        elif other_version(rep):
+            say(anchoring(rep))
         else:
             c = failed[0] if failed else {"check": "verification", "detail": "", "problems": []}
             say("FAILED: " + CHECKS.get(c["check"], f"{c['check']}: "
@@ -132,13 +138,46 @@ def summary(rep, code, integrity, assurance, stream=None):
         say(f"Note: {note}")
     for kind, n in sorted(rep.info.items(), key=lambda kv: str(kv[0])):
         say(f"Note: {INFO.get(kind, f'the signer recorded {kind}')}" + (f" ({n} times)" if n > 1 else "") + ".")
-    for line in protection(rep, assurance, unanchored):
-        say(line)
-    if getattr(rep, "not_anchored", False):   # v2: no independent witness or anchor among the pinned ones
-        say("NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could "
-            f"rewrite it unseen ({wiki_url('docs/witnesses.md')}).")
+    said = protection(rep, assurance, unanchored)
+    for line in said + [anchoring(rep, any(x.startswith("NOT PROOF") for x in said))]:
+        if line:
+            say(line)
     if getattr(rep, "log_fingerprint", None):
         say(f"Pinned log key SHA-256 fingerprint: {rep.log_fingerprint}.")
+
+
+def other_version(rep):
+    """The pinned witness whose cosignature in the bundle is over another checkpoint than the bundle's, else None."""
+    checks = getattr(rep, "checks", None)
+    for c in checks if isinstance(checks, list) else ():
+        m = c["check"] == "checkpoint" and c["status"] == "fail" and _OTHER_VERSION.fullmatch(str(c["detail"]))
+        if m:
+            return m[1]
+    return None
+
+
+def anchoring(rep, reachable=False):
+    """verify's line on whether a v2 report's log is anchored (None for a v1 report): ANCHORED when enough pinned
+    independent witnesses or anchors cosigned its checkpoint, so a rewrite after that fails this check; NOT ANCHORED,
+    with what is missing, when fewer did; FAILED when a pinned witness cosigned another version of the log.
+    `reachable`: the line before said the agent could reach the key, so this one doesn't say again who could rewrite."""
+    other = other_version(rep)
+    if other:
+        return f"FAILED: {CHANGED.format(other)}."
+    a = getattr(rep, "anchoring", None)
+    if not isinstance(a, tuple):
+        return None
+    by, need, size = a
+    names = ", ".join(by)
+    if len(by) >= need:
+        return (f"ANCHORED: {'an independent witness' if len(by) == 1 else 'independent witnesses'} ({names}) cosigned "
+                f"this log at size {size}, so a later rewrite would fail this check.")
+    if by:
+        return (f"NOT ANCHORED: {len(by)} independent witness{'es' if len(by) > 1 else ''} ({names}) cosigned the log; "
+                f"your trust file requires {need} ({wiki_url('docs/witnesses.md')}).")
+    return ("NOT ANCHORED: no independent witness or anchor cosigned the log"
+            + ("" if reachable else ", so whoever holds the signing key could rewrite it unseen")
+            + f" ({wiki_url('docs/witnesses.md')}).")
 
 
 def protection(rep, assurance, unanchored):
@@ -177,6 +216,4 @@ def _general(rep, assurance, unanchored, boxed):
         return out
     if "approvals: self" in assurance.split("; "):
         out.append("But a held call was approved by the agent's own user, so that approval proves nothing.")
-    elif assurance.startswith("witnessed"):
-        out.append("An independent witness cosigned the log too.")
     return out

@@ -375,6 +375,8 @@ class TestService(unittest.TestCase):
         with mock.patch.object(svc, "CLOSE_WAIT_S", 0.05):
             s = self.open(witnesses=[Silent()], witness_start_s=0.05, grace_s=0)
         self.assertLess(time.monotonic() - start, 1)
+        with open(os.path.join(self.dir, svc.WITNESSED), encoding="ascii") as f:
+            self.assertEqual(json.load(f), {s.witnesses[0].name: None})   # configured, no answer
         run = self.register(s)
         s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": run["run_id"],
                                   "run_token": run["run_token"]})
@@ -392,6 +394,12 @@ class TestService(unittest.TestCase):
         signed_gaps = [r["event"] for r in records(self.dir) if r["event"]["type"] == "capture.gap"]
         self.assertEqual([g["data"]["kind"] for g in signed_gaps], ["degraded_unanchored"])
         self.assertTrue(rep.assurance.startswith("dev;"))
+
+    def test_every_start_records_its_witnesses_none_with_none(self):
+        """init and up --wait read it: a start with no witness wrote nothing, so they read an older start's."""
+        self.open()
+        with open(os.path.join(self.dir, svc.WITNESSED), encoding="ascii") as f:
+            self.assertEqual(json.load(f), {})
 
     def test_a_key_made_while_the_signer_starts_is_the_one_it_uses(self):
         """`tracekit init --dev --v2` makes keys/log.key outside the signer's lock, to print its fingerprint."""

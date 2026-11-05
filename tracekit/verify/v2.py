@@ -644,14 +644,19 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     except checkpoint.NoteError as e:
         rep.check("checkpoint", False, str(e))
         return
-    key = next((k for k in trust["logs"] if checkpoint.parse_vkey(k)[0::2] == (origin, checkpoint.ED25519)), None)
+    signed = checkpoint.signers(files[name].decode("utf-8") if isinstance(files[name], bytes) else files[name])
+    key = next((k for k in trust["logs"] if checkpoint.parse_vkey(k)[0::2] == (origin, checkpoint.ED25519)
+                and (origin, checkpoint.parse_vkey(k)[1]) in signed), None)   # open_note verified its line
     rep.log_fingerprint = key and hashlib.sha256(checkpoint.parse_vkey(key)[3]).hexdigest()   # as `init` prints it
     rep.check("checkpoint", size == proofs["tree_size"], f"{origin} at tree size {size}, signed by its pinned log key"
               + ("" if size == proofs["tree_size"] else ", but the proofs are for another tree size"))
     rep.check("witness quorum", len(cosigs) >= trust["witnesses_required"],
               f"{len(cosigs)} pinned cosignature(s), {trust['witnesses_required']} required")
     anchors = _anchor(rep, files, trust, files[name], origin, size)
-    rep.not_anchored = _level(cosigs, witnesses, trust, anchors) != "witnessed"   # whatever the run's approvals
+    # for verify's ANCHORED line, whatever the run's approvals: the independent cosigners and anchors, how many the
+    # trust file asks for (_level's rule) and the size they cosigned
+    rep.anchoring = ([k.split("+")[0] for k, _ in cosigs if witnesses[k] != "operator"]
+                     + [log for log, cls, _ in anchors if cls != "operator"], max(1, trust["witnesses_required"]), size)
     monitored = _monitor(rep, trust, monitor_reports, origin, size, root)
 
     def included(record):

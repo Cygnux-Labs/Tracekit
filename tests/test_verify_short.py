@@ -28,6 +28,8 @@ DEV = ("NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signi
 UNANCHORED = "NOT SHOWN: nothing outside the bundle vouches for the signing key. Pin it with --key, or use a witness.\n"
 NOT_ANCHORED = ("NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could "
                 f"rewrite it unseen ({wiki_url('docs/witnesses.md')}).")
+ANCHORED = (f"ANCHORED: an independent witness ({tb.WITNESS}) cosigned this log at size 5, so a later rewrite would fail "
+            "this check.")   # a bundle()'s log: the key's epoch, the run's start, two calls and its end
 
 
 def verify(*argv):
@@ -67,7 +69,7 @@ class V2(tb.Case):
         self.assertEqual(verify(self.bundle("separate-user"), "--trust", self.trust), (0, (
             "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after signing.\n"
             "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).\n"
-            f"An independent witness cosigned the log too.\nPinned log key SHA-256 fingerprint: {self.fingerprint}.\n")))
+            f"{ANCHORED}\nPinned log key SHA-256 fingerprint: {self.fingerprint}.\n")))
 
     def test_without_a_witness_it_says_who_could_still_rewrite_it(self):
         code, out = verify(self.bundle("remote", witnesses=()), "--trust", self.write_trust(0, name="t0.json"))
@@ -83,13 +85,55 @@ class V2(tb.Case):
         summary(rep, code, rep.integrity, "dev" + rep.assurance[len("witnessed"):] + "; approvals: self", out)
         self.assertEqual(out.getvalue().splitlines()[1:], [
             "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).",
-            "But a held call was approved by the agent's own user, so that approval proves nothing.",
+            "But a held call was approved by the agent's own user, so that approval proves nothing.", ANCHORED,
             f"Pinned log key SHA-256 fingerprint: {self.fingerprint}."])
+
+    def test_a_dev_bundle_no_witness_cosigned_says_so_without_repeating_who_could_rewrite_it(self):
+        code, out = verify(self.bundle("same-user", witnesses=()), "--trust", self.write_trust(0, name="t0.json"))
+        self.assertEqual((code, out.splitlines()[1:]), (0, DEV.splitlines() + [
+            f"NOT ANCHORED: no independent witness or anchor cosigned the log ({wiki_url('docs/witnesses.md')}).",
+            f"Pinned log key SHA-256 fingerprint: {self.fingerprint}."]))
+
+    def test_fewer_independent_witnesses_than_the_trust_file_requires_says_what_is_missing(self):
+        """Two cosignatures meet a quorum of two, but one is the operator's own witness."""
+        both = ((tb.WITNESS, tb.WIT_SECRET), (tb.OPERATOR, tb.OP_SECRET))
+        code, out = verify(self.bundle("separate-user", witnesses=both), "--trust", self.write_trust(2, name="t2.json"))
+        self.assertEqual((code, out.splitlines()[2]), (0, f"NOT ANCHORED: 1 independent witness ({tb.WITNESS}) cosigned "
+                                                          f"the log; your trust file requires 2 ({wiki_url('docs/witnesses.md')})."))
+
+    def test_the_fingerprint_is_of_the_key_that_signed_the_checkpoint(self):
+        """With another key of the log's origin pinned first, the line named that one."""
+        with open(self.trust, encoding="utf-8") as f:
+            trust = json.load(f)
+        trust["logs"].insert(0, checkpoint.vkey(tb.ORIGIN, checkpoint.ED25519, tb.pub(tb.KEY2)))
+        both = os.path.join(self.d, "two-keys.json")
+        with open(both, "w", encoding="utf-8") as f:
+            json.dump(trust, f)
+        out = verify(self.bundle("separate-user"), "--trust", both)[1]
+        self.assertTrue(out.endswith(f"Pinned log key SHA-256 fingerprint: {self.fingerprint}.\n"), out)
+
+    @pytest.mark.unverified_bundles
+    def test_a_witness_cosignature_of_another_version_says_the_log_changed_after_the_witness_saw_it(self):
+        """The key holder rewrote the log and kept the witness's cosignature of the version it saw."""
+        log = self.log("rewritten")
+        log.epoch(tb.KEY1)
+        log.add("run.registered", {"agent": {"name": "agent"}, "signer_isolation": "separate-user",
+                                   "identity": {"scheme": "uid", "subject": "1", "attested": True}})
+        log.final()
+        size = log.store.tree.size
+        text = checkpoint.body(tb.ORIGIN, size, log.store.tree.root_at(size))
+        seen = checkpoint.body(tb.ORIGIN, size, log.store.tree.root_at(size - 1))   # what the witness cosigned
+        out = os.path.join(self.d, "rewritten.tkb")
+        export(log.store, "acme", "run-a", text + "\n" + checkpoint.sign(text, tb.ORIGIN, tb.LOG_SECRET)
+               + tb.cosign(seen, tb.WITNESS, tb.WIT_SECRET, 1760000000), out)
+        self.assertEqual(verify(out, "--trust", self.trust), (1, (
+            f"FAILED: the witness ({tb.WITNESS}) cosigned a different version of this log: it was changed after the "
+            "witness saw it.\nAdd --detail to see each check.\n")))
 
     def test_a_dev_bundle_is_not_proof_against_the_agent_however_it_was_witnessed(self):
         self.assertEqual(verify(self.bundle("same-user"), "--trust", self.trust),
                          (0, "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after "
-                             f"signing.\n{DEV}Pinned log key SHA-256 fingerprint: {self.fingerprint}.\n"))
+                             f"signing.\n{DEV}{ANCHORED}\nPinned log key SHA-256 fingerprint: {self.fingerprint}.\n"))
 
     def test_a_run_with_no_tool_call_counts_its_signed_records(self):
         self.assertEqual(verify(self.bundle("same-user", calls=()), "--trust", self.trust)[1].splitlines()[0],

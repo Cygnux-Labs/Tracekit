@@ -142,10 +142,12 @@ cosigned; whether the agent could reach the signer is each run's `signer_isolati
 ## The public witness
 
 Cygnux's free public C2SP tlog-witness gives a team `Assurance: witnessed` without running a witness of its own. Once
-it is deployed, every v2 signer uses it by default. It is not deployed yet: `URL` and `VKEY` in
-`tracekit/public_witness.py` are empty, so nothing is anchored by default. Until then `tracekit init --v2`, `tracekit up
---wait` and `tracekit doctor` say `not anchored yet`, and verify says `NOT ANCHORED` for a bundle no other pinned
-independent witness or anchor cosigned. [What the public witness sees](public-witness-privacy.md) lists exactly what it
+it is deployed, the dev signer and the system-mode signer `tracekit init --v2` sets up use it by default; a signer.yaml
+you write yourself (the Compose, Helm and Docker examples) uses it only if it lists `witnesses: [public]`. It is not
+deployed yet: `URL` and `VKEY` in `tracekit/public_witness.py` are empty, so nothing is anchored by default. Until then
+`tracekit init --v2` and `tracekit up --wait` say `not anchored: the public witness isn't deployed yet`, doctor's
+`D-WITNESS-CONFIGURED` check fails, and verify says `NOT ANCHORED` for a bundle no other pinned independent witness or
+anchor cosigned. [What the public witness sees](public-witness-privacy.md) lists exactly what it
 gets; [deploying it](public-witness.md) is for its operator.
 
 ```yaml
@@ -156,10 +158,11 @@ witnesses: [public]          # or, with your own witnesses: [public, {url: ..., 
 or `tracekit init --v2 --user AGENT --public-witness` run as root (v2
 [system mode](deploy.md#laptop-system-mode)). `public` expands to the witness's URL and
 cosignature vkey from `tracekit/public_witness.py`, with class `public`. Once both are set, system init writes it
-without the flag, and the dev signer uses it too; `--public-witness` is the strict form, which fails while they are
-empty. `--no-witness` opts out: system init leaves `witnesses` out of signer.yaml, and `tracekit init --dev --v2
---no-witness` or `tracekit up --no-witness` leaves a `no-witness` file in the dev data dir, which `init --dev --v2`
-without the flag removes. A signer that sends a chosen `origin` (anything but its random default) to the public witness
+without the flag, and the dev signer uses it too; in system mode `--public-witness` fails while they are empty.
+`--no-witness` opts out: system init leaves `witnesses` out of signer.yaml, and `tracekit init --dev --v2 --no-witness`
+or `tracekit up --no-witness` leaves a `no-witness` file in the dev data dir, which later inits keep and say so; only
+`tracekit init --dev --v2 --public-witness` turns the witness back on. A change reaches the dev signer when it next starts:
+`tracekit up --replace` restarts it, and `tracekit up --wait` then says what the running signer uses. A signer that sends a chosen `origin` (anything but its random default) to the public witness
 warns at start: the origin would tell Cygnux whose log it is.
 
 - **First use.** The witness does not know a new log: it answers `404`, and the signer registers the log (its origin

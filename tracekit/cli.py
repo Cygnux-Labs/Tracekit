@@ -52,34 +52,53 @@ def _dev_key_fingerprint(data_dir):
     return hashlib.sha256(crypto.public_from_secret(secret)).hexdigest()
 
 
+def _witnessed(data_dir):
+    """data_dir/witnessed.json as the signer wrote it at its last start ({witness name: size it held, None: no answer}),
+    else None: no start wrote it yet, or the file is not that, and nothing of it is ever printed."""
+    from .signer.service import WITNESSED
+    try:
+        with open(os.path.join(data_dir, WITNESSED), "rb") as f:
+            got = json.loads(f.read(1 << 16))
+    except (OSError, ValueError, RecursionError):
+        return None
+    sizes = isinstance(got, dict) and all(v is None or type(v) is int and v >= 0 for v in got.values())
+    return got if sizes else None
+
+
 def _dev_anchoring(data_dir):
     """The lines `init --dev --v2` and `up --wait` print: the dev signer's log key, and whether a witness anchors its
-    log (data_dir/witnessed.json: what each witness held at the signer's last start)."""
+    log as the signer last started (_witnessed), with what a change needs to apply."""
     from . import public_witness
-    from .signer.service import WITNESSED, NO_WITNESS
+    from .signer.service import NO_WITNESS
     try:
         key = f"log key SHA-256 fingerprint: {_dev_key_fingerprint(data_dir)}"
     except (OSError, ValueError):
         key = "start the signer with `tracekit up --wait` to see its log key"
+    heard, name = _witnessed(data_dir), public_witness.VKEY.split("+")[0]
+    using = bool(name) and heard is not None and name in heard   # the signer's last start used the public witness
+    apply = "restart it with `tracekit up --replace` to apply"
     if os.path.exists(os.path.join(data_dir, NO_WITNESS)):
-        return [key, public_witness.LOST]
+        return [key, f"public witness: off from the dev signer's next start (--no-witness); {apply}" if using
+                else public_witness.LOST]
     if not public_witness.configured():
         return [key, public_witness.NOT_CONFIGURED]
-    try:
-        with open(os.path.join(data_dir, WITNESSED), encoding="ascii") as f:
-            heard = json.load(f)
-    except (OSError, ValueError):
-        heard = {}
-    name = public_witness.VKEY.split("+")[0]
-    return [key, f"public witness: on (at the signer's last start it held this log at size {heard[name]})"
-            if name in heard else "public witness: on (it has not answered the signer yet)"]
+    if heard is None:
+        return [key, "public witness: on from the dev signer's next start"]
+    if not using:
+        return [key, f"public witness: on, but the dev signer last started without it; {apply}"]
+    if heard[name] is None:
+        return [key, "public witness: on, but it didn't answer when the dev signer started, so the log isn't anchored "
+                     "until it does"]
+    return [key, f"anchored: the public witness held this log at size {heard[name]} when the dev signer started"]
 
 
-def _init_dev_witness(disabled):
-    """`tracekit init --dev --v2`: set or clear the dev signer's witness opt-out; returns _dev_anchoring's lines."""
+def _init_dev_witness(no_witness, public):
+    """`tracekit init --dev --v2`: `--no-witness` turns the dev signer's witness off and only `--public-witness` turns
+    it back on, so any other init keeps the choice; returns _dev_anchoring's lines."""
     from .signer.service import dev_data_dir, set_dev_witness
     data_dir = dev_data_dir()
-    set_dev_witness(disabled, data_dir)
+    if no_witness or public:
+        set_dev_witness(no_witness, data_dir)
     return _dev_anchoring(data_dir)
 
 
@@ -172,12 +191,15 @@ def main(argv=None):
     p.add_argument("--approver", help="with --v2, system mode: the user who answers the agent's approvals (default: "
                                       "$SUDO_USER, the admin running init)")
     p.add_argument("--policy", help="with --v2, system mode: the signer's policy file (root-owned; default: its own pack)")
-    p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
-                                                                 f"the signer's logs ({wiki_url('docs/witnesses.md')}; it sees origins, "
-                                                                 "sizes, roots and timing, never content)")
+    p.add_argument("--public-witness", action="store_true", help="with --v2: the public witness cosigns the signer's "
+                                                                 "logs, undoing an earlier --no-witness (system mode: "
+                                                                 "fails until it is deployed; "
+                                                                 f"{wiki_url('docs/public-witness-privacy.md')}: it sees "
+                                                                 "origins, sizes, roots and timing, never content)")
     p.add_argument("--no-witness", action="store_true", help="with --v2: no public witness, the default once it is "
-                                                             "deployed (whoever holds the signing key can then rewrite "
-                                                             "the log unseen)")
+                                                             "deployed, kept by later inits until --public-witness "
+                                                             "(whoever holds the signing key can then rewrite the log "
+                                                             "unseen)")
     p.add_argument("--egress", action="store_true", help="with --v2, system mode on Linux: the agent user's outside "
                                                          "traffic only through a local egress observer (an owner-match "
                                                          f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
@@ -220,7 +242,7 @@ def main(argv=None):
     p = sub.add_parser("up", help="find or start the same-user v2 dev signer")
     p.add_argument("--wait", action="store_true", help="return once it answers")
     p.add_argument("--no-witness", action="store_true", help="no public witness for the dev signer (restarts it; "
-                                                             "init --dev --v2 turns it back on)")
+                                                             "init --dev --v2 --public-witness turns it back on)")
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
@@ -549,12 +571,12 @@ def _run(a):
             print("tracekit: --home, --witness, --proxy, --fail-closed and --signer-cmd are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
-        if a.no_witness and (a.public_witness or not a.v2):
-            print("tracekit: --no-witness goes with --v2, without --public-witness", file=sys.stderr)
+        if (a.no_witness or a.public_witness) and not a.v2 or a.no_witness and a.public_witness:
+            print("tracekit: --no-witness and --public-witness go with --v2, one at a time", file=sys.stderr)
             return 2
-        if (a.approver or a.policy or a.public_witness or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
-            print("tracekit: --approver, --policy, --public-witness, --egress and --harness with --v2 are for --v2 "
-                  "system mode", file=sys.stderr)
+        if (a.approver or a.policy or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
+            print("tracekit: --approver, --policy, --egress and --harness with --v2 are for --v2 system mode",
+                  file=sys.stderr)
             return 2
         if a.v2 and not a.dev:
             if not a.user:
@@ -588,7 +610,7 @@ def _run(a):
             if not _signer_extra():
                 return 2
             try:
-                anchoring = _init_dev_witness(a.no_witness)
+                anchoring = _init_dev_witness(a.no_witness, a.public_witness)
                 path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
                 summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
             except install.SettingsError as e:
@@ -626,7 +648,7 @@ def _run(a):
                 if not _signer_extra():
                     return 2
                 from .signer.service import dev_data_dir
-                anchoring = _init_dev_witness(a.no_witness)
+                anchoring = _init_dev_witness(a.no_witness, a.public_witness)
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
                 plugin = hooks and install.plugin_enabled()
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on

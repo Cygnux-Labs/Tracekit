@@ -15,7 +15,7 @@ from unittest import mock
 from factories import wait_for
 from test_signer_service import ME, tmpdir
 from test_witness_publish import signed_note
-from tracekit import cli, crypto, install, merkle, public_witness
+from tracekit import cli, crypto, install, merkle, public_witness, view
 from tracekit import public_witness_server as pws
 from tracekit.format import checkpoint, registry
 from tracekit.signer import service as svc
@@ -388,13 +388,56 @@ class OptIn(unittest.TestCase):
         self.addCleanup(s.close)
         with open(os.path.join(data, svc.WITNESSED), encoding="ascii") as f:
             self.assertEqual(json.load(f), {NAME: 0})   # it answered at start: a new log, registered then
-        self.assertEqual(cli._dev_anchoring(data)[1], "public witness: on (at the signer's last start it held this log "
-                                                      "at size 0)")
+        self.assertEqual(cli._dev_anchoring(data)[1], "anchored: the public witness held this log at size 0 when the "
+                                                      "dev signer started")
         s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
         s.checkpoint()
         self.assertTrue(wait_for(lambda: f"— {NAME} " in (s.log.storage.checkpoint_latest(RECORDS) or (0, ""))[1], 5))
+        # the viewer pins the dev signer's witness, as `tracekit last` does: its run review says the log is anchored
+        feed = view.StoreFeed({"data_dir": data, "witnesses": svc.dev_witnesses(data)})
+        self.addCleanup(feed.close)
+
+        def anchoring():
+            with feed.lock:
+                return next((r["review"]["anchoring"] for r in feed.records if (r.get("review") or {}).get("anchoring")),
+                            None)
+        self.assertTrue(wait_for(anchoring, 15))
+        self.assertRegex(anchoring(), rf"^ANCHORED: an independent witness \({NAME}\) cosigned this log at size \d+, so "
+                                      r"a later rewrite would fail this check\.$")
+        svc.set_dev_witness(True, data)   # the running signer still uses it
+        self.assertEqual(cli._dev_anchoring(data)[1], "public witness: off from the dev signer's next start "
+                                                      "(--no-witness); restart it with `tracekit up --replace` to apply")
+
+    def test_init_and_up_say_what_the_dev_signer_used_at_its_last_start(self):
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        apply = "restart it with `tracekit up --replace` to apply"
+        for heard, said in ((None, "public witness: on from the dev signer's next start"),
+                            ({}, f"public witness: on, but the dev signer last started without it; {apply}"),
+                            ({NAME: None}, "public witness: on, but it didn't answer when the dev signer started, so the "
+                                           "log isn't anchored until it does"),
+                            ({NAME: 7}, "anchored: the public witness held this log at size 7 when the dev signer "
+                                        "started")):
+            with self.subTest(heard):
+                with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
+                    f.write("" if heard is None else json.dumps(heard))
+                self.assertEqual(cli._dev_anchoring(data)[1], said)
         svc.set_dev_witness(True, data)
+        self.assertEqual(cli._dev_anchoring(data)[1], f"public witness: off from the dev signer's next start "
+                                                      f"(--no-witness); {apply}")
+        with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
+            f.write("{}")   # restarted: off
         self.assertEqual(cli._dev_anchoring(data)[1], public_witness.LOST)
+
+    def test_a_witnessed_file_that_is_not_one_is_never_printed(self):
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        for raw in (b"[]", b'"x"', b'{"%s": "\x1b[31m red"}' % NAME.encode(), b'{"%s": -1}' % NAME.encode(),
+                    b'{"%s": true}' % NAME.encode(), b"{", b"[" * 100000, b"\xff\xfe"):
+            with self.subTest(raw[:20]):
+                with open(os.path.join(data, svc.WITNESSED), "wb") as f:
+                    f.write(raw)
+                self.assertEqual(cli._dev_anchoring(data)[1], "public witness: on from the dev signer's next start")
 
     def test_dev_signer_config_and_startup_status_use_the_same_witness_setting(self):
         data = os.path.join(self.dir, "dev")
@@ -403,8 +446,8 @@ class OptIn(unittest.TestCase):
             self.assertEqual(svc.signer_config(None)["witnesses"][0]["vkey"], public_witness.VKEY)
         with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
             json.dump({public_witness.VKEY.split("+")[0]: 7}, f)
-        self.assertEqual(cli._dev_anchoring(data)[1], "public witness: on (at the signer's last start it held this log "
-                                                      "at size 7)")
+        self.assertEqual(cli._dev_anchoring(data)[1], "anchored: the public witness held this log at size 7 when the "
+                                                      "dev signer started")
 
     def test_the_shortcut_refuses_an_origin_the_witness_does_not_take(self):
         with open(self.cfg, "w") as f:
@@ -422,11 +465,13 @@ class OptIn(unittest.TestCase):
         with mock.patch.object(public_witness, "URL", ""):
             self.assertIsNone(public_witness.named_origin(cfg))
 
-    def test_no_witness_goes_with_v2_and_not_with_public_witness(self):
-        for argv in (["init", "--no-witness"], ["init", "--v2", "--user", "agent", "--public-witness", "--no-witness"]):
+    def test_no_witness_and_public_witness_go_with_v2_one_at_a_time(self):
+        for argv in (["init", "--no-witness"], ["init", "--public-witness"],
+                     ["init", "--v2", "--user", "agent", "--public-witness", "--no-witness"],
+                     ["init", "--v2", "--dev", "--public-witness", "--no-witness"]):
             with self.subTest(argv), contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(cli.main(argv), 2)
-                self.assertIn("--no-witness goes with --v2, without --public-witness", err.getvalue())
+                self.assertIn("--no-witness and --public-witness go with --v2, one at a time", err.getvalue())
 
     @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
     def test_init_v2_writes_the_shortcut(self):

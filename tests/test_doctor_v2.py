@@ -644,7 +644,12 @@ class DevFresh(unittest.TestCase):
         got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev")}
         self.assertEqual(got["D-KEYS-MODE"]["fix"], "start the dev signer: tracekit up")
         self.assertIn("assurance stays dev", got["D-WITNESS-CONFIGURED"]["detail"])
-        self.assertIn("public witness, the dev signer's default, is not deployed yet", got["D-WITNESS-CONFIGURED"]["fix"])
+        self.assertIn("the dev signer uses the public witness, which isn't deployed yet: nothing to do until a release "
+                      "names it; to anchor now", got["D-WITNESS-CONFIGURED"]["fix"])
+        open(os.path.join(d, "no-witness"), "w").close()
+        self.assertEqual(doctor.v2_checks({"data_dir": d}, "dev")[[r["id"] for r in got.values()].index(
+            "D-WITNESS-CONFIGURED")]["fix"], "--no-witness turned the dev signer's witness off: tracekit init --dev --v2 "
+                                             "--public-witness turns it back on")
 
     def test_keys_it_cannot_read_name_the_doctor_command_root_can_run(self):
         """System-mode init puts no `tracekit` command on root's PATH, so the fix `sudo tracekit doctor` found none."""
@@ -730,9 +735,16 @@ class NoHooksChosen(unittest.TestCase):
                                              f"{dev_key_fingerprint()}\n{public_witness.LOST}\n")
             marker = os.path.join(autospawn.data_dir(), "no-witness")
             self.assertTrue(os.path.isfile(marker))
-            with contextlib.redirect_stdout(io.StringIO()):   # init without --no-witness turns the witness back on
-                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks"]), 0)
+            # every later init keeps the opt-out and says so, whatever else it sets up; only --public-witness undoes it
+            for argv in (["--no-hooks"], ["--agent", "codex", "--no-hooks"], ["--agent", "codex", "--project", "--no-hooks"]):
+                with self.subTest(argv), contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(cli.main(["init", "--dev", "--v2", *argv]), 0)
+                    self.assertTrue(os.path.isfile(marker))
+                    self.assertTrue(out.getvalue().endswith(f"{public_witness.LOST}\n"), out.getvalue())
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks", "--public-witness"]), 0)
             self.assertFalse(os.path.exists(marker))
+            self.assertTrue(out.getvalue().endswith(f"{public_witness.NOT_CONFIGURED}\n"), out.getvalue())
             self.assertFalse(install._v2_hooks_in(settings))
             self.assertEqual(client.client_config(), {"no_hooks": True})
 

@@ -81,10 +81,10 @@ from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
-from .signer.service import data_dir_at, dev_data_dir, load_config, lookup, read_vkeys, reader
+from .signer.service import data_dir_at, dev_data_dir, dev_witnesses, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
-from .verify import v2
+from .verify import anchoring, other_version, v2
 from .why.server import Store
 
 POLL_S = 1.0
@@ -793,7 +793,8 @@ def review(records, rep, verdict):
     used that call's approval, is that call: its use is the held call's outcome, counted once (`retries` counts them). Counts keep each snapshot
     small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
-           "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
+           "anchoring": anchoring(rep), "label": OPERATOR_SIDE, "agent": None, "records": len(records),
+           "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0, "retries": 0,
            "state": "open", "first": {}}
@@ -985,7 +986,7 @@ class StoreFeed:
             self.threads.append(threading.Thread(target=self._mirrors, daemon=True))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
-        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), self.vkeys)
+        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), self.vkeys, cfg.get("witnesses") or ())
         self.threads.append(threading.Thread(target=self._watch, daemon=True))
         for t in self.threads:
             t.start()
@@ -1209,7 +1210,7 @@ class StoreFeed:
         e, hidden = {"run_id": run_id}, False
         if code:
             rv = {"verdict": "failed", "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
-                  "label": OPERATOR_SIDE, "agent": None}
+                  "anchoring": anchoring(rep) if other_version(rep) else None, "label": OPERATOR_SIDE, "agent": None}
             try:   # placed at its run's last record's time, as a run that verifies is; only the time is read
                 e["ts"] = collections.deque(reader.iter_run(tenant, run_id), 1)[0]["event"]["ts"]
             except (ValueError, KeyError, IndexError, TypeError, StorageCorrupt):
@@ -1851,7 +1852,8 @@ def main(argv=None):
             tls.load_cert_chain(a.tls_cert, a.tls_key)
         v1 = a.ledger is not None or a.bundle
         alone = a.why and not (v1 or a.dev or a.config or a.data_dir)   # why logs alone, as `tracekit why serve`
-        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
+        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir} if a.data_dir else \
+            {"data_dir": (d := dev_data_dir(create=False)), "witnesses": dev_witnesses(d)}   # pinned as `last` pins them
         view = cfg.get("view") or {}
         login = view.get("oidc") and OidcLogin(view["oidc"], (cfg.get("http") or {}).get("oidc"))
         desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),

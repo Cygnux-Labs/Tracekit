@@ -142,7 +142,7 @@ run 40c7ee89ae9eaec8f8eb8556b32fdc9d (my-agent)
 VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
-NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could rewrite it unseen (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
 Pinned log key SHA-256 fingerprint: <64 hex digits>.
 bundle: /home/me/project/40c7ee89ae9eaec8f8eb8556b32fdc9d.tkb
 check it again: tracekit verify 40c7....tkb --trust 40c7....trust.json
@@ -234,7 +234,7 @@ tracekit verify run.tkb --trust trust.json
 VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
-NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could rewrite it unseen (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
 Pinned log key SHA-256 fingerprint: <64 hex digits>.
 ```
 
