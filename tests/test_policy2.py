@@ -564,6 +564,67 @@ class Prefilter(unittest.TestCase):
                 self.assertEqual([s[:80] for s in subjects if rx.search(s) and not any(x in s.lower() for x in lits)],
                                  [])
 
+    def test_a_literal_set_says_maybe_wherever_a_scan_does(self):
+        """#605: on RE2 a prefilter of more than eight strings is one search of their alternation (Engine._maybe). It
+        must find one wherever a str scan of each does, or a subject the rule matches would go unsearched: every
+        shipped pack's prefilters, on the corpus's subjects as given and lower-cased, and on random text in mixed case
+        with non-ASCII characters around and inside the strings."""
+        subjects = set()
+        real = engine._prepare
+        with mock.patch.object(engine, "_prepare", side_effect=lambda s, *tag: subjects.update(s) or real(s, *tag)):
+            e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "regex")
+            for tool, args in corpus_calls():
+                e.decide(tool, args)
+        rnd = random.Random(605)
+        noise = ["é", "ß", "日本", " ", "Ω", "ü", " ", "-", "/", "x", "Q", "\n"]
+        for name in sorted(os.listdir(PACKS)):
+            for backend in BACKENDS:
+                e = Engine(pc.build(os.path.join(PACKS, name))[0], backend)
+                sets = {id(s): s for _, r, *_, lits, tool_lits in e.rules for s in (lits, tool_lits) if s}
+                deadline = time.monotonic() + 3600
+                for strings in sets.values():
+                    texts = list(subjects)[:400] + [t.lower() for t in list(subjects)[:400]]
+                    for _ in range(40):
+                        s = rnd.choice(strings)
+                        cut = rnd.randrange(len(s) + 1)
+                        mixed = "".join(c.upper() if rnd.random() < .5 else c for c in s)
+                        texts += ["".join(rnd.choice(noise) for _ in range(rnd.randint(0, 6))) + w +
+                                  "".join(rnd.choice(noise) for _ in range(rnd.randint(0, 6)))
+                                  for w in (s, mixed, s[:cut] + rnd.choice(noise) + s[cut:])]
+                    with self.subTest(pack=name, backend=backend, strings=strings[:3]):
+                        self.assertEqual([t[:60] for t in texts if any(map(t.__contains__, strings))
+                                          and not e._maybe(strings, t, deadline)], [])
+
+    def test_a_long_prefilter_is_one_search_on_re2(self):
+        """#605: a prefilter of 80 strings over a 4 KiB command none of them is in took 80 str scans of the command
+        per rule, which made the laptop default's p99 19% slower than main's once the server rules (TK-C001's 76
+        strings) read every Bash call. On RE2 it is one search of their alternation; the fallback keeps the scans,
+        faster there than the regex module's alternation. Counted in scans, not time."""
+        words = ["".join(w) for w in itertools.product("bcdfg", "hjklm", "npqrs")][:80]
+        pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "MANY", "class": "shell", "pattern": "(?:" + "|".join(words) + ")"}]}
+        self.assertEqual(len(pc.literals(pol["flag"][0]["pattern"])), 80)
+        scans = []
+
+        class Counting(str):
+            def __contains__(self, s):
+                scans.append(s)
+                return str.__contains__(self, s)
+        real = engine._prepare
+
+        def counted(subjects, tag=0):
+            texts, lows, joined, big = real(subjects, tag)
+            return texts, [Counting(t) for t in lows], Counting(joined), big
+        command = "echo " + "abc " * 1024
+        for backend in BACKENDS:
+            scans.clear()
+            e = Engine(pol, backend)
+            with mock.patch.object(engine, "_prepare", counted):
+                self.assertEqual(e.decide("Bash", {"command": command})["verdict"], "allow")
+                self.assertEqual(e.decide("Bash", {"command": command + " " + words[42]})["rule_ids"], ["MANY"])
+            with self.subTest(backend=backend):
+                self.assertLessEqual(len(scans), 2 if backend == "re2" else 10 ** 6)
+                self.assertGreaterEqual(len(scans), 0 if backend == "re2" else 80)
+
     def test_lint_warns_of_a_rule_the_prefilter_cannot_skip(self):
         pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "N", "class": "shell", "pattern": r"[a-z]+@[0-9]+"},
                                                     {"id": "Y", "class": "shell", "pattern": r"[a-z]+@example"},

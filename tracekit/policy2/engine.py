@@ -78,6 +78,14 @@ class Engine:
                        rx(r, "unless") if "unless" in r else None, literals(r["pattern"]),
                        literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
+        # on RE2, a prefilter of more than _SET_MIN strings is one search of their alternation, compiled as its rule's
+        # pattern is (an a2a rule's in any case), so it finds one wherever a str scan would (_maybe)
+        self._sets = {}
+        if self.engine.startswith("re2@"):
+            for _, r, _, _, _, lits, tool_lits in self.rules:
+                for strings, anycase in ((lits, r.get("class") == "a2a"), (tool_lits, False)):
+                    if strings and len(strings) > _SET_MIN:
+                        self._sets[id(strings)] = compile_(_alternation(strings), anycase)
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._of = {}
@@ -169,8 +177,14 @@ class Engine:
         """Whether a rule's tool pattern takes the tool `name` (`low`: lower-cased); none takes every name. A name
         holding none of the pattern's literals is not searched: 27 searches of a 48 KiB MCP name of `run_` took the
         fallback engine 0.3 s on a laptop, past its 1 s on CI's macOS runners (#481)."""
-        return tool_re is None or (lits is None or any(map(low.__contains__, lits))) and self._match(
+        return tool_re is None or (lits is None or self._maybe(lits, low, deadline)) and self._match(
             tool_re, name, True, deadline)
+
+    def _maybe(self, lits, text, deadline):
+        """Whether `text` holds one of a prefilter's strings (compile.literals), so its pattern may match: one search
+        of their alternation (self._sets), else one str scan each."""
+        rx = self._sets.get(id(lits))
+        return any(map(text.__contains__, lits)) if rx is None else self._match(rx, text, False, deadline) is not None
 
     def decide(self, tool, args, cls=None, untrusted=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
@@ -224,11 +238,11 @@ class Engine:
                 memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]),
                                      _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
-            if lits is None or any(map(joined.__contains__, lits)):
+            if lits is None or self._maybe(lits, joined, deadline):
                 for subject, low in zip(texts, lows):
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
-                    if (lits is None or len(texts) == 1 or any(map(low.__contains__, lits))) and self._match(
+                    if (lits is None or len(texts) == 1 or self._maybe(lits, low, deadline)) and self._match(
                             pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
@@ -391,6 +405,18 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+# A prefilter of more strings is one search of their alternation on RE2: about 8 us over 4 KiB however many there
+# are, where a str scan each took 14 us for 8 and 100 us for 76 (TK-C001's); the regex module's alternation is
+# slower than the scans at every size (490 us for 76), so the fallback keeps them (#605)
+_SET_MIN = 8
+
+
+def _alternation(strings):
+    """A pattern that matches any of `strings` (ASCII, compile.literals), each character not a letter or digit as \\xHH,
+    which both engines read as itself."""
+    return "|".join("".join(c if c.isalnum() else f"\\x{ord(c):02x}" for c in s) for s in strings)
 
 
 def _reaches(rule, cls):
