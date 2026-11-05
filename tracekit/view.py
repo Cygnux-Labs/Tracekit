@@ -1916,8 +1916,9 @@ def main(argv=None):
              f"  (bundle: {a.bundle}, verified, read-only)" if a.bundle else
              f"  (ledger: {feed.path}, read-only)" if v1 else f"  (why logs alone: {why.root})" if alone else
              f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
-    if getattr(feed, "tips", None) and feed.tips.root:
-        print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only", flush=True)
+    if getattr(feed, "tips", None) and feed.tips.root:   # the folder it reads, only when there is one
+        print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
+              else "  tips: no Claude Code transcripts found", flush=True)
     if why and mirror:
         why.watch()
         print("  graphs: each verified run, imported from the store (read-only) into a temp dir", flush=True)

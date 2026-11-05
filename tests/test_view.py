@@ -1603,6 +1603,24 @@ class View(unittest.TestCase):
             self.assertEqual(view.main(["--data-dir", self.d, "--approval", aid + "&x=<b>"]), 2)
         self.assertIn("--approval takes an approval id", err.getvalue())
 
+    def test_the_tips_line_names_a_transcripts_folder_only_when_there_is_one(self):
+        """With no Claude Code folder, `tracekit view --dev` printed "tips: Claude Code's transcripts in
+        .../.claude/projects, read-only" for a folder that doesn't exist."""
+        for folder, line in ((os.path.join(self.d, "no-claude"), "  tips: no Claude Code transcripts found\n"),
+                             (self.d, f"  tips: Claude Code's transcripts in {self.d}, read-only\n")):
+            with self.subTest(line=line), mock.patch.object(view, "server") as server, \
+                    mock.patch.object(view, "dev_data_dir", return_value=self.d), \
+                    mock.patch("tracekit.audit.default_root", return_value=folder), \
+                    mock.patch.object(view.StoreFeed, "_watch", lambda feed: None), \
+                    mock.patch.object(view.StoreFeed, "_mirrors", lambda feed: None), \
+                    mock.patch.object(view.Store, "watch"), mock.patch.object(view.signal, "signal"), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                server.return_value.serve_forever.side_effect = KeyboardInterrupt
+                server.return_value.server_address = ("127.0.0.1", 7778)
+                self.assertEqual(view.main(["--dev"]), 0)
+            self.assertIn(line, out.getvalue())
+            self.assertEqual(out.getvalue().count("  tips: "), 1)
+
     def test_loopback_viewer_prints_a_token_url_and_needs_it(self):
         with mock.patch.object(view, "server") as server, mock.patch.dict(os.environ), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
