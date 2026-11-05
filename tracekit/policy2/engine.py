@@ -159,7 +159,7 @@ class Engine:
         cls, name, deadline = cls or self.tool_class(tool), _text(tool), time.monotonic() + REGEX_TIMEOUT_S
         low, out = name.lower(), {sec: [] for sec in SECTIONS}
         for sec, rule, tool_re, *_, tool_lits in self.rules:
-            if rule.get("class", cls) == cls and self._named(tool_re, tool_lits, name, low, deadline):
+            if _reaches(rule, cls) and self._named(tool_re, tool_lits, name, low, deadline):
                 out[sec].append(rule["id"])
         return out
 
@@ -207,9 +207,7 @@ class Engine:
         name, memo = _text(tool), {}
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
-            # but `harness`'s (a subagent's prompt, a message to a teammate, a todo list), which acts on nothing: the
-            # calls it leads to are decided as their own, so a rule of no class doesn't read the text it carries
-            self._of[cls] = [x for x in self.rules if x[1].get("class", None if cls == "harness" else cls) == cls]
+            self._of[cls] = [x for x in self.rules if _reaches(x[1], cls)]
 
         def hit(entry, parsed, memo, oversize):
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
@@ -343,7 +341,9 @@ class Engine:
         and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
         writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
         mcp: the whole call without the text it only carries (_acted_on), each string in it with a `/` or `\\` also
-        read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call. Each
+        read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call;
+        harness (a coding agent's message to its own agents): only the URLs and bare network addresses in it, so the
+        rules that read a target for file names (TK-S004, TK-F005) don't read a prompt's prose as a file it opens. Each
         URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal, hex, octal or IPv6
         form reads as the address it is: of mcp, app and unknown tools, each URL in a string of what they act on."""
         if cls == "shell":
@@ -372,6 +372,11 @@ class Engine:
             to = fields.get("receiver")
             receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
             return receiver + [canonical(args.get("params"))]
+        if cls == "harness":   # a message to the agent's own agents: the addresses it names, not its file names
+            strings = _strings(args)
+            urls = [u for s in strings for u in _URL.findall(s)]
+            bare = [w for s in strings for w in s.split() if _BARE_ADDRESS.match(w)]
+            return list(dict.fromkeys(urls + [t for t in map(classes.url_target, urls) if t] + bare))
         if cls not in ("mcp", "app", "unknown"):
             return []
         tool = fields.get("tool")
@@ -380,6 +385,11 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+def _reaches(rule, cls):
+    """Whether a rule reads a call of class `cls`: one of no class or of that class (decide and reads alike)."""
+    return rule.get("class", cls) == cls
 
 
 def _unread_cause(command):
@@ -648,7 +658,8 @@ def _container_host_access(commands):
 
 
 # git's own options before its command that take the next word as their value (git -C dir push); the rest are flags
-_GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"}
+_GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
+               "--attr-source"}
 # git push's long options (git push -h), each with what it means here: a reason to hold the push, "value" (it takes
 # the next word unless given with `=`), or "" (neither). git reads a unique prefix of one as it, and so does _pushes.
 # A force (-f, --force, --force-with-lease, a +refspec) is TK-D003's deny and a delete (-d, --delete, --prune, a
@@ -663,23 +674,26 @@ _PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6
 
 
 def _git_push(argv):
-    """Why a git push (also git-push; after git's own options, `git -C dir push`) needs a person, from its argv as
-    the parser read it: a list of `PUSH:<why> <word>`, empty for a push of named branches other than main and master;
-    None for any other command. Held: a target of main or master (`main`, `HEAD:main`, `refs/heads/master`, `:main`);
-    one the line can't tell (no refspec, so push.default picks; HEAD, @ or origin/HEAD; an expansion or a pattern);
-    tags (--tags, --follow-tags, a refs/tags/ refspec); every branch (--all, --mirror, the `:` refspec); an option
-    git doesn't take, or an ambiguous prefix, which git refuses. A force or a delete is another rule's (_PUSH_LONG).
+    """Why a git push needs a person, from its argv as the parser read it: a list of `PUSH:<why> <word>`, empty for a
+    push of named branches other than main and master; None for any other command. A push is `git push` (after git's
+    own options, `git -C dir push`), `git send-pack`, which names its refs as push does, `hub push` (hub runs git) and
+    git-push or git-send-pack themselves. Held: a target of main or master (`main`, `HEAD:main`, `refs/heads/master`,
+    `heads/main`, `:main`); one the line can't tell (no refspec, so push.default picks; HEAD, @ or origin/HEAD; an
+    expansion or a pattern); tags (--tags, --follow-tags, a refs/tags/ or tags/ refspec, `tag <name>`); every branch
+    (--all, --mirror, the `:` refspec); an option push doesn't take, or an ambiguous prefix, which git refuses
+    (send-pack's --stdin, whose refs come from its input, among them). A force or a delete is another rule's
+    (_PUSH_LONG).
     lean: a git alias (`git p`) or `git subtree push` isn't read, as TK-D003 doesn't read them; nor a tag pushed by its
     bare name (`git push origin v1.0`), which reads as a branch"""
     name = argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe") if argv else ""
-    if name == "git":
+    if name in ("git", "hub"):
         i = 1
         while i < len(argv) and argv[i].startswith("-"):
             i += 2 if argv[i] in _GIT_VALUED else 1
-        if argv[i:i + 1] != ["push"]:
+        if argv[i:i + 1] not in (["push"], ["send-pack"]):
             return None
         words = argv[i + 1:]
-    elif name == "git-push":
+    elif name in ("git-push", "git-send-pack"):
         words = argv[1:]
     else:
         return None
@@ -716,15 +730,21 @@ def _git_push(argv):
     refspecs = positional[1:]   # the first is the repository
     if not refspecs:
         why.append("unknown no refspec")
+    tag = False
     for r in refspecs:
+        if tag or r == "tag":   # `tag <name>` pushes refs/tags/<name>
+            why.append("tags tag " + r)
+            tag = not tag
+            continue
         spec = r[1:] if r.startswith("+") else r
         src, colon, dst = spec.partition(":")
-        target = (dst if colon else src).removeprefix("refs/heads/")
+        target = dst if colon else src
+        ref = target.removeprefix("refs/")   # git reads `heads/main` as refs/heads/main, `tags/v1` as a tag
         if spec == ":":
             why.append("all " + r)
-        if "refs/tags/" in spec:
+        if "refs/tags/" in spec or ref.startswith("tags/"):
             why.append("tags " + r)
-        elif target in ("main", "master"):
+        elif ref.removeprefix("heads/") in ("main", "master"):
             why.append("default " + r)
         elif not target or target in ("HEAD", "@") or target.endswith("/HEAD") or any(c in target for c in "$`*?[{"):
             why.append("unknown " + r)
@@ -741,7 +761,7 @@ def _pushes(commands):
     return out
 
 
-_HISTORY =(".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")
+_HISTORY = (".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")
 
 
 def _log_or_history(path):

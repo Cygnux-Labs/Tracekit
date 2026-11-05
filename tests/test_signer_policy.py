@@ -70,13 +70,15 @@ class Packs(unittest.TestCase):
     def test_dev_default_is_the_server_pack_with_unmapped_tools_flagged(self):
         """#604: the laptop default flagged a secret read, a remote delete and an access change, which only the server
         pack held. It is the server pack now, with every rule as tested, but a tool no pack maps is flagged (a laptop
-        runs tools no list names) and the agent's messages to its own agents are class `harness`, which a rule of no
-        class doesn't read; a file written with a key in it is still denied."""
+        runs tools no list names), and the agent's messages to its own agents are class `harness`, whose target is
+        only the addresses they name (below); a file written with a key in it is still denied."""
         dev, server = pc.build(svc.DEFAULT_POLICY)[0], pc.build(os.path.join(PACKS, "server.yaml"))[0]
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
         self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-DEMO-ASK")], server["ask"])
-        self.assertEqual(dev["flag"], server["flag"])
+        self.assertEqual(dev["flag"][:len(server["flag"])], server["flag"])
+        self.assertEqual([r["id"] for r in dev["flag"][len(server["flag"]):]], ["TK-F018", "TK-F019", "TK-F020", "TK-F021",
+                                                                                     "TK-F022", "TK-F023"])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
         self.assertFalse({"sequences", "limits", "respond"} & set(dev))   # no detection: no `detect` on its decisions
         e = Engine(dev)
@@ -97,15 +99,39 @@ class Packs(unittest.TestCase):
                 self.assertIn(rule, d["rule_ids"], d)
                 self.assertIn(Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide(tool, args)["verdict"],
                               ("allow", "flag"))   # what the laptop default did before
-        # fake secrets, as the redaction fixtures are: agent-flow:allow-secret
-        secret = "AKIA" + "A" * 16 + " ~/.aws/credentials http://169.254.169.254/ -----BEGIN RSA PRIVATE KEY-----"
-        for tool, args in (("Agent", {"description": "d", "prompt": secret}), ("Task", {"prompt": secret}),
-                           ("SendMessage", {"to": "a1", "message": secret}),
-                           ("SubagentHandback", {"message": secret}), ("TodoWrite", {"todos": [{"content": secret}]})):
-            with self.subTest(tool=tool):
-                self.assertEqual(e.tool_class(tool), "harness")
-                self.assertEqual(e.decide(tool, args)["verdict"], "allow")
         self.assertEqual(e.decide("SomeUnmappedTool", {"x": 1})["verdict"], "flag")
+
+    def test_a_harness_message_is_read_for_secrets_and_addresses_not_file_names(self):
+        """Review of #605: the harness class skipped every rule of no class, so a secret in a SendMessage or an Agent
+        prompt, which can leave the machine, was allowed unflagged. Every rule of no class reads it now; only its
+        target is narrowed to the URLs and addresses it names, so the file-name rules (TK-S004, TK-F005) don't read a
+        prompt's prose. SendMessage and a remote Agent stay on the record (TK-F018, TK-F019)."""
+        e = Engine(pc.build(svc.DEFAULT_POLICY)[0], "regex")
+        names = "fix how we read ~/.aws/credentials, ~/.ssh/id_rsa, .netrc and .pgpass"
+        # fake secrets, as the redaction fixtures are: agent-flow:allow-secret
+        key, pem = "AKIA" + "A" * 16, "-----BEGIN RSA PRIVATE KEY-----"
+        for tool, args, want in (
+                ("Agent", {"description": "d", "prompt": names}, ("allow", [])),
+                ("Task", {"prompt": names}, ("allow", [])), ("SubagentHandback", {"message": names}, ("allow", [])),
+                ("TodoWrite", {"todos": [{"content": names}]}, ("allow", [])),
+                ("SendMessage", {"to": "a1", "message": names}, ("flag", ["TK-F018"])),
+                ("Agent", {"description": "d", "prompt": "push the branch to main", "isolation": "remote"},
+                 ("flag", ["TK-F019"])),
+                ("Agent", {"description": "d", "prompt": "use " + key}, ("deny", ["TK-S002"])),
+                ("SendMessage", {"to": "a1", "message": pem}, ("deny", ["TK-S002", "TK-F018"])),
+                ("Task", {"prompt": "fetch http://169.254.169.254/latest/meta-data"}, ("deny", ["TK-S001", "TK-F012"])),
+                ("SubagentHandback", {"message": "curl 169.254.169.254/latest"}, ("deny", ["TK-S001"]))):
+            with self.subTest(tool=tool, args=args):
+                self.assertEqual(e.tool_class(tool), "harness")
+                d = e.decide(tool, args)
+                self.assertEqual((d["verdict"], d["rule_ids"]), want, d)
+        # the viewer's reads() names the rules decide() reads: the same predicate, every rule of no class among them
+        for tool in ("Agent", "SendMessage", "Bash"):
+            got = e.reads(tool)
+            self.assertIn("TK-S002", got["deny"])
+            self.assertIn("TK-S001", got["deny"])
+        self.assertIn("TK-F018", e.reads("SendMessage")["flag"])
+        self.assertNotIn("TK-F018", e.reads("Agent")["flag"])
         for tool in ("tracekit_demo_denied", "mcp:demo/tracekit_demo_denied"):
             self.assertEqual(e.decide(tool, {})["verdict"], "deny")
         for tool in ("tracekit_demo_ask", "mcp:demo/tracekit_demo_ask"):
@@ -4127,15 +4153,72 @@ class GuardrailsAndPushes(unittest.TestCase):
                       [("Read", {"file_path": ".claude/settings.json"}),
                        ("Write", {"file_path": "/Users/u/.claude/projects/p/memory/note.md", "content": "x"})], "allow")
 
-    def test_a_rule_of_no_class_does_not_read_a_harness_message(self):
+    def test_a_harness_calls_target_is_the_addresses_it_names(self):
+        """Every rule of no class reads a harness call (a rule on the whole call, a value in it); a rule on `target`
+        reads only its URLs, each also canonical, and bare addresses, not the file names in its prose."""
         pol = {"tools": {"Agent": "harness", "Bash": "shell"},
-               "deny": [{"id": "X-ANY", "pattern": "AKIA"}, {"id": "X-H", "class": "harness", "pattern": "rm -rf"}]}
+               "deny": [{"id": "X-ANY", "pattern": "AKIA"}, {"id": "X-H", "class": "harness", "pattern": "rm -rf"},
+                        {"id": "X-NAME", "field": "target", "pattern": r"\.aws/credentials"},
+                        {"id": "X-ADDR", "field": "target", "pattern": r"169\.254\.169\.254|metadata\.google"}]}
         self.assertEqual(pc._lint(pol, "p"), [])
         for backend in (("re2", "regex") if HAVE_RE2 else ("regex",)):
             e = Engine(pol, backend)
-            self.assertEqual(e.decide("Agent", {"prompt": "AKIA"})["verdict"], "allow")
+            self.assertEqual(e.decide("Agent", {"prompt": "AKIA"})["rule_ids"], ["X-ANY"])
             self.assertEqual(e.decide("Agent", {"prompt": "rm -rf ~"})["rule_ids"], ["X-H"])
-            self.assertEqual(e.decide("Bash", {"command": "echo AKIA"})["rule_ids"], ["X-ANY"])
+            self.assertEqual(e.decide("Agent", {"prompt": "read ~/.aws/credentials"})["verdict"], "allow")
+            for prompt in ("get http://169.254.169.254/x", "curl 169.254.169.254/x", "see http://METADATA.google.internal/"):
+                with self.subTest(backend=backend, prompt=prompt):
+                    self.assertEqual(e.decide("Agent", {"prompt": prompt})["rule_ids"], ["X-ADDR"])
+            self.assertEqual(e.decide("Bash", {"command": "cat ~/.aws/credentials"})["rule_ids"], ["X-NAME"])
+            self.assertEqual(e.reads("Agent")["deny"], ["X-ANY", "X-H", "X-NAME", "X-ADDR"])
+            self.assertEqual(e.reads("Bash")["deny"], ["X-ANY", "X-NAME", "X-ADDR"])
+
+    def test_more_ways_to_push_to_main_and_to_publish(self):
+        """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a
+        value before the command; git send-pack and hub push name refs as push does; gh and hub api write main's ref
+        or merge into it; twine runs as any runner's module; Sapling, git town and Jujutsu push to main their own way."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git push origin heads/main", "git push origin HEAD:heads/main", "git push origin feature:heads/master",
+            "git push https://github.com/o/r.git HEAD:heads/main", "git push origin tag v1.0",
+            "git push origin tags/v1.0", "git --attr-source HEAD push origin main", "git send-pack origin refs/heads/main",
+            "git send-pack --stdin origin", "hub push origin main", "hub push origin", "python -m twine upload dist/*",
+            "python3 -I -m twine upload dist/*", "uv run -m twine upload dist/*", "uvx twine upload dist/*",
+            "gh api -X PATCH repos/o/r/git/refs/heads/main -f sha=abc -F force=true",
+            "gh api repos/o/r/git/refs -f ref=refs/heads/main -f sha=abc",
+            "gh api repos/o/r/merges -f base=main -f head=feature", "gh api -f base=master -f head=x repos/o/r/merges",
+            "gh api -X POST -H 'Accept: application/vnd.github+json' repos/o/r/merges --field base=main -f head=f",
+            "gh api repos/o/r/merges -f head=f -f commit_message='merge f now' --raw-field=base=main",
+            "hub api repos/o/r/git/refs/heads/master -X PATCH -f sha=abc", "sl push --to main", "sl push -t master",
+            "git town ship", "jj git push", "jj git push -b main", "jj git push --bookmark=master", "jj git push --all",
+            "jj git push --tracked")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git --attr-source HEAD push origin feature", "jj git push -b feature")], "flag")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "git send-pack origin refs/heads/feature", "hub push origin feature", "python -m twine check dist/*",
+            "gh api repos/o/r/git/refs/heads/feature -X PATCH -f sha=abc", "gh api repos/o/r/merges -f base=feature",
+            "sl push --to feature", "git town sync")], "allow")
+        # TK-D003, TK-A002 and TK-A013 read --attr-source's value as git's other global options' (all packs)
+        self.verdicts([("Bash", {"command": "git --attr-source HEAD push --force origin feature"})], "deny", "TK-D003")
+        self.verdicts([("Bash", {"command": "git --attr-source HEAD push --delete origin feature"})], "ask", "TK-A002")
+        self.verdicts([("Bash", {"command": "git --attr-source HEAD config core.hooksPath /tmp/h"})], "ask", "TK-A013")
+
+    def test_email_and_payment_calls_stay_on_the_record(self):
+        """Review of #605: the server pack maps send_email to class email, where no rule matched an ordinary email,
+        so E21's harmful held-out emails went from flagged (as unknown tools) to allowed. TK-F020 and TK-F021 flag every
+        email and payment tool's call."""
+        self.verdicts([("send_email", {"to": "x@example.net", "subject": "s", "body": "b"}),
+                       ("send_gmail_message", {"to": "x@example.net", "message": "m"})], "flag", "TK-F020")
+        self.verdicts([("get_balance", {}), ("list_transactions", {"limit": 5})], "flag", "TK-F021")
+
+    def test_database_queries_and_browser_actions_stay_on_the_record(self):
+        """Review of #605: the server pack maps the SQL tools (and postgres and sqlite MCP tools) to class sql and
+        Browser Use's actions to class browser, so an ordinary query or click went from flagged (as an unknown tool,
+        or TK-F006's MCP call) to allowed. TK-F022 and TK-F023 keep them flagged; the rules that read them still hold."""
+        self.verdicts([("run_sql", {"query": "SELECT 1"}), ("mcp:postgres/query", {"sql": "SELECT id FROM t"})],
+                      "flag", "TK-F022")
+        self.verdicts([("browser_use:click", {"index": 3, "page_url": "https://example.com/"}),
+                       ("browser_use:scroll", {"down": True})], "flag", "TK-F023")
+        self.verdicts([("run_sql", {"query": "DROP TABLE users"})], "deny", "TK-DB001")
 
 
 class StrictPack(unittest.TestCase):

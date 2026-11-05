@@ -549,7 +549,7 @@ denied or held:
 | both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 86 (84.3%), 21 denied | 8 (8.4%) |
 | | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 90 (88.2%), 23 denied | 13 (13.7%) |
 
-The current policy scores above were refreshed on Windows. The latency rows below retain the recorded macOS baseline; Windows timings were discarded, and the existing gates are unchanged. The dev row was measured again on that machine when `dev.yaml` took the server pack's rules (#604): its p99_ref rose 13% (RE2) and 24% (regex), within the gate's 25%.
+The current policy scores above were refreshed on Windows. The latency rows below retain the recorded macOS baseline; Windows timings were discarded, and the existing gates are unchanged. The dev row was measured again on the macOS gate machine when `dev.yaml` took the server pack's rules (#604): against the previous pack measured at the same time (4.65 and 5.13), its p99_ref rose 17% (RE2) and 22% (regex), and against the recorded row 16% and 24%, within the gate's 25%; the regex one is near that cap.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
@@ -564,7 +564,7 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 |---|---|---|---|---|
 | default, RE2 / regex | 120 / 119 | 282 / 344 | 706 / 852 | 5.23 / 6.32 |
 | strict, RE2 / regex | 119 / 117 | 259 / 302 | 574 / 747 | 4.72 / 5.49 |
-| dev, RE2 / regex | 126 / 123 | 302 / 356 | 721 / 869 | 5.29 / 6.29 |
+| dev, RE2 / regex | 126 / 124 | 307 / 358 | 740 / 883 | 5.44 / 6.28 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
