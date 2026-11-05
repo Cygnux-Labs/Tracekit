@@ -591,8 +591,9 @@ def _blocked_tool(harness, tool_name, raw=""):
         return None
     if tool_name.casefold() in CRUSH_SUBAGENTS:   # as its argument names, Crush may match a tool's name ignoring case
         return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
-                "can't decide them; make each call itself instead. To stop Crush offering it, set "
-                '"options": {"disabled_tools": ["agent", "agentic_fetch"]} in crush.json.')
+                "can't decide them; make each call itself instead. To stop Crush offering it, put "
+                '"permissions deny agent agentic_fetch" in crushrc (in crush.json: '
+                '"options": {"disabled_tools": ["agent", "agentic_fetch"]}).')
     if CRUSH_CODE_MODE.fullmatch(tool_name):
         return (f"Blocked by Tracekit: {tool_name} is Docker MCP Gateway's code-mode, whose script calls MCP tools "
                 "inside the gateway with no hook, so Tracekit can't decide them; make each call itself instead. "

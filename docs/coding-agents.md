@@ -65,11 +65,13 @@ a rule whose matcher is a bare `*`, which is an invalid regex); the PreToolUse a
 which translates the harness's payload into the Claude Code hook shape and runs the same pipeline as the Claude Code
 hook ([v2 hooks](#on-the-v2-signer)).
 
-Crush (`crush.json` in a project; the user's is `$CRUSH_GLOBAL_CONFIG/crush.json`, else
-`$XDG_CONFIG_HOME/crush/crush.json`, or `~/.config/crush/crush.json`, on Windows `%USERPROFILE%\.config\crush`) keeps
-its hooks as a flat list of `{name, command, timeout}` entries per event, not Claude Code's nested matcher groups. Its
-payload and event names are already Claude Code's (`hook_event_name`, `session_id`, `tool_name`, `tool_input`,
-`tool_use_id`, `tool_response`, `error`), so the adapter only maps its lower-case tool names: `bash` -> `Bash`,
+Crush reads `crushrc` / `.crushrc` (a Bash file, since Crush 0.88) first and `crush.json` as its legacy format, and
+merges both. Tracekit's hooks go in `crush.json` (in a project; the user's is `$CRUSH_GLOBAL_CONFIG/crush.json`, else
+`$XDG_CONFIG_HOME/crush/crush.json`, or `~/.config/crush/crush.json`, on Windows `%USERPROFILE%\.config\crush`).
+Crush keeps its hooks as a flat list of `{name, command, timeout}` entries per event, not Claude Code's nested
+matcher groups. Its payload and event names are already Claude Code's (`hook_event_name`, `session_id`, `tool_name`,
+`tool_input`, `tool_use_id`, `tool_response`, `error`), so the adapter only maps its lower-case tool names:
+`bash` -> `Bash`,
 `view` -> `Read`, `write` -> `Write`, `edit`, `multiedit`, `lsp_replace_symbol` and `lsp_rename` -> `Edit`, `ls` -> `LS`,
 `grep` -> `Grep`, `glob` -> `Glob` (`lsp_rename`, `ls`, `grep` and `glob` are decided on the `path` they read, never a
 `file_path` sent beside it), `fetch` -> `WebFetch`, `download` -> `Write` (the file it creates is what the file rules
@@ -78,8 +80,9 @@ untrusted. That joined name doesn't split the server from the tool: the signer t
 server's end, so the shipped packs' MCP rules and `mcp:<server>/<tool>` mappings read it, and holds it as an unknown
 tool on the server packs, but a rule of your own written for `mcp__<server>__<tool>` doesn't match it
 ([limits](limits.md)). Crush runs no hooks
-inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself; set
-`"options": {"disabled_tools": ["agent", "agentic_fetch"]}` in `crush.json` so Crush doesn't offer them. It denies
+inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself; put `permissions deny agent agentic_fetch`
+in `crushrc` (in `crush.json`: `"options": {"disabled_tools": ["agent", "agentic_fetch"]}`) so Crush doesn't offer
+them. It denies
 Docker MCP Gateway's `code-mode` tools too (`mcp_<server>_code-mode` and the `code-mode-<name>` tools it makes), whose
 scripts call MCP tools inside the gateway, where no hook sees them. Crush reads a built-in tool's argument names ignoring case and lets a later repeat win unless
 it is null, so the hook denies a built-in tool call whose input repeats a name or has one that isn't lower-case
