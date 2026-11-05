@@ -5443,7 +5443,7 @@
     }
     // one sentence a person reads first: the verdict, what the run's calls came to, its findings
     function runSentence(r) {
-      // a witness's cosignature of another version: the ANCHORING line's plain words, the check's in the report below
+      // a pinned witness's cosignature the check refused: the ANCHORING line's plain words, the check's in the report below
       const changed = r.verdict === "failed" && /^FAILED: (.*)\.$/.exec(r.anchoring || "");
       if (r.verdict === "failed") return "Failed verification: " + (changed ? changed[1] : failLines(r.report).join(" · ").replace(/^\[FAIL\]\s*/, "") || "see the verifier report") + ". None of its records are shown.";
       if (r.verdict === "pending" && /^RE-CHECKING/.test(r.integrity || "")) return "Being checked again: the store's bytes changed after the viewer read them, so its last verdict no longer stands.";

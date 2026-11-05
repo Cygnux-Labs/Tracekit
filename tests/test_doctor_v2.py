@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 
 from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
+from tracekit.format import checkpoint
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
 
@@ -665,6 +666,29 @@ class DevFresh(unittest.TestCase):
         for cfg, level in (({}, "dev"), ({"anchors": {"rekor": {"url": "https://rekor.example"}}}, "local")):
             got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d, **cfg})}
             self.assertIn(f"assurance stays {level}", got["D-WITNESS-CONFIGURED"]["detail"])
+
+
+class WitnessFresh(unittest.TestCase):
+    def test_a_witness_a_moment_behind_is_not_stale_and_one_record_is_one(self):
+        """After every start doctor warned "1 records behind": the signer had not sent the witness its new note yet."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, "store"))
+        note = os.path.join(d, "store", "checkpoint.note")
+        with open(note, "w", encoding="utf-8") as f:
+            f.write(f"example.org/log\n1\n{base64.b64encode(bytes(32)).decode()}\n\n— example.org/log AAAAAAAA\n")
+        w = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
+             "class": "public"}
+
+        def fresh(age):
+            os.utime(note, (time.time() - age,) * 2)
+            return next(r for r in doctor.v2_checks({"data_dir": d, "witnesses": [w]}, "dev")
+                        if r["id"] == "D-WITNESS-FRESH")
+        row = fresh(5)
+        self.assertEqual((row["status"], row["detail"]), ("ok", "w.example/w1 is 1 record behind, as for a moment after "
+                                                                "each checkpoint (a problem only after 300 s)"))
+        row = fresh(600)
+        self.assertEqual((row["status"], row["detail"]), ("warn", "w.example/w1 is 1 record behind"))
 
 
 def dev_key_fingerprint():

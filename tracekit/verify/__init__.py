@@ -33,10 +33,13 @@ CHECKS = {"files match manifest": "a file in the bundle was changed, added or re
           "bundle structure": "the bundle is malformed, so it could not be fully checked",
           "witness quorum": "fewer witnesses cosigned it than your trust file requires",
           "inclusion": "some of its records are not in the signed checkpoint"}
-# a pinned witness's cosignature that doesn't verify over the bundle's checkpoint (checkpoint.open_note): it cosigned
-# another version of the log
-_OTHER_VERSION = re.compile(r"bad cosignature from pinned witness (\S+)")
-CHANGED = "the witness ({}) cosigned a different version of this log: it was changed after the witness saw it"
+# a pinned witness's cosignature the checkpoint check refused (checkpoint.open_note), in plain words saying only what is
+# known: one that doesn't verify over this checkpoint is of a changed log or damaged (a flipped bit, an altered time);
+# one of the wrong shape is damaged
+_COSIGNATURE = re.compile(r"(bad|malformed) cosignature from pinned witness (\S+)")
+COSIGNATURE = {"bad": "the witness's ({}) cosignature doesn't match this log: the log was changed after the witness "
+                      "saw it, or the cosignature is damaged",
+               "malformed": "the witness's ({}) cosignature is malformed"}
 # v1's gap checks, in plain words (capture gaps are counted)
 GAPS = {"run boundaries": "the run's start or end is not in the bundle, so actions before or after it may be missing",
         "run completeness": "some of the run's records were left out of the bundle",
@@ -101,7 +104,7 @@ def summary(rep, code, integrity, assurance, stream=None):
             _where(p) for c in failed for p in c["problems"])))
         if at:
             say(f"{'TAMPERED' if not at[0][0] else 'FAILED'} at event {at[0][1]}: {at[0][2]}.")
-        elif other_version(rep):
+        elif cosignature_failure(rep):
             say(anchoring(rep))
         else:
             c = failed[0] if failed else {"check": "verification", "detail": "", "problems": []}
@@ -146,24 +149,24 @@ def summary(rep, code, integrity, assurance, stream=None):
         say(f"Pinned log key SHA-256 fingerprint: {rep.log_fingerprint}.")
 
 
-def other_version(rep):
-    """The pinned witness whose cosignature in the bundle is over another checkpoint than the bundle's, else None."""
+def cosignature_failure(rep):
+    """The plain words for a pinned witness's cosignature that the checkpoint check refused, else None."""
     checks = getattr(rep, "checks", None)
     for c in checks if isinstance(checks, list) else ():
-        m = c["check"] == "checkpoint" and c["status"] == "fail" and _OTHER_VERSION.fullmatch(str(c["detail"]))
+        m = c["check"] == "checkpoint" and c["status"] == "fail" and _COSIGNATURE.fullmatch(str(c["detail"]))
         if m:
-            return m[1]
+            return COSIGNATURE[m[1]].format(m[2])
     return None
 
 
 def anchoring(rep, reachable=False):
     """verify's line on whether a v2 report's log is anchored (None for a v1 report): ANCHORED when enough pinned
     independent witnesses or anchors cosigned its checkpoint, so a rewrite after that fails this check; NOT ANCHORED,
-    with what is missing, when fewer did; FAILED when a pinned witness cosigned another version of the log.
+    with what is missing, when fewer did; FAILED when a pinned witness's cosignature doesn't match or is malformed.
     `reachable`: the line before said the agent could reach the key, so this one doesn't say again who could rewrite."""
-    other = other_version(rep)
-    if other:
-        return f"FAILED: {CHANGED.format(other)}."
+    refused = cosignature_failure(rep)
+    if refused:
+        return f"FAILED: {refused}."
     a = getattr(rep, "anchoring", None)
     if not isinstance(a, tuple):
         return None

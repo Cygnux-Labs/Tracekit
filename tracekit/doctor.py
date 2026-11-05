@@ -1108,6 +1108,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     store = os.path.join(data, "store")
     try:
         note = read_text(os.path.join(store, "checkpoint.note"))
+        noted = os.path.getmtime(os.path.join(store, "checkpoint.note"))
     except FileNotFoundError:
         note = None
     except OSError as e:
@@ -1119,14 +1120,20 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             queue = read_json(os.path.join(store, "witness-queue.json"))
         except FileNotFoundError:
             queue = {}
-        size, stale = int(note.split("\n", 2)[1]), []
+        size, stale, behind = int(note.split("\n", 2)[1]), [], []
         for w in ws:
             name = TlogWitness(w["url"], w["vkey"]).name
             st = queue.get(name, {}).get(RECORDS)
             lag = size - (st or {}).get("size", 0)
-            if lag > 0 and (st is None or (st.get("since") and now - st["since"] >= service.WITNESS_GAP_S)):
-                stale.append(f"{name} is {lag} records behind")
-        add("D-WITNESS-FRESH", not stale, "; ".join(stale) or "every witness has cosigned the latest checkpoint",
+            # failing since (`since`), or not asked yet (just started or added: since the latest note), for a while
+            since = st.get("since") if st else noted
+            said = f"{name} is {lag} record{'s' if lag != 1 else ''} behind"
+            if lag > 0 and since and now - since >= service.WITNESS_GAP_S:
+                stale.append(said)
+            elif lag > 0:   # the signer sends each new checkpoint at once: a start or a busy log is a moment behind
+                behind.append(f"{said}, as for a moment after each checkpoint (a problem only after "
+                              f"{int(service.WITNESS_GAP_S)} s)")
+        add("D-WITNESS-FRESH", not stale, "; ".join(stale or behind) or "every witness has cosigned the latest checkpoint",
             f"check the witness is reachable and accepts this log ({wiki_url('docs/witnesses.md')})", bad=WARN)
         try:
             cosigs = checkpoint.open_note(note, service.read_vkeys(data), [w["vkey"] for w in ws])[3]

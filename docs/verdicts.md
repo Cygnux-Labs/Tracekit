@@ -26,8 +26,12 @@ A v2 bundle then says whether it is anchored ([witnesses](witnesses.md)):
 - `NOT ANCHORED: ...`: none did, or fewer than the trust file asks for (the line names who did and how many it asks
   for). Whoever holds the log key could then rewrite the log and re-sign it, and the bundle would still verify. When
   the line before already says the agent could reach the key (dev mode), it doesn't say so twice.
-- `FAILED: the witness (witness.example.org/w1) cosigned a different version of this log: it was changed after the
-  witness saw it.` (exit 1): the bundle carries a pinned witness's cosignature that doesn't match its checkpoint.
+- `FAILED: the witness's (witness.example.org/w1) cosignature doesn't match this log: the log was changed after the
+  witness saw it, or the cosignature is damaged.` (exit 1): the bundle carries a pinned witness's cosignature that
+  doesn't verify over its checkpoint. A rewritten log carrying the cosignature of the version the witness saw reads
+  so, and so does a cosignature damaged on the way (a flipped bit, an altered time): this check can't tell which, so
+  get the bundle again from its source and check that copy. One of the wrong length reads `FAILED: the witness's
+  (...) cosignature is malformed.`
 
 The last line is the SHA-256 of the log key that signed the checkpoint, the same fingerprint `tracekit init --dev --v2`
 and `tracekit up --wait` print, so you can check the trust file pins the key you expect.

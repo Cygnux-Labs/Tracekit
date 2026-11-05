@@ -388,8 +388,7 @@ class OptIn(unittest.TestCase):
         self.addCleanup(s.close)
         with open(os.path.join(data, svc.WITNESSED), encoding="ascii") as f:
             self.assertEqual(json.load(f), {NAME: 0})   # it answered at start: a new log, registered then
-        self.assertEqual(cli._dev_anchoring(data)[1], "anchored: the public witness held this log at size 0 when the "
-                                                      "dev signer started")
+        self.assertEqual(cli._dev_anchoring(data)[1], "registered with the public witness; nothing cosigned yet")
         s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
         s.checkpoint()
         self.assertTrue(wait_for(lambda: f"— {NAME} " in (s.log.storage.checkpoint_latest(RECORDS) or (0, ""))[1], 5))

@@ -2,6 +2,7 @@
 whether it is proof against the agent, which only a key something outside the bundle vouches for can show; a tampered
 or broken bundle's first broken record in plain words; signed gaps said as such. `--detail` prints the full report as
 before and `--json` is unchanged."""
+import base64
 import contextlib
 import glob
 import hashlib
@@ -28,6 +29,8 @@ DEV = ("NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signi
 UNANCHORED = "NOT SHOWN: nothing outside the bundle vouches for the signing key. Pin it with --key, or use a witness.\n"
 NOT_ANCHORED = ("NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could "
                 f"rewrite it unseen ({wiki_url('docs/witnesses.md')}).")
+MISMATCH = (f"the witness's ({tb.WITNESS}) cosignature doesn't match this log: the log was changed after the witness saw "
+            "it, or the cosignature is damaged")
 ANCHORED = (f"ANCHORED: an independent witness ({tb.WITNESS}) cosigned this log at size 5, so a later rewrite would fail "
             "this check.")   # a bundle()'s log: the key's epoch, the run's start, two calls and its end
 
@@ -113,6 +116,40 @@ class V2(tb.Case):
         self.assertTrue(out.endswith(f"Pinned log key SHA-256 fingerprint: {self.fingerprint}.\n"), out)
 
     @pytest.mark.unverified_bundles
+    def test_a_damaged_cosignature_of_an_honest_log_is_not_called_a_rewrite_alone(self):
+        """It read "cosigned a different version of this log: it was changed after the witness saw it" for any
+        cosignature that failed, so whoever handled the bundle could make an honest log read as rewritten."""
+        honest = self.bundle("separate-user")
+
+        def damaged(change):
+            def edit(files, _manifest):
+                name = json.loads(files["proofs/records.json"])["checkpoint"]
+                text, line = files[name].decode().rsplit("\n", 2)[:2]
+                dash, who, blob = line.split(" ")
+                files[name] = f"{text}\n{dash} {who} {base64.b64encode(change(base64.b64decode(blob))).decode()}\n".encode()
+            out = os.path.join(self.d, f"damaged{len(os.listdir(self.d))}.tkb")
+            rewrite_bundle(honest, out, edit)
+            return verify(out, "--trust", self.trust)[1].splitlines()[0]
+        self.assertEqual(damaged(lambda raw: raw[:-1] + bytes([raw[-1] ^ 1])), f"FAILED: {MISMATCH}.")   # a bit
+        self.assertEqual(damaged(lambda raw: raw[:4] + bytes(8) + raw[12:]), f"FAILED: {MISMATCH}.")   # its time
+        self.assertEqual(damaged(lambda raw: raw[:4] + raw[12:]),   # no time: 64 bytes
+                         f"FAILED: the witness's ({tb.WITNESS}) cosignature is malformed.")
+
+    def test_the_report_says_a_witness_named_witness_once_and_nothing_else_changes(self):
+        rep = mock.Mock(integrity="FAILED", assurance="none", findings=None, checks=[
+            {"check": "checkpoint", "status": "fail", "problems": [],
+             "detail": f"bad cosignature from pinned witness {name}"}
+            for name in ("witness.example.org/w1", "witnesses.example.org/w1", "witness2.example/w1")] + [
+            {"check": "run chain", "status": "pass", "detail": "agent a witness witnessed it", "problems": []}])
+        out = io.StringIO()
+        v2.print_report(rep, 1, out)
+        self.assertEqual(out.getvalue().splitlines()[:4], [
+            "[FAIL] checkpoint — bad cosignature from pinned witness.example.org/w1",
+            "[FAIL] checkpoint — bad cosignature from pinned witness witnesses.example.org/w1",
+            "[FAIL] checkpoint — bad cosignature from pinned witness witness2.example/w1",
+            "[PASS] run chain — agent a witness witnessed it"])
+
+    @pytest.mark.unverified_bundles
     def test_a_witness_cosignature_of_another_version_says_the_log_changed_after_the_witness_saw_it(self):
         """The key holder rewrote the log and kept the witness's cosignature of the version it saw."""
         log = self.log("rewritten")
@@ -126,9 +163,7 @@ class V2(tb.Case):
         out = os.path.join(self.d, "rewritten.tkb")
         export(log.store, "acme", "run-a", text + "\n" + checkpoint.sign(text, tb.ORIGIN, tb.LOG_SECRET)
                + tb.cosign(seen, tb.WITNESS, tb.WIT_SECRET, 1760000000), out)
-        self.assertEqual(verify(out, "--trust", self.trust), (1, (
-            f"FAILED: the witness ({tb.WITNESS}) cosigned a different version of this log: it was changed after the "
-            "witness saw it.\nAdd --detail to see each check.\n")))
+        self.assertEqual(verify(out, "--trust", self.trust), (1, f"FAILED: {MISMATCH}.\nAdd --detail to see each check.\n"))
         # the check's own words: a witness named witness.… is said once in the report, and --json keeps them as checked
         self.assertIn(f"[FAIL] checkpoint — bad cosignature from pinned {tb.WITNESS}\n",
                       verify(out, "--trust", self.trust, "--detail")[1])

@@ -1739,17 +1739,19 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
             + ("; approvals: self" if self_approved else ""))
 
 
-# a witness named after its role, as docs/public-witness.md names one (witness.example.org/w1), said once:
-# "pinned witness witness.example.org/w1" prints "pinned witness.example.org/w1"; --json keeps the words as checked
-_WITNESS_TWICE = re.compile(r"\bwitness (?=witness[.\w])")
+# the checkpoint check's refusal of a cosignature names the pinned witness by its key name, which docs/public-witness.md
+# makes `witness.<domain>/w1`: "pinned witness witness.example.org/w1" prints "pinned witness.example.org/w1" (--json
+# keeps the detail as checked)
+_WITNESS_TWICE = re.compile(r"(cosignature from pinned) witness (?=witness\.)")
 
 
 def print_report(rep, code, stream=None):
     """The report as text; control and bidirectional format characters in bundle-derived strings are dropped, so they
     reach no terminal and can't reorder the signer's words around them."""
-    s, clean = stream or sys.stdout, lambda x: _WITNESS_TWICE.sub("", _CONTROL.sub("", str(x)))
+    s, clean = stream or sys.stdout, lambda x: _CONTROL.sub("", str(x))
     for c in rep.checks:
-        s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(c['detail'])}" if c["detail"] else "") + "\n")
+        detail = _WITNESS_TWICE.sub(r"\1 ", str(c["detail"])) if c["check"] == "checkpoint" else c["detail"]
+        s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(detail)}" if detail else "") + "\n")
         for p in c["problems"]:
             s.write(f"        {clean(p)}\n")
     s.write(f"\nIntegrity: {clean(rep.integrity)}.\n"

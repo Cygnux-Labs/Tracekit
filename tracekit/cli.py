@@ -89,6 +89,8 @@ def _dev_anchoring(data_dir):
     if heard[name] is None:
         return [key, "public witness: on, but it didn't answer when the dev signer started, so the log isn't anchored "
                      "until it does"]
+    if heard[name] == 0:   # registered, as a new log is at its first start: the witness holds no checkpoint of it yet
+        return [key, "registered with the public witness; nothing cosigned yet"]
     return [key, f"anchored: the public witness held this log at size {heard[name]} when the dev signer started"]
 
 

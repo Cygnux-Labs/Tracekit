@@ -3120,11 +3120,11 @@ class RunChip(unittest.TestCase):
         """The headline read "checkpoint — bad cosignature from pinned witness witness.…" under the ANCHORING line's
         plain sentence; any other failure still reads its failing check."""
         needs_node(self)
-        changed = ("the witness (witness.example.org/w1) cosigned a different version of this log: it was changed after "
-                   "the witness saw it")
+        changed = ("the witness's (witness.example.org/w1) cosignature doesn't match this log: the log was changed after "
+                   "the witness saw it, or the cosignature is damaged")
         out = json.loads(page_js(["failLines", "runSentence"], f"""
             process.stdout.write(JSON.stringify([
-              runSentence({{ verdict: "failed", anchoring: "FAILED: {changed}.",
+              runSentence({{ verdict: "failed", anchoring: {json.dumps("FAILED: " + changed + ".")},
                              report: "[FAIL] checkpoint — bad cosignature from pinned witness.example.org/w1\\n" }}),
               runSentence({{ verdict: "failed", anchoring: null, report: "[FAIL] inclusion — gone\\n" }})]));"""))
         self.assertEqual(out, [f"Failed verification: {changed}. None of its records are shown.",

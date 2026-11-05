@@ -84,7 +84,7 @@ from .signer.rpc_schema import RPCError
 from .signer.service import data_dir_at, dev_data_dir, dev_witnesses, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
-from .verify import anchoring, other_version, v2
+from .verify import anchoring, cosignature_failure, v2
 from .why.server import Store
 
 POLL_S = 1.0
@@ -1210,7 +1210,7 @@ class StoreFeed:
         e, hidden = {"run_id": run_id}, False
         if code:
             rv = {"verdict": "failed", "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
-                  "anchoring": anchoring(rep) if other_version(rep) else None, "label": OPERATOR_SIDE, "agent": None}
+                  "anchoring": anchoring(rep) if cosignature_failure(rep) else None, "label": OPERATOR_SIDE, "agent": None}
             try:   # placed at its run's last record's time, as a run that verifies is; only the time is read
                 e["ts"] = collections.deque(reader.iter_run(tenant, run_id), 1)[0]["event"]["ts"]
             except (ValueError, KeyError, IndexError, TypeError, StorageCorrupt):
