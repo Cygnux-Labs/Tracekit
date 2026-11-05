@@ -32,6 +32,9 @@ _SCHEDULED = {"trap", "at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's
 # empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
 # line's characters ($'…' decodes others, after a $)
 _SECOND = re.compile(r"[$`*?[]")
+# the shell fields whose subjects carry a tag of up to this many bytes (ACT:, SIGNER_MODULE: …), which doesn't count
+# toward a subject's size: a command just under MAX_SUBJECT isn't oversize for being tagged
+_TAGGED = {"tracekit": 16}
 REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one decision share; a match that runs out
                             # of it denies, marked nondeterministic
 
@@ -185,6 +188,7 @@ class Engine:
         if cls == "a2a" and fields.get("unreadable"):
             hits["deny"].append("TK-A2A-NAME")   # a name with spellings its rules can't see (classes.a2a_fields)
         parsed, oversize, on_parse_error = ([], [], [], [], []), [], self.policy.get("on_parse_error", "ask")
+        cause = None
         if cls == "shell":
             command = fields.get("command", "")
             if len(_text(command if isinstance(command, str) else canonical(command)).encode()) > MAX_SUBJECT:
@@ -194,8 +198,10 @@ class Engine:
                 parsed, unread = self._parse(args, command)
                 # what trap, at or batch run later and the parser can't read (trap "$f" EXIT) isn't held, as before
                 # their code was read; with a writer's name in it, it counts for TK-D008 (_effects)
-                if unread or any(c["opaque"] and not _SCHEDULED.intersection(c["via"]) for c in parsed[0]):
+                held = next((c for c in parsed[0] if c["opaque"] and not _SCHEDULED.intersection(c["via"])), None)
+                if unread or held:
                     hits[on_parse_error].append("TK-SHELL-PARSE")
+                    cause = unread or _unread_cause(held)
         # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
@@ -213,7 +219,8 @@ class Engine:
             field = rule.get("field")
             key = ("argv" if field is None and cls == "shell" else field, "from" in rule)
             if key not in memo:
-                memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]))
+                memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]),
+                                     _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
             if lits is None or any(map(joined.__contains__, lits)):
                 for subject, low in zip(texts, lows):
@@ -261,18 +268,20 @@ class Engine:
             out["nondeterministic"] = True
         if oversize:
             out["oversize"] = oversize
+        if cause:
+            out["unread"] = cause
         return out
 
     def _parse(self, args, command, readings=True):
-        """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; whether it can't).
-        `readings`: False reads the command only as written (shell.analyse)."""
+        """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
+        ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse)."""
         target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
             if self._persistent_targets else None
         try:
-            return _shell(args, target, readings), False
+            return _shell(args, target, readings), None
         except shell.ParseError as e:
             return (_plain(command, getattr(e, "at", 0), readings, target) if isinstance(command, str) else
-                    _plain(canonical(command), 0, readings, target)), True
+                    _plain(canonical(command), 0, readings, target)), e.cause
 
     @staticmethod
     def _subjects(cls, field, args, fields, parsed, split=False):
@@ -296,6 +305,8 @@ class Engine:
             return Engine._targets(cls, args, fields, parsed)
         if cls == "shell" and field == "effects":
             return _effects(parsed)
+        if cls == "shell" and field == "tracekit":
+            return _tracekit(parsed)
         if cls == "shell" and field == "package_index":
             return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
@@ -341,12 +352,7 @@ class Engine:
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
             targets = [" ".join(w) for w in words] + parsed[2] + stdin
-            # a path also as plainly written: /etc/./x, /etc//x and /etc/y/../x name /etc/x
-            have = set(targets)
-            targets += [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
-                                    for t in targets if _DOTTED_WORD.search(t)) if n not in have]
-            have = set(targets)
-            return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
+            return _path_forms(targets) + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
         if cls in ("http", "browser"):
@@ -370,6 +376,36 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+def _unread_cause(command):
+    """Why the parser can't read what an opaque command runs, as a key of compile.ENGINE_REASONS's TK-SHELL-PARSE
+    causes: a function the line defines and doesn't call, or exports (function); its name is built by a variable or
+    substitution (name) or a pattern (pattern); a shell bash isn't (foreign);
+    a shell, interpreter, source, at, batch, parallel or xargs that runs code from a pipe, a file or its input (input);
+    else other."""
+    name = command["argv"][0]
+    if any(v.endswith("(defined)") for v in command["via"]):
+        return "function"
+    if re.search(r"[$`]", command["word"]):
+        return "name"
+    if re.search(r"[*?[{]", command["word"]):
+        return "pattern"
+    if name in shell.FOREIGN_SHELLS:
+        return "foreign"
+    if name in shell.SHELLS or shell._kind(name) or name in ("source", ".", "at", "batch", "parallel", "xargs") or \
+            name in shell.DASH_C or command["via"][-1:] == ["xargs"]:
+        return "input"
+    return "other"
+
+
+def _path_forms(targets):
+    """Targets, each also as plainly written (/etc/./x, /etc//x and /etc/y/../x name /etc/x) and casefolded."""
+    have = set(targets)
+    targets = targets + [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
+                                     for t in targets if _DOTTED_WORD.search(t)) if n not in have]
+    have = set(targets)
+    return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
 
 
 def _shell(args, persistent_target=None, readings=True):
@@ -861,6 +897,144 @@ def _command_effects(commands):
 _SQL_WRITE = re.compile(r"(?im)\b(?:insert|update|delete|drop|create|alter|replace\s+into|vacuum|reindex)\b"
                         r"|^\s*\.(?:restore|import)\b")
 
+# TK-D007's allowlists (#589): the programs that may read a file's contents under Tracekit's dirs (which files they
+# may read there the pack's `unless` names: the installed package and /etc/tracekit's client.json and policy), and
+# the programs that may list one; any other program there acts
+_PLAIN_READERS = {"cat", "head", "tail", "grep", "egrep", "fgrep", "sed", "jq"}
+_LISTERS = {"ls", "stat", "test", "[", "find"}
+_NAVIGATE = ("cd", "pushd", "popd")
+# a later pipeline stage that only filters text: what an earlier stage prints goes no further than the terminal
+_FILTERS = {"head", "tail", "grep", "egrep", "fgrep", "wc", "sort", "uniq", "cut", "tr", "sed", "jq", "column", "nl",
+            "cat"}
+# variables the shell or a program reads on its own (cd's CDPATH, HOME and OLDPWD, a startup file, a search path): an
+# assignment to one is never a value the line only reads
+_SPECIAL = re.compile(r"CDPATH|HOME|OLDPWD|PWD|PATH|IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|GLOBIGNORE|PROMPT_COMMAND|"
+                      r"PS[0-4]|TMPDIR|HISTFILE|INPUTRC|MAIL\w*|LD_\w+|DYLD_\w+|PYTHON\w*|XDG_\w+|TRACEKIT\w*|LESS\w*|"
+                      r"PAGER|EDITOR|VISUAL")
+
+
+# the options of a sed that only reads: any other (GNU's -i, BSD's -I, -f, a prefix of --in-place such as --in) may
+# write or run what the line doesn't show
+_SED_READ_OPTION = re.compile(r"-[nrsuzEe]+|--|--(?:quiet|silent|regexp-extended|expression|null-data|separate|"
+                              r"unbuffered|posix|debug|sandbox)(?:=[\w\W]*)?")
+
+
+def _reading(argv):
+    """What a command does with the files it names, for TK-D007: "read" (a _PLAIN_READERS program: sed only with -n
+    and a script that only prints, grep without -r), "deep" (grep -r: every file under a folder), "list" (a _LISTERS
+    program: find without an action, -fprint, -fls or -files0-from; pgrep and ps naming no file), else None."""
+    name, args = argv[0], argv[1:]
+    if name == "sed":
+        script = shell._sed_scripts(args)
+        return "read" if "-n" in args and script is not None and shell._sed_prints(script) and all(
+            _SED_READ_OPTION.fullmatch(a) for a in args if a.startswith("-") and a != "-") else None
+    if name in ("grep", "egrep", "fgrep"):
+        return "deep" if any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(
+            ("--recursive", "--dereference-recursive", "--directories=recurse", "-d")) for a in args) else "read"
+    if name in _PLAIN_READERS:
+        return "read"
+    if name == "find":
+        return None if any(a.startswith(("-exec", "-ok", "-fprint", "-fls", "-files0-from", "--files0-from")) or
+                           a == "-delete" for a in args) else "list"
+    if name in _LISTERS or name in ("pgrep", "ps") and not any("/" in a for a in args):
+        return "list"
+    return None
+
+
+_SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
+# the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
+# service's policy loader on its default policy
+_SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
+                 "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
+_PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins)\b|"
+                        r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
+
+
+def _runs_signer(code):
+    """Whether code that names tracekit.signer, .daemon or .proxy may reach more than _SIGNER_READS: the daemon or the
+    proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
+    other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
+    reached by its full name."""
+    if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
+            re.search(r"\btracekit\.signer\.\w+\.\w", code):
+        return True
+    aliases = {}   # a name the code gives one of the signer's modules -> that module
+    for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+\(?([\w\s,*]+)", code):
+        for item in m.group(2).replace("\n", " ").split(","):
+            name, _, alias = (x.strip() for x in item.partition(" as "))
+            if not name:
+                continue
+            if m.group(1) is None and name in _SIGNER_READS:
+                aliases[alias or name] = name
+            elif m.group(1) not in _SIGNER_READS or alias or name not in _SIGNER_READS[m.group(1)]:
+                return True
+    for m in re.finditer(r"\bimport\s+tracekit\.signer(?:\.(\w+))?(?:\s+as\s+(\w+))?", code):
+        if m.group(1) not in _SIGNER_READS or not m.group(2):
+            return True
+        aliases[m.group(2)] = m.group(1)
+    for alias, module in aliases.items():
+        uses = re.findall(r"(?<![\w.])%s\b(\.\w+)?" % re.escape(alias), code)
+        if any(u and u[1:] not in _SIGNER_READS[module] for u in uses) or uses.count("") > 1:   # the import names it
+            return True
+    return False
+
+
+def _tracekit(parsed):
+    """What a shell call does to Tracekit itself (TK-D007), each as a tagged subject. ACT: what a command acts on or
+    runs, its words joined (but data words), its stdin, the files redirections write, _effects' files, the other words
+    that name something (assignments, heredoc programs). READ, DEEP and LIST: one subject per word a command that only
+    reads names (_reading; the pack's `unless` names the files a READ may name under Tracekit's dirs): DEEP for a
+    recursive read, a pattern, a reader whose output goes on to a file, a substitution or anything but a filter
+    (`find … > l; xargs cat < l`, `cat $(find …)`, `find … | while read f`), and the folder a cd, pushd or popd enters
+    where every command only reads or lists and no redirection writes (else the cd is ACT); a file a redirection
+    reads is READ, an assignment the line uses only in readers (_private) LIST. SIGNER_MODULE: an ACT text whose code
+    reaches more of Tracekit's signer than it may read (_runs_signer). Each also normalised and casefolded as a path
+    is (_path_forms)."""
+    commands, refs, written = parsed[0], parsed[2], set(parsed[3])
+    learned = parsed[5] if len(parsed) > 5 else None
+    kinds = [_reading(c["argv"]) for c in commands]
+    roams = not written and all(k or c["argv"][0] in _NAVIGATE for c, k in zip(commands, kinds))
+    stages = {}   # pipeline -> the stage of each command, and whether it only filters
+    for c in commands:
+        stages.setdefault(c["pipeline"], []).append((c.get("stage", 0), c["argv"][0] in _FILTERS))
+    act, listed, read, deep = [], [], [], []
+    for c, kind in zip(commands, kinds):
+        data = shell.data_words(c["argv"]) | set(c.get("data_words", ()))
+        words = [a for i, a in enumerate(c["argv"]) if i not in data]
+        named = [a for a in words[1:] if not re.fullmatch(r"-[^/=]*", a)]
+        feeds = any(s > c.get("stage", 0) and not f for s, f in stages[c["pipeline"]]) or \
+            bool({"$()", "``", "<()"} & set(c["via"])) or bool(c.get("out"))
+        if c["argv"][0] in _NAVIGATE:
+            if roams:
+                deep += named
+            else:
+                act.append(" ".join(words))
+        elif kind is None:
+            act.append(" ".join(words))
+        else:
+            {"read": read, "list": listed, "deep": deep}["deep" if feeds or c["glob"] else kind].extend(named)
+        act += [] if c.get("data_stdin") else c["stdin"]
+    reads, private = set(learned["read"]) if learned else set(), _private(learned, commands, "\n".join(act))
+    for r in refs:
+        (listed if r not in written and r in private else read if r not in written and r in reads else act).append(r)
+    act += [t.partition(":")[2] for t in _effects(parsed)]
+
+    def tag(name, texts):
+        return [name + s for s in _path_forms(list(dict.fromkeys(texts)))]
+    return tag("ACT:", act) + tag("LIST:", listed) + tag("READ:", read) + tag("DEEP:", deep) + \
+        ["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _SIGNER_MODULE.search(s) and _runs_signer(s)]
+
+
+def _private(learned, commands, acted):
+    """The assignment words that set a shell variable only commands that read use: standalone (the shell's own, not a
+    command's environment), of no variable the shell or a program reads on its own (_SPECIAL), its $NAME in none of the
+    `acted` text (the words, code and stdin of the commands that act), with nothing on the line that may set or export
+    any variable (`set` too: set -a exports them) or name one at run time (${!x})."""
+    if not learned or learned["any_set"] or "*" in learned["unresolved"] or any(c["argv"][0] == "set" for c in commands):
+        return set()
+    used = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", acted))
+    return {text for name, text in learned["assigned"] if name not in used and not _SPECIAL.fullmatch(name)}
+
 
 def _code(parsed):
     """shell.analyse's code, each line without the data words a command carries (a git commit message, the pattern grep
@@ -967,14 +1141,14 @@ def _strings(value):
     return [s for v in value for s in _strings(v)] if isinstance(value, list) else []
 
 
-def _prepare(subjects):
-    """(the subjects as text, up to the first longer than MAX_SUBJECT; their lower-case forms; those joined by a
-    newline; whether one was longer). A rule matches the subjects before a long one and, matching none, takes
-    TK-OVERSIZE, as one that walked them in order would."""
+def _prepare(subjects, tag=0):
+    """(the subjects as text, up to the first longer than MAX_SUBJECT, past `tag` bytes a field's own tag adds
+    (_TAGGED); their lower-case forms; those joined by a newline; whether one was longer). A rule matches the subjects
+    before a long one and, matching none, takes TK-OVERSIZE, as one that walked them in order would."""
     texts = []
     for s in subjects:
         b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
-        if len(b) > MAX_SUBJECT:
+        if len(b) > MAX_SUBJECT + tag:
             break
         texts.append(s if b is s else b.decode("utf-8"))
     lows = [t.lower() for t in texts]

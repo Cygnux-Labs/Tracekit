@@ -192,6 +192,21 @@ its lines) is also a `MAY_WRITE:word` subject, which only `TK-D008` reads, and s
 `cp -l` makes (a later write through it writes the file it points at). A rule on `effects` can tell a destination from
 a file a command only reads or copies. The tags are not in `target`, so a target rule reads the same subjects as before `effects` existed.
 
+- `tracekit` (shell): what a command does to Tracekit's own files and signer, each a tagged subject (`TK-D007`).
+  `ACT:` what a command acts on or runs: its words (data words aside) and stdin, the files redirections write, the
+  files `effects` names, assignments and heredoc programs. The other tags are allowlists, one subject per word.
+  `LIST:` what `ls`, `stat`, `test` or `find` (without an action, `-fprint`, `-fls` or `-files0-from`) names, and an
+  assignment the line uses only in readers (not to `CDPATH`, `HOME`, `OLDPWD` or another variable the shell reads on
+  its own; none on a line that may set or export variables). `READ:` what `cat`, `head`, `tail`, `grep`,
+  `sed -n` (a script that only prints; not `-i`, `-I`, `-f` or another option but `-n`, `-e`, `-E`, `-r`, `-s`, `-u`
+  and `-z`) or `jq` names, printing to the terminal or a filter, and the files a
+  redirection reads. `DEEP:` what such a reader reads all of (`grep -r`, a pattern) or names when its output goes to
+  a file, a substitution or anything but a filter (`find … | xargs cat`, `cat $(find …)`, a `while read` loop), and the
+  folder a `cd` enters where every command only reads or lists. Any other program's words are `ACT:`.
+  `SIGNER_MODULE:` an `ACT:` text whose code reaches more of `tracekit.signer` than `rpc_schema`'s tables,
+  `reconcile.compared` and `model_names`, and the service's `load_policy` and `DEFAULT_POLICY`, by those names. A
+  tagged subject's tag doesn't count toward its size.
+
 - `host`: the URL's host as a browser reads it (`host:port/path` without a scheme is http; controls, tabs and newlines dropped, `view-source:` and `blob:`
   peeled, `\` as `/`, any number of slashes after the scheme, the host after the last `@`), percent-decoded, NFKC
   (fullwidth letters and digits), casefolded, without port or trailing path; an IP address in its canonical form
@@ -275,7 +290,21 @@ stopped in, parsed, and on its text split at `;`, `&`, `|` and newlines into bla
 an unreadable word or on plain words stands. A command it cannot parse, or one that
 is opaque, asks (`TK-SHELL-PARSE`): a glob or an expansion in a command name (`$x id`; a `$VAR/` directory in front of a
 literal name is fine), a shell or interpreter reading its program from a pipe or file, `xargs -I` putting its input
-into a script or command name, sed's `s///e`.
+into a script or command name, sed's `s///e`. A command name a variable gives is read with the literal the line
+surely gives it (`PY=.venv/bin/python; $PY -m pytest`, a for loop's words), and isn't opaque when it is a path; a
+bare program name a variable gives (`X=rm; $X …`) only hides that name, so it is read and still held. A value from a
+substitution, the environment or an assignment that may not run (`cd x && PY=…; $PY`) stays opaque, and so does every
+variable on a line that names `IFS` (where bash splits a value can't be told). A shell function
+(`f() { …; }`, `function f { …; }`) is read where it is called, its body with the call's words as `$1` … and `"$@"`
+(a call in its own body is opaque; a function named `cd`, `export`, `unset` or `command_not_found_handle` makes the
+line unreadable); a body the line doesn't call after defining it (one given after its name's last call too), or
+one it exports (`export -f`), is read as if it ran and held, as a shell that
+persists or a bash child may run it later; on a line that may download (its text names `curl` or `wget`, a command
+is one, or a command's name isn't written plainly: `c''url`, `$X''rl`), a function makes the line unreadable, as
+before (`TK-D002` reads that line's text); every arm of a `case` is read; `bash --version` and `--help` run no
+script. The decision's `unread`
+says why a command is held (`function`, `download`, `name`, `pattern`, `input`, `foreign`, `syntax`), and the signer gives that cause's own
+reason and remedy.
 
 **Paths:** a `\` is a `/` and `C:/…` is absolute (the agent may run on Windows). An absolute path without `..` is
 normalised. A relative path, or one with a `..` a symlink could redirect, is unverifiable, so the rule matches its

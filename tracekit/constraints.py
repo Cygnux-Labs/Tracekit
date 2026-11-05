@@ -801,13 +801,13 @@ def shell(cmd):
     in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
     ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
     after `--`, and the -name of a find that deletes or runs a command; a word with a variable, a glob, braces or a
-    command substitution is no path; a line the parser can't read (`case`, over its size) does nothing, and the
+    command substitution is no path; a line the parser can't read (`coproc`, over its size) does nothing, and the
     policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
     out = {"paths": [], "dirs": [], "cd": False, "elsewhere": False, "later": False, "push": False, "network": False,
            "writes": False}
     try:
-        cmds, _, _, written, _ = _parse(cmd if isinstance(cmd, dict) else
-                                        {"command": cmd if isinstance(cmd, str) else ""})
+        cmds, _, _, written = _parse(cmd if isinstance(cmd, dict) else
+                                     {"command": cmd if isinstance(cmd, str) else ""})[:4]
     except ParseError:
         return out
     for c in cmds:
