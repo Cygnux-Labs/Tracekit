@@ -41,9 +41,9 @@ REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one d
 
 def _backend(name):
     """Return (engine id, compile(pattern, anycase=False), match(compiled, text, full, deadline)); only the fallback
-    uses the deadline: [seconds left], which the matches of one decision (or bounds check) share and each spends by
-    the time it takes. Reading the call (its parse, its subjects) is the same on either engine and bounded by the
-    64 KiB input: a slow machine's reading doesn't spend it."""
+    uses the deadline: [seconds left] of the 1 s (REGEX_TIMEOUT_S) its regex matches of one decision (or bounds check)
+    share, each spending it by the time it takes. Reading the call (its parse, its subjects) isn't charged to it: that
+    is the same work on either engine, bounded by the input size limits (MAX_SUBJECT, shell.MAX_WORK) as on RE2."""
     if name != "regex":
         try:
             import re2
@@ -209,8 +209,8 @@ class Engine:
                 if unread or held:
                     hits[on_parse_error].append("TK-SHELL-PARSE")
                     cause = unread or _unread_cause(held)
-        # the fallback's time is its matches' (_backend), not the parse's or the subjects', which are the same on either
-        # engine and bounded by MAX_WORK (a few times the 64 KiB input)
+        # the fallback's 1 s covers its regex matches alone (_backend): reading the call (the parse, the subjects) isn't
+        # charged to it, and is bounded by the input size limits, as on RE2
         nondeterministic, deadline = False, [REGEX_TIMEOUT_S]
         name, memo = _text(tool), {}
         low_name = name.lower()

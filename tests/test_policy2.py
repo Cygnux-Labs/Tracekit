@@ -409,8 +409,8 @@ class Engines(unittest.TestCase):
         on a laptop) spent it before the first match and denied, marked nondeterministic. Started after the parse, it
         still ran while the engine built the subjects (each command's targets, effects, Tracekit's own words: 140 ms of
         those lines on a laptop, against 7 ms of matches) and parsed a second reading: CI's py3.13 Linux runner spent
-        it all there and denied the same lines. Reading the call is bounded by the 64 KiB input; only the matches spend
-        this time."""
+        it all there and denied the same lines. Only the regex matches spend this time; reading the call isn't charged
+        to it."""
         e = Engine({"tools": {"Bash": "shell"}, "deny": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
         # _shell: the parse, and the second reading's of a deny with a $; _prepare: each field's subjects
         for name in ("_shell", "_prepare"):
