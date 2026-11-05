@@ -3994,7 +3994,7 @@
     // replayed compacting at the cap (green); the cap dashed, and each compaction it made itself (cyan). Both axes are
     // one scale: the right one is the left in dollars a step pays for that much context, at the session's own average
     function contextChart(c) {
-      const W = 720, H = 230, L = 52, R = 62, T = 14, B = 26, top = Math.max(...c.actual, ...c.replay, c.cap) * 1.08;
+      const W = 720, H = 238, L = 52, R = 62, T = 22, B = 26, top = Math.max(...c.actual, ...c.replay, c.cap) * 1.08;
       const X = i => L + (W - L - R) * (c.n > 1 ? i / (c.n - 1) : 0), Y = v => H - B - (H - B - T) * v / top, f = v => v.toFixed(1);
       const pts = vs => c.x.map((i, k) => `${esc(f(X(i)))},${f(Y(vs[k]))}`).join(" ");
       return `<svg class="tchart" viewBox="0 0 ${esc(W)} ${esc(H)}" role="img" aria-label="${esc(`The context of each of ${c.n} steps as it ran, and replayed compacting at ${tipTok(c.cap)} tokens`)}">`
@@ -4003,19 +4003,19 @@
         + `<polygon class="tarea" points="${esc(f(X(c.x[0])))},${esc(f(Y(0)))} ${esc(pts(c.actual))} ${esc(f(X(c.x[c.x.length - 1])))},${esc(f(Y(0)))}"/><polyline class="tact" points="${esc(pts(c.actual))}"/><polyline class="tsim" points="${esc(pts(c.replay))}"/>`
         + `<line class="tcap" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(c.cap)))}" y2="${esc(f(Y(c.cap)))}"/><text x="${esc(L + 4)}" y="${esc(f(Y(c.cap) - 4))}">compact here: ${esc(tipTok(c.cap))}</text>`
         + c.marks.map(([i, v]) => `<path class="tmark" d="M${esc(f(X(i)))},${esc(f(Y(v) - 2))} l-4,-7 h8 z"><title>${esc(`step ${i.toLocaleString("en-US")}: compacted itself at ${tipTok(v)} tokens`)}</title></path>`).join("")
-        + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="${esc(L - 6)}" y="${esc(T - 4)}" text-anchor="end">TOKENS</text><text x="${esc(W - R + 6)}" y="${esc(T - 4)}">$ A STEP</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">STEP</text></svg>`;
+        + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="2" y="${esc(T - 8)}">TOKENS</text><text x="${esc(W - 2)}" y="${esc(T - 8)}" text-anchor="end">$ A STEP</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">STEP</text></svg>`;
     }
     // tip 2: each wait that outlived the cache, when it began (local time) and what the rebuild after it cost; amber
     // while blocked on a call a bounded poll would have kept the cache through, faint while idle
     function cacheChart(t) {
-      const W = 720, H = 190, L = 52, R = 18, T = 14, B = 30, [t0, t1] = t.window, span = Math.max(1, t1 - t0), top = Math.max(...t.waits.map(w => w.usd)) * 1.1 || 1;
+      const W = 720, H = 198, L = 66, R = 18, T = 22, B = 30, [t0, t1] = t.window, span = Math.max(1, t1 - t0), top = Math.max(...t.waits.map(w => w.usd)) * 1.1 || 1;
       const X = s => L + (W - L - R) * (s - t0) / span, Y = v => H - B - (H - B - T) * v / top, f = v => v.toFixed(1);
       const lab = s => (span > 36 * 3600 ? new Date(s * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric" }) + " " : "") + fmtT(s).slice(0, 5);
       return `<svg class="tchart" viewBox="0 0 ${esc(W)} ${esc(H)}" role="img" aria-label="${esc(`${t.waits.length} waits that outlived the prompt cache, by when they began and what the rebuild after each cost`)}">`
         + tipTicks(top).map(v => `<line class="tgrid" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(v)))}" y2="${esc(f(Y(v)))}"/><text x="${esc(L - 6)}" y="${esc(f(Y(v) + 3))}" text-anchor="end">${esc(tipUsd(v))}</text>`).join("")
         + [0, .25, .5, .75, 1].map(k => `<text x="${esc(f(X(t0 + k * span)))}" y="${esc(H - B + 14)}" text-anchor="${esc(k ? k === 1 ? "end" : "middle" : "start")}">${esc(lab(t0 + k * span))}</text>`).join("")
         + [...t.waits].sort((a, b) => a.fix - b.fix).map(w => `<line class="tstem${w.fix ? "" : " tidle"}" x1="${esc(f(X(w.t)))}" x2="${esc(f(X(w.t)))}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(w.usd)))}"/><circle class="tdot${w.fix ? "" : " tidle"}" cx="${esc(f(X(w.t)))}" cy="${esc(f(Y(w.usd)))}" r="3.5"><title>${esc(`${fmtD(w.t)} ${fmtT(w.t)} ${TZ} · ${w.agent} · waited ${tipDur(w.s)} (its cache lasts ${tipDur(w.life)}) · wrote ${tipTok(w.tokens)} tokens again: ${tipUsd(w.usd)}${w.fix ? ` (polling: ${tipUsd(w.alt)})` : ""} · ${w.cause}`)}</title></circle>`).join("")
-        + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="${esc(L - 6)}" y="${esc(T - 4)}" text-anchor="end">REBUILD</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">${esc(TZ)}</text></svg>`;
+        + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="2" y="${esc(T - 8)}">REBUILD</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">${esc(TZ)}</text></svg>`;
     }
     const tipBar = (rows, key) => `<div class="tbars">` + rows.map(([label, parts, text]) => `<span>${esc(label)}</span><div class="tbar">` + parts.map(([w, cls, title]) => `<span class="${esc(cls)}" style="width:${esc((100 * w).toFixed(2))}%" title="${esc(title)}"></span>`).join("") + `</div><span class="dim">${esc(text)}</span>`).join("") + `</div>` + (key || "");
     // tip 2's own experiment: subagent steps by the wait before them, and how many wrote their whole context again

@@ -413,12 +413,12 @@ class Page(unittest.TestCase):
             self.skipTest("needs node to run the page's code")
 
     def test_the_context_chart_is_drawn_to_scale(self):
-        """y maps tokens linearly from the axis (204) to 8% over the largest value; the right axis is the same line
-        in dollars a step pays to re-read it."""
+        """y maps tokens linearly from the axis (212) to 8% over the largest value, 22 from the top; the right axis is
+        the same line in dollars a step pays for that much context."""
         svg = page_js(self.NAMES, """process.stdout.write(contextChart({x: [0, 1], actual: [100, 200], replay: [100, 50],
             n: 2, cap: 150, marks: [[1, 200]], read: 0.2}))""")
         top = 200 * 1.08
-        y = lambda v: f"{204 - 190 * v / top:.1f}"   # noqa: E731
+        y = lambda v: f"{212 - 190 * v / top:.1f}"   # noqa: E731
         self.assertIn(f'<line class="tcap" x1="52" x2="658" y1="{y(150)}" y2="{y(150)}"/>', svg)
         self.assertIn(f'<polyline class="tact" points="52.0,{y(100)} 658.0,{y(200)}"/>', svg)
         self.assertIn(f'<polyline class="tsim" points="52.0,{y(100)} 658.0,{y(50)}"/>', svg)
