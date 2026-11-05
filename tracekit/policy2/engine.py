@@ -20,12 +20,21 @@ ALIASES = (classes.SHELL_KEYS, classes.PATH_KEYS, classes.PAYEE_KEYS, classes.RE
            ("amount", "amount_cents"), ("sql", "query", "statement"), ("db", "database"))
 _URL = re.compile(r"(?i)\b(?:https?|wss?|ftp):[^\s'\"<>`]*")
 _DOTTED = re.compile(r"(?:^|/)\.\.?(?:/|$)|(?<!:)//")   # a path with . or .. parts, or an empty one (not a URL's)
+# a line with a word _DOTTED finds (and maybe more): _DOTTED's `$` also matches before a word's last newline
+_DOTTED_WORD = re.compile(r"(?:^|[/ ])\.\.?(?:[/ ]|\n? |$)|(?<!:)//")
 _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 2852039166/latest
 # ...when it reads as an IPv4 address outside 0.0.0.0/8, which no call reaches: not 1.txt, 2fa/ or head -n 50's 50.
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
 # too much
 _BARE_TARGET = re.compile(r"http://[1-9][0-9]*(\.[0-9]+){3}/")
 _SCHEDULED = {"trap", "at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's `via` for code run later
+# what every second reading of a line starts from (shell.analyse's `readings`): an expansion or substitution read as
+# empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
+# line's characters ($'…' decodes others, after a $)
+_SECOND = re.compile(r"[$`*?[]")
+# the shell fields whose subjects carry a tag of up to this many bytes (ACT:, SIGNER_MODULE: …), which doesn't count
+# toward a subject's size: a command just under MAX_SUBJECT isn't oversize for being tagged
+_TAGGED = {"tracekit": 16}
 REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one decision share; a match that runs out
                             # of it denies, marked nondeterministic
 
@@ -74,12 +83,11 @@ class Engine:
         self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
                         for name, b in (r.get("approval") or {}).get("agent", {}).get("allow", {}).get("fields", {}).items()
                         if "pattern" in b}
-        # the names `tools:` lists (not its globs) by spelling, for listed(); a spelling two names share names neither
-        spelled = {}
+        # the names `tools:` lists (not its globs) by spelling, for listed(); a spelling two names share names both
+        self._spelled = {}
         for t in self.policy.get("tools", {}):
             if not any(c in t for c in "*?[") and _spelling(t):   # a name with no ASCII letter or digit spells none
-                spelled.setdefault(_spelling(t), []).append(t)
-        self._spelled = {k: v[0] for k, v in spelled.items() if len(v) == 1}
+                self._spelled.setdefault(_spelling(t), []).append(t)
 
     def bounds(self, rule, args, deadline):
         """[(condition, passed)] of ask rule `rule`'s approval.agent bounds over a call's `args`: a closed world, not
@@ -130,19 +138,20 @@ class Engine:
         return tools[hits[0][1]] if hits else "unknown"
 
     def listed(self, tool):
-        """The name `tools:` lists that `tool` spells with case, spaces and punctuation ignored, when it lists neither
-        `tool` nor a glob that takes it; None otherwise, and when two listed names spell it. Frameworks rewrite the
-        names they are given: CrewAI's hooks see `bash` for a tool declared `Bash`, `multi_edit` for `MultiEdit`."""
+        """The names `tools:` lists that `tool` spells with case, spaces and punctuation ignored (every one, when two
+        share the spelling: the server pack's `bash` and the coding pack's `Bash`), when it lists neither `tool` nor a
+        glob that takes it; [] otherwise. Frameworks rewrite the names they are given: CrewAI's hooks see `bash` for a
+        tool declared `Bash`, `multi_edit` for `MultiEdit`."""
         if tool in self.policy.get("tools", {}) or self.tool_class(tool) != "unknown":
-            return None
-        return self._spelled.get(_spelling(tool))
+            return []
+        return list(self._spelled.get(_spelling(tool), ()))
 
     def untrusted_results(self, tool):
         """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted,
-        or those of the tool it spells (listed)."""
-        return any(name is not None and any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
-                                for u in self.policy.get("untrusted", ()))
-                   for name in (tool, self.listed(tool)))
+        or those of a tool it spells (listed)."""
+        return any(any(u == self.tool_class(name) if u in CLASSES else fnmatch.fnmatchcase(name, u)
+                       for u in self.policy.get("untrusted", ()))
+                   for name in (tool, *self.listed(tool)))
 
     def reads(self, tool, cls=None):
         """{section: [rule ids]} decide() reads for a call of `tool` (`cls` overrides its class, as for decide): those
@@ -158,8 +167,8 @@ class Engine:
         """Whether a rule's tool pattern takes the tool `name` (`low`: lower-cased); none takes every name. A name
         holding none of the pattern's literals is not searched: 27 searches of a 48 KiB MCP name of `run_` took the
         fallback engine 0.3 s on a laptop, past its 1 s on CI's macOS runners (#481)."""
-        return tool_re is None or (lits is None or any(s in low for s in lits)) and self._match(tool_re, name, True,
-                                                                                                 deadline)
+        return tool_re is None or (lits is None or any(map(low.__contains__, lits))) and self._match(
+            tool_re, name, True, deadline)
 
     def decide(self, tool, args, cls=None, untrusted=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
@@ -178,64 +187,80 @@ class Engine:
             hits["ask"].append("TK-SQL-PARSE")   # no dialect reads it: an unclosed literal or comment, or not text
         if cls == "a2a" and fields.get("unreadable"):
             hits["deny"].append("TK-A2A-NAME")   # a name with spellings its rules can't see (classes.a2a_fields)
-        parsed, oversize = ([], [], [], [], []), []
+        parsed, oversize, on_parse_error = ([], [], [], [], []), [], self.policy.get("on_parse_error", "ask")
+        cause = None
         if cls == "shell":
             command = fields.get("command", "")
             if len(_text(command if isinstance(command, str) else canonical(command)).encode()) > MAX_SUBJECT:
                 hits["deny"].append("TK-OVERSIZE")
                 oversize.append("the shell command")
             else:
-                unreadable = hits[self.policy.get("on_parse_error", "ask")]   # TK-SHELL-PARSE's section
-                try:
-                    if self._persistent_targets:
-                        parsed = _shell(args, lambda target: any(p.search(target.casefold())
-                                                                  for p in self._persistent_targets))
-                    else:
-                        parsed = _shell(args)
-                except shell.ParseError:
-                    unreadable.append("TK-SHELL-PARSE")
-                    # its own target and code
-                    raw = command if isinstance(command, str) else canonical(command)
-                    parsed = [], [], [raw], [], [raw]
+                parsed, unread = self._parse(args, command)
                 # what trap, at or batch run later and the parser can't read (trap "$f" EXIT) isn't held, as before
                 # their code was read; with a writer's name in it, it counts for TK-D008 (_effects)
-                if any(c["opaque"] and not _SCHEDULED.intersection(c["via"]) for c in parsed[0]):
-                    unreadable.append("TK-SHELL-PARSE")
+                held = next((c for c in parsed[0] if c["opaque"] and not _SCHEDULED.intersection(c["via"])), None)
+                if unread or held:
+                    hits[on_parse_error].append("TK-SHELL-PARSE")
+                    cause = unread or _unread_cause(held)
         # from here: the fallback's time is its matches', not the parse's, which is the same on either engine and bounded by MAX_WORK (a few times the 64 KiB input)
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
         name, memo = _text(tool), {}
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
             self._of[cls] = [x for x in self.rules if x[1].get("class", cls) == cls]
-        for sec, rule, tool_re, pat, unless, lits, tool_lits in self._of[cls]:
+
+        def hit(entry, parsed, memo, oversize):
+            """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
+            over MAX_SUBJECT), else None; TimeoutError past the deadline."""
+            sec, rule, tool_re, pat, unless, lits, tool_lits = entry
+            if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
+                return None
+            # rules on the same subjects read them once (a shell rule with no field reads argv)
+            field = rule.get("field")
+            key = ("argv" if field is None and cls == "shell" else field, "from" in rule)
+            if key not in memo:
+                memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]),
+                                     _TAGGED.get(key[0], 0))
+            texts, lows, joined, big = memo[key]
+            if lits is None or any(map(joined.__contains__, lits)):
+                for subject, low in zip(texts, lows):
+                    # `unless`: an exemption checked against the same subject (use it only where the subject is
+                    # one target, e.g. a file path; in a whole command it could exempt a different target)
+                    if (lits is None or len(texts) == 1 or any(map(low.__contains__, lits))) and self._match(
+                            pat, subject, False, deadline) and not (
+                            unless is not None and self._match(unless, subject, False, deadline)) and (
+                            "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
+                                                                                     fields)):
+                        return rule["id"]
+            if big:   # the rule's own verdict: a flag rule cannot block a large call
+                field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
+                oversize.append(f"{rule['id']}'s subject ({field})")
+                return "TK-OVERSIZE"
+            return None
+        for entry in self._of[cls]:
             try:
-                if not self._named(tool_re, tool_lits, name, low_name, deadline):
-                    continue
-                key = (rule.get("field"), "from" in rule)   # rules on the same subjects read them once
-                if key not in memo:
-                    memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]))
-                texts, lows, joined, big = memo[key]
-                hit = None
-                if lits is None or any(s in joined for s in lits):
-                    for subject, low in zip(texts, lows):
-                        # `unless`: an exemption checked against the same subject (use it only where the subject is
-                        # one target, e.g. a file path; in a whole command it could exempt a different target)
-                        if (lits is None or len(texts) == 1 or any(s in low for s in lits)) and self._match(
-                                pat, subject, False, deadline) and not (
-                                unless is not None and self._match(unless, subject, False, deadline)) and (
-                                "from" not in rule or untrusted is not None and untrusted(subject, rule.get("field"))):
-                            hit = rule["id"]
-                            break
-                if hit is None and big:   # the rule's own verdict: a flag rule cannot block a large call
-                    hit = "TK-OVERSIZE"
-                    field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
-                    oversize.append(f"{rule['id']}'s subject ({field})")
-                if hit is not None:
-                    hits[sec].append(hit)
+                if (found := hit(entry, parsed, memo, oversize)) is not None:
+                    hits[entry[0]].append(found)
             except TimeoutError:   # the time of the whole decision is spent: deny, and leave the other rules out
                 nondeterministic = True
-                hits["deny"].append(rule["id"])
+                hits["deny"].append(entry[1]["id"])
                 break
+        # a deny that only a second reading of the command makes (an expansion read as empty, a pattern as matching
+        # nothing: `rm -rf "$D"/`), and not the command as written, takes on_parse_error's section: the line can't say
+        # whether $D is empty, so by default a person answers it. A line with no $, backquote or pattern character has
+        # no second reading (_SECOND): it reads the same without them, so each of its denies is as written
+        written = [x for x in self._of[cls] if x[0] == "deny" and x[1]["id"] in hits["deny"]]
+        if cls == "shell" and on_parse_error == "ask" and written and not nondeterministic and (
+                not isinstance(command, str) or _SECOND.search(command)):
+            parsed, memo = self._parse(args, command, readings=False)[0], {}
+            for entry in written:
+                try:
+                    if hit(entry, parsed, memo, []) is None:
+                        hits["deny"].remove(entry[1]["id"])
+                        hits["ask"].append(entry[1]["id"])
+                except TimeoutError:   # it stays a deny
+                    nondeterministic = True
+                    break
         verdict = next((sec for sec in SECTIONS if hits[sec]), "allow")
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
                "policy_hash": self.policy_hash, "engine": self.engine}
@@ -243,7 +268,20 @@ class Engine:
             out["nondeterministic"] = True
         if oversize:
             out["oversize"] = oversize
+        if cause:
+            out["unread"] = cause
         return out
+
+    def _parse(self, args, command, readings=True):
+        """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
+        ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse)."""
+        target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
+            if self._persistent_targets else None
+        try:
+            return _shell(args, target, readings), None
+        except shell.ParseError as e:
+            return (_plain(command, getattr(e, "at", 0), readings, target) if isinstance(command, str) else
+                    _plain(canonical(command), 0, readings, target)), e.cause
 
     @staticmethod
     def _subjects(cls, field, args, fields, parsed, split=False):
@@ -267,6 +305,8 @@ class Engine:
             return Engine._targets(cls, args, fields, parsed)
         if cls == "shell" and field == "effects":
             return _effects(parsed)
+        if cls == "shell" and field == "tracekit":
+            return _tracekit(parsed)
         if cls == "shell" and field == "package_index":
             return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
@@ -274,7 +314,7 @@ class Engine:
         if cls == "sql" and field == "code":
             return fields.get("code", [])
         if cls == "shell" and field == "code":
-            return parsed[4]
+            return _code(parsed)
         if cls == "shell" and field in (None, "argv"):
             return [" ".join(c["argv"]) for c in parsed[0]]
         if cls == "shell" and field == "line":
@@ -298,23 +338,21 @@ class Engine:
         """shell: each command's argv without its data words (shell.data_words), the redirection targets, assignments
         and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
         writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
-        mcp, app and unknown tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
-        decimal, hex, octal or IPv6 form reads as the address it is."""
+        mcp: the whole call without the text it only carries (_acted_on), each string in it with a `/` or `\\` also
+        read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call. Each
+        URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal, hex, octal or IPv6
+        form reads as the address it is: of mcp, app and unknown tools, each URL in a string of what they act on."""
         if cls == "shell":
             commands = parsed[0]
             words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in commands
                      for data in [shell.data_words(c["argv"]) | set(c.get("data_words", ()))]]
             stdin = [s for c in commands if not c.get("data_stdin") for s in c["stdin"]]
             found = [a for ws in words for a in ws] + parsed[2] + stdin
-            urls = [t for t in map(classes.url_target, (u for w in found for u in _URL.findall(w))) if t]
+            urls = [t for t in map(classes.url_target, (u for w in found if ":" in w for u in _URL.findall(w))) if t]
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
             targets = [" ".join(w) for w in words] + parsed[2] + stdin
-            # a path also as plainly written: /etc/./x, /etc//x and /etc/y/../x name /etc/x
-            targets += [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
-                                    for t in targets) if n not in targets]
-            have = set(targets)
-            return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
+            return _path_forms(targets) + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
         if cls in ("http", "browser"):
@@ -330,10 +368,47 @@ class Engine:
             to = fields.get("receiver")
             receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
             return receiver + [canonical(args.get("params"))]
-        return [canonical(args)] if cls in ("mcp", "app", "unknown") else []
+        if cls not in ("mcp", "app", "unknown"):
+            return []
+        tool = fields.get("tool")
+        call = _acted_on(args, _carried(tool if isinstance(tool, str) else "")) if cls == "mcp" else args
+        strings = _strings(call)
+        paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
+        urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
+        return list(dict.fromkeys([canonical(call)] + paths + urls))
 
 
-def _shell(args, persistent_target=None):
+def _unread_cause(command):
+    """Why the parser can't read what an opaque command runs, as a key of compile.ENGINE_REASONS's TK-SHELL-PARSE
+    causes: a function the line defines and doesn't call, or exports (function); its name is built by a variable or
+    substitution (name) or a pattern (pattern); a shell bash isn't (foreign);
+    a shell, interpreter, source, at, batch, parallel or xargs that runs code from a pipe, a file or its input (input);
+    else other."""
+    name = command["argv"][0]
+    if any(v.endswith("(defined)") for v in command["via"]):
+        return "function"
+    if re.search(r"[$`]", command["word"]):
+        return "name"
+    if re.search(r"[*?[{]", command["word"]):
+        return "pattern"
+    if name in shell.FOREIGN_SHELLS:
+        return "foreign"
+    if name in shell.SHELLS or shell._kind(name) or name in ("source", ".", "at", "batch", "parallel", "xargs") or \
+            name in shell.DASH_C or command["via"][-1:] == ["xargs"]:
+        return "input"
+    return "other"
+
+
+def _path_forms(targets):
+    """Targets, each also as plainly written (/etc/./x, /etc//x and /etc/y/../x name /etc/x) and casefolded."""
+    have = set(targets)
+    targets = targets + [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
+                                     for t in targets if _DOTTED_WORD.search(t)) if n not in have]
+    have = set(targets)
+    return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
+
+
+def _shell(args, persistent_target=None, readings=True):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
     a list of command lines. Anything else, or more than one of them, raises ParseError."""
@@ -343,18 +418,54 @@ def _shell(args, persistent_target=None):
     value = args[present[0]] if present else ""
     strings = isinstance(value, list) and value and all(isinstance(a, str) for a in value)
     if isinstance(value, str):
-        return shell.analyse(value, persistent_target)
+        return shell.analyse(value, persistent_target, readings)
     if strings and present == ["commands"]:
-        return shell.analyse("\n".join(value), persistent_target)
+        return shell.analyse("\n".join(value), persistent_target, readings)
     if strings:
-        return shell.analyse_argv(value)
+        return shell.analyse_argv(value, readings)
     raise shell.ParseError("the command is neither a string nor a list of strings")
+
+
+# a piece of a line between ;, &, | and newlines outside quotes, as bash separates commands; a quote left open runs to
+# the end of the line, as bash reads no command after it; a # that starts a word comments out the rest of its line, a
+# quote in it too
+_PIECE = re.compile(r"""(?:(?<![^ \t\n;&|(])(?<!\\.)#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
+
+
+def _plain(raw, at=0, readings=True, persistent_target=None):
+    """What a command the parser can't read is decided on: its text as its target and code; the line before the word
+    it stopped in (`at`: where), parsed; and each piece of the rest (_PIECE), from the one it stopped in, split on
+    blanks as a command (shell.analyse_argv), so a rule that reads plain words still holds what it held (`sudo id
+    {1..3..1}`). A part that can't be read so is left out; the parts share one parse budget (shell.MAX_WORK).
+    `persistent_target`: as for shell.analyse, so text echoed into ~/.bashrc stays code in the head too."""
+    out, start, work = ([], [], [raw], [], [raw]), 0, [0]
+    head = raw[:max(0, *(raw.rfind(c, 0, at) for c in " \t\n"))]
+    found = []
+    if head.strip():
+        try:
+            found.append(shell.analyse(head, persistent_target, readings, work))
+            last = ([m.span() for m in _PIECE.finditer(head)] or [(0, 0)])[-1]
+            start = last[0] if last[1] == len(head) else last[1] + 1   # after a separator that ends the head
+        except shell.ParseError:
+            pass
+    for piece in (m.group() for m in _PIECE.finditer(raw, start)):
+        try:
+            found.append(shell.analyse_argv(piece.split(), readings, work) if piece.split() else ())
+        except shell.ParseError:
+            continue
+    for reading in found:
+        for into, more in zip(out, reading):
+            into += more
+    return out
 
 
 # variables that set a package source: before a command (`PIP_INDEX_URL=… pip install`), or through env or export
 _SOURCE_VARIABLES = dict.fromkeys(("PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL", "PIP_FIND_LINKS", "UV_INDEX_URL", "UV_INDEX",
                                    "UV_EXTRA_INDEX_URL", "UV_DEFAULT_INDEX", "UV_FIND_LINKS"), "pypi.org")
 _SOURCE_VARIABLES["NPM_CONFIG_REGISTRY"] = "registry.npmjs.org"
+
+
+_PIP = re.compile(r"pip[0-9.]*")
 
 
 def _package_indexes(commands, refs=()):
@@ -372,7 +483,7 @@ def _package_indexes(commands, refs=()):
             module = _python_module(args)
             if module[:1] == ["pip"]:
                 exe, args = "pip", module[1:]
-        exe = "pip" if re.fullmatch(r"pip[0-9.]*", exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
+        exe = "pip" if _PIP.fullmatch(exe) else {"uvx": "uv", "npx": "npm", "pnpx": "pnpm"}.get(exe, exe)
         if exe == "pip":
             default, options = "pypi.org", {"-i", "--index-url", "--extra-index-url", "-f", "--find-links"}
         elif exe == "uv":
@@ -390,6 +501,10 @@ def _package_indexes(commands, refs=()):
         command = next((a for a in args if not a.startswith("-")), None)   # after global options (pip --isolated)
         if command in ("publish", "unpublish"):
             continue   # publishing doesn't change where installs come from
+        if exe == "gem" and command in ("install", "i", "update", "fetch"):
+            options = options | {"-s"}   # --source's short form there (gem cert's -s signs)
+        elif exe == "gem" and command == "sources":
+            options = {"-a", "--add"}   # a source every later install reads
         if command == "config" and "set" in args or exe == "npm" and command == "set":
             # `set key value` or `set key=value ...`, options anywhere
             words = [a for a in args[args.index("set") + 1:] if not a.startswith("-")]
@@ -409,11 +524,14 @@ def _package_indexes(commands, refs=()):
             # pip (optparse) takes a long option's unique prefix: --index-u is --index-url
             if exe == "pip" and len(name) > 2 and name.startswith("--"):
                 name = next((o for o in options if o.startswith(name)), name)
-            if name in options:
+            scoped = exe in ("npm", "pnpm", "yarn", "bun") and name.startswith("--@") and name.endswith(":registry")
+            if name in options or scoped:
                 if value is None and i + 1 < len(args):
                     value = args[i + 1]
                     i += 1
-                if exe in ("npm", "pnpm", "yarn", "bun"):
+                if scoped:   # a scope's own registry (--@acme:registry=…), whatever --registry says
+                    out += [value] if value is not None and _non_default_source(value, default) else []
+                elif exe in ("npm", "pnpm", "yarn", "bun"):
                     selected = [value] if value is not None else []  # npm uses the last --registry
                 elif value is not None:
                     if exe == "uv" and name == "--index" and "=" in value:
@@ -461,23 +579,46 @@ _RUN_FLAGS = {"--detach", "--interactive", "--tty", "--rm", "--init", "--privile
               "--no-healthcheck", "--oom-kill-disable", "--disable-content-trust", "--quiet", "--sig-proxy", "--help",
               "--use-api-socket", "--replace", "--rmi", "--http-proxy", "--env-host", "--no-hosts", "--passwd",
               "--read-only-tmpfs", "--tls-verify"}
-_HOST_PATH = re.compile(r"/|/proc(/.*)?")   # a mount source that hands the container the host's root or /proc
+# a mount source that hands the container the host's root, /proc, /etc or root's home (a file under /etc, such as
+# /etc/localtime, isn't one)
+_HOST_PATH = re.compile(r"/|/proc(/.*)?|/etc|/root(/.*)?")
+_CONTAINER_VERBS = {"run", "create", "exec", "container"}
+# docker's and podman's global options that always take the next word, a verb's name too (`docker --context run run`),
+# and those that never do; another reads one unless an option or a verb follows
+_GLOBAL_VALUED = {"-H", "--host", "-c", "--context", "--connection", "--config", "-l", "--log-level", "--url",
+                  "--tlscacert", "--tlscert", "--tlskey", "--identity", "--root", "--runroot", "--storage-driver",
+                  "--storage-opt", "--cgroup-manager", "--events-backend", "--hooks-dir", "--module", "--tmpdir",
+                  "--runtime", "--runtime-flag", "--conmon", "--network-cmd-path", "--network-config-dir",
+                  "--volumepath", "--imagestore", "--db-backend", "--ssh"}
+_GLOBAL_FLAGS = {"-D", "--debug", "--tls", "--tlsverify", "-r", "--remote", "--syslog", "--noout", "-v", "--version",
+                 "-h", "--help"}
 
 
 def _host_path(source):
-    """Whether mount source `source` is the host's root or /proc, read as the runtime resolves it (`//`, `/.`)."""
+    """Whether mount source `source` is a _HOST_PATH, read as the runtime resolves it (`//`, `/.`)."""
     p = posixpath.normpath(source)
     return bool(_HOST_PATH.fullmatch("/" + p.lstrip("/") if p.startswith("/") else p))
 
 
 def _container_host_access(commands):
-    """A docker/podman run whose own options (those before the image: later words are the container's command) give
-    it host privileges, the host's process space, or the host's root or /proc."""
+    """A docker/podman run, create or exec (also as `container run`, and after the CLI's global options: docker -H
+    host, --context prod, podman --remote; one that takes a value takes it whatever it is named, _GLOBAL_VALUED) whose
+    own options (those before the image or container: later words are
+    the command it runs) give it host privileges or every capability, the host's process space, or a _HOST_PATH."""
     for command in commands:
         argv = command["argv"]
-        if len(argv) < 2 or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman") or argv[1] != "run":
+        if not argv or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman"):
             continue
-        args, i = argv[2:], 0
+        words, i = argv[1:], 0
+        while i < len(words) and words[i].startswith("-"):   # a global option, and its value (_GLOBAL_VALUED)
+            w = words[i]
+            i += 1 if "=" in w or w in _GLOBAL_FLAGS or w not in _GLOBAL_VALUED and i + 1 < len(words) and (
+                words[i + 1].startswith("-") or words[i + 1] in _CONTAINER_VERBS) else 2
+        words = words[i:]
+        words = words[1:] if words[:1] == ["container"] else words
+        if words[:1] not in (["run"], ["create"], ["exec"]):
+            continue
+        args, i = words[1:], 0
         while i < len(args) and args[i].startswith("-"):
             arg = args[i]
             if arg.startswith("--"):
@@ -493,6 +634,8 @@ def _container_host_access(commands):
             i += 1
             if (name == "--privileged" and value.lower() not in ("0", "f", "false")
                     or name == "--pid" and value == "host"
+                    or name == "--cap-add" and any(c.strip().upper().removeprefix("CAP_") == "ALL"
+                                                   for c in value.split(","))
                     or name in ("-v", "--volume") and _host_path(value.partition(":")[0])
                     or name == "--mount" and any(k in ("src", "source") and _host_path(v)
                                                  for k, _, v in (item.partition("=") for item in value.split(",")))):
@@ -511,7 +654,7 @@ def _log_or_history(path):
 
 def _effects(parsed):
     """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
-    path casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
+    path resolved (_normal) and casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
     sed -i and perl -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i), awk's
     print > "file", zip -m's sources, and one of those that git, docker, podman, kubectl or parallel runs from its words
     (git rm). When a command writes files the line names only at run time or inside code it runs (_opaque), or the
@@ -527,11 +670,28 @@ def _effects(parsed):
         # #421); follow the names into the writer if that holds real reads
         tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:] + c["stdin"]]
         tags += ["MAY_WRITE:" + line for line in parsed[1] if unread]
+    tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
+             if k != "MAY_WRITE" and (n := _normal(path)) != path]
     return list(dict.fromkeys(tags + [k + ":" + path.casefold() for k, _, path in (t.partition(":") for t in tags)]))
+
+
+def _normal(path):
+    """A target with `.`, `..` and repeated separators resolved, a `\\` read as `/`: `~/./.claude` is `~/.claude`. A
+    `..` after a symlink may lead elsewhere, so this is only a second reading: it adds matches, and the target as
+    written is still read. One that resolves to a start of ~ or $ it didn't have (`./~/.claude`, `x/../$HOME`) names
+    a folder of that name here, and keeps a ./ in front. POSIX keeps two leading slashes, which Linux and macOS read as
+    one: `//var/log` is `/var/log` (a Windows `\\\\host` share keeps its two)."""
+    p = posixpath.normpath(path.replace("\\", "/")) if path else path
+    if p.startswith("//") and path.startswith("/"):
+        p = p[1:]
+    if p.startswith(("~", "$")) and not path.startswith(("~", "$")):
+        p = "./" + p
+    return path if p == "." else p
 
 
 _WRITER = re.compile(r"\b(?:rm|unlink|truncate|shred|mv|tee|dd|ln|perl)\b")
 _WRITE_WORD = re.compile(r"\b(?:rm|unlink|truncate|shred|mv|tee|dd|ln|sed|perl|find)\b|>")
+_INTERPRETER = re.compile(r"perl|python[\d.]*|node(?:js)?|ruby|php|bun|deno|lua")
 _APPLESCRIPT_WRITE = re.compile(r"(?i)do ?shell ?script|\bdelete\b")   # JXA's doShellScript too
 
 
@@ -555,7 +715,7 @@ def _reaches_unread(parsed):
     if not any(c["opaque"] and re.search(r"[$`]", c["word"]) for c in commands):
         return False
     values = [r for r in parsed[2] if shell._ASSIGN.match(r)] + [
-        w for c in commands if c["argv"][0] in _SETS_VARIABLES or c["argv"][0] == "printf" and "-v" in c["argv"]
+        w for c in commands if c["argv"][0] in _SETS_VARIABLES or shell._sets_with_v(c["argv"])
         for w in c["argv"][1:] + c["stdin"]]
     return any(_WRITER.search(v.lower()) for v in values)
 
@@ -573,7 +733,7 @@ def _opaque(command):
     if exe == "zip" and _zip_moves(argv[1:]):
         return any("$" in a or "`" in a or re.fullmatch(r"-[^-]*@[^-]*", a) for a in argv[1:])
     if exe in ("xargs", "parallel", "docker", "podman", "kubectl", "ssh") or \
-            re.fullmatch(r"perl|python[\d.]*|node(?:js)?|ruby|php|bun|deno|lua", exe):
+            _INTERPRETER.fullmatch(exe):
         return any(_WRITE_WORD.search(a) for a in argv[1:])
     if exe in ("at", "batch"):   # at -l, -r, -d, -c and -V list, remove, show or print: they schedule nothing
         return not command["stdin"] and not any(a in ("-l", "-r", "-d", "-c", "-V") for a in argv[1:])
@@ -722,23 +882,275 @@ def _command_effects(commands):
             out.extend("DELETE_TARGET:" + path for path in operands[1:])
         elif exe in ("awk", "gawk", "mawk", "nawk"):   # print or printf > "file" in its program
             out.extend("WRITE_TARGET:" + path for path in re.findall(r'>>?\s*"([^"\n]+)"', shell._awk_program(args) or ""))
+        elif exe in ("sqlite3", "sqlite"):
+            # every operand (the database among them), when its SQL (the operands and a heredoc or herestring) writes
+            # outside literals and comments, or can't be read
+            # lean: SQL read from a file (`sqlite3 db < x.sql`, `.read x.sql`) isn't seen; read it if one is held wrongly
+            operands = [a for a in args if not a.startswith("-")]
+            code = classes.sql_code("\n".join(operands + list(command.get("stdin", ()))),
+                                    *classes.SQL_DIALECTS["sqlite"])
+            if code is None or _SQL_WRITE.search(code):
+                out.extend("WRITE_TARGET:" + a for a in operands)
     return out
+
+
+_SQL_WRITE = re.compile(r"(?im)\b(?:insert|update|delete|drop|create|alter|replace\s+into|vacuum|reindex)\b"
+                        r"|^\s*\.(?:restore|import)\b")
+
+# TK-D007's allowlists (#589): the programs that may read a file's contents under Tracekit's dirs (which files they
+# may read there the pack's `unless` names: the installed package and /etc/tracekit's client.json and policy), and
+# the programs that may list one; any other program there acts
+_PLAIN_READERS = {"cat", "head", "tail", "grep", "egrep", "fgrep", "sed", "jq"}
+_LISTERS = {"ls", "stat", "test", "[", "find"}
+_NAVIGATE = ("cd", "pushd", "popd")
+# a later pipeline stage that only filters text: what an earlier stage prints goes no further than the terminal
+_FILTERS = {"head", "tail", "grep", "egrep", "fgrep", "wc", "sort", "uniq", "cut", "tr", "sed", "jq", "column", "nl",
+            "cat"}
+# variables the shell or a program reads on its own (cd's CDPATH, HOME and OLDPWD, a startup file, a search path): an
+# assignment to one is never a value the line only reads
+_SPECIAL = re.compile(r"CDPATH|HOME|OLDPWD|PWD|PATH|IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|GLOBIGNORE|PROMPT_COMMAND|"
+                      r"PS[0-4]|TMPDIR|HISTFILE|INPUTRC|MAIL\w*|LD_\w+|DYLD_\w+|PYTHON\w*|XDG_\w+|TRACEKIT\w*|LESS\w*|"
+                      r"PAGER|EDITOR|VISUAL")
+
+
+# the options of a sed that only reads: any other (GNU's -i, BSD's -I, -f, a prefix of --in-place such as --in) may
+# write or run what the line doesn't show
+_SED_READ_OPTION = re.compile(r"-[nrsuzEe]+|--|--(?:quiet|silent|regexp-extended|expression|null-data|separate|"
+                              r"unbuffered|posix|debug|sandbox)(?:=[\w\W]*)?")
+
+
+def _reading(argv):
+    """What a command does with the files it names, for TK-D007: "read" (a _PLAIN_READERS program: sed only with -n
+    and a script that only prints, grep without -r), "deep" (grep -r: every file under a folder), "list" (a _LISTERS
+    program: find without an action, -fprint, -fls or -files0-from; pgrep and ps naming no file), else None."""
+    name, args = argv[0], argv[1:]
+    if name == "sed":
+        script = shell._sed_scripts(args)
+        return "read" if "-n" in args and script is not None and shell._sed_prints(script) and all(
+            _SED_READ_OPTION.fullmatch(a) for a in args if a.startswith("-") and a != "-") else None
+    if name in ("grep", "egrep", "fgrep"):
+        return "deep" if any(re.fullmatch(r"-[A-Za-z]*[rR][A-Za-z]*", a) or a.startswith(
+            ("--recursive", "--dereference-recursive", "--directories=recurse", "-d")) for a in args) else "read"
+    if name in _PLAIN_READERS:
+        return "read"
+    if name == "find":
+        return None if any(a.startswith(("-exec", "-ok", "-fprint", "-fls", "-files0-from", "--files0-from")) or
+                           a == "-delete" for a in args) else "list"
+    if name in _LISTERS or name in ("pgrep", "ps") and not any("/" in a for a in args):
+        return "list"
+    return None
+
+
+_SIGNER_MODULE = re.compile(r"tracekit\.(?:daemon|proxy|signer)\b")
+# the parts of Tracekit's signer code may read, by name: the RPC schema's tables, reconcile's comparison, and the
+# service's policy loader on its default policy
+_SIGNER_READS = {"rpc_schema": {"REQUESTS", "RESPONSES", "RPC_VERSION", "RPC_MIN", "RPCError"},
+                 "reconcile": {"compared", "model_names"}, "service": {"load_policy", "DEFAULT_POLICY"}}
+_PY_LOOKUP = re.compile(r"\b(?:runpy|importlib|import_module|__import__|__dict__|__builtins__|builtins)\b|"
+                        r"(?<![\w.])(?:getattr|exec|eval|compile|globals|locals|vars)\s*\(")
+
+
+def _runs_signer(code):
+    """Whether code that names tracekit.signer, .daemon or .proxy may reach more than _SIGNER_READS: the daemon or the
+    proxy, any other module or name, a name imported under another name (`load_policy as lp`), a module alias used
+    other than to reach an allowed name, a name looked up at run time (runpy, getattr, importlib …), or a module
+    reached by its full name."""
+    if re.search(r"tracekit\.(?:daemon|proxy)\b", code) or _PY_LOOKUP.search(code) or \
+            re.search(r"\btracekit\.signer\.\w+\.\w", code):
+        return True
+    aliases = {}   # a name the code gives one of the signer's modules -> that module
+    for m in re.finditer(r"\bfrom\s+tracekit\.signer(?:\.(\w+))?\s+import\s+\(?([\w\s,*]+)", code):
+        for item in m.group(2).replace("\n", " ").split(","):
+            name, _, alias = (x.strip() for x in item.partition(" as "))
+            if not name:
+                continue
+            if m.group(1) is None and name in _SIGNER_READS:
+                aliases[alias or name] = name
+            elif m.group(1) not in _SIGNER_READS or alias or name not in _SIGNER_READS[m.group(1)]:
+                return True
+    for m in re.finditer(r"\bimport\s+tracekit\.signer(?:\.(\w+))?(?:\s+as\s+(\w+))?", code):
+        if m.group(1) not in _SIGNER_READS or not m.group(2):
+            return True
+        aliases[m.group(2)] = m.group(1)
+    for alias, module in aliases.items():
+        uses = re.findall(r"(?<![\w.])%s\b(\.\w+)?" % re.escape(alias), code)
+        if any(u and u[1:] not in _SIGNER_READS[module] for u in uses) or uses.count("") > 1:   # the import names it
+            return True
+    return False
+
+
+def _tracekit(parsed):
+    """What a shell call does to Tracekit itself (TK-D007), each as a tagged subject. ACT: what a command acts on or
+    runs, its words joined (but data words), its stdin, the files redirections write, _effects' files, the other words
+    that name something (assignments, heredoc programs). READ, DEEP and LIST: one subject per word a command that only
+    reads names (_reading; the pack's `unless` names the files a READ may name under Tracekit's dirs): DEEP for a
+    recursive read, a pattern, a reader whose output goes on to a file, a substitution or anything but a filter
+    (`find … > l; xargs cat < l`, `cat $(find …)`, `find … | while read f`), and the folder a cd, pushd or popd enters
+    where every command only reads or lists and no redirection writes (else the cd is ACT); a file a redirection
+    reads is READ, an assignment the line uses only in readers (_private) LIST. SIGNER_MODULE: an ACT text whose code
+    reaches more of Tracekit's signer than it may read (_runs_signer). Each also normalised and casefolded as a path
+    is (_path_forms)."""
+    commands, refs, written = parsed[0], parsed[2], set(parsed[3])
+    learned = parsed[5] if len(parsed) > 5 else None
+    kinds = [_reading(c["argv"]) for c in commands]
+    roams = not written and all(k or c["argv"][0] in _NAVIGATE for c, k in zip(commands, kinds))
+    stages = {}   # pipeline -> the stage of each command, and whether it only filters
+    for c in commands:
+        stages.setdefault(c["pipeline"], []).append((c.get("stage", 0), c["argv"][0] in _FILTERS))
+    act, listed, read, deep = [], [], [], []
+    for c, kind in zip(commands, kinds):
+        data = shell.data_words(c["argv"]) | set(c.get("data_words", ()))
+        words = [a for i, a in enumerate(c["argv"]) if i not in data]
+        named = [a for a in words[1:] if not re.fullmatch(r"-[^/=]*", a)]
+        feeds = any(s > c.get("stage", 0) and not f for s, f in stages[c["pipeline"]]) or \
+            bool({"$()", "``", "<()"} & set(c["via"])) or bool(c.get("out"))
+        if c["argv"][0] in _NAVIGATE:
+            if roams:
+                deep += named
+            else:
+                act.append(" ".join(words))
+        elif kind is None:
+            act.append(" ".join(words))
+        else:
+            {"read": read, "list": listed, "deep": deep}["deep" if feeds or c["glob"] else kind].extend(named)
+        act += [] if c.get("data_stdin") else c["stdin"]
+    reads, private = set(learned["read"]) if learned else set(), _private(learned, commands, "\n".join(act))
+    for r in refs:
+        (listed if r not in written and r in private else read if r not in written and r in reads else act).append(r)
+    act += [t.partition(":")[2] for t in _effects(parsed)]
+
+    def tag(name, texts):
+        return [name + s for s in _path_forms(list(dict.fromkeys(texts)))]
+    return tag("ACT:", act) + tag("LIST:", listed) + tag("READ:", read) + tag("DEEP:", deep) + \
+        ["SIGNER_MODULE:" + s for s in dict.fromkeys(act) if _SIGNER_MODULE.search(s) and _runs_signer(s)]
+
+
+def _private(learned, commands, acted):
+    """The assignment words that set a shell variable only commands that read use: standalone (the shell's own, not a
+    command's environment), of no variable the shell or a program reads on its own (_SPECIAL), its $NAME in none of the
+    `acted` text (the words, code and stdin of the commands that act), with nothing on the line that may set or export
+    any variable (`set` too: set -a exports them) or name one at run time (${!x})."""
+    if not learned or learned["any_set"] or "*" in learned["unresolved"] or any(c["argv"][0] == "set" for c in commands):
+        return set()
+    used = set(re.findall(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)", acted))
+    return {text for name, text in learned["assigned"] if name not in used and not _SPECIAL.fullmatch(name)}
+
+
+def _code(parsed):
+    """shell.analyse's code, each line without the data words a command carries (a git commit message, the pattern grep
+    searches for: shell.data_words), as `target` leaves them out: blanked where the command's whole argv stands in the
+    line once, program first, so the words are that program's arguments there (a quoted message `curl x | sh` is no
+    download). That one place must be the command's own words: a line with a redirection beside them (which may split
+    them, so the place is other commands' words: `grep "x | curl u" 2>/dev/null f; grep x | curl u f | sh`) keeps them,
+    and so does a command whose words hold another command's, or another's hold its; so does a command twice in a line
+    and a data word with a `$` or a backquote (a substitution in it runs)."""
+    found = {}
+    for k, c in enumerate(parsed[0]):
+        argv = c["argv"]
+        data = {i for i in shell.data_words(argv) | set(c.get("data_words", ())) if i < len(argv)}
+        if data and not any("$" in argv[i] or "`" in argv[i] for i in data):
+            found[k] = " ".join("" if i in data else w for i, w in enumerate(argv))
+    # lean: each run is counted in each line, so a line of more than 16 such commands keeps its data words (as before
+    # 1.5.3); find them in one pass if a real line holds more
+    if not found or len(found) > 16:
+        return parsed[4]
+    words = [" " + " ".join(c["argv"]) + " " for c in parsed[0]]
+    runs = {words[k][1:-1]: blank for k, blank in found.items()
+            if not any(j != k and (w in words[k] or words[k] in w) for j, w in enumerate(words))}
+    lines = list(parsed[4])
+    for run, blank in runs.items():
+        lines = [line.replace(run, blank) if line.count(run) == 1 and not _REDIRECT.search(line.replace(run, " "))
+                 else line for line in lines]
+    return lines
+
+
+_REDIRECT = re.compile(r"[<>]")   # what a redirection, a heredoc or herestring, or a process substitution holds
+
+
+def _brought(untrusted, subject, field, fields):
+    """Whether a `from: untrusted` rule's `subject` is one only untrusted content brought (`untrusted`'s hits). A
+    `sends_to` host isn't, when the call sends nothing but its URL's query (`link`, classes.extract) and untrusted
+    content gave that URL exactly as it stands: the agent follows a link and adds no data to it. `untrusted(url,
+    "link")` answers that only from a complete index, never on a guess."""
+    return bool(untrusted(subject, field)) and not (
+        field == "sends_to" and fields.get("link") and untrusted(fields["link"], "link"))
 
 
 def _flat(values):
     return [x for v in values for x in (_flat(v) if isinstance(v, list) else [v])]
 
 
-def _prepare(subjects):
-    """(the subjects as text, up to the first longer than MAX_SUBJECT; their lower-case forms; those joined by a
-    newline; whether one was longer). A rule matches the subjects before a long one and, matching none, takes
-    TK-OVERSIZE, as one that walked them in order would."""
+# arguments whose text an MCP tool that posts or sends a message only carries (an issue's title and body, a message, a
+# comment): a path or an address named there is mentioned, not read or fetched
+_CARRIED = frozenset(("title", "body", "text", "description", "comment", "message", "subject", "content"))
+_POSTS = frozenset(("post", "comment", "reply"))
+# what `create` posts: the thing it names, the first word after it or the last one or two before a for, on, to and
+# the like (create_issue, createPullRequest, create_github_issue, create_comment_on_issue; create_commit_for_pr creates
+# a commit; one right after create, with its word, says where or how: create_to_do_issue posts an issue,
+# create_from_pr_sandbox makes a sandbox, and alone it is where: create_on_issue posts on the issue, create_from_issue
+# makes something from it); a name that also says file, cache, rule, job or workflow (create_note_file) creates
+# something acted on
+_CREATED = frozenset(("issue", "issues", "comment", "comments", "discussion", "review", "ticket", "note", "notes", "pr",
+                      "worklog", "worklogs"))
+_LINKS = frozenset(("for", "on", "in", "to", "from", "with", "at", "of", "by", "into", "under", "via"))
+_ACTED = frozenset(("file", "files", "cache", "rule", "rules", "job", "jobs", "cron", "workflow", "function"))
+_MESSAGES = frozenset(("message", "messages", "email", "mail", "dm", "chat", "notification"))
+# a name that types, sends keys, runs or holds code: what such a tool carries is what it runs
+_RUNS = frozenset(("type", "typing", "key", "keys", "keystroke", "keystrokes", "run", "exec", "execute", "eval",
+                   "evaluate", "code", "cell", "cells", "script", "command", "cmd", "shell", "terminal", "kernel", "repl"))
+_FETCHES = frozenset(("fetch", "read", "open", "get", "download", "navigate", "browse", "visit", "load", "scrape", "crawl"))
+
+
+def _carried(tool):
+    """The argument names whose string values MCP tool `tool` only carries: _CARRIED when its name says it posts,
+    comments, replies, creates an issue, comment, pull request or the like (_CREATED), or sends a message, and doesn't
+    say it types, sends keys, runs or holds code or a cell (_RUNS); `query` and `q` when it says it searches and doesn't
+    say it fetches or reads (_FETCHES) or runs. Words in snake, kebab or camel case."""
+    seq = re.findall(r"[a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool).casefold())
+    words, out = set(seq), set()
+    after = seq[seq.index("create") + 1:] if "create" in seq else []
+    if after[:1] and after[0] in _LINKS:   # create_on_issue posts on the issue; create_from_issue makes something else
+        after = after[2:] or (after[1:2] if after[0] in ("on", "to", "in", "into") else [])
+    thing = after[:next((i for i, w in enumerate(after) if w in _LINKS), len(after))]
+    creates = any(t[:1] and t[0] in _CREATED or t[:2] in (["pull", "request"], ["merge", "request"])
+                  for t in (thing, thing[-1:], thing[-2:])) and not words & _ACTED
+    posts = words & _POSTS or creates or "send" in words and words & _MESSAGES
+    if posts and not words & _RUNS:
+        out |= _CARRIED
+    if any(w.startswith("search") for w in words) and not words & (_RUNS - {"code"} | _FETCHES):
+        out |= {"query", "q"}
+    return out
+
+
+def _acted_on(value, carried):
+    """An MCP call's arguments without the string values of those it only carries (`carried`, _carried's, at any
+    depth): an object or a list under such a name is still read."""
+    if isinstance(value, dict):
+        return {k: _acted_on(v, carried) for k, v in value.items() if not (isinstance(v, str) and k.casefold() in carried)}
+    if isinstance(value, list):
+        return [_acted_on(v, carried) for v in value]
+    return value
+
+
+def _strings(value):
+    """Every string in a JSON value, its objects' keys too."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in [k] + _strings(v)]
+    return [s for v in value for s in _strings(v)] if isinstance(value, list) else []
+
+
+def _prepare(subjects, tag=0):
+    """(the subjects as text, up to the first longer than MAX_SUBJECT, past `tag` bytes a field's own tag adds
+    (_TAGGED); their lower-case forms; those joined by a newline; whether one was longer). A rule matches the subjects
+    before a long one and, matching none, takes TK-OVERSIZE, as one that walked them in order would."""
     texts = []
     for s in subjects:
-        b = s.encode("utf-8", "backslashreplace")
-        if len(b) > MAX_SUBJECT:
+        b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
+        if len(b) > MAX_SUBJECT + tag:
             break
-        texts.append(b.decode("utf-8"))
+        texts.append(s if b is s else b.decode("utf-8"))
     lows = [t.lower() for t in texts]
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
 

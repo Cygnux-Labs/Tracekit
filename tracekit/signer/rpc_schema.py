@@ -1,6 +1,10 @@
-"""The signer RPC contract, version 20: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 21: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 20 adds proof-carrying messages (experimental):
+Frozen: a change to any schema here is a new RPC_VERSION. Version 21 adds Tracekit Box's agent channel (experimental):
+register_run's `box` (a `box_daemons` identity's box run: its id, image digest and allowlist names, which the signer
+writes as the run's `ext.box` with the engine from its own config) and `channel_open` (the daemon names its open box
+run on a connection of its own, which from then on is the box's identity, `box:<uid>/<box id>`). Version 20 adds
+proof-carrying messages (experimental):
 `pcm_sign`, `pcm_grant`, `pcm_delegate` and `pcm_evidence`. Version 19 adds `review_finding` (a signed finding of
 `tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states; its
 response's `refused` past the run's cap), model_event's `amended` (the fields an LLM gateway changed in a request),
@@ -30,7 +34,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 20
+RPC_VERSION = 21
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -76,6 +80,8 @@ DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
+# in a deny's or an ask's `reason` (decide), what follows it is the rules' remedies: what to do instead
+INSTEAD = ". Instead: "
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:[^\n]+" + _END)   # scheme:subject
 HOST = _str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END)   # a host name or IP address, lower case
 TS = _str(27, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z" + _END)
@@ -90,6 +96,11 @@ PERSON = _obj(["subject", "person"], subject=_str(256, minLength=1), person=_str
 # a WebAuthn assertion (identity.webauthn) over webauthn.challenge(approval_id, binding_digest, decision)
 PASSKEY = _obj(["credential_id", "client_data_json", "authenticator_data", "signature"], credential_id=B64URL,
                client_data_json=B64URL, authenticator_data=B64URL, signature=B64URL)
+# a Tracekit Box box, as its daemon describes it (register_run `box`): its id, image digest and allowlist entries (a
+# preset's or a host pattern's name), and `channel` when its agent channel is on
+BOX = _obj(["id", "image_digest", "allow"], id=ID, image_digest=DIGEST, channel={"const": "agent"},
+           allow={"type": "array", "maxItems": 256,
+                  "items": _str(261, minLength=1, pattern=r"^[A-Za-z0-9.*:\[\]_-]+" + _END)})
 
 _RUN = dict(request_id=ID, run_id=ID, run_token=TOKEN)
 _EVENT = dict(_RUN, stream=ID, client_seq=SEQ)
@@ -265,6 +276,7 @@ REQUESTS = {
                          parent=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
                          # a gateway registering the run of a client it serves: counted in its open runs for that client
                          caller=IDENTITY,
+                         box=BOX,   # a box_daemons identity's box run (version 21)
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT, caller=IDENTITY,
@@ -427,6 +439,8 @@ REQUESTS = {
                          subject=IDENTITY, caveats=_CAVEATS, expires_at=TS, delegable={"type": "boolean"}),
     "pcm_evidence": _obj(["run_id", "run_token", "run_seqs"], run_id=ID, run_token=TOKEN,
                          run_seqs={"type": "array", "minItems": 1, "maxItems": 16, "items": SEQ}),
+    # a box_daemons identity names its open box run (version 21): every later frame of this connection is the box's
+    "channel_open": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -547,6 +561,7 @@ RESPONSES = {
                              ["run_seq", "event", "hash", "proof"], run_seq=SEQ,
                              **{k: _PCM_RECORD["properties"][k] for k in ("event", "hash", "proof", "salt")})},
                          pending={"type": "array", "maxItems": 16, "items": SEQ}),
+    "channel_open": _obj(["identity"], identity=IDENTITY),   # the box's: box:<uid>/<box id>
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -622,3 +637,4 @@ class SignerAPI(Protocol):
     def pcm_grant(self, req: dict) -> dict: ...
     def pcm_delegate(self, req: dict) -> dict: ...
     def pcm_evidence(self, req: dict) -> dict: ...
+    def channel_open(self, req: dict) -> dict: ...

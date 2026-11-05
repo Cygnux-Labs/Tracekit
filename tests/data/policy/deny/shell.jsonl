@@ -41,12 +41,12 @@
 {"tool": "Bash", "args": {"command": "curl http://169.254.43518/"}, "expect": "deny", "note": "metadata address in three-part form"}
 {"tool": "Bash", "args": {"command": "curl http://0xa9.0xfe.0xa9.0xfe/"}, "expect": "deny", "note": "metadata address in hex parts"}
 {"tool": "Bash", "args": {"command": "curl http://metadata/computeMetadata/v1/"}, "expect": "deny", "note": "metadata short name"}
-{"tool": "Bash", "args": {"command": "sudo${IFS}id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "sudo${IFS}id"}, "expect": "deny", "note": "words split at an unquoted $IFS, as bash splits them"}
 {"tool": "Bash", "args": {"command": "$(echo sudo) id"}, "expect": "ask", "note": "command name built by an expansion"}
 {"tool": "Bash", "args": {"command": "\"$(printf sudo)\" id"}, "expect": "ask", "note": "command name built by an expansion"}
-{"tool": "Bash", "args": {"command": "x=sudo; $x id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "x=sudo; $x id"}, "expect": "deny", "note": "a variable the line gives a literal is read as it"}
 {"tool": "Bash", "args": {"command": "${X:-sudo} id"}, "expect": "ask", "note": "command name built by an expansion"}
-{"tool": "Bash", "args": {"command": "rm${IFS}-rf${IFS}/"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "rm${IFS}-rf${IFS}/"}, "expect": "deny", "note": "words split at an unquoted $IFS, as bash splits them"}
 {"tool": "Bash", "args": {"command": "bash --rcfile /dev/null -c 'sudo id'"}, "expect": "deny", "note": "shell option with a value"}
 {"tool": "Bash", "args": {"command": "bash --init-file /dev/null -c 'sudo id'"}, "expect": "deny", "note": "shell option with a value"}
 {"tool": "Bash", "args": {"command": "env - sudo id"}, "expect": "deny", "note": "env with an empty environment"}
@@ -306,3 +306,15 @@
 {"tool": "Bash", "args": {"command": "podman volume prune -f"}, "expect": "ask", "note": "delete every unused Podman volume"}
 {"tool": "Bash", "args": {"command": "docker volume rm pgdata"}, "expect": "ask", "note": "delete a named Docker volume"}
 {"tool": "Bash", "args": {"command": "podman volume rm pgdata"}, "expect": "ask", "note": "delete a named Podman volume"}
+{"tool": "Bash", "args": {"command": "rm -rf .github/workflows/security-scan.yml .github/workflows/codeql.yml"}, "expect": "ask", "note": "delete security workflows"}
+{"tool": "Bash", "args": {"command": "git rm -f .github/workflows/deploy.yml"}, "expect": "ask", "note": "delete deployment workflow"}
+{"tool": "Bash", "args": {"command": "npx prisma migrate reset --force"}, "expect": "ask", "note": "Prisma wipes the database and re-applies its migrations"}
+{"tool": "Bash", "args": {"command": "bundle exec rails db:drop"}, "expect": "ask", "note": "Rails drops the database"}
+{"tool": "Bash", "args": {"command": "rails db:reset"}, "expect": "ask", "note": "Rails drops, recreates and seeds the database"}
+{"tool": "Bash", "args": {"command": "python3 manage.py flush --no-input"}, "expect": "ask", "note": "Django deletes every row of the database"}
+{"tool": "Bash", "args": {"command": "npx sequelize-cli db:drop"}, "expect": "ask", "note": "Sequelize drops the database"}
+{"tool": "Bash", "args": {"command": "php artisan migrate:fresh --seed"}, "expect": "ask", "note": "Laravel drops every table and migrates again"}
+{"tool": "Bash", "args": {"command": "php artisan db:wipe --force"}, "expect": "ask", "note": "Laravel drops every table, view and type"}
+{"tool": "Bash", "args": {"command": "supabase db reset --linked"}, "expect": "ask", "note": "Supabase resets the linked database"}
+{"tool": "Bash", "args": {"command": "mix ecto.reset"}, "expect": "ask", "note": "Ecto drops and recreates the database"}
+{"tool": "Bash", "args": {"command": "dotnet ef database drop --force"}, "expect": "ask", "note": "EF Core drops the database"}

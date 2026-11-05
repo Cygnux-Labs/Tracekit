@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+import zlib
 from concurrent.futures import ProcessPoolExecutor
 from unittest import mock
 
@@ -54,6 +55,44 @@ def ledger_records(home):
     return [r for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")) if r]
 
 
+# a Tracekit Box box, as its daemon describes it (register_run `box`)
+BOX = {"id": "b-1", "image_digest": "sha256:" + "a" * 64, "allow": ["claude-code", "anthropic"], "channel": "agent"}
+
+
+def box_runset_bundle(d):
+    """(a run-set bundle of a plain run whose registry range also points to an open box run's run.registered, the
+    plain run's bundle alone, their trust file): the box's label is on a record of a run the bundle doesn't hold (#603's
+    review)."""
+    from tracekit.bundle_v2 import export
+    from tracekit.identity.base import CallerIdentity
+    from tracekit.signer import service as svc
+    from tracekit.storage.base import registry_tree
+    me = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
+    os.makedirs(d, exist_ok=True)
+    s = svc.SignerService(os.path.join(d, "data"), grace_s=0, fsck_every_s=0,
+                          box_daemons={f"uid:{me.subject}": "firecracker"})
+    try:
+        n = iter(range(10))
+        call = lambda m, req: s.call(me, m, {"request_id": f"r{next(n)}", **req})   # noqa: E731
+        call("register_run", {"agent": {"name": "tkbox"}, "box": BOX})   # stays open
+        plain = call("register_run", {"agent": {"name": "plain-agent"}})
+        call("close_run", {"run_id": plain["run_id"], "run_token": plain["run_token"]})
+        s.sweep(time.monotonic() + 1)
+        s.checkpoint()
+        st, out, trust = s.log.storage, os.path.join(d, "plain-runset.tkb"), os.path.join(d, "plain-runset-trust.json")
+        export(st, "default", plain["run_id"], st.checkpoint_latest()[1], out,
+               run_set=(0, st.checkpoint_latest(registry_tree("default"))[0]), tenant_salt=s.log.tenant_salt("default"))
+        alone = os.path.join(d, "plain.tkb")
+        export(st, "default", plain["run_id"], st.checkpoint_latest()[1], alone)
+        with open(trust, "w") as f:
+            json.dump({"logs": [s.vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0}, f)
+    finally:
+        s.close()
+    with zipfile.ZipFile(out) as z:
+        assert b'"box":{"id":"b-1"' in z.read("registry/records.jsonl"), "the range holds no box label"
+    return out, alone, trust
+
+
 def unverified_bundles(test):
     """@pytest.mark.unverified_bundles for files the TypeScript suite runs without pytest: the test exports v2 bundles
     the verifier rejects on purpose, so conftest's every-export-verifies check skips it."""
@@ -85,6 +124,27 @@ def damage_crc(src, dst):
     central = data.index(entry.filename.encode(), directory) - 46   # its name follows its 46-byte central header
     for at in (entry.header_offset + 14, central + 16):
         data[at] ^= 1
+    with open(dst, "wb") as f:
+        f.write(data)
+
+
+def overinflate(src, dst):
+    """Copy a bundle with its first runs/ entry's deflate stream holding bytes past the entry's stated size, which, with
+    its CRC-32, stays that of the run's records: the layout holds, the stream inflates to more than the entry says."""
+    with zipfile.ZipFile(src) as z:
+        entries = [(n, z.read(n)) for n in z.namelist()]
+    name = next(n for n, _ in entries if n.startswith("runs/"))
+    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, b in entries:
+            z.writestr(n, b + b"x" * 1000 if n == name else b)
+    with zipfile.ZipFile(dst) as z:
+        entry = z.getinfo(name)
+    with open(dst, "rb") as f:
+        data = bytearray(f.read())
+    central = data.index(name.encode(), int.from_bytes(data[-6:-2], "little")) - 46
+    real = dict(entries)[name]
+    for at in (entry.header_offset + 14, central + 16):   # CRC-32, then the uncompressed size 8 bytes on
+        data[at:at + 4], data[at + 8:at + 12] = zlib.crc32(real).to_bytes(4, "little"), len(real).to_bytes(4, "little")
     with open(dst, "wb") as f:
         f.write(data)
 

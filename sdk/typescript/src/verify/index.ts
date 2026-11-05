@@ -30,7 +30,7 @@ export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
-export const VERSION = "1.5.2";
+export const VERSION = "1.5.3";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -72,6 +72,10 @@ export class Report {
   findings: string | null = null;
   /** Checks the bundle needs that this verifier does not implement. */
   unsupported: string[] = [];
+  /** For the box check: the pinned witnesses' cosignatures of the checkpoint, `name (class) at time`, and the seqs of
+   * the bundle's own runs' first records. */
+  anchored: string[] = [];
+  firsts = new Set<J>();
 
   check(check: string, ok: boolean, detail = "", problems: string[] = [], warn = false) {
     this.checks.push({ check, status: ok ? "pass" : warn ? "warn" : "fail", detail, problems });
@@ -89,13 +93,23 @@ export class Report {
 type J = any;
 const isObj = (v: unknown): v is Record<string, J> => typeof v === "object" && v !== null && !Array.isArray(v);
 
-/** The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how. */
-function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad: string[]): string {
+/** The files a bundle may hold besides its manifest (format-v2.md §9): no code, no trust config; a misnamed run part or
+ * policy snapshot fails a line of its own (run parts, policy snapshot). */
+const FILES = new RegExp("^(runs/[0-9a-f]{32}(\\.part-[0-9]+)?\\.jsonl|keys/records\\.jsonl|proofs/records\\.json"
+  + "|checkpoints/(registry-)?[0-9]+\\.note|rekor/[0-9]+\\.json|tsa/[0-9]+\\.tsr|policies/.+"
+  + "|registry/(run-set\\.json|records\\.jsonl))$");
+
+/** The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how, and the
+ * files no bundle holds (the first 5). */
+function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad: string[], other: string[]): string {
   if (!isObj(listed)) return "the manifest lists no files";
-  if (bad.length === 0) return "every file is listed with its SHA-256 and nothing else is in the bundle";
-  const how = bad.slice(0, 5).map((n) => `${n} (${Object.hasOwn(listed, n) && hashes.has(n) ? "changed"
-    : Object.hasOwn(listed, n) ? "missing" : "not listed"})`);
-  return "files differ from the manifest: " + how.join(", ") + (bad.length > 5 ? ` and ${bad.length - 5} more` : "");
+  if (!bad.length && !other.length) return "every file is listed with its SHA-256 and nothing else is in the bundle";
+  const more = (names: string[]) => names.length > 5 ? ` and ${names.length - 5} more` : "", out: string[] = [];
+  if (bad.length)
+    out.push("files differ from the manifest: " + bad.slice(0, 5).map((n) => `${n} (${Object.hasOwn(listed, n)
+      && hashes.has(n) ? "changed" : Object.hasOwn(listed, n) ? "missing" : "not listed"})`).join(", ") + more(bad));
+  if (other.length) out.push("files no bundle holds: " + other.slice(0, 5).join(", ") + more(other));
+  return out.join("; ");
 }
 /** A check's detail: what it found when it passed, else how many problems in what (its lines say which), so a failed
  * line never reads as a pass. */
@@ -324,7 +338,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   for (const [n, b] of files) hashes.set(n, await sha256hex(b));
   const bad = isObj(listed) ? [...new Set([...Object.keys(listed), ...hashes.keys()])]
     .filter((n) => !(Object.hasOwn(listed, n) && hashes.get(n) === listed[n])).sort() : [];
-  rep.check("manifest", isObj(listed) && bad.length === 0, manifestDetail(listed, hashes, bad));
+  const other = [...hashes.keys()].filter((n) => !FILES.test(n)).sort();
+  rep.check("manifest", isObj(listed) && !bad.length && !other.length, manifestDetail(listed, hashes, bad, other));
 
   // the checkpoint: the only thing the records' trust hangs on
   const proofs = json("proofs/records.json");
@@ -422,7 +437,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const runSet = files.has("registry/run-set.json");
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
   const layout: string[] = [], seen = new Set<string>();
+  let unchecked = 0;
   for (const [name, parts] of names) {
+    const marks = problems.length + chain.length;
     const pieces = parts.map(jsonl), records = pieces.flat(), whole = parts.length === 1 && parts[0] === name;
     runs.set(name, records);
     extend(layout, parted(name, parts, pieces));
@@ -432,15 +449,24 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       const key = JSON.stringify([tenant, runId]);
       if (seen.has(key)) chain.push(`run ${repr(cut(runId, 200))} of tenant ${repr(cut(tenant, 64))} again in ${name}`);
       seen.add(key);
+      const named = await runName(tenant, runId);   // §9: a run's file is named by its tenant and run_id
+      if (named !== name)
+        chain.push(`run ${repr(cut(runId, 200))} of tenant ${repr(cut(tenant, 64))} in ${name}: its file is ${named}`);
     }
     for (const [i, r] of records.entries()) {
-      await checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), problems);
-      const e = r.event, prev = i ? records[i - 1] : null;
+      if (problems.length + chain.length - marks >= RUN_PROBLEMS) {
+        unchecked += records.length - i;
+        chain.push(`run ${repr(cut(str(get(head, "run_id")), 200))}: ${records.length - i} record(s) from run_seq ${i} on `
+          + `not checked, after ${RUN_PROBLEMS} problems in the run`);
+        break;
+      }
+      const e = at(r, "event"), prev = i ? records[i - 1] : null;   // its link to the one before first: it costs nothing
       if (!same(get(e, "run_seq"), i) || !same(get(e, "run_prev_hash"), prev ? at(prev, "hash") : ZERO_HASH)
           || !same([get(e, "tenant"), get(e, "run_id")], [get(head, "tenant"), get(head, "run_id")])
           || prev && (num(at(e, "seq")) <= num(at(at(prev, "event"), "seq")) || get(prev.event, "type") === "run.final"))
         chain.push(`run ${repr(cut(str(get(head, "run_id")), 200))} run_seq ${i} (seq ${repr(get(e, "seq"))}) does not `
           + "continue the run");
+      await checkRecord(r, keysAt(num(at(e, "seq"))), problems);
     }
     if (!(await included(records[0]) && await included(records.at(-1))))
       outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}` + (!whole && await included(records[0])
@@ -450,10 +476,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (why) rep.unsupport("tracekit why findings");
   else if (runs.size !== 1 && !runSet && !aboutOne(runs))
     throw new ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set");
-  let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
+  let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [], pointed: J[] = [];
   if (runSet) {
-    [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
-      origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p), floats);
+    [retired, provenTo, regCosigs, pointed] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust,
+      witnesses, origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p), floats);
     const keyed = new Set(keyRecords.map((r) => `${at(at(r, "event"), "seq")} ${at(r, "hash")}`));
     extend(keyProblems, retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
       .map(([seq]) => `seq ${seq}: key.retire withheld (the registry log has it)`));
@@ -477,8 +503,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (inParts.length)
     rep.check("run parts", !layout.length, found(layout, `${inParts.length} run(s) in ${inParts.reduce((a, b) => a + b, 0)} `
       + "parts, each part continuing the one before it", `the parts of ${inParts.length} run(s)`), layout);
-  rep.check("signatures", !problems.length, found(problems, `${every.length} record(s), keys valid at their position`,
-    `${every.length} record(s)`), problems);
+  rep.check("signatures", !problems.length, found(problems, `${every.length - unchecked} record(s), keys valid at their `
+    + "position", `${every.length - unchecked} record(s)`), problems);
   const only = runs.size === 1 ? [...runs.values()][0][0].event : null;
   rep.check("run chain", !chain.length, found(chain, only ? `run ${repr(cut(str(get(only, "run_id")), 200))} of tenant `
     + `${repr(get(only, "tenant"))}, contiguous from run_seq 0` : `${runs.size} run(s), each contiguous from run_seq 0`,
@@ -634,8 +660,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
-  const pointed = runSet ? jsonl("registry/records.jsonl") : [];   // the records a run-set's leaves name
-  checkExt(rep, [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
+  rep.anchored = [...cosigs].sort((a, b) => a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)
+    .map(([k, ts]) => `${k.split("+")[0]} (${witnesses.get(k)}) at ${fmt(ts)}`);
+  rep.firsts = new Set(firsts.map((e) => at(e, "seq")));
+  checkExt(rep,[...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
     .values()], get(manifest, "verifier_version"));
 }
 
@@ -685,13 +713,66 @@ function checkOpenshellPolicy(rep: Report, events: J[]) {
     + "recorded").slice(0, 20), true);
 }
 
+/** A Tracekit Box engine, as verify names what its box is (tracekit/signer/service.py ENGINES). */
+const ENGINES: Record<string, string> = { firecracker: "micro-VM" };
+const BOXED = "PROOF AGAINST THE BOXED AGENT";
+const DOORS = "the box's doors (its connections and file writes)";
+
+/**
+ * Whether `e` carries ext.box as the signer writes it: on run.registered only, {id, image_digest, allow, engine,
+ * channel?}, under a Box daemon's identity (a uid): its box run, or with parent_run a run of its box's agent channel.
+ */
+function boxLabel(e: J): boolean {
+  const v = isObj(get(e, "ext")) ? get(e.ext, "box") : null, d = get(e, "data");
+  const i = isObj(d) ? get(d, "identity") : null, keys = isObj(v) ? Object.keys(v) : [];
+  return get(e, "type") === "run.registered" && isObj(v) && isObj(i) && get(i, "scheme") === "uid"
+    && ["id", "image_digest", "allow", "engine"].every((k) => keys.includes(k))
+    && keys.every((k) => ["id", "image_digest", "allow", "engine", "channel"].includes(k))
+    && typeof v.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(v.id) && typeof v.image_digest === "string"
+    && /^sha256:[0-9a-f]{64}$/.test(v.image_digest) && Array.isArray(v.allow)
+    && v.allow.every((a: J) => typeof a === "string") && typeof v.engine === "string"
+    && Object.hasOwn(ENGINES, v.engine) && (!Object.hasOwn(v, "channel") || v.channel === "agent");
+}
+
+/**
+ * ext.box: the label of a Tracekit Box box's run (its daemon's account of the box, with the engine from the signer's
+ * own config) and of each run its agent channel registered (a copy, with parent_run). The signing key was outside that
+ * box, so the runs are proof against the agent in it, and no more: an agent run's records are its own account, the
+ * box's doors held it, and anything running as the daemon's or the signer's user on the host is outside the claim.
+ * Anywhere else, or in another shape, a warning and no claim. Only the bundle's own runs are claimed for
+ * (rep.firsts): a run-set's records of other runs carry their labels too.
+ */
+function checkBox(rep: Report, events: J[]) {
+  const bad = events.filter((e) => !boxLabel(e));
+  if (bad.length) {
+    rep.check("boxed agent", false, `${bad.length} record(s) carry ext.box where or how the signer never writes it: `
+      + "no proof against a boxed agent", bad.map((e) => `seq ${str(get(e, "seq"))}: ext.box is not a box's label on `
+      + "its run.registered").slice(0, 20), true);
+    return;
+  }
+  const good = events.filter((e) => rep.firsts.has(get(e, "seq")));
+  if (!good.length) return;   // labels of runs this bundle doesn't hold
+  const one = good.length === 1, agent = good.some((e) => Object.hasOwn(e.data, "parent_run"));
+  const kinds = [...new Set(good.map((e) => ENGINES[e.ext.box.engine]))].sort(byCodePoint).join(", ");
+  rep.check("boxed agent", true, `${BOXED} (${kinds}): the signing key was outside its box for `
+    + `${one ? "this run" : `these ${good.length} runs`}.`, [one && agent
+    ? `This run's records are the agent's own account of its calls; ${DOORS} are the record of what it could do.`
+    : one ? `This run's records are ${DOORS}, as the Box daemon recorded them.`
+      : `In these runs, the agent's records are its own account of its calls; ${DOORS} are the record of what it `
+        + "could do.",
+  "Before you run anything the box wrote, review it: code you run on this machine can reach the key.",
+  ...rep.anchored.map((a) => `anchored by ${a}`)]);
+}
+
 /**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
  */
 const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended],
-  ["openshell.policy", checkOpenshellPolicy]]);
+  ["openshell.policy", checkOpenshellPolicy], ["box", checkBox]]);
 const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
+/** A run's problems past which its later records go unchecked: forged records cost a verifier little. */
+const RUN_PROBLEMS = 20;
 
 /** The ext names an event carries: its `ext` field's keys, and an `ext` record's name. */
 const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {}),
@@ -1087,12 +1168,12 @@ export async function verifyRecord(r: J, keys: Uint8Array[], algs: string[]): Pr
 }
 
 /** §7: the run-set line (COMPLETE or INCOMPLETE) and the log tail line. Returns the (seq, hash) of every key.retire the
- * range points to, the highest seq it points to when it starts at registry size 0 (else -1), and the pinned
- * cosignatures of each registry note. */
+ * range points to, the highest seq it points to when it starts at registry size 0 (else -1), the pinned cosignatures of
+ * each registry note, and the records of registry/records.jsonl it checked, each the one its leaf points to. */
 async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: (n: string) => Uint8Array, trust: Trust,
   witnesses: Map<string, string>, origin: string, size: number, runs: Map<string, J[]>,
   included: (r: J) => Promise<boolean>, checkRecord: (r: J, p: string[]) => Promise<void>, floats: Floats,
-): Promise<[[number, string][], number, [string, bigint][][]]> {
+): Promise<[[number, string][], number, [string, bigint][][], J[]]> {
   const problems: string[] = [], tsalt = b64decode(at(rs, "tenant_salt"));
   const lo = at(rs, "from"), hi = at(rs, "to"), regOrigin = await registryOrigin(origin, tsalt);
   // a bound as the reference prints it: 2.0 when its token had a fraction or exponent
@@ -1101,7 +1182,7 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   const span = `registry ${bound("from", lo)}..${bound("to", hi)}`;
   if (![lo, hi].every((n) => Number.isSafeInteger(n)) || floats.get(rs)?.has("from") || floats.get(rs)?.has("to")) {
     rep.check("run-set", false, `INCOMPLETE, ${span}`, ["the registry range is not two integers"]);
-    return [[], -1, []];
+    return [[], -1, [], []];
   }
   // the registry notes are signed by the record log's own pinned key, under the registry origin
   const vkeys: string[] = [];
@@ -1129,13 +1210,17 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
   }
   if (problems.length || !(0 <= lo && lo <= hi) || hi === 0) {
     rep.check("run-set", false, `INCOMPLETE, ${span}`, problems.length ? problems : [`bad registry range ${lo}..${hi}`]);
-    return [[], -1, regCosigs];
+    return [[], -1, regCosigs, []];
   }
   if (0 < lo && lo < hi && !await verifyConsistency(lo, hi, roots.get(lo)!, roots.get(hi)!, list(at(rs, "consistency")).map(b64decode)))
     problems.push(`registry checkpoint ${lo} is not a prefix of ${hi}`);
+  else if (!(0 < lo && lo < hi) && !same(at(rs, "consistency"), []))   // a range from 0, or empty, has no consistency proof
+    problems.push(`a consistency proof for registry ${lo}..${hi}, which has none`);
   const leaves = list(at(rs, "leaves"));
-  const pointed = new Map<number, J>(jsonl("registry/records.jsonl").map((r) => [at(at(r, "event"), "seq"), r]));
+  const lines = jsonl("registry/records.jsonl"), pointed: J[] = [];
   if (leaves.length !== hi - lo) problems.push(`${hi - lo} leaves in ${lo}..${hi}, ${leaves.length} in the bundle: a leaf is missing`);
+  if (lines.length !== leaves.length)   // §9: the record each leaf points to, in leaf order, and nothing else
+    problems.push(`${lines.length} record(s) in registry/records.jsonl for ${leaves.length} leaves: one per leaf, in leaf order`);
   const registered = new Map<J, J>(), finals = new Map<J, J>(), retired: [number, string][] = [], targets = new Set<string>();
   const gaps = new Map<string, number>();
   let closed: J = null, tenant: J = null, top = -1;
@@ -1146,15 +1231,16 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
       continue;
     }
     const { type, runHash: rh, logId, seq, hash } = parseLeaf(leaf);
-    const r = pointed.get(seq) ?? null, e = r && truthy(r) ? at(r, "event") : r;
-    if (r === null || at(r, "hash") !== hash || at(e, "type") !== type || at(e, "log_id") !== logId || !await included(r)
+    top = Math.max(top, seq);   // the registry note proves the leaf, whatever record the bundle has for it
+    const r = j < lines.length ? lines[j] : null, e = r && truthy(r) ? at(r, "event") : r;
+    if (r === null || !same(at(e, "seq"), seq) || at(r, "hash") !== hash || at(e, "type") !== type || at(e, "log_id") !== logId || !await included(r)
         || !equal(await runHash(tsalt, text(at(e, "run_id"))), rh)
         || !SIGNER_LEAVES.includes(type) && tenant !== null && !same(tenant, at(e, "tenant"))) {
       problems.push(`leaf ${i} points to a missing or different record (seq ${seq})`);
       continue;
     }
     await checkRecord(r, problems);
-    top = Math.max(top, seq);
+    pointed.push(r);
     if (type === "run.registered" || type === "run.final") targets.add(await runName(at(e, "tenant"), e.run_id));
     if (type === "run.registered") {
       tenant = e.tenant;
@@ -1192,7 +1278,7 @@ async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: 
     [], true);
   rep.check("log tail", truthy(closed), truthy(closed) ? `none: log.closed at seq ${str(closed.seq)} is the last record`
     : `records after tree size ${size} are unproven (no log.closed in the range)`, [], true);
-  return [retired, lo === 0 ? top : -1, regCosigs];
+  return [retired, lo === 0 ? top : -1, regCosigs, pointed];
 }
 
 /** A run's part: the run's file name, the part's number (tracekit/bundle_v2.py PART). */

@@ -680,7 +680,7 @@ class NoHooksChosen(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
                                           "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None):
-            self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, "v2 hooks: not installed\n"))
+            self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, f"v2 hooks: not installed\n{install.DEV_MODE_LINE}\n"))
             code, out = run("doctor", "--json")
             rows = {r["id"]: r for r in json.loads(out)}
             self.assertEqual((code, rows["D-HOOKS-PRESENT"]), (0, {
@@ -716,7 +716,7 @@ class NoHooksChosen(unittest.TestCase):
             self.assertTrue(install._v2_hooks_in(settings))
             with contextlib.redirect_stdout(io.StringIO()) as out:
                 self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks"]), 0)
-            self.assertEqual(out.getvalue(), f"Tracekit v2 hooks removed from {settings}\nv2 hooks: not installed\n")
+            self.assertEqual(out.getvalue(), f"Tracekit v2 hooks removed from {settings}\nv2 hooks: not installed\n{install.DEV_MODE_LINE}\n")
             self.assertFalse(install._v2_hooks_in(settings))
             self.assertEqual(client.client_config(), {"no_hooks": True})
 
@@ -1429,6 +1429,16 @@ class Versions(unittest.TestCase):
         hook, signer = self.rows()
         self.assertEqual((hook["status"], signer["status"]), ("ok", "warn"))
         self.assertTrue(signer["fix"].startswith("`tracekit down`: the next call"), signer["fix"])
+
+    def test_a_signer_still_starting_is_not_called_old(self):
+        """1.5.3 review: while the dev signer hadn't written endpoint.json yet, doctor read its version as older than
+        its own and told every hook's fix to run `tracekit down` too."""
+        self.signer(__version__)
+        os.remove(os.path.join(self.run_dir, "endpoint.json"))
+        self.hooks(self.command(self.tree("1.5.0")))
+        hook = self.rows()[0]
+        self.assertEqual(hook["status"], "warn")
+        self.assertNotIn("tracekit down", hook["fix"])
 
     def test_a_current_signer_is_ok(self):
         self.signer(__version__)

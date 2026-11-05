@@ -92,7 +92,8 @@ def approval(tenant, run_id, data, ts):
     (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
     when the record has them); an agent's approval adds `kind` agent and the times it may be consumed between
     (`not_before`, `consume_by`), and a revoke `revoked` (by whom); an answer or a revoke sets `answer_seq` (its
-    record's run_seq); one a later call of the same arguments consumed adds `used_by` (ran)."""
+    record's run_seq); one a later call of the same arguments consumed adds `used_by` (ran); one a root PCM grant was
+    minted from adds `granted`."""
     b = data["binding"]
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
@@ -543,7 +544,7 @@ class RecordLog:
             if "span_id" in e:   # an imported record: its span and type are written once per run
                 run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
-                run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                run["owner"], run["source"] = detect.recorded_owner(e), e["source"]
                 run["registered"] = e["ts"]
                 run["principal"] = e.get("principal")
                 run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
@@ -551,6 +552,8 @@ class RecordLog:
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 if "session" in e["data"]:
                     run["session"] = e["data"]["session"]
+                if "box" in (e.get("ext") or {}):   # the box label (SignerService._register_run)
+                    run["box"] = e["ext"]["box"]
                 if {"replay_of", "analyzes"} & e["data"].keys():
                     run["replay"] = True
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
@@ -616,6 +619,8 @@ class RecordLog:
                 if e["type"] == "approval.consumed" and used != [a["tool_call_id"], a["attempt"]]:   # a later call's
                     a["used_by"] = [*used, (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)
                     index[(e["tenant"], e["run_id"], *used)] = e["data"]["approval_id"]
+            elif e["type"] == "ext" and e["data"].get("name") == "pcm.grant" and e["data"].get("approval_id"):
+                approvals[e["data"]["approval_id"]]["granted"] = True   # Service._pcm_grant: one grant per approval
             if not run["final"]:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)

@@ -7,6 +7,14 @@ make install        # editable install with dev extras
 make check          # lint + tests + build
 ```
 
+Or open the repository in a Codespace (or VS Code's Dev Containers), which runs `make install` for you.
+
+## Picking an issue
+
+Comment on a good first issue to claim it; if someone claimed it already, pick another. Take one at a time: claim
+the next once your pull request for the first is merged or closed, so the others stay open for other first-time
+contributors. A claim with no pull request after 7 days is open again.
+
 ## Tests and evals
 
 - Tests are plain `unittest` classes run by pytest (`make test`, about 15 minutes on a laptop: many start a real

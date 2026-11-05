@@ -31,6 +31,7 @@ experimental.
 | `tracekit graph`: graph and report built from v2 bundles | [graph](graph.md) |
 | `tracekit report`: a week of a signer's store on one page, as text or JSON | [viewer](viewer.md#weekly-report) |
 | `tracekit audit`: Claude Code transcripts replayed through the policy, read-only and not a record | [audit](audit.md) |
+| Model receipts: the coding-agent hooks' receipts of the weights files a call wrote, and `tracekit verify-model` | [coding agents](coding-agents.md#weights-files-a-call-wrote) |
 | Detection and containment: sequences and limits, holds, quarantine, suspensions, incidents, the webhook outbox | [incidents](incidents.md), [webhooks](webhooks.md) |
 | Argument provenance (`untrusted`, `from_untrusted`) | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 | Readable reasoning: what the model said, recorded by the transcript tailer, the coding-agent hooks, the framework integrations and the LLM gateway | [reasoning](reasoning.md) |
@@ -46,6 +47,7 @@ experimental.
 | Wassette behind the MCP gateway (its policy rule is tested against a stand-in with Wassette's tool names, not against Wassette in CI) | [Wassette](integrations/wassette.md) |
 | `tracekit follow` (agentsh's audit log) and the signer's `importers` | [agentsh](integrations/agentsh.md) |
 | Verified tool results (signer.yaml `verify_tool_results`) | [gateway](gateway.md#verified-tool-results) |
+| Tracekit Box's agent channel (signer.yaml `box_daemons`, `channel_open`, `ext.box` and verify's `boxed agent` line; tested against a stand-in daemon on the signer's Unix socket, not Tracekit Box itself) | [limits](limits.md#tracekit-box-experimental) |
 | The kernel sensor import (`tracekit sensor import`), Linux: checked against event lines shaped as Tetragon's and Falco's source writes them, not a live sensor | [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md) |
 | OTLP import and export, the v1 OTLP receiver, ingest gateway and model proxy (these three need `--experimental`) | [OpenTelemetry](otel.md) |
 | Witnesses, the public witness, Rekor and RFC 3161 anchors, `tracekit monitor`, the record-key issuer, external and KMS log keys, SLH-DSA hybrid checkpoints | [witnesses](witnesses.md), [monitor](monitor.md), [issuer](issuer.md) |

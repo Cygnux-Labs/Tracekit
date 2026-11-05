@@ -11,7 +11,7 @@ This dependency-free Go implementation reads evidence offline without invoking e
 - Record envelopes and SHA-256 event hashes; SHA-256 SPKI key IDs; domain-separated Ed25519 messages; cofactorless Ed25519 verification and rejection of noncanonical/small-order keys.
 - RFC 6962 / RFC 9162 record Merkle leaf, node and inclusion proof verification.
 - C2SP signed checkpoint notes, log vkeys, witness cosignatures, duplicate signature-key rejection, one witness per key and per name (a trust config pinning one witness key under two names, two keys under one name, or one key with two classes is refused) and witness quorum.
-- Rigid ZIP layout and limits, manifest file hashes, record-key epochs and retirement positions, per-run hash chains, multi-part run concatenation and first/last/key-record inclusion proofs.
+- Rigid ZIP layout and limits, manifest file hashes and only the file names format-v2 §9 allows, record-key epochs and retirement positions, per-run hash chains, multi-part run concatenation and first/last/key-record inclusion proofs.
 - CLI input caps: bundles and v1 witness files are limited to 512 MiB; trust and v1 public-key files are limited to 1 MiB.
 - Cryptographic registry run-set checks: derived-origin signed checkpoints, RFC 9162 consistency proofs, per-leaf inclusion proofs, fixed-width leaf contents, record signatures, run-final uniqueness and selected-run limits. These are *necessary* checks, not sufficient to establish the complete run-set semantics.
 
@@ -53,7 +53,9 @@ An invalid `signer.pub` stops the v1 verifier at `signatures valid` (exit 1, as 
 also reports the checks that don't need the key, and fails every bundled checkpoint under `head matches a witness
 checkpoint`.
 
-The Go verifier rejects some inputs accepted by Python: a run with a findings companion, an open-only runset, empty monitors/issuers/analyzers lists, two log keys or extra algorithms, v2 numeric spellings `v: 2.0`, `run_seq: -0`, or `tree_size: 18.0`, noncanonical base64 signatures or inclusion nodes, checkpoint filenames outside its constraints, v1 ZIP archives with more than 10,000 entries, and v1 ZIP members whose name or extra field contains a crafted ambiguous local-header signature. An open run whose run-set range contains a second `run.registered` leaf gets `FAILED` from Go and `VERIFIED TO HEAD (open)` from Python. These are false rejections and remain verdict differences if present in the golden corpus.
+The Go verifier rejects some inputs accepted by Python: a run with a findings companion, an open-only runset, empty monitors/issuers/analyzers lists, two log keys or extra algorithms, v2 numeric spellings `v: 2.0`, `run_seq: -0`, or `tree_size: 18.0`, noncanonical base64 signatures or inclusion nodes, checkpoint filenames outside its constraints, v1 ZIP archives with more than 10,000 entries, and v1 ZIP members whose name or extra field contains a crafted ambiguous local-header signature. An open run whose run-set range contains a second `run.registered` leaf gets `FAILED` from Go and `VERIFIED TO HEAD (open)` from Python. A v1 manifest whose `seq_range` end is written as a float (`22.0`) fails Go's `manifest range`. These are false rejections and remain verdict differences if present in the golden corpus.
+
+A manifest's `verifier_min_version` is compared with 1.4.0, the newest row of the format's version table (`VERSIONS` in `tracekit/bundle_v2.py`) Go implements (`formatVersion` in `verify.go`): above it a bundle may use entries Go doesn't know, so Go reports it `UNVERIFIABLE (needs tracekit >= x)`, as Python and TypeScript do for one above their own release version. Between the two (from 1.4.1 up to that release) the verdicts differ. The exporter declares only versions of that table, so only an edited manifest falls between them. Raise `formatVersion` when Go implements a new row.
 
 ## Run
 
@@ -111,3 +113,19 @@ be misrouted to v1 and produce a non-JSON argument error. V1 cases use the
 Python CLI. Every verdict mismatch and every unexpected check-name difference fails the gate and is captured in the optional JSON report.
 
 The gate compares exit code, integrity, assurance, and the names of warning and failed checks outside the verdict-only ones. It is an executable acceptance test, not a substitute for reviewing unsupported features. Rerun it against the checkout being reviewed; report files are generated on demand and are not committed.
+
+## Mutated bundles
+
+`tests/test_go_verifier.py` builds `tkverify` and gives it the mutated bundles the TypeScript verifier is held to:
+every structural mutation of the golden closed bundle, run-set and run in parts (`tests/test_bounded.py`) and the
+mutated copies of the real signer's bundles (`tests/test_ts_verifier.py`). Each must get Python's exit code and
+integrity. It skips without Go on `PATH`; CI's go-verifier job runs it and fails if it skips.
+
+```sh
+PYTHONPATH=$PWD python -m pytest -q tests/test_go_verifier.py
+```
+
+It compares the verdict only. On a few mutations both fail, but Go stops sooner, at `bundle structure` (a run file
+without its final newline, a run file under a name that isn't a run's, an integer written as a float), where Python
+names the checks it fails later (`manifest`, `run chain`, `run parts`, `signatures`, ...); and the JSON assurance of a
+failed bundle can differ. Both CLIs print a failed bundle's assurance as `not rated`.

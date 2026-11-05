@@ -162,6 +162,12 @@ func parseFileObject(files map[string][]byte, name string) (map[string]any, erro
 	return object(v)
 }
 
+// bundleFile matches the files a bundle may hold besides its manifest (format-v2 section 9): no code, no trust config;
+// a misnamed run part or policy snapshot fails a check of its own.
+var bundleFile = regexp.MustCompile(`^(runs/[0-9a-f]{32}(\.part-[0-9]+)?\.jsonl|keys/records\.jsonl|proofs/records\.json` +
+	`|checkpoints/(registry-)?[0-9]+\.note|rekor/[0-9]+\.json|tsa/[0-9]+\.tsr|policies/.+` +
+	`|registry/(run-set\.json|records\.jsonl))$`)
+
 func checkManifest(files map[string][]byte) error {
 	manifest, err := parseFileObject(files, "manifest.json")
 	if err != nil {
@@ -187,6 +193,9 @@ func checkManifest(files map[string][]byte) error {
 	for name, bytes := range files {
 		if name == "manifest.json" {
 			continue
+		}
+		if !bundleFile.MatchString(name) {
+			return fmt.Errorf("%s: a file no bundle holds", name)
 		}
 		digest, ok := declared[name].(string)
 		sum := sha256.Sum256(bytes)

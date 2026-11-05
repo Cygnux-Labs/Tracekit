@@ -1,7 +1,7 @@
 # Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
 # people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
 
-version: '2026.10-server-comms-6'
+version: '2026.10-server-comms-9'
 description: server-hosted agents, payments, email and chat
 unknown_tools: ask
 
@@ -33,8 +33,9 @@ ask:
     # TK-M005's names too, over MCP only: a deployment's own payment tool by one of them (issue_refund) is TK-M001's
     # with an amount, so approval.agent bounds on TK-M001 still decide it. Over MCP as `mcp:<server>/<tool>`,
     # `mcp__<server>__<tool>` or Crush's joined `mcp__<server>_<tool>`; a refund_ name only at the tool's start, as
-    # without a server (get_refund_status moves no money), so in Crush's form only after a server named without `_`
-    tool: '(mcp(:[^/]+/|__.*[_-]))?(transfer_funds|send_(payment|money)|pay_invoice|create_(payment|payout|transfer|refund|charge|payment_intent)|(confirm|capture)_payment_intent)|(mcp(:[^/]+/|__.*__|__[^_]+_))?refund_.*|mcp(:[^/]+/|__.*[_-])((issue|process|make|initiate)_(payment|payout|transfer|refund|charge)|transfer_money)'
+    # without a server (get_refund_status moves no money), so in Crush's form only after a server named without `_`.
+    # Each name also in camelCase or PascalCase (createPayout, CreateRefund, refundPayment)
+    tool: '(mcp(:[^/]+/|__.*[_-]))?([Tt]ransfer_?[Ff]unds|[Ss]end_?([Pp]ayment|[Mm]oney)|[Pp]ay_?[Ii]nvoice|[Cc]reate_?([Pp]ayment|[Pp]ayout|[Tt]ransfer|[Rr]efund|[Cc]harge|[Pp]ayment_?[Ii]ntent)|([Cc]onfirm|[Cc]apture)_?[Pp]ayment_?[Ii]ntent)|(mcp(:[^/]+/|__.*__|__[^_]+_))?[Rr]efund[_A-Z].*|mcp(:[^/]+/|__.*[_-])(([Ii]ssue|[Pp]rocess|[Mm]ake|[Ii]nitiate)_?([Pp]ayment|[Pp]ayout|[Tt]ransfer|[Rr]efund|[Cc]harge)|[Tt]ransfer_?[Mm]oney)'
     pattern: '^'
     reason: moving money
     rationale: Payouts, transfers, charges and refunds move money even without an amount argument (a full refund), and over MCP too.
@@ -54,15 +55,28 @@ ask:
     remedy: Check which payment the call refunds, pays or sends before approving it; with no amount it moves all of it, or the amount set earlier.
     rationale: TK-M001 holds a payment with an amount; a refund or payment tool called without one moves money too.
   - id: TK-M003
-    # ten or more recipients in to, cc or bcc (a list or a comma-separated string), or a whole-company address; the
-    # list is read forward to that address (`*?`), so the fallback engine never backs off over a long list without one
-    pattern: '"(to|cc|bcc|recipients)":(\[("[^"]*",){9}|"([^"@]*@){10})|"(to|cc|bcc|recipients)":(\[[^\]\[]*?)?"(all|everyone|all-staff|allstaff|staff|all-hands|customers|users)@'
+    # ten or more recipients in to, cc or bcc (a list or a comma-separated string, display names with escaped quotes
+    # too), or a whole-company address in any case (all, everyone, everybody, staff, customers, users, and all-staff,
+    # all-hands and all-employees with `-`, `.`, `_` or nothing between the words) where an address starts in the list or string, after a display
+    # name too (`All Staff <all@corp.com>`); the list and the string are read forward to that address (`*?`), so the
+    # fallback engine never backs off over a long list without one, and the list a whole string at a time, so the
+    # address is read from a string's opening quote (from each escaped one, 64 KiB of `\"` took the fallback
+    # seconds), the address after any other character but one a local part may hold (RFC 5322's: o'staff@ is one
+    # address), or after any escape pair (`\"all@…\"`, `\n`)
+    pattern: '"(to|cc|bcc|recipients)":(\[("([^"\\]|\\.)*",){9}|"(([^"@\\]|\\.)*@){10})|"(to|cc|bcc|recipients)":(\[([^\]\["\\]|"([^"\\]|\\.)*")*?)?"(([^"\\]|\\.)*?([^\\A-Za-z0-9._%+''!#$&*/=?^`{|}~-]|\\.))?([Aa][Ll][Ll]|[Ee][Vv][Ee][Rr][Yy][Oo][Nn][Ee]|[Ee][Vv][Ee][Rr][Yy][Bb][Oo][Dd][Yy]|[Aa][Ll][Ll][-._]?[Ss][Tt][Aa][Ff][Ff]|[Ss][Tt][Aa][Ff][Ff]|[Aa][Ll][Ll][-._]?[Hh][Aa][Nn][Dd][Ss]|[Aa][Ll][Ll][-._]?[Ee][Mm][Pp][Ll][Oo][Yy][Ee][Ee][Ss]|[Cc][Uu][Ss][Tt][Oo][Mm][Ee][Rr][Ss]|[Uu][Ss][Ee][Rr][Ss])@'
     reason: mass email
     rationale: One message to many people (or to a list address) cannot be recalled; a person checks the audience and the text.
   - id: TK-M004
-    # as `mcp:<server>/<tool>`, `mcp__<server>__<tool>` or Crush's joined `mcp__<server>_<tool>`
-    tool: 'mcp(:[^/]+/|__.*[_-])(slack_post_message|slack_reply_to_thread|send_slack_message|chat_post_message|post_message)'
-    pattern: '<!(channel|everyone|here)(\|[^<>]*)?>'
+    # as `mcp:<server>/<tool>`, `mcp__<server>__<tool>` or Crush's joined `mcp__<server>_<tool>`: a tool that posts,
+    # sends or adds a message or replies to a thread (slack_post_message, conversations_add_message, chat_postMessage),
+    # in snake_case or camelCase; a channel, workspace or user-group mention (<!channel>, <!here>, <!everyone>,
+    # <!subteam^ID>), or a plain @channel, @here or @everyone in a string argument after link_names set true, with
+    # which Slack turns it into one (`@channel-ops`, a group's handle, isn't one). The call is read as sorted-key JSON:
+    # the arguments between link_names and the text are read one by one, so the fallback engine stays linear.
+    # lean: a mention in an argument that sorts before link_names (blocks, content) or after a nested object isn't
+    # read; read the parsed arguments if a server sends one so
+    tool: 'mcp(:[^/]+/(.*[_-])?|__.*[_-])(([Pp]ost|[Ss]end|[Aa]dd)_?[Mm]essage|[Rr]eply_?[Tt]o_?[Tt]hread|send_slack_message)|mcp(:[^/]+/|__.*[_-])[^_/-]*[a-z0-9]((Post|Send|Add)_?[Mm]essage|Reply_?[Tt]o_?[Tt]hread)'
+    pattern: '<!(channel|everyone|here)(\|[^<>]*)?>|<!subteam\^[^<>]*>|"link_names":(true|1|"(true|1)")(,"[^"\\]*":("([^"\\]|\\.)*"|[^,{}\[\]"]*))*?,"[^"\\]*":"(([^"\\]|\\.)*?[^A-Za-z0-9_.@\\-])?@(channel|everyone|here)[^A-Za-z0-9_-]'
     reason: notifying a whole channel or workspace
     rationale: '@channel, @here and @everyone page everyone in the channel or workspace.'
   - id: TK-P001

@@ -458,13 +458,13 @@ class Client:
 
     def _connect(self):
         conn = _Conn(*self._dial())
+        conn.fin = weakref.finalize(self, conn.close)   # its reader detaches it: a dead connection is not kept alive
         # the threads hold the client weakly: a Client dropped without close() is collected, and its connection with it
         conn.threads = (threading.Thread(target=Client._read, args=(weakref.ref(self), conn), daemon=True,
                                          name="tracekit-client"),
                         threading.Thread(target=conn.write, daemon=True, name="tracekit-client-write"))
         for t in conn.threads:
             t.start()
-        weakref.finalize(self, conn.close)
         return conn
 
     @staticmethod
@@ -482,7 +482,10 @@ class Client:
             if client and client._conn is conn:
                 client._conn = None
             conn.out.put(None)   # the writer stops
+            conn.drop()   # and one blocked in sendall wakes before the fd closes
             conn.sock.close()
+            conn.rfile.close()   # the socket's fd closes only once its reader has too
+            conn.fin.detach()
             while conn.pending:
                 conn.pending.popleft().set_exception(_ConnectionLost())
 
@@ -541,6 +544,14 @@ def named_rules(rule_ids):
     """The rule ids a refusal names to the model: TK-UNKNOWN-TOOL only flags a tool the policy doesn't name, it never
     refuses one."""
     return ", ".join(r for r in rule_ids if r != "TK-UNKNOWN-TOOL")
+
+
+def refusal(out, approval_id=None):
+    """Why the signer stopped a call, as the model reads it: the rule ids (named_rules), the approval a person answers
+    (by id), then the signer's reason (a decision's or a refused consume's), which says what to do instead
+    (rpc_schema.INSTEAD) when a rule gives a remedy; "" when it gives none of them."""
+    head = named_rules(out["rule_ids"]) + (f" (approval {approval_id})" if approval_id else "")
+    return ": ".join(x for x in (head.strip(), out.get("reason")) if x)
 
 
 def result_field(send, out):

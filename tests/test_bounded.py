@@ -1,7 +1,8 @@
 """Bounded exhaustive checks (#487): every case within a stated bound, not a sample, so a pass proves the property
 within the bound and a failure is a real bug. The decision logic over its whole finite domain; RFC 9162 Merkle proofs
-for every tree size up to MERKLE_N (TRACEKIT_BOUND_MERKLE raises it); the v2 verifier against every structural mutation
-of the golden closed bundle (tests/test_verify_v2_property.py samples bit flips of it)."""
+for every tree size up to MERKLE_N (TRACEKIT_BOUND_MERKLE raises it); both v2 verifiers against every structural
+mutation of the golden closed bundle, run-set and run in parts (tests/test_verify_v2_property.py samples bit flips of
+the first)."""
 import base64
 import collections
 import importlib.util
@@ -11,10 +12,12 @@ import os
 import shutil
 import tempfile
 import unittest
+import zipfile
 
 import test_signer_service as ts
+import test_ts_verifier as tv
 from factories import process_pool
-from test_verify_v2_property import ENTRIES, REQUIRED, TRUST, zipped
+from test_verify_v2_property import zipped
 
 from tracekit import merkle
 from tracekit.format.canon import event_hash
@@ -197,7 +200,13 @@ class DecisionLogic(unittest.TestCase):
             self.assertEqual(d.get("oversize"), union or None)
 
 
-LINES = [i for i, (n, b) in enumerate(ENTRIES) if n.endswith((".jsonl", ".note"))]   # one line or many
+GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden")
+
+
+def verdict(code, integrity, assurance, checks):
+    """What both verifiers must agree on (test_ts_verifier's Agreement.agree): the exit code, integrity, assurance and
+    each line's check and status."""
+    return code, integrity, assurance, [(c["check"], c["status"]) for c in checks]
 
 
 def cut_back(entries):
@@ -213,47 +222,75 @@ def cut_back(entries):
 
 
 class EveryStructuralMutation(unittest.TestCase):
-    """Each mutation refreshes the manifest's hashes, as anyone rewriting a bundle would. None verifies; a run cut back
-    to a record whose inclusion proof the bundle holds reads open (exit 0) and never closed, since nothing in one run's
-    bundle shows the dropped records (docs/limits.md, "A run cut back"; a run-set bundle shows them)."""
+    """Each mutation of BUNDLE refreshes the manifest's hashes, as anyone rewriting a bundle would. None verifies; a run
+    cut back to a record whose inclusion proof the bundle holds reads open (exit 0) and never closed, since nothing in
+    one run's bundle shows the dropped records (docs/limits.md, "A run cut back"; a run-set bundle shows them). The
+    TypeScript verifier reads every mutation as the reference does (test_ts_verifier's agreement), and the Go one gives
+    each its verdict (test_go_verifier.py)."""
+    BUNDLE, TRUST = os.path.join(GOLDEN, "v2", "closed.tkb"), os.path.join(GOLDEN, "v2", "trust.json")
+
+    @classmethod
+    def setUpClass(cls):
+        with zipfile.ZipFile(cls.BUNDLE) as z:
+            cls.entries = [(n, z.read(n)) for n in z.namelist()]
+        # entries the bundle may omit and still verify: the Rekor anchor is optional evidence
+        cls.required = [i for i, (n, _) in enumerate(cls.entries) if not n.startswith(("rekor/", "tsa/"))]
+        cls.lines = [i for i, (n, b) in enumerate(cls.entries) if n.endswith((".jsonl", ".note"))]   # one or many
+
+    def setUp(self):
+        self.d, self.made = tempfile.mkdtemp(), []   # each mutation's file and the reference's verdict on it
+        self.addCleanup(shutil.rmtree, self.d, True)
 
     def outcome(self, entries):
-        with tempfile.TemporaryDirectory() as d:
-            path = os.path.join(d, "m.tkb")
-            with open(path, "wb") as f:
-                f.write(zipped(entries))
-            rep, code = v2.verify(path, TRUST)   # raising fails the test
+        path = os.path.join(self.d, f"{len(self.made)}.tkb")
+        with open(path, "wb") as f:
+            f.write(zipped(entries, self.entries))
+        rep, code = v2.verify(path, self.TRUST)   # raising fails the test
+        self.made.append((path, verdict(code, rep.integrity, rep.assurance, rep.checks)))
         return code, rep.integrity
+
+    def assert_none(self, wrong):
+        """No mutation verified, and the TypeScript verifier gives each the reference's verdict."""
+        self.assertEqual(wrong, [])
+        if not tv.SKIP:
+            ts = tv.ts_verify_many([(path, self.TRUST) for path, _ in self.made])
+            self.assertEqual([(path, got) for (path, want), got in zip(self.made, (
+                verdict(t["exit_code"], t["integrity"], t["assurance"], t["checks"]) for t in ts)) if got != want], [])
 
     def check(self, entries, what, wrong):
         code, integrity = self.outcome(entries)
         if not (code in (1, 2) and integrity != "VERIFIED" or code == 0 and integrity == cut_back(entries)):
             wrong.append((what, code, integrity))
 
-    def test_every_entry_dropped_or_duplicated(self):
-        """Every entry the bundle needs dropped, and every entry duplicated."""
-        wrong = []
-        for i in REQUIRED:
-            self.check(ENTRIES[:i] + ENTRIES[i + 1:], ("dropped", ENTRIES[i][0]), wrong)
-        for i in range(len(ENTRIES)):
-            self.check(ENTRIES + [ENTRIES[i]], ("duplicated", ENTRIES[i][0]), wrong)
-        self.assertEqual(wrong, [])
+    def test_every_entry_dropped_duplicated_or_added(self):
+        """Every entry the bundle needs dropped, every entry duplicated, and, listed in the manifest, every entry added
+        under a name no bundle holds, and the trust config and a script added (a bundle carries neither)."""
+        entries, wrong = self.entries, []
+        for i in self.required:
+            self.check(entries[:i] + entries[i + 1:], ("dropped", entries[i][0]), wrong)
+        for i in range(len(entries)):
+            self.check(entries + [entries[i]], ("duplicated", entries[i][0]), wrong)
+        with open(self.TRUST, "rb") as f:
+            planted = [("trust.json", f.read()), ("verify.sh", b"#!/bin/sh\necho VERIFIED\n")]
+        for n, b in [(n + ".orig", b) for n, b in entries] + planted:
+            self.check(entries + [(n, b)], ("added", n), wrong)
+        self.assert_none(wrong)
 
     def test_every_line_deleted_duplicated_swapped_or_cut(self):
         """Every line of every JSON lines entry (one line or many) and of the checkpoint note: deleted, duplicated,
         swapped with every other line that differs, and the entry emptied or cut after every line. A note's signature
         lines in another order are the same note (C2SP signed-note: signatures are a set over the same text) and
         verify."""
-        self.assertEqual({ENTRIES[i][0].split("/")[0] for i in LINES}, {"runs", "keys", "checkpoints"})
-        wrong = []
-        for i in LINES:
-            name, data = ENTRIES[i]
+        entries, wrong = self.entries, []
+        self.assertLessEqual({"runs", "keys", "checkpoints"}, {entries[i][0].split("/")[0] for i in self.lines})
+        for i in self.lines:
+            name, data = entries[i]
             lines = data.split(b"\n")
             tail = lines.pop() if not lines[-1] else None   # a final newline leaves an empty last element
 
             def entry(ls):
                 text = b"\n".join(ls) + (b"\n" if tail is not None and ls else b"")
-                return ENTRIES[:i] + [(name, text)] + ENTRIES[i + 1:]
+                return entries[:i] + [(name, text)] + entries[i + 1:]
             self.check(entry([]), (name, "emptied"), wrong)
             for a in range(len(lines)):
                 self.check(entry(lines[:a] + lines[a + 1:]), (name, "deleted", a), wrong)
@@ -269,18 +306,17 @@ class EveryStructuralMutation(unittest.TestCase):
                         self.assertEqual(self.outcome(entry(swapped)), (0, "VERIFIED"), (name, a, b))
                     else:
                         self.check(entry(swapped), (name, "swapped", a, b), wrong)
-        self.assertEqual(wrong, [])
+        self.assert_none(wrong)
 
     def test_every_inclusion_path_one_edit_away(self):
         """The verifier's Merkle input, proofs/records.json, rewritten: every hash of every record's inclusion path
         changed, dropped, or joined by another at every place; each record's path dropped; every two records' paths
         swapped. The file written back unchanged verifies, so a refusal is the edit's."""
-        files = dict(ENTRIES)
-        proofs = json.loads(files["proofs/records.json"])
+        proofs = json.loads(dict(self.entries)["proofs/records.json"])
 
         def entries(inclusion):
             text = json.dumps({**proofs, "inclusion": inclusion}).encode()
-            return [(n, text if n == "proofs/records.json" else b) for n, b in ENTRIES]
+            return [(n, text if n == "proofs/records.json" else b) for n, b in self.entries]
         self.assertEqual(self.outcome(entries(proofs["inclusion"])), (0, "VERIFIED"))
         wrong, paths = [], proofs["inclusion"]
         for seq, path in paths.items():
@@ -290,7 +326,15 @@ class EveryStructuralMutation(unittest.TestCase):
         for a, b in itertools.combinations(paths, 2):
             if paths[a] != paths[b]:
                 self.check(entries({**paths, a: paths[b], b: paths[a]}), (a, b, "swapped"), wrong)
-        self.assertEqual(wrong, [])
+        self.assert_none(wrong)
+
+
+class EveryStructuralMutationOfARunSet(EveryStructuralMutation):
+    BUNDLE = os.path.join(GOLDEN, "v2", "run-set.tkb")
+
+
+class EveryStructuralMutationOfARunInParts(EveryStructuralMutation):
+    BUNDLE, TRUST = os.path.join(GOLDEN, "parts", "parts.tkb"), os.path.join(GOLDEN, "parts", "trust.json")
 
 
 PAY_A, PAY_B = {"to": "acct-42", "cents": 1500}, {"to": "acct-99", "cents": 1500}

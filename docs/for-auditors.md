@@ -26,6 +26,8 @@ supplying the evidence.
 
 ## Check these three report lines first
 
+Tracekit after 1.5.3 prints a short result by default; add `--detail` to `tracekit verify` for these lines.
+
 1. `Integrity:` Look for exactly `Integrity: VERIFIED.` Read any extra wording:
    `open` means the run has no recorded ending, so later records may be missing, and `WITH GAPS` needs
    investigation. `FAILED` (v1: `VERIFICATION FAILED`) means a check failed; the `[FAIL]` lines say which.
@@ -51,8 +53,8 @@ extract it. In the new window, type `cd `, drag the extracted folder containing 
 window, and press Enter. Paste each command separately and press Enter:
 
 ```sh
-uvx --python 3.13 --from tracekit-ai==1.5.2 tracekit --version
-uvx --python 3.13 --from tracekit-ai==1.5.2 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub
+uvx --python 3.13 --from tracekit-ai==1.5.3 tracekit --version
+uvx --python 3.13 --from tracekit-ai==1.5.3 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub
 ```
 
 The first command downloads the verifier and Python if needed, then prints its

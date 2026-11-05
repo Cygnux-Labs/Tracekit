@@ -52,12 +52,22 @@ def write_frame(conn, obj):
     conn.sendall(json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode() + b"\n")
 
 
+class Bound(dict):
+    """An answer (channel_open's) after which every frame of its connection is `identity`'s. Each frame is still
+    authenticated as the transport does; the signer, never a frame, set the identity it is handled as."""
+
+    def __init__(self, out, identity):
+        super().__init__(out)
+        self.identity = identity
+
+
 def serve(conn, rfile, authenticate, handle):
     """Answer frames until the peer closes, a read times out, a line is too long or a frame fails authentication.
 
-    `authenticate(conn, frame)` returns a CallerIdentity; `handle(identity, frame)` returns the response dict. Both
-    raise RPCError for a refusal.
+    `authenticate(conn, frame)` returns a CallerIdentity; `handle(identity, frame)` returns the response dict, or a
+    Bound one, whose identity handles the connection's later frames. Both raise RPCError for a refusal.
     """
+    channel = None
     try:
         while True:
             try:
@@ -70,7 +80,10 @@ def serve(conn, rfile, authenticate, handle):
             if frame is None:
                 return
             try:
-                out = handle(authenticate(conn, frame), frame)
+                identity = authenticate(conn, frame)
+                out = handle(channel or identity, frame)
+                if isinstance(out, Bound):
+                    channel = out.identity
             except RPCError as e:
                 write_frame(conn, e.wire())
                 if e.code == "unauthenticated":
