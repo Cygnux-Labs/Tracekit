@@ -446,16 +446,12 @@ class OptIn(unittest.TestCase):
             self.assertEqual(up(), ["start the signer with `tracekit up --wait` to see its log key",
                                     "public witness: on from the dev signer's next start"])
             self.assertFalse(os.path.exists(data))
-            secret = crypto.generate()[0]
-            os.makedirs(os.path.join(data, "keys"))
-            with open(os.path.join(data, "keys", "log.key"), "wb") as f:
-                f.write(secret)
+            fingerprint = cli._dev_key_fingerprint(data)   # the key as init makes it: keys/ 0700, log.key 0600
             with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
                 json.dump({NAME: 3}, f)
             before = sorted(os.listdir(data))
-            self.assertEqual(up(), [
-                f"log key SHA-256 fingerprint: {hashlib.sha256(crypto.public_from_secret(secret)).hexdigest()}",
-                "anchored: the public witness held this log at size 3 when the dev signer started"])
+            self.assertEqual(up(), [f"log key SHA-256 fingerprint: {fingerprint}",
+                                    "anchored: the public witness held this log at size 3 when the dev signer started"])
             self.assertEqual(sorted(os.listdir(data)), before)
 
     def test_a_witnessed_file_that_is_not_one_is_never_printed(self):
