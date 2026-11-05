@@ -37,18 +37,18 @@ on 443 too for plain http to port 80 (it upgrades http to https); the URL read a
     (no_outcome).
 A box run with no agent channel run in what was analysed is no_agent_runs for each door event; no_agent_account when
 the box run is final, its channel was on, what was analysed holds every run of the box's tenant (the store, or a
-run-set from registry 0 with no run open: whole()) and Box refused no register_run on the channel (tkbox.channel):
-the agent registered none. An agent channel's run is agent_run for each call: its box run holds the doors.
+run-set from registry 0 with no run open, the box run among its leaves: whole()) and Box refused no register_run on the
+channel (tkbox.channel; a count of folded refusals may hold one): the agent registered none. An agent channel's run is
+agent_run for each call: its box run holds the doors.
 """
 import ipaddress
-import itertools
 import posixpath
 import re
 import urllib.parse
 
 from .findings import WRITE_TOOLS
-from .findings_effects import ALL, FETCH, GRACE_S, KINDS, MAX_CITES, WRAPPERS, _kinds, _t, _under
-from .findings_text import _Lexer
+from .findings_effects import ALL, FETCH, GRACE_S, KINDS, MAX_CITES, _kinds, _t, _under
+from .policy2 import shell
 from .signer.reconcile import PROVIDER_HOSTS
 
 RULE = "TK-X212"
@@ -56,15 +56,8 @@ CHECKS = (RULE,)
 SEVERITIES = {RULE: "high"}
 WORKSPACE = "/workspace"   # where Box mounts the workspace copy inside a box (its proto.DefaultWorkspacePath)
 SHELLS = frozenset(t for t, k in KINDS.items() if k == ALL)
-BACKGROUND = frozenset(("nohup", "setsid", "disown", "coproc"))
-SCRIPT_SHELLS = frozenset(("sh", "bash", "dash", "zsh", "ksh"))
-SCRIPT_FLAG = re.compile(r"-[a-z]*c[a-z]*")   # -c, -lc, -ec: the next word is the script
-KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))   # a command follows them
-ARG_FLAGS = frozenset(("-u", "-g", "-n", "-C"))   # a wrapper's options that take a value (sudo -u, nice -n, env -C)
-PUNCT = frozenset("();<>|&")   # the lexer's punctuation characters
-LONE_AMP = re.compile(r"(?<![&<>|])&(?![&>])")   # `&` that sends to the background: not &&, >&, <&, &> or |&
+DETACHERS = frozenset(("setsid", "disown", "coproc"))   # a command that detaches what it runs (coproc: \coproc)
 WHATWG_PART = re.compile(r"0x[0-9a-f]*|[0-9]+")
-RUN_SET_WHOLE = re.compile(r"COMPLETE, registry 0\.\.\d+\b.*\(\d+ runs registered, \d+ final, 0 open[;)]")
 WHY = {RULE: ("the agent's own records of its calls (sent from inside the box, where it can skip or forge them) and "
               "the box's door records (decided on the host, outside its reach) disagree: the agent did something it "
               "didn't record, or recorded something the door didn't see",
@@ -72,7 +65,8 @@ WHY = {RULE: ("the agent's own records of its calls (sent from inside the box, w
               "(`tracekit view`), and review what the box wrote before you apply or run it")}
 REASONS = {
     "no_agent_runs": ("no run of the box's agent channel is in what was analysed: its runs weren't given (a bundle of "
-                      "the box run alone, the viewer), or the box ran without the channel",
+                      "the box run alone, the viewer, a run-set short of them, a box still running), Box refused a "
+                      "registration on the channel, or the box ran without it",
                       "analyse the box run from a run-set bundle (`tracekit export --v2 --run-set`) or the signer's "
                       "store, and start the box with its agent channel on (Box's docs/agent-channel.md)"),
     "no_agent_account": ("the box ran with its agent channel on, yet its agent registered no run: the agent kept no "
@@ -88,7 +82,7 @@ REASONS = {
                    "call names", "nothing; Box records each model call on that host (tkbox.model.call)"),
     "host_command": ("a command Box started from the host (not the agent's own) was running, or ran, and may have done "
                      "it", "run host commands before the agent starts, or in a box of their own"),
-    "background": ("a shell call earlier in the run may have left a process running (run_in_background, `&`, nohup, "
+    "background": ("a shell call earlier in the run may have left a process running (run_in_background, `&`, setsid, "
                    "tmux, screen), which may have made it", "review that call's command; its later connections can't "
                    "be told from the agent's"),
     "untimed_refusal": ("Box refused a connection itself (or lost the record of one), and sends those records later "
@@ -141,10 +135,12 @@ def store_runs(data_dir, box_run):
         r.close()
 
 
-def whole(checks):
-    """Whether a verified bundle's checks (verify.v2's Report.checks) show a run-set that holds every run of its
-    tenant: its registry range starts at 0 and no run registered in it is still open (a run-set bundles final runs)."""
-    return any(c["check"] == "run-set" and c["status"] == "pass" and RUN_SET_WHOLE.match(c["detail"]) for c in checks)
+def whole(rep, box_run):
+    """Whether a verified bundle's report (verify.v2's) shows a run-set that holds every run of its tenant up to box run
+    `box_run`'s end: its registry range starts at 0, no run registered in it is still open (a run-set bundles only final
+    runs), and the box run's own registration is a leaf of it (a run-set may carry its selected run from outside)."""
+    rs = getattr(rep, "run_set", None)
+    return bool(rs) and rs["from"] == 0 and not rs["open"] and box_run in rs["registered"]
 
 
 def _ipv4(h):
@@ -231,57 +227,18 @@ def _background(args):
     return _detaches(args["command"]) if isinstance(args.get("command"), str) else None
 
 
-def _unquote(w):
-    return w[1:-1] if len(w) > 1 and w[0] == w[-1] and w[0] in "'\"" else w
-
-
-def _detaches(cmd, depth=0):
-    """Whether shell command `cmd` may leave a process running past its end, as far as a lexer that keeps quoting can
-    tell: a lone `&` outside quotes (`cmd &`, `(cmd &)`; never &&, >&, &>, |& or an escaped \\&), or a command (the
-    first word of a simple command, past assignments, keywords, wrappers and their options) that is nohup, setsid,
-    disown or coproc, `tmux ... -d`, `screen -d...`, or a shell running a script with -c past its options (`bash -o
-    pipefail -c`, `sh -e -c`, `bash --norc -c`) that does; True when it can't be read. Outside a heredoc, whose lines
-    are text, a newline ends a command."""
-    lines = "<<" not in cmd
+def _detaches(cmd):
+    """Whether shell command `cmd` may leave a process running past its end, as the policy engine's shell parser
+    (policy2.shell: bash's quoting, heredocs, comments, `sh -c` strings, wrappers) reads it: a command it runs in the
+    background (`&`, also in a subshell or an `sh -c` string), or one that detaches by itself (setsid, disown, coproc,
+    `tmux ... -d`, `screen -d...`); nohup alone runs in the foreground. True when the parser can't read the line (coproc
+    as bash's keyword among it)."""
     try:
-        lex = _Lexer(cmd[:1 << 16], posix=False, punctuation_chars="();<>|&" + "\n" * lines)
-        lex.whitespace_split = True
-        if lines:
-            lex.whitespace = " \t\r"
-        words = list(lex)
-    except ValueError:   # a quote that never closes
+        cmds = shell.parse(cmd)
+    except shell.ParseError:
         return True
-    first, wrapped, skip = True, False, False
-    for i, w in enumerate(words):
-        if set(w) <= PUNCT | {"\n"}:
-            if LONE_AMP.search(w) and not (i and words[i - 1].endswith("\\")):
-                return True
-            if set(w) & set("<>"):   # a redirection: its target is no command
-                skip = True
-            else:
-                first, wrapped = True, False
-            continue
-        if skip or not first:
-            skip = False
-            continue
-        name = posixpath.basename(_unquote(w))
-        if name in BACKGROUND:
-            return True
-        if name in KEYWORDS or name in WRAPPERS or "=" in w[1:] and w[0] not in "'\"" or wrapped and (
-                w[:1] in "-+" or w[:1].isdigit()):   # FOO=1 cmd, then cmd, sudo -u dev cmd, timeout 10 cmd
-            wrapped, skip = wrapped or name in WRAPPERS, wrapped and w in ARG_FLAGS
-            continue
-        first = False
-        rest = list(itertools.takewhile(lambda x: not set(x) <= PUNCT | {"\n"}, words[i + 1:]))
-        if name in ("tmux", "screen") and any(x[:1] == "-" and "d" in x for x in rest):
-            return True
-        if name in SCRIPT_SHELLS and depth < 4:
-            j = 0
-            while j < len(rest) and rest[j][:1] in "-+" and not SCRIPT_FLAG.fullmatch(rest[j]):
-                j += 2 if rest[j] in ("-o", "+o", "-O", "+O") else 1
-            if j + 1 < len(rest) and SCRIPT_FLAG.fullmatch(rest[j]) and _detaches(_unquote(rest[j + 1]), depth + 1):
-                return True
-    return False
+    return any(c.get("background") or c["argv"][0] in DETACHERS or c["argv"][0] in ("tmux", "screen") and any(
+        a[:1] == "-" and "d" in a for a in c["argv"][1:]) for c in cmds)
 
 
 def _bodies(records, want, content, late):
@@ -382,8 +339,9 @@ def check(run, out, cov, others, opts, deadline, clock):
     kids = {k: v for k, v in ((k, sorted(v, key=lambda r: r["event"]["run_seq"])) for k, v in runs.items())
             if (label(v) or (None, None))[1] == run.run_id}
     # no agent account: the box ran to its end with the channel on, the source holds every run of the tenant, and Box
-    # refused no register_run on the channel (a refusal with no method, or one lost, may have been one)
-    refused = any(s == "tkbox.channel" and b.get("method") in ("register_run", None)
+    # refused no register_run on the channel (a refusal with no method, refusals folded into a count, or one lost, may
+    # have been one)
+    refused = any(s == "tkbox.channel" and (b.get("method") in ("register_run", None) or b.get("folded"))
                   or s == "tkbox.gap" and b.get("kind") == "tkbox.channel" for s, _, b in obs)
     if not kids:
         return note("no_agent_account" if whole and run.final and lab[0].get("channel") == "agent" and not refused

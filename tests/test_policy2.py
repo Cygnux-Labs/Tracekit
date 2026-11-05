@@ -977,6 +977,19 @@ class Shell(unittest.TestCase):
         self.assertEqual([c["glob"] for c in shell.parse("ls []x]; ls x[]")], [True, True, True, True, False])   # ] first
         self.assertIn(["ls", "]"], argvs("ls []x]"))   # is in the set
 
+    def test_a_command_sent_to_the_background(self):
+        """`background` on each command a pipeline ending in `&` runs, nested ones too (tracekit.findings_box reads
+        it); never for a quoted `&`, a heredoc's text, &&, &> or |&."""
+        def background(command):
+            return [c["argv"][0] for c in shell.parse(command) if c.get("background")]
+        for command, want in (("npm run dev &", ["npm"]), ("(npm run dev &)", ["npm"]), ("a | b & c", ["a", "b"]),
+                              ("sh -c 'npm start &'", ["npm"]), ("(a; b) &", ["a", "b"]), ("nohup a &", ["nohup", "a"]),
+                              ("cat <<EOF\nx &\nEOF\nb &", ["b"]), ("a # c &\nb", []), ("npm run dev \\\n&", ["npm"]),
+                              ('echo "&"', []), ("git commit -qm'a & b'", []), ("a && b", []), ("a &> f", []),
+                              ("a |& b", []), ("echo $'a & b'", []), ("sh -c 'npm start' &", ["sh", "npm"])):
+            with self.subTest(command):
+                self.assertEqual(background(command), want)
+
     def test_ordinary_commands(self):
         cases = {
             "pytest -q tests/test_policy2.py": [["pytest", "-q", "tests/test_policy2.py"]],

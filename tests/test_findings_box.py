@@ -10,12 +10,14 @@ import tempfile
 import time
 import types
 import unittest
+import uuid
 from unittest import mock
 
 from factories import BoxScene
 from test_findings_v2 import Via
-from tracekit import findings, findings_box, findings_effects, findings_v2
+from tracekit import bundle_v2, findings, findings_box, findings_effects, findings_v2
 from tracekit.bundle_v2 import export
+from tracekit.storage.base import registry_tree
 from tracekit.verify import v2
 from tracekit.why.import_v2 import bundle_records
 from tracekit.why.signed import vault_content
@@ -435,13 +437,18 @@ class Background(Base):
     def test_what_a_command_may_leave_running(self):
         for cmd in ("npm run dev &", "(npm run dev > /tmp/dev.log 2>&1 &)", "sleep 1&", "a & b",
                     "bash -c 'npm start &'", 'sh -lc "(x &)"', "tmux new -d -s dev 'npm start'",
-                    "screen -dmS dev npm start", "coproc cat", "nohup x", "setsid x", "x; disown", "echo 'unclosed",
+                    "screen -dmS dev npm start", "coproc cat", "setsid x", "x; disown", "echo 'unclosed",
                     # #608's second review: options before -c, nested and wrapped shells, commands on their own line
                     "bash -o pipefail -c 'npm run dev &'", "sh -e -c 'npm run dev &'", "bash --norc -c 'npm run dev &'",
                     "bash -c \"sh -c 'npm run dev &'\"", "env -i bash -c 'npm run dev &'",
                     "sudo -u dev bash -c 'npm run dev &'", "cd app && bash -c '(npm start &)'",
-                    "timeout 10 bash -c 'x &'", "make\nnohup x", "if true; then nohup x; fi", "FOO=1 nohup x",
-                    "$(cmd &)"):
+                    "timeout 10 bash -c 'x &'", "make\nsetsid x", "if true; then setsid x; fi", "FOO=1 setsid x",
+                    "$(cmd &)",
+                    # the final check: as bash reads them (policy2.shell): heredocs, comments, continuations, coproc
+                    "cat > start.sh <<'EOF'\nnpm run dev\nEOF\nbash -c './start.sh &'",
+                    "cat > a.txt <<EOF\nhi\nEOF\ntmux new -d -s dev 'npm start'", 'grep -q x <<< "$v"\ncoproc cat',
+                    "cd app # into the app\nbash -c 'npm start &'", "make # build it\ntmux new -d -s dev 'npm run dev'",
+                    "npm run dev \\\n&", "echo a\\\\&", "\\coproc cat", "time coproc cat", "builtin coproc cat"):
             with self.subTest(cmd):
                 self.assertTrue(findings_box._detaches(cmd))
         for cmd in ("make && make test", "cmd 2>&1", "cmd &> log", "cmd |& tee log", "cat <&3", "echo 'a & b'",
@@ -450,9 +457,29 @@ class Background(Base):
                     'echo "&"', "echo '&'", "echo '&)'", 'echo "a &"', "echo a\\&", "grep -c '&' f",
                     "printf '%s\\n' '&'", "echo coproc", "echo 'coproc'", 'echo "coproc cat"', "echo nohup",
                     "grep -rn setsid .", "echo tmux -d", "echo screen -d", "echo bash -c 'x &'",
-                    "git log --grep=disown", "cat <<EOF\ncoproc\nEOF"):
+                    "git log --grep=disown", "cat <<EOF\ncoproc\nEOF",
+                    # nohup alone runs in the foreground; quotes that start mid-word (the final check)
+                    "nohup x", "\\nohup npm run dev", "git commit -m'fix a & b'", "git commit -qm'fix a & b'",
+                    "FOO='a & b' make", "git log --grep='a & b'", "echo x'&'", "echo $'a & b'",
+                    'URL="https://x.example/?a=1&b=2" npm test'):
             with self.subTest(cmd):
                 self.assertFalse(findings_box._detaches(cmd))
+
+    def test_a_dev_server_left_running_as_bash_reads_the_command(self):   # the final check, end to end
+        for cmd, found in (("cat > notes.txt <<EOF\nstarting the dev server\nEOF\ntmux new -d -s dev 'npm run dev'", 0),
+                           ("cat > start.sh <<'EOF'\nnpm run dev\nEOF\nchmod +x start.sh\nbash -c './start.sh &'", 0),
+                           ("cd app # the web app\nbash -c 'npm run dev > dev.log 2>&1 &'", 0),
+                           ("git commit -qm'fix a & b'", 1)):   # nothing left running: the later connection is found
+            with self.subTest(cmd):
+                d = tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, d, True)
+                self.box = BoxScene(d, workspace=PROJ)
+                self.addCleanup(self.box.close)
+                self.box.agent(1.0)
+                self.box.call(2.0, 2.5, "Bash", {"command": cmd})
+                self.box.door(10.0, "https://telemetry.nextjs.org:443")
+                out = self.analyze()
+                self.assertEqual((len(self.found(out)), self.cov(out)[2]), (found, {} if found else {"background": 1}))
 
     def test_a_subshell_sent_to_the_background(self):   # P2
         b = self.box
@@ -642,6 +669,59 @@ class Cli(Base):
         b.observe(1.0, "tkbox.channel", {"refusal": "limit", "method": "register_run", "reason": "too many runs"})
         b.door(10.0, "https://exfil.example.net:443")
         bundle, trust, box_id, _ = b.bundle(40.0)
+        _, out, _ = self.cli("--run", box_id, "--bundle", bundle, "--trust", trust)
+        self.assertNotIn("NO AGENT ACCOUNT", out)
+        self.assertIn("TK-X212 for 1 door event: no run of the box's agent channel is in what was analysed", out)
+
+    def test_every_run_needs_a_range_from_0_with_none_open_that_holds_the_box_run(self):
+        def rep(**kw):
+            return types.SimpleNamespace(run_set={"from": 0, "registered": {"box", "agent"}, "open": set(), **kw})
+        self.assertTrue(findings_box.whole(rep(), "box"))
+        for r in (rep(**{"from": 3}), rep(open={"agent"}), rep(registered={"agent"}), types.SimpleNamespace(),
+                  types.SimpleNamespace(run_set=None)):   # no run-set, or one that didn't verify
+            with self.subTest(getattr(r, "run_set", "none")):
+                self.assertFalse(findings_box.whole(r, "box"))
+
+    def test_refusals_folded_into_a_count_may_hold_a_registration(self):   # the final check, F1
+        b = self.box   # Box events one refusal of a kind a second; the next one's `folded` counts the rest
+        b.command(0.2, 35.0, "claude -p 'fix the bug'")
+        why = "field caller is not passed"
+        b.observe(1.0, "tkbox.channel", {"refusal": "field", "method": "decide", "reason": why})
+        b.observe(3.0, "tkbox.channel", {"refusal": "field", "method": "observe", "reason": why, "folded": 1})
+        b.door(10.0, "https://exfil.example.net:443")
+        bundle, trust, box_id, _ = b.bundle(40.0)
+        _, out, _ = self.cli("--run", box_id, "--bundle", bundle, "--trust", trust)
+        self.assertNotIn("NO AGENT ACCOUNT", out)
+        self.assertIn("TK-X212 for 1 door event: no run of the box's agent channel is in what was analysed", out)
+
+    def test_a_run_set_from_0_that_does_not_hold_the_box_run(self):   # the final check, F1
+        early, real = {}, BoxScene._register
+
+        def register(scene, who, **kw):   # an earlier run, closed and checkpointed, before the box registers
+            if kw.get("box"):
+                other = real(scene, scene.me)
+                scene.s.call(scene.me, "close_run", {**other["handle"], "request_id": uuid.uuid4().hex})
+                scene.s.sweep(time.monotonic() + 1)
+                scene.s.checkpoint()
+                early["n"] = scene.s.log.storage.checkpoint_latest(registry_tree("default"))[0]
+            return real(scene, who, **kw)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.object(BoxScene, "_register", register):
+            self.box = b = BoxScene(d, workspace=PROJ)
+        self.addCleanup(b.close)
+        b.command(0.2, 35.0, "claude -p 'fix the bug'")
+        b.agent(1.0)   # its run registers after the range's end
+        b.door(10.0, "https://exfil.example.net:443")
+        real_export = bundle_v2.export
+
+        def export(st, tenant, run_id, note, out, run_set=None, **kw):   # the range up to the earlier run, the box's
+            return real_export(st, tenant, b.box["handle"]["run_id"], note, out, run_set=(0, early["n"]), **kw)
+        with mock.patch.object(bundle_v2, "export", export):
+            bundle, trust, box_id, _ = b.bundle(40.0)
+        rep = bundle_records(bundle, trust)[1]
+        self.assertEqual((rep.run_set["from"], rep.run_set["open"], box_id in rep.run_set["registered"]),
+                         (0, set(), False))   # complete, nothing open, yet without the box's own registration
         _, out, _ = self.cli("--run", box_id, "--bundle", bundle, "--trust", trust)
         self.assertNotIn("NO AGENT ACCOUNT", out)
         self.assertIn("TK-X212 for 1 door event: no run of the box's agent channel is in what was analysed", out)

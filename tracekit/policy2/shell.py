@@ -10,7 +10,8 @@ are stages of one pipeline, in order. `opaque`: what the command runs cannot be 
 expansion in its name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of
 a stream). `stdin`: the herestring and heredoc text the command reads (the names `xargs rm <<< x` deletes). A command
 of the line itself also has `out` and `in`, the files its redirections write and read, and `stage`, its place in its
-pipeline (0 first).
+pipeline (0 first). `background`: True when its pipeline, or one it runs in (a subshell, an `sh -c` string), ends in
+`&`; absent otherwise.
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
@@ -1054,8 +1055,12 @@ class _Parser:
             if not self.peek() or self.peek() == ")" or arm and (self.at(";;") or self.at(";&") or
                                                                _ESAC.match(self.s, self.i)):
                 break
+            first = len(self.ctx["cmds"])
             self.pipeline()
             self.blank()
+            if self.peek() == "&" and not self.at("&&"):   # sent to the background: each command it runs, nested too
+                for cmd in self.ctx["cmds"][first:]:
+                    cmd["background"] = True
             self.out.append(self.s[self.i:self.i + 2] if self.at("&&") or self.at("||") else
                             self.peek() if self.peek() in (";", "&") else ";")
             if self.at("&&") or self.at("||"):
