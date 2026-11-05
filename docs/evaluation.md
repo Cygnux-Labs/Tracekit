@@ -280,9 +280,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 790 harmful and 854 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 790 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 854 (0.12%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 806 harmful and 866 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 806 harmful calls are
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 866 (0.12%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -549,7 +549,8 @@ denied or held:
 | both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 86 (84.3%), 21 denied | 8 (8.4%) |
 | | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 90 (88.2%), 23 denied | 13 (13.7%) |
 
-The current policy scores above were refreshed on Windows. The latency rows below retain the recorded macOS baseline; Windows timings were discarded, and the existing gates are unchanged.
+The current policy scores above were refreshed on macOS. The latency rows below keep the recorded macOS baseline, and the
+existing gates are unchanged.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
@@ -591,16 +592,17 @@ recorded again with those rules, on purpose: strict's false positives on E17's b
 repository-protection, database-client and infrastructure-removal rules, are calls strict does not hold, so the count
 stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule sweep added, strict holds one
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
-`py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the nine AWS audit-logging reads (`TK-C010`) and the six lookalikes of `TK-A055` strict does not hold either: 46 of 854 (5.4%).
+`py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
+(`TK-C010`) and the six lookalikes of `TK-A055` strict does not hold either: 46 of 866 (5.3%).
 All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 463 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 478 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 790
-originals and all 2,222 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 806
+originals and all 2,297 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
