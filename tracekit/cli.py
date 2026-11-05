@@ -29,6 +29,55 @@ def guidance():
             f"at {wiki_url('docs/coding-agents.md', 'when-tracekit-stops-a-call')} into its CLAUDE.md or AGENTS.md")
 
 
+def _dev_witness_status(data_dir):
+    from . import public_witness
+    from .signer.service import WITNESSED, NO_WITNESS
+    if os.path.exists(os.path.join(data_dir, NO_WITNESS)):
+        return public_witness.LOST
+    if not public_witness.configured():
+        return public_witness.NOT_CONFIGURED
+    try:
+        with open(os.path.join(data_dir, WITNESSED), encoding="ascii") as f:
+            heard = json.load(f)
+    except (OSError, ValueError):
+        heard = {}
+    name = public_witness.entry()["vkey"].split("+")[0]
+    return f"public witness: cosigned through size {heard[name]}" if name in heard else "public witness: not yet answered"
+
+
+def _dev_key_fingerprint(data_dir):
+    import hashlib
+    from . import crypto
+    from .signer import service
+    path = os.path.join(data_dir, "keys", "log.key")
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        with open(path, "rb") as f:
+            secret = f.read()
+    except FileNotFoundError:
+        secret = crypto.generate()[0]
+        try:
+            service._write_new(path, secret)
+        except FileExistsError:   # a signer made the same key while init was preparing its output
+            with open(path, "rb") as f:
+                secret = f.read()
+    if len(secret) != 32:
+        raise ValueError(f"{path} is not a 32-byte log key")
+    public = crypto.public_from_secret(secret)
+    return f"SHA-256 fingerprint: {hashlib.sha256(public).hexdigest()}"
+
+
+def _init_dev_witness(disabled):
+    from .signer.service import dev_data_dir, set_dev_witness
+    data_dir = dev_data_dir()
+    set_dev_witness(disabled, data_dir)
+    try:
+        print(_dev_key_fingerprint(data_dir))
+    except (OSError, ValueError):
+        print("start the signer with `tracekit up` to see its key")
+    return _dev_witness_status(data_dir)
+
+
 def experimental(what, help=False):
     """The one line each experimental command or server prints when it starts (docs/support.md); with `help`, the line
     its --help ends with, on stdout."""
@@ -121,6 +170,7 @@ def main(argv=None):
     p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
                                                                  f"the signer's logs ({wiki_url('docs/witnesses.md')}; it sees origins, "
                                                                  "sizes, roots and timing, never content)")
+    p.add_argument("--no-witness", action="store_true", help="with --v2 --dev: disable the configured public witness")
     p.add_argument("--egress", action="store_true", help="with --v2, system mode on Linux: the agent user's outside "
                                                          "traffic only through a local egress observer (an owner-match "
                                                          f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
@@ -162,6 +212,7 @@ def main(argv=None):
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
     p = sub.add_parser("up", help="find or start the same-user v2 dev signer")
     p.add_argument("--wait", action="store_true", help="return once it answers")
+    p.add_argument("--no-witness", action="store_true", help="disable the configured public witness for this dev signer")
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
@@ -490,6 +541,9 @@ def _run(a):
             print("tracekit: --home, --witness, --proxy, --fail-closed and --signer-cmd are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
+        if a.no_witness and not (a.v2 and a.dev):
+            print("tracekit: --no-witness goes with --dev --v2", file=sys.stderr)
+            return 2
         if (a.approver or a.policy or a.public_witness or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
             print("tracekit: --approver, --policy, --public-witness, --egress and --harness with --v2 are for --v2 "
                   "system mode", file=sys.stderr)
@@ -511,6 +565,9 @@ def _run(a):
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
+            from . import public_witness
+            if not a.public_witness and not public_witness.configured():
+                print(public_witness.NOT_CONFIGURED)
             if settings:
                 print(guidance())
             if settings and a.agent == "codex":
@@ -522,6 +579,7 @@ def _run(a):
             if not _signer_extra():
                 return 2
             try:
+                witness_status = _init_dev_witness(a.no_witness)
                 path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
                 summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
             except install.SettingsError as e:
@@ -529,6 +587,7 @@ def _run(a):
                 return 1
             print(f"v2 {a.agent} hooks:", path or "not installed")
             print(install.DEV_MODE_LINE)
+            print(witness_status)
             if summary:
                 print(agent_hooks.reasoning_line(*summary))
             if path:
@@ -558,6 +617,7 @@ def _run(a):
                 if not _signer_extra():
                     return 2
                 from .signer.service import dev_data_dir
+                witness_status = _init_dev_witness(a.no_witness)
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
                 plugin = hooks and install.plugin_enabled()
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
@@ -567,6 +627,7 @@ def _run(a):
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
                           f"/plugin disable {plugin_key}, then run init again")
                     print(install.DEV_MODE_LINE)
+                    print(witness_status)
                     if not a.no_thinking_summaries:
                         try:
                             print(install.thinking_line(hooks, install.thinking_on(hooks)))
@@ -588,6 +649,7 @@ def _run(a):
                     return 1
                 print("v2 hooks:", hooks or "not installed")
                 print(install.DEV_MODE_LINE)
+                print(witness_status)
                 if hooks and not a.no_thinking_summaries:
                     print(install.thinking_line(hooks, on))
                 if hooks:
@@ -636,9 +698,13 @@ def _run(a):
     if a.cmd == "up":
         from . import install
         from .sdk import autospawn
+        from . import public_witness
         if not _signer_extra():
             return 2
-        if a.replace:
+        from .signer.service import dev_data_dir, set_dev_witness
+        if a.no_witness:
+            set_dev_witness(True)
+        if a.replace or a.no_witness:
             autospawn.down()
         conn = autospawn.ensure(wait=a.wait or a.json)
         hello = conn and conn[2]
@@ -649,6 +715,11 @@ def _run(a):
         else:
             print(f"dev signer {hello['version']} running (pid {hello['pid']})" if hello else "dev signer starting")
             print(install.DEV_MODE_LINE)
+            if a.wait:
+                print(_dev_witness_status(dev_data_dir()))
+                print(_dev_key_fingerprint(dev_data_dir()))
+            if a.no_witness:
+                print(public_witness.LOST)
         return 0
     if a.cmd == "down":
         from .sdk import autospawn
@@ -1030,7 +1101,8 @@ def _last(a):
     if _export_v2(ns, show=lambda s: None):
         return 1
     try:
-        trust = write_trust(os.path.splitext(out)[0] + ".trust.json", read_vkeys(cfg["data_dir"]))
+        trust = write_trust(os.path.splitext(out)[0] + ".trust.json", read_vkeys(cfg["data_dir"]),
+                            cfg.get("witnesses") or ())
     except (OSError, ValueError) as e:
         print(f"tracekit last: cannot pin the dev signer's key: {e}", file=sys.stderr)
         return 1

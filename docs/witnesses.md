@@ -141,8 +141,11 @@ cosigned; whether the agent could reach the signer is each run's `signer_isolati
 
 ## The public witness
 
-Cygnux will run a free public C2SP tlog-witness, so a team gets `Assurance: witnessed` without running or finding one.
-It is not deployed yet: until it is, the signer and `init` refuse it (below).
+Tracekit's public C2SP tlog-witness can give a team `Assurance: witnessed` without running its own witness. It is not
+deployed or configured today: `URL` and `VKEY` in `tracekit/public_witness.py` are empty. Therefore no signer is
+anchored by default, despite the opt-in/default-on behavior the code supports once these constants are populated.
+`tracekit init --v2` and `tracekit doctor` report `NOT_CONFIGURED`; v2 bundles without another pinned independent
+witness or anchor report `NOT ANCHORED`. See [deployment steps](public-witness.md).
 
 ```yaml
 # signer.yaml
@@ -151,8 +154,10 @@ witnesses: [public]          # or, with your own witnesses: [public, {url: ..., 
 
 or `tracekit init --v2 --user AGENT --public-witness` run as root (v2
 [system mode](deploy.md#laptop-system-mode)). `public` expands to the witness's URL and
-cosignature vkey from `tracekit/public_witness.py`, with class `public`; until those are set (the witness is not
-deployed yet) the signer and `init` refuse it and say so. Off by default.
+cosignature vkey from `tracekit/public_witness.py`, with class `public`. System init writes it by default only when
+both constants are configured; `--public-witness` is the strict form and fails when they are empty. Dev signers also
+use it when configured; `tracekit init --dev --v2 --no-witness` persists an opt-out. Until the constants are set,
+nothing is anchored by default.
 
 - **First use.** The witness does not know a new log: it answers `404`, and the signer registers the log (its origin
   and log vkey, proved by a checkpoint signed with that key), then resends. The record log and each tenant's registry
@@ -182,7 +187,7 @@ deployed yet) the signer and `init` refuse it and say so. Off by default.
   `409`, neither counted), 100 registrations per client network (an IPv4 /24 or IPv6 /48) a day and 60 in all a
   minute, 8 requests at a time per client, and a cap on logs in total (docs/limits.md).
 
-Running it: `tracekit public-witness init|serve` and deploy/public-witness/README.md.
+Running it: `tracekit public-witness init|serve`; deployment steps are in [public-witness.md](public-witness.md).
 
 ## v2: Rekor v2 anchors and RFC 3161 timestamps
 

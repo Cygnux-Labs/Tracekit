@@ -1550,10 +1550,11 @@ def store_trust(cfg, log_vkey=None):
     return vkeys, note
 
 
-def write_trust(path, vkeys):
-    """A verify.v2 trust config at `path` that pins the log vkeys `vkeys` and no witness; returns `path`."""
+def write_trust(path, vkeys, witnesses=()):
+    """A verify.v2 trust config at `path` that pins log vkeys `vkeys` and witnesses; returns `path`."""
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"logs": vkeys, "witnesses": [], "algs": [RecordSigner.alg], "witnesses_required": 0}, f)
+        json.dump({"logs": vkeys, "witnesses": [{"vkey": w["vkey"], "class": w["class"]} for w in witnesses],
+                   "algs": [RecordSigner.alg], "witnesses_required": 0}, f)
     return path
 
 

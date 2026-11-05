@@ -134,6 +134,11 @@ def summary(rep, code, integrity, assurance, stream=None):
         say(f"Note: {INFO.get(kind, f'the signer recorded {kind}')}" + (f" ({n} times)" if n > 1 else "") + ".")
     for line in protection(rep, assurance, unanchored):
         say(line)
+    fingerprint = getattr(rep, "log_fingerprint", None)
+    if fingerprint and not unanchored:
+        say(f"Pinned log key SHA-256 fingerprint: {fingerprint}.")
+    if fingerprint and not unanchored and not str(assurance).startswith("witnessed"):
+        say(f"NOT ANCHORED: pin an independent witness or Rekor anchor ({wiki_url('docs/witnesses.md')}).")
 
 
 def protection(rep, assurance, unanchored):

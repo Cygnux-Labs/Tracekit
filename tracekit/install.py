@@ -1413,6 +1413,8 @@ def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), 
     public_witness: the public witness cosigns the logs (`witnesses: [public]`). egress_uid: the egress observer's,
     in the agent's tenant, granted observe_effect only.
     Scalars are JSON-quoted, which the built-in YAML subset reads back exactly."""
+    from . import public_witness as pw
+    public_witness = public_witness or pw.configured()
     q = json.dumps
     tenant, me, approver = q(agent.pw_name), q(f"uid:{agent.pw_uid}"), q(f"uid:{approver_uid}")
     binding = ["harness_binding:", f"  helper: {q(V2_HELPER_SOCKET)}", f"  required: [{me}]", "  harnesses:"] + [

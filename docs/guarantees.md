@@ -16,8 +16,9 @@ OWASP's lists: [compliance mapping](compliance/README.md).
   flag what they mean.
 - **Policy rules are tripwires.** They match text, tool names and extracted fields; a determined agent can reword a
   command ([policy](policy-v2.md)). The protection is a signer the agent can't reach.
-- **Without an independent witness, the key holder can rewrite history**, and a cut-off tail shows nothing. No public
-  witness runs yet, so `witnessed` needs a witness you or a partner run
+- **Without an independent witness or anchor, the key holder can rewrite history**, and a cut-off tail shows nothing.
+  The public witness is not deployed/configured: `URL` and `VKEY` in `tracekit/public_witness.py` are empty, so nothing
+  is anchored by default. Until configured, `witnessed` needs a witness you or a partner run
   ([witnesses](witnesses.md#the-public-witness)).
 
 ## Dev mode (`tracekit up`, `tracekit.instrument()`, `tracekit init --dev --v2`)

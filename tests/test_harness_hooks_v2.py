@@ -596,6 +596,10 @@ class OnTheDevPolicy(HarnessCase):
 
 class Installer(unittest.TestCase):
     def setUp(self):
+        home = ac.tmpdir(self)
+        env = mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data")})
+        env.start()
+        self.addCleanup(env.stop)
         agent = mock.patch.object(claude_code, "AGENT", claude_code.AGENT)   # the in-process hooks below set it
         agent.start()
         self.addCleanup(agent.stop)
@@ -625,7 +629,7 @@ class Installer(unittest.TestCase):
                                                                                (harness, ev))
                                                     for ev in ("tool.execute.before", "tool.execute.after")})
                         again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
-                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
+                        self.assertIn(f"v2 {harness} hooks: {path}", again)
                         code, out = self.cli("uninstall", "--agent", harness, "--project")
                         self.assertEqual(code, 0)
                         self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
@@ -652,7 +656,7 @@ class Installer(unittest.TestCase):
                         self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                         self.assertIn(harness_hooks.__name__, cmd)
                         again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
-                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")   # idempotent: nothing replaced
+                        self.assertIn(f"v2 {harness} hooks: {path}", again)   # idempotent: nothing replaced
                         code, out = self.cli("uninstall", "--agent", harness, "--project")
                         self.assertEqual(code, 0)
                         self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
@@ -680,7 +684,7 @@ class Installer(unittest.TestCase):
                         self.assertEqual({ev for ev, hs in blob["hooks"].items() for h in hs if h["failClosed"]},
                                          {"preToolUse"})
                     again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
-                    self.assertEqual(again[0], f"v2 {harness} hooks: {path}")   # idempotent: nothing replaced
+                    self.assertIn(f"v2 {harness} hooks: {path}", again)   # idempotent: nothing replaced
                     if harness == "codex":   # init turned Codex's reasoning summaries on, once
                         self.assertNotIn("set by init", again[1])
                     code, out = self.cli("uninstall", "--agent", harness, "--project")
@@ -929,6 +933,10 @@ class CodexReasoningSummary(unittest.TestCase):
 
     def setUp(self):
         self.d = ac.tmpdir(self)
+        self.home = ac.tmpdir(self)
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": os.path.join(self.home, "data")})
+        env.start()
+        self.addCleanup(env.stop)
         self.hooks = os.path.join(self.d, ".codex", "hooks.json")
         self.toml = os.path.join(self.d, ".codex", "config.toml")
         os.makedirs(os.path.dirname(self.toml))
@@ -1009,6 +1017,28 @@ class CodexReasoningSummary(unittest.TestCase):
             self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project"]), 0)
         self.assertEqual(self.read(), agent_hooks.CODEX_LINE)
         self.assertIn("Codex reasoning summaries: on", out.getvalue())
+
+    @unittest.skipIf(os.name == "nt", "uses POSIX advisory locks")
+    def test_init_does_not_open_a_store_held_by_another_process(self):
+        from tracekit.sdk.autospawn import data_dir
+
+        store = os.path.join(data_dir(), "store")
+        os.makedirs(store, exist_ok=True)
+        lock_path = os.path.join(store, "lock")
+        ready_r, ready_w = os.pipe()
+        code = ("import fcntl, os, sys, time; f=open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+                "os.write(int(sys.argv[2]), b'x'); time.sleep(30)")
+        holder = subprocess.Popen([sys.executable, "-c", code, lock_path, str(ready_w)], pass_fds=(ready_w,))
+        os.close(ready_w)
+        try:
+            self.assertEqual(os.read(ready_r, 1), b"x")
+            with mock.patch("os.getcwd", return_value=self.d), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project",
+                                           "--no-thinking-summaries"]), 0)
+        finally:
+            os.close(ready_r)
+            holder.terminate()
+            holder.wait(timeout=10)
 
 
 class CodexHookTrust(unittest.TestCase):

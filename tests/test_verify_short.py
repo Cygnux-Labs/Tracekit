@@ -4,6 +4,7 @@ or broken bundle's first broken record in plain words; signed gaps said as such.
 before and `--json` is unchanged."""
 import contextlib
 import glob
+import hashlib
 import io
 import json
 import os
@@ -18,6 +19,7 @@ import test_bundle_v2 as tb
 from factories import ev, make_signer, rewrite_bundle, run_start, tool_call
 from tracekit import bundle, cli, policy
 from tracekit.bundle_v2 import export
+from tracekit.format import checkpoint
 from tracekit.verify import protection, v2
 from tracekit.wiki import wiki_url
 
@@ -36,6 +38,12 @@ def verify(*argv):
 
 
 class V2(tb.Case):
+    @property
+    def fingerprint(self):
+        with open(self.trust, encoding="utf-8") as f:
+            key = json.load(f)["logs"][0]
+        return hashlib.sha256(checkpoint.parse_vkey(key)[3]).hexdigest()
+
     def bundle(self, isolation, witnesses=((tb.WITNESS, tb.WIT_SECRET),), edit_run=None, extra=(), calls=("t1", "t2")):
         """A closed run of `calls` decided calls, then `extra` records ((type, data, fields)), exported."""
         name = f"s{len(os.listdir(self.d))}"
@@ -57,19 +65,21 @@ class V2(tb.Case):
         self.assertEqual(verify(self.bundle("separate-user"), "--trust", self.trust), (0, (
             "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after signing.\n"
             "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).\n"
-            "An independent witness cosigned the log too.\n")))
+            f"An independent witness cosigned the log too.\nPinned log key SHA-256 fingerprint: {self.fingerprint}.\n")))
 
     def test_without_a_witness_it_says_who_could_still_rewrite_it(self):
         code, out = verify(self.bundle("remote", witnesses=()), "--trust", self.write_trust(0, name="t0.json"))
         self.assertEqual((code, out.splitlines()[1:]), (0, [
             "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (remote).",
             "Not proof against whoever runs the signer: no independent witness cosigned the log "
-            f"({wiki_url('docs/witnesses.md')})."]))
+            f"({wiki_url('docs/witnesses.md')}).",
+            f"Pinned log key SHA-256 fingerprint: {self.fingerprint}.",
+            f"NOT ANCHORED: pin an independent witness or Rekor anchor ({wiki_url('docs/witnesses.md')})."]))
 
     def test_a_dev_bundle_is_not_proof_against_the_agent_however_it_was_witnessed(self):
         self.assertEqual(verify(self.bundle("same-user"), "--trust", self.trust),
                          (0, "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after "
-                             f"signing.\n{DEV}"))
+                             f"signing.\n{DEV}Pinned log key SHA-256 fingerprint: {self.fingerprint}.\n"))
 
     def test_a_run_with_no_tool_call_counts_its_signed_records(self):
         self.assertEqual(verify(self.bundle("same-user", calls=()), "--trust", self.trust)[1].splitlines()[0],

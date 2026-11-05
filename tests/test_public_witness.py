@@ -15,7 +15,7 @@ from unittest import mock
 from factories import wait_for
 from test_signer_service import ME, tmpdir
 from test_witness_publish import signed_note
-from tracekit import crypto, install, merkle, public_witness
+from tracekit import cli, crypto, install, merkle, public_witness
 from tracekit import public_witness_server as pws
 from tracekit.format import checkpoint, registry
 from tracekit.signer import service as svc
@@ -362,10 +362,31 @@ class OptIn(unittest.TestCase):
 
     def test_the_shortcut_and_init_error_clearly_until_deployed(self):
         with mock.patch.object(public_witness, "URL", ""):
-            with self.assertRaisesRegex(ValueError, "witnesses: public: the public witness is not deployed yet"):
+            with self.assertRaisesRegex(ValueError, "witnesses: public: the public witness isn't configured yet"):
                 svc.load_config(self.cfg)
-            with self.assertRaisesRegex(SystemExit, "--public-witness: the public witness is not deployed yet"):
+            with self.assertRaisesRegex(SystemExit, "--public-witness: the public witness isn't configured yet"):
                 install.init_system_v2("agent", public_witness=True)
+
+    def test_dev_witness_defaults_on_and_the_marker_disables_it(self):
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        self.assertEqual(svc.dev_witnesses(data), [{"url": public_witness.URL, "vkey": public_witness.VKEY,
+                                                    "class": "public"}])
+        svc.set_dev_witness(True, data)
+        self.assertTrue(os.path.isfile(os.path.join(data, svc.NO_WITNESS)))
+        self.assertEqual(svc.dev_witnesses(data), [])
+        svc.set_dev_witness(False, data)
+        self.assertFalse(os.path.exists(os.path.join(data, svc.NO_WITNESS)))
+        self.assertEqual(len(svc.dev_witnesses(data)), 1)
+
+    def test_dev_signer_config_and_startup_status_use_the_same_witness_setting(self):
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        with mock.patch.object(svc, "dev_data_dir", return_value=data):
+            self.assertEqual(svc.signer_config(None)["witnesses"][0]["vkey"], public_witness.VKEY)
+        with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
+            json.dump({public_witness.VKEY.split("+")[0]: 7}, f)
+        self.assertEqual(cli._dev_witness_status(data), "public witness: cosigned through size 7")
 
     def test_the_shortcut_refuses_an_origin_the_witness_does_not_take(self):
         with open(self.cfg, "w") as f:
@@ -378,9 +399,9 @@ class OptIn(unittest.TestCase):
         import types
         agent = types.SimpleNamespace(pw_uid=64101, pw_gid=64101, pw_name="agent", pw_dir="/home/agent")
         with open(self.cfg, "w") as f:
-            f.write(install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102, public_witness=True))
+            f.write(install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102))
         self.assertEqual(svc.load_config(self.cfg)["witnesses"][0]["class"], "public")
-        self.assertNotIn("witnesses", install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102))
+        self.assertEqual(svc.load_config(self.cfg)["witnesses"][0]["class"], "public")
 
 
 if __name__ == "__main__":

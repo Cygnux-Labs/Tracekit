@@ -87,7 +87,8 @@ signer.yaml:
                                              # serve_records: true adds the record entries a monitor of the record
                                              # log reads (every tenant's records: keep that port private)
     witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness);
-                                             # `- public`: the public witness (tracekit.public_witness)
+                                             # `- public`: the public witness (tracekit.public_witness), which
+                                             # `tracekit init --v2` lists unless --no-witness
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
     anchors: {rekor: {signing_config: sigstage-signing_config.json, trusted_root: sigstage-trusted_root.json,
@@ -125,8 +126,10 @@ signer.yaml:
       harnesses: {claude: /usr/local/bin/claude}   # name -> root-owned executable, or {exe, script} for an interpreter
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
-checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint.
-A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`, `add_checkpoint` and `latest`), and
+checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint,
+for up to WITNESS_START_S (the dev signer: DEV_WITNESS_START_S, within the time a client waits for it to start). A log a
+witness doesn't know yet registers there (its log key, proved by its signed empty checkpoint): the key's first checkpoint.
+data_dir/witnessed.json maps each witness that answered to the size it holds (0: none yet). A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`, `add_checkpoint` and `latest`), and
 `latest` raises when it is unreachable. A local log behind the witnessed one is a rollback: a signed `trace.tamper{rollback}`, then client writes are refused until it is
 acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the signer runs. The store opens from its
 latest snapshot (written every SNAPSHOT_RECORDS records and on close) and replays only the records after it.
@@ -363,6 +366,9 @@ LIST_PAGE = 100
 T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decided, ran and completed for its client
 TICK_S = 1.0
 WITNESS_START_S = 30.0   # start-up: how long the witnesses, asked at once, have to say how far they cosigned
+DEV_WITNESS_START_S = 2.0   # the dev signer's: a client waits 10 s for it to start (autospawn.ensure)
+WITNESSED = "witnessed.json"   # in data_dir: each witness that answered at the last start -> the size it holds
+NO_WITNESS = "no-witness"   # in the dev data dir: `--no-witness` (init --dev --v2, up) turned its witness off
 CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
@@ -726,12 +732,13 @@ class SignerService:
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
                  content=None, gateway_wait_s=GATEWAY_WAIT_S, suspensions=None, posture=None,
-                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None, box_daemons=None):
+                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None, box_daemons=None,
+                 witness_start_s=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
         in data_dir/store. `origin` names the log in its checkpoints, `contact` its operator in the logs list.
-        `witnesses` cosign its notes (see the module docstring).
+        `witnesses` cosign its notes (see the module docstring); at start they have `witness_start_s` to answer.
         `multi_tenant_apps`, `migrators`, `analyzers` and `importers` are identities ("scheme:subject"); `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
@@ -998,7 +1005,8 @@ class SignerService:
                 if self.log.approvals.get(aid, {}).get("state") not in LIVE:
                     self._drop_args(aid)
             self._check_notes(acknowledge_rollback)
-            self._check_witnesses(witnesses, acknowledge_rollback)
+            self._check_witnesses(witnesses, acknowledge_rollback,
+                                  WITNESS_START_S if witness_start_s is None else witness_start_s)
         except BaseException:
             self.log.close()
             for w in self._webhooks:
@@ -1083,7 +1091,7 @@ class SignerService:
                                acknowledged, f"the local {path} log ({local} leaves) does not extend its stored "
                                              f"checkpoint ({size}): rolled back")
 
-    def _check_witnesses(self, witnesses, acknowledged):
+    def _check_witnesses(self, witnesses, acknowledged, wait_s):
         if not witnesses:
             return
         text, heads = checkpoint.body(self.origin, 0, merkle.root([])), []
@@ -1094,20 +1102,21 @@ class SignerService:
 
         def ask(w):
             try:
-                heads.append(w.latest(empty, self.vkey))
+                heads.append((w.name, w.latest(empty, self.vkey)))
             except Exception:   # unreachable or unreadable: counted as no answer
                 pass
         asks = [threading.Thread(target=ask, args=(w,), name="tracekit-witness-start", daemon=True) for w in witnesses]
         for t in asks:
             t.start()
-        end = time.monotonic() + WITNESS_START_S
+        end = time.monotonic() + wait_s
         for t in asks:   # one that has not answered by then counts as no answer
             t.join(max(0.0, end - time.monotonic()))
-        heads = list(heads)
+        heads = list(heads)   # a late answer goes to the list the threads hold, not this copy
+        files.write(self.data_dir, WITNESSED, json.dumps({name: h[0] for name, h in heads}).encode("ascii"), 0o644)
         if not heads:
             self.log.write(lambda tx: tx.gap("degraded_unanchored", "no configured witness answered at startup"))
             return
-        size, root = max(heads, key=lambda h: h[0])
+        size, root = max((h for _, h in heads), key=lambda h: h[0])
         local = self.log.storage.tail_state()
         if local["tree_size"] >= size:
             return
@@ -4834,7 +4843,37 @@ def signer_config(path=None, data_dir=None):
     if data_dir:
         return {"data_dir": data_dir_at(data_dir)}
     from tracekit.sdk.autospawn import SOCK, signer_dir
-    return {"data_dir": dev_data_dir(create=False), "socket": os.path.join(signer_dir(), SOCK)}
+    d = dev_data_dir(create=False)
+    return {"data_dir": d, "socket": os.path.join(signer_dir(), SOCK), "witnesses": dev_witnesses(d)}
+
+
+def dev_witnesses(data_dir=None):
+    """The configured public witness for the dev signer, unless this data dir opted out."""
+    from tracekit import public_witness
+    data_dir = data_dir or dev_data_dir(create=False)
+    return [public_witness.entry()] if public_witness.configured() and not os.path.exists(os.path.join(data_dir, NO_WITNESS)) else []
+
+
+def set_dev_witness(disabled, data_dir=None):
+    """Set or clear the dev signer's persistent witness opt-out marker."""
+    data_dir = data_dir or dev_data_dir()
+    marker = os.path.join(data_dir, NO_WITNESS)
+    if disabled:
+        with open(marker, "w", encoding="ascii") as f:
+            f.write("no-witness\n")
+    else:
+        try:
+            os.unlink(marker)
+        except FileNotFoundError:
+            pass
+
+
+def open_dev():
+    """Construct the same-user signer with its default public witness and short startup allowance."""
+    data_dir = dev_data_dir()
+    return SignerService(data_dir, isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
+                         witnesses=dev_witnesses(data_dir), witness_start_s=DEV_WITNESS_START_S,
+                         grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
 
 
 def data_dir_at(path):
@@ -5066,8 +5105,7 @@ def _serve_dev():
     logkey.harden()
 
     def open_handler():   # the user may sign findings about their own runs: they read self-asserted (docs/verdicts.md)
-        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
-                                grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
+        service = open_dev()
         return service.handle_frame, service.close
     stacks = None
     if hasattr(signal, "SIGUSR1"):

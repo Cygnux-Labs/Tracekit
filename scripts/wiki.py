@@ -46,7 +46,7 @@ SECTIONS = [
     ("Deploy and operate", ["deploy.md", "deploy-container.md", "deploy-kubernetes.md", "deploy-compose.md",
                             "identity.md", "executor.md", "a2a.md", "c2c.md", "mcp-gateway.md", "gateway.md", "egress.md", "witnesses.md",
                             "monitor.md", "issuer.md", "observability.md", "viewer.md", "horizon.md", "viewer-1.4.md",
-                            "why.md", "migration.md", "portability.md"]),
+                            "why.md", "migration.md", "portability.md", "public-witness.md"]),
     ("Verify the evidence", ["for-auditors.md", "verdicts.md", "format-v2.md", "auditor-guide.md", "sample/README.md",
                              "signing.md", "graph.md", "guarantees.md"]),
     ("Security and privacy", ["threat-model-server.md", "threat-model-laptop.md", "security-checklist.md",
