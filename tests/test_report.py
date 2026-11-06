@@ -198,10 +198,14 @@ class WeeklyReport(unittest.TestCase):
                           for o, c in (("approved · ran", 5), ("rejected", 6), ("expired", 7))})
         self.assertEqual([(g["decision"], g["rule"], g["why"], g["reason"], g["count"],
                            [x["call"] for x in g["examples"]]) for g in rep["rules"]],
-                         [("flag", "T-NET", True, "reaching the network", 2,
+                         [("ask", "T-PAY", True, "paying money", 3, []),   # its example is the Holds section's
+                          ("flag", "T-NET", True, "reaching the network", 2,
                            ["Bash curl -s https://example.com", f"Bash · {weekly.NO_ARGS}"]),
                           ("deny", "T-PATH", False, "a path", 1, []),   # a flag rule: not why rm was denied
                           ("deny", "T-RM", True, "deleting files", 1, ['rm {"path":"x"}'])])
+        # what people did with the rule's holds, from the signed approval records: the retry counted with its hold
+        self.assertEqual([(g["approved"], g["rejected_or_expired"]) for g in rep["rules"] if g["decision"] == "ask"],
+                         [(1, 2)])
         self.assertEqual(rep["gaps"]["by_kind"], {"tailer_lost": 1})
         page = weekly.text(rep)
         # a run id a person copies is a whole one: tracekit export --v2 --run takes no prefix
@@ -261,7 +265,9 @@ class WeeklyReport(unittest.TestCase):
             "Gaps (signed records that something may be missing): 2   tailer_lost 2",
             "Denied and flagged calls, by rule (one call can match several rules):",
             # T-RM; T-PATH; T-NET 3 and the marker's rule 1: the test policy's ids are custom
-            "  deny custom rule 2", "  deny custom rule 2 (also matched, not why)", "  flag custom rule 4"])
+            "  deny custom rule 2", "  deny custom rule 2 (also matched, not why)", "  flag custom rule 4",
+            # what became of each hold of a rule: the rejected 2 and expired 1 against the approved 1 above
+            "Holds by rule: held, approved by a person, rejected or expired:", "  custom rule 4, 1, 3"])
         # a gap kind that isn't one this Tracekit names (another signer's, or any string) is counted as "other"
         odd = weekly.share(dict(rep, gaps={"total": 3, "by_kind": {"tailer_lost": 2, f"{mark}-kind": 1}}))
         self.assertIn("Gaps (signed records that something may be missing): 3   tailer_lost 2, other 1\n", odd)
@@ -294,7 +300,7 @@ class WeeklyReport(unittest.TestCase):
         cfg = {k: v for k, v in self.cfg.items() if k != "policy"}
         rules = lambda rep: {(g["decision"], g["rule"], g["reason"], g["why"]) for g in rep["rules"]}   # noqa: E731
         rep = self.build(cfg=cfg)
-        self.assertEqual(rules(rep), {("flag", "T-NET", "reaching the network", True),
+        self.assertEqual(rules(rep), {("flag", "T-NET", "reaching the network", True), ("ask", "T-PAY", "paying money", True),
                                       ("deny", "T-RM", "deleting files", True), ("deny", "T-PATH", "a path", False)})
         self.assertEqual(rep["notes"], [])
         kept = os.path.join(cfg["data_dir"], "policies")
@@ -305,7 +311,7 @@ class WeeklyReport(unittest.TestCase):
             f.write(pol.replace("deleting files", "tidying up"))
         rep = self.build(cfg=cfg)
         self.assertEqual(rules(rep), {("flag", "T-NET", "", None), ("deny", "T-RM", "", None),
-                                      ("deny", "T-PATH", "", None)})
+                                      ("deny", "T-PATH", "", None), ("ask", "T-PAY", "", None)})
         page = weekly.text(rep)
         self.assertIn("Denied calls (1), by rule (one call can match several rules):\n  not placed (engine checks, which "
                       "may be why, and rules of a policy this report can't read): T-PATH 1, T-RM 1\n", page)

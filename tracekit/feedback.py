@@ -2,7 +2,7 @@
 
 It sends nothing and makes no network call: the person reads the link, opens it (--open hands it to the browser) and
 submits it, or doesn't. A false alarm (--harmless) holds the approval's rule ids, tool name, policy hash and verdict,
-never its command, arguments or paths.
+never its command, arguments or paths. --file writes a field report to send as a pull request instead.
 """
 from __future__ import annotations
 
@@ -32,25 +32,48 @@ def _hooks():
     return ["claude-code"] * any(h.get("events") for h in _installed_hooks()) + sorted(_dev_harnesses())
 
 
-def field_report():
-    """(title, fields) of a field report (#385): this machine's Tracekit, OS, Python and hooks, and tracekit report
-    --share's week when the dev signer has a store."""
+def _week():
+    """tracekit report --share's 7 days of the dev signer's store, or None when there is none (said on stderr)."""
     from . import report
     from .signer.service import dev_data_dir
     from .storage.base import StorageCorrupt, StorageUnavailable
-    fields = {"agent": f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n"
-                       "(filed with `tracekit feedback`, for #385)",
-              "how-long": f"Tracekit {__version__}, {platform.platform(terse=True)}, Python {platform.python_version()}"}
     try:
         now = time.time()
         rep = report.build({"data_dir": dev_data_dir(create=False)}, now - 7 * 86400, now,
                            say=lambda s: print(f"tracekit feedback: {s}", file=sys.stderr, flush=True))
-        fields = {"share": report.share(rep), **fields}
-        print(f"tracekit feedback: {report.SHARE_NOTE}", file=sys.stderr)
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
         print(f"tracekit feedback: no week's counts ({e}); `tracekit audit --share --since 7d` prints a replay's",
               file=sys.stderr)
-    return "Field report", fields
+        return None
+    print(f"tracekit feedback: {report.SHARE_NOTE}", file=sys.stderr)
+    return report.share(rep)
+
+
+def field_report():
+    """(title, fields) of a field report (#385): this machine's Tracekit, OS, Python and hooks, and tracekit report
+    --share's week when the dev signer has a store."""
+    week = _week()
+    return "Field report", {
+        **({"share": week} if week else {}),
+        "agent": f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n(filed with `tracekit feedback`, for #385)",
+        "how-long": f"Tracekit {__version__}, {platform.platform(terse=True)}, Python {platform.python_version()}"}
+
+
+# a report file's lines outside its counts block (tests/test_feedback.py checks each file in docs/field-reports/)
+KEYS = ("Tracekit", "OS", "Python", "Hooks installed", "Run by", "Anything you'd like to tell us (optional)")
+
+
+def report_file():
+    """A field report as a file, to send as a pull request (docs/field-reports/README.md): this machine's Tracekit, OS,
+    Python and hooks, report --share's week (tool calls, and each rule's holds with what people did with them), who
+    ran it, and one optional line."""
+    week = _week()
+    return "\n".join([
+        "# Tracekit field report", "", f"Tracekit: {__version__}", f"OS: {platform.platform(terse=True)}",
+        f"Python: {platform.python_version()}", f"Hooks installed: {', '.join(_hooks()) or 'none'}",
+        "Run by: a person / an agent (name it)", "", "## Counts", "",
+        "```text", week or "(no dev store: paste `tracekit audit --share --since 7d` here)", "```",
+        "", f"{KEYS[-1]}:", ""])
 
 
 def false_alarm(x, why=None):
@@ -70,8 +93,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit feedback", description="print a pre-filled GitHub issue (a field "
                                  "report, or a false alarm with --harmless) and exactly what it holds. It sends "
                                  "nothing: you open the link, read it and submit it.")
-    ap.add_argument("--harmless", metavar="APPROVAL_ID", help="report this held call as a false alarm: its rule ids, "
-                    "tool name, policy hash and verdict, never its command, arguments or paths")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--harmless", metavar="APPROVAL_ID", help="report this held call as a false alarm: its rule ids, "
+                   "tool name, policy hash and verdict, never its command, arguments or paths")
+    g.add_argument("--file", metavar="PATH", help="write a field report to this new file instead, to fill in and send as "
+                   "a pull request (docs/field-reports/README.md)")
     ap.add_argument("--why", help="with --harmless, one line on why the call was harmless")
     ap.add_argument("--signer", help="with --harmless, the signer's Unix socket or tcp://host:port (default: the "
                     "same-user dev signer)")
@@ -79,6 +105,17 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.why and not a.harmless:
         ap.error("--why goes with --harmless")
+    if a.file:
+        try:
+            with open(a.file, "x", encoding="utf-8") as f:
+                f.write(report_file())
+        except OSError as e:
+            print(f"tracekit feedback: {e}", file=sys.stderr)
+            return 1
+        print(f"wrote {a.file}: fill in who ran it and read it all (counts only: no command, path or content)\n"
+              f"next: copy it to docs/field-reports/<github-login>-{time.strftime('%Y-%m-%d', time.gmtime())}.md in your "
+              "fork of Cygnux-Labs/Tracekit and open a pull request; commit with `git commit -s`")
+        return 0
     if a.harmless:
         from .sdk.client import Client, Incompatible, SignerUnavailable
         from .signer.rpc_schema import RPCError

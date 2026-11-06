@@ -789,7 +789,7 @@ def review(records, rep, verdict):
     decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
     answered, not answered yet, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
     when the run's records have left the live view; `holds`: the same outcomes, of the calls held for a person (decided
-    ask) only, and `hold_examples` the first such call (its tool_use_id) of each. The agent's retry of a held call, which
+    ask) only, `hold_outcomes` each such call's (by tool_use_id) and `hold_examples` the first such call of each. The agent's retry of a held call, which
     used that call's approval, is that call: its use is the held call's outcome, counted once (`retries` counts them). Counts keep each snapshot
     small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
@@ -866,11 +866,11 @@ def review(records, rep, verdict):
     # a hold the run ended without an answer to
     ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
     out["permissions"] = collections.Counter(ended.values())
-    out["holds"] = collections.Counter(o for c, o in ended.items() if c in asked)
+    out["hold_outcomes"] = {c: o for c, o in ended.items() if c in asked}   # tool_use_id -> what it came to
+    out["holds"] = collections.Counter(out["hold_outcomes"].values())
     out["hold_examples"] = {}
-    for c, o in ended.items():
-        if c in asked:
-            out["hold_examples"].setdefault(o, c)
+    for c, o in out["hold_outcomes"].items():
+        out["hold_examples"].setdefault(o, c)
     return out
 
 

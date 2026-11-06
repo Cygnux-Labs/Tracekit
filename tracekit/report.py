@@ -153,6 +153,13 @@ def _failed(rep):
                  if c["status"] == "fail"), rep.integrity)
 
 
+def _placed(tr, d):
+    """(rule, why) of each rule decision `d` names, `why` as _tally's."""
+    secs = tr.reads(d).get("secs") or {}
+    return [(rule, secs[rule["id"]] == d["decision"] if rule["id"] in secs else True if rule["id"] == "no rule" else None)
+            for rule in tr.rules(d) or [{"id": "no rule", "reason": ""}]]
+
+
 def _tally(key, records, tr, rules, unread):
     """Run `key`'s verified `records` in the window into `rules` ((decision, rule id, why) -> its count and up to
     EXAMPLES decisions, for each rule that matched a denied or flagged call; `why`: True for a rule of the section of
@@ -166,11 +173,8 @@ def _tally(key, records, tr, rules, unread):
         e = x["event"]
         t, d = e["type"], e.get("data") or {}
         if t == "policy.decision" and d.get("decision") in ("deny", "flag"):
-            secs = tr.reads(d).get("secs") or {}
             unread[d["decision"]] += d.get("policy_hash") not in tr.reasons
-            for rule in tr.rules(d) or [{"id": "no rule", "reason": ""}]:
-                why = (secs[rule["id"]] == d["decision"] if rule["id"] in secs else
-                       True if rule["id"] == "no rule" else None)
+            for rule, why in _placed(tr, d):
                 g = rules.setdefault((d["decision"], rule["id"], why), {
                     "decision": d["decision"], "rule": rule["id"], "why": why, "reason": rule["reason"], "count": 0,
                     "examples": []})
@@ -182,7 +186,8 @@ def _tally(key, records, tr, rules, unread):
         elif t == "approval" and d.get("decision") in ("approve", "reject") and d.get("tool_use_id") in held:
             asked, tool, _ = held[d["tool_use_id"]]
             took = ts_seconds(e["ts"]) - asked
-            waits.setdefault(d["tool_use_id"], {"seconds": round(took), "took": took, "tool": tool, "run_id": key[1],
+            waits.setdefault(d["tool_use_id"], {"call": d["tool_use_id"], "seconds": round(took), "took": took,
+                                                "tool": tool, "run_id": key[1],
                                                 "approved": d["decision"] == "approve",
                                                 "by": "agent" if d.get("approver_kind") == "agent" else
                                                 "self" if d.get("self_approved") else "person"})
@@ -299,6 +304,16 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
                            gaps=sum(rv["gaps"].values()))
                 held, held_waits = _tally(key, mine, tr, rules, unread)
                 waits += held_waits
+                answered = {w["call"]: w["by"] for w in held_waits}   # a hold's first answer: a person's or an agent's
+                # each hold by rule, with what became of it: approved by a person, or rejected or expired
+                for call, outcome in rv["hold_outcomes"].items():
+                    for rule, why in _placed(tr, held[call][2]["event"]["data"]) if call in held else ():
+                        g = rules.setdefault(("ask", rule["id"], why), {
+                            "decision": "ask", "rule": rule["id"], "why": why, "reason": rule["reason"], "count": 0,
+                            "examples": [], "approved": 0, "rejected_or_expired": 0})
+                        g["count"] += 1
+                        g["approved"] += outcome in ("approved", "approved · ran") and answered.get(call) != "agent"
+                        g["rejected_or_expired"] += outcome in ("rejected", "expired")
                 for outcome, call in rv["hold_examples"].items():   # the first call of each outcome, of any run
                     if outcome not in hold_examples and call in held:
                         hold_examples[outcome] = key, held[call][2]
@@ -493,6 +508,12 @@ APPROVAL_RULES = {f"TK-APPROVAL-{s}" for s in ("CONSUMED", "EXPIRED", "MISMATCH"
                                               "UNBOUND", "VETO")}
 
 
+def _shared(rid, ours):
+    """A rule id as --share prints it: Tracekit's own (`ours`, tracekit_rules), the signer's or "no rule" as it is,
+    any other as "custom rule"."""
+    return rid if rid in ours or rid in APPROVAL_RULES or rid == "no rule" else "custom rule"
+
+
 def share_rules(counts):
     """--share's rule lines (report's and audit's) of `counts`, {(decision, rule id, why): calls}, `why` as _tally's:
     the denies, then the holds and the flags, most first, the rules that only also matched after the others. A rule id
@@ -500,7 +521,7 @@ def share_rules(counts):
     counted as "custom rule", one count for all of them; "no rule" (a decision no rule named, _tally's) stays."""
     ours, shown = tracekit_rules(), collections.Counter()
     for (dec, rid, why), n in counts.items():
-        shown[dec, rid if rid in ours or rid in APPROVAL_RULES or rid == "no rule" else "custom rule", why] += n
+        shown[dec, _shared(rid, ours), why] += n
     tag = {True: "", False: " (also matched, not why)", None: " (not placed)"}
     return [f"  {dec} {rid} {n:,}{tag[why]}" for (dec, rid, why), n in
             sorted(shown.items(), key=lambda x: (-DECISIONS.index(x[0][0]), x[0][2] is False, -x[1], x[0][1]))]
@@ -530,8 +551,19 @@ def share(rep):
            f"Holds: {holds['total']:,}   {_counts(holds['outcomes'])}".rstrip() + (retries or ""),
            f"Gaps (signed records that something may be missing): {rep['gaps']['total']:,}"
            + (f"   {_counts(dict(gaps.most_common()))}" if gaps else ""),
-           "Denied and flagged calls, by rule (one call can match several rules):" + " none" * (not rep["rules"])]
-    out += share_rules({(g["decision"], g["rule"], g["why"]): g["count"] for g in rep["rules"]})
+           "Denied and flagged calls, by rule (one call can match several rules):"
+           + " none" * (not any(g["decision"] != "ask" for g in rep["rules"]))]
+    out += share_rules({(g["decision"], g["rule"], g["why"]): g["count"] for g in rep["rules"] if g["decision"] != "ask"})
+    # what people did with each rule's holds: one approved nearly every time is a false alarm; a rule that only also
+    # matched a held call is not counted
+    ours, held = tracekit_rules(), collections.defaultdict(collections.Counter)
+    for g in rep["rules"]:
+        if g["decision"] == "ask" and g["why"] is not False:
+            held[_shared(g["rule"], ours)].update(holds=g["count"], approved=g["approved"],
+                                                  rejected=g["rejected_or_expired"])
+    out += ["Holds by rule: held, approved by a person, rejected or expired:" + " none" * (not held),
+            *(f"  {rid} {c['holds']:,}, {c['approved']:,}, {c['rejected']:,}"
+              for rid, c in sorted(held.items(), key=lambda x: (-x[1]["holds"], x[0])))]
     return "\n".join(_escaped(line) for line in out)
 
 
