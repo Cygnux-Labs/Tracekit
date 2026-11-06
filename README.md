@@ -84,9 +84,11 @@ VERIFIED: 6 tool calls in 17 signed records, none changed, removed or added afte
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
 ANCHORED: an independent witness (witness.demo.tracekit.local) cosigned this log at size 18, so a later rewrite would fail this check.
+Pinned log key SHA-256 fingerprint: ….
 
 == tamper test: rewrite the downloaded script's deny as allow in a copy, then verify again
 TAMPERED at event 8: its content was changed after it was signed.
+Add --detail to see each check.
 ```
 
 The downloaded script, the credentials read and the force-push were denied before they ran. The hidden delete and the
