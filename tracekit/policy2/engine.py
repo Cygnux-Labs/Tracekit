@@ -59,9 +59,11 @@ def _backend(name):
     import regex
 
     def match(c, s, full, deadline):
+        if deadline[0] <= 0:   # spent: a tiny match could finish inside any floor, so the outcome would vary by machine
+            raise TimeoutError("the fallback's 1 s for this decision is spent")
         start = time.perf_counter()
         try:
-            return (c.fullmatch if full else c.search)(s, timeout=max(deadline[0], 1e-6))
+            return (c.fullmatch if full else c.search)(s, timeout=deadline[0])
         finally:
             deadline[0] -= time.perf_counter() - start
     return (f"regex@{regex.__version__}", lambda p, anycase=False: regex.compile(
