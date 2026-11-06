@@ -3,6 +3,7 @@ demand, each with its deny, its approval and a verified bundle; and `tracekit de
 fails the tampered copy. A temp HOME and runtime dir keep them off the user's own dev signer."""
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -102,11 +103,16 @@ class DemoServer(unittest.TestCase):
                            timeout=120, cwd=ROOT)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         verified, tampered = p.stdout.split("tamper test")
-        self.assertIn("\nVERIFIED: 3 tool calls in 11 signed records, none changed, removed or added after signing.\n"
+        # each scripted call's verdict and first rule under the dev pack as shipped
+        self.assertEqual(re.findall(r"': (\w+) ?(\S*)", verified),
+                         [("allow", ""), ("ask", "TK-SHELL-PARSE"), ("deny", "TK-D002"), ("allow", "TK-F005"),
+                          ("allow", "TK-F002"), ("deny", "TK-D003")])
+        self.assertRegex(verified, r"\n    rejected apr-[0-9a-f]{32}: it never runs\n")
+        self.assertIn("\nVERIFIED: 6 tool calls in 16 signed records, none changed, removed or added after signing.\n"
                       "NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could "
                       "have rewritten the record.\n", verified)   # what dev mode means
         self.assertNotIn("PASS", verified)
-        self.assertIn("\nTAMPERED at event 4: its content was changed after it was signed.\n", tampered)
+        self.assertIn("\nTAMPERED at event 8: its content was changed after it was signed.\n", tampered)
         self.assertRegex(tampered, r"\ndeleted .+ \(--keep keeps it\)\n$")
 
     def test_detail_prints_every_check_and_keep_says_where_the_files_are(self):
@@ -126,6 +132,17 @@ class DemoServer(unittest.TestCase):
                       f"{_quote(os.path.join(kept, 'trust.json'))}\n", tampered)
         # the kept store is no dev signer's: `tracekit view --dev` does not show it, so the command that does is printed
         self.assertIn(f"\n  see the run: tracekit view --data-dir {_quote(os.path.join(kept, 'data'))}\n", tampered)
+
+    def test_e22_finds_the_kept_folder(self):
+        """E22 took everything after "kept " as the folder, so the lines --keep prints after it became part of the path
+        and building its corpus failed."""
+        sys.path[:0] = [os.path.join(ROOT, "eval")]
+        import e22_verifier_agreement as e22
+        with tempfile.TemporaryDirectory() as d:
+            corpus = e22.Corpus(d)
+            corpus.demo()
+            self.assertEqual([(c["name"], os.path.exists(c["bundle"])) for c in corpus.cases],
+                             [("demo run", True), ("demo tampered", True)])
 
 
 if __name__ == "__main__":

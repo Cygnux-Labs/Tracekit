@@ -534,7 +534,7 @@ def _parser():
     p.add_argument("--detail", action="store_true", help="print every check of each verification, as `tracekit verify "
                    "--detail` does (not with --why)")
     p.add_argument("--server", action="store_true",
-                   help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
+                   help="the v2 signer: a dev signer, a test witness, allow/deny/hold, export and verify")
     p.add_argument("--why", action="store_true",
                    help="`tracekit why` on the signer: a 3-agent desk, a held email, its cause found and cited")
     p.add_argument("--agent", default="claude", choices=demo.AGENTS,
