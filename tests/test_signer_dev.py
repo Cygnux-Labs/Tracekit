@@ -446,7 +446,7 @@ class SpawnAndStatus(unittest.TestCase):
         HOME, one whose endpoint.json names this data dir), and says when the per-user one can't be told."""
         home = os.path.join(self.dir, "home")
         os.makedirs(home)
-        with mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data")}):
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}):
             self.assertEqual(autospawn.own_runtime_dirs(), ([], None))   # none made yet
             os.makedirs(self.run_dir, 0o700)
             self.assertEqual(autospawn.own_runtime_dirs(), ([], self.run_dir))   # shared, and no endpoint: can't tell

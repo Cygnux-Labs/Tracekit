@@ -467,10 +467,12 @@ class SystemV2Install(unittest.TestCase):
         self.assertEqual(install.uninstall_system_v2(purge=True), [])
         for p in (install.V2_DATA, install.V2_CONFIG, client.SYSTEM_CONFIG):
             self.assertFalse(os.path.exists(p), p)
-        with open(settings) as f:
-            self.assertEqual(json.load(f), admin if managed else {})
         if managed:
+            with open(settings) as f:
+                self.assertEqual(json.load(f), admin)
             self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
+        else:
+            self.assertFalse(os.path.exists(settings))   # init made it, and nothing else is in it
         for user in ("tk-test-signer", "tk-test-tailer"):
             with self.assertRaises(KeyError):
                 pwd.getpwnam(user)

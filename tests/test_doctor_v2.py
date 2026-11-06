@@ -812,7 +812,7 @@ class Reinit(unittest.TestCase):
         self.addCleanup(importlib.reload, doctor)
         self.assertEqual(reinit("/usr/local/bin/python3", True), "/usr/local/bin/python3")
         self.assertEqual(reinit("/home/me/.venv/bin/python", False), "/usr/bin/python3")
-        self.assertEqual(reinit("/opt/tracekit/bin/python", True), "/usr/bin/python3")   # 3.9, 3.10: init fails there
+        self.assertEqual(reinit(install.OPT_PYTHON, True), "/usr/bin/python3")   # 3.9, 3.10: init fails there
         self.assertNotIn("docs/deploy.md", doctor.REINIT)
 
 
