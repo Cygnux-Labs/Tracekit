@@ -6122,7 +6122,7 @@
     function whyText(ref, d, A) {
       const by = dict(d.nodes.map(n => [n.id, n])), n = by[ref.node] || {};
       const steps = [...new Set(A.lineage.flat())].map(id => by[id] || { label: id }).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-      return [`Why did ${n.agent} run ${n.label}?`, verdict(A), "How it got here:", ...steps.map((x, i) => `${i + 1}. ${WTYPE[x.type] || x.type} · ${x.agent} · ${x.label}`
+      return [`Why did ${n.agent} ${n.status === "blocked" ? "try to run" : "run"} ${n.label}?`, verdict(A), "How it got here:", ...steps.map((x, i) => `${i + 1}. ${WTYPE[x.type] || x.type} · ${x.agent} · ${x.label}`
         + (x.trust === "untrusted" ? " (untrusted)" : "") + (recSeq(x) != null ? ` (record ${recSeq(x)})` : "")), ...steps.length ? [] : ["No upstream inputs recorded."], `run ${d.run_id}`].join("\n");
     }
     function whyBody(ref, d, A) {
@@ -6141,7 +6141,7 @@
       }).join("");
       const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${prog} to run them here, or run: tracekit why attribute ${path} --system ${prog} --target ${tq} (one cause: tracekit why test ${path} --system ${prog} --remove SPEC --target ${tq})` : "This run names no program, so it cannot be replayed: record it with a System (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).")}</p>`;
       const args = `<table class="wt"><thead><tr><th>ARGUMENT VALUE</th><th>WHERE THE VALUE CAME FROM</th></tr></thead><tbody>` + (A.provenance.map(p => `<tr><td>${esc(String(p.value).slice(0, 60))}</td><td><span class="${esc((PROV[p.status] || PROV.generated)[0])}">${esc((PROV[p.status] || PROV.generated)[1])}</span> ${esc(p.sources.map(x => x.label).join(", "))}</td></tr>`).join("") || `<tr><td colspan="2" class="dim">No traceable argument values.</td></tr>`) + `</tbody></table>`;
-      const head = `<div class="sec">${esc(n.agent || "")} RAN</div><div class="wverdict">${esc(n.label || "")}${A.sensitive ? ` <span class="s-flag">sensitive${A.sensitive === "heuristic" ? " (by name)" : ""}</span>` : ""} <button type="button" data-wopen="${esc(ref.node)}" data-wr="${esc(ref.run)}">DETAILS</button></div>`;
+      const head = `<div class="sec">${esc(n.agent || "")} ${n.status === "blocked" ? "WAS BLOCKED FROM RUNNING" : "RAN"}</div><div class="wverdict">${esc(n.label || "")}${A.sensitive ? ` <span class="s-flag">sensitive${A.sensitive === "heuristic" ? " (by name)" : ""}</span>` : ""} <button type="button" data-wopen="${esc(ref.node)}" data-wr="${esc(ref.run)}">DETAILS</button></div>`;
       const left = head + args + `<div class="sec">VERDICT</div><div class="wverdict">${esc(verdict(A))}</div><div class="sec">HOW IT GOT HERE</div>` + lineageHtml(d, A.lineage)
         + `<div class="wbar">` + cp(whyText(ref, d, A), "COPY THIS EXPLANATION") + `</div>`;
       const right = `<div class="wcause" data-wr="${esc(ref.run)}" data-wn="${esc(ref.node)}"><div class="sec">CANDIDATE CAUSES</div><div class="wbar">${rp.allowed ? `<button type="button" data-wfind${busy ? " disabled" : ""}>${busy ? "REPLAYING…" : "FIND THE CAUSE"}</button>` : ""}<label>target <input class="wtarget" value="${esc(target)}" spellcheck="false"></label></div>
