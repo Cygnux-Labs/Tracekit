@@ -786,13 +786,14 @@ def held_outcome(was, t, d):
     return "expired" if "TK-APPROVAL-EXPIRED" in ids else "rejected" if "TK-APPROVAL-REJECTED" in ids else OUTCOMES[t]
 
 
-def review(records, rep, verdict):
+def review(records, rep, verdict, outcomes=None):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
     report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
     decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
     answered, not answered yet, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
     when the run's records have left the live view; `holds`: the same outcomes, of the calls held for a person (decided
-    ask) only, and `hold_examples` the first such call (its tool_use_id) of each. The agent's retry of a held call, which
+    ask) only, and `hold_examples` the first such call (its tool_use_id) of each; `outcomes`, a dict when given, gets
+    each such call's (its decision's run_seq -> outcome), which stays out of the counts. The agent's retry of a held call, which
     used that call's approval, is that call: its use is the held call's outcome, counted once (`retries` counts them). Counts keep each snapshot
     small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
@@ -890,11 +891,13 @@ def review(records, rep, verdict):
     # a hold the run ended without an answer to
     ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
     out["permissions"] = collections.Counter(ended.values())
-    out["holds"] = collections.Counter(o for c, o in ended.items() if c in asked)
+    held = {c: o for c, o in ended.items() if c in asked}
+    out["holds"] = collections.Counter(held.values())
     out["hold_examples"] = {}
-    for c, o in ended.items():
-        if c in asked:
-            out["hold_examples"].setdefault(o, ids[c])
+    for c, o in held.items():
+        out["hold_examples"].setdefault(o, ids[c])
+    if outcomes is not None:
+        outcomes.update(held)
     return out
 
 

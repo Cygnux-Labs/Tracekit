@@ -721,6 +721,7 @@ class TestCli(unittest.TestCase):
                       f"`tracekit approvals --signer {sock} reject {aids[1]}` to refuse it\n", shown.stdout)
         self.assertIn(f"\nrecord      tracekit view --approval {aids[1]} (with the --config or --data-dir of this "
                       "signer)\n", shown.stdout)
+        self.assertIn(f"\na false alarm? tracekit feedback --harmless {aids[1]} --signer {sock}\n", shown.stdout)
         listed = tracekit("approvals", "--signer", sock, "list").stdout.splitlines()
         self.assertEqual([line.split()[0] for line in listed[:-1]], [aids[2], aids[1]])
         self.assertTrue(listed[0].endswith('  "stripe refunds create --charge ch_3"'), listed[0])
