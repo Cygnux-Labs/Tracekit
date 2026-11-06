@@ -104,13 +104,21 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     the held call, blocked at once, `ran_by`, the retry."""
     calls: Dict[str, Dict[str, Any]] = {}
     asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
+    used = set()   # calls whose approval a use consumed
     for r in recs:
         t, d = r["event"]["type"], r["event"]["data"]
         if t == "policy.decision":
-            ap = (calls.get(d["tool_use_id"]) or {}).get("approval")
+            was = calls.get(d["tool_use_id"]) or {}
             calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
-            if d["decision"] != "allow" and (ap or {}).get("decision") == "approve":
-                calls[d["tool_use_id"]]["approval"] = ap   # the agent's retry under its approval, same id (LangGraph)
+            # the agent's retry of the approved call with its id (LangGraph) asks again for the same tool and attempt while
+            # the approval stands unused: it is that call, with its approval; any other decision is a call of its own
+            if d["decision"] == "ask" and (was.get("approval") or {}).get("decision") == "approve" \
+                    and d["tool_use_id"] not in used and (was["decision"]["event"]["data"]["tool"],
+                                                          was["decision"]["event"].get("attempt")) == \
+                    (d["tool"], r["event"].get("attempt")):
+                calls[d["tool_use_id"]]["approval"] = was["approval"]
+            else:
+                used.discard(d["tool_use_id"])
         elif t == "tool.result" and d["tool_use_id"] in calls:
             calls[d["tool_use_id"]]["result"] = r
         elif t == "approval" and d.get("tool_use_id") in calls:
@@ -119,6 +127,7 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             asked[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
         elif t == "approval.consumed":
             held, retry = asked.get(d.get("approval_id")), r["event"].get("tool_call_id")
+            used.add(held)
             if retry != held and retry in calls and (calls.get(held) or {}).get("approval"):
                 calls[retry]["approval"] = {**calls[held]["approval"], "retry_of": held}
                 calls[held]["approval"]["ran_by"] = retry

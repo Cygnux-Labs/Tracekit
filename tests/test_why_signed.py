@@ -14,7 +14,9 @@ import unittest
 from unittest import mock
 
 from factories import rewrite_bundle, wait_for
-from tracekit import demo_why
+from test_view import page_js
+from test_view_ui import needs_node
+from tracekit import demo_why, view
 from tracekit.demo_server import Witness, _serve, export_final, tamper
 from tracekit.deploy import files
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
@@ -176,6 +178,75 @@ class SignedRuntime(unittest.TestCase):
         [act] = why.of_type("action")
         self.assertEqual((act["status"], act["policy"]["approval"]["decision"]), ("ok", "approve"))
         self.assertEqual([a["title"] for a in alerts(why, build_graph(why)) if "held" in a["title"]], [])
+
+    ASK, DENY, FLAG = {"command": "gsutil cp a.txt gs://b/a.txt"}, {"command": "sudo rm -rf /"}, {"command": "curl http://example.com"}
+
+    def approved(self, run, attempt=0, answer="approve", retry=True):
+        """c1 at `attempt` held, answered; approved with `retry`, the agent's retry with c1's own id runs (LangGraph)."""
+        run.decide("c1", "Bash", self.ASK, attempt=attempt)
+        aid = run.call("approval_request", tool_call_id="c1", attempt=attempt)["approval_id"]
+        if answer:
+            self.client.approval_decide({"approval_id": aid, "decision": answer})
+        if answer == "approve" and retry:
+            run.decide("c1", "Bash", self.ASK, attempt=attempt)
+            self.assertTrue(run.approval_consume("c1", "Bash", self.ASK, attempt=attempt, approval_id_hint=aid)["ok"])
+            run.complete("c1", attempt=attempt)
+
+    def seen(self, run):
+        """What view.review, the page (each call's state, PERMISSIONS' rows) and the why import make of an open run."""
+        recs = self.records()[run.run_id]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        tr, rows = view.Translator(), []
+        for r in recs:
+            rows += [{**x, "ts": r["event"]["run_seq"], "session_id": run.run_id, "tk_seq": r["event"]["run_seq"]}
+                     for x in tr.feed(r)]
+        page = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                   "heldCall", "used", "sameRetry", "callState", "ingest", "permOf"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows)};
+            for (const r of ALL) {{ sessionOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify([S.actList.map(a => [a.v2.decision, callState(a)[1]]),
+                                                 permOf(ALL).map(r => [r.rec.v2.decision, r.out[1]])]));"""))
+        why = load_run(import_v2.convert(recs, tempfile.mkdtemp(dir=self.dir), {}))
+        return {"decisions": dict(rv["decisions"]), "retries": rv["retries"], "calls": page[0], "perm": page[1],
+                "why": [(a["policy"]["decision"], (a["policy"].get("approval") or {}).get("decision"))
+                        for a in why.of_type("action")]}
+
+    def test_a_deny_or_a_flag_under_an_approved_calls_id_is_a_call_of_its_own(self):
+        """The same-id fold took any later decision under an id a person had approved, which the agent chooses: a deny
+        disappeared into the approved call (the review: 1 call, approved) and a flagged call that ran read APPROVED · RAN,
+        its approval given to it in GRAPH."""
+        needs_node(self)
+        deny, flag = self.client.run("deny-under-approved"), self.client.run("flag-under-approved")
+        self.approved(deny, retry=False)
+        self.assertEqual(deny.decide("c1", "Bash", self.DENY)["decision"], "deny")
+        self.approved(flag, retry=False)
+        flag.decide("c1", "Bash", self.FLAG)   # the agent hears allow; the record says flag
+        flag.complete("c1")
+        self.assertEqual(self.seen(deny), {"decisions": {"ask": 1, "deny": 1}, "retries": 0,
+                                           "calls": [["ask", "APPROVED"], ["deny", "BLOCKED"]],
+                                           "perm": [["deny", "BLOCKED"], ["ask", "APPROVED"]], "why": [("deny", None)]})
+        self.assertEqual(self.seen(flag), {"decisions": {"ask": 1, "flag": 1}, "retries": 0,
+                                           "calls": [["ask", "APPROVED"], ["flag", "⚑ OK"]],
+                                           "perm": [["flag", "RAN · FLAGGED"], ["ask", "APPROVED"]], "why": [("flag", None)]})
+
+    def test_a_later_attempt_of_the_call_is_a_call_of_its_own(self):
+        """A call re-run with its id at a new attempt (rejected, approved and run, or still waiting) folded into the first
+        one, approved and run, as its retry."""
+        needs_node(self)
+        run = self.client.run("attempts")
+        self.approved(run)
+        self.approved(run, attempt=1, answer="reject")
+        self.approved(run, attempt=2)
+        self.approved(run, attempt=3, answer=None)
+        self.assertEqual(self.seen(run), {
+            "decisions": {"ask": 4}, "retries": 2,
+            "calls": [["ask", "APPROVED · RAN"], ["ask", "REJECTED"], ["ask", "APPROVED · RAN"], ["ask", "TO ANSWER"]],
+            "perm": [["ask", "TO ANSWER"], ["ask", "APPROVED · RAN"], ["ask", "REJECTED"], ["ask", "APPROVED · RAN"]],
+            "why": []})   # the why log keys a call by its id: attempt 3, still waiting, is not shown yet
 
     def test_a_hold_nobody_has_answered_is_refused_only_once_its_run_is_final(self):
         """While the run waited for a person, its hold came back blocked: WHY alerted HIGH "Bash was held for approval

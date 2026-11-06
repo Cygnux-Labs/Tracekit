@@ -1085,7 +1085,7 @@ class View(unittest.TestCase):
         post = next(r for r in rows if r["event"] == "PostToolUse")
         effect = next(r for r in rows if r.get("v2", {}).get("effect", {}).get("kind") == "net")
         out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS",
-                                  "subject", "rel", "ingest", "joinEgress", "whyRef", "netEffects", "effectHow", "dict",
+                                  "subject", "rel", "used", "sameRetry", "ingest", "joinEgress", "whyRef", "netEffects", "effectHow", "dict",
                                   "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
                                   "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"], f"""
             let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();

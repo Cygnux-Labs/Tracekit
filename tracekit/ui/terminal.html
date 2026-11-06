@@ -3551,6 +3551,13 @@
     // a retry's, that of the held call whose approval it used
     const lastAnswer = a => (a.retryOf || a).approvals?.filter(x => x.v2.approval in ANSWER).pop()?.v2.approval;
     const ended = a => S.sessions.get(a.agent.session)?.end != null;
+    // the agent's retry of a held call under its approval, sent with the call's own id (LangGraph's resume): `r` asks again
+    // for that call (`held`, its decision: same tool, same attempt) while its approval stands unused (`answers`: the held
+    // call's approval records). Any other decision under the id (deny, flag, allow, a new attempt) is a call of its own.
+    // An approved call runs only by using its approval (`used`)
+    const used = answers => answers.some(x => x.v2.approval === "consumed");
+    const sameRetry = (r, held, answers = []) => r.event === "PreToolUse" && r.v2?.decision === "ask" && held?.tool_name === r.tool_name
+      && held.v2?.attempt === r.v2.attempt && answers.filter(x => x.v2.approval in ANSWER).pop()?.v2.approval === "approve" && !used(answers);
     // a call held for a person (decided ask), the agent's retry of one counted with it: DESK's HELD, HORIZON's HOLDS
     const heldCall = a => a.v2?.decision === "ask" && !a.retryOf;
     // a run's calls held for a person, as its review counts them (view.review's holds)
@@ -3564,7 +3571,7 @@
       if (a.error) return ["s-err", "FAILED"];
       if (a.v2?.decision === "ask") {
         const ap = lastAnswer(a);
-        if (ap === "approve") return ["s-ok", a.ranBy?.post ? "APPROVED · RETRY RAN" : a.post ? "APPROVED · RAN" : "APPROVED"];
+        if (ap === "approve") return ["s-ok", a.ranBy?.post ? "APPROVED · RETRY RAN" : a.post && used(a.approvals) ? "APPROVED · RAN" : "APPROVED"];
         if (ap) return ["s-deny", ANSWER[ap]];
         return ["s-flag", ended(a) ? "NOT ANSWERED" : "TO ANSWER"];
       }
@@ -3605,11 +3612,11 @@
         return;
       }
       if (ev === "PreToolUse") {
-        // a decision on a call already approved is the agent's retry under that approval, sent with the same id
-        // (LangGraph): a row under that call, which its result and the approval's use are, not a call of its own
-        const was = r.v2 && r.v2.decision !== "allow" ? S.actions.get(tuid(r)) : null;
-        if (was?.approvals.some(x => x.v2.approval === "approve")) {
-          const row = pushTape({ ts: r.ts, agent: was.agent, ev: "HOLD", text: "the agent's retry of this call, under its approval", rec: r, under: was });
+        // the agent's retry of an approved call with its own id (sameRetry): a row under that call, which its result and the
+        // approval's use are, not a call of its own
+        const was = r.v2 ? S.actions.get(tuid(r)) : null;
+        if (sameRetry(r, was?.pre, was?.approvals)) {
+          const row = pushTape({ ts: r.ts, agent: was.agent, ev: "HOLD", text: "the agent sent this call again, with its id", rec: r, under: was });
           (was.subs ||= []).push(row);
           return;
         }
@@ -4138,10 +4145,13 @@
     function hzData() {
       const key = [ALL.length, ALL[ALL.length - 1], RUNS.size, chainState.ok];
       if (key.every((x, i) => x === hzKey[i])) return hzD;
-      const ans = new Map(), retry = new Map(), again = new Set(), raw = [], places = dict(), parent = dict(), cwds = new Set();
+      const ans = new Map(), retry = new Map(), again = new Set(), held = new Map(), raw = [], places = dict(), parent = dict(), cwds = new Set();
       for (const r of ALL) {
-        // a decision on a call already approved: the agent's retry under that approval, same id (LangGraph), no move of its own
-        if (r.event === "PreToolUse" && r.v2 && r.v2.decision !== "allow" && ans.get(r.session_id + "|" + r.v2.tool_use_id) === "approve") again.add(r);
+        // the agent's retry with an approved call's id (sameRetry): no move of its own
+        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), h = held.get(k);
+        if (sameRetry(r, h?.rec, h?.answers)) again.add(r);
+        else if (r.event === "PreToolUse" && r.v2) held.set(k, { rec: r, answers: [] });
+        else if (r.v2?.approval) h?.answers.push(r);
         if (r.v2?.approval in ANSWER) ans.set(r.session_id + "|" + r.v2.tool_use_id, r.v2.approval);
         if (r.v2?.approval && r.v2.held) retry.set(r.session_id + "|" + r.v2.tool_use_id, r.session_id + "|" + r.v2.held);   // the held call it retried
       }
@@ -5057,9 +5067,7 @@
         if (r.analysis) continue;
         const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), held = r.v2?.held && by.get(r.session_id + "|" + r.v2.held);
         if (r.event === "SessionEnd") ended.add(r.session_id);
-        // a decision on a call already approved is the agent's retry under that approval, sent with the same id (LangGraph):
-        // that call's row
-        else if (r.event === "PreToolUse" && r.v2 && r.v2.decision !== "allow" && by.get(k)?.answers.some(x => x.v2.approval === "approve")) continue;
+        else if (sameRetry(r, by.get(k)?.rec, by.get(k)?.answers)) continue;   // the agent's retry with the call's id: its row
         else if (r.event === "PreToolUse" && r.v2 && r.v2.decision !== "allow") { const row = { rec: r, answers: [] }; by.set(k, row); rows.push(row); }
         else if (r.event === "PostToolUse" && by.has(k)) by.get(k).post = r;
         else if (r.v2?.approval && by.has(k)) {
@@ -5070,7 +5078,7 @@
       return rows.filter(row => !row.retry).reverse().map(row => {
         const d = row.rec.v2.decision, ans = row.answers.filter(x => x.v2.approval in ANSWER).pop(), a = ans?.v2.approval, done = ended.has(row.rec.session_id);
         const [tab, out] = d === "deny" ? ["", ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
-          : a === "approve" ? ["approved", ["s-ok", row.ranBy?.post ? "APPROVED · RETRY RAN" : row.post ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
+          : a === "approve" ? ["approved", ["s-ok", row.ranBy?.post ? "APPROVED · RETRY RAN" : row.post && used(row.answers) ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
           : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "TO ANSWER"]];
         return { ...row, ans, who: row.answers.filter(x => x.v2.approver).pop(), req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
       });
@@ -5119,8 +5127,8 @@
     let toasting = false;
     function toastOf(r) {
       if (!toasting || r.analysis) return;
-      // (the agent's retry of a call a person just approved, sent with the same id, is no new hold)
-      const hold = r.event === "PreToolUse" && r.v2?.decision === "ask" && !S.actions.get(tuid(r))?.approvals.some(x => x.v2.approval === "approve"), high = r.event === "tk_alert" && r.severity === "high";
+      // (the agent's retry of a call a person just approved, sent with the call's id, is no new hold)
+      const act = S.actions.get(tuid(r)), hold = r.event === "PreToolUse" && r.v2?.decision === "ask" && !sameRetry(r, act?.pre, act?.approvals), high = r.event === "tk_alert" && r.severity === "high";
       if (!hold && !high) return;
       const t = document.createElement("div"), b = document.createElement("b"), x = document.createElement("button"), sub = document.createElement("span"), go = document.createElement("button");
       t.className = "toast" + (high ? " high" : "");
