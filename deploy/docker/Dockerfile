@@ -22,12 +22,14 @@ LABEL org.opencontainers.image.source="https://github.com/Cygnux-Labs/Tracekit" 
       org.opencontainers.image.title="tracekit-signer" \
       org.opencontainers.image.licenses="MIT"
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-# lean: the pinned base ships OpenSSL 3.0.22-1~deb12u1 (CVE-2026-84782, #428); drop this step once BASE is re-pinned to
-# a python:3.12-slim-bookworm digest with 3.0.22-1~deb12u2 or later
+# lean: the pinned base ships OpenSSL 3.0.22-1~deb12u1 (CVE-2026-84782, #428) and apt 2.6.1 (CVE-2026-109518); drop
+# this step once BASE is re-pinned to a python:3.12-slim-bookworm digest with libssl3 3.0.22-1~deb12u2 and apt 2.6.2
 RUN apt-get update \
- && apt-get install -y --no-install-recommends --only-upgrade libssl3 openssl \
+ && apt-get install -y --no-install-recommends --only-upgrade libssl3 openssl apt libapt-pkg6.0 \
  && { dpkg --compare-versions "$(dpkg-query -W -f='${Version}' libssl3)" ge 3.0.22-1~deb12u2 \
       || { echo "libssl3 is older than 3.0.22-1~deb12u2 (CVE-2026-84782): re-pin BASE or wait for the mirror" >&2; exit 1; }; } \
+ && { dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge 2.6.2 \
+      || { echo "apt is older than 2.6.2 (CVE-2026-109518): re-pin BASE or wait for the mirror" >&2; exit 1; }; } \
  && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=bind,from=build,source=/wheels,target=/wheels \
     pip install --no-cache-dir --no-index /wheels/*.whl \
