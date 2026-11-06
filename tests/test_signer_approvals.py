@@ -721,13 +721,20 @@ class TestCli(unittest.TestCase):
                       f"`tracekit approvals --signer {sock} reject {aids[1]}` to refuse it\n", shown.stdout)
         self.assertIn(f"\nrecord      tracekit view --approval {aids[1]} (with the --config or --data-dir of this "
                       "signer)\n", shown.stdout)
+        self.assertIn(f"\na false alarm? tracekit feedback --harmless {aids[1]} --signer {sock}\n", shown.stdout)
         listed = tracekit("approvals", "--signer", sock, "list").stdout.splitlines()
         self.assertEqual([line.split()[0] for line in listed[:-1]], [aids[2], aids[1]])
         self.assertTrue(listed[0].endswith('  "stripe refunds create --charge ch_3"'), listed[0])
+        self.assertRegex(listed[0], r" expires \S+Z \(in 5\d min\)  ")
+        self.assertRegex(listed[1], r" expires \S+Z \(in 5\d min\)  ")
         self.assertEqual(listed[-1], "(1 expired, not shown: list them with --all)")
         listed = tracekit("approvals", "--signer", sock, "list", "--all").stdout.splitlines()
         self.assertEqual([line.split()[:2] for line in listed], [[aids[2], "requested"], [aids[1], "requested"],
                                                                  [aids[0], "expired"]])
+        self.assertTrue(listed[2].endswith("Z"), listed[2])   # abandoned before its time: no "in 59 min"
+        service.log.approvals[aids[0]]["expires_at"] = svc._iso(time.time() - 180)
+        listed = tracekit("approvals", "--signer", sock, "list", "--all").stdout.splitlines()
+        self.assertRegex(listed[2], r" expires \S+Z \(3 min ago\)$")
 
     def test_a_refusal_and_an_empty_list_say_how_to_get_further(self):
         d = ts.tmpdir(self)

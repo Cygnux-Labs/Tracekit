@@ -31,6 +31,9 @@ venv the agent already has. pipx and `uv tool` give you the `tracekit` command
 then run from that install), but nothing your agent can import. The command and the SDK can come from two installs:
 both use the same dev signer. Keep them at the same version.
 
+`tracekit help` lists every command, grouped by what you'd use it for, and the features that aren't commands of their
+own; `tracekit help <command>` shows a command's options.
+
 ### Upgrading
 
 `pip install -U tracekit-ai` upgrades the environment you run it in. Two other places can keep the old version, and
@@ -142,6 +145,8 @@ run 40c7ee89ae9eaec8f8eb8556b32fdc9d (my-agent)
 VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: <64 hex digits>.
 bundle: /home/me/project/40c7ee89ae9eaec8f8eb8556b32fdc9d.tkb
 check it again: tracekit verify 40c7....tkb --trust 40c7....trust.json
 next: tracekit view --dev   (every run, replayed and reviewed)
@@ -232,6 +237,8 @@ tracekit verify run.tkb --trust trust.json
 VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: <64 hex digits>.
 ```
 
 `--detail` prints every check, then:
