@@ -5614,7 +5614,9 @@
     }
     // one sentence a person reads first: the verdict, what the run's calls came to, its findings
     function runSentence(r) {
-      if (r.verdict === "failed") return "Failed verification: " + (failLines(r.report).join(" · ").replace(/^\[FAIL\]\s*/, "") || "see the verifier report") + ". None of its records are shown.";
+      // a pinned witness's cosignature the check refused: the ANCHORING line's plain words, the check's in the report below
+      const changed = r.verdict === "failed" && /^FAILED: (.*)\.$/.exec(r.anchoring || "");
+      if (r.verdict === "failed") return "Failed verification: " + (changed ? changed[1] : failLines(r.report).join(" · ").replace(/^\[FAIL\]\s*/, "") || "see the verifier report") + ". None of its records are shown.";
       if (r.verdict === "pending" && /^RE-CHECKING/.test(r.integrity || "")) return "Being checked again: the store's bytes changed after the viewer read them, so its last verdict no longer stands.";
       if (r.verdict !== "verified") return "Pending: no checkpoint covers this run's last record yet.";
       const acts = S.actList, held = acts.filter(heldCall), by = new Map();
@@ -5655,7 +5657,7 @@
     function reviewHtml(r, cmds = true) {
       const d = r.decisions || {}, f = r.first || {};
       const line = (seq, k, text, cls, tip) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}" title="${esc(tip || "")}">${esc(text)}</dd>`;
-      let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd>` + vchip(r.verdict) + `${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
+      let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd>` + vchip(r.verdict) + `${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}${r.anchoring ? `<dt>ANCHORING</dt><dd class="${/^ANCHORED/.test(r.anchoring) ? "s-ok" : "s-flag"}">${esc(r.anchoring)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
       if (r.analyzes) left += `<dt>FINDINGS ABOUT</dt><dd class="go" data-run="${esc(r.analyzes)}">${esc("run " + r.analyzes + ": its signed findings are the rows of this run")}</dd>`;
       // live constraints: what the person's request said not to do; a call that breaks one waits for a person
       if (r.constraints?.length) left += line(r.constraints[0].seq, "CONSTRAINTS", r.constraints.map(c => c.kind).join(" · ") + ` · held ${plural(r.constraint_holds, "call")} for approval`, "s-flag");
@@ -6120,7 +6122,7 @@
     function whyText(ref, d, A) {
       const by = dict(d.nodes.map(n => [n.id, n])), n = by[ref.node] || {};
       const steps = [...new Set(A.lineage.flat())].map(id => by[id] || { label: id }).sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
-      return [`Why did ${n.agent} run ${n.label}?`, verdict(A), "How it got here:", ...steps.map((x, i) => `${i + 1}. ${WTYPE[x.type] || x.type} · ${x.agent} · ${x.label}`
+      return [`Why did ${n.agent} ${n.status === "blocked" ? "try to run" : "run"} ${n.label}?`, verdict(A), "How it got here:", ...steps.map((x, i) => `${i + 1}. ${WTYPE[x.type] || x.type} · ${x.agent} · ${x.label}`
         + (x.trust === "untrusted" ? " (untrusted)" : "") + (recSeq(x) != null ? ` (record ${recSeq(x)})` : "")), ...steps.length ? [] : ["No upstream inputs recorded."], `run ${d.run_id}`].join("\n");
     }
     function whyBody(ref, d, A) {
@@ -6139,7 +6141,7 @@
       }).join("");
       const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${prog} to run them here, or run: tracekit why attribute ${path} --system ${prog} --target ${tq} (one cause: tracekit why test ${path} --system ${prog} --remove SPEC --target ${tq})` : "This run names no program, so it cannot be replayed: record it with a System (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why).")}</p>`;
       const args = `<table class="wt"><thead><tr><th>ARGUMENT VALUE</th><th>WHERE THE VALUE CAME FROM</th></tr></thead><tbody>` + (A.provenance.map(p => `<tr><td>${esc(String(p.value).slice(0, 60))}</td><td><span class="${esc((PROV[p.status] || PROV.generated)[0])}">${esc((PROV[p.status] || PROV.generated)[1])}</span> ${esc(p.sources.map(x => x.label).join(", "))}</td></tr>`).join("") || `<tr><td colspan="2" class="dim">No traceable argument values.</td></tr>`) + `</tbody></table>`;
-      const head = `<div class="sec">${esc(n.agent || "")} RAN</div><div class="wverdict">${esc(n.label || "")}${A.sensitive ? ` <span class="s-flag">sensitive${A.sensitive === "heuristic" ? " (by name)" : ""}</span>` : ""} <button type="button" data-wopen="${esc(ref.node)}" data-wr="${esc(ref.run)}">DETAILS</button></div>`;
+      const head = `<div class="sec">${esc(n.agent || "")} ${n.status === "blocked" ? "WAS BLOCKED FROM RUNNING" : "RAN"}</div><div class="wverdict">${esc(n.label || "")}${A.sensitive ? ` <span class="s-flag">sensitive${A.sensitive === "heuristic" ? " (by name)" : ""}</span>` : ""} <button type="button" data-wopen="${esc(ref.node)}" data-wr="${esc(ref.run)}">DETAILS</button></div>`;
       const left = head + args + `<div class="sec">VERDICT</div><div class="wverdict">${esc(verdict(A))}</div><div class="sec">HOW IT GOT HERE</div>` + lineageHtml(d, A.lineage)
         + `<div class="wbar">` + cp(whyText(ref, d, A), "COPY THIS EXPLANATION") + `</div>`;
       const right = `<div class="wcause" data-wr="${esc(ref.run)}" data-wn="${esc(ref.node)}"><div class="sec">CANDIDATE CAUSES</div><div class="wbar">${rp.allowed ? `<button type="button" data-wfind${busy ? " disabled" : ""}>${busy ? "REPLAYING…" : "FIND THE CAUSE"}</button>` : ""}<label>target <input class="wtarget" value="${esc(target)}" spellcheck="false"></label></div>

@@ -42,6 +42,7 @@ from tracekit.why.graph import target_hits
 from tracekit.why import cli as why_cli, import_v2
 from tracekit.why.import_v2 import _target, store_records
 from tracekit.why.server import Feed as WhyFeed, IngestError, Store, tape
+from tracekit.wiki import wiki_url
 
 POLICY = Engine({"deny": [{"id": "T-DENY", "tool": "rm", "pattern": "^"}],
                  "ask": [{"id": "T-PAY", "tool": "pay", "pattern": "^"}]})
@@ -1185,6 +1186,9 @@ class View(unittest.TestCase):
                          {"verdict": "verified", "agent": "e2e", "state": "final",
                           "decisions": {"allow": 1, "deny": 1, "ask": 1}})
         self.assertEqual([(a["decision"], a["self_approved"]) for a in rep["review"]["approvals"]], [("approve", True)])
+        self.assertEqual(rep["review"]["anchoring"], "NOT ANCHORED: no independent witness or anchor cosigned the log, so "
+                                                     "whoever holds the signing key could rewrite it unseen "
+                                                     f"({wiki_url('docs/witnesses.md')}).")   # the run review's line
         self.assertEqual({r["agent"] for r in rows}, {"e2e"})
         self.assertEqual(next(r["target"] for r in rows if r.get("tool_name") == "rm"), "T-DENY")
         self.assertEqual([(r["tape"], r["v2"]["approval"]) for r in rows if r.get("v2", {}).get("approval")],
