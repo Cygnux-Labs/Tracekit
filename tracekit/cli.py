@@ -823,7 +823,9 @@ def _run(a):
         if a.json:
             print(json.dumps({**st, "signer_v2": v2, **({"dev_mode": install.DEV_MODE_LINE} if dev else {})}, indent=2))
             return 0
-        print(*_status_lines(st, v2), *([install.DEV_MODE_LINE] if dev else []),
+        cfg = st["client_config"] or {}   # system mode's: its hooks section
+        chosen = (cfg.get("hooks") or {}).get("no_hooks") if system else cfg.get("no_hooks")
+        print(*_status_lines(st, v2, install.plugin_enabled(), chosen), *([install.DEV_MODE_LINE] if dev else []),
               "(tracekit status --json prints all of it)", sep="\n")
         return 0
     if a.cmd == "up":
@@ -1085,9 +1087,10 @@ def _kept():
             + ["to delete these and Tracekit too:", "  tracekit down", f"  {remove}", f"  {pip} tracekit-ai"])
 
 
-def _status_lines(st, v2):
+def _status_lines(st, v2, plugin=None, chosen=False):
     """`tracekit status` for a person: the v2 signer (install.status's and autospawn.status's findings), where its
-    keys and runs are, the hooks, then a v1 signer and proxy when there is one."""
+    keys and runs are, the hooks (and the Claude Code plugin's, `plugin`: install.plugin_enabled's; `chosen`: init
+    --no-hooks chose none), then a v1 signer and proxy when there is one."""
     name = "dev signer" if v2.get("dev") else "signer"
     lines = [f"signer      {name} {v2['version']}, running (pid {v2['pid']}), socket {v2['socket']}" if "version" in v2
              else f"signer      {name}: {v2.get('error') or 'running'}"]
@@ -1097,7 +1100,11 @@ def _status_lines(st, v2):
              for h in st["hooks"] if h.get("versions")]
     lines += [f"hooks       {h['settings']} isn't a settings file Tracekit can read, so its hooks are unknown"
               for h in st["hooks"] if "error" in h]
-    lines += found or ["hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"]
+    if plugin:   # its hooks are the ones init writes, and init writes none while it is on
+        found.append(f"hooks       the Claude Code plugin {plugin[1]}'s, enabled in {plugin[0]}")
+    lines += found or ["hooks       none, as init --no-hooks chose: SDK runs (tracekit.instrument()) are still "
+                       "recorded; init without --no-hooks adds Claude Code's" if chosen else
+                       "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"]
     if st.get("signer"):
         lines.append(f"v1 signer   {st['signer'].get('error') or 'answering'}")
     if st.get("proxy"):

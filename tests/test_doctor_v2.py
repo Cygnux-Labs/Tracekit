@@ -817,6 +817,28 @@ class FirstDay(unittest.TestCase):
         prod = {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d})}
         self.assertEqual(prod["D-WITNESS-CONFIGURED"]["status"], "fail")   # production: unchanged
 
+    def test_what_the_first_start_makes_is_info_until_then(self):
+        """Review of #628: right after `init --dev --v2` (its log key only, no store) doctor warned "start the signer
+        once" three times, so it never ended with `dev setup OK` as the Claude Code quickstart says. Before the dev
+        signer's first start they are info and say when they're checked; once it has a store, warnings again."""
+        os.makedirs(os.path.join(self.d, "keys"), 0o700)
+        with open(os.path.join(self.d, "keys", "log.key"), "wb") as f:   # as init makes it
+            f.write(b"k" * 32)
+        first = ("D-CONTENT-VAULT", "D-KEYS-DISTINCT", "D-KEY-HYGIENE")
+        from tracekit.signer import service
+        cfg = {"data_dir": self.d, "content": service.dev_content()["content"]}   # the dev signer's vault: on
+
+        def rows():
+            return {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=os.path.join(self.d, "none"))}
+        got = rows()
+        self.assertEqual([got[i]["status"] for i in first], ["info"] * 3)
+        for i in first:
+            self.assertTrue(got[i]["detail"].endswith("checked after the dev signer's first start (an agent's first "
+                                                      "call, or tracekit up)"), got[i])
+        os.makedirs(os.path.join(self.d, "store"))   # it started once
+        got = rows()
+        self.assertEqual([got[i]["status"] for i in first], ["warn"] * 3)
+
     def test_a_healthy_dev_run_ends_with_one_ok_line(self):
         ok = [doctor.result("D-PROCESS-BOUNDARY", doctor.WARN, install.DEV_MODE_LINE, "system mode"),
               doctor.result("D-WITNESS-CONFIGURED", doctor.INFO, "no witnesses", "a signer.yaml"),

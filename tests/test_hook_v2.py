@@ -1559,6 +1559,19 @@ class InitV2(unittest.TestCase):
         self.assertEqual(lines[-2:], [f"  Remove-Item -Recurse -Force {data}, {config}",
                                       '  & "C:\\Program Files\\Python\\python.exe" -m pip uninstall tracekit-ai'])
 
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX key modes: D-KEYS-MODE warns there")
+    def test_doctor_right_after_init_ends_with_dev_setup_ok(self):
+        """Review of #628: the Claude Code quickstart says doctor ends with `dev setup OK` once init has run, but before
+        the dev signer's first start it warned "start the signer once" three times."""
+        from tracekit import client, doctor
+        self.assertEqual(self.init("--dev", "--v2")[0], 0)
+        with mock.patch.object(client, "system_config", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(doctor.main(), 0)
+        self.assertEqual(out.getvalue().splitlines()[-1], "dev setup OK: everything checks out for dev mode, which "
+                                                          "records but does not guard (D-PROCESS-BOUNDARY)",
+                         out.getvalue())
+
     def test_uninstall_leaves_a_persons_own_thinking_setting(self):
         settings = os.path.join(self.home, "settings.json")
         for before in ({}, {install.THINKING: True}, {install.THINKING: False}):

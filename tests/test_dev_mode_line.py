@@ -114,6 +114,26 @@ class DevModeLine(unittest.TestCase):
             f"hooks       {hooks[0]['settings']} isn't a settings file Tracekit can read, so its hooks are unknown",
             "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"])
 
+    def test_status_names_the_plugins_hooks_and_a_no_hooks_choice(self):
+        """Review of #628: status told a plugin user, and one whose init chose --no-hooks, that `tracekit init --dev
+        --v2` adds hooks, though init adds none while the plugin is on."""
+        def hooks(client_config, plugin, system=None):
+            with mock.patch.object(install, "status", return_value={"client_config": client_config, "hooks": [],
+                                                                     "signer": None}), \
+                    mock.patch.object(autospawn, "status", return_value={"socket": "s.sock", "dev": True}), \
+                    mock.patch("tracekit.client.system_config", return_value=system), \
+                    mock.patch.object(install, "plugin_enabled", return_value=plugin):
+                return [x for x in run(["status"])[1].splitlines() if x.startswith("hooks")]
+        self.assertEqual(hooks(None, ("/h/.claude/settings.json", "tracekit@tracekit")),
+                         ["hooks       the Claude Code plugin tracekit@tracekit's, enabled in /h/.claude/settings.json"])
+        chosen = ["hooks       none, as init --no-hooks chose: SDK runs (tracekit.instrument()) are still recorded; "
+                  "init without --no-hooks adds Claude Code's"]
+        self.assertEqual(hooks({"mode": "dev", "no_hooks": True}, None), chosen)
+        sc = {"signer": "/run/s.sock", "hooks": {"user": "agent", "no_hooks": True}}   # system mode's choice
+        self.assertEqual(hooks(sc, None, sc), chosen)
+        self.assertEqual(hooks(None, None), ["hooks       none in Claude Code's settings: tracekit init --dev --v2 adds "
+                                             "them"])
+
     def test_status_says_it_for_a_dev_signer_and_not_for_a_system_one(self):
         self.assertEqual(self.status(True, None), LINE)
         self.assertIsNone(self.status(False, None))

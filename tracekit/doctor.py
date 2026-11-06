@@ -801,6 +801,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "make it and its directories root-owned and not group/world-writable (sudo chown 0:0; chmod go-w)")
     data = cfg["data_dir"]
     keys = os.path.join(data, "keys")
+    # dev, before the dev signer's first start (no store yet, as right after init): what that start makes is info,
+    # not a fault
+    first = not prod and not os.path.isdir(os.path.join(data, "store"))
+    later = "checked after the dev signer's first start (an agent's first call, or tracekit up)"
     policy = cfg.get("policy") or service.DEFAULT_POLICY
 
     if prod:
@@ -869,8 +873,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             except _Windows:
                 add("D-CONTENT-VAULT", False, f"{on}; keys/content.key present, its mode not checked", acl, bad=WARN)
             except OSError as e:
-                add("D-CONTENT-VAULT", False, f"{on}; keys/content.key: {e.strerror}", "start the signer once (it makes "
-                    "the key), or run doctor as root", bad=WARN)
+                add("D-CONTENT-VAULT", False, f"{on}; keys/content.key: " + (f"not made yet, {later}" if first else
+                    e.strerror), "" if first else "start the signer once (it makes the key), or run doctor as root",
+                    bad=INFO if first else WARN)
 
     if names is not None and cfg.get("log_key"):
         add("D-KEYS-DISTINCT", True, "the log key is held in AWS KMS", "")
@@ -882,7 +887,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 "the log key and the record key differ", "a log keeps its log key, so start a new signer on a new "
                 "data_dir (its keys are made distinct); export what you need from this one first")
         except OSError as e:
-            add("D-KEYS-DISTINCT", False, f"no keys yet ({e.strerror})", "start the signer once", bad=WARN)
+            add("D-KEYS-DISTINCT", False, f"the record key: not made yet, {later}" if first else
+                f"no keys yet ({e.strerror})", "" if first else "start the signer once", bad=INFO if first else WARN)
     if (cfg.get("log_key") or {}).get("aws_kms"):
         out += kms_checks(cfg["log_key"]["aws_kms"], issuer_key)
     if (cfg.get("storage") or {}).get("postgres") is not None:
@@ -898,7 +904,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-KEY-HYGIENE", not bad, "; ".join(bad) or "no core dumps, not dumpable, keys mlocked where the OS allows",
             "start the signer with `tracekit signer serve` and a LimitMEMLOCK of at least 64K", bad=WARN)
     except (OSError, ValueError, AttributeError) as e:
-        add("D-KEY-HYGIENE", False, f"no key hygiene report: {e}", "start the signer once", bad=WARN)
+        add("D-KEY-HYGIENE", False, f"the key hygiene report: not written yet, {later}" if first else
+            f"no key hygiene report: {e}", "" if first else "start the signer once", bad=INFO if first else WARN)
 
     if prod and agent:
         targets = [[data, "read"], [data, "write"], [keys, "read"], [keys, "write"]]
