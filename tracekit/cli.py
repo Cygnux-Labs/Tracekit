@@ -65,6 +65,7 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm",
                  "report": "tracekit report", "audit": "tracekit audit", "verify-model": "tracekit verify-model"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
+GRANTS = "intent grants (tracekit grant, approvals approve --grant)"   # experimental, as their --help ends
 
 
 def main(argv=None):
@@ -285,12 +286,33 @@ def main(argv=None):
     q.add_argument("approval_id")
     q.add_argument("--json", action="store_true", help="print one JSON object without a pager")
     for name in ("approve", "reject"):
-        q = acts.add_parser(name, help=f"{name} a pending approval")
+        q = acts.add_parser(name, help=f"{name} a pending approval" + (
+            "; with --grant, also grant the run calls like it within limits (docs/intent-grants.md)" * (name == "approve")))
         q.add_argument("approval_id")
         q.add_argument("--reason")
+        if name == "approve":
+            q.add_argument("--grant", action="store_true", help="also issue a payment grant from this held call: it "
+                           "counts as the grant's first payment, and later payments within the limits run without a stop")
+            _grant_flags(q, False)
     q = acts.add_parser("slack", help=f"the Slack approvals bridge ({wiki_url('docs/approvals.md', 'slack')})")
     q.add_argument("slack_action", choices=["serve"])
     q.add_argument("--config", required=True, help="slack.yaml")
+
+    p = sub.add_parser("grant", help="intent grants on the v2 signer: approve a kind of costly call once, within limits, "
+                       "for one run: `grant add|list|revoke` (docs/intent-grants.md)",
+                       epilog=f"{GRANTS} is experimental: it works and is tested, but may change "
+                              f"({wiki_url('docs/support.md')})")
+    p.add_argument("--signer", help="the signer's Unix socket or tcp://host:port (default: the same-user dev signer)")
+    acts = p.add_subparsers(dest="action", required=True)
+    q = acts.add_parser("add", help="grant a run's agent payments within limits, without a stop for each one")
+    q.add_argument("--run", required=True, help="the run's id (tracekit view, or approvals show)")
+    _grant_flags(q, True)
+    q = acts.add_parser("list", help="the grants of the open runs you may see, with what each has left")
+    q.add_argument("--run", help="only this run's")
+    q.add_argument("--json", action="store_true", help="print one JSON array, as the signer gives it")
+    q = acts.add_parser("revoke", help="end a grant: every call it would release is held again")
+    q.add_argument("grant_id", help="g-... from tracekit grant list")
+    q.add_argument("--reason")
 
     p = sub.add_parser("export", help="write a .tkb evidence bundle")
     p.add_argument("-o", "--out", default="tracekit.tkb")
@@ -727,6 +749,8 @@ def _run(a):
         return 0 if r.get("ok") else 1
     if a.cmd == "approvals":
         return _approvals(a)
+    if a.cmd == "grant":
+        return _grant(a)
     if a.cmd == "export" and (a.v2 or a.dev or a.data_dir or a.config or a.run_set or a.tenant):   # each names a v2 store
         return _export_v2(a)
     if a.cmd == "last":
@@ -1139,8 +1163,30 @@ def _stop_lines(c, x):
             *([f"answer      `{cmd} approve {x['approval_id']}` to allow it once, `{cmd} reject {x['approval_id']}` "
                "to refuse it" + ("" if c.signer else "; in the agent's Claude Code session, with a leading `! `")]
               if x["state"] == "requested" else []),
+            *_grant_hint(x, reasons.policies.get(x["policy_hash"], {}), flags, cmd),
             f"record      tracekit view --approval {x['approval_id']}"
             + (" (with the --config or --data-dir of this signer)" if c.signer else "")]
+
+
+def _grant_hint(x, pol, flags, cmd):
+    """What `approvals show` says about granting calls like held call `x` (docs/intent-grants.md), when every rule that
+    held it opts into a grant in its policy `pol`: how the grant reads the call, and a command that approves it and
+    grants the run more like it, with limits from this call for the person to edit; [] otherwise."""
+    from . import grants
+    opted = {r["id"]: (r.get("approval") or {}).get("grant") for r in pol.get("ask", [])}
+    intents = {opted.get(i) for i in x["rule_ids"] if i not in flags}
+    if x["state"] != "requested" or len(intents) != 1 or None in intents:
+        return []
+    fields, why = grants.read(intents.pop(), _args(x))
+    if fields is None:
+        return [f"grant       a payment grant can't read this call ({why}): approve it on its own"]
+    amount, cur = grants.show(fields["amount"], fields["currency"]), fields["currency"]
+    line = f"grant       a payment grant reads it as {amount} to {json.dumps(fields['payee'])}"
+    if cur not in grants.DECIMALS:
+        return [line + f"; tracekit doesn't know {cur}'s minor units, so approve it on its own"]
+    return [line + "; to approve it and let more payments like it run, set your own limits:",
+            f"            {cmd} approve {x['approval_id']} --grant --payee {fields['payee']} --max '{amount}' "
+            f"--total '{grants.show(fields['amount'] * 5, cur)}' --for 1h"]
 
 
 def _approvals(a):
@@ -1201,6 +1247,10 @@ def _approvals(a):
                 lines.append(f"reason given by the agent (unverified): {json.dumps(x['reason'])}")
             pydoc.pager("\n".join(lines) + "\n")
         else:
+            if getattr(a, "grant", False):   # the grant first: if the signer refuses it, nothing is approved
+                experimental(GRANTS)
+                g = _grant_req(a, c.approval_get({"approval_id": a.approval_id})["run_id"], a.approval_id)
+                print(_grant_issued({**c.grant_issue(g), "limits": g["limits"]}, c.signer is None))
             req = {"approval_id": a.approval_id, "decision": a.action, **({"reason": a.reason} if a.reason else {})}
             r = c.approval_decide(req)
             print(f"{r['state']}: {r['approval_id']}"
@@ -1211,6 +1261,99 @@ def _approvals(a):
     except RPCError as e:
         print(f"tracekit approvals: {e}", file=sys.stderr)
         return 1
+    except ValueError as e:   # a grant flag that doesn't read (an amount, a duration)
+        print(f"tracekit approvals: {e}", file=sys.stderr)
+        return 2
+    finally:
+        c.close()
+    return 0
+
+
+def _grant_flags(q, required):
+    """The flags that say a payment grant's limits, on `grant add` and `approvals approve --grant`."""
+    q.add_argument("--payee", action="append", required=required, help="a payee the agent may pay (repeat it for "
+                   "each); the grant holds a payment to anyone else")
+    q.add_argument("--total", required=required, help="the most all its payments add up to, such as '500 USDC'")
+    q.add_argument("--max", help="the most one payment may be, such as '200 USDC' (default: the total)")
+    q.add_argument("--count", type=int, help="the most payments it releases")
+    q.add_argument("--for", dest="for_", default="1h", help="how long it lasts: 30m, 4h, at most 24h (default 1h)")
+    q.add_argument("--note", help="your own words for what it is for, shown on every hold")
+
+
+def _grant_req(a, run_id, approval_id=None):
+    """The grant_issue request the grant flags of `a` say, for run `run_id` (ValueError when one doesn't read)."""
+    import datetime
+
+    from . import grants
+    if not a.payee or not a.total:
+        raise ValueError("a grant names its payees (--payee, one each) and its total (--total '500 USDC')")
+    total, cur = grants.parse_amount(a.total)
+    caveats = [{"field": "currency", "op": "==", "value": cur},
+               {"field": "payee", "op": "in", "value": list(dict.fromkeys(a.payee))}]
+    if a.max:
+        most, other = grants.parse_amount(a.max)
+        if other != cur:
+            raise ValueError(f"--max is in {other} and --total in {cur}: a grant has one currency")
+        caveats.append({"field": "amount", "op": "<=", "value": most})
+    if a.count is not None and a.count < 1:
+        raise ValueError("--count is at least 1")
+    until = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=grants.parse_for(a.for_))
+    return {"run_id": run_id, "intent": "payment.send", "caveats": caveats,
+            "limits": [{"op": "sum", "field": "amount", "max": total}]
+            + ([{"op": "count", "max": a.count}] if a.count else []),
+            "expires_at": until.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), **({"approval_id": approval_id} if approval_id else {}),
+            **({"description": a.note} if a.note else {})}
+
+
+def _grant_issued(r, dev):
+    """What `grant add` and `approvals approve --grant` print for grant `r` the signer issued (its response, with the
+    limits asked for); `dev`: the same-user dev signer issued it."""
+    from . import grants
+    g = r["grant"]
+    return (f"grant {r['grant_id']} issued for run {g['issuer']['run']}: payments "
+            f"{grants.words(g, r['limits'], r['used'])}, "
+            f"until {g['expires_at']}" + ("" if not r["self_approved"] else
+                                          ". Recorded as self-approved: " + ("the dev signer runs as your own user and "
+                                                                             "can't tell you from your agent" if dev else
+                                                                             "you are the run's own user")))
+
+
+def _grant(a):
+    """`tracekit grant add|list|revoke` (docs/intent-grants.md). Strings an agent chose are printed JSON-escaped."""
+    from . import grants
+    from .sdk.client import Client, Incompatible, SignerUnavailable
+    from .signer.rpc_schema import RPCError
+    experimental(GRANTS)
+    c = Client(a.signer)
+    try:
+        if a.action == "add":
+            req = _grant_req(a, a.run)
+            print(_grant_issued({**c.grant_issue(req), "limits": req["limits"]}, c.signer is None))
+        elif a.action == "list":
+            gs = c.grant_list({"run_id": a.run} if a.run else {})["grants"]
+            if a.json:
+                print(json.dumps(gs))
+            for x in [] if a.json else gs:
+                g = x["grant"]
+                who = "self-approved (the run's own user, which the agent can be)" if x["self_approved"] else \
+                    f"by {g['issuer'].get('person') or g['issuer']['id']}"
+                print(f"{x['grant_id']}  {x['state']}  run={x['run_id']}  {g['intent'].split('@')[0]}  {who}  "
+                      f"{grants.words(g, x['limits'], x['used'])}  until {g['expires_at']}"
+                      + (f"  {json.dumps(x['description'])}" if x.get("description") else ""))
+            if not gs and not a.json:
+                print("no grants in the open runs you may see")
+        else:
+            r = c.grant_revoke({"grant_id": a.grant_id, **({"reason": a.reason} if a.reason else {})})
+            print(f"revoked: {r['grant_id']} (run {r['run_id']}): its calls are held again")
+    except (SignerUnavailable, Incompatible) as e:
+        print(f"signer unavailable: {e}", file=sys.stderr)
+        return 2
+    except RPCError as e:
+        print(f"tracekit grant: {e}", file=sys.stderr)
+        return 1
+    except ValueError as e:
+        print(f"tracekit grant: {e}", file=sys.stderr)
+        return 2
     finally:
         c.close()
     return 0

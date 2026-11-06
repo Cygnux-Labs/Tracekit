@@ -325,6 +325,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, provenance, \
     public_witness, yamlmini
+from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -387,7 +388,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
                "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s",
-               "verify_tool_results", "box_daemons"}
+               "verify_tool_results", "box_daemons", "grants"}
 # signer.yaml sections whose features are experimental (docs/support.md)
 EXPERIMENTAL_KEYS = ("http", "storage", "tenants", "multi_tenant_apps", "gateways", "witnesses", "anchors", "record_key",
                      "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions", "verify_tool_results",
@@ -427,7 +428,7 @@ DEFAULT_GRANTS = frozenset({
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
-    "pcm_evidence"})
+    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
@@ -726,7 +727,7 @@ class SignerService:
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
                  content=None, gateway_wait_s=GATEWAY_WAIT_S, suspensions=None, posture=None,
-                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None, box_daemons=None):
+                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None, box_daemons=None, grants=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -753,6 +754,7 @@ class SignerService:
         `posture` ({network, tool_calls}), `observe_grace_s` and `verify_tool_results`: see the config keys.
         `box_daemons`: Tracekit Box daemon identity (uid:<n>) -> its engine (see the module docstring)."""
         self.box_daemons = dict(box_daemons or {})
+        self.grant_ceilings = grantlib.ceilings(grants)   # signer.yaml's grants section: {intent: {currency: max}}
         if not all(isinstance(k, str) and re.fullmatch(r"uid:[0-9]+", k) and v in ENGINES
                    for k, v in self.box_daemons.items()):
             raise ValueError("box_daemons maps a Tracekit Box daemon's uid (uid:<n>: it connects over the Unix socket) "
@@ -2857,14 +2859,21 @@ class SignerService:
                 verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
             if sums:
                 data["detect"] = {**data.get("detect", {}), **sums}
+            granted, grant_why = self._grant_release(key, run, tool, holder[0], rule_ids, args, digest, gw) \
+                if verdict == "ask" else (None, None)
+            if grant_why:   # signed with the decision: what the grant released, or exactly why it held the call
+                data["reasons"] = [grant_why[:4096]]
+            if granted:
+                verdict, rule_ids = "flag", rule_ids + ["TK-GRANT"]
             names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
             seen = reconcile.compared(tool, args) if (run.get("rec") or {}).get("claude_code") else args
             l2 = {n: event_hash({"tool": n, "args": args}) for n in names} if digest and len(names) > 1 else \
                 digest if seen is args else event_hash({"tool": tool, "args": seen})
 
-            def record(did, verdict, rule_ids, again=False):
+            def record(did, verdict, rule_ids, again=False, ext=None):
                 """Write decision `did`, as the run's hold or quarantine leaves it, and make it the call's; `again`: the
-                call's second decision, written by the signer after the first fired a hold or quarantine."""
+                call's second decision, written by the signer after the first fired a hold or quarantine; `ext`: the
+                record's ext field (`grant`: what an intent grant released)."""
                 verdict, rule_ids, iid = self._contained(run, verdict, rule_ids)
                 commitment = self._commit(did, digest) if digest else None
                 d = dict(data, decision_id=did, nonce=secrets.token_hex(16), decision=verdict, rule_ids=rule_ids,
@@ -2881,15 +2890,18 @@ class SignerService:
                 tx.set(run["calls"], tcid, call)
                 tx.set(run["decisions"], did, call)
                 kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
-                          **top)
+                          **top, **({"ext": ext} if ext else {}))
                 seq = tx.emit(run, "policy.decision", d, **kw) if again else \
                     tx.event(run, req, "policy.decision", d, **kw)
                 written.append((seq, commitment))
                 return seq, d
-            seq, d = record(did, verdict, rule_ids)
+            seq, d = record(did, verdict, rule_ids, ext=granted and {"grant": granted})
             if d["decision"] in ("allow", "flag") and (run.get("held") or run.get("quarantined")):
                 tx.pop(run["decisions"], did)   # the call fired a hold or quarantine: it never runs on this decision
-                seq, d = record("dec-" + secrets.token_hex(16), d["decision"], d["rule_ids"], again=True)
+                if granted:   # the hold or quarantine stops what the grant released: its spend stays counted
+                    data.pop("reasons", None)
+                seq, d = record("dec-" + secrets.token_hex(16), d["decision"],
+                                [i for i in d["rule_ids"] if i != "TK-GRANT"], again=True)
             if isinstance(host, str) and d["decision"] != "deny" and run.get("rec") is not None:   # explains its traffic
                 # lean: hosts are memory and snapshot state; after a restart with no snapshot since, the run's earlier
                 # http calls no longer explain an observed host (an unexplained_effect warning)
@@ -2906,10 +2918,12 @@ class SignerService:
                    **({"reason": "; ".join(big["reasons"])[:1024]} if big else {})}
             said_no = d["decision"] == "ask" and self._said_no(key, tool, holder[0], digest)
             if d["decision"] in ("deny", "ask") and not big and (why := "; ".join(x for x in (
-                    said_no, held if "TK-CONSTRAINT" in d["rule_ids"] else None,
+                    said_no, held if "TK-CONSTRAINT" in d["rule_ids"] else None, None if granted else grant_why,
                     self._reasons(d["rule_ids"], ruled and ruled[0].get("unread")))
                     if x)[:1024]):
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids
+            elif granted and d["decision"] == "flag":
+                out["reason"] = grant_why[:1024]   # what the grant released, and what it has left
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index
@@ -4369,6 +4383,174 @@ class SignerService:
             return {"checkpoint": note, "records": records, "pending": pending}
         return self.log.write(read)
 
+    def _grant_intent(self, rule_ids):
+        """The intent every rule of `rule_ids` (flags aside) opts into with `approval: {grant: <intent>}`, or None:
+        a call held by any other rule, or by an id the signer or engine gives itself (TK-HOLD, TK-CONSTRAINT,
+        TK-SHELL-PARSE, ...), is never a grant's to release."""
+        by, flags = {}, set()
+        for sec, r, *_ in self.policy.rules:
+            if sec == "flag":
+                flags.add(r["id"])
+            elif (r.get("approval") or {}).get("grant"):
+                by[r["id"]] = r["approval"]["grant"]
+        intents = {by.get(i) for i in rule_ids if i not in flags}
+        return next(iter(intents)) if len(intents) == 1 and None not in intents else None
+
+    def _approved_twin(self, key, tool, via, rule_ids, digest):
+        """(on the writer) Whether a person already approved this very call in run `key` (an approval of the same tool
+        and arguments, by the same caller, under this policy, for these rules, not consumed or expired): the agent's
+        retry then runs on that approval (_reusable), and no grant counts it again."""
+        # lean: scans the signer's live approvals, as _reusable does
+        now = _iso(time.time())
+        return any(a["run_key"] == key and a["state"] == "approved" and a["tool"] == tool and a.get("via") == via
+                   and a["policy_hash"] == self.policy.policy_hash and set(rule_ids) <= set(a["rule_ids"])
+                   and a["expires_at"] > now and self._opens(a["commitment"], a["label"], digest)
+                   for a in list(self.log.approvals.values()))
+
+    def _grant_release(self, key, run, tool, via, rule_ids, args, digest, gw):
+        """(on the writer) What run `key`'s intent grants make of call `tool` with `args`, which the policy held (`ask`)
+        by `rule_ids`: ({id, fields, used, tier}, what it released, in words) when a grant releases it; (None, exactly why
+        not) when the rules opt into an intent the run has grants for and none has room or can read the call; (None,
+        None) when no grant applies: the rules don't all opt into one intent, the run has no grants, it is held or
+        quarantined, or a person already approved this very call (_approved_twin). `tier`: T2 when an executor or
+        gateway decided the call and runs it, else T1, the arguments the harness reported."""
+        intent = self._grant_intent(rule_ids)
+        if not intent or digest is None or not run.get("grants") or run.get("held") or run.get("quarantined") \
+                or self._approved_twin(key, tool, via, rule_ids, digest):
+            return None, None
+        gid, fields, used, why = grantlib.decide(run["grants"], intent, args, _iso(time.time()))
+        if gid is None:
+            return None, why
+        cur = fields["currency"]
+        return ({"id": gid, "fields": fields, "used": used, "tier": "T2" if gw else "T1"},
+                f"within grant {gid}: {grantlib.show(fields['amount'], cur)} to {fields['payee']}; "
+                + grantlib.left({**run["grants"][gid], "used": used}))
+
+    def _granter(self, identity, key):
+        """(the person, self_approved) when `identity` may issue a grant for run `key`: as it may answer the run's
+        approvals (_answer). With signer.yaml's approvals, an approver of the tenant who is not the run's owner, its
+        principal or the same person (unless self_approval: allow); without them (the dev signer), any identity of the
+        run's tenant, labelled self_approved when it is the run's own user, which the agent can be. Never an agent
+        approver (`call` refuses them), and never in a held, quarantined or ending run."""
+        run = self.log.runs.get(key)
+        if run is None or run["final"] or not self._may_see(identity, {"run_key": key}):
+            raise RPCError("unknown_run", key[1])
+        if run["closed"]:
+            raise RPCError("run_closed", f"run {key[1]} is ending: a grant is for a run that is still open")
+        if run.get("held") or run.get("quarantined"):
+            raise RPCError("forbidden", self._why_contained(run))
+        sub, own = subject(identity), owner(identity)
+        who = person(identity) or self._persons.get(sub)
+        owner_person, principal = run.get("people", (None, None))
+        if who and who == principal:
+            raise RPCError("forbidden", f"{sub[:256]} is the run's principal and may not issue its grants")
+        same = self._self_approval({"run_key": key, "requester": run["owner"]}, sub, own, *([who] if who else ())) \
+            or bool(who) and who == owner_person
+        if self.approvals is not None:
+            if same and self.approvals.get("self_approval") != "allow":
+                raise RPCError("forbidden", f"{sub[:256]} may not issue a grant for its own run: issue it as an identity "
+                                            "signer.yaml's approvals.approvers lists")
+            if not same and not self._in(self._approvers, identity):
+                raise RPCError("forbidden", f"{sub[:256]} is not an approver: signer.yaml's approvals.approvers lists "
+                                            "who may issue grants")
+        return who, same
+
+    def _grant_issue(self, identity, req):
+        """A grant for run `run_id` (docs/intent-grants.md): a PCM grant of `intent` to the run's agent (its owner),
+        within `caveats`, up to `limits` over every call that uses it, until `expires_at` (24 h at most; grantlib's
+        problems, and signer.yaml's ceiling), signed into the run as an `intent.grant` record. Issued as _granter
+        allows. With `approval_id`: a pending approval of the run, of a call whose rules opt into the intent and whose
+        arguments are within the grant; that call is the grant's first use, counted in its totals (its approval then
+        runs it, and the agent's retry of it on that approval counts nothing more)."""
+        key = (self._tenant_of(identity), req["run_id"])
+        who, same = self._granter(identity, key)
+        run, now, intent = self.log.runs[key], _iso(time.time()), req["intent"]
+
+        def norm(c):   # caveats as calls are read: a currency in upper case, an EVM address in lower case
+            f = {"currency": lambda v: v.upper() if isinstance(v, str) else v, "payee": grantlib.payee}.get(c["field"])
+            v = c["value"]
+            return dict(c, value=([f(x) for x in v] if isinstance(v, list) else f(v)) if f else v)
+        caveats = [norm(c) for c in req.get("caveats", [])]
+        problems = grantlib.problems(intent, caveats, req["limits"], req["expires_at"], now, self.grant_ceilings)
+        if problems:
+            raise RPCError("invalid_request", "; ".join(problems))
+        aid, first = req.get("approval_id"), None
+        grant = {"pcm_grant": 0, "ts": now, "issuer": {
+            "kind": "person", "id": subject(identity), "run": key[1], "tenant": key[0],
+            **({"approval_id": aid} if aid else {}), **({"person": who} if who else {})},
+            "subject": run["owner"], "intent": grantlib.ref(intent), "caveats": caveats,
+            "expires_at": req["expires_at"], "delegable": False, "parent": None}
+        used = grantlib.zero(req["limits"])
+        if aid:   # its first use: the held call it is issued from
+            a = self._visible(identity, aid)
+            if a["run_key"] != key or a["state"] != "requested":
+                raise RPCError("invalid_request", f"{aid} is not a pending approval of run {key[1]}")
+            if self._grant_intent(a["rule_ids"]) != intent:
+                raise RPCError("forbidden", f"{a['tool_call_id'][:128]} is held by {', '.join(a['rule_ids'])}, not "
+                                            f"only by rules a {intent} grant releases: approve it on its own")
+            copy = self._unseal(aid) or {}   # the real arguments where kept (exec_args), else the shown copy
+            held = copy.get("exec_args", copy.get("args"))
+            try:
+                held = loads_strict(held) if copy.get("args_source") == "raw" and isinstance(held, str) else held
+            except StrictJSONError:
+                held = None
+            fields, why = grantlib.read(intent, held)
+            used, out = grantlib.check({"grant": grant, "limits": req["limits"], "used": used}, fields, now) \
+                if fields else (None, why)
+            if used is None:
+                raise RPCError("invalid_request", f"the held call is outside this grant ({out}): approve or reject it "
+                                                  "on its own, and grant the calls after it with tracekit grant add")
+            first = {"approval_id": aid, "tool_call_id": a["tool_call_id"], "fields": fields}
+        self.quotas.take_event(identity)
+        grant = self._pcm_signed("pcm-grant", grant)
+        gid = grantlib.grant_id(grant)
+        data = {"name": "intent.grant", "id": gid, "grant": grant, "limits": req["limits"], "used": used,
+                "self_approved": same, **({"first": first} if first else {}),
+                **({"description": req["description"]} if req.get("description") else {})}
+
+        def fn(tx, run):
+            if run["closed"] or run["final"]:
+                raise RPCError("run_closed", f"run {key[1]} is ending: a grant is for a run that is still open")
+            if run.get("held") or run.get("quarantined"):
+                raise RPCError("forbidden", self._why_contained(run))
+            if aid and self.log.approvals[aid]["state"] != "requested":
+                raise RPCError("approval_not_pending", self.log.approvals[aid]["state"])
+            return {"grant_id": gid, "grant": grant, "used": used, "self_approved": same,
+                    "run_seq": tx.emit(run, "ext", data, source="signer", request_id=req["request_id"])}
+        return self.log.submit(identity, "grant_issue", req, fn, key)
+
+    def _grant_list(self, identity, req):
+        """The grants of the open runs `identity` may see (one run with `run_id`), each with its totals and whether it
+        may still release a call (live, revoked, expired or used_up)."""
+        now, out = _iso(time.time()), []
+        for key in list(self.log.live):
+            run = self.log.runs.get(key)
+            if run is None or not run.get("grants") or req.get("run_id", key[1]) != key[1] \
+                    or not self._may_see(identity, {"run_key": key}):
+                continue
+            out += [{"grant_id": gid, "run_id": key[1], "state": grantlib.state(e, now),
+                     **{k: e[k] for k in ("grant", "limits", "used", "self_approved", "description") if k in e}}
+                    for gid, e in list(run["grants"].items())]
+        return {"grants": out[:1000]}
+
+    def _grant_revoke(self, identity, req):
+        """End grant `grant_id` of an open run `identity` may see: an `intent.revoked` record, after which every call it
+        would have released is held again. Revoking only narrows what the agent may do, so the run's own user may too."""
+        gid = req["grant_id"]
+        key = next((k for k in list(self.log.live) if gid in ((self.log.runs.get(k) or {}).get("grants") or {})), None)
+        if key is None or not self._may_see(identity, {"run_key": key}):
+            raise RPCError("invalid_request", f"no grant {gid} in an open run you may see")
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            if run["grants"][gid]["revoked"]:
+                raise RPCError("invalid_request", f"grant {gid} is already revoked")
+            seq = tx.emit(run, "ext", {"name": "intent.revoked", "id": gid, "by": subject(identity),
+                                       **({"reason": req["reason"]} if req.get("reason") else {})},
+                          source="signer", request_id=req["request_id"])
+            return {"grant_id": gid, "run_id": key[1], "run_seq": seq}
+        return self.log.submit(identity, "grant_revoke", req, fn, key)
+
     def _channel_open(self, identity, req):
         """A box_daemons identity names its own open box run: the rest of this connection is the box's agent channel,
         box:<uid>/<the box id the run's label holds> (transport.Bound), in the box run's tenant."""
@@ -4913,6 +5095,7 @@ def open_service(cfg, **kw):
                          content=cfg.get("content"), gateway_wait_s=float(cfg.get("gateway_wait_s", GATEWAY_WAIT_S)),
                          posture=cfg.get("posture"), observe_grace_s=float(cfg.get("observe_grace_s", OBSERVE_GRACE_S)),
                          verify_tool_results=cfg.get("verify_tool_results"), box_daemons=cfg.get("box_daemons"),
+                         grants=cfg.get("grants"),
                          **kw)
 
 

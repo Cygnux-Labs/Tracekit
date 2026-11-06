@@ -267,6 +267,12 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
     warn: "A record carries a box label where or how the signer never writes one: nothing is claimed about the key. "
       + "The record verified like every other.",
   },
+  "intent grants": {
+    pass: "Payments a person allowed the run's agent once, within limits, and the calls each grant let run, each "
+      + "re-checked against its grant and its running totals.",
+    warn: "A grant, revocation or released call is recorded where or how the signer never writes one, or a released "
+      + "call doesn't fit its grant. The records verified like every other.",
+  },
   "constraints": {
     pass: "What the person's request said not to do, added while the run was open, and the calls it held.",
     fail: "A call held by a live constraint comes before any constraint in its run, or wasn't held for approval: the "

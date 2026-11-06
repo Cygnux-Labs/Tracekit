@@ -27,7 +27,6 @@ REPO = "https://github.com/Cygnux-Labs/Tracekit"
 
 # docs pages that aren't user docs
 EXCLUDED = {
-    "intent-grants.md": "a design proposal; nothing in it is built",
     "RELEASING.md": "the maintainers' release procedure",
     "launch-checklist.md": "the 1.0 launch's internal checklist",
 }
@@ -42,7 +41,7 @@ SECTIONS = [
                       "concepts/deployment.md", "concepts/storage-and-performance.md", "concepts/integrations.md",
                       "concepts/security-model.md", "architecture.md", "why-architecture.md"]),
     ("Integrations", ["integrations.md", "adapters.md", "otel.md", "remote-ingest.md", "integrations/*.md"]),
-    ("Policy and approvals", ["policy-v2.md", "approvals.md", "pcm.md", "findings.md", "audit.md", "reasoning.md",
+    ("Policy and approvals", ["policy-v2.md", "approvals.md", "intent-grants.md", "pcm.md", "findings.md", "audit.md", "reasoning.md",
                               "incidents.md", "webhooks.md"]),
     ("Deploy and operate", ["deploy.md", "deploy-container.md", "deploy-kubernetes.md", "deploy-compose.md",
                             "identity.md", "executor.md", "a2a.md", "c2c.md", "mcp-gateway.md", "gateway.md", "egress.md", "witnesses.md",

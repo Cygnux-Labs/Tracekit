@@ -255,6 +255,22 @@ def constraint_state(e):
     return [e["data"]["kind"], salt_label(e), e["data"].get("object_commitment"), e["run_seq"]]
 
 
+def grant_state(set_, run, e):
+    """Follow record `e` of `run` in its intent grants (docs/intent-grants.md), `run["grants"]`: grant id -> {grant,
+    limits, used, revoked, self_approved, description?}. An `intent.grant` record adds one, an `intent.revoked` record
+    ends it, and a decision a grant released (`ext.grant`) sets its totals. `set_`: as agent_state's."""
+    typ, d, x = e["type"], e["data"], (e.get("ext") or {}).get("grant")
+    gs = run.get("grants") or {}
+    if typ == "ext" and d.get("name") == "intent.grant":
+        set_(run, "grants", {**gs, d["id"]: {"grant": d["grant"], "limits": d["limits"], "used": d["used"],
+                                             "revoked": False, "self_approved": d["self_approved"],
+                                             **({"description": d["description"]} if "description" in d else {})}})
+    elif typ == "ext" and d.get("name") == "intent.revoked" and d.get("id") in gs:
+        set_(gs[d["id"]], "revoked", True)
+    elif typ == "policy.decision" and isinstance(x, dict) and x.get("id") in gs:
+        set_(gs[x["id"]], "used", x["used"])
+
+
 def writer(identity, req):
     """Who writes a stream: the caller, and whether through a gateway (a request with `caller`)."""
     return subject(identity) + (" through a gateway" if "caller" in req else "")
@@ -328,6 +344,7 @@ class Tx:
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
         agent_state(self.set, log, run, e)
         contain_state(self.set, log, run, e, self.pop)
+        grant_state(self.set, run, e)
         for t, d in incidents:   # first, as detect.backtest feeds them; an enforced incident is the responder's to write
             if t == "incident.opened" and d["mode"] == "enforce" and log.respond:
                 log.respond(self, run, e, d)
@@ -624,6 +641,7 @@ class RecordLog:
             if not run["final"]:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
+                grant_state(dict.__setitem__, run, e)
         self.log_id = self.log_id or secrets.token_hex(16)
         self.agent, self.contain = agent, contain
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys

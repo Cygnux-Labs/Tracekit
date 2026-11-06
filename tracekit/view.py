@@ -69,7 +69,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_text, findings_v2, parsers
+from . import findings_text, findings_v2, grants, parsers
 from .bundle_v2 import bundle, export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -403,6 +403,7 @@ class Translator(observe.Translator):
         self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
         self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
+        self.grants = observe._Bounded(observe.MAX_RUNS_KEPT)   # grant id -> its intent.grant record's data
 
     def _base(self, e, rec, event):   # tk_tier: T2 a gateway or executor wrote it for its client (said vs did)
         return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent"),
@@ -447,6 +448,18 @@ class Translator(observe.Translator):
             x["v2"] = {**info, **x.get("v2", {})}
             if e["run_id"] == SIGNER_RUN[1]:
                 x.update(signer=True, agent="signer")
+        return out
+
+    def _released(self, x):
+        """What a grant released, for the decision's row: its id, its tier, the payment in words and what the grant has
+        left after it (when this reader saw the grant's record)."""
+        f, g = x.get("fields") if isinstance(x.get("fields"), dict) else {}, self.grants.get(x.get("id"))
+        out = {"id": x.get("id"), "tier": x.get("tier"),
+               "what": f"{grants.show(f.get('amount'), f.get('currency'))} to {f.get('payee')}"}
+        try:
+            out["left"] = grants.left({"grant": g["grant"], "limits": g["limits"], "used": x["used"]}) if g else None
+        except (KeyError, TypeError):
+            out["left"] = None
         return out
 
     def _v2(self, e, rec, t, d):
@@ -518,7 +531,9 @@ class Translator(observe.Translator):
                              "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
                      v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
                          "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"), **self.reads(d),
-                         **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d}})
+                         **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d},
+                         **({"grant": self._released(e["ext"]["grant"])} if isinstance(
+                             (e.get("ext") or {}).get("grant"), dict) else {})})
             return [r]
         aid = d.get("approval_id")
         tool, rule_ids, asked = self.requests.get(aid, ("", [], None))
@@ -694,6 +709,24 @@ class Translator(observe.Translator):
         if t == "ext" and d.get("name") == "pcm.sent":   # a proof-carrying message the signer signed: a row, not an alert
             return note("PCM · MESSAGE SENT", f"to {d.get('to')} · message {d.get('id')} · intent {d.get('intent')}",
                         "STATE")
+        if t == "ext" and d.get("name") == "intent.grant" and isinstance(d.get("grant"), dict):
+            self.grants[d.get("id")] = d   # a person granted the run payments within limits (docs/intent-grants.md)
+            g = d["grant"]
+            who = "self-approved (the run's own user, which the agent can be)" if d.get("self_approved") else \
+                f"by {(g.get('issuer') or {}).get('person') or (g.get('issuer') or {}).get('id')}"
+            try:
+                bounds = grants.words(g, d["limits"], d.get("used"))
+            except (KeyError, TypeError, IndexError):   # a record the signer never writes: its id alone
+                bounds = "limits unreadable"
+            issued = {"id": d.get("id"), "by": who, "words": bounds, "until": g.get("expires_at"),
+                      **({"description": d["description"]} if isinstance(d.get("description"), str) else {})}
+            return note(f"GRANT ISSUED · {d.get('id')}", f"{who} · payments {bounds} · until {g.get('expires_at')}"
+                        + (f" · {json.dumps(d['description'])}" if "description" in issued else ""), "STATE",
+                        grant_issued=issued)
+        if t == "ext" and d.get("name") == "intent.revoked":
+            return note(f"GRANT REVOKED · {d.get('id')}", f"by {d.get('by')}" + (f" · {json.dumps(d['reason'])}"
+                                                                                if d.get("reason") else "")
+                        + " · its calls are held again", "STATE", grant_revoked=d.get("id"))
         if t == "ext" and d.get("name") == "pcm.grant":
             return note("PCM · GRANT ISSUED", f"to {d.get('subject')} · intent {d.get('intent')}"
                         + (f" · approval {d['approval_id']}" if d.get("approval_id") else ""), "STATE")
@@ -815,7 +848,8 @@ def review(records, rep, verdict):
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key = d.get("decision")
             if key != "allow":
-                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
+                perms[d.get("tool_use_id")] = "within a grant" if isinstance((e.get("ext") or {}).get("grant"), dict) \
+                    else {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
                 asked.add(d.get("tool_use_id"))
         elif t == "constraint.added":

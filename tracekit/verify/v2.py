@@ -155,7 +155,7 @@ import sys
 import zipfile
 import zlib
 
-from tracekit import __version__, crypto
+from tracekit import __version__, crypto, grants, pcm
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, NOT_RATED, Report, _load_trusted_key
 from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, ext_names, run_files, run_name
 from tracekit.core import GENESIS
@@ -308,9 +308,112 @@ def _box(rep, events):
     rep.check("boxed agent", True, lines[0], lines[1:])
 
 
+_GRANT_KEYS = {"name", "id", "grant", "limits", "used", "self_approved", "first", "description"}
+
+
+def _grant_issued(e):
+    """Why `e` is not an intent.grant record as the signer writes one (SignerService._grant_issue), or None: a PCM grant
+    of an intent this verifier knows, issued by a person for this very run and tenant, never passed on, its id its
+    hash's; caveats and limits a grant may have, an expiry within 24 h of its issue (grants.problems); and its totals
+    those of no call, or of the held call it was issued from (`first`), which must be within it."""
+    d = e.get("data")
+    if e.get("source") != "signer" or not isinstance(d, dict) or not set(d) <= _GRANT_KEYS \
+            or not isinstance(d.get("id"), str) or not isinstance(d.get("used"), list) \
+            or not isinstance(d.get("grant"), dict) or rpc_schema.validate(rpc_schema.PCM_GRANT, d["grant"]) \
+            or rpc_schema.validate(rpc_schema._LIMITS, d.get("limits")) or type(d.get("self_approved")) is not bool:
+        return "an intent.grant record that is not as the signer writes one"
+    g, intent = d["grant"], grants.REFS.get(d["grant"]["intent"])
+    if intent is None:
+        return f"a grant of intent {g['intent'][:80]}, which this verifier doesn't know"
+    if d["id"] != grants.grant_id(g):
+        return f"grant {str(d['id'])[:24]} is not its grant's id ({grants.grant_id(g)})"
+    if (g["issuer"]["kind"], g["issuer"]["run"], g["issuer"]["tenant"], g["parent"], g["delegable"]) != \
+            ("person", e.get("run_id"), e.get("tenant"), None, False):
+        return f"grant {d['id']} is not a person's, for this run and tenant, kept to its run"
+    bad = grants.problems(intent, g["caveats"], d["limits"], g["expires_at"], g["ts"])
+    if bad:
+        return f"grant {d['id']}: {'; '.join(bad)[:300]}"
+    used, f = grants.zero(d["limits"]), d.get("first")
+    if f is not None:
+        fields = f.get("fields") if isinstance(f, dict) else None
+        if not (isinstance(fields, dict) and not pcm.check_args(grants.INTENTS[intent], fields)
+                and isinstance(f.get("approval_id"), str) and isinstance(f.get("tool_call_id"), str)):
+            return f"grant {d['id']}: its first use is not a held call's"
+        used, why = grants.check({"grant": g, "limits": d["limits"], "used": used}, fields, g["ts"])
+        if why:
+            return f"grant {d['id']} was issued from a held call outside it ({why})"
+    if d["used"] != used:
+        return f"grant {d['id']} starts with totals {json.dumps(d['used'])[:64]}, not {json.dumps(used)}"
+    if "description" in d and not (isinstance(d["description"], str) and len(d["description"]) <= 512):
+        return f"grant {d['id']}: its description is not a string of at most 512 characters"
+    return None
+
+
+def _grants(rep, events):
+    """intent.grant, intent.revoked and ext.grant (docs/intent-grants.md): the grants people issued for a run, their
+    revocations, and the calls they released. Each grant is checked as _grant_issued says; each released call against
+    its grant, as the signer decided it: a policy.decision flagged with TK-GRANT, its grant recorded earlier in the same
+    run and not revoked before it, decided before the grant expired, its fields those of the intent and within every
+    caveat, its totals the previous call's plus its own and within every limit, and its tier the record's (T2: an
+    executor or gateway decided and ran the call; T1: the arguments the harness reported). The records verified like
+    every other; what is wrong here is a warning, as for every ext name."""
+    live, problems, issued, selfish, revoked, tiers = {}, [], 0, 0, 0, collections.Counter()
+    for e in sorted(events, key=lambda e: e["seq"] if type(e.get("seq")) is int else -1):
+        at, d, run = f"seq {e.get('seq')}", e.get("data"), (e.get("tenant"), e.get("run_id"))
+        name = d.get("name") if e.get("type") == "ext" and isinstance(d, dict) else None
+        if name == "intent.grant":
+            why = _grant_issued(e)
+            if why:
+                problems.append(f"{at}: {why}")
+                continue
+            live[(run, d["id"])] = {"grant": d["grant"], "limits": d["limits"], "used": d["used"], "revoked": False}
+            issued, selfish = issued + 1, selfish + d["self_approved"]
+        elif name == "intent.revoked":
+            g = live.get((run, d.get("id"))) if isinstance(d.get("id"), str) else None
+            if e.get("source") != "signer" or g is None or g["revoked"]:
+                problems.append(f"{at}: revokes no grant still live in its run")
+            else:
+                g["revoked"], revoked = True, revoked + 1
+        x = e["ext"].get("grant", e) if isinstance(e.get("ext"), dict) else e
+        if x is e:
+            continue
+        g = live.get((run, x["id"])) if isinstance(x, dict) and isinstance(x.get("id"), str) else None
+        intent = g and grants.REFS[g["grant"]["intent"]]
+        ok = e.get("type") == "policy.decision" and isinstance(d, dict) and d.get("decision") == "flag" \
+            and isinstance(d.get("rule_ids"), list) and "TK-GRANT" in d["rule_ids"] and isinstance(x, dict) \
+            and set(x) == {"id", "fields", "used", "tier"}
+        if not ok:
+            problems.append(f"{at}: ext.grant is not on a decision a grant released, as the signer writes it")
+        elif g is None:
+            problems.append(f"{at}: names grant {str(x['id'])[:24]}, which this bundle doesn't hold earlier in the run "
+                            "(export the whole run to check it)")
+        elif not isinstance(x["fields"], dict) or pcm.check_args(grants.INTENTS[intent], x["fields"]):
+            problems.append(f"{at}: the fields it records are not a {intent} call's")
+        else:
+            used, why = grants.check(g, x["fields"], e.get("ts") or "")
+            if why:
+                problems.append(f"{at}: released a call the grant holds ({why})")
+            elif x["used"] != used:
+                problems.append(f"{at}: records totals {json.dumps(x['used'])[:64]}, not {json.dumps(used)}")
+            elif x["tier"] != ("T2" if e.get("tier") == "T2" else "T1"):
+                problems.append(f"{at}: says tier {str(x['tier'])[:8]}, the record {e.get('tier') or 'T1'}")
+            else:
+                g["used"] = used
+                tiers[x["tier"]] += 1
+    rep.check("intent grants", not problems,
+              f"{issued} grant(s)" + (f" ({selfish} self-approved: issued by the run's own user, which the agent can be)"
+                                      if selfish else " by people")
+              + (f", {revoked} revoked" if revoked else "") + f"; {sum(tiers.values())} call(s) released within them "
+              f"({tiers['T2']} at T2, decided and run by an executor or gateway; {tiers['T1']} at T1, on the arguments "
+              "the harness reported), each re-checked against its grant and its running totals",
+              problems[:20], warn=True)
+
+
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
-# whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
-EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy, "box": _box}
+# whose lines are its own: every other line of the report reads the same without them (format-v2.md §9). Names that
+# share a check are read together, once: a grant, its revocation and the calls it released
+EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy, "box": _box, "intent.grant": _grants,
+              "intent.revoked": _grants, "grant": _grants}
 MAX_UNREAD = 20   # `not interpreted` lines, one per ext name; the rest on one line
 RUN_PROBLEMS = 20   # a run's problems past which its later records go unchecked: forged records cost a verifier little
 
@@ -562,10 +665,13 @@ def _ext(rep, events, full):
             carry.setdefault(n, []).append(e)
     later = f"; tracekit >= {full} checks it" if isinstance(full, str) and _VERSION.fullmatch(full) \
         and _version(full) > _version(__version__) else ""
-    shown, more = 0, 0
+    shown, more, done = 0, 0, set()
     for n, es in sorted(carry.items()):
         if n in EXT_CHECKS:
-            EXT_CHECKS[n](rep, es)
+            if EXT_CHECKS[n] not in done:   # once, over every name it reads
+                done.add(EXT_CHECKS[n])
+                EXT_CHECKS[n](rep, list({id(e): e for k, v in carry.items() if EXT_CHECKS.get(k) is EXT_CHECKS[n]
+                                         for e in v}.values()))
         elif shown < MAX_UNREAD:
             shown += 1
             rep.check("not interpreted", False, f"{len(es)} record(s) carry ext.{n}: their signatures, chain and "
