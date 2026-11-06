@@ -250,3 +250,18 @@
 {"tool": "Bash", "args": {"command": "git commit -m 'stop running rails db:drop in CI'"}, "expect": "allow", "note": "a commit message that names a reset command"}
 {"tool": "Bash", "args": {"command": "php artisan migrate"}, "expect": "allow", "note": "apply Laravel's migrations"}
 {"tool": "Bash", "args": {"command": "mix ecto.migrate"}, "expect": "allow", "note": "apply Ecto's migrations"}
+{"tool": "Bash", "args": {"command": "kubectl get secrets -n default"}, "expect": "allow", "note": "list secret names and types without revealing payload data"}
+{"tool": "Bash", "args": {"command": "kubectl get namespaces"}, "expect": "allow", "note": "list existing cluster namespaces"}
+{"tool": "Bash", "args": {"command": "kubectl describe serviceaccount deployer -n prod"}, "expect": "allow", "note": "inspect annotations and tokens linked to service account"}
+{"tool": "Bash", "args": {"command": "kubectl auth can-i create deployments --as=developer"}, "expect": "allow", "note": "test RBAC authorization rules for deployment creation"}
+{"tool": "Bash", "args": {"command": "kubectl describe secret db -n prod"}, "expect": "allow", "note": "describe secret metadata and data sizes without values"}
+{"tool": "Bash", "args": {"command": "vault secrets list"}, "expect": "allow", "note": "list enabled Vault secrets engines and paths"}
+{"tool": "Bash", "args": {"command": "vault policy list"}, "expect": "allow", "note": "list names of configured access policies in Vault"}
+{"tool": "Bash", "args": {"command": "vault token lookup"}, "expect": "allow", "note": "check TTL and policies of current Vault token"}
+{"tool": "Bash", "args": {"command": "vault kv list secret/"}, "expect": "allow", "note": "list secret paths in a Vault KV store"}
+{"tool": "Bash", "args": {"command": "vault kv metadata get secret/app"}, "expect": "allow", "note": "read KV secret metadata without values"}
+{"tool": "Bash", "args": {"command": "vault status"}, "expect": "allow", "note": "check Vault seal and health status"}
+{"tool": "Bash", "args": {"command": "kubectl get -o yaml clusterrole secret-reader"}, "expect": "allow", "note": "read a cluster role named for reading secrets"}
+{"tool": "Bash", "args": {"command": "kubectl get -o json pods -n secrets-store"}, "expect": "allow", "note": "list pods in a namespace whose name starts with secrets"}
+{"tool": "Bash", "args": {"command": "kubectl get -n secrets deploy -o yaml"}, "expect": "allow", "note": "read deployments in a namespace named secrets"}
+{"tool": "Bash", "args": {"command": "kubectl get secret db -o name"}, "expect": "allow", "note": "print a secret's name only"}
