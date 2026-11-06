@@ -189,9 +189,12 @@ deny:
   - id: TK-D012
     class: shell
     # each command's argv (wrappers and runners such as uvx, uv tool run, pipx run, hatch run and conda run, `sh -c`,
-    # `eval` and a path to the binary resolved): `tracekit approve|reject` and `tracekit approvals [OPTIONS]
-    # approve|reject`, also as `python -m tracekit[.cli]` (python, pythonw, py, pyw or pypy, with a version and a
-    # free-threaded build's `t`; up to eight options, with a value, before -m; or -Im) or a runner's module (`uv run -m
+    # `eval` and a path to the binary resolved): `tracekit approve|reject`, `tracekit approvals [OPTIONS]
+    # approve|reject` (with --grant too) and every `tracekit grant` whatever follows it: a grant releases calls like an
+    # approval, and an agent needs no grant command (listing or revoking included), so its options and action aren't
+    # read at all and no spelling of them (an argparse prefix of --signer, a repeated or spaced value, an action from
+    # stdin or computed) gets past; also as `python -m tracekit[.cli]` (python,
+    # pythonw, py, pyw or pypy, with a version and a free-threaded build's `t`; up to eight options, with a value, before -m; or -Im) or a runner's module (`uv run -m
     # tracekit.cli`), and after a `--` (Python 3.14's argparse takes one before the command). The hold line names these
     # commands for a person, and the agent reads it too: the dev signer takes the agent's own answer, labelled
     # self_approved. Listing and showing approvals aren't held. The action is the word after `approvals` and its
@@ -204,9 +207,9 @@ deny:
     # a value (`uvx -qc c.txt tracekit`), a runner's own options before its subcommand (`uv -q run`) or a runner
     # policy2/shell.py doesn't name (mamba, `hatch env run`); when that must hold too, run system mode, whose signer
     # refuses the agent's own answer
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (approve|reject|approvals( --[\w\W]*?)? (approve|reject))( |$)'
-    reason: answering an approval from the agent's session
-    remedy: Wait for a person to approve or reject the held call from their own terminal; `tracekit approvals list` and `show` stay allowed.
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant)( |$)'
+    reason: answering an approval or issuing a grant from the agent's session
+    remedy: Wait for a person to answer the held call, or grant calls like it, from their own terminal; `tracekit approvals list` and `show` stay allowed.
     rationale: An approval is a person's decision; an agent that answers its own held calls turns every ask into an allow.
   - id: TK-D020
     class: shell
@@ -627,6 +630,9 @@ ask:
     # `mcp:<server>/<tool>` or Crush's joined `mcp__<server>_<tool>`, in snake_case or camelCase (createRefund)
     tool: 'mcp(:[^/]+/|__.*[_-])([Ss]end_?[Mm]oney|[Tt]ransfer_?[Mm]oney|[Cc]onvert_?[Cc]urrency|[Cc]reate_?[Rr]efund)'
     pattern: '^'
+    # a person's payment grant (docs/intent-grants.md) releases a call it can read (an amount in minor units, a
+    # currency, one payee) within its limits; a refund or conversion names no payee, so it stays held
+    approval: {grant: payment.send}
     reason: moving money through an MCP tool (sending, transferring or converting money, or a refund)
     remedy: Check the amount, currency and recipient in the call's arguments before approving it; a refund with no amount refunds in full.
     rationale: The MCP twin of TK-A043 for tools whose name says they move money; a person confirms each call.

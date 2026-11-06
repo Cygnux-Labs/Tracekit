@@ -130,6 +130,13 @@ unchanged: the hook only chooses which arguments the retry is decided with, and 
 the approval. So a retry exactly as approved, description included, runs under that approval even when another
 wording of the command was rejected: the person approved that call. It runs once; the approval is used up then.
 
+## Approve calls like this one: grants
+
+For a held payment, `tracekit approvals approve ID --grant --payee … --max '200 USDC' --total '500 USDC' --for 1h`
+approves the call and grants the run more payments like it, within those limits: they run without a stop, and
+anything outside them is held with the reason. `tracekit approvals show ID` says how a grant reads the call. See
+[intent grants](intent-grants.md).
+
 ## Tiers: T1 and T2 executors
 
 - **T1** (default): the approval binds the arguments the agent reported. The adapter runs the call in the agent's

@@ -25,7 +25,7 @@ RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rat
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
-                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME"}
+                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT"}
 # the reason and remedy the signer gives with an id the engine gives itself, as with a rule's own: fixed text, never
 # the call's
 ENGINE_REASONS = {"TK-A2A-NAME": {
@@ -66,8 +66,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
-# agent: a reviewer agent may answer calls within its bounds (_lint_agent)
-APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
+# agent: a reviewer agent may answer calls within its bounds (_lint_agent); grant: a person's intent grant of that intent
+# may release the rule's calls within its limits (docs/intent-grants.md; the intents are tracekit.grants.INTENTS)
+APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",), "grant": ("payment.send",)}
 SCOPES = ("run", "session", "owner", "principal")
 MAX_WINDOW = 86400   # seconds
 MAX_STEPS = 64       # an incident cites at most 64 records: one per step
@@ -373,8 +374,11 @@ def _lint(pol, path):
             if "approval" in r and (sec != "ask" or not isinstance(r["approval"], dict) or not r["approval"]
                                     or any(v not in APPROVAL.get(k, ()) for k, v in r["approval"].items()
                                            if k != "agent")):
-                errors.append(f"{where}: approval must be {{executor?: t1|t2, passkey?: required, agent?}}, on an ask "
-                              "rule")
+                errors.append(f"{where}: approval must be {{executor?: t1|t2, passkey?: required, agent?, grant?: "
+                              "payment.send}, on an ask rule")
+            elif r.get("approval", {}).get("grant") and r["approval"].get("passkey") == "required":
+                errors.append(f"{where}: approval.grant on a passkey rule: each of its calls needs a person's passkey, "
+                              "so no grant releases them")
             elif "agent" in r.get("approval", {}):
                 errors += [f"{where}: approval.agent: {e}" for e in _lint_agent(r)]
             if r["id"] in ids:

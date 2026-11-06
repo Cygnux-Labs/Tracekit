@@ -1607,8 +1607,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # the tailer reads Claude Code transcripts only
     why = (_tailer_acl(owner, tailer.pw_name, darwin) or _tailer_sudo(owner, tailer)) if agent == "claude" else None
     if why:
-        print(f"transcript tailer: {why}. No tailer is set up, so each run of {target_user}'s sessions records a "
-              "tailer_lost gap instead of their tool uses and prompts")
+        print(f"transcript tailer: {why}. No tailer is set up, so each of {target_user}'s Claude Code sessions "
+              "records a tailer_lost gap instead of its transcript")
     sock = os.path.join(run_dir, "signer.sock")
     observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
     _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
