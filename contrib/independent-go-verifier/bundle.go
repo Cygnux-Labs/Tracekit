@@ -284,14 +284,14 @@ func checkRecord(r validatedRecord, raw []byte, keys map[string]recordedKey) err
 	return ValidateEvent(r.ev)
 }
 
-func loadTrust(raw []byte) (VKey, []VKey, int, error) {
+func loadTrust(raw []byte) (VKey, []VKey, int, bool, error) {
 	v, err := ParseStrict(raw)
 	if err != nil {
-		return VKey{}, nil, 0, err
+		return VKey{}, nil, 0, false, err
 	}
 	trust, err := object(v)
 	if err != nil {
-		return VKey{}, nil, 0, err
+		return VKey{}, nil, 0, false, err
 	}
 	for key := range trust {
 		switch key {
@@ -299,101 +299,118 @@ func loadTrust(raw []byte) (VKey, []VKey, int, error) {
 		case "rekor":
 			pin, err := object(trust[key])
 			if err != nil {
-				return VKey{}, nil, 0, err
+				return VKey{}, nil, 0, false, err
 			}
 			if len(pin) != 0 {
 				if len(pin) != 3 {
-					return VKey{}, nil, 0, errors.New("invalid Rekor trust")
+					return VKey{}, nil, 0, false, errors.New("invalid Rekor trust")
 				}
 				if _, err := object(pin["trusted_root"]); err != nil {
-					return VKey{}, nil, 0, err
+					return VKey{}, nil, 0, false, err
 				}
 				if _, err := fieldString(pin, "publishing_key"); err != nil {
-					return VKey{}, nil, 0, err
+					return VKey{}, nil, 0, false, err
 				}
 				switch pin["class"] {
 				case "public", "customer", "tracekit", "operator":
 				default:
-					return VKey{}, nil, 0, errors.New("invalid Rekor class")
+					return VKey{}, nil, 0, false, errors.New("invalid Rekor class")
 				}
 			}
 		case "monitors", "issuers", "analyzers":
-			return VKey{}, nil, 0, fmt.Errorf("trust feature %s is not supported", key)
+			// an empty list pins nothing (format-v2.md §10), as an absent one
+			pins, err := array(trust[key])
+			if err != nil {
+				return VKey{}, nil, 0, false, fmt.Errorf("trust %s is not a list", key)
+			}
+			if len(pins) != 0 {
+				return VKey{}, nil, 0, false, fmt.Errorf("trust feature %s is not supported", key)
+			}
 		default:
-			return VKey{}, nil, 0, fmt.Errorf("unknown trust field %s", key)
+			return VKey{}, nil, 0, false, fmt.Errorf("unknown trust field %s", key)
 		}
 	}
+	// the pinned allow-list may name algorithms this verifier doesn't implement: records of those fail, as records of
+	// an algorithm the list leaves out (format-v2.md §4, algorithms)
 	algs, err := array(trust["algs"])
 	if err != nil {
-		return VKey{}, nil, 0, err
+		return VKey{}, nil, 0, false, err
 	}
-	if len(algs) != 1 || algs[0] != "ed25519" {
-		return VKey{}, nil, 0, errors.New("only ed25519 trust is supported")
+	if len(algs) == 0 {
+		return VKey{}, nil, 0, false, errors.New("no algorithm is allowed")
+	}
+	ed25519Allowed := false
+	for _, a := range algs {
+		name, ok := a.(string)
+		if !ok {
+			return VKey{}, nil, 0, false, errors.New("non-string algorithm")
+		}
+		ed25519Allowed = ed25519Allowed || name == "ed25519"
 	}
 	logs, err := array(trust["logs"])
 	if err != nil {
-		return VKey{}, nil, 0, err
+		return VKey{}, nil, 0, false, err
 	}
 	if len(logs) != 1 {
-		return VKey{}, nil, 0, errors.New("exactly one Ed25519 log key is required; hybrid unsupported")
+		return VKey{}, nil, 0, false, errors.New("exactly one Ed25519 log key is required; hybrid unsupported")
 	}
 	str, ok := logs[0].(string)
 	if !ok {
-		return VKey{}, nil, 0, errors.New("non-string log key")
+		return VKey{}, nil, 0, false, errors.New("non-string log key")
 	}
 	log, err := ParseVKey(str)
 	if err == nil && log.Type != 1 {
 		err = errors.New("not an Ed25519 log vkey")
 	}
 	if err != nil {
-		return VKey{}, nil, 0, notVKey(str, err)
+		return VKey{}, nil, 0, false, notVKey(str, err)
 	}
 	var witnesses []VKey
 	var classes, vkeys []string
 	if value, ok := trust["witnesses"]; ok {
 		arr, err := array(value)
 		if err != nil {
-			return VKey{}, nil, 0, err
+			return VKey{}, nil, 0, false, err
 		}
 		for _, item := range arr {
 			m, err := object(item)
 			if err != nil {
-				return VKey{}, nil, 0, err
+				return VKey{}, nil, 0, false, err
 			}
 			if len(m) != 2 {
-				return VKey{}, nil, 0, errors.New("invalid witness trust object")
+				return VKey{}, nil, 0, false, errors.New("invalid witness trust object")
 			}
 			class, err := fieldString(m, "class")
 			if err != nil {
-				return VKey{}, nil, 0, err
+				return VKey{}, nil, 0, false, err
 			}
 			switch class {
 			case "public", "customer", "tracekit", "operator":
 			default:
-				return VKey{}, nil, 0, errors.New("invalid witness class")
+				return VKey{}, nil, 0, false, errors.New("invalid witness class")
 			}
 			name, err := fieldString(m, "vkey")
 			if err != nil {
-				return VKey{}, nil, 0, err
+				return VKey{}, nil, 0, false, err
 			}
 			// a vkey of another type is no trust error: the checkpoint fails it (exit 1), as in the reference
 			vkey, err := ParseVKey(name)
 			if err != nil {
-				return VKey{}, nil, 0, notVKey(name, err)
+				return VKey{}, nil, 0, false, notVKey(name, err)
 			}
 			witnesses = append(witnesses, vkey)
 			classes = append(classes, class)
 			vkeys = append(vkeys, name)
 		}
 		if err := checkWitnesses(witnesses); err != nil {
-			return VKey{}, nil, 0, err
+			return VKey{}, nil, 0, false, err
 		}
 		seen := make(map[string]string) // by the vkey as written, as the reference keys a witness's class
 		for i, k := range witnesses {
 			if c, ok := seen[vkeys[i]]; !ok {
 				seen[vkeys[i]] = classes[i]
 			} else if c != classes[i] {
-				return VKey{}, nil, 0, fmt.Errorf("witness %s with two classes (%s, %s); a witness has one class: list it once, with the class you give it", k.Name, c, classes[i])
+				return VKey{}, nil, 0, false, fmt.Errorf("witness %s with two classes (%s, %s); a witness has one class: list it once, with the class you give it", k.Name, c, classes[i])
 			}
 		}
 	}
@@ -402,12 +419,12 @@ func loadTrust(raw []byte) (VKey, []VKey, int, error) {
 	if _, ok := trust["witnesses_required"]; ok {
 		n, err := fieldInt(trust, "witnesses_required")
 		if err != nil {
-			return VKey{}, nil, 0, err
+			return VKey{}, nil, 0, false, err
 		}
 		// int is 32 bits on some builds: past any number of witnesses, every larger quorum fails alike
 		quorum = int(min(n, math.MaxInt32))
 	}
-	return log, witnesses, quorum, nil
+	return log, witnesses, quorum, ed25519Allowed, nil
 }
 
 // notVKey says which pinned key is not a vkey, and why, as the reference verifier does.
@@ -419,7 +436,7 @@ func notVKey(key string, err error) error {
 // VerifyBundle for semantic checks, optional anchors and a verification verdict.
 func InspectBundle(bundle, trustBytes []byte) (Inspection, error) {
 	result := Inspection{}
-	log, witnesses, quorum, err := loadTrust(trustBytes)
+	log, witnesses, quorum, ed25519Allowed, err := loadTrust(trustBytes)
 	if err != nil {
 		return result, fmt.Errorf("trust: %w", err)
 	}
@@ -427,10 +444,10 @@ func InspectBundle(bundle, trustBytes []byte) (Inspection, error) {
 	if err != nil {
 		return result, err
 	}
-	return inspectFiles(files, log, witnesses, quorum)
+	return inspectFiles(files, log, witnesses, quorum, ed25519Allowed)
 }
 
-func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum int) (Inspection, error) {
+func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum int, ed25519Allowed bool) (Inspection, error) {
 	result := Inspection{Files: len(files)}
 	// the checks of the reference verifier these errors fail
 	structure := func(err error) error { return failed("bundle structure", err) }
@@ -570,6 +587,9 @@ func inspectFiles(files map[string][]byte, log VKey, witnesses []VKey, quorum in
 			keys[kid] = key
 		default:
 			return result, keyRecord(errors.New("non-key record in keys/records.jsonl"))
+		}
+		if !ed25519Allowed {
+			return result, keyRecord(fmt.Errorf("key record seq %d: algorithm 'ed25519' is not allowed", r.seq))
 		}
 		if err := checkRecord(r, line, keys); err != nil {
 			return result, keyRecord(fmt.Errorf("key record seq %d: %w", r.seq, err))
