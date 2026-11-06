@@ -1542,22 +1542,46 @@ class InitV2(unittest.TestCase):
     def test_uninstall_prints_windows_commands_powershell_runs(self):
         """Review of #628: on Windows the dev signer's runtime dir (%LOCALAPPDATA%\\tracekit\\run) is inside its data
         dir, so Remove-Item named it again after deleting its parent, and a Python path with a space came out quoted,
-        which PowerShell runs only after `&`."""
+        which PowerShell runs only after `&`. Final review: the paths were quoted for cmd.exe (only on a space), so a
+        profile such as O'Brien, or a name with , ; ( $ or [ ], broke both lines in PowerShell. They are PowerShell
+        literals now ('...' with each quote PowerShell reads doubled, ’ too), and Remove-Item takes -LiteralPath."""
         from tracekit import client
-        os.environ.pop("TRACEKIT_RUNTIME_DIR", None)   # Windows' own: %LOCALAPPDATA%\tracekit\run (setUp restores it)
-        data = os.path.join(os.environ["LOCALAPPDATA"], "tracekit")
-        run, config = os.path.join(data, "run"), os.path.join(self.home, ".tracekit-client")
+        name = "O'Brien, a;b (c) $x [y] ’z"   # ’: PowerShell reads it as a single quote too
+        home = os.path.join(self.home, name)
+        data = os.path.join(home, "data", "tracekit")
+        run, config = os.path.join(data, "run"), os.path.join(home, ".tracekit-client")
         for d in (run, config):
             os.makedirs(d, 0o700)
-        with mock.patch.object(os, "name", "nt"), mock.patch.object(sys, "platform", "win32"), \
-                mock.patch.object(sys, "executable", "C:\\Program Files\\Python\\python.exe"), \
+        os.environ.pop("TRACEKIT_RUNTIME_DIR", None)   # Windows' own: %LOCALAPPDATA%\tracekit\run (setUp restores it)
+        env = {"HOME": home, "USERPROFILE": home, "LOCALAPPDATA": os.path.join(home, "data")}
+        with mock.patch.dict(os.environ, env), mock.patch.object(os, "name", "nt"), \
+                mock.patch.object(sys, "platform", "win32"), \
+                mock.patch.object(sys, "executable", "C:\\Users\\O'Brien $x\\python.exe"), \
                 mock.patch.object(autospawn, "_short", lambda d: d), \
-                mock.patch.object(client, "system_config", return_value=None), \
-                mock.patch.object(client, "client_config", return_value={}):
+                mock.patch.object(client, "system_config", return_value=None):
             lines = cli._kept()
         self.assertIn(f"  {run}  (the dev signer's runtime dir)", lines)   # kept, and said so
-        self.assertEqual(lines[-2:], [f"  Remove-Item -Recurse -Force {data}, {config}",
-                                      '  & "C:\\Program Files\\Python\\python.exe" -m pip uninstall tracekit-ai'])
+        literal = os.path.join(self.home, "O''Brien, a;b (c) $x [y] ’’z")
+        self.assertEqual(lines[-2:], [
+            f"  Remove-Item -Recurse -Force -LiteralPath '{os.path.join(literal, 'data', 'tracekit')}', "
+            f"'{os.path.join(literal, '.tracekit-client')}'",
+            "  & 'C:\\Users\\O''Brien $x\\python.exe' -m pip uninstall tracekit-ai"])
+
+    @unittest.skipIf(not hasattr(os, "getuid"), "Windows has no root-owned system config")
+    def test_uninstall_with_a_system_config_it_cannot_trust_finishes_and_says_so(self):
+        """Final review of #628: what uninstall keeps caught the SystemConfigError of a system config it can't trust,
+        then read the client config, which raised it again, so `uninstall --agent codex` took the hooks out and exited
+        1. It reads it once, lists this user's own files, and says why only those."""
+        from tracekit import client
+        bad = os.path.join(self.home, "client.json")
+        with open(bad, "w") as f:
+            f.write("{}")
+        os.chmod(bad, 0o666)   # world-writable: system_config refuses it, as root too
+        with mock.patch.object(client, "SYSTEM_CONFIG", bad), contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["uninstall", "--agent", "codex"]), 0, err.getvalue())
+        self.assertIn(f"{bad} must be owned by root and not group- or world-writable, so this lists only your own "
+                      "files\n", out.getvalue())
 
     @unittest.skipIf(os.name == "nt", "Windows has no POSIX key modes: D-KEYS-MODE warns there")
     def test_doctor_right_after_init_ends_with_dev_setup_ok(self):

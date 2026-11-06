@@ -1056,32 +1056,36 @@ def _kept():
     from . import client
     from .sdk import autospawn
     try:
-        system = client.system_config() is not None
-    except client.SystemConfigError:   # one that can't be read is still system mode's
-        system = True
-    cfg = client.client_config()
+        system, unread = client.system_config() is not None, None
+    except client.SystemConfigError as e:   # one that can't be read is still system mode's
+        system, unread = True, e
+    cfg = {} if system else client.client_config()   # never read again: a broken one would raise there
     data = autospawn.data_dir()
     mine, shared = autospawn.own_runtime_dirs()
     where = [(data, "the dev signer's keys and signed runs: a bundle you exported verifies without them"),
              (client.client_home(), "Tracekit's client config"),
              # as uninstall() stops it: a dev home only, never system mode's signer home (/var/lib/tracekit)
-             (cfg.get("signer_home") if cfg.get("mode") == "dev" and not system else None, "the v1 dev signer's home"),
+             (cfg.get("signer_home") if cfg.get("mode") == "dev" else None, "the v1 dev signer's home"),
              *[(d, "the dev signer's runtime dir") for d in mine]]
     where = [(d, what) for d, what in where if d and os.path.isdir(d)]
+    note = [f"{unread}, so this lists only your own files"] if unread else []
     if not where:
-        return []
+        return note
     paths = [d for d, _ in where]
     if sys.platform == "darwin":   # data/ and run/ in Tracekit's own Application Support dir (autospawn.data_dir)
         paths.insert(0, os.path.dirname(data))
     # a dir inside another one the command deletes isn't named again (Windows' run\ is inside its data dir)
     paths = [d for d in paths if not any(d.startswith(p + os.sep) for p in paths)]
+    def ps(path):   # Windows: a PowerShell literal, '...' with each character it reads as a single quote doubled
+        return "'" + re.sub("(['‘’‚‛])", r"\1\1", path) + "'"
     pip = ("uv tool uninstall" if re.search(r"[/\\]uv[/\\]tools[/\\]", sys.executable) else   # as claude_code.upgrade
            "pipx uninstall" if re.search(r"[/\\]pipx[/\\]venvs[/\\]", sys.executable) else
-           # PowerShell (Remove-Item's shell) runs a quoted program only after &
-           ("& " if os.name == "nt" else "") + f"{_quote(sys.executable)} -m pip uninstall")
-    remove = (f"Remove-Item -Recurse -Force {', '.join(map(_quote, paths))}" if os.name == "nt"
+           f"& {ps(sys.executable)} -m pip uninstall" if os.name == "nt" else   # & runs a quoted program
+           f"{_quote(sys.executable)} -m pip uninstall")
+    # -LiteralPath: -Path reads [ ] * ? in a name as wildcards
+    remove = (f"Remove-Item -Recurse -Force -LiteralPath {', '.join(map(ps, paths))}" if os.name == "nt"
               else f"rm -rf {' '.join(map(_quote, paths))}")
-    return (["kept:"] + [f"  {d}  ({what})" for d, what in where]
+    return note + (["kept:"] + [f"  {d}  ({what})" for d, what in where]
             + [f"  runtime files under {shared} may be shared with another HOME's dev signer: run tracekit down first, "
                "and delete only what is yours"] * bool(shared)
             + ["to delete these and Tracekit too:", "  tracekit down", f"  {remove}", f"  {pip} tracekit-ai"])
