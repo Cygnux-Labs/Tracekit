@@ -9,6 +9,7 @@ import posixpath
 import re
 import time
 import unicodedata
+from urllib.parse import unquote
 
 from . import classes, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, translate
@@ -27,6 +28,7 @@ _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 28
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
 # too much
 _BARE_TARGET = re.compile(r"http://[1-9][0-9]*(\.[0-9]+){3}/")
+_PROSE_SPLIT = re.compile(r"[\s()<>{}\[\],;'\"`|]+")   # a message's words: `(169.254.169.254)`, `169.254.169.254,`
 _SCHEDULED = {"trap", "at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's `via` for code run later
 # what every second reading of a line starts from (shell.analyse's `readings`): an expansion or substitution read as
 # empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
@@ -85,6 +87,14 @@ class Engine:
                        rx(r, "unless") if "unless" in r else None, literals(r["pattern"]),
                        literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
+        # on RE2, a pattern's prefilter of six or more strings is one search of their alternation for a subject longer
+        # than _set_from's length, compiled as the rule's pattern is (an a2a rule's in any case), so it finds one
+        # wherever a str scan would (_holds): {id(strings): (compiled, length)}
+        self._sets = {}
+        if self.engine.startswith("re2@"):
+            for _, r, _, _, _, lits, _ in self.rules:
+                if lits and (at := _set_from(len(lits))) is not None:
+                    self._sets[id(lits)] = (compile_(_alternation(lits), r.get("class") == "a2a"), at)
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._of = {}
@@ -168,7 +178,7 @@ class Engine:
         cls, name, deadline = cls or self.tool_class(tool), _text(tool), [REGEX_TIMEOUT_S]
         low, out = name.lower(), {sec: [] for sec in SECTIONS}
         for sec, rule, tool_re, *_, tool_lits in self.rules:
-            if rule.get("class", cls) == cls and self._named(tool_re, tool_lits, name, low, deadline):
+            if _reaches(rule, cls) and self._named(tool_re, tool_lits, name, low, deadline):
                 out[sec].append(rule["id"])
         return out
 
@@ -216,13 +226,13 @@ class Engine:
         nondeterministic, deadline = False, [REGEX_TIMEOUT_S]
         name, memo = _text(tool), {}
         low_name = name.lower()
-        if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class
-            self._of[cls] = [x for x in self.rules if x[1].get("class", cls) == cls]
+        if cls not in self._of:   # the rules a class's calls reach (no class or that class), each with its _sets entry
+            self._of[cls] = [x + self._sets.get(id(x[5]), (None, 0)) for x in self.rules if _reaches(x[1], cls)]
 
         def hit(entry, parsed, memo, oversize):
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
             over MAX_SUBJECT), else None; TimeoutError past the deadline."""
-            sec, rule, tool_re, pat, unless, lits, tool_lits = entry
+            sec, rule, tool_re, pat, unless, lits, tool_lits, lits_rx, lits_at = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
             # rules on the same subjects read them once (a shell rule with no field reads argv)
@@ -232,11 +242,12 @@ class Engine:
                 memo[key] = _prepare(self._subjects(cls, key[0], args, fields, parsed, key[1]),
                                      _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
-            if lits is None or any(map(joined.__contains__, lits)):
+            if lits is None or _holds(lits, lits_rx, lits_at, joined, self._match, deadline):
                 for subject, low in zip(texts, lows):
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
-                    if (lits is None or len(texts) == 1 or any(map(low.__contains__, lits))) and self._match(
+                    if (lits is None or len(texts) == 1 or
+                            _holds(lits, lits_rx, lits_at, low, self._match, deadline)) and self._match(
                             pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
@@ -321,6 +332,8 @@ class Engine:
             return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
             return _container_host_access(parsed[0])
+        if cls == "shell" and field == "push":
+            return _pushes(parsed[0])
         if cls == "sql" and field == "code":
             return fields.get("code", [])
         if cls == "shell" and field == "code":
@@ -349,7 +362,10 @@ class Engine:
         and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
         writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
         mcp: the whole call without the text it only carries (_acted_on), each string in it with a `/` or `\\` also
-        read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call. Each
+        read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call;
+        harness (a coding agent's message to its own agents): only the URLs and bare network addresses in it (its words
+        split at spaces and punctuation, a bare IPv4 address also read as its canonical host, as a shell argv's is), so the
+        rules that read a target for file names (TK-S004, TK-F005) don't read a prompt's prose as a file it opens. Each
         URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal, hex, octal or IPv6
         form reads as the address it is: of mcp, app and unknown tools, each URL in a string of what they act on."""
         if cls == "shell":
@@ -378,6 +394,14 @@ class Engine:
             to = fields.get("receiver")
             receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
             return receiver + [canonical(args.get("params"))]
+        if cls == "harness":   # a message to the agent's own agents: the addresses it names, not its file names
+            strings = _strings(args)
+            urls = [u for s in strings for u in _URL.findall(s)]
+            bare = list(dict.fromkeys(w for s in strings for w in _PROSE_SPLIT.split(s) if _BARE_ADDRESS.match(w)))
+            # a bare address's canonical host, without a scheme: TK-S001 reads it, and TK-F012 (egress, `://`) doesn't
+            # flag prose that only names a version (1.2.3 reads as an address)
+            hosts = [t[7:-1] for t in (classes.url_target("http://" + w) for w in bare) if t and _BARE_TARGET.fullmatch(t)]
+            return list(dict.fromkeys(urls + [t for t in map(classes.url_target, urls) if t] + bare + hosts))
         if cls not in ("mcp", "app", "unknown"):
             return []
         tool = fields.get("tool")
@@ -386,6 +410,34 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+def _set_from(n):
+    """The subject length past which one RE2 search of n strings' alternation is cheaper than a str scan for each, or
+    None when it never is (n < 6). Measured on an M-series Mac (#605): a scan costs about 20 ns plus 0.3 ns a
+    character, the search about 790 ns plus 1.56 ns a character (so 76 strings over 4 KiB: 100 us scanning, 8 us
+    searching), whatever n. The regex module's alternation is slower than the scans at every size (490 us for 76),
+    so the fallback engine always scans."""
+    return None if n < 6 else max(0, (790 - 20 * n) * 100 // (30 * n - 156))
+
+
+def _holds(lits, rx, at, text, match, deadline):
+    """Whether `text` holds one of a prefilter's strings (compile.literals), so the rule's pattern may match it: one
+    search of their alternation `rx` when the text is longer than `at`, else a str scan for each."""
+    if rx is None or len(text) <= at:
+        return any(map(text.__contains__, lits))
+    return match(rx, text, False, deadline) is not None
+
+
+def _alternation(strings):
+    """A pattern that matches any of `strings` (ASCII, compile.literals), each character not a letter or digit as \\xHH,
+    which both engines read as itself."""
+    return "|".join("".join(c if c.isalnum() else f"\\x{ord(c):02x}" for c in s) for s in strings)
+
+
+def _reaches(rule, cls):
+    """Whether a rule reads a call of class `cls`: one of no class or of that class (decide and reads alike)."""
+    return rule.get("class", cls) == cls
 
 
 def _unread_cause(command):
@@ -651,6 +703,151 @@ def _container_host_access(commands):
                                                  for k, _, v in (item.partition("=") for item in value.split(",")))):
                 return ["host-access"]
     return []
+
+
+# git's own options before its command that take the next word as their value (git -C dir push); the rest are flags
+_GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
+               "--attr-source"}
+# git push's long options (git push -h), each with what it means here: a reason to hold the push, "value" (it takes
+# the next word unless given with `=`), or "" (neither). git reads a unique prefix of one as it, and so does _pushes.
+# A force (-f, --force, --force-with-lease, a +refspec) is TK-D003's deny and a delete (-d, --delete, --prune, a
+# :refspec) TK-A002's ask, so they give no reason here: a denied force push isn't also told to wait for approval
+_PUSH_LONG = {"all": "all", "branches": "all", "mirror": "all", "delete": "", "prune": "", "tags": "tags",
+              "follow-tags": "tags", "force": "", "force-with-lease": "", "force-if-includes": "",
+              "repo": "value", "recurse-submodules": "value", "receive-pack": "value", "exec": "value",
+              "push-option": "value", "verbose": "", "quiet": "", "dry-run": "", "porcelain": "", "thin": "",
+              "set-upstream": "", "progress": "", "verify": "", "no-verify": "", "signed": "", "atomic": "",
+              "ipv4": "", "ipv6": ""}
+_PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6": ""}   # and -o VALUE
+_REMOTE_PUSH = re.compile(r"remote\..+\.(?:push|mirror)")   # a config key, casefolded (its remote name keeps case)
+# gh api's method (-X PUT, -XPUT, --method PUT, --method=PUT), a branch field (-f branch=x, --field=branch=x) and the
+# contents API's path. lean: a method in a short-option cluster (-iXPUT) isn't read; read it if one is in use
+_GH_METHOD = re.compile(r"(?:-X|--method=?|--request=?)(.*)", re.S)
+_GH_BRANCH = re.compile(r"(?:-[fF]|--(?:raw-)?field=)?branch=(.*)", re.S)
+_GH_CONTENTS = re.compile(r"/?repos/[^/]+/[^/]+/contents/")
+
+
+def _git_push(argv):
+    """Why a git push needs a person, from its argv as the parser read it: a list of `PUSH:<why> <word>`, empty for a
+    push of named branches other than main and master; None for any other command. A push is `git push` (after git's
+    own options, `git -C dir push`), `git send-pack`, which names its refs as push does, `hub push` (hub runs git) and
+    git-push or git-send-pack themselves. Held: a target of main or master (`main`, `HEAD:main`, `refs/heads/master`,
+    `heads/main`, `:main`); one the line can't tell (no refspec, so push.default picks; HEAD, @ or origin/HEAD; an
+    expansion or a pattern, or a remote's push or mirror setting given with -c or --config-env); tags (--tags,
+    --follow-tags, a refs/tags/ or tags/ refspec, `tag <name>`); every branch (--all, --mirror, the `:` refspec); an
+    option push doesn't take, or an ambiguous prefix, which git refuses (send-pack's --stdin, whose refs come from its
+    input, among them). A force or a delete is another rule's (_PUSH_LONG).
+    lean: a git alias (`git p`) or `git subtree push` isn't read, as TK-D003 doesn't read them; nor a tag pushed by its
+    bare name (`git push origin v1.0`), which reads as a branch"""
+    name = _program(argv)
+    why = []
+    if name in ("git", "hub"):
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            # a remote's push or mirror setting given for this run (`-c remote.origin.push=HEAD:main`) picks the target
+            value = argv[i + 1] if argv[i] in ("-c", "--config-env") and i + 1 < len(argv) else \
+                argv[i].removeprefix("--config-env=") if argv[i].startswith("--config-env=") else None
+            if value is not None and _REMOTE_PUSH.fullmatch(value.partition("=")[0].casefold()):
+                why.append("unknown " + value)
+            i += 2 if argv[i] in _GIT_VALUED else 1
+        if argv[i:i + 1] not in (["push"], ["send-pack"]):
+            return None
+        words = argv[i + 1:]
+    elif name in ("git-push", "git-send-pack"):
+        words = argv[1:]
+    else:
+        return None
+    positional, i = [], 0
+    while i < len(words):
+        w = words[i]
+        i += 1
+        if w == "--":
+            positional += words[i:]
+            break
+        if w.startswith("--"):
+            opt, eq, _ = w[2:].partition("=")
+            names = [opt] if opt in _PUSH_LONG or opt.startswith("no-") else [n for n in _PUSH_LONG if n.startswith(opt)]
+            if len(names) != 1:
+                why.append("unknown " + w)
+                continue
+            kind = "" if names[0].startswith("no-") and names[0] != "no-verify" else _PUSH_LONG[names[0]]
+            if kind == "value":
+                i += not eq
+            elif kind:
+                why.append(f"{kind} {w}")
+        elif w.startswith("-") and len(w) > 1:
+            kinds = set()
+            for j, c in enumerate(w[1:], 1):
+                if c == "o":   # -o takes the rest of the word, or the next one
+                    i += j == len(w) - 1
+                    break
+                kinds.add(_PUSH_SHORT.get(c, "unknown"))
+                if c not in _PUSH_SHORT:
+                    break
+            why += [f"{k} {w}" for k in sorted(kinds - {""})]
+        else:
+            positional.append(w)
+    refspecs = positional[1:]   # the first is the repository
+    if not refspecs:
+        why.append("unknown no refspec")
+    tag = False
+    for r in refspecs:
+        if tag or r == "tag":   # `tag <name>` pushes refs/tags/<name>
+            why.append("tags tag " + r)
+            tag = not tag
+            continue
+        spec = r[1:] if r.startswith("+") else r
+        src, colon, dst = spec.partition(":")
+        target = dst if colon else src
+        ref = target.removeprefix("refs/")   # git reads `heads/main` as refs/heads/main, `tags/v1` as a tag
+        if spec == ":":
+            why.append("all " + r)
+        if "refs/tags/" in spec or ref.startswith("tags/"):
+            why.append("tags " + r)
+        elif ref.removeprefix("heads/") in ("main", "master"):
+            why.append("default " + r)
+        elif not target or target in ("HEAD", "@") or target.endswith("/HEAD") or any(c in target for c in "$`*?[{"):
+            why.append("unknown " + r)
+    return ["PUSH:" + w[:64] for w in why]   # what matters is the reason; a word is cut, so a subject stays short
+
+
+def _gh_api(argv):
+    """A gh or hub api call's argv percent-decoded, as GitHub reads its path (`git/refs/heads%2Fmain`), and
+    `PUSH:contents` when it puts or deletes a repository's file (repos/<o>/<r>/contents/…), which commits to the
+    default branch unless a branch field names another (one in an --input file isn't read, so that is held too)."""
+    words = [unquote(w) for w in argv]
+    method, branch = "", ""
+    for i, w in enumerate(words[2:], 2):
+        m = _GH_METHOD.fullmatch(w)
+        if m:
+            method = m[1] or (words[i + 1] if i + 1 < len(words) else "")
+        m = _GH_BRANCH.fullmatch(w)
+        if m:
+            branch = m[1]
+    out = [" ".join(words)]
+    if method.upper() in ("PUT", "DELETE") and branch.removeprefix("refs/heads/") in ("", "main", "master") and any(
+            _GH_CONTENTS.match(w) for w in words[2:]):
+        out.append("PUSH:contents " + method)
+    return out
+
+
+def _pushes(commands):
+    """Each command's argv, as the `argv` field reads it, but a git push as what makes it need a person (_git_push):
+    one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master; a gh or hub
+    api call also percent-decoded (_gh_api)."""
+    out = []
+    for command in commands:
+        argv = command["argv"]
+        push = _git_push(argv)
+        out += push if push is not None else [" ".join(argv)]
+        if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
+            out += [s for s in _gh_api(argv) if s not in out]
+    return out
+
+
+def _program(argv):
+    """The program an argv runs, by its file name, casefolded and without .exe."""
+    return argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe") if argv else ""
 
 
 _HISTORY = (".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")

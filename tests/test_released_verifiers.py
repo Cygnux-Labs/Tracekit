@@ -54,7 +54,10 @@ class Released(Signed):
     def setUp(self):
         self.dir = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
         self.addCleanup(shutil.rmtree, self.dir, True)
-        self.s = svc.SignerService(os.path.join(self.dir, "data"), grace_s=0, fsck_every_s=0, observe_grace_s=0,
+        # the coding pack: the default holds every A2A message (the server core's TK-S011) since #604, and a2a_run's
+        # message must go through
+        coding = svc.load_policy(os.path.join(os.path.dirname(svc.DEFAULT_POLICY), "coding.yaml"))
+        self.s = svc.SignerService(os.path.join(self.dir, "data"), coding, grace_s=0, fsck_every_s=0, observe_grace_s=0,
                                    analyzers=[f"uid:{ANALYZER.subject}"], gateways=[f"mtls:{OPENSHELL.subject}"],
                                    authorize={f"{SENSOR.scheme}:{SENSOR.subject}": ["observe_effect"],
                                               f"mtls:{OPENSHELL.subject}": sorted(svc.DEFAULT_GRANTS

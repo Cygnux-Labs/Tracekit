@@ -1,7 +1,34 @@
-# The signer's default policy: the coding pack plus a visible demo deny and ask, so both are easy to see. They also
-# match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
-extends: coding.yaml
-description: dev default (coding pack, uploads to cloud storage held, a demo deny and a demo ask)
+# The signer's default policy, for coding agents on a laptop: the server pack's tested rules, from the packs it is
+# composed of (the coding, browser, data, network, cloud, comms and core packs: secrets, credentials files and the
+# cloud metadata service among them), so a secret read or sent, a remote delete, an access or audit-logging change
+# and money moved are held or denied here too (#604); plus a visible demo deny and ask, so both are easy to see. They
+# also match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
+#
+# Three things differ from the server pack. Its shadow detection isn't here. A tool no pack maps is flagged, not
+# held: a laptop runs tools and MCP servers no list names. And a coding agent's messages to its own agents are class
+# `harness`: Claude Code's Agent and Task prompts, SendMessage, a subagent's SubagentHandback report and its
+# TodoWrite list, and what the hooks map onto those names (Task: Qwen Code's agent, Cursor's Task, OpenCode's and
+# Kilo Code's task, Antigravity CLI's invoke_subagent; TodoWrite: Qwen Code's todo_write, OpenCode's todowrite). Every
+# rule of no class reads them, but their `target` is only the URLs and network addresses they name, not the file
+# names their prose mentions: TK-S004 (a credentials file) and TK-F005 (a secret-looking path) don't read them, as a
+# prompt that names ~/.aws/credentials doesn't open it. TK-S002 still denies a secret's value in one, and TK-S001 the
+# metadata service's address, as a URL or a bare IPv4 address in any form. A SendMessage can leave the machine, so
+# it is flagged (TK-F018); an Agent or Task run remotely is held (TK-F019), as none of its calls are decided here. An
+# app's own tool by one of these names gets the same reading here. Every email, payment and database tool's call and
+# every Browser Use action is flagged (TK-F020 to TK-F023), as the coding pack flags an MCP call: the server parts'
+# rules for them hold only the harmful forms.
+extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
+          server-core.yaml]
+version: '2026.11-dev-1'
+description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
+unknown_tools: flag
+
+tools:
+  Agent: harness             # Claude Code: a subagent's prompt
+  Task: harness              # Claude Code's earlier name for Agent, and the other harnesses' (above)
+  SendMessage: harness       # Claude Code: a message to a teammate or a running subagent
+  SubagentHandback: harness  # Claude Code: a subagent's report to the agent that started it
+  TodoWrite: harness         # Claude Code's todo list, and the other harnesses' (above)
 
 deny:
   - id: TK-DEMO-DENY
@@ -24,8 +51,74 @@ ask:
     reason: uploading to cloud storage
     remedy: Have a person approve the held call, or write the files locally and let a person upload them.
     rationale: A bucket can hold production data or serve the public; a person confirms what a coding agent writes there.
+  - id: TK-A056
+    class: shell
+    field: push
+    # here, not in the coding pack, as TK-A032: the server pack extends the coding pack, and a server agent's deploy
+    # is often its job (E17's benign corpus has them). Each command's argv, a git push read for where it goes
+    # (engine._git_push: git push, git send-pack, hub push): `PUSH:<why>` for a push to main or master (`main`,
+    # `HEAD:main`, `refs/heads/master`, `heads/main`), to a branch the line can't tell (no refspec, so push.default
+    # picks; HEAD, @ or origin/HEAD; an expansion or a pattern), of tags (--tags, --follow-tags, a refs/tags/ or tags/
+    # refspec, `tag v1.0`) or of every branch (--all, --mirror). A force push is TK-D003's deny and a delete push
+    # TK-A002's ask. A push of named branches other than main and master stays flagged (TK-F004). Any other command is
+    # its argv: publishing a package (npm, pnpm, yarn or bun publish, yarn's `npm publish`, uv, poetry or cargo
+    # publish, gem push, twine upload, also as any runner's `-m twine`), pushing an image or a chart (docker or podman
+    # push and image push, helm push) or deploying (terraform or tofu apply, pulumi up, helm install or upgrade,
+    # kubectl apply or delete), each after up to eight options with a value or not; a gh or hub api call naming
+    # main's or master's ref (git/refs/heads/main, ref=refs/heads/main), merging branches (repos/<o>/<r>/merges) or
+    # putting or deleting a file (engine._gh_api's `PUSH:contents`), read percent-decoded as GitHub reads its path;
+    # a GraphQL updateRef, mergeBranch or createCommitOnBranch, read as TK-A002 reads deleteRef; Sapling's
+    # `sl push --to main`, `git town ship` (or git-town), and Jujutsu's `jj git push` with no arguments, --all,
+    # --tracked, a main or master bookmark (exact: too) or a glob:.
+    # lean: another deploy CLI (vercel, fly deploy, gh release create) is recorded, not held; a gh or hub api GET of
+    # main's ref, a merge into any branch and a GraphQL mutation on any ref are held as one on main would be (the
+    # method, the base and the ref id aren't read: reading /merges with base=main in either order took the fallback
+    # engine seconds on 64 KiB); add a verb here when one is in use
+    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\brepos/[^/ ]+/[^/ ]+/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRef|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/)?(?:main|master)(?: |$)|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))'
+    reason: a push to the default branch or of tags, or a publish or deploy
+    remedy: Have a person approve the held call, or push a named feature branch and leave the merge or release to a person.
+    rationale: These reach a shared branch, a registry or a running system, where others build, install or deploy from them; a person confirms each one.
+  - id: TK-F019
+    class: harness
+    tool: 'Agent|Task'
+    # a subagent that runs remotely: this signer decides none of its calls, so the prompt is the last thing it reads
+    pattern: '"isolation":"remote"'
+    reason: a subagent that runs where Tracekit doesn't decide its calls
+    remedy: Have a person approve the held call, or run the subagent locally, where each of its calls is decided.
+    rationale: A remote subagent's tool calls aren't decided or recorded here; a person confirms what it is sent to do.
   - id: TK-DEMO-ASK
     tool: '(mcp:[^/]+/)?tracekit_demo_ask'
     pattern: '^'
     reason: demo ask rule
     rationale: Shows a call held for a person's approval.
+
+flag:
+  - id: TK-F018
+    class: harness
+    tool: SendMessage
+    # a message to another agent: a teammate or a running subagent may run elsewhere, so the message is kept on the
+    # record as one that can leave the machine
+    pattern: '^'
+    label: agent_message
+  - id: TK-F020
+    class: email
+    # every email tool's call: outbound mail, kept on the record (TK-M003 holds a mass email, TK-P001 a recipient that
+    # came only from untrusted content)
+    pattern: '^'
+    label: outbound_email
+  - id: TK-F021
+    class: payment
+    # every payment tool's call, kept on the record (TK-M001, TK-M002 and TK-M005 hold money moved)
+    pattern: '^'
+    label: payment
+  - id: TK-F022
+    class: sql
+    # every database query, kept on the record as an MCP call is (TK-F006): the server-data rules read a query's
+    # SQL, and a postgres or sqlite MCP tool is class sql, not mcp, once they do
+    pattern: '^'
+    label: database_query
+  - id: TK-F023
+    class: browser
+    # every Browser Use action, kept on the record as a browser MCP tool's call is (TK-F006)
+    pattern: '^'
+    label: browser_action

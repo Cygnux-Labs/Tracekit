@@ -2487,6 +2487,16 @@
         "same_rule_rate": 1.0,
         "total": 1
       },
+      "TK-F015": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
       "TK-S001": {
         "contained": 12,
         "coverage_rate": 1.0,
@@ -2919,6 +2929,16 @@
         "same_rule_rate": 1.0,
         "total": 1
       },
+      "TK-F015": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
       "TK-S001": {
         "contained": 12,
         "coverage_rate": 1.0,
@@ -3312,6 +3332,16 @@
         "total": 1
       },
       "TK-D021": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
+      "TK-F015": {
         "contained": 1,
         "coverage_rate": 1.0,
         "covered_by_rule_or_parse": 1,
@@ -3734,6 +3764,16 @@
         "total": 1
       },
       "TK-D021": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
+      "TK-F015": {
         "contained": 1,
         "coverage_rate": 1.0,
         "covered_by_rule_or_parse": 1,
@@ -4175,6 +4215,16 @@
         "same_rule_rate": 1.0,
         "total": 1
       },
+      "TK-F015": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
       "TK-S001": {
         "contained": 12,
         "coverage_rate": 1.0,
@@ -4237,7 +4287,7 @@
       }
     }
   },
-  "policy_hash": "sha256:4f5e410190bb560ae9360b3abaacb16e1def8d5642d512db884bd5d96ff6e966",
+  "policy_hash": "sha256:43481d9537ae11ef0d8830ce7cc08591226e792faa849c41e113258fb0284b51",
   "regressions": [],
   "rewrite_missed": [],
   "rewritten_cases": 500,
