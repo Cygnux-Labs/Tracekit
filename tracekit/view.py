@@ -441,6 +441,9 @@ class Translator(observe.Translator):
         # under the agent's retry of that call, which used its approval (signer _reusable), names it as `held`
         info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": call or asked,
                 **({"held": asked} if t.startswith("approval") and call and asked and asked != call else {}),
+                # which call and approval a record is of: the page reads them as held_calls does
+                **({"attempt": e["attempt"]} if e.get("attempt") is not None else {}),
+                **({"approval_id": d["approval_id"]} if d.get("approval_id") else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
@@ -616,8 +619,7 @@ class Translator(observe.Translator):
                 t, d.get("reason") or "")
             sev = {"approval.consumed": "info", "approval.expired": "med", "approval.abandoned": "low"}.get(t, "high")
             return alert(sev, f"APPROVAL {word.replace('_', ' ').upper()} · {tool}", text,
-                         "APPROVE" if word == "consumed" else "HOLD" if sev != "high" else "ALERT", approval=word,
-                         approval_id=aid)
+                         "APPROVE" if word == "consumed" else "HOLD" if sev != "high" else "ALERT", approval=word)
         if t == "capture.gap" or t.startswith("reconcile."):
             kind = d.get("kind") or t
             text = (d.get("reason") or d.get("detail") or "")
@@ -797,9 +799,11 @@ def review(records, rep, verdict):
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0, "retries": 0,
            "state": "open", "first": {}}
-    from .why.import_v2 import retries
-    perms, calls, asked = {}, {}, set()   # tool_use_id -> its outcome; approval_id -> its tool_use_id; calls held
-    again = retries(records)   # the held calls' retries with their own id, as the signer's consumes file them
+    from .why.import_v2 import _call_id, held_calls
+    # a call is its decision's run_seq: perms -> its outcome, asked: those held; calls: approval_id -> its tool_use_id;
+    # cur: tool_use_id -> its latest call, ids: call -> its tool_use_id; folds and owners as held_calls has them
+    perms, calls, asked, cur, ids = {}, {}, set(), {}, {}
+    folds, owners = held_calls(records)
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -812,16 +816,18 @@ def review(records, rep, verdict):
                 out["analyzes"] = d["analyzes"]
             if d.get("parent_run"):   # the run that started this one: panel 1 shows it under its parent
                 out["parent"] = d["parent_run"]
-        elif t == "policy.decision" and e.get("run_seq") in again:
+        elif t == "policy.decision" and e.get("run_seq") in folds:
             out["retries"] += 1   # the held call's retry with its id (LangGraph): that call
+            cur[d.get("tool_use_id")] = folds[e["run_seq"]]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
-            key = d.get("decision")
+            key, seq = d.get("decision"), e.get("run_seq")
+            cur[d.get("tool_use_id")], ids[seq] = seq, d.get("tool_use_id")
             if key != "allow":
-                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
+                perms[seq] = {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
-                asked.add(d.get("tool_use_id"))
+                asked.add(seq)
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -857,14 +863,22 @@ def review(records, rep, verdict):
             out["state"] = "closing"
         if t == "approval.request":
             calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
-        own = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id"))
-        call = t.startswith("approval") and (calls.get(d.get("approval_id")) or own)
-        if own != call and own in perms and call in perms:   # the agent's retry of a held call, under its approval
-            del perms[own]   # (signer _reusable): one held call, whose outcome the retry's use is
-            asked.discard(own)
-            out["retries"] += 1
-        if call in perms and (t == "approval" or t in OUTCOMES):
-            perms[call] = held_outcome(perms[call], t, d)
+        if t.startswith("approval"):
+            # an approval's records are the call's its request was for; a use refused, the call's that tried it
+            own, refused = _call_id(rec), t in ("approval.refused", "approval.binding_mismatch")
+            mine, held = cur.get(own), owners.get(d.get("approval_id"))
+            if own and own != calls.get(d.get("approval_id"), own) and mine in perms and held in perms:
+                del perms[mine]   # the agent's retry of a held call under its approval (signer _reusable), with another
+                asked.discard(mine)   # id: one held call, whose outcome the retry's use is
+                out["retries"] += 1
+            if refused and held in perms:   # the call that tried it comes to it, unless it repeats the approval's state
+                now = held_outcome(perms[held], t, d)
+                if now != perms[held] and mine in asked:
+                    perms[mine] = now
+            else:
+                call = mine if refused or held is None else held
+                if call in asked and (t == "approval" or t in OUTCOMES):   # a held call's: a deny or flag has none
+                    perms[call] = held_outcome(perms[call], t, d)
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
@@ -874,7 +888,7 @@ def review(records, rep, verdict):
     out["hold_examples"] = {}
     for c, o in ended.items():
         if c in asked:
-            out["hold_examples"].setdefault(o, c)
+            out["hold_examples"].setdefault(o, ids[c])
     return out
 
 

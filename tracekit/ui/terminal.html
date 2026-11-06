@@ -3553,24 +3553,36 @@
     const ended = a => S.sessions.get(a.agent.session)?.end != null;
     // An approved call runs only by using its approval (`used`)
     const used = answers => answers.some(x => x.v2.approval === "consumed");
-    // the decisions in `rows` the signer filed as a held call's retry with the call's own id (LangGraph's resume): an
-    // approval.consumed names the id while its approval was requested for an earlier decision under it, so the id's
-    // latest decision before the consume is that retry. Into `out`: the retry's row -> the held call's
-    // (why/import_v2.retries). The consume says so; nothing the agent names does
+    // a v2 row's call id and attempt, its approval's key, and whether it is a use the signer refused (of the call that
+    // tried it, not the call the approval is for)
+    const callKey = r => r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id) + "|" + (r.v2?.attempt ?? ""), aidKey = r => r.session_id + "|" + r.v2?.approval_id, refusedUse = r => /^approval\.(refused|binding_mismatch)$/.test(r.v2?.type);
+    // a run's held calls as why/import_v2.held_calls reads them. Returns the owners: approval key -> the decision row its
+    // request was for (the latest under the request's call id and attempt). Into `out`: each decision row that is a held
+    // call's retry with its own id (LangGraph's resume) -> the held call's row. A consume names a call id and attempt, not
+    // a decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it
+    // has no approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of
+    // that approval under the id does. When in doubt it is a call of its own
     function foldsOf(rows, out = new Map()) {
-      const last = new Map(), req = new Map();
+      const decs = new Map(), at = new Map(), owners = new Map(), mism = new Map(), cons = new Map();   // call key -> its decisions
       out.clear();
-      for (const r of rows) {
-        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), a = r.v2?.approval;
-        if (r.event === "PreToolUse") last.set(k, r);
-        else if (a === "requested") req.set(r.session_id + "|" + r.v2.approval_id, last.get(k));
-        else if (a === "consumed" && !r.v2.held) {
-          const held = req.get(r.session_id + "|" + r.v2.approval_id), d = last.get(k);
-          if (held && d && d !== held) out.set(d, held);
-        }
-      }
-      return out;
+      rows.forEach((r, i) => {
+        const a = r.v2?.approval, k = callKey(r);
+        if (r.event === "PreToolUse" && r.v2) { at.set(r, i); decs.set(k, [...(decs.get(k) || []), r]); }
+        else if (a === "requested" && decs.has(k)) owners.set(aidKey(r), decs.get(k).at(-1));
+        else if (a === "binding_mismatch") mism.set(aidKey(r), i);   // the latest
+        else if (a === "consumed") cons.set(aidKey(r), [...(cons.get(aidKey(r)) || []), [i, k]]);
+      });
+      const own = new Set(owners.values());
+      for (const [aid, h] of owners) for (const d of decs.get(callKey(h)))
+        if (at.get(d) > at.get(h) && d.v2.decision === "ask" && d.tool_name === h.tool_name && !own.has(d) && !(mism.get(aid) > at.get(d))
+            && (cons.get(aid) || []).some(([c, k]) => c > at.get(d) && k === callKey(h))) out.set(d, h);
+      return owners;
     }
+    // a call's acts under its id (latest last), and the one a row of `r`'s id and attempt is of that passes `ok`
+    const actsOf = r => (S.byId ||= new Map()).get(tuid(r)) || [];
+    const latestAct = (r, ok = () => true) => actsOf(r).findLast(a => (r.v2?.attempt == null || a.v2?.attempt === r.v2.attempt) && ok(a));
+    // what could have run: an allow, a flag, an ask whose approval was used (a result is never a deny's)
+    const couldRun = (v2, answers) => v2?.decision === "allow" || v2?.decision === "flag" || v2?.decision === "ask" && used(answers);
     // what ingest folds: foldsOf of the rows it reads
     const FOLDS = new Map();
     // a call held for a person (decided ask), the agent's retry of one counted with it: DESK's HELD, HORIZON's HOLDS
@@ -3586,7 +3598,7 @@
       if (a.error) return ["s-err", "FAILED"];
       if (a.v2?.decision === "ask") {
         const ap = lastAnswer(a);
-        if (ap === "approve") return ["s-ok", a.ranBy?.post ? "APPROVED · RETRY RAN" : a.post && used(a.approvals) ? "APPROVED · RAN" : "APPROVED"];
+        if (ap === "approve") return ["s-ok", a.ranBy ? "APPROVED · RETRY RAN" : used(a.approvals) ? "APPROVED · RAN" : "APPROVED"];
         if (ap) return ["s-deny", ANSWER[ap]];
         return ["s-flag", ended(a) ? "NOT ANSWERED" : "TO ANSWER"];
       }
@@ -3642,7 +3654,7 @@
           reasons: pol.reasons || [], start: r.ts, end: null, ms: null, error: false, child: null, v2: r.v2, approvals: []
         };
         if (act.denied) act.flags.unshift("denied");
-        S.actions.set(act.id, act); S.actList.push(act);
+        S.actions.set(act.id, act); S.actList.push(act); (S.byId ||= new Map()).set(act.id, [...(S.byId.get(act.id) || []), act]);
         a.actions++; a.status = "running"; a.current = act.denied ? null : act;
         S.tools.set(act.tool, (S.tools.get(act.tool) || 0) + 1);
         const fm = FILE_TOOLS[act.tool];
@@ -3664,7 +3676,8 @@
         return;
       }
       if (ev === "PostToolUse") {
-        const act = S.actions.get(r.v2 ? tuid(r) : r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input || {}));
+        // v2: the latest call under its id and attempt that could have run (couldRun), never a deny
+        const act = r.v2 ? latestAct(r, a => couldRun(a.v2, a.approvals)) : S.actions.get(r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input || {}));
         if (!act) return;
         act.post = r; act.end = r.ts; act.ms = r.duration_ms ?? Math.round((r.ts - act.start) * 1000);
         const resp = r.tool_response;
@@ -3707,11 +3720,15 @@
       if (ev === "tk_note") { pushTape({ ts: r.ts, agent: agentOf(r), ev: r.tape, text: r.title + " · " + r.text, rec: r }); return; }
       if (ev === "tk_alert") {
         // a verifier report of a run with no record shown (it failed) is no agent: no lane, not counted
-        const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" }, act = r.v2?.approval && S.actions.get(tuid(r));
+        const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" };
+        // an approval's records are the call's its request was for; a use refused, the call's that tried it
+        const owner = (S.req ||= new Map()).get(aidKey(r));
+        const act = r.v2?.approval && (owner?.id === tuid(r) && !refusedUse(r) ? owner : latestAct(r));
+        if (r.v2?.approval === "requested" && act) S.req.set(aidKey(r), act);
         if (act) act.approvals.push(r);
         // the agent's retry of a held call, using that call's approval: the held call's answer is the retry's, and the
         // held call ran as its retry
-        const held = act && r.v2.held && S.actions.get(r.session_id + "|" + r.v2.held);
+        const held = act && r.v2.held && (owner || S.actions.get(r.session_id + "|" + r.v2.held));
         if (held) { act.retryOf = held; if (r.v2.approval === "consumed") held.ranBy = act; }
         // v2: an effect is shown under the call its process names, unchecked (the agent's claim), until the run's analysis joins it (TK-X206), which may say otherwise
         const ef = r.v2?.effect;
@@ -4159,14 +4176,15 @@
     function hzData() {
       const key = [ALL.length, ALL[ALL.length - 1], RUNS.size, chainState.ok];
       if (key.every((x, i) => x === hzKey[i])) return hzD;
-      const ans = new Map(), retry = new Map(), cur = new Map(), again = foldsOf(ALL), raw = [], places = dict(), parent = dict(), cwds = new Set();
+      const ans = new Map(), retry = new Map(), cur = new Map(), again = new Map(), owners = foldsOf(ALL, again), raw = [], places = dict(), parent = dict(), cwds = new Set();
       for (const r of ALL) {
-        // an answer is the call's the page files it under: its id's latest decision then; a retry the signer's consume
-        // filed with its held call (foldsOf) is no move of its own
-        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), d = cur.get(k);
-        if (r.event === "PreToolUse") { if (!again.has(r)) cur.set(k, r); continue; }
+        // an answer is the call's its approval's request was for (a use refused, the call's that tried it: the latest
+        // under its id and attempt), as the tape files it; a held call's retry with its id (foldsOf) is no move of its own
+        if (r.event === "PreToolUse") { if (!again.has(r)) cur.set(callKey(r), r).set(tuid(r), r); continue; }
+        const owner = owners.get(aidKey(r)), mine = cur.get(r.v2?.attempt == null ? tuid(r) : callKey(r));
+        const d = owner && tuid(owner) === tuid(r) && !refusedUse(r) ? owner : mine;
         if (d && r.v2?.approval in ANSWER) ans.set(d, r.v2.approval);
-        if (d && r.v2?.approval && r.v2.held) retry.set(d, cur.get(r.session_id + "|" + r.v2.held));   // the held call it retried
+        if (mine && r.v2?.approval && r.v2.held) retry.set(mine, owner || cur.get(r.session_id + "|" + r.v2.held));   // the held call it retried
       }
       for (const r of ALL) {
         const fx = r.v2?.effect, d = r.v2?.decision ?? (r.policy?.decision === "deny" ? "deny" : "allow"), rules = r.v2?.rules || [];
@@ -5075,23 +5093,33 @@
     // its approval, out: [class, words], tabs}], in their order, newest first. A retry is its held call's row, not one of
     // its own (view.review counts them once)
     function permOf(recs) {
-      const by = new Map(), ended = new Set(), rows = [], again = foldsOf(recs);
+      // by: a call id -> its decisions' rows (an allow's too, which is listed nowhere), as ingest files records under them
+      const by = new Map(), ended = new Set(), rows = [], again = new Map(), owners = foldsOf(recs, again), rowOf = new Map();
       for (const r of recs) {
         if (r.analysis) continue;
-        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), held = r.v2?.held && by.get(r.session_id + "|" + r.v2.held);
+        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), owner = rowOf.get(owners.get(aidKey(r)));
+        const latest = (ok = () => true) => (by.get(k) || []).findLast(x => (r.v2?.attempt == null || x.rec.v2.attempt === r.v2.attempt) && ok(x));
+        const held = r.v2?.held && (owner || by.get(r.session_id + "|" + r.v2.held)?.at(-1));
         if (r.event === "SessionEnd") ended.add(r.session_id);
         else if (again.has(r)) continue;   // a held call's retry with its id (foldsOf): that call's row
-        else if (r.event === "PreToolUse" && r.v2 && r.v2.decision !== "allow") { const row = { rec: r, answers: [] }; by.set(k, row); rows.push(row); }
-        else if (r.event === "PostToolUse" && by.has(k)) by.get(k).post = r;
-        else if (r.v2?.approval && by.has(k)) {
-          by.get(k).answers.push(r);
-          if (held) { by.get(k).retry = true; if (r.v2.approval === "consumed") held.ranBy = by.get(k); }
+        else if (r.event === "PreToolUse" && r.v2) {
+          const row = { rec: r, answers: [], k };
+          by.set(k, [...(by.get(k) || []), row]);
+          if (r.v2.decision !== "allow") { rows.push(row); rowOf.set(r, row); }
+        }
+        else if (r.event === "PostToolUse") { const row = latest(x => couldRun(x.rec.v2, x.answers)); if (row) row.post = r; }
+        else if (r.v2?.approval) {
+          // an approval's records are the call's its request was for; a use refused, the call's that tried it
+          const row = owner?.k === k && !refusedUse(r) ? owner : latest();
+          if (!row) continue;
+          row.answers.push(r);
+          if (held) { row.retry = true; if (r.v2.approval === "consumed") held.ranBy = row; }
         }
       }
       return rows.filter(row => !row.retry).reverse().map(row => {
         const d = row.rec.v2.decision, ans = row.answers.filter(x => x.v2.approval in ANSWER).pop(), a = ans?.v2.approval, done = ended.has(row.rec.session_id);
         const [tab, out] = d === "deny" ? ["", ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
-          : a === "approve" ? ["approved", ["s-ok", row.ranBy?.post ? "APPROVED · RETRY RAN" : row.post && used(row.answers) ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
+          : a === "approve" ? ["approved", ["s-ok", row.ranBy ? "APPROVED · RETRY RAN" : used(row.answers) ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
           : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "TO ANSWER"]];
         return { ...row, ans, who: row.answers.filter(x => x.v2.approver).pop(), req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
       });
@@ -5889,9 +5917,13 @@
         if (LOADED.delete(r.session_id)) n ||= 1;   // and its rows read from the store
       }
       if (ALL.length > MAXREC * 1.1) { const k = ALL.length - MAXREC; ALL.splice(0, k); DROPPED += k; n += k; }
-      // a consume for an approval this id's latest call never requested: the signer filed that call with an earlier one,
-      // its held call (foldsOf), so the rows are read again with it there
-      if (r.v2?.approval === "consumed" && !r.v2.held && inScope(r) && !S.actions.get(tuid(r))?.approvals.some(x => x.v2.approval === "requested")) n ||= 1;
+      // a request, a consume or a mismatch arriving live can change which decisions are held calls' retries (foldsOf;
+      // a snapshot is read with them known): the rows are read again when it did, so a retry shows as its own call until
+      // its consume, then under its held call
+      if (!n && inScope(r) && ["requested", "consumed", "binding_mismatch"].includes(r.v2?.approval) && toasting) {
+        const now = new Map(); foldsOf(runRows(), now);
+        if (now.size !== FOLDS.size || [...now].some(([d, h]) => FOLDS.get(d) !== h)) n = 1;
+      }
       if (n) { if (R && scope === r.session_id) stopRun(true); if (!R) rebuild(); }
       else if (!R && inScope(r)) ingest(r);
     }

@@ -97,55 +97,83 @@ def cite(rec: Dict[str, Any]) -> Dict[str, Any]:
     return c
 
 
-def retries(recs: List[Dict[str, Any]]) -> set:
-    """The run_seqs of decisions the signer filed as a held call's retry with the call's own id (LangGraph's resume): an
-    approval.consumed names the id while its approval was requested for an earlier decision under it, so the id's latest
-    decision before the consume is that retry, the held call itself. The signer's consume says so; nothing else does."""
-    out, last, req = set(), {}, {}
+def _call_id(r: Dict[str, Any]) -> Optional[str]:
+    """The call id a record names (view.Translator's): its tool_use_id, its approval's binding's, or the event's."""
+    e, d = r["event"], r["event"].get("data") or {}
+    return d.get("tool_use_id") or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
+
+
+def held_calls(recs: List[Dict[str, Any]]):
+    """(folds, owners) of a run's records. owners: approval_id -> the run_seq of the decision its request was for (the
+    latest decision under the request's call id and attempt). folds: run_seq -> the held call's run_seq, for each decision
+    that is the held call's retry with its own id (LangGraph's resume). A consume names a call id and attempt, not a
+    decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it has
+    no approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of that
+    approval under the id does. When in doubt a decision is a call of its own: a call shown twice is a small fault, a
+    deny hidden under an approved call a serious one."""
+    decs, owners, mism, cons = {}, {}, {}, {}   # (id, attempt) -> its decisions; approval_id -> (its owner, key)
     for r in recs:
         e, t, d = r["event"], r["event"]["type"], r["event"]["data"]
+        key = (_call_id(r), e.get("attempt"))
         if t == "policy.decision":
-            last[d.get("tool_use_id")] = e["run_seq"]
-        elif t == "approval.request":
-            call = (d.get("binding") or {}).get("tool_call_id")
-            req[d.get("approval_id")] = call, last.get(call)   # the held call, its decision
+            decs.setdefault(key, []).append((e["run_seq"], d.get("tool"), d.get("decision")))
+        elif t == "approval.request" and decs.get(key):
+            owners[d.get("approval_id")] = decs[key][-1], key
+        elif t == "approval.binding_mismatch":
+            mism[d.get("approval_id")] = e["run_seq"]   # the latest
         elif t == "approval.consumed":
-            call, held = req.get(d.get("approval_id"), (None, None))
-            if e.get("tool_call_id") == call and last.get(call) not in (None, held):
-                out.add(last[call])
-    return out
+            cons.setdefault(d.get("approval_id"), []).append((e["run_seq"], key))
+    folds, own = {}, {o[0][0] for o in owners.values()}
+    for aid, ((h, tool, _), key) in owners.items():
+        for seq, dtool, decision in decs[key]:
+            if seq > h and decision == "ask" and dtool == tool and seq not in own and mism.get(aid, -1) < seq \
+                    and any(c > seq and k == key for c, k in cons.get(aid, ())):
+                folds[seq] = h
+    return folds, {aid: o[0][0] for aid, o in owners.items()}
 
 
 def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """tool_call_id -> {"decision", "result": records, "approval": {decision, approver, self_approved}}; an approval
     that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...). The agent's retry
     of a held call that consumed that call's approval (signer _reusable) has its approval and `retry_of`, the held call;
-    the held call, blocked at once, `ran_by`, the retry."""
+    the held call, blocked at once, `ran_by`, the retry. A call is the id's latest decision, or the held call a decision
+    folds into (held_calls); an approval's records are the call's its request was for, and a result the latest call under
+    its id and attempt that could have run (an allow, a flag, an ask whose approval was used), never a deny: one that is
+    not the id's latest call is not in the log."""
     calls: Dict[str, Dict[str, Any]] = {}
     asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
-    again = retries(recs)
+    folds, owners = held_calls(recs)
+    appr, used, decs = {}, set(), {}   # call (run_seq) -> its approval; calls whose approval was used; (id, attempt) -> calls
     for r in recs:
-        t, d = r["event"]["type"], r["event"]["data"]
+        e, t, d = r["event"], r["event"]["type"], r["event"]["data"]
+        aid, tid = d.get("approval_id"), _call_id(r)
         if t == "policy.decision":
-            was = calls.get(d["tool_use_id"]) or {}
-            calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
-            if r["event"]["run_seq"] in again and was.get("approval"):   # the held call's retry with its id: its approval
-                calls[d["tool_use_id"]]["approval"] = was["approval"]
-        elif t == "tool.result" and d["tool_use_id"] in calls:
-            calls[d["tool_use_id"]]["result"] = r
-        elif t == "approval" and d.get("tool_use_id") in calls:
-            calls[d["tool_use_id"]]["approval"] = {k: d.get(k) for k in ("decision", "approver", "self_approved")}
+            seq = folds.get(e["run_seq"], e["run_seq"])
+            calls[tid] = {"decision": r, "seq": seq}   # a later attempt replaces an earlier one
+            decs.setdefault((tid, e.get("attempt")), []).append((seq, d["decision"]))
+        elif t == "tool.result" and tid in calls:
+            ran = next((s for s, dec in reversed(decs.get((tid, e.get("attempt")), ())) if dec in ("allow", "flag") or s in used),
+                       None)
+            if ran == calls[tid]["seq"]:
+                calls[tid]["result"] = r
+        elif t == "approval" and aid in owners:
+            appr[owners[aid]] = {k: d.get(k) for k in ("decision", "approver", "self_approved")}
         elif t == "approval.request":
-            asked[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
-        elif t == "approval.consumed":
-            held, retry = asked.get(d.get("approval_id")), r["event"].get("tool_call_id")
-            if retry != held and retry in calls and (calls.get(held) or {}).get("approval"):
-                calls[retry]["approval"] = {**calls[held]["approval"], "retry_of": held}
-                calls[held]["approval"]["ran_by"] = retry
-        elif t in ("approval.expired", "approval.abandoned", "approval.revoked"):
-            call = calls.get(r["event"].get("tool_call_id") or asked.get(d.get("approval_id")))
-            if call is not None and (call.get("approval") or {}).get("decision") in (None, "approve"):
-                call["approval"] = {"decision": t.split(".")[1], "approver": None, "self_approved": False}
+            asked[aid] = (d.get("binding") or {}).get("tool_call_id")
+        elif t == "approval.consumed" and aid in owners:
+            held, retry = asked.get(aid), e.get("tool_call_id")
+            if retry == held:
+                used.add(owners[aid])
+            elif retry in calls and appr.get(owners[aid]):
+                used.add(calls[retry]["seq"])
+                appr[calls[retry]["seq"]] = {**appr[owners[aid]], "retry_of": held}
+                appr[owners[aid]]["ran_by"] = retry
+        elif t in ("approval.expired", "approval.abandoned", "approval.revoked") and aid in owners:
+            if (appr.get(owners[aid]) or {}).get("decision") in (None, "approve"):
+                appr[owners[aid]] = {"decision": t.split(".")[1], "approver": None, "self_approved": False}
+    for c in calls.values():
+        if c["seq"] in appr:
+            c["approval"] = appr[c["seq"]]
     return calls
 
 
