@@ -421,6 +421,15 @@ class Engines(unittest.TestCase):
                     d = e.decide("Bash", {"command": 'rm "$D"'})
                 self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S"], None))
 
+    def test_a_spent_fallback_time_raises_before_matching(self):
+        """With its time spent, a match still got a floor of 1 µs, and a tiny one finished inside it on a fast machine:
+        whether the budget ran out depended on the machine (macOS py3.9 CI raised nothing for `^` on "ok")."""
+        e = Engine({"tools": {"Bash": "shell"}, "deny": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
+        tiny = mock.Mock(search=lambda s, timeout: "matched")   # finishes at once, whatever its timeout
+        for left in (0, -0.5):
+            with self.subTest(left=left), self.assertRaises(TimeoutError):
+                e._match(tiny, "ok", False, [left])
+
     def test_a_redirection_to_a_lone_surrogate_is_decided_on_both_engines(self):
         """An ASCII command whose $'…' makes a lone surrogate, as a redirection's target, reached the persistent-target
         check unconverted: re2 raised UnicodeEncodeError (a crash, TK-ENGINE-ERROR in the signer) where the fallback

@@ -37,9 +37,11 @@ bundle once it verifies (what `tracekit observe` runs), on this server, token an
 
     tracekit view [--dev | --config signer.yaml | --data-dir DIR | --ledger [HOME] | --bundle FILE] [--log-vkey VKEY]
                   [--host H] [--port N] [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR]
-                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID]
+                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID] [--transcripts DIR]
 
-`--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held.
+`--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held. The TIPS page
+(tracekit/tips.py) reads the store's rows and, with the dev store or `--transcripts DIR`, Claude Code's transcripts,
+read-only, for the token only.
 """
 import argparse
 import atexit
@@ -788,13 +790,14 @@ def held_outcome(was, t, d):
     return "expired" if "TK-APPROVAL-EXPIRED" in ids else "rejected" if "TK-APPROVAL-REJECTED" in ids else OUTCOMES[t]
 
 
-def review(records, rep, verdict):
+def review(records, rep, verdict, outcomes=None):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
     report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
     decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
     answered, not answered yet, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
     when the run's records have left the live view; `holds`: the same outcomes, of the calls held for a person (decided
-    ask) only, and `hold_examples` the first such call (its tool_use_id) of each. The agent's retry of a held call, which
+    ask) only, and `hold_examples` the first such call (its tool_use_id) of each; `outcomes`, a dict when given, gets
+    each such call's (its decision's run_seq -> outcome), which stays out of the counts. The agent's retry of a held call, which
     used that call's approval, is that call: its use is the held call's outcome, counted once (`retries` counts them). Counts keep each snapshot
     small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
@@ -892,11 +895,13 @@ def review(records, rep, verdict):
     # a hold the run ended without an answer to
     ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
     out["permissions"] = collections.Counter(ended.values())
-    out["holds"] = collections.Counter(o for c, o in ended.items() if c in asked)
+    held = {c: o for c, o in ended.items() if c in asked}
+    out["holds"] = collections.Counter(held.values())
     out["hold_examples"] = {}
-    for c, o in ended.items():
-        if c in asked:
-            out["hold_examples"].setdefault(o, ids[c])
+    for c, o in held.items():
+        out["hold_examples"].setdefault(o, ids[c])
+    if outcomes is not None:
+        outcomes.update(held)
     return out
 
 
@@ -1497,6 +1502,12 @@ class StoreFeed:
                     * bool(again) + [self.stopped] * bool(self.stopped), None)
 
 
+def shown(feed):
+    """The rows the live view holds now (a run being checked again holds RETRACTED in its rows' place)."""
+    with feed.lock:
+        return [r for r in feed.records if r is not observe.RETRACTED]
+
+
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):
     """Import one verified v2 run as a why run under `why_dir` (why.import_v2, from the records only), replacing an
     earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs; with `records` None (the
@@ -1844,10 +1855,18 @@ def main(argv=None):
     ap.add_argument("--webhook", help="POST each new high why alert here as JSON (Slack-compatible)")
     ap.add_argument("--approval", metavar="ID", help="start the viewer and print a link that opens the call approval "
                                                      "ID held (`tracekit approvals show ID` names it)")
+    ap.add_argument("--transcripts", metavar="DIR", help="Claude Code transcripts the TIPS page reads, read-only "
+                                                         "(default with the dev store: $CLAUDE_CONFIG_DIR/projects or "
+                                                         "~/.claude/projects)")
     a = ap.parse_args(argv)
     if a.approval and not re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval):
         print(f"tracekit view: --approval takes an approval id (apr- and 32 hex digits), not {a.approval!r}",
               file=sys.stderr)
+        return 2
+    transcripts = a.transcripts and os.path.abspath(os.path.expanduser(a.transcripts))
+    if transcripts and not os.path.isdir(transcripts):
+        print(f"tracekit view: --transcripts {transcripts}: no such folder (Claude Code keeps its transcripts in "
+              "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
     from .cli import experimental
@@ -1909,6 +1928,10 @@ def main(argv=None):
                     if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
+            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
+                from . import audit, tips
+                feed.tips = tips.Page(functools.partial(shown, feed),
+                                      transcripts or (audit.default_root() if dev else None))
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -1927,6 +1950,9 @@ def main(argv=None):
              f"  reading the bundle {a.bundle}, verified, read-only" if a.bundle else
              f"  reading the ledger {feed.path}, read-only" if v1 else f"  reading why logs alone: {why.root}" if alone
              else f"  reading the store {feed.store}, read-only; {feed.note}"), flush=True)
+    if getattr(feed, "tips", None) and feed.tips.root:   # the folder it reads, only when there is one
+        print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
+              else "  tips: no Claude Code transcripts found", flush=True)
     if why and mirror:
         why.watch()
         print("  graphs: each verified run is drawn as a graph too, from a copy in a temp dir", flush=True)
