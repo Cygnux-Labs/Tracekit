@@ -18,9 +18,10 @@ import zipfile
 from unittest import mock
 
 
-from factories import damage_crc, overinflate, rewrite_bundle, unverified_bundles
+from factories import damage_crc, overinflate, patch_env, rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, bundle, export, needs, run_name
+from tracekit.demo_server import tamper
 from tracekit.format import checkpoint
 from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
@@ -564,7 +565,7 @@ class TestVerifyV2(Case):
         Assurance line is not rated (--json keeps the level the checkpoint has)."""
         _, out = self.honest()
         edited = self.mutate(out, lambda rs: rs[2]["event"]["data"].update(name="Write"))
-        code, stdout, _ = self.cli(edited, "--trust", self.trust)
+        code, stdout, _ = self.cli(edited, "--trust", self.trust, "--detail")
         self.assertEqual(code, 1)
         self.assertRegex(stdout, r"\n\[FAIL\] signatures — 1 problem\(s\) in 5 record\(s\)\n        seq \d+: ")
         self.assertNotIn("keys valid at their position", stdout)
@@ -865,7 +866,7 @@ class TestVerifyV2(Case):
 
     def test_cli_dispatches_on_format(self):
         _, out = self.honest()
-        code, stdout, _ = self.cli(out, "--trust", self.trust)
+        code, stdout, _ = self.cli(out, "--trust", self.trust, "--detail")
         self.assertEqual(code, 0)
         self.assertIn("Integrity: VERIFIED.\nAssurance: witnessed;", stdout)
         code, stdout, err = self.cli(out)
@@ -925,9 +926,11 @@ class TestVerifyV2(Case):
             files.append((path, trust, said))
         for path, t, said in files:
             with self.subTest(os.path.basename(path)):
-                self.assertEqual(self.cli(path, "--trust", t), (2, f"[FAIL] bundle readable — cannot read bundle: {said}"
-                                                                   "\n\nIntegrity: UNUSABLE BUNDLE.\nAssurance: none.\n",
-                                                                ""))
+                self.assertEqual(self.cli(path, "--trust", t, "--detail"),
+                                 (2, f"[FAIL] bundle readable — cannot read bundle: {said}\n\nIntegrity: UNUSABLE "
+                                     "BUNDLE.\nAssurance: none.\n", ""))
+                self.assertEqual(self.cli(path, "--trust", t),
+                                 (2, f"UNUSABLE BUNDLE: cannot read bundle: {said}.\n", ""))
                 code, stdout, _ = self.cli(path, "--trust", t, "--json")
                 self.assertEqual((code, json.loads(stdout)["integrity"]), (2, "UNUSABLE BUNDLE"))
 
@@ -948,16 +951,53 @@ class TestVerifyV2(Case):
                    "assert crypto.BACKEND == 'pure-python'\n"
                    "sys.exit(cli.main(sys.argv[1:]))\n")
         key = ["--key", os.path.join(sample, "signer.pub")]
-        cases = {"v1 sample": (["verify", os.path.join(sample, "demo-run.tkb"), *key], 0, "Integrity: VERIFIED."),
+        cases = {"v1 sample": (["verify", os.path.join(sample, "demo-run.tkb"), *key], 0,
+                               "VERIFIED: 6 tool calls in 23 signed records, "),
                  "v1 tampered sample": (["verify", os.path.join(sample, "demo-run-tampered.tkb"), *key], 1,
-                                        "Integrity: VERIFICATION FAILED."),
-                 "v2 bundle": (["verify", v2_bundle, "--trust", self.trust], 0, "Integrity: VERIFIED.")}
+                                        "TAMPERED at event 6: "),
+                 "v1 sample, every check": (["verify", os.path.join(sample, "demo-run.tkb"), *key, "--detail"], 0,
+                                            "Integrity: VERIFIED."),
+                 "v2 bundle": (["verify", v2_bundle, "--trust", self.trust], 0, "VERIFIED: 5 signed records, ")}
         for why, (argv, want, verdict) in cases.items():
             with self.subTest(why):
                 p = subprocess.run([sys.executable, "-c", blocker, *argv], capture_output=True, text=True,
                                    cwd=os.path.dirname(TESTS))
                 self.assertEqual(p.returncode, want, p.stdout + p.stderr)
                 self.assertIn(verdict, p.stdout)
+
+
+@unittest.skipUnless(hasattr(time, "tzset"), "time.tzset is Unix only")
+class TestEntryTimes(Case):
+    """Every zip entry is dated 1980-01-01 00:00: the default date, the exporter's local clock, would show its time
+    zone against the records' UTC times."""
+
+    def setUp(self):
+        super().setUp()
+        self.addCleanup(time.tzset)   # runs after patch_env puts TZ back
+        patch_env(self)
+
+    def zone(self, tz):
+        os.environ["TZ"] = tz
+        time.tzset()
+        self.assertEqual(time.localtime(0)[:6] == time.gmtime(0)[:6], tz == "UTC")
+
+    def test_every_entry_is_dated_1980_in_any_time_zone(self):
+        self.zone("JST-9")
+        _, out = self.honest()
+        with zipfile.ZipFile(out) as z:
+            self.assertEqual({i.date_time for i in z.infolist()}, {(1980, 1, 1, 0, 0, 0)})
+
+    def test_the_same_run_exports_to_the_same_bytes(self):
+        self.zone("UTC")
+        log, out = self.honest()
+        self.zone("JST-9")
+        again = os.path.join(self.d, "again.tkb")
+        export(log.store, "acme", "run-a", log.note(), again)
+        copy = os.path.join(self.d, "copy.tkb")
+        tamper(out, copy)   # the demo's tampered copy, with no denied call to rewrite
+        for path in (again, copy):
+            with open(out, "rb") as a, open(path, "rb") as b:
+                self.assertEqual(a.read(), b.read(), path)
 
 
 class TestRunParts(Case):

@@ -305,7 +305,7 @@ class Command(unittest.TestCase):
         last = self.tracekit("last")
         self.assertEqual(last.returncode, 0, last.stderr)
         self.assertIn("(srt-proxy)", last.stdout)
-        self.assertIn("Integrity: VERIFIED.", last.stdout)
+        self.assertIn("\nVERIFIED: ", last.stdout)
 
     def test_no_signer_no_srt_proxy(self):
         marker = os.path.join(self.dir, "started")

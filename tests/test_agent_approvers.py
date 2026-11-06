@@ -57,7 +57,7 @@ def policy(**agent):
 def bounds(args, fields=FIELDS):
     rule = {"id": "R", "approval": {"agent": {"allow": {"fields": fields}}}}
     eng = Engine({"ask": [dict(rule, pattern="^")]})
-    return all(ok for _, ok in eng.bounds(rule, args, time.monotonic() + 1))
+    return all(ok for _, ok in eng.bounds(rule, args, [1]))
 
 
 class TestBounds(unittest.TestCase):
@@ -89,7 +89,7 @@ class TestBounds(unittest.TestCase):
         rule = {"id": "R", "approval": {"agent": {"allow": {"fields": {"memo": FIELDS["memo"]}}}}}
         eng = Engine({"ask": [dict(rule, pattern="^")]}, backend="regex")
         with self.assertRaises(TimeoutError):
-            eng.bounds(rule, {"memo": "ok"}, time.monotonic() - 1)
+            eng.bounds(rule, {"memo": "ok"}, [0])
 
 
 class TestLint(unittest.TestCase):
@@ -585,10 +585,14 @@ class TestVetoAndRevoke(Case):
                 contextlib.redirect_stdout(io.StringIO()), mock.patch.dict(os.environ, {claude_code.WAIT_ENV: ""}):
             code = claude_code._pre(mock.Mock(timeout=30.0, signer=None), {"tool_name": "pay", "tool_input": OK}, "s1",
                                     "tc-2")
-        self.assertEqual((code, err.getvalue()), (2, f"[tracekit] approval {aid} ({'; '.join(d['rule_ids'])}) is "
-                                                     "approved by an agent approver; people may still revoke it, so wait "
-                                                     "60 s, then try the same call again, unchanged. "
-                                                     f"Why: {d['reason']}\n"))
+        self.assertEqual(code, 2)
+        head, why, person, agent = err.getvalue().strip().split("\n")   # #587: why, the look command, what to do
+        self.assertEqual(head, f"[tracekit] HELD, nothing ran: {aid} ({', '.join(d['rule_ids'])}) is approved by an "
+                               "agent approver; people may still revoke it, so wait 60 s, then make the identical call "
+                               "again.")
+        self.assertEqual((why, person), (f"Why: {d['reason']}", f"Person: look with `! tracekit approvals show {aid}`."))
+        self.assertTrue(agent.startswith("Agent: wait as the first line says, then make the identical call again"),
+                        agent)
 
     def test_a_retry_is_held_until_the_veto_delay_passed(self):
         """Approve, then retry with an agent approver: asking for the call, again or in a retry, reads `requested`

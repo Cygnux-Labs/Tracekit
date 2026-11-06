@@ -14,7 +14,7 @@ import time
 import zipfile
 
 from tracekit import crypto
-from tracekit.bundle_v2 import export
+from tracekit.bundle_v2 import export, zip_entry
 from tracekit.demo import say
 from tracekit.deploy import files
 from tracekit.format import checkpoint
@@ -23,7 +23,7 @@ from tracekit.signer.service import SignerService, _dev_token
 from tracekit.storage.file import FileReader
 from tracekit.tlog_witness import log_signed, signed_by
 from tracekit.transport import answering_hello, hello
-from tracekit.verify import v2
+from tracekit.verify import summary, v2
 
 CALLS = [("call-1", "ls"), ("call-2", "sudo rm -rf /"), ("call-3", 'echo "unterminated')]
 
@@ -104,11 +104,21 @@ def tamper(src, dst):
     bundle[name] = bundle[name].replace(b'"decision":"deny"', b'"decision":"allow"', 1)
     with zipfile.ZipFile(dst, "w") as z:
         for n, v in bundle.items():
-            z.writestr(n, v)
+            z.writestr(zip_entry(n), v)
 
 
-def main(keep=False):
+def report(rep, code, detail):
+    """The verifier's report: every check with `detail`, else the short result."""
+    if detail:
+        v2.print_report(rep, code)
+    else:
+        summary(rep, code, rep.integrity, rep.assurance)
+
+
+def main(keep=False, detail=False):
+    from tracekit.cli import _quote
     d = tempfile.mkdtemp(prefix="tk-demo-", dir="/tmp" if os.path.isdir("/tmp") else None)   # macOS caps socket paths
+    out, trust = os.path.join(d, "run.tkb"), os.path.join(d, "trust.json")
     service = srv = None
     try:
         say(f"setup: dev signer and an in-process test witness in {d}")
@@ -121,19 +131,18 @@ def main(keep=False):
         run_id = agent(client)
         client.close()
         say("export the run once it is final and a witness cosigned it")
-        out, trust = os.path.join(d, "run.tkb"), os.path.join(d, "trust.json")
         export_final(os.path.join(d, "data", "store"), run_id, witness, out)
         files.write_json(trust, {"logs": [service.vkey], "witnesses": [{"vkey": witness.vkey, "class": "customer"}],
                                  "algs": ["ed25519"], "witnesses_required": 1}, 0o644)
         print(f"  wrote {out}\n  trust config {trust}: pins the log key and the witness")
         say("verify offline with the pinned trust config")
         rep, code = v2.verify(out, trust)
-        v2.print_report(rep, code)
+        report(rep, code, detail)
         say("tamper test: rewrite the denied call as allowed in a copy, then verify again")
         bad = os.path.join(d, "tampered.tkb")
         tamper(out, bad)
         rep2, code2 = v2.verify(bad, trust)
-        v2.print_report(rep2, code2)
+        report(rep2, code2, detail)
         print(f"\n  original bundle exit {code}, tampered bundle exit {code2}")
         return 0 if code == 0 and code2 != 0 else 1
     finally:
@@ -143,7 +152,9 @@ def main(keep=False):
         if service:
             service.close()
         if keep:
-            print(f"\nkept {d}")
+            print(f"\nkept {d}" + (f"\n  verify the bundle again: tracekit verify {_quote(out)} --trust {_quote(trust)}"
+                                   if os.path.exists(trust) else ""))
         else:
             shutil.rmtree(d, ignore_errors=True)
+            print(f"\ndeleted {d} (--keep keeps it)")
 

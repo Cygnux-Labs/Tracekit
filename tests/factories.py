@@ -2,6 +2,7 @@
 
 Import with `from factories import ...` (tests/ is on sys.path under pytest; see conftest.py).
 """
+import datetime
 import hashlib
 import json
 import multiprocessing
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+import uuid
 import zipfile
 import zlib
 from concurrent.futures import ProcessPoolExecutor
@@ -53,6 +55,173 @@ def make_signer(home, **cfg):
 def ledger_records(home):
     """Every readable record in the signer's ledger, in order."""
     return [r for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")) if r]
+
+
+# a Tracekit Box box, as its daemon describes it (register_run `box`)
+BOX = {"id": "b-1", "image_digest": "sha256:" + "a" * 64, "allow": ["claude-code", "anthropic"], "channel": "agent"}
+
+
+def box_runset_bundle(d):
+    """(a run-set bundle of a plain run whose registry range also points to an open box run's run.registered, the
+    plain run's bundle alone, their trust file): the box's label is on a record of a run the bundle doesn't hold (#603's
+    review)."""
+    from tracekit.bundle_v2 import export
+    from tracekit.identity.base import CallerIdentity
+    from tracekit.signer import service as svc
+    from tracekit.storage.base import registry_tree
+    me = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
+    os.makedirs(d, exist_ok=True)
+    s = svc.SignerService(os.path.join(d, "data"), grace_s=0, fsck_every_s=0,
+                          box_daemons={f"uid:{me.subject}": "firecracker"})
+    try:
+        n = iter(range(10))
+        call = lambda m, req: s.call(me, m, {"request_id": f"r{next(n)}", **req})   # noqa: E731
+        call("register_run", {"agent": {"name": "tkbox"}, "box": BOX})   # stays open
+        plain = call("register_run", {"agent": {"name": "plain-agent"}})
+        call("close_run", {"run_id": plain["run_id"], "run_token": plain["run_token"]})
+        s.sweep(time.monotonic() + 1)
+        s.checkpoint()
+        st, out, trust = s.log.storage, os.path.join(d, "plain-runset.tkb"), os.path.join(d, "plain-runset-trust.json")
+        export(st, "default", plain["run_id"], st.checkpoint_latest()[1], out,
+               run_set=(0, st.checkpoint_latest(registry_tree("default"))[0]), tenant_salt=s.log.tenant_salt("default"))
+        alone = os.path.join(d, "plain.tkb")
+        export(st, "default", plain["run_id"], st.checkpoint_latest()[1], alone)
+        with open(trust, "w") as f:
+            json.dump({"logs": [s.vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0}, f)
+    finally:
+        s.close()
+    with zipfile.ZipFile(out) as z:
+        assert b'"box":{"id":"b-1"' in z.read("registry/records.jsonl"), "the range holds no box label"
+    return out, alone, trust
+
+
+class BoxScene:
+    """A Tracekit Box box run and its agent channel's runs in an in-process signer that keeps content, on a synthetic
+    signer clock (seconds from the box's start), with the records Box's daemon writes (internal/daemon): a WebFetch
+    decision per connection out of the box, {url: <scheme>://<host>:<port>}, completed ok when it went through; a Write
+    decision per file written back at apply; a Bash decision per command Box started; tkbox.* observes. The steps run
+    in time order at bundle(), which exports the run-set (the box run and its agent runs) and its trust file."""
+
+    DAEMON = "1001"
+
+    def __init__(self, d, workspace="/home/dev/proj"):
+        from tracekit.identity.base import CallerIdentity
+        from tracekit.signer import service as svc
+        self.d, self.steps, self.agents = d, [], []
+        self.me = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
+        self.daemon = CallerIdentity("uid", self.DAEMON, True)
+        self.s = svc.SignerService(os.path.join(d, "data"), fsck_every_s=0, grace_s=0,
+                                   box_daemons={f"uid:{self.DAEMON}": "firecracker"}, content={"retain": True},
+                                   analyzers=[f"uid:{self.me.subject}"], authorize={
+                                       f"uid:{self.me.subject}": sorted(svc.DEFAULT_GRANTS | {svc.CONTENT_READ})})
+        self.box = self._register(self.daemon, box=BOX)
+        self.observe(0, "tkbox.box", {"event": "created", "box_id": BOX["id"], "workspace": workspace}, "trusted")
+        self.channel = self.s.call(self.daemon, "channel_open", dict(self.box["handle"])).identity
+
+    def _register(self, who, **kw):
+        out = self.s.call(who, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "claude-code"}, **kw})
+        return {"handle": {"run_id": out["run_id"], "run_token": out["run_token"]}, "who": who, "seq": 0}
+
+    def _send(self, run, method, **fields):
+        req = {**run["handle"], "request_id": uuid.uuid4().hex, "stream": "s", "client_seq": run["seq"], **fields}
+        run["seq"] += 1
+        return self.s.call(run["who"], method, req)
+
+    def agent(self, t):
+        """A run the box's agent registers over the channel at `t`: its index, for call(run=)."""
+        self.agents.append(None)
+        self.steps.append((t, len(self.steps), "register", len(self.agents) - 1))
+        return len(self.agents) - 1
+
+    def stop(self, t, run=0):
+        """The agent closes run `run` at `t` (the rest close at bundle()'s end)."""
+        self.steps.append((t, len(self.steps), "close", run))
+
+    def call(self, t0, t1, tool, args, ok=True, run=0):
+        """A call of the agent's run `run`: decided at t0, its result at t1 (None: none). -> its tool call id."""
+        tid = f"toolu_{len(self.steps)}"
+        self.steps += [(t0, len(self.steps), "decide", (run, tid, tool, args)),
+                       *([(t1, len(self.steps) + 1, "complete", (run, tid, tool, args, ok))] if t1 is not None else [])]
+        return tid
+
+    def door(self, t, url, allowed=True):
+        """A connection out of the box at `t`: let through, or refused after the signer allowed it (an approval no one
+        gave); allowed None: no outcome recorded."""
+        tid = f"egress-{len(self.steps)}"
+        self.steps.append((t, len(self.steps), "decide", ("box", tid, "WebFetch", {"url": url})))
+        if allowed is not None:
+            self.steps.append((t + 0.01, len(self.steps), "complete", ("box", tid, "WebFetch", {"url": url}, allowed)))
+
+    def write(self, t, path):
+        """A file of the box's patch written back at apply, at `t`."""
+        args = {"file_path": path, "sha256": "0" * 64, "mode": 420, "symlink": False, "deleted": False,
+                "patch_sha256": "1" * 64}
+        self.steps += [(t, len(self.steps), "decide", ("box", f"write-{len(self.steps)}", "Write", args)),
+                       (t + 0.01, len(self.steps) + 1, "complete", ("box", f"write-{len(self.steps)}", "Write", args,
+                                                                    True))]
+
+    def command(self, t0, t1, cmd):
+        """A command Box started from the host, running from t0 to t1."""
+        args = {"command": cmd}
+        self.steps += [(t0, len(self.steps), "decide", ("box", f"exec-{len(self.steps)}", "Bash", args)),
+                       (t1, len(self.steps) + 1, "complete", ("box", f"exec-{len(self.steps)}", "Bash", args, True))]
+
+    def observe(self, t, source, value, trust="untrusted"):
+        self.steps.append((t, len(self.steps), "observe", (source, trust, value)))
+
+    def bundle(self, end):
+        """Run the steps, close the runs still open at `end` (the agent's, then the box run), and export the run-set.
+        -> (bundle path, trust path, box run id, [agent run ids])."""
+        from tracekit.bundle_v2 import export
+        from tracekit.format.canon import event_hash
+        from tracekit.signer import pipeline
+        from tracekit.storage.base import registry_tree
+        base = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        clock, decided = [0.0], {}
+
+        def run_of(who):
+            return self.box if who == "box" else self.agents[who]
+        with mock.patch.object(pipeline, "now_ts", lambda: (base + datetime.timedelta(seconds=clock[0])).strftime(
+                "%Y-%m-%dT%H:%M:%S.%fZ")):
+            for t, _, kind, x in sorted(self.steps, key=lambda s: s[:2]):
+                clock[0] = t
+                if kind == "register":
+                    self.agents[x] = self._register(self.channel)
+                elif kind == "close":
+                    self.s.call(self.channel, "close_run", {**self.agents[x]["handle"], "request_id": uuid.uuid4().hex})
+                    self.agents[x]["closed"] = True
+                elif kind == "observe":
+                    self._send(self.box, "observe", source=x[0], trust=x[1], value=x[2])
+                elif kind == "decide":
+                    decided[x[1]] = self._send(run_of(x[0]), "decide", tool_call_id=x[1], tool=x[2],
+                                               args_source="parsed", args=x[3])
+                else:
+                    self._send(run_of(x[0]), "complete", tool_call_id=x[1], decision_id=decided[x[1]]["decision_id"],
+                               status="ok" if x[4] else "error", result={"allowed": x[4]} if x[0] == "box" else "done",
+                               args_digest=event_hash({"tool": x[2], "args": x[3]}))
+            clock[0] = end
+            for run in [*(a for a in self.agents if not a.get("closed")), self.box]:
+                self.s.call(run["who"], "close_run", {**run["handle"], "request_id": uuid.uuid4().hex})
+            self.s.sweep(time.monotonic() + 1)
+        self.s.checkpoint()
+        st = self.s.log.storage
+        out, trust = os.path.join(self.d, "box-runset.tkb"), os.path.join(self.d, "box-runset-trust.json")
+        export(st, "default", None, st.checkpoint_latest()[1], out,
+               run_set=(0, st.checkpoint_latest(registry_tree("default"))[0]), tenant_salt=self.s.log.tenant_salt(
+                   "default"))
+        with open(trust, "w") as f:
+            json.dump({"logs": [self.s.vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0}, f)
+        return out, trust, self.box["handle"]["run_id"], [a["handle"]["run_id"] for a in self.agents]
+
+    def call_as_me(self, method, req):
+        """A call as the analysing user (an analyzer with content_read, as the dev signer's user is)."""
+        return self.s.call(self.me, method, req)
+
+    def content_get(self, req):   # what tracekit.why.signed.vault_content reads through
+        return self.call_as_me("content_get", req)
+
+    def close(self):
+        self.s.close()
 
 
 def unverified_bundles(test):

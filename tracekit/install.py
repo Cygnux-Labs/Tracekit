@@ -107,6 +107,8 @@ V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
 # starts it through sudo, and the signer lets its uid make only the calls of TAILER_METHODS
 V2_TAILER, V2_TAILER_DARWIN = "tracekit-tailer", "_tracekit_tailer"
 TAILER_SUDOERS = "/etc/sudoers.d/tracekit-tailer"
+DEV_MODE_LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. "
+                 "For protection, use system mode or Box.")
 TAILER_METHODS = ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]
 V2_RUN = {"linux": "/run/tracekit-signer", "darwin": "/Library/Application Support/tracekit-signer"}   # the socket's dir
 V2_UNIT_TEXT = """[Unit]
@@ -145,7 +147,18 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 """
-# its own unit, so a stopped or crashed observer leaves the agent's traffic blocked, never unobserved ($$: systemd's $)
+# its own unit, so a stopped or crashed observer leaves the agent's traffic blocked, never unobserved ($$: systemd's $);
+# DNS to loopback is refused too: a local stub (127.0.0.53) would resolve, and so carry out, any name the agent asks.
+# Start and reload alike rebuild the rule under a hold, a reject of the agent's uid at the top of OUTPUT, removed once
+# the rule is whole and kept if building it fails.
+FIREWALL_HOLD = "-m owner --uid-owner {uid} -m comment --comment tracekit-egress-hold -j REJECT"
+FIREWALL_APPLY = """/bin/sh -c 'for t in iptables ip6tables; do $$t -I OUTPUT """ + FIREWALL_HOLD + """ && \
+{{ $$t -N TRACEKIT-EGRESS 2>/dev/null; $$t -F TRACEKIT-EGRESS; }} && \
+$$t -A TRACEKIT-EGRESS -p udp --dport 53 -j REJECT && $$t -A TRACEKIT-EGRESS -p tcp --dport 53 -j REJECT && \
+$$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT && \
+{{ $$t -C OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS 2>/dev/null || \
+$$t -I OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; }} || exit 1; \
+while $$t -D OUTPUT """ + FIREWALL_HOLD + """ 2>/dev/null; do :; done; done'"""
 FIREWALL_UNIT_TEXT = """[Unit]
 Description=Tracekit: {agent}'s outside traffic only through the egress observer
 Before=network-pre.target
@@ -153,11 +166,10 @@ Before=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'for t in iptables ip6tables; do $$t -N TRACEKIT-EGRESS 2>/dev/null; $$t -F TRACEKIT-EGRESS && \
-$$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT && \
-{{ $$t -C OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS 2>/dev/null || \
-$$t -I OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; }} || exit 1; done'
+ExecStart=""" + FIREWALL_APPLY + """
+ExecReload=""" + FIREWALL_APPLY + """
 ExecStop=/bin/sh -c 'for t in iptables ip6tables; do $$t -D OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; \
+while $$t -D OUTPUT """ + FIREWALL_HOLD + """ 2>/dev/null; do :; done; \
 $$t -F TRACEKIT-EGRESS; $$t -X TRACEKIT-EGRESS; done; true'
 
 [Install]
@@ -1583,7 +1595,11 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                    (EGRESS_FIREWALL, FIREWALL_UNIT_TEXT.format(agent=target_user, uid=owner.pw_uid))):
                     _write_root_file(os.path.join(SYSTEMD_DIR, unit + ".service"), text.encode())
                 subprocess.run(["systemctl", "daemon-reload"], check=False)
-                if subprocess.run(["systemctl", "enable", "--now", V2_EGRESS, EGRESS_FIREWALL], check=False).returncode:
+                # not enable --now, which leaves an active firewall unit's earlier rule in place: a reload rebuilds it
+                # under its hold, never unblocked (a restart's stop would drop it for a moment)
+                if [subprocess.run(["systemctl", *cmd], check=False).returncode for cmd in (
+                        ["enable", V2_EGRESS, EGRESS_FIREWALL], ["restart", V2_EGRESS],
+                        ["reload-or-restart", EGRESS_FIREWALL])] != [0, 0, 0]:
                     failed.append(f"could not start {V2_EGRESS} or {EGRESS_FIREWALL} (iptables with the owner match is "
                                   f"needed): see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then "
                                   f"{target_user}'s network is reported only")

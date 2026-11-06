@@ -1,7 +1,41 @@
 # Reading a v2 verify report
 
-`tracekit verify bundle.tkb --trust trust.json` prints one line per check, then two summary lines, and a third when
-the bundle holds `review` records (signed findings, or reviews imported with no citations):
+`tracekit verify bundle.tkb --trust trust.json` (and `tracekit last`, and `tracekit demo`) prints a short result in
+plain words: the verdict, with the tool calls and signed records it covers, the warnings by name, and whether the
+record is proof against the agent. A dev signer's bundle:
+
+```text
+VERIFIED: 3 tool calls in 11 signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+```
+
+A signer the agent can't reach says `PROOF AGAINST THE AGENT: the signing key was out of the agent's reach
+(separate-user).`, then whether an independent witness cosigned the log too. It says so only when something outside the
+bundle vouches for the signing key: always for a v2 bundle (your trust file pins it), and for a v1 bundle only with
+`--key` or `--witness`. Without them a v1 bundle prints `NOT SHOWN: nothing outside the bundle vouches for the signing
+key. Pin it with --key, or use a witness.` With several runs, the weakest isolation counts.
+
+The counts are of what was signed: the tool calls the records name, in that many signed records. A verified bundle shows
+that what was signed is intact, not that every call was captured. `none changed, removed or added` is said only when no
+check warned. Signed gaps, records the signer wrote about what it missed (a run-set's tenant-level ones among them; its
+informational ones, like a stretch with no witness, are a `Note:` line instead), read
+`VERIFIED WITH GAPS: 1 tool call in 6 signed records, none changed after signing; 2 signed gaps (things Tracekit knows
+it missed)`. A call that ran against the signer's decision, or an imported decision that disagrees with it, was
+recorded, not missed: `1 policy mismatch recorded (see --detail)`. A bundle that fails says where it breaks, by the record's log `seq`, in plain words:
+
+```text
+TAMPERED at event 4: its content was changed after it was signed.
+Add --detail to see each check.
+```
+
+`TAMPERED` is for a record that was changed, forged, removed or reordered (`the record before it is missing, extra or
+out of order`); anything else is `FAILED at event n:` or `FAILED:` with the reason in one line. A bundle that can't be
+checked at all (exit 2) says why (`UNUSABLE BUNDLE: ...`), with the commands to run when it needs a newer verifier.
+
+`tracekit verify bundle.tkb --trust trust.json --detail` prints one line per check, then two summary lines, and a third
+when the bundle holds `review` records (signed findings, or reviews imported with no citations). The rest of this page
+reads that report; scripts that parse the text use it, or `--json`:
 
 ```text
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
@@ -35,8 +69,17 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 The composite action can verify v2 bundles against a pinned trust config. Pass its path with `trust`; the file must be
 available to the workflow. Get the trust file from the sender directly, not from the pull request or the
 `<run>.trust.json` file that `tracekit last` writes next to the bundle. A trust file in the repository is only as
-trusted as the commit it's read from: on `pull_request` the pull request's author can change it, so run the check on
-`push` to a protected branch, or keep the trust file outside the repository. The default `require-anchor: true`
+trusted as the commit it's read from, so on a pull request the action reads a `trust`, `key` or `witness: file:` file
+in the pull request's checkout (at its merge or head commit, or one with its head in it, such as a `pull_request_target`
+checkout of the merge ref) from its base commit, by the path as given, fetching the commit when the checkout is
+shallow. The step fails for a file that isn't at the base commit (one the pull request adds, or one the workflow wrote
+into the checkout), a path with `..` or through a symlink, a file in a submodule, a file in `$GITHUB_WORKSPACE` outside any git
+checkout, and a `witness: git:` path that is the pull request's checkout. Files outside `$GITHUB_WORKSPACE` (write the
+workflow's own to `$RUNNER_TEMP`), and those in another checkout there, are used as given. The step's Python and pip
+run isolated from the checkout. On `pull_request` GitHub runs the workflow file as the pull request has it, so its
+author can still change the
+step itself: make the check a required workflow in a repository ruleset, or have CODEOWNERS review
+`.github/workflows/` ([limits](limits.md#evidence-and-verification)). The default `require-anchor: true`
 accepts a v2 bundle only when verification with that trust config succeeds. For v1 bundles, continue to pass `key` or
 `witness`; the action checks the v1 `trust root` result.
 
@@ -100,7 +143,7 @@ It shows, in this order:
 - what to do next, with the commands to run, for every result that isn't plainly VERIFIED;
 - when nothing failed, a summary: records and time span, signer, assurance, agents, tool calls, calls held for
   approval and who answered them, gaps, and findings with their author labels;
-- every line exactly as `tracekit verify` prints it, each with what it means, then **copy report** and **download
+- every line exactly as `tracekit verify --detail` prints it, each with what it means, then **copy report** and **download
   JSON**, the JSON of `tracekit verify --json`.
 
 Without a trust file it checks everything that needs no pinned key: a changed, missing or reordered record still
@@ -182,6 +225,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `tiers` (`decided and completed by different capture paths`) | a tool call's decision and result records name different `source` or `tier`, for example a call a gateway decided (T2) completed by the agent, which a current signer refuses; each such call is listed and counted at the weaker tier | which record is false, or that the call didn't run |
 | `gateway amendments` | `ext.amended` is on a record other than an LLM gateway's model request, or isn't a list of JSON pointers: the signer never writes that. It passes otherwise: `gateway amended n request(s) to show reasoning (/thinking/display: n)`, the requests the [gateway](gateway.md#readable-reasoning) sent with a field changed so the provider shows reasoning, each record committing to the request as sent | that the records are false: they verified like every other |
 | `openshell policy` | `ext.openshell.policy` is on anything but a signer-written `ext` record with OpenShell's name for the change and the observer: the signer never writes that. It passes otherwise: `OpenShell changed the sandbox policy or configuration n time(s) (approved: n, ...), as OpenShell reported it`, from the [OpenShell middleware's OCSF import](integrations/openshell.md#openshells-ocsf-events) | that OpenShell's report is true, or complete: it is what OpenShell said |
+| `boxed agent` | `ext.box` is on anything but a `run.registered` under a uid's identity, or isn't a box label the signer writes ({id, image_digest, allow, engine `firecracker`, channel `agent`}): no claim is made, and the short result says `NOT SHOWN`. It passes otherwise, for the runs the bundle holds (not a run-set's records of other runs) of a [Tracekit Box](limits.md#tracekit-box-experimental) box and its agent's channel: `PROOF AGAINST THE BOXED AGENT (micro-VM): the signing key was outside its box for this run.`, then that an agent run's records are its own account and the box's doors (its connections and file writes) are the record of what it could do, to review what the box wrote before running it, and `anchored by <witness> at <time>` for each pinned cosignature. The short result prints these lines in place of the general claim, never `PROOF AGAINST THE AGENT` for a box's run | that the agent's records are true or complete, or anything about a process running as the Box daemon's or the signer's user on the host |
 | `not interpreted` | records carry an ext name (format 1.4's non-critical slot) this verifier doesn't check, one line per name for the first 20 (`n record(s) carry ext.<name>`), then one line for the rest (`n more ext name(s)`). They verified like every record (signature, chain, inclusion); what the name says is not checked. `tracekit >= x checks it` names a verifier that does (from the manifest, advisory) | that anything is wrong: a later Tracekit wrote something this verifier doesn't read |
 | `external decisions` | another policy system's imported decision (`policy.external`) disagreed with the signer's for the same call (or named another tool, or a call the signer never decided), recorded as `capture.gap{decision_mismatch}`; the line also counts imports by system and by verified signature | that either decision was wrong: the signer's decision is the one that applied |
 

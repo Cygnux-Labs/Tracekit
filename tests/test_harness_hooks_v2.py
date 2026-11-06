@@ -101,7 +101,7 @@ class Mapping(HarnessCase):
                 self.assertEqual(code, CODEX_DENY if harness == "codex" and case["exit"] == 2 else case["exit"], err)
                 self.assertEqual(json.loads(out) if out else "", case["stdout"])
                 sent = self.sent[-1]
-                if case["request"]["tool_call_id"] is None:   # Gemini, agy: paired by the hook, never defaulted
+                if case["request"]["tool_call_id"] is None:   # Gemini, agy, Devin: paired by the hook, never defaulted
                     prefix = "gem" if harness == "gemini" else harness
                     self.assertRegex(sent["tool_call_id"], rf"^{prefix}_[0-9a-f]{{16}}_\d+$")
                     sent = dict(sent, tool_call_id=None)
@@ -160,6 +160,24 @@ class Mapping(HarnessCase):
 
     def test_crush(self):
         self.check("crush")
+
+    def test_devin(self):
+        self.check("devin")
+
+    def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
+        # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
+        # header and a webfetch with no url are denied in the hook, with no decide request sent
+        for name, ti in (("read", {"target": "/w/a.py"}), ("write", {"content": "x"}), ("edit", {"file_path": None}),
+                         ("write", {"file_path": "", "content": "x"}), ("apply_patch", {"input": "no headers"}),
+                         ("apply_patch", {"input": "*** Add File:  \n+x"}), ("webfetch", {"uri": "https://x.example"}),
+                         ("webfetch", {"url": "https://example.com", "Url": "http://169.254.169.254/latest"})):
+            with self.subTest(tool=name, ti=ti):
+                code, out, err = self.hook("devin", {"session_id": "dv-9", "hook_event_name": "PreToolUse",
+                                                     "tool_name": name, "tool_input": ti})
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"Devin's {name} call names no", err)
+                self.assertIn("issues/566", err)
+        self.assertEqual(self.sent, [])
 
     def test_crush_sub_agents_are_denied_before_the_signer(self):
         # Crush runs no hooks inside a sub-agent (internal/agent/hooked_tool.go), so the hook denies agent and
@@ -257,7 +275,10 @@ class Mapping(HarnessCase):
                     "conversationId": "ag-pair", "workspacePaths": ["/w"]}
         self.decision = "deny"
         code, out, err = self.hook("antigravity", pre(3, "ls"), "PreToolUse")
-        self.assertEqual((code, json.loads(out)), (0, {"decision": "deny", "reason": "Blocked by tracekit policy: R-1"}))
+        self.assertEqual((code, json.loads(out)), (0, {"decision": "deny", "reason": "[tracekit] BLOCKED, nothing ran, "
+                                                       "and no one can approve it (R-1).\nAgent: tell the person what "
+                                                       "you were doing and why it was blocked. Never hide what a call "
+                                                       "runs to get past the policy: every call is signed and kept."}))
         self.decision = "allow"
         for step, cmd in ((4, "ls"), (4, "pwd"), (5, "ls")):
             self.assertEqual(self.hook("antigravity", pre(step, cmd), "PreToolUse")[:2], (0, '{"decision": "allow"}'))
@@ -482,6 +503,24 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
         self.assertIn("TK-D005", err)
 
+    def test_a_devin_file_call_is_decided_on_every_path_its_input_names(self):
+        # the review of #576: the signer decided only the first path key, so a decoy file_path beside the path Devin's
+        # tool reads let a write of .env through
+        # the second review: or under a key in another case (Devin's decoder may fold it, K and ſ too) or another name
+        for i, (real, decoy) in enumerate((("path", "file_path"), ("notebook_path", "file_path"), ("path", "notebook_path"),
+                                           ("Path", "file_path"), ("FILE_PATH", "file_path"),
+                                           ("notebooK_path", "file_path"), ("target_file", "file_path"))):
+            code, out, err = self.hook("devin", {"session_id": "dv-p", "hook_event_name": "PreToolUse", "tool_name": "write",
+                                                 "tool_input": {decoy: f"/w/notes{i}.txt", real: "/w/.env", "content": "A=1"}})
+            self.assertEqual((code, out), (2, ""), (real, decoy))
+            self.assertIn("TK-D005", err)
+        # and a unified diff's files, beside a decoy patch header in another argument
+        code, out, err = self.hook("devin", {"session_id": "dv-p", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+                                             "tool_input": {"patch": "--- a/config/.env\n+++ b/config/.env\n@@\n-A=1\n+A=2\n",
+                                                            "note": "*** Update File: README.md"}})
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("TK-D005", err)
+
     def test_a_gemini_sandbox_expansion_is_held_for_a_person(self):
         pre = {"session_id": "s", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
                "tool_input": {"command": "npm install", "additional_permissions": {"network": True}}}
@@ -489,8 +528,8 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
         aid = err.split()[4]
         self.assertRegex(json.loads(out)["reason"],   # what Gemini CLI shows the person and the model
-                         rf"\(TK-A004(; TK-F\d+)*\): a person lets it run with `tracekit approvals( --signer \S+)? approve {aid}`"
-                         ", then asks the agent to try the same call again")
+                         rf"\(TK-A004(, TK-F\d+)*\), expires \d\d:\d\d UTC\.\nPerson: .*; allow once with "
+                         rf"`tracekit approvals( --signer \S+)? approve {aid}`;")
         pre["tool_input"]["additional_permissions"] = {"network": False}
         self.assertEqual(self.hook("gemini", pre)[0], 0)
 
@@ -505,12 +544,13 @@ class OnTheDevPolicy(HarnessCase):
             with self.subTest(name=name):
                 code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
                 self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
-                self.assertIn("Blocked by tracekit policy", json.loads(out)["reason"])
+                self.assertTrue(json.loads(out)["reason"].startswith("[tracekit] BLOCKED, nothing ran, and no one "
+                                                                     "can approve it (TK-D"), out)
         cmd = {"CommandLine": "mkdir -p /tmp/x", "BypassSandbox": True}
         code, out, err = self.hook("antigravity", pre(3, "run_command", cmd), "PreToolUse")   # held: blocked at once
         self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
-        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\): a person lets it run with `tracekit approvals "
-                                                    r"(--signer \S+ )?approve apr-")
+        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\), expires \d\d:\d\d UTC\.\nPerson: look with "
+                                                    r"`tracekit approvals (--signer \S+ )?show apr-")
         self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
                          (0, '{"decision": "allow"}'))
 
@@ -621,7 +661,8 @@ class Installer(unittest.TestCase):
                     with open(path) as f:
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
-                    hooks = [h for hs in (blob if harness == "droid" else blob[key]).values() for h in hs]
+                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map
+                    hooks = [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
@@ -630,8 +671,8 @@ class Installer(unittest.TestCase):
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
-                    # through its own POSIX shell)
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush"):
+                    # through its own POSIX shell), and Devin's shell isn't documented: a path with a space keeps cmd.exe's
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
@@ -643,7 +684,12 @@ class Installer(unittest.TestCase):
                     if harness == "codex":   # init turned Codex's reasoning summaries on, once
                         self.assertNotIn("set by init", again[1])
                     code, out = self.cli("uninstall", "--agent", harness, "--project")
-                    self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")   # once: the CLI repeated it
+                    want = f"Tracekit v2 hooks removed from {path}\n"   # once: the CLI repeated it
+                    if harness == "devin":   # and that init's turning off Devin's reading of Claude Code's config stays
+                        want += (f"read_config_from.claude stays false in {os.path.join(d, '.devin', 'config.json')}: "
+                                 "set it to true there for Devin to read Claude Code's hooks, rules, skills, commands "
+                                 "and MCP servers again\n")
+                    self.assertEqual(out, want)
                     if harness == "droid":
                         self.assertFalse(os.path.exists(path))
                         continue
@@ -1476,9 +1522,10 @@ class VersionNotice(HarnessCase):
     def test_a_blocked_call_carries_no_notice_and_the_next_call_let_through_does(self):
         self.decision = "deny"
         code, out, err = self.pre("t1")
-        self.assertEqual((code, out), (2, ""))
-        self.assertIn("Blocked by tracekit policy", err)
-        self.assertNotIn("older than", err)
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("[tracekit] BLOCKED, nothing ran"), err)
+        self.assertEqual(json.loads(out)["systemMessage"], err.strip())   # the block's own JSON (#587), no notice
+        self.assertNotIn("older than", err + out)
         self.decision = "allow"
         self.assertIn("older than this hook's", json.loads(self.pre("t2")[1])["systemMessage"])
 

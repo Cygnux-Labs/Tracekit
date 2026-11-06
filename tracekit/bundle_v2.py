@@ -79,6 +79,7 @@ VERSIONS = {
                                                         "model.exchange": ["said_only"], "capture.gap": ["sensor"]},
               "values": {"capture.gap": {"kind": ["constraint_refused"]}}, "ext": ["amended", "openshell.policy"],
               "layout": ["run parts"]},
+    "1.6.0": {"types": [], "fields": {}, "values": {}, "ext": ["box"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
 # uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain
@@ -237,7 +238,7 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
         with open(tmp, "wb") as f:
             with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
                 for n, b in files.items():
-                    z.writestr(n, b)
+                    z.writestr(zip_entry(n), b)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, out_path)
@@ -246,6 +247,15 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
             os.unlink(tmp)
         raise
     return {"bundle": out_path, **info}
+
+
+def zip_entry(name):
+    """A deflated zip entry dated 1980-01-01 00:00, the zip epoch: the default date, the exporter's local clock, would
+    show its time zone against the records' UTC times. A fixed date also makes an export of the same files the same
+    bytes."""
+    e = zipfile.ZipInfo(name, (1980, 1, 1, 0, 0, 0))
+    e.compress_type, e.external_attr = zipfile.ZIP_DEFLATED, 0o600 << 16   # as writestr(name, ...) sets them
+    return e
 
 
 def bundle(storage, tenant, run_id, note, run_set=None, tenant_salt=None, with_runs=(), policy_dir=None, kept=None):

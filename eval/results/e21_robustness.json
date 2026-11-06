@@ -2358,24 +2358,24 @@
         "total": 10
       },
       "TK-C001": {
-        "contained": 29,
+        "contained": 30,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 29,
+        "covered_by_rule_or_parse": 30,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 29,
+        "same_rule": 30,
         "same_rule_rate": 1.0,
-        "total": 29
+        "total": 30
       },
       "TK-C010": {
-        "contained": 45,
+        "contained": 60,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 45,
+        "covered_by_rule_or_parse": 60,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 45,
+        "same_rule": 60,
         "same_rule_rate": 1.0,
-        "total": 45
+        "total": 60
       },
       "TK-D001": {
         "contained": 27,
@@ -2770,24 +2770,24 @@
         "total": 10
       },
       "TK-C001": {
-        "contained": 29,
+        "contained": 30,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 29,
+        "covered_by_rule_or_parse": 30,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 29,
+        "same_rule": 30,
         "same_rule_rate": 1.0,
-        "total": 29
+        "total": 30
       },
       "TK-C010": {
-        "contained": 45,
+        "contained": 60,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 45,
+        "covered_by_rule_or_parse": 60,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 45,
+        "same_rule": 60,
         "same_rule_rate": 1.0,
-        "total": 45
+        "total": 60
       },
       "TK-D001": {
         "contained": 27,
@@ -3172,24 +3172,24 @@
         "total": 10
       },
       "TK-C001": {
-        "contained": 29,
+        "contained": 30,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 29,
+        "covered_by_rule_or_parse": 30,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 29,
+        "same_rule": 30,
         "same_rule_rate": 1.0,
-        "total": 29
+        "total": 30
       },
       "TK-C010": {
-        "contained": 45,
+        "contained": 60,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 45,
+        "covered_by_rule_or_parse": 60,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 45,
+        "same_rule": 60,
         "same_rule_rate": 1.0,
-        "total": 45
+        "total": 60
       },
       "TK-D001": {
         "contained": 20,
@@ -3554,24 +3554,24 @@
         "total": 10
       },
       "TK-C001": {
-        "contained": 29,
+        "contained": 30,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 29,
+        "covered_by_rule_or_parse": 30,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 29,
+        "same_rule": 30,
         "same_rule_rate": 1.0,
-        "total": 29
+        "total": 30
       },
       "TK-C010": {
-        "contained": 45,
+        "contained": 60,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 45,
+        "covered_by_rule_or_parse": 60,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 45,
+        "same_rule": 60,
         "same_rule_rate": 1.0,
-        "total": 45
+        "total": 60
       },
       "TK-D001": {
         "contained": 27,
@@ -3966,24 +3966,24 @@
         "total": 10
       },
       "TK-C001": {
-        "contained": 29,
+        "contained": 30,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 29,
+        "covered_by_rule_or_parse": 30,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 29,
+        "same_rule": 30,
         "same_rule_rate": 1.0,
-        "total": 29
+        "total": 30
       },
       "TK-C010": {
-        "contained": 45,
+        "contained": 60,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 45,
+        "covered_by_rule_or_parse": 60,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 45,
+        "same_rule": 60,
         "same_rule_rate": 1.0,
-        "total": 45
+        "total": 60
       },
       "TK-D001": {
         "contained": 27,

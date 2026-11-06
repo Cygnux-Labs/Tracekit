@@ -6,13 +6,16 @@ holds the actions' credentials and decides, runs and records each call in the si
     actions = ex.actions("https://executor.internal:8090", run, headers={"authorization": "Bearer ..."})
     tools = [ex.openai_agents(a) for a in actions]               # agents.FunctionTool
     tools = [ex.langchain(a) for a in actions]                   # langchain_core StructuredTool
-    server = ex.claude_agent_sdk(actions)                        # ClaudeAgentOptions(mcp_servers={ex.SERVER: server})
+    servers = {ex.SERVER: ex.claude_agent_sdk(actions)}          # ClaudeAgentOptions(mcp_servers=servers), and
+                                                                 # tracekit_hooks(signer, run, mcp_servers=servers)
 
 `headers` authenticate the agent to the executor (its `http.authenticators`: a bearer token, a service-account
 token); `context` is an ssl.SSLContext for its CA and a client certificate. The Tracekit adapters leave these tools to
 the executor, which decides and records them: each is marked (EXECUTOR), and the Claude Agent SDK hooks skip the tools
-of the MCP server named SERVER. A refusal (deny, an approval not given, the signer unreachable) raises
-ExecutorRefused with the executor's message, which each framework hands the model as the tool's error.
+of the server under SERVER only when it is this in-process server, handed to them in `mcp_servers` (a project
+.mcp.json server of that name is never one: the hooks gate its tools). A refusal (deny, an approval not given, the
+signer unreachable) raises ExecutorRefused with the executor's message, which each framework hands the model as the
+tool's error.
 
 Each tool hands the executor the model's id for the call, so the executor decides it under the id the model's message
 carries and the signer pairs the two: OpenAI Agents gives it to the tool; under LangChain, TracekitMiddleware sets
@@ -131,4 +134,7 @@ def claude_agent_sdk(actions, name=SERVER):
                 return {"content": [{"type": "text", "text": str(e)}], "is_error": True}
             return {"content": [{"type": "text", "text": json.dumps(out)}]}
         return tool(action.name, action.description, action.args)(handler)
-    return create_sdk_mcp_server(name, tools=[one(a) for a in actions])
+    server = create_sdk_mcp_server(name, tools=[one(a) for a in actions])
+    # what tracekit_hooks knows this in-process server by: the names of the actions it serves, and no others
+    setattr(server["instance"], EXECUTOR, frozenset(a.name for a in actions))
+    return server
