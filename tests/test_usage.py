@@ -46,6 +46,17 @@ class Normalise(unittest.TestCase):
         for bad in (None, {}, {"prompt_tokens": "lots"}, {"input_tokens": -5, "output_tokens": True}, {"input_tokens": 10 ** 15}):
             self.assertIsNone(usage.from_openai(bad) if bad is None or "prompt_tokens" in bad else usage.from_anthropic(bad), bad)
 
+    def test_a_count_past_a_float_is_dropped_not_raised(self):
+        """A JSON number past a float (1e999 reads as inf) raised OverflowError out of _int: the LLM gateway's
+        response parsing stopped on it, as the TIPS page's transcript reading did."""
+        inf = json.loads("1e999")
+        self.assertIsNone(usage.from_anthropic({"input_tokens": inf, "output_tokens": inf}))
+        self.assertEqual(usage.from_openai({"prompt_tokens": inf, "completion_tokens": 7})["output_tokens"], 7)
+        from tracekit import parsers
+        out = parsers.parse("anthropic:messages", {"id": "msg_1", "model": "m", "stop_reason": "end_turn", "content": [],
+                                                   "usage": {"input_tokens": 50, "output_tokens": inf}})
+        self.assertEqual((out["usage"]["input_tokens"], out["usage"]["output_tokens"]), (50, 0))
+
     def test_streaming_merge(self):
         start = usage.from_anthropic({"input_tokens": 50, "output_tokens": 1})
         end = usage.from_anthropic({"output_tokens": 30})

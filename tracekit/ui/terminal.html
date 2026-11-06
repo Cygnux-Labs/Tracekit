@@ -1616,7 +1616,7 @@
     }
 
     /* pages (body pg-*): DESK is today's grid; a run is its agents and tool mix, one view, and the inspector (DETAIL);
-       RUNS, APPROVALS, PERMISSIONS and INFLUENCE take the whole width. The panels are the same: only where they sit */
+       RUNS, APPROVALS, PERMISSIONS, INFLUENCE and TIPS take the whole width. The panels are the same: only where they sit */
     body:not(.pg-desk) main>.p,
     body:not(.pg-desk) .ticker {
       display: none
@@ -1638,7 +1638,8 @@
     body.pg-approvals main>.p.apprp,
     body.pg-permissions main>.p.whyv,
     body.pg-horizon main>.p.hzp,
-    body.pg-influence main>.p.whyv {
+    body.pg-influence main>.p.whyv,
+    body.pg-tips main>.p.tipsp {
       display: flex
     }
 
@@ -1652,7 +1653,8 @@
     .pg-approvals main,
     .pg-permissions main,
     .pg-horizon main,
-    .pg-influence main {
+    .pg-influence main,
+    .pg-tips main {
       grid-template-columns: minmax(0, 1fr);
       grid-template-rows: minmax(0, 1fr);
       grid-template-areas: "page"
@@ -1661,6 +1663,7 @@
     .runsp,
     .apprp,
     .hzp,
+    .tipsp,
     .pg-permissions .whyv,
     .pg-influence .whyv {
       grid-area: page
@@ -1668,7 +1671,8 @@
 
     .runsp,
     .apprp,
-    .hzp {
+    .hzp,
+    .tipsp {
       display: none
     }
 
@@ -2843,6 +2847,215 @@
       color: var(--magenta)
     }
 
+    /* TIPS: a card per tip: its statement, the evidence (a chart drawn to scale, or a table), what it saves with the
+       arithmetic one click away, and the fix with its COPY */
+    .tips {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 8px;
+      max-width: 1100px
+    }
+
+    .tsrc {
+      color: var(--faint);
+      font-size: 10px;
+      letter-spacing: .06em;
+      text-transform: uppercase
+    }
+
+    .tread {
+      color: var(--muted);
+      line-height: 1.5
+    }
+
+    .tcard {
+      display: grid;
+      gap: 8px;
+      border: 1px solid var(--line2);
+      border-left: 3px solid var(--amber);
+      background: var(--panel);
+      padding: 10px 12px
+    }
+
+    .tcard.tno {
+      border-left-color: var(--line2)
+    }
+
+    .tcard h3 {
+      margin: 0;
+      font-size: 15px;
+      color: var(--text)
+    }
+
+    .tst {
+      color: var(--muted);
+      line-height: 1.5
+    }
+
+    .tsave {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 22px;
+      align-items: baseline
+    }
+
+    .tsave span {
+      color: var(--muted)
+    }
+
+    .tsave b {
+      font-size: 18px;
+      color: var(--green);
+      margin: 0 4px
+    }
+
+    .tsave b.tzero {
+      color: var(--muted)
+    }
+
+    .tmath summary,
+    .tmore summary {
+      cursor: pointer;
+      color: var(--amber);
+      font-size: 11px;
+      letter-spacing: .06em
+    }
+
+    .tmath ol {
+      margin: 6px 0 0;
+      padding-left: 20px;
+      color: var(--muted);
+      line-height: 1.55
+    }
+
+    .tfix {
+      display: grid;
+      gap: 6px;
+      background: var(--amber-bg);
+      border: 1px solid var(--line2);
+      padding: 8px 10px
+    }
+
+    .tfix code.shell {
+      white-space: pre-wrap;
+      word-break: break-word
+    }
+
+    .tkey {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 14px;
+      color: var(--muted);
+      font-size: 11px
+    }
+
+    .tkey i {
+      display: inline-block;
+      width: 14px;
+      height: 0;
+      margin-right: 5px;
+      vertical-align: middle;
+      border-top: 2px solid var(--c)
+    }
+
+    .tkey i.tdash {
+      border-top-style: dashed
+    }
+
+    .tkey b {
+      color: var(--cyan)
+    }
+
+    .tchart {
+      display: block;
+      width: 100%;
+      height: auto;
+      overflow: visible
+    }
+
+    .tchart text {
+      fill: var(--muted);
+      font: 10px var(--mono)
+    }
+
+    .tchart .tgrid {
+      stroke: var(--line);
+      stroke-width: 1
+    }
+
+    .tchart .tax {
+      stroke: var(--line2);
+      stroke-width: 1
+    }
+
+    .tchart .tarea {
+      fill: var(--amber-bg)
+    }
+
+    .tchart .tact {
+      fill: none;
+      stroke: var(--amber);
+      stroke-width: 1.5
+    }
+
+    .tchart .tsim {
+      fill: none;
+      stroke: var(--green);
+      stroke-width: 1.5
+    }
+
+    .tchart .tcap {
+      stroke: var(--green);
+      stroke-width: 1;
+      stroke-dasharray: 5 4
+    }
+
+    .tchart .tcap+text {
+      fill: var(--green)
+    }
+
+    .tchart .tmark {
+      fill: var(--cyan)
+    }
+
+    .tchart .tstem {
+      stroke: var(--amber);
+      stroke-width: 1.5
+    }
+
+    .tchart .tdot {
+      fill: var(--amber)
+    }
+
+    .tchart .tidle {
+      stroke: var(--faint);
+      fill: var(--faint)
+    }
+
+    .tbars {
+      display: grid;
+      grid-template-columns: max-content minmax(120px, 1fr) max-content;
+      gap: 4px 10px;
+      align-items: center
+    }
+
+    .tbar {
+      display: flex;
+      height: 12px;
+      background: var(--track)
+    }
+
+    .tbar span {
+      display: block;
+      height: 100%;
+      background: var(--amber)
+    }
+
+    .tbar span.tok {
+      background: var(--green)
+    }
+
     @media (max-width:900px) {
       body {
         overflow: auto
@@ -2992,6 +3205,27 @@
 
     /* phones: every page stacks, a tape row is a two-line card, nothing scrolls the page sideways */
     @media (max-width:700px) {
+      .tbars {
+        grid-template-columns: minmax(0, 1fr)
+      }
+
+      .tbars>.dim {
+        margin-bottom: 6px
+      }
+
+      .tcard table.wt th {
+        white-space: normal
+      }
+
+      .tcard table.wt td {
+        white-space: normal;
+        overflow-wrap: anywhere
+      }
+
+      .tchart text {
+        font-size: 17px
+      }
+
       .rviews {
         flex-wrap: wrap
       }
@@ -3324,6 +3558,10 @@
         <h2>APPROVALS<small id="apprsum"></small></h2>
         <div class="body" id="apprp"></div>
       </section>
+      <section class="p tipsp">
+        <h2>TIPS<span class="hzsub">what each step cost, and how to cut it</span><small id="tipssum"></small></h2>
+        <div class="body" id="tipsp"></div>
+      </section>
       <section class="p hzp" id="hzp">
         <h2>EVENT HORIZON<span class="hzsub">where your agents went: the project, this machine and the outside
             world</span><small>every mark is a record</small></h2>
@@ -3417,10 +3655,10 @@
               gap, back to live (also ESC)</td>
           </tr>
           <tr>
-            <td>DESK · RUNS · LIVE · APPROVALS · PERMISSIONS · HORIZON · INFLUENCE</td>
+            <td>DESK · RUNS · LIVE · APPROVALS · PERMISSIONS · HORIZON · INFLUENCE · TIPS</td>
             <td>The pages (header): every panel at once; every run; the newest open run; held calls nobody answered yet;
               every decision that was not a plain allow; where the agents went; with why logs, what content reached
-              which tools. Back and Forward step through what you opened</td>
+              which tools; what each step cost and how to cut it. Back and Forward step through what you opened</td>
           </tr>
           <tr>
             <td>1–7 · OVERVIEW · CALLS · TIMELINE · GRAPH · WHY · AGENTS · EVIDENCE</td>
@@ -3808,7 +4046,7 @@
       for (const p of [...PAGES, "run"]) document.body.classList.toggle("pg-" + p, PAGE === p);
       for (const v of RVIEWS) document.body.classList.toggle("rv-" + v, PAGE === "run" && RV === v);
       document.body.classList.toggle("callslog", CALLSLOG);
-      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunsPage(); renderApprovalsPage(); renderHorizon();
+      renderTop(); renderPages(); renderWaiting(); renderTicker(); renderNeeds(); renderRunsPage(); renderApprovalsPage(); renderTipsPage(); renderHorizon();
       renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderWaterfall(); renderReason(); renderFiles();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
       document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
@@ -3822,7 +4060,7 @@
     /* ---------------- pages and a run's views (v7): the same panels, placed per page ---------------- */
     // PAGE: a global page, or "run": one run's agents and tool mix, one of its views (RV) and the inspector (DETAIL).
     // RV "waterfall" is the run's TIMELINE (an old link's view=timeline was the why log's events: CALLS shows them)
-    const PAGES = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence"];
+    const PAGES = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence", "tips"];
     const RVIEWS = ["overview", "calls", "waterfall", "graph", "why", "agents", "evidence"], RVNAME = { waterfall: "TIMELINE" };
     let PAGE = "desk", RV = "calls", CALLSLOG = false;
     // a view by any of its names, old (links, the why views' own buttons) or new; MAP was HORIZON's first name
@@ -3845,7 +4083,7 @@
     // the header: the global pages (APPROVALS counts the holds waiting), and on a run's page its views, keys 1–7
     function renderPages() {
       const n = ENDED ? 0 : waitingCount(), on = p => p === "live" ? PAGE === "run" && RUNS.get(scope)?.state === "open" : PAGE === p;
-      put("pages", PAGES.filter(p => p !== "influence" || WHY).map(p => `<button type="button" data-page="${esc(p)}" class="${on(p) ? "on" : ""}">${esc(p.toUpperCase())}${p === "approvals" && n ? `<span class="n">${esc(n)}</span>` : ""}</button>`).join(""));
+      put("pages", PAGES.filter(p => (p !== "influence" || WHY) && (p !== "tips" || TIPSON)).map(p => `<button type="button" data-page="${esc(p)}" class="${on(p) ? "on" : ""}">${esc(p.toUpperCase())}${p === "approvals" && n ? `<span class="n">${esc(n)}</span>` : ""}</button>`).join(""));
       $("rviews").hidden = PAGE !== "run";
       put("rviews", RVIEWS.map((v, i) => `<button type="button" data-rv="${esc(v)}" class="${RV === v ? "on" : ""}">${esc(RVNAME[v] || v.toUpperCase())}<kbd>${esc(i + 1)}</kbd></button>`).join(""));
     }
@@ -3875,6 +4113,114 @@
         + (document.querySelector('.nav a[href="/runs"]') ? `<p style="padding:0 8px">Every log of this deployment, searchable: the <a href="/runs">runs page</a>.</p>` : ""));
       $("runssum").textContent = `${plural(list.length, "run")} · checked by this viewer`;
       if (WHY && $("whyruns")._w !== WHY) { $("whyruns")._w = WHY; runsView($("whyruns")); }
+    }
+    /* ---------------- TIPS: what each step cost, and how to cut it (tracekit/tips.py, over /api/tips) ---------------- */
+    // TIPSON: the server has tips (its snapshot says so, to the token); TIPS: its answer, asked for when the page opens
+    let TIPSON = false, TIPS = null, TIPSERR = "", TIPSASKED = false, tipsKey = null;
+    async function loadTips(fresh) {   // fresh: READ AGAIN, worked out again now rather than the minute-old answer
+      TIPSASKED = true; TIPSERR = "";
+      try { TIPS = await getJSON("api/tips" + (fresh ? "?fresh=1" : "")); } catch (e) { TIPSERR = e.message || String(e); }
+      schedule();
+    }
+    // an axis's ticks from 0 to hi: about n, each step 1, 2, 2.5 or 5 times a power of ten
+    function tipTicks(hi, n = 4) {
+      if (!(hi > 0)) return [0];
+      const raw = hi / n, p = 10 ** Math.floor(Math.log10(raw)), step = [1, 2, 2.5, 5, 10].map(m => m * p).find(x => x >= raw), out = [];
+      for (let k = 0; k * step <= hi * 1.0001; k++) out.push(+(k * step).toPrecision(12));
+      return out;
+    }
+    // a duration in plain words: "45 s", "5 min 29 s" (under 10 minutes, where the seconds still matter), "42 min", "1 h 5 min"
+    function tipDur(s) {
+      s = Math.round(s);
+      if (s < 60) return s + " s";
+      if (s < 600) return Math.floor(s / 60) + " min" + (s % 60 ? " " + (s % 60) + " s" : "");
+      const m = Math.round(s / 60);
+      return m < 60 ? m + " min" : Math.floor(m / 60) + " h" + (m % 60 ? " " + (m % 60) + " min" : "");
+    }
+    const tipTok = n => n >= 1e6 ? +(n / 1e6).toFixed(2) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(Math.round(n));
+    // dollars: whole from $100, cents from $0.10, else two significant digits; a negative sum is what it costs more
+    const tipUsd = v => v == null ? "–" : v < 0 ? "costs " + tipUsd(-v) + " more" : v === 0 ? "$0" : v < 0.0001 ? "under $0.0001"
+      : v < 0.1 ? "$" + +v.toPrecision(2) : v < 100 ? "$" + v.toFixed(2) : "$" + Math.round(v).toLocaleString("en-US");
+    // tip 1: the session's context at each step as it ran (amber; the area under it is what re-reading it cost) and
+    // replayed compacting at the cap (green); the cap dashed, and each compaction it made itself (cyan). Both axes are
+    // one scale: the right one is the left in dollars a step pays for that much context, at the session's own average
+    function contextChart(c) {
+      const W = 720, H = 238, L = 52, R = 62, T = 22, B = 26, top = Math.max(...c.actual, ...c.replay, c.cap) * 1.08;
+      const X = i => L + (W - L - R) * (c.n > 1 ? i / (c.n - 1) : 0), Y = v => H - B - (H - B - T) * v / top, f = v => v.toFixed(1);
+      const pts = vs => c.x.map((i, k) => `${esc(f(X(i)))},${f(Y(vs[k]))}`).join(" ");
+      return `<svg class="tchart" viewBox="0 0 ${esc(W)} ${esc(H)}" role="img" aria-label="${esc(`The context of each of ${c.n} steps as it ran, and replayed compacting at ${tipTok(c.cap)} tokens`)}">`
+        + tipTicks(top).map(v => `<line class="tgrid" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(v)))}" y2="${esc(f(Y(v)))}"/><text x="${esc(L - 6)}" y="${esc(f(Y(v) + 3))}" text-anchor="end">${esc(tipTok(v))}</text><text x="${esc(W - R + 6)}" y="${esc(f(Y(v) + 3))}">${esc(tipUsd(v * c.read / 1e6))}</text>`).join("")
+        + tipTicks(c.n - 1).map(i => `<text x="${esc(f(X(i)))}" y="${esc(H - B + 14)}" text-anchor="middle">${esc(i.toLocaleString("en-US"))}</text>`).join("")
+        + `<polygon class="tarea" points="${esc(f(X(c.x[0])))},${esc(f(Y(0)))} ${esc(pts(c.actual))} ${esc(f(X(c.x[c.x.length - 1])))},${esc(f(Y(0)))}"/><polyline class="tact" points="${esc(pts(c.actual))}"/><polyline class="tsim" points="${esc(pts(c.replay))}"/>`
+        + `<line class="tcap" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(c.cap)))}" y2="${esc(f(Y(c.cap)))}"/><text x="${esc(L + 4)}" y="${esc(f(Y(c.cap) - 4))}">compact here: ${esc(tipTok(c.cap))}</text>`
+        + c.marks.map(([i, v]) => `<path class="tmark" d="M${esc(f(X(i)))},${esc(f(Y(v) - 2))} l-4,-7 h8 z"><title>${esc(`step ${i.toLocaleString("en-US")}: compacted itself at ${tipTok(v)} tokens`)}</title></path>`).join("")
+        + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="2" y="${esc(T - 8)}">TOKENS</text><text x="${esc(W - 2)}" y="${esc(T - 8)}" text-anchor="end">$ A STEP</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">STEP</text></svg>`;
+    }
+    // tip 2: each wait that outlived the cache, when it began (local time) and what the rebuild after it cost; amber
+    // while blocked on a call a bounded poll would have kept the cache through, faint while idle
+    function cacheChart(t) {
+      const W = 720, H = 198, L = 66, R = 18, T = 22, B = 30, [t0, t1] = t.window, span = Math.max(1, t1 - t0), top = Math.max(...t.waits.map(w => w.usd)) * 1.1 || 1;
+      const X = s => L + (W - L - R) * (s - t0) / span, Y = v => H - B - (H - B - T) * v / top, f = v => v.toFixed(1);
+      const lab = s => (span > 36 * 3600 ? new Date(s * 1000).toLocaleDateString(undefined, { weekday: "short", day: "numeric" }) + " " : "") + fmtT(s).slice(0, 5);
+      return `<svg class="tchart" viewBox="0 0 ${esc(W)} ${esc(H)}" role="img" aria-label="${esc(`${t.waits.length} waits that outlived the prompt cache, by when they began and what the rebuild after each cost`)}">`
+        + tipTicks(top).map(v => `<line class="tgrid" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(v)))}" y2="${esc(f(Y(v)))}"/><text x="${esc(L - 6)}" y="${esc(f(Y(v) + 3))}" text-anchor="end">${esc(tipUsd(v))}</text>`).join("")
+        + [0, .25, .5, .75, 1].map(k => `<text x="${esc(f(X(t0 + k * span)))}" y="${esc(H - B + 14)}" text-anchor="${esc(k ? k === 1 ? "end" : "middle" : "start")}">${esc(lab(t0 + k * span))}</text>`).join("")
+        + [...t.waits].sort((a, b) => a.fix - b.fix).map(w => `<line class="tstem${w.fix ? "" : " tidle"}" x1="${esc(f(X(w.t)))}" x2="${esc(f(X(w.t)))}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(w.usd)))}"/><circle class="tdot${w.fix ? "" : " tidle"}" cx="${esc(f(X(w.t)))}" cy="${esc(f(Y(w.usd)))}" r="3.5"><title>${esc(`${fmtD(w.t)} ${fmtT(w.t)} ${TZ} · ${w.agent} · waited ${tipDur(w.s)} (its cache lasts ${tipDur(w.life)}) · wrote ${tipTok(w.tokens)} tokens again: ${tipUsd(w.usd)}${w.fix ? ` (polling: ${tipUsd(w.alt)})` : ""} · ${w.cause}`)}</title></circle>`).join("")
+        + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="2" y="${esc(T - 8)}">REBUILD</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">${esc(TZ)}</text></svg>`;
+    }
+    const tipBar = (rows, key) => `<div class="tbars">` + rows.map(([label, parts, text]) => `<span>${esc(label)}</span><div class="tbar">` + parts.map(([w, cls, title]) => `<span class="${esc(cls)}" style="width:${esc((100 * w).toFixed(2))}%" title="${esc(title)}"></span>`).join("") + `</div><span class="dim">${esc(text)}</span>`).join("") + `</div>` + (key || "");
+    // tip 2's own experiment: subagent steps by the wait before them, and how many wrote their whole context again
+    const tipBins = t => t.bins?.length ? `<div class="tsrc">subagent steps by the wait before them · the share that wrote their whole context again</div>`
+      + tipBar(t.bins.map(b => [b.label, [[b.rebuilt / b.n, "", `${b.rebuilt} rebuilt`]], `${b.rebuilt.toLocaleString("en-US")} of ${b.n.toLocaleString("en-US")} (${(100 * b.rebuilt / b.n).toFixed(b.rebuilt && b.rebuilt < b.n / 100 ? 1 : 0)}%)`])) : "";
+    function tipEvidence(t) {
+      if (t.id === "context") return `<div class="tkey"><span><i style="--c:var(--amber)"></i>context as it ran</span><span><i style="--c:var(--green)"></i>replayed, compacting at ${esc(tipTok(t.cap))}</span><span><i class="tdash" style="--c:var(--green)"></i>the compaction point</span>${t.chart.marks.length ? "<span><b>▼</b> where it compacted itself</span>" : ""}</div>`
+        + contextChart(t.chart) + `<details class="tmore"><summary>OTHER COMPACTION POINTS</summary><table class="wt"><thead><tr><th>COMPACT AT</th><th>COMPACTIONS</th><th>WOULD SAVE</th></tr></thead><tbody>`
+        + t.caps.map(c => `<tr${c.cap === t.cap ? ' class="on"' : ""}><td>${esc(tipTok(c.cap))}</td><td>${esc(c.compactions.toLocaleString("en-US"))}</td><td>${esc(tipUsd(c.usd))}</td></tr>`).join("") + `</tbody></table></details>`;
+      if (t.id === "cache") return `<div class="tkey"><span><i style="--c:var(--amber)"></i>blocked on a call: a bounded poll keeps the cache</span><span><i style="--c:var(--faint)"></i>idle: a person away, a subagent resumed later</span></div>`
+        + cacheChart(t) + (t.causes.length ? `<table class="wt"><thead><tr><th>BLOCKED ON</th><th>WAITS</th><th>TIME</th><th>REBUILDS COST</th><th>POLLING INSTEAD</th></tr></thead><tbody>`
+          + t.causes.slice(0, 6).map(c => `<tr><td>${esc(c.cause)}</td><td>${esc(c.n)}</td><td>${esc(tipDur(c.s))}</td><td>${esc(tipUsd(c.usd))}</td><td>${esc(tipUsd(c.alt))}</td></tr>`).join("")
+          + `</tbody></table>` + (t.causes.length > 6 ? `<div class="dim">${esc(`and ${plural(t.causes.length - 6, "more cause")}: ${t.causes.slice(6).map(c => c.cause).join(", ")}`)}</div>` : "") : "") + tipBins(t);
+      const most = Math.max(...t.where.map(w => w.answered + w.open));
+      return tipBar(t.where.map(w => [w.where.toUpperCase(), [[w.answered / most, "tok", "answered"], [w.open / most, "", "nobody answered"]],
+        `${w.answered} answered · ${w.open} nobody answered` + (w.joined ? ` · blocked ${tipDur(w.blocked_s)}` : "")]),
+        `<div class="tkey"><span><i style="--c:var(--green)"></i>answered</span><span><i style="--c:var(--amber)"></i>nobody answered</span></div>`)
+        + (t.rules.length ? `<table class="wt"><thead><tr><th>RULE</th><th>NOBODY ANSWERED</th><th>WHY IT HOLDS</th></tr></thead><tbody>` + t.rules.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.n)}</td><td>${esc(r.reason)}</td></tr>`).join("") + `</tbody></table>` : "");
+    }
+    const TIPNAME = { context: "CONTEXT", cache: "CACHE", holds: "HOLDS NOBODY ANSWERED" };
+    const TIPTIME = { context: "compaction's effect on time isn't measured", cache: "a wait stays a wait; a held call's waiting time is counted in tip 3", holds: "the agent sat blocked on calls nobody answered" };
+    function tipCard(t, i, days) {
+      const head = `<div class="tsrc">TIP ${esc(i + 1)} · ${esc(TIPNAME[t.id] || t.id)}` + (t.from ? " · from " + esc(t.from) : "") + `</div>`;
+      if (!t.ok) return `<section class="tcard tno">` + head + `<div class="tst">${esc(t.why || "Not enough data to say.")}</div>` + (t.id === "cache" ? tipBins(t) : "") + `</section>`;
+      const sv = t.saving || {};
+      return `<section class="tcard">` + head + `<h3>${esc(t.title)}</h3><div class="tst">${esc(t.line)}</div>` + tipEvidence(t)
+        + `<div class="tsave">` + (sv.usd != null ? `<span>WOULD HAVE SAVED<b class="${sv.usd >= 0.005 ? "" : "tzero"}">${esc(sv.usd >= 0.005 ? "about " + tipUsd(sv.usd) : "nothing")}</b>${esc(`in ${plural(days, "day")}, an estimate` + (sv.pct > 0 ? `: ${sv.pct}% of these sessions' input side` : ""))}</span>` : "")
+        + `<span>TIME<b class="${sv.minutes ? "" : "tzero"}">${esc(sv.minutes == null ? "not measured" : sv.minutes ? "about " + tipDur(sv.minutes * 60) : "none")}</b>${esc(t.id === "context" && t.slower > 0 ? `steps above ${tipTok(t.cap)} answered a median ${t.slower} s slower here, a correlation, not a saving` : TIPTIME[t.id] || "")}</span></div>`
+        + `<details class="tmath"><summary>THE ARITHMETIC</summary><ol>` + t.math.map(m => `<li>${esc(m)}</li>`).join("") + `</ol></details>`
+        + (t.fix ? `<div class="tfix"><div class="tsrc">THE FIX</div><div>${esc(t.fix.text)}${t.id === "holds" ? ' <button type="button" class="cp" data-page="approvals">APPROVALS</button>' : ""}</div>` + (t.fix.copy ? `<div><code class="shell">${esc(t.fix.copy)}</code>` + cp(t.fix.copy) + `</div>` : "") + `</div>` : "") + `</section>`;
+    }
+    // TIPS: what the store's signed records and Claude Code's transcripts say each step cost, and the three tips
+    function renderTipsPage() {
+      if (PAGE !== "tips") return;
+      // only with the token (a sign-in's 403 would end the page's session): a link may open TIPS on any viewer
+      if (!TIPSON) return put("tipsp", `<div class="empty">No tips here: they need tracekit view on a signer's store, opened with the link it printed.</div>`);
+      if (!TIPS && !TIPSERR) {
+        if (!TIPSASKED) loadTips();
+        return put("tipsp", `<div class="empty">Reading the signed records and Claude Code's transcripts…</div>`);
+      }
+      if (TIPSERR) return put("tipsp", `<div class="empty">${esc("The tips could not be read: " + TIPSERR)} <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>`);
+      if (tipsKey === TIPS) return;
+      tipsKey = TIPS;
+      const s = TIPS.sources, [w0, w1] = TIPS.window, days = Math.round((w1 - w0) / 86400), tr = s.transcripts;
+      const also = s.signed.also || {};
+      const span = s.signed.span ? ` from ${fmtD(s.signed.span[0])} ${fmtT(s.signed.span[0]).slice(0, 5)} to ${fmtD(s.signed.span[1])} ${fmtT(s.signed.span[1]).slice(0, 5)}, the viewer's live view` : "";
+      put("tipsp", `<div class="tips"><div class="tread">READ: ${esc(plural(s.signed.records, "signed record") + span)} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
+        + esc(also.steps ? ` · ${plural(also.steps, "more signed model step")} of ${plural(also.runs, "run")} the transcripts also hold, counted once, from them` : "")
+        + esc(TIPS.root ? ` · Claude Code's transcripts in ${TIPS.root}, read-only: ${plural(tr.files, "file")}, ${plural(tr.steps, "step")}` + (tr.unreadable ? `, ${tr.unreadable} unreadable` : "")
+          + "; the tips list sessions from every project under that folder"
+          : " · no transcripts read: start tracekit view with --transcripts DIR (with --dev it reads Claude Code's own)")
+        + esc(` · the last ${plural(days, "day")}, to ${fmtD(w1)} ${fmtT(w1)} ${TZ} · dollars at Anthropic's list prices of ${TIPS.prices}: a subscription bills none of them, but the same tokens fill its usage limit.`)
+        + ` <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>` + TIPS.tips.map((t, i) => tipCard(t, i, days)).join("") + `</div>`);
+      $("tipssum").textContent = `${TIPS.tips.filter(t => t.ok).length} of ${TIPS.tips.length} with enough data · operator-side, not evidence`;
     }
     // the calls held for a person (decided ask) in every run the page has, with what came of each (PERMISSIONS' words)
     let heldKey = [], heldList = [];
@@ -5865,7 +6211,7 @@
         if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); LOADED.clear(); selected = null; reset(); }
         DROPPED = snap.dropped || 0; MAXREC = snap.max || MAXREC;
         foldsOf(snap.records, FOLDS);   // the snapshot's retries are filed with their held calls as it is read, no read again
-        toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; SIGNER = snap.signer || null; SNAPPED = true; loadWhy(); schedule();
+        toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; SIGNER = snap.signer || null; TIPSON = !!snap.tips; SNAPPED = true; loadWhy(); schedule();
         followLink();
         es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
@@ -6654,7 +7000,7 @@
       $("wvsum").textContent = [many(groups.length, "kind") + " of content", many(S2.length, "source"), many(T.length, "tool")].join(" · ");
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-ifk],[data-ift],[data-ifl]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-wfby],[data-page],[data-rv],[data-openrun],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit],[data-wgo],[data-wpick],[data-tlk],[data-ptab],[data-ppage],[data-ingrp],[data-inmore],[data-ifk],[data-ift],[data-ifl],[data-tipsre]"); if (!t) return;
       e.preventDefault();
       // INFLUENCE's flow and answer: content, a line or an answer opens its row and marks it (a line to "+N more": every
       // tool in the row), a tool is marked in every row, and empty space clears the mark
@@ -6667,6 +7013,7 @@
       if (t.dataset.inmore) { INFLMORE.has(t.dataset.inmore) ? INFLMORE.delete(t.dataset.inmore) : INFLMORE.add(t.dataset.inmore); wvKey = ""; return schedule(); }
       if (t.dataset.ingrp) { INFL.has(t.dataset.ingrp) ? INFL.delete(t.dataset.ingrp) : INFL.add(t.dataset.ingrp); wvKey = ""; return schedule(); }
       if (t.dataset.page) { show(t.dataset.page); wvKey = ""; return schedule(); }
+      if (t.dataset.tipsre !== undefined) { TIPS = null; TIPSERR = ""; tipsKey = null; loadTips(true); return schedule(); }
       if (t.dataset.rv) { show(t.dataset.rv); wvKey = ""; return schedule(); }
       if (t.dataset.openrun) { setScope(t.dataset.openrun); show("calls"); return schedule(); }
       if (t.dataset.ptab) { PERM.tab = t.dataset.ptab; PERM.page = 0; return schedule(); }
