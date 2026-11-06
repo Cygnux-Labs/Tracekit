@@ -43,8 +43,8 @@ def _week():
         rep = report.build({"data_dir": dev_data_dir(create=False)}, now - 7 * 86400, now,
                            say=lambda s: print(f"tracekit feedback: {s}", file=sys.stderr, flush=True))
     except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
-        print(f"tracekit feedback: no week's counts ({e}); `tracekit audit --share --since 7d` prints a replay's",
-              file=sys.stderr)
+        print(f"tracekit feedback: no week's counts ({e}); `tracekit audit --share --since 7d` prints a replay's "
+              "counts", file=sys.stderr)
         return None
     print(f"tracekit feedback: {report.SHARE_NOTE}", file=sys.stderr)
     return report.share(rep)

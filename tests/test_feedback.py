@@ -169,7 +169,7 @@ class TestFeedback(unittest.TestCase):
         self.assertNotIn("how-long", query)
         self.assertEqual(query["share"], ["no dev store on this machine (tracekit audit --share --since 7d prints a "
                                           "replay's counts)"])   # no dev store in this HOME; the form requires it
-        self.assertIn("tracekit audit --share --since 7d", err)
+        self.assertIn("`tracekit audit --share --since 7d` prints a replay's counts\n", err)
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             cli.main(["feedback", "--why", "x"])   # --why goes with --harmless
 
