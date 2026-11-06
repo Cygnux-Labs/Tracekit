@@ -972,6 +972,10 @@ async function grantIssued(e: J, payment: string, floats: Floats): Promise<strin
   return null;
 }
 
+/** Whether `e` is a decision whose rule ids name TK-GRANT: one a grant released, as its ext.grant must say. */
+const tkGrant = (e: J) => get(e, "type") === "policy.decision" && isObj(get(e, "data"))
+  && Array.isArray(get(e.data, "rule_ids")) && e.data.rule_ids.includes("TK-GRANT");
+
 /**
  * intent.grant, intent.revoked and ext.grant (docs/intent-grants.md): the grants people issued for a run, their
  * revocations, and the calls they released. Each grant is checked as grantIssued says; each released call against its
@@ -979,13 +983,17 @@ async function grantIssued(e: J, payment: string, floats: Floats): Promise<strin
  * and not revoked before it, decided before the grant expired, of a tool the grant covers, its fields those of the
  * intent (whole numbers where they count) and within every caveat, its totals the previous call's plus its own, whole
  * numbers within every limit, and its tier the record's (T2: an executor or gateway decided and ran the call; T1: the
- * arguments the harness reported). A release that breaks its grant fails the line: the records are the signer's own word
- * that the call was within it. A record in a shape the signer never writes, or a release whose grant this bundle doesn't
- * hold, is a warning, as for every ext name. `floats`: the parser's, so a number written as a float is no whole number.
+ * arguments the harness reported). A release that breaks its grant fails the line, and so does one whose grant the
+ * bundle doesn't hold earlier in its run, or holds only in a record a signer never writes, a decision flagged TK-GRANT
+ * without ext.grant, and a tier that isn't the record's: the records are the signer's own word that the call was within
+ * a person's grant. Any other record in a shape the signer never writes is a warning, as for every ext name. `events`
+ * also holds the decisions TK-GRANT names (checkExt); `floats`: the parser's, so a number written as a float is no whole
+ * number.
  */
 export async function checkGrants(rep: Report, events: J[], floats: Floats) {
   const payment = `payment.send@sha256:${await sha256hex(bytes(canonicalize(PAYMENT)))}`;
-  const live = new Map<string, J>(), bad: string[] = [], broken: string[] = [], issuers = new Set<string>();
+  const live = new Map<string, J>(), invalid = new Set<string>(), bad: string[] = [], broken: string[] = [];
+  const issuers = new Set<string>();
   const tiers: Record<string, number> = { T1: 0, T2: 0 };
   let issued = 0, selfish = 0, revoked = 0;
   const seq = (e: J) => Number.isInteger(get(e, "seq")) ? e.seq : -1;
@@ -997,6 +1005,7 @@ export async function checkGrants(rep: Report, events: J[], floats: Floats) {
       const why = await grantIssued(e, payment, floats);
       if (why) {
         bad.push(`${where}: ${why}`);
+        if (typeof get(d, "id") === "string") invalid.add(key(d.id));   // what it released is released under no valid grant
         continue;
       }
       live.set(key(d.id), { grant: d.grant, tools: d.tools, limits: d.limits, used: d.used, revoked: false });
@@ -1011,16 +1020,21 @@ export async function checkGrants(rep: Report, events: J[], floats: Floats) {
         revoked++;
       }
     }
-    if (!(isObj(get(e, "ext")) && Object.hasOwn(e.ext, "grant"))) continue;
+    if (!(isObj(get(e, "ext")) && Object.hasOwn(e.ext, "grant"))) {
+      if (tkGrant(e))
+        broken.push(`${where}: a decision flagged TK-GRANT carries no ext.grant: it names no grant it was released under`);
+      continue;
+    }
     const x = e.ext.grant, g = isObj(x) && typeof get(x, "id") === "string" ? live.get(key(x.id)) : undefined;
-    if (!(get(e, "type") === "policy.decision" && isObj(d) && get(d, "decision") === "flag"
-      && Array.isArray(get(d, "rule_ids")) && d.rule_ids.includes("TK-GRANT") && shaped(x, ["id", "fields", "used", "tier"]))) {
+    if (!(tkGrant(e) && get(d, "decision") === "flag" && shaped(x, ["id", "fields", "used", "tier"]))) {
       bad.push(`${where}: ext.grant is not on a decision a grant released, as the signer writes it`);
       continue;
     }
     const errs = !g ? [] : isObj(x.fields) ? argErrors(x.fields, floats) : ["not an object"];
-    if (!g) bad.push(`${where}: names grant ${cut(pyStr(x.id, floats, isFloat(floats, x, "id")), 24)}, which this bundle `
-      + "doesn't hold earlier in the run (export the whole run to check it)");
+    if (!g && typeof x.id === "string" && invalid.has(key(x.id)))
+      broken.push(`${where}: released under grant ${cut(x.id, 24)}, whose record is not as the signer writes one`);
+    else if (!g) broken.push(`${where}: names grant ${cut(pyStr(x.id, floats, isFloat(floats, x, "id")), 24)}, which this `
+      + "bundle doesn't hold earlier in the run (export the whole run to check it)");
     else if (errs.length) broken.push(`${where}: the fields it records are not a payment.send call's (${cut(errs[0], 120)})`);
     else if (!g.tools.includes(get(d, "tool")))
       broken.push(`${where}: released a call of ${dumps(get(d, "tool"), floats, isFloat(floats, d, "tool")).slice(0, 64)}, `
@@ -1032,7 +1046,7 @@ export async function checkGrants(rep: Report, events: J[], floats: Floats) {
         && same(x.used, used)))
         broken.push(`${where}: records totals ${dumps(x.used, floats).slice(0, 64)}, not ${dumps(used)}`);
       else if (x.tier !== (get(e, "tier") === "T2" ? "T2" : "T1"))
-        bad.push(`${where}: says tier ${cut(pyStr(x.tier, floats, isFloat(floats, x, "tier")), 8)}, the record `
+        broken.push(`${where}: says tier ${cut(pyStr(x.tier, floats, isFloat(floats, x, "tier")), 8)}, the record `
           + (truthy(get(e, "tier")) ? pyStr(e.tier, floats, isFloat(floats, e, "tier")) : "T1"));
       else {
         g.used = used;
@@ -1069,7 +1083,7 @@ const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {
  * like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version; `floats`: the
  * parser's.
  */
-async function checkExt(rep: Report, events: J[], full: J, floats: Floats) {
+export async function checkExt(rep: Report, events: J[], full: J, floats: Floats) {
   const carry = new Map<string, J[]>();   // name -> the events carrying it
   for (const e of events)
     for (const n of new Set(extNames(e).map((x) => cut(str(x), 64)))) {
@@ -1080,13 +1094,17 @@ async function checkExt(rep: Report, events: J[], full: J, floats: Floats) {
     ? `; tracekit >= ${full} checks it` : "";
   let shown = 0, more = 0;
   const done = new Set<ExtCheck>();
+  // records a check reads beside its names' own: the decisions TK-GRANT names, ext.grant or not
+  const also = new Map<ExtCheck, J[]>([[checkGrants, events.filter(tkGrant)]]);
+  const run = async (f: ExtCheck) => {   // once, over the records of every name it reads and what it reads beside them
+    done.add(f);
+    await f(rep, [...new Set([...[...carry].filter(([k]) => EXT_CHECKS.get(k) === f).flatMap(([, v]) => v),
+      ...also.get(f) ?? []])], floats);
+  };
   for (const [n, es] of [...carry].sort(byKey)) {
     const interpret = EXT_CHECKS.get(n);
     if (interpret) {
-      if (!done.has(interpret))   // once, over every name it reads
-        await interpret(rep, [...new Set([...carry].filter(([k]) => EXT_CHECKS.get(k) === interpret).flatMap(([, v]) => v))],
-          floats);
-      done.add(interpret);
+      if (!done.has(interpret)) await run(interpret);
     } else if (shown < MAX_UNREAD) {
       shown++;
       rep.check("not interpreted", false, `${es.length} record(s) carry ext.${n}: their signatures, chain and `
@@ -1096,6 +1114,8 @@ async function checkExt(rep: Report, events: J[], full: J, floats: Floats) {
   if (more)
     rep.check("not interpreted", false, `${more} more ext name(s), on records whose signatures, chain and inclusion `
       + `are checked above; what they mean is not checked${later}`, [], true);
+  for (const [f, extra] of also)   // a check whose names no record carries reads what it reads beside them
+    if (extra.length && !done.has(f)) await run(f);
 }
 
 /** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run

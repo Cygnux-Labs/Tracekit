@@ -998,16 +998,24 @@ class Agreement(SignerBundles):
         def extra(n, amount, used):   # a release after `again` the signer would never sign: another call's record
             return edit(again, lambda e: (e.update(seq=again["seq"] + n), e["ext"]["grant"].update(
                 fields=dict(e["ext"]["grant"]["fields"], amount=amount * usdc, payee=p1), used=[used * usdc])))
+        wide = edit(grant, lambda e: e["data"]["grant"].update(expires_at="2099-01-01T00:00:00.000000Z"), rehash=True)
+        loose = edit(grant, lambda e: e["data"]["grant"].update(
+            caveats=[c for c in e["data"]["grant"]["caveats"] if c["field"] != "payee"]), rehash=True)
+        bare = edit(release, lambda e: e.pop("ext"))   # a decision flagged TK-GRANT that names no grant
+
+        def under(g, **fields):   # the release under grant record `g`, with `fields`
+            return edit(release, lambda e: e["ext"]["grant"].update(
+                id=g["data"]["id"], fields=dict(e["ext"]["grant"]["fields"], **fields)))
         cases = [("pass", [grant, release, again, revoke]),
                  ("pass", [edit(grant, lambda e: e["data"].update(self_approved=True)), release]),
-                 ("warn", [release]), ("warn", [revoke]), ("warn", [dict(grant, seq=release["seq"] + 1), release]),
+                 ("fail", [release]), ("warn", [revoke]), ("fail", [dict(grant, seq=release["seq"] + 1), release]),
                  ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(used=[1]))]),
-                 ("warn", [grant, edit(release, lambda e: e["ext"]["grant"].update(tier="T2"))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(tier="T2"))]),
                  ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(
                      fields=dict(e["ext"]["grant"]["fields"], amount=900 * usdc), used=[900 * usdc]))]),
                  ("fail", [grant, edit(release, lambda e: e["ext"]["grant"]["fields"].update(currency="usdc"))]),
                  ("warn", [grant, edit(release, lambda e: e["data"].update(decision="allow"))]),
-                 ("warn", [edit(grant, lambda e: e["data"]["grant"].update(expires_at="2099-01-01T00:00:00.000000Z")),
+                 ("fail", [edit(grant, lambda e: e["data"]["grant"].update(expires_at="2099-01-01T00:00:00.000000Z")),
                            release]),
                  ("warn", [edit(grant, lambda e: e["data"]["grant"].update(
                      expires_at="2099-01-01T00:00:00.000000Z", caveats=[{"field": "payee", "op": "<=", "value": "\u00e9"},
@@ -1026,7 +1034,7 @@ class Agreement(SignerBundles):
                  ("warn", [edit(grant, lambda e: e.update(source="agent"))]),
                  ("warn", [edit(grant, lambda e: e["data"].pop("id"))]),
                  ("warn", [edit(grant, lambda e: e["data"].pop("used"))]),
-                 ("warn", [grant, edit(release, lambda e: e["ext"]["grant"].update(id=[gid, None]))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(id=[gid, None]))]),
                  ("warn", [grant, edit(revoke, lambda e: e["data"].update(id={"id": gid}))]),
                  ("warn", [edit(grant, lambda e: e["data"].update(limits=[
                      {"op": "sum", "field": "amount", "max": 500 * usdc}, {"op": "sum", "field": "payee", "max": 5}],
@@ -1042,10 +1050,15 @@ class Agreement(SignerBundles):
                  ("warn", [edit(grant, lambda e: e["data"]["grant"]["caveats"][0].update(value="XYZ"), rehash=True)]),
                  ("warn", [edit(grant, lambda e: e["data"]["grant"]["caveats"][0].update(value=["USDC"]), rehash=True)]),
                  ("warn", [grant, edit(release, lambda e: e["ext"]["grant"].pop("fields"))]),
-                 ("fail", [grant, release, again, extra(1, 200, 400), extra(2, 200, 600)])]
-        script = ('const { Report, checkGrants, strictParse } = await import(%s);\nconst out = [], floats = new WeakMap();\n'
+                 ("fail", [grant, release, again, extra(1, 200, 400), extra(2, 200, 600)]),
+                 # releases under a grant no valid record holds, and a release that names no grant
+                 ("fail", [wide, under(wide, payee="0x" + "c3" * 20)]), ("fail", [loose, under(loose)]),
+                 ("fail", [grant, bare]), ("fail", [bare])]
+        script = ('const { Report, checkExt, checkGrants, strictParse } = await import(%s);\n'
+                  'const out = [], floats = new WeakMap();\n'
                   'for (const events of strictParse(await new Response(process.stdin).text(), floats)) {\n'
-                  '  const rep = new Report();\n  await checkGrants(rep, events, floats);\n  out.push(rep.checks);\n}\n'
+                  '  const grants = new Report(), ext = new Report();\n  await checkGrants(grants, events, floats);\n'
+                  '  await checkExt(ext, events, null, floats);\n  out.push([grants.checks, ext.checks]);\n}\n'
                   'console.log(JSON.stringify(out));\n') % json.dumps(
                       "file://" + os.path.join(TS, "dist", "verify", "index.js").replace(os.sep, "/"))
         p = subprocess.run(["node", "--input-type=module", "-e", script], input=json.dumps([es for _, es in cases]),
@@ -1054,11 +1067,15 @@ class Agreement(SignerBundles):
         self.assertEqual(len(out), len(cases))
         for i, ((status, events), ts_checks) in enumerate(zip(cases, out)):
             with self.subTest(case=i):
-                py = Report()
+                py, ext = Report(), Report()
                 v2._grants(py, json.loads(json.dumps(events)))
-                self.assertEqual(ts_checks, py.checks)
+                v2._ext(ext, json.loads(json.dumps(events)), None)   # the entry point, which hands _grants its records
+                self.assertEqual(ts_checks, [py.checks, ext.checks])
+                self.assertEqual(ext.checks, py.checks)   # a decision TK-GRANT names reaches it with no ext name too
                 self.assertEqual(py.failures, ["intent grants"] if status == "fail" else [])
                 self.assertEqual(py.checks[0]["status"], status, py.checks)
+        self.assertEqual(out[-1][1][0]["problems"], [f"seq {bare['seq']}: a decision flagged TK-GRANT carries no ext.grant: "
+                                                     "it names no grant it was released under"])
 
     def test_the_browser_page_reports_what_the_cli_does(self):
         """verify.html: its one script and its style allowed by hash, workers only from blob: URLs (its own script, which

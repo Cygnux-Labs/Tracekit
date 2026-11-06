@@ -224,12 +224,14 @@ As who may answer the run's approvals ([approvals](approvals.md#who-may-answer))
   `approvals: {self_approval: allow}`). The grant names the person `approvals.persons` maps them to.
 - On the dev signer: any identity that may answer the run's approvals, which there is any identity of the run's
   tenant. The grant records who issued it; one from the run's own user is recorded `self_approved`, and the verifier
-  says so, because the agent runs as that user too. The dev pack denies the agent's own `tracekit grant` commands (any
-  but `list` and `revoke`) and `tracekit approvals approve --grant` (`TK-D012`), as it denies its own approvals.
+  says so, because the agent runs as that user too.
 - Never an agent approver, and never in a held, quarantined or ending run.
 
-`tracekit grant list` and `tracekit grant revoke` are open to anyone who may see the run, the run's own user
-included: revoking only narrows what the agent may do.
+A person runs every grant command. The coding pack (and the dev and server packs, which extend it) denies every
+`tracekit grant` the agent runs, whatever its options and action, `list` and `revoke` included, and its
+`tracekit approvals approve --grant` (`TK-D012`): as `tracekit`, as `python -m tracekit`, and through a path to it or a
+runner such as `uvx`, as it denies the agent's own approvals. The signer's `grant_list` and `grant_revoke` calls are
+open to anyone who may see the run, the run's own user included: revoking only narrows what the agent may do.
 
 A grant lasts at most 24 hours. No call widens a grant or extends one; a new grant is a new decision by a person.
 
@@ -280,10 +282,15 @@ These go in format v2's non-critical `ext` slot ([format v2](format-v2.md#9-bund
 
 The `intent grants` line says how many grants there are and who issued them (`by alice`, or how many were
 self-approved), and how many payments they released, at which tier: T2 when an executor or gateway decided and ran the
-call ([executor](executor.md)), T1 when the harness reported the arguments. A released payment that breaks its grant
-(outside its caveats, past a limit or after it ended, wrong totals, another tool, an amount that isn't a whole number)
-fails the line and the verification: the records are the signer's own word that the payment was within the grant. A
-record in a shape the signer never writes, or a release whose grant this bundle doesn't hold, is a warning.
+call ([executor](executor.md)), T1 when the harness reported the arguments. These fail the line and the verification,
+because the records are the signer's own word that the payment was within a person's grant:
+- a released payment that breaks its grant (outside its caveats, past a limit or after it ended, wrong totals, another
+  tool, an amount that isn't a whole number, a tier that isn't its record's);
+- one whose grant the bundle doesn't hold earlier in its run (export the whole run), or holds only in a grant record
+  no signer writes (an expiry past 24 hours, a caveat missing, its id recomputed);
+- a decision flagged `TK-GRANT` that names no grant.
+
+Any other record in a shape the signer never writes is a warning.
 
 The fields a decision records are the signer's reading of the arguments, which the bundle holds as commitments, and
 the verifier doesn't open them. Checking the fields against the arguments is a manual step: open the arguments

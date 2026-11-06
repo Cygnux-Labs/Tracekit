@@ -450,12 +450,34 @@ class TestVerify(Case):
         other["data"]["tool"] = "pay_invoice"
         self.assertEqual(problems(grant, other), ("fail", f"seq {release['seq']}: released a call of \"pay_invoice\", a "
                                                           f"tool grant {release['ext']['grant']['id']} doesn't cover"))
-        self.assertEqual(problems(release), ("warn", f"seq {release['seq']}: names grant "
+        self.assertEqual(problems(release), ("fail", f"seq {release['seq']}: names grant "
                                                      f"{release['ext']['grant']['id']}, which this bundle doesn't hold "
                                                      "earlier in the run (export the whole run to check it)"))
-        self.assertEqual(problems(dict(grant, seq=release["seq"] + 1), release)[0], "warn")
-        self.assertEqual(problems(grant, edited(release, tier="T2")), ("warn", f"seq {release['seq']}: says tier T2, "
+        self.assertEqual(problems(dict(grant, seq=release["seq"] + 1), release)[0], "fail")
+        self.assertEqual(problems(grant, edited(release, tier="T2")), ("fail", f"seq {release['seq']}: says tier T2, "
                                                                                "the record T1"))
+        # #642 re-review: a release under a grant record no signer writes (a 2099 expiry, no payee caveat), its id
+        # recomputed to match, fails; the grant record itself is a warning
+        for change in (lambda g: g.update(expires_at="2099-01-01T00:00:00.000000Z"),
+                       lambda g: g.update(caveats=[c for c in g["caveats"] if c["field"] != "payee"])):
+            forged = json.loads(json.dumps(grant))
+            change(forged["data"]["grant"])
+            forged["data"]["id"] = grants.grant_id(forged["data"]["grant"])
+            under = edited(release, id=forged["data"]["id"], fields={**release["ext"]["grant"]["fields"], "payee": P3})
+            status, said = problems(forged, under)
+            self.assertEqual(status, "fail")
+            self.assertIn(f"seq {release['seq']}: released under grant {forged['data']['id']}, whose record is not as "
+                          "the signer writes one", said)
+        # a decision flagged TK-GRANT with no ext.grant names no grant: read through _ext, which hands such decisions
+        # to the check though they carry no ext name
+        bare = json.loads(json.dumps(release))
+        del bare["ext"]
+        for es in ([grant, bare], [bare]):
+            rep = Report()
+            v2._ext(rep, [json.loads(json.dumps(e)) for e in es], None)
+            line = next(c for c in rep.checks if c["check"] == "intent grants")
+            self.assertEqual((line["status"], rep.failures), ("fail", ["intent grants"]))
+            self.assertIn(f"seq {release['seq']}: a decision flagged TK-GRANT carries no ext.grant", line["problems"][0])
         wide = json.loads(json.dumps(grant))
         wide["data"]["grant"]["expires_at"] = "2099-01-01T00:00:00.000000Z"
         self.assertIn("is not its grant's id", problems(wide, release)[1])
@@ -464,7 +486,7 @@ class TestVerify(Case):
             del bare["data"][key]
             self.assertIn("not as the signer writes one" if key != "tools" else "names the tools whose calls it covers",
                           problems(bare, release)[1])
-        self.assertEqual(problems(grant, edited(release, id=["g"]))[0], "warn")
+        self.assertEqual(problems(grant, edited(release, id=["g"]))[0], "fail")   # it names no grant the bundle holds
         revoke = {**grant, "seq": release["seq"] + 1, "data": {"name": "intent.revoked", "id": {"g": 1}, "by": "x"}}
         self.assertEqual(problems(grant, release, revoke), ("warn", f"seq {release['seq'] + 1}: revokes no grant still "
                                                                     "live in its run"))
@@ -578,23 +600,35 @@ class TestPolicy(unittest.TestCase):
         self.assertEqual(policy_compile.APPROVAL["grant"], tuple(grants.INTENTS))
 
     def test_the_agent_own_grant_commands(self):
-        e = svc.load_policy()   # the dev pack, the laptop default
-        for line, denied in (("tracekit grant add --run r --payee x --total '5 USD'", True),
-                             ("tracekit grant --signer s add --run r", True),
-                             ("python3 -m tracekit grant add --run r", True),
-                             ("tracekit approvals approve apr-1 --grant --payee x --total '5 USD'", True),
-                             # #642 review 4: an action from stdin, computed or quoted, or none, is no list or revoke
-                             ("echo add --run r --payee x | xargs tracekit grant", True),
-                             ("tracekit grant $(echo add) --run r --payee x --total '1 USDC'", True),
-                             ("A=add; tracekit grant $A --run r --payee x --total '1 USDC'", True),
-                             ('tracekit grant "add" --run r', True), ("tracekit grant", True),
-                             ("tracekit grant --help", True), ("tracekit grant lists", True),
-                             ("tracekit grant list", False), ("tracekit grant list --json", False),
-                             ("tracekit grant --signer /tmp/s.sock list", False),
-                             ("tracekit grant revoke g-0123456789abcdef", False)):
+        """#642 reviews 4 and 6: every `tracekit grant` the agent runs is denied, whatever its options and action (an
+        argparse prefix of --signer, a repeated or spaced value, an action from stdin or computed, list and revoke
+        too), in each program form the approval tripwire reads; on both engines, each line decided in well under a
+        second, a 64 KiB flood of options included."""
+        t = " --run r --tool t --payee x --total '1 USDC'"
+        lines = ["tracekit grant add" + t, "tracekit grant --signer s add" + t, "python3 -m tracekit grant add" + t,
+                 "/usr/local/bin/tracekit grant add" + t, "uvx tracekit grant add" + t,
+                 "tracekit approvals approve apr-1 --grant --payee x --total '5 USD'",
+                 "tracekit grant --sig /tmp/s add" + t, "tracekit grant --si=/tmp/s add" + t,
+                 "tracekit grant --signer a --signer b add" + t, "tracekit grant --signer 'x list' add" + t,
+                 "echo add --run r --payee x | xargs tracekit grant", "tracekit grant $(echo add)" + t,
+                 "A=add; tracekit grant $A" + t, 'tracekit grant "add" --run r', "tracekit grant", "tracekit grant --help",
+                 "tracekit grant -- add" + t, "tracekit grant list", "tracekit grant list --json",
+                 "tracekit grant --signer /tmp/s.sock list", "tracekit grant revoke g-0123456789abcdef",
+                 "tracekit grant " + " -x" * 21800, "tracekit grant --signer s" + " -y" * 21800]
+        pol, errors = policy_compile.build(svc.DEFAULT_POLICY)   # the dev pack, the laptop default
+        self.assertEqual(errors, [])
+        for backend in ("re2", "regex"):
+            e = Engine(pol, backend)
+            for line in lines:
+                with self.subTest(backend=backend, line=line[:60]):
+                    start = time.perf_counter()
+                    d = e.decide("Bash", {"command": line})
+                    self.assertLess(time.perf_counter() - start, 0.5)
+                    self.assertEqual(d["verdict"], "deny", d)
+                    self.assertIn("TK-D012", d["rule_ids"])
+        for line in ("tracekit approvals list", "tracekit help grant", "tracekit granted"):   # no grant command
             with self.subTest(line=line):
-                d = e.decide("Bash", {"command": line})
-                self.assertEqual(("TK-D012" in d["rule_ids"], d["verdict"] == "deny"), (denied, denied), d)
+                self.assertNotIn("TK-D012", Engine(pol).decide("Bash", {"command": line})["rule_ids"])
 
     def test_the_payment_rules_opt_in(self):
         e = svc.load_policy()

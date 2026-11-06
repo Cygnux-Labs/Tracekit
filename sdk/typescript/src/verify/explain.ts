@@ -270,10 +270,11 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
   "intent grants": {
     pass: "Payments people allowed the run's agent once, within limits, who allowed them, and the calls each grant let "
       + "run, each re-checked against its grant and its running totals.",
-    warn: "A grant, revocation or released call is recorded where or how the signer never writes one, or names a grant "
-      + "the bundle doesn't hold. The records verified like every other.",
-    fail: "The signer recorded a call as released by a grant that doesn't allow it: another tool, other fields, over a "
-      + "limit, or totals that don't add up.",
+    warn: "A grant, revocation or released call is recorded where or how the signer never writes one. The records "
+      + "verified like every other.",
+    fail: "The signer recorded a call as released by a grant that doesn't allow it (another tool, other fields, over a "
+      + "limit, totals that don't add up), by no grant the bundle holds, or by a grant whose record a signer never "
+      + "writes.",
   },
   "constraints": {
     pass: "What the person's request said not to do, added while the run was open, and the calls it held.",
