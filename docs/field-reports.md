@@ -35,7 +35,7 @@ Denied and flagged calls, by rule (one call can match several rules):
   flag TK-F011 1,402
   flag TK-UNKNOWN-TOOL 377 (not placed)
   ...
-Holds by rule: held, approved by a person, rejected or expired:
+Holds by rule: held, approved (by a person or the run's own user), rejected or expired:
   TK-A015 31, 4, 27
   TK-A001 22, 21, 1
   ...
@@ -45,8 +45,10 @@ Holds by rule: held, approved by a person, rejected or expired:
 section that matched the call too; `not placed` is an engine check, or a rule of a policy the report can't read, which
 may or may not be why ([weekly report](viewer.md#weekly-report)). The holds count a call held at once and the agent's
 retry of it, which ran under its approval, as one hold, so the line says how many such asks it counted with their
-held calls. `Holds by rule` reads the signed approval records: a rule people approve nearly every time (TK-A001
-above) is likely a false alarm, and one they reject or let expire is doing its job. It exits 1, as `tracekit report` does, when the store or a run fails to verify: post the report anyway.
+held calls. `Holds by rule` reads the signed approval records: a hold counts as approved when its first answer
+approved it, by a person or the run's own user (on a dev signer, every answer is the run's own user's), even if the
+approval then expired unused; rejected or expired counts the holds never approved. A rule approved nearly every time
+(TK-A001 above) is likely a false alarm, and one rejected or let expire is doing its job. It exits 1, as `tracekit report` does, when the store or a run fails to verify: post the report anyway.
 
 ## Without a hook: replay past transcripts
 
@@ -70,7 +72,7 @@ of the calls it matched, marked as `report --share` marks it.
 | Tool calls by decision: allow, flag, ask, deny | An example call, a rule's description, a hold's reason or who answered it |
 | Holds by outcome: approved · ran, rejected, expired, ... (`report`) | What the model or the person said, a tool's result, a gap's reason |
 | The gaps by kind: the signer's own kinds, any other as `other` (`report`) | An agent name that isn't Tracekit's own |
-| Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` (`no rule` for a decision no rule named, `report`); each rule's holds, with how many a person approved and how many were rejected or expired (`report`) | A rule id that isn't Tracekit's own; any record, hash or signature |
+| Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` (`no rule` for a decision no rule named, `report`); each rule's holds, with how many were approved (by a person or the run's own user, as on a dev signer) and how many never approved were rejected or expired (`report`) | A rule id that isn't Tracekit's own; any record, hash or signature |
 
 An agent name is printed only when it is one Tracekit's own hooks and tools give a run (`claude-code`, `codex`,
 `cursor`, `gemini-cli`, `opencode`, `goose`, `qwen-code`, `droid`, `antigravity`, `crush`, `agentsh`,

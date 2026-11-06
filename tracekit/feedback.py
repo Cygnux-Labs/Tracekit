@@ -7,7 +7,6 @@ never its command, arguments or paths. --file writes a field report to send as a
 from __future__ import annotations
 
 import argparse
-import json
 import platform
 import sys
 import time
@@ -49,14 +48,30 @@ def _week():
     return report.share(rep)
 
 
-def field_report():
-    """(title, fields) of a field report (#385): this machine's Tracekit, OS, Python and hooks, and tracekit report
-    --share's week when the dev signer has a store."""
-    week = _week()
-    return "Field report", {
-        **({"share": week} if week else {}),
-        "agent": f"Tracekit {__version__}, {platform.platform(terse=True)}, Python {platform.python_version()}\n"
-                 f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n(filed with `tracekit feedback`, for #385)"}
+def _os():
+    """The OS and its major.minor release (macOS-26.3, Windows-10, Linux-6.8): on Linux, platform.platform's terse form
+    is the kernel's whole build string."""
+    if platform.system() != "Linux":
+        return platform.platform(terse=True)
+    return "Linux-" + ".".join(platform.release().split(".")[:2])
+
+
+def _about():
+    """The form's two required fields, which every link fills: `share`, tracekit report --share's week (a line saying
+    there is none without a dev store), and `agent`, this machine's Tracekit, OS, Python and hooks (#385)."""
+    return {"share": _week() or "no dev store on this machine (tracekit audit --share --since 7d prints a replay's counts)",
+            "agent": f"Tracekit {__version__}, {_os()}, Python {platform.python_version()}\n"
+                     f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n(filed with `tracekit feedback`, for #385)"}
+
+
+def _tool(name):
+    """A tool's name as a link may hold it: a built-in one the default policy names (Bash, Edit, Read, WebFetch, ...)
+    as it is; an MCP tool's, whose server and tool names can name a customer or a project, and any other, as what it
+    is."""
+    from .signer.service import DEFAULT_POLICY, load_policy
+    if name in load_policy(DEFAULT_POLICY).policy.get("tools", {}) and not set("*?[") & set(name):
+        return name
+    return "an MCP tool" if name.startswith(("mcp__", "mcp:")) else "another tool"
 
 
 # a report file's lines outside its counts block (tests/test_feedback.py checks each file in docs/field-reports/)
@@ -69,21 +84,21 @@ def report_file():
     ran it, and one optional line."""
     week = _week()
     return "\n".join([
-        "# Tracekit field report", "", f"Tracekit: {__version__}", f"OS: {platform.platform(terse=True)}",
+        "# Tracekit field report", "", f"Tracekit: {__version__}", f"OS: {_os()}",
         f"Python: {platform.python_version()}", f"Hooks installed: {', '.join(_hooks()) or 'none'}",
         "Run by: a person / an agent (name it)", "", "## Counts", "",
-        "```text", week or "(no dev store: paste `tracekit audit --share --since 7d` here)", "```",
+        "```text", week or "(no dev store: paste what tracekit audit --share --since 7d prints here)", "```",
         "", f"{KEYS[-1]}:", ""])
 
 
 def false_alarm(x, why=None):
     """(title, fields) of approval `x` (approval_get's) as a false alarm: its rule ids (a rule that isn't Tracekit's
-    own as "custom rule", as --share counts it), tool name, policy hash and verdict, and the person's one line `why`.
-    Never the call's arguments: nothing else of `x` is read."""
-    from .report import APPROVAL_RULES, tracekit_rules
-    ours = tracekit_rules() | APPROVAL_RULES
-    rules = list(dict.fromkeys(r if r in ours else "custom rule" for r in x["rule_ids"]))
-    lines = [f"rules: {', '.join(rules)}", f"tool: {json.dumps(x['tool'])}", f"policy: {x['policy_hash']}",
+    own as "custom rule", as --share counts it), tool name (_tool's), policy hash and verdict, and the person's one line
+    `why`. Never the call's arguments: nothing else of `x` is read."""
+    from .report import _shared, tracekit_rules
+    ours = tracekit_rules()
+    rules = list(dict.fromkeys(_shared(r, ours) for r in x["rule_ids"]))
+    lines = [f"rules: {', '.join(rules)}", f"tool: {_tool(x['tool'])}", f"policy: {x['policy_hash']}",
              "verdict: ask (held for a person)", *([f"why: {' '.join(why.split())}"] if why and why.strip() else [])]
     return f"False alarm: {', '.join(rules)}", {"notes": "\n".join(lines)}
 
@@ -130,8 +145,9 @@ def main(argv=None):
             return 1
         finally:
             c.close()
+        fields = {**_about(), **fields}   # the form's required fields, so the report can be submitted
     else:
-        title, fields = field_report()
+        title, fields = "Field report", _about()
     link = url(title, fields)
     print(link, "", "the link holds exactly this, and nothing is sent until you submit it on GitHub:",
           f"title: {title}", sep="\n")

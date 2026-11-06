@@ -12,6 +12,7 @@ import shlex
 import socket
 import sys
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -267,7 +268,8 @@ class WeeklyReport(unittest.TestCase):
             # T-RM; T-PATH; T-NET 3 and the marker's rule 1: the test policy's ids are custom
             "  deny custom rule 2", "  deny custom rule 2 (also matched, not why)", "  flag custom rule 4",
             # what became of each hold of a rule: the rejected 2 and expired 1 against the approved 1 above
-            "Holds by rule: held, approved by a person, rejected or expired:", "  custom rule 4, 1, 3"])
+            "Holds by rule: held, approved (by a person or the run's own user), rejected or expired:",
+            "  custom rule 4, 1, 3"])
         # a gap kind that isn't one this Tracekit names (another signer's, or any string) is counted as "other"
         odd = weekly.share(dict(rep, gaps={"total": 3, "by_kind": {"tailer_lost": 2, f"{mark}-kind": 1}}))
         self.assertIn("Gaps (signed records that something may be missing): 3   tailer_lost 2, other 1\n", odd)
@@ -657,6 +659,25 @@ def _hold_and_answer(tcid, held_at, answered_at, **answer):
 
 class Oversight(unittest.TestCase):
     """Who answered each hold and how fast, from the records alone."""
+
+    def test_a_hold_approved_then_left_to_expire_counts_as_approved_and_review_stays_counts(self):
+        """The signer expires an approved approval no call used: that hold was approved, not rejected or expired.
+        Each hold's outcome comes to the report through the dict it passes; review's own answer, which the viewer
+        keeps in its rows, holds counts only."""
+        records = (_hold_and_answer("t0", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z", decision="approve",
+                                    approver="uid:1", self_approved=True)
+                   + _hold_and_answer("t1", "2026-11-05T10:00:00Z", "2026-11-05T10:00:04Z", decision="reject",
+                                      approver="uid:1")
+                   + [{"event": {"ts": "2026-11-05T11:00:00Z", "type": "approval.expired", "data": {"tool_use_id": "t0"}}}])
+        outcomes = {}
+        rv = view.review(records, types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified", outcomes)
+        self.assertEqual(outcomes, {"t0": "expired", "t1": "rejected"})
+        self.assertFalse([k for k, v in rv.items() if isinstance(v, dict) and set(v) & {"t0", "t1"}])
+        tr, rules = view.Translator(view.policy_reasons()), {}
+        held, waits = weekly._tally(("default", "r"), records, tr, rules, collections.Counter())
+        weekly._hold_rules(tr, rules, held, waits, outcomes)
+        self.assertEqual([(g["decision"], g["count"], g["approved"], g["rejected_or_expired"]) for g in rules.values()],
+                         [("ask", 2, 1, 1)])
 
     def oversight(self, *answers):
         records = [r for i, (took, answer) in enumerate(answers) for r in _hold_and_answer(

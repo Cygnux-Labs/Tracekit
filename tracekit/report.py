@@ -160,6 +160,23 @@ def _placed(tr, d):
             for rule in tr.rules(d) or [{"id": "no rule", "reason": ""}]]
 
 
+def _hold_rules(tr, rules, held, waits, outcomes):
+    """Each hold (`outcomes`: tool_use_id -> what it came to, view.review's) into `rules` by rule, as an "ask" row:
+    how many it held, how many its first answer (`waits`, _tally's) approved, a person's or the run's own user's (an
+    agent's is neither), and how many of those never approved were rejected or expired. An approval the signer let
+    expire unused was still approved."""
+    first = {w["call"]: w for w in waits}
+    for call, outcome in outcomes.items():
+        w = first.get(call) or {}
+        for rule, why in _placed(tr, held[call][2]["event"]["data"]) if call in held else ():
+            g = rules.setdefault(("ask", rule["id"], why), {
+                "decision": "ask", "rule": rule["id"], "why": why, "reason": rule["reason"], "count": 0,
+                "examples": [], "approved": 0, "rejected_or_expired": 0})
+            g["count"] += 1
+            g["approved"] += bool(w.get("approved")) and w["by"] != "agent"
+            g["rejected_or_expired"] += not w.get("approved") and outcome in ("rejected", "expired")
+
+
 def _tally(key, records, tr, rules, unread):
     """Run `key`'s verified `records` in the window into `rules` ((decision, rule id, why) -> its count and up to
     EXAMPLES decisions, for each rule that matched a denied or flagged call; `why`: True for a rule of the section of
@@ -298,22 +315,14 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
                     continue
                 mine = [x for x in records if since <= ts_seconds(x["event"]["ts"]) < until]
                 first_ts = min([first_ts or until] + [ts_seconds(x["event"]["ts"]) for x in mine[:1]])
-                rv = view.review(mine, rep, "verified")
+                outcomes = {}   # each hold's: what it came to
+                rv = view.review(mine, rep, "verified", outcomes)
                 row.update(verdict="verified", detail=rep.assurance.split(";")[0],
                            state=view.review(records, rep, "verified")["state"], calls=dict(rv["decisions"]),
                            gaps=sum(rv["gaps"].values()))
                 held, held_waits = _tally(key, mine, tr, rules, unread)
                 waits += held_waits
-                answered = {w["call"]: w["by"] for w in held_waits}   # a hold's first answer: a person's or an agent's
-                # each hold by rule, with what became of it: approved by a person, or rejected or expired
-                for call, outcome in rv["hold_outcomes"].items():
-                    for rule, why in _placed(tr, held[call][2]["event"]["data"]) if call in held else ():
-                        g = rules.setdefault(("ask", rule["id"], why), {
-                            "decision": "ask", "rule": rule["id"], "why": why, "reason": rule["reason"], "count": 0,
-                            "examples": [], "approved": 0, "rejected_or_expired": 0})
-                        g["count"] += 1
-                        g["approved"] += outcome in ("approved", "approved · ran") and answered.get(call) != "agent"
-                        g["rejected_or_expired"] += outcome in ("rejected", "expired")
+                _hold_rules(tr, rules, held, held_waits, outcomes)
                 for outcome, call in rv["hold_examples"].items():   # the first call of each outcome, of any run
                     if outcome not in hold_examples and call in held:
                         hold_examples[outcome] = key, held[call][2]
@@ -508,6 +517,10 @@ APPROVAL_RULES = {f"TK-APPROVAL-{s}" for s in ("CONSUMED", "EXPIRED", "MISMATCH"
                                               "UNBOUND", "VETO")}
 
 
+# a dev signer's every approval is the run's own user's (self-approved), so the column names both
+HOLDS_BY_RULE = "Holds by rule: held, approved (by a person or the run's own user), rejected or expired:"
+
+
 def _shared(rid, ours):
     """A rule id as --share prints it: Tracekit's own (`ours`, tracekit_rules), the signer's or "no rule" as it is,
     any other as "custom rule"."""
@@ -561,7 +574,7 @@ def share(rep):
         if g["decision"] == "ask" and g["why"] is not False:
             held[_shared(g["rule"], ours)].update(holds=g["count"], approved=g["approved"],
                                                   rejected=g["rejected_or_expired"])
-    out += ["Holds by rule: held, approved by a person, rejected or expired:" + " none" * (not held),
+    out += [HOLDS_BY_RULE + " none" * (not held),
             *(f"  {rid} {c['holds']:,}, {c['approved']:,}, {c['rejected']:,}"
               for rid, c in sorted(held.items(), key=lambda x: (-x[1]["holds"], x[0])))]
     return "\n".join(_escaped(line) for line in out)

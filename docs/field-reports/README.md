@@ -1,7 +1,7 @@
 # Field reports
 
 A field report is a week of Tracekit under your real agent, as counts: the tool calls, and for each rule how many
-calls it held and how many of those people approved, rejected or let expire. You use Tracekit as you always do and
+calls it held and how many of those were approved, rejected or let expire. You use Tracekit as you always do and
 share the counts; we read what to change from them. A report run by an agent is as welcome as one run by a person:
 say which in its `Run by` line. ([Why reports matter](../field-reports.md).)
 
