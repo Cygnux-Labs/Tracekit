@@ -507,7 +507,16 @@ class SignerBundles(unittest.TestCase):
             "inclusion proof an object": (1, dict(edit=lambda f, m: forge_proof(f, m, {"AAAA": 1}))),
             "newer verifier_min_version": (2, dict(edit=manifest(lambda m: m.update(verifier_min_version="9.0")))),
             "older verifier_min_version": (0, dict(edit=manifest(lambda m: m.update(verifier_min_version="0.4")))),
+            "record twice": (1, dict(edit_run=lambda rs: rs.insert(2, rs[1]))),
         }.items()}
+
+        def leaf_twice(files, m):   # leaf 0 copied over the last: the copy's inclusion proof is for another index
+            s = json.loads(files["registry/run-set.json"])
+            s["leaves"] = [s["leaves"][0], *s["leaves"][:-1]]
+            files["registry/run-set.json"] = json.dumps(s).encode()
+            lines = files["registry/records.jsonl"].splitlines(keepends=True)
+            files["registry/records.jsonl"] = b"".join([lines[0], *lines[:-1]])
+        cases["run-set leaf duplicated"] = (self.mutate(src="run-set", edit=leaf_twice), witnessed, 1)
         for token in (b"0.0", b"0e0", b"false"):   # run-set bounds are integer tokens
             cases[f"run-set from {token}"] = (self.mutate(src="run-set", edit=lambda f, m: f.update({
                 "registry/run-set.json": f["registry/run-set.json"].replace(b'"from": 0,', b'"from": ' + token + b",")
@@ -657,6 +666,29 @@ class Agreement(SignerBundles):
         code, rep = self.agree(bundle, trusts["two"])
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"))
         self.assertIn("2 pinned cosignature(s), 2 required", [c["detail"] for c in rep.checks])
+
+    def test_a_damaged_cosignature_reads_alike_in_both(self):
+        """A cosignature of the wrong length is malformed and one that fails to verify bad, with the same detail in
+        both verifiers: tracekit verify then says only what is known of each, never a rewrite alone."""
+        with open(self.trusts["witnessed"]) as f:
+            name = checkpoint.parse_vkey(json.load(f)["witnesses"][0]["vkey"])[0]
+        for said, change in (("malformed", lambda raw: raw[:4] + raw[12:]),   # no time: 64 bytes
+                             ("bad", lambda raw: raw[:-1] + bytes([raw[-1] ^ 1]))):   # a flipped bit
+
+            def damaged(files, m, change=change):
+                k = json.loads(files["proofs/records.json"])["checkpoint"]
+                lines = files[k].decode().split("\n")
+                i = next(i for i, ln in enumerate(lines) if ln.startswith(f"— {name} "))
+                dash, who, blob = lines[i].split(" ")
+                lines[i] = f"{dash} {who} {base64.b64encode(change(base64.b64decode(blob))).decode()}"
+                files[k] = "\n".join(lines).encode()
+            with self.subTest(said):
+                bundle, want = self.mutate(edit=damaged), [f"{said} cosignature from pinned witness {name}"]
+                code, rep = self.agree(bundle, self.trusts["witnessed"])
+                self.assertEqual(code, 1)
+                self.assertEqual([c["detail"] for c in rep.checks if c["check"] == "checkpoint"], want)
+                self.assertEqual([c["detail"] for c in ts_verify(bundle, self.trusts["witnessed"])["checks"]
+                                  if c["check"] == "checkpoint"], want)
 
     def test_a_witness_is_one_key_under_one_name_with_one_class_in_both(self):
         """Two keys pinned under one witness name, or one witness with two classes: both verifiers refuse the trust
@@ -1241,6 +1273,27 @@ class Agreement(SignerBundles):
         rewrite_bundle(os.path.join(golden, "parts.tkb"), bundle, cut)
         code, rep = self.agree(bundle, os.path.join(golden, "trust.json"))
         self.assertEqual((code, rep.integrity), (0, "VERIFIED TO HEAD 3 (open)"))
+
+    def test_the_kit(self):
+        """The conformance kit (tests/kit): every case but the proposed rules', as the reference passes them."""
+        sys.path.insert(0, os.path.join(TESTS, "kit"))
+        import run_kit as kit
+        cases = kit.load()
+        reports = ts_verify_many([[os.path.join(TESTS, c[k]) for k in ("input", "trust")] for c in cases])
+        with open(os.path.join(TS, "package.json")) as f:
+            version = json.load(f)["version"].split("-")[0]
+        for c, out in zip(cases, reports):
+            with self.subTest(c["name"]):
+                ok, how = kit.score(c, {"exit": out["exit_code"], "verdict": kit.verdict(out["integrity"]),
+                                        "level": out["assurance"].split(";")[0].strip() if out["exit_code"] == 0 else None,
+                                        "failed": [x["check"] for x in out["checks"] if x["status"] == "fail"]}, version)
+                self.assertTrue(ok or c.get("proposed"), how)
+
+    def test_a_certified_key_no_pinned_issuer_signed_fails_keys_in_both(self):
+        """format-v2.md §11 step 5: no issuer is pinned, so none signed the certificate: FAILED, not UNVERIFIABLE."""
+        kit = os.path.join(TESTS, "kit", "vectors")
+        code, rep = self.agree(os.path.join(kit, "certified-key.tkb"), os.path.join(kit, "trust.json"))
+        self.assertEqual((code, rep.failures[0]), (1, "keys"))
 
     def test_unimplemented_checks_are_unverifiable(self):
         golden = os.path.join(TESTS, "golden", "v2")

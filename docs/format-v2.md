@@ -16,6 +16,7 @@ Normative test vectors:
 | `tests/vectors/slh_dsa_note.json` | a hybrid checkpoint note: Ed25519 and SLH-DSA-SHA2-128s lines, keys, key ids |
 | `tests/golden/v2/` | bundles (closed, open, approval, run-set) with `trust.json` and the expected report |
 | `tests/golden/negative/` | one bundle per rejection, with the expected report in `expected.json` |
+| `tests/kit/` | the conformance kit: every golden v2 bundle and more vectors as cases (exit code, verdict, assurance level, first failed check, the section that decides it); `run_kit.py` scores any verifier against it |
 
 Every worked example on this page is checked against the code by `tests/test_format_doc_vectors.py`.
 
@@ -97,7 +98,8 @@ its record hash is that of `"seq": 1`. It adds to v1:
 `source` is `hook`, `proxy`, `transcript`, `signer`, `sdk`, `gateway`, `migrated` or `import`. Gap and tamper records
 (`capture.gap`, `trace.tamper`) are written only with `source: signer`; the `kind`s are listed in the schema's
 `capture_gap` and `trace_tamper` definitions. A gap marked `tenant_level: true` (`witness_failed`, `witness_late`,
-`clock_skew`, `degraded_unanchored`, and rollback tamper records) concerns every tenant (§7).
+`clock_skew`, `degraded_unanchored`, and rollback tamper records) concerns every tenant (§7). A run `tracekit/signer`
+(the signer's own, or a tenant's) holds only signer records and has no `run.registered`.
 
 Lifecycle records: `run.registered` (agent, the caller identity, `signer_isolation` and `fail_modes` from the signer's
 own measurement and config, and with harness binding the `harness{name, exe, pid, start_time, attested}` process the
@@ -672,7 +674,8 @@ line and verdict is in [verdicts](verdicts.md).
    (`rekor anchor`).
 5. **Keys.** Walk `keys/records.jsonl` in increasing seq: each must be a `signer.epoch` or `key.retire` record included
    in the checkpointed tree; each declared key's `kid` and `alg` must match its SPKI; each record must verify (§4)
-   under the keys valid at its seq; a `key.retire` must name a declared key and sets its `last_seq`. All records must
+   under the keys valid at its seq; a `key.retire` must name a declared key and sets its `last_seq`, before its own
+   signature is checked (signed by the key it retires, after that `last_seq`, it fails). All records must
    share the first key record's `log_id`. A key with `cert` is declared only if its certificate verifies under a
    pinned issuer, for that key and `log_id`, in the issuer's cosigned issuance log ([issuer.md](issuer.md)).
 6. **Runs.** A bundle holds exactly one run, one run with its findings and replay runs (`--with-findings`), or any
@@ -787,8 +790,10 @@ tell a later v1 record from a genuine one; only this check reports it.
 
 The TypeScript verifier does not implement SLH-DSA (§6, Web Crypto has none), Rekor anchors (§8) or record-key
 certificates ([issuer.md](issuer.md)), nor `tracekit why` findings (a bundle with a `why.finding` or a replay run): a
-bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`, exit 2, never `VERIFIED`. It checks
-signed findings (`reviews`, and the `Findings:` line) and live constraints (`constraints`) as the reference does. It
+bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`, exit 2, never `VERIFIED` (a
+certified key under a trust config that pins no issuer fails `keys`, as in the reference: no pinned issuer signed
+it). It checks signed findings (`reviews`, and the `Findings:` line) and live constraints (`constraints`) as the
+reference does. It
 takes no monitor reports, revocations or v1 ledger. Both verifiers implement the non-critical slot and the upgrade
 lines alike (§9, §11); the browser page reports exactly what the TypeScript CLI does. For evidence, check the page you
 open against the release first: `gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`
@@ -809,3 +814,10 @@ python -m pytest tests/test_ts_verifier.py       # skipped without Node >= 20.12
 record hashes and signature messages, the Ed25519 acceptance rules, checkpoint notes and key ids) and the worked examples
 on this page, then reach the reference's integrity, assurance and exit code on the differential corpus: the golden
 bundles with their `trust.json`, and the bundles `tests/test_ts_verifier.py` builds.
+
+**The kit.** `tests/kit/cases.json` holds every golden v2 bundle and the bundles of `tests/kit/vectors` as cases,
+`{input, trust, exit, verdict, level, failed_check, decided_by}`, with no report text compared; `python
+tests/kit/run_kit.py --cmd '<verifier> ... {bundle} ... {trust} ...'` scores a verifier whose JSON report has
+`exit_code`, `integrity`, `assurance` and `checks`. A case marked `addon` may be answered `UNVERIFIABLE` by a
+verifier without that add-on; one marked `proposed` holds a rule this page doesn't state yet, which `decided_by`
+names.

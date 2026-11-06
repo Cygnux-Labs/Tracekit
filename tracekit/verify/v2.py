@@ -750,11 +750,19 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     except checkpoint.NoteError as e:
         rep.check("checkpoint", False, str(e))
         return
+    signed = checkpoint.signers(files[name].decode("utf-8") if isinstance(files[name], bytes) else files[name])
+    key = next((k for k in trust["logs"] if checkpoint.parse_vkey(k)[0::2] == (origin, checkpoint.ED25519)
+                and (origin, checkpoint.parse_vkey(k)[1]) in signed), None)   # open_note verified its line
+    rep.log_fingerprint = key and hashlib.sha256(checkpoint.parse_vkey(key)[3]).hexdigest()   # as `init` prints it
     rep.check("checkpoint", size == proofs["tree_size"], f"{origin} at tree size {size}, signed by its pinned log key"
               + ("" if size == proofs["tree_size"] else ", but the proofs are for another tree size"))
     rep.check("witness quorum", len(cosigs) >= trust["witnesses_required"],
               f"{len(cosigs)} pinned cosignature(s), {trust['witnesses_required']} required")
     anchors = _anchor(rep, files, trust, files[name], origin, size)
+    # for verify's ANCHORED line, whatever the run's approvals: the independent cosigners and anchors, how many the
+    # trust file asks for (_level's rule) and the size they cosigned
+    rep.anchoring = ([k.split("+")[0] for k, _ in cosigs if witnesses[k] != "operator"]
+                     + [log for log, cls, _ in anchors if cls != "operator"], max(1, trust["witnesses_required"]), size)
     monitored = _monitor(rep, trust, monitor_reports, origin, size, root)
 
     def included(record):
@@ -838,12 +846,12 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                     if (pin["vkey"], c["serial"]) in revocations:
                         revoked[k["kid"]] = revocations[(pin["vkey"], c["serial"])]
                 declared[k["kid"]] = {"spki": der, "from": e["seq"], "until": None}
-        check_record(r, keys_at(e["seq"]) + [k["spki"] for k in declared.values()], key_problems)
-        if e["type"] == "key.retire":
+        if e["type"] == "key.retire":   # first: a key.retire is a record too, valid only under a key valid at its seq
             if e["data"]["kid"] not in timeline:
                 key_problems.append(f"seq {e['seq']}: retires an unknown key")
             else:
                 timeline[e["data"]["kid"]]["until"] = e["data"]["last_seq"]
+        check_record(r, keys_at(e["seq"]) + [k["spki"] for k in declared.values()], key_problems)
         timeline.update(declared)
 
     # the runs: one, or with a run-set any number; each in one file or in parts
@@ -1840,12 +1848,19 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
             + ("; approvals: self" if self_approved else ""))
 
 
+# the checkpoint check's refusal of a cosignature names the pinned witness by its key name, which docs/public-witness.md
+# makes `witness.<domain>/w1`: "pinned witness witness.example.org/w1" prints "pinned witness.example.org/w1" (--json
+# keeps the detail as checked)
+_WITNESS_TWICE = re.compile(r"(cosignature from pinned) witness (?=witness\.)")
+
+
 def print_report(rep, code, stream=None):
     """The report as text; control and bidirectional format characters in bundle-derived strings are dropped, so they
     reach no terminal and can't reorder the signer's words around them."""
     s, clean = stream or sys.stdout, lambda x: _CONTROL.sub("", str(x))
     for c in rep.checks:
-        s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(c['detail'])}" if c["detail"] else "") + "\n")
+        detail = _WITNESS_TWICE.sub(r"\1 ", str(c["detail"])) if c["check"] == "checkpoint" else c["detail"]
+        s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(detail)}" if detail else "") + "\n")
         for p in c["problems"]:
             s.write(f"        {clean(p)}\n")
     s.write(f"\nIntegrity: {clean(rep.integrity)}.\n"

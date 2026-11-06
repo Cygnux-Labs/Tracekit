@@ -29,6 +29,85 @@ def guidance():
             f"at {wiki_url('docs/coding-agents.md', 'when-tracekit-stops-a-call')} into its CLAUDE.md or AGENTS.md")
 
 
+def _dev_key_fingerprint(data_dir, make=True):
+    """The SHA-256 of the dev signer's log key (`tracekit verify` prints it for the key a trust file pins). With `make`
+    (init) it is made when no signer made it yet, so init can print the key the signer will use without opening its
+    store; without (up), a key not there is a FileNotFoundError and nothing is written."""
+    import hashlib
+    from . import crypto
+    from .signer import service
+    path = os.path.join(data_dir, "keys", "log.key")
+    if make:
+        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    try:
+        with open(path, "rb") as f:
+            secret = f.read()
+    except FileNotFoundError:
+        if not make:
+            raise
+        secret = crypto.generate()[0]
+        try:
+            service._write_new(path, secret)
+        except FileExistsError:   # a signer made the same key while init was preparing its output
+            with open(path, "rb") as f:
+                secret = f.read()
+    if len(secret) != 32:
+        raise ValueError(f"{path} is not a 32-byte log key")
+    return hashlib.sha256(crypto.public_from_secret(secret)).hexdigest()
+
+
+def _witnessed(data_dir):
+    """data_dir/witnessed.json as the signer wrote it at its last start ({witness name: size it held, None: no answer}),
+    else None: no start wrote it yet, or the file is not that, and nothing of it is ever printed."""
+    from .signer.service import WITNESSED
+    try:
+        with open(os.path.join(data_dir, WITNESSED), "rb") as f:
+            got = json.loads(f.read(1 << 16))
+    except (OSError, ValueError, RecursionError):
+        return None
+    sizes = isinstance(got, dict) and all(v is None or type(v) is int and v >= 0 for v in got.values())
+    return got if sizes else None
+
+
+def _dev_anchoring(data_dir, make=True):
+    """The lines `init --dev --v2` and `up --wait` print: the dev signer's log key (made by init only: `make`), and
+    whether a witness anchors its log as the signer last started (_witnessed), with what a change needs to apply."""
+    from . import public_witness
+    from .signer.service import NO_WITNESS
+    try:
+        key = f"log key SHA-256 fingerprint: {_dev_key_fingerprint(data_dir, make)}"
+    except (OSError, ValueError):
+        key = "start the signer with `tracekit up --wait` to see its log key"
+    heard, name = _witnessed(data_dir), public_witness.VKEY.split("+")[0]
+    using = bool(name) and heard is not None and name in heard   # the signer's last start used the public witness
+    apply = "restart it with `tracekit up --replace` to apply"
+    if os.path.exists(os.path.join(data_dir, NO_WITNESS)):
+        return [key, f"public witness: off from the dev signer's next start (--no-witness); {apply}" if using
+                else public_witness.LOST]
+    if not public_witness.configured():
+        return [key, public_witness.NOT_CONFIGURED]
+    if heard is None:
+        return [key, "public witness: on from the dev signer's next start"]
+    if not using:
+        return [key, f"public witness: on, but the dev signer last started without it; {apply}"]
+    if heard[name] is None:
+        return [key, "public witness: on, but it didn't answer when the dev signer started, so the log isn't anchored "
+                     "until it does"]
+    if heard[name] == 0:   # registered, as a new log is at its first start: the witness holds no checkpoint of it yet
+        return [key, "registered with the public witness; nothing cosigned yet"]
+    return [key, f"anchored: the public witness held this log at size {heard[name]} when the dev signer started"]
+
+
+def _init_dev_witness(no_witness, public):
+    """`tracekit init --dev --v2`: `--no-witness` turns the dev signer's witness off and only `--public-witness` turns
+    it back on, so any other init keeps the choice; returns _dev_anchoring's lines."""
+    from .signer.service import dev_data_dir, set_dev_witness
+    data_dir = dev_data_dir()
+    if no_witness or public:
+        set_dev_witness(no_witness, data_dir)
+    return _dev_anchoring(data_dir)
+
+
 def experimental(what, help=False):
     """The one line each experimental command or server prints when it starts (docs/support.md); with `help`, the line
     its --help ends with, on stdout."""
@@ -102,10 +181,92 @@ def main(argv=None):
             return run(args[1:])
         finally:
             experimental(_EXPERIMENTAL[args[0]], help=True)
+    ap, sub = _parser()
+    a = ap.parse_args(argv)
+    try:
+        if a.cmd in (None, "help"):
+            return _help(ap, sub, getattr(a, "command", None))
+        return _run(a)
+    except KeyboardInterrupt:
+        print("interrupted", file=sys.stderr)
+        return 130
+    except BrokenPipeError:
+        return 0
+    except SystemExit:
+        raise
+    except Exception as e:  # a CLI should print a reason, not a traceback; TRACEKIT_DEBUG=1 restores it
+        if os.environ.get("TRACEKIT_DEBUG") == "1":
+            raise
+        print(f"tracekit: {type(e).__name__}: {e}", file=sys.stderr)
+        return 1
+
+
+# `tracekit help` and a bare `tracekit`: each command under what a person runs it for (tests/test_cli.py checks that
+# every command is in exactly one group), then what Tracekit does that is not a command of its own
+_GROUPS = (
+    ("Start here", "init up down status doctor demo"),
+    ("See what agents did", "view last report audit why graph cost analyze"),
+    ("Approvals", "approvals grant pending approve reject"),
+    ("Evidence", "export verify verify-model pcm"),
+    ("Policy", "policy"),
+    ("Run it on a server", "signer deploy issuer monitor reviewer witness public-witness"),
+    ("Record model, tool and network traffic", "gateway executor mcp-gateway a2a-gateway egress"),
+    ("Connect other tools", "follow srt-decider openshell-middleware ext-mcp sensor"),
+    ("Maintenance", "migrate uninstall"),
+    ("Legacy (v1)", "daemon observe ingest otel proxy"),
+)
+_FEATURES = (
+    ("Witnesses and anchoring: other parties cosign the signer's log, and Rekor and RFC 3161 timestamps anchor it "
+     "(the free public witness is not deployed yet)", wiki_url("docs/witnesses.md")),
+    ("Tracekit Box, a separate program: runs an agent in its own micro-VM whose only ways out are decided and signed",
+     "https://github.com/Cygnux-Labs/Tracekit-box"),
+    ("SDKs and integrations: tracekit.instrument() and the Python SDK, the TypeScript SDK, framework integrations "
+     "and coding-agent hooks", wiki_url("docs/integrations.md")),
+)
+
+
+def _help(ap, sub, name):
+    """`tracekit help NAME` is `tracekit NAME --help`; without NAME, every command in its group, each with its own help
+    up to where its usage starts, then the features."""
+    import textwrap
+    if name in sub.choices or name in _MOVED:
+        return main([name, "--help"])
+    if name:
+        print(f"tracekit help: no command named {name!r}; the commands are:\n"
+              + textwrap.fill(", ".join(sorted(sub.choices)), 80, initial_indent="  ", subsequent_indent="  ",
+                              break_on_hyphens=False), file=sys.stderr)
+        return 2
+    helps = {x.dest: x.help for x in sub._choices_actions}
+    lines = [f"tracekit {__version__}: {ap.description}"]
+    for title, names in _GROUPS:
+        lines += ["", title]
+        for n in names.split():
+            text = re.split(r"[;:] (?=`|--|https?://)", helps[n])[0]
+            if n in _EXPERIMENTAL and "experimental" not in text:
+                text += " (experimental)"
+            first = f"  {n:<14}  "
+            if len(first) > 18:   # a name longer than the column gets a line of its own
+                lines.append(first.rstrip())
+                first = " " * 18
+            lines.append(textwrap.fill(text, 80, initial_indent=first, subsequent_indent=" " * 18,
+                                       break_on_hyphens=False))
+    lines += ["", "Also in Tracekit"]
+    for text, url in _FEATURES:
+        lines += [textwrap.fill(text, 80, initial_indent="  ", subsequent_indent="  "), f"    {url}"]
+    print("\n".join(lines + ["", "`tracekit help <command>` shows a command's options."]))
+    return 0
+
+
+def _parser():
+    """tracekit's argument parser and its subcommands."""
     ap = argparse.ArgumentParser(prog="tracekit", description="Tamper-evident records of what AI agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
-    sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
+    sub = ap.add_subparsers(dest="cmd", metavar="command")
 
+    p = sub.add_parser("help", help="every command, grouped by what it is for; `help COMMAND` shows its options",
+                       description="Every command, grouped by what it is for, and the features that are not commands "
+                                   "of their own; `tracekit help COMMAND` shows that command's options.")
+    p.add_argument("command", nargs="?", help="a command's name")
     p = sub.add_parser("init", help="install the signer and Claude Code hooks")
     p.add_argument("--remote", metavar="URL", help="agent on another machine: with --v2, send to this signer's HTTPS "
                                                    f"transport; without, to the deprecated ingest gateway ({wiki_url('docs/remote-ingest.md')})")
@@ -119,9 +280,15 @@ def main(argv=None):
     p.add_argument("--approver", help="with --v2, system mode: the user who answers the agent's approvals (default: "
                                       "$SUDO_USER, the admin running init)")
     p.add_argument("--policy", help="with --v2, system mode: the signer's policy file (root-owned; default: its own pack)")
-    p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
-                                                                 f"the signer's logs ({wiki_url('docs/witnesses.md')}; it sees origins, "
-                                                                 "sizes, roots and timing, never content)")
+    p.add_argument("--public-witness", action="store_true", help="with --v2: the public witness cosigns the signer's "
+                                                                 "logs, undoing an earlier --no-witness (system mode: "
+                                                                 "fails until it is deployed; "
+                                                                 f"{wiki_url('docs/public-witness-privacy.md')}: it sees "
+                                                                 "origins, sizes, roots and timing, never content)")
+    p.add_argument("--no-witness", action="store_true", help="with --v2: no public witness, the default once it is "
+                                                             "deployed, kept by later inits until --public-witness "
+                                                             "(whoever holds the signing key can then rewrite the log "
+                                                             "unseen)")
     p.add_argument("--egress", action="store_true", help="with --v2, system mode on Linux: the agent user's outside "
                                                          "traffic only through a local egress observer (an owner-match "
                                                          f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
@@ -163,6 +330,8 @@ def main(argv=None):
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
     p = sub.add_parser("up", help="find or start the same-user v2 dev signer")
     p.add_argument("--wait", action="store_true", help="return once it answers")
+    p.add_argument("--no-witness", action="store_true", help="no public witness for the dev signer (restarts it; "
+                                                             "init --dev --v2 --public-witness turns it back on)")
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
@@ -298,7 +467,8 @@ def main(argv=None):
     q.add_argument("slack_action", choices=["serve"])
     q.add_argument("--config", required=True, help="slack.yaml")
 
-    p = sub.add_parser("grant", help="intent grants on the v2 signer: approve a kind of costly call once, within limits, "
+    p = sub.add_parser("grant", help="intent grants on the v2 signer (experimental): approve a kind of costly call "
+                       "once, within limits, "
                        "for one run: `grant add|list|revoke` (docs/intent-grants.md)",
                        epilog=f"{GRANTS} is experimental: it works and is tested, but may change "
                               f"({wiki_url('docs/support.md')})")
@@ -388,22 +558,7 @@ def main(argv=None):
                    help="`tracekit why` on the signer: a 3-agent desk, a held email, its cause found and cited")
     p.add_argument("--agent", default="claude", choices=demo.AGENTS,
                    help="send the scripted run as this coding agent's own hook payloads (default: claude)")
-
-    a = ap.parse_args(argv)
-    try:
-        return _run(a)
-    except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
-        return 130
-    except BrokenPipeError:
-        return 0
-    except SystemExit:
-        raise
-    except Exception as e:  # a CLI should print a reason, not a traceback; TRACEKIT_DEBUG=1 restores it
-        if os.environ.get("TRACEKIT_DEBUG") == "1":
-            raise
-        print(f"tracekit: {type(e).__name__}: {e}", file=sys.stderr)
-        return 1
+    return ap, sub
 
 
 def _init_remote(a):
@@ -512,9 +667,12 @@ def _run(a):
             print("tracekit: --home, --witness, --proxy, --fail-closed and --signer-cmd are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
-        if (a.approver or a.policy or a.public_witness or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
-            print("tracekit: --approver, --policy, --public-witness, --egress and --harness with --v2 are for --v2 "
-                  "system mode", file=sys.stderr)
+        if (a.no_witness or a.public_witness) and not a.v2 or a.no_witness and a.public_witness:
+            print("tracekit: --no-witness and --public-witness go with --v2, one at a time", file=sys.stderr)
+            return 2
+        if (a.approver or a.policy or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
+            print("tracekit: --approver, --policy, --egress and --harness with --v2 are for --v2 system mode",
+                  file=sys.stderr)
             return 2
         if a.v2 and not a.dev:
             if not a.user:
@@ -523,7 +681,8 @@ def _run(a):
             try:
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
-                                                        a.allow_privileged, a.agent, a.harness, a.public_witness,
+                                                        a.allow_privileged, a.agent, a.harness,
+                                                        a.public_witness or (False if a.no_witness else None),
                                                         a.egress, not a.no_thinking_summaries, a.managed, a.managed_only)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
@@ -533,6 +692,10 @@ def _run(a):
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
+            from . import public_witness
+            off = os.path.exists(install.V2_NO_WITNESS)   # this init's --no-witness, or an earlier one's, kept
+            if off or not public_witness.configured():
+                print(public_witness.LOST if off else public_witness.NOT_CONFIGURED)
             if settings:
                 print(guidance())
             if settings and a.agent == "codex":
@@ -544,6 +707,7 @@ def _run(a):
             if not _signer_extra():
                 return 2
             try:
+                anchoring = _init_dev_witness(a.no_witness, a.public_witness)
                 path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
                 summary = path and a.agent == "codex" and not a.no_thinking_summaries and agent_hooks.codex_reasoning(path)
             except install.SettingsError as e:
@@ -551,6 +715,7 @@ def _run(a):
                 return 1
             print(f"v2 {a.agent} hooks:", path or "not installed")
             print(install.DEV_MODE_LINE)
+            print(*anchoring, sep="\n")
             if summary:
                 print(agent_hooks.reasoning_line(*summary))
             if path:
@@ -580,6 +745,7 @@ def _run(a):
                 if not _signer_extra():
                     return 2
                 from .signer.service import dev_data_dir
+                anchoring = _init_dev_witness(a.no_witness, a.public_witness)
                 dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
                 plugin = hooks and install.plugin_enabled()
                 if plugin:   # both would decide every call, and one would consume each approval the other waits on
@@ -589,6 +755,7 @@ def _run(a):
                           f"(with both, every approved call is blocked). To use init's hooks instead: "
                           f"/plugin disable {plugin_key}, then run init again")
                     print(install.DEV_MODE_LINE)
+                    print(*anchoring, sep="\n")
                     if not a.no_thinking_summaries:
                         try:
                             print(install.thinking_line(hooks, install.thinking_on(hooks)))
@@ -610,6 +777,7 @@ def _run(a):
                     return 1
                 print("v2 hooks:", hooks or "not installed")
                 print(install.DEV_MODE_LINE)
+                print(*anchoring, sep="\n")
                 if hooks and not a.no_thinking_summaries:
                     print(install.thinking_line(hooks, on))
                 if hooks:
@@ -658,9 +826,13 @@ def _run(a):
     if a.cmd == "up":
         from . import install
         from .sdk import autospawn
+        from . import public_witness
         if not _signer_extra():
             return 2
-        if a.replace:
+        from .signer.service import set_dev_witness
+        if a.no_witness:
+            set_dev_witness(True)
+        if a.replace or a.no_witness:
             autospawn.down()
         conn = autospawn.ensure(wait=a.wait or a.json)
         hello = conn and conn[2]
@@ -671,6 +843,10 @@ def _run(a):
         else:
             print(f"dev signer {hello['version']} running (pid {hello['pid']})" if hello else "dev signer starting")
             print(install.DEV_MODE_LINE)
+            if a.wait:   # the data dir a client takes the signer's from (its hello's): read, nothing made there
+                print(*_dev_anchoring(autospawn.data_dir(), make=False), sep="\n")
+            elif a.no_witness:
+                print(public_witness.LOST)
         return 0
     if a.cmd == "down":
         from .sdk import autospawn
@@ -1054,7 +1230,8 @@ def _last(a):
     if _export_v2(ns, show=lambda s: None):
         return 1
     try:
-        trust = write_trust(os.path.splitext(out)[0] + ".trust.json", read_vkeys(cfg["data_dir"]))
+        trust = write_trust(os.path.splitext(out)[0] + ".trust.json", read_vkeys(cfg["data_dir"]),
+                            cfg.get("witnesses") or ())
     except (OSError, ValueError) as e:
         print(f"tracekit last: cannot pin the dev signer's key: {e}", file=sys.stderr)
         return 1
@@ -1127,12 +1304,25 @@ def _gist(c, aid, n=60):
     return text if len(text) <= n else text[:n - 3] + "..."
 
 
+def _expires_left(x):
+    """How long approval `x` has left, as `show` and `list` print it: ` (in 55 min)` while it is requested or approved,
+    ` (3 min ago)` once its time passed; nothing for one rejected, consumed or abandoned before then, whose expiry no
+    longer counts. Another signer's time format is left as it is."""
+    import datetime
+    try:
+        left = (datetime.datetime.strptime(x["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
+                .replace(tzinfo=datetime.timezone.utc) - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    except ValueError:   # another signer's time format: as it is
+        return ""
+    if left < 0:
+        return f" ({-left // 60:.0f} min ago)"
+    return f" (in {left // 60:.0f} min)" if x["state"] in ("requested", "approved") else ""
+
+
 def _stop_lines(c, x):
     """What `approvals show` adds to approval `x`: why its call was held and what to do instead (the reasons and
     remedies of its rules, in the policy whose hash it records: a shipped pack's, or one the dev signer kept), when
     it expires, the commands that answer it and where the viewer opens it."""
-    import datetime
-
     from . import view
     from .integrations.claude_code import approvals_cmd
     from .policy2.compile import ENGINE_REASONS
@@ -1148,12 +1338,7 @@ def _stop_lines(c, x):
              for i in x["rule_ids"] if i != "TK-UNKNOWN-TOOL" and i not in flags]
     why = "; ".join(f"{r['reason']} ({i})" for i, r in rules if r.get("reason"))
     instead = " ".join(dict.fromkeys(r["remedy"] for _, r in rules if r.get("remedy")))
-    try:
-        left = (datetime.datetime.strptime(x["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
-                .replace(tzinfo=datetime.timezone.utc) - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-        left = f" (in {left // 60:.0f} min)" if left >= 0 else f" ({-left // 60:.0f} min ago)"
-    except ValueError:   # another signer's time format: as it is
-        left = ""
+    left = _expires_left(x)
     cmd = approvals_cmd(c.signer)
     why = why or ("not on this machine: `tracekit policy compile <file>` prints the reasons of the signer's policy, "
                   + x["policy_hash"])
@@ -1216,7 +1401,7 @@ def _approvals(a):
             for x in [] if a.json else shown:
                 state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
                 print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
-                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}" + (
+                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}{_expires_left(x)}" + (
                           f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
                           else ""))
             if a.json:

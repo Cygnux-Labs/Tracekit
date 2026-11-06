@@ -62,7 +62,8 @@ experimental.
 | Codex CLI, Cursor, Gemini CLI and OpenCode 1.x hooks (checked against recorded hook payloads, OpenCode's written in its documented shape, not the live tools) | [coding agents](coding-agents.md) |
 | goose, Qwen Code, Factory Droid, Antigravity CLI and Crush hooks (written to each harness's published hook documentation and tested against payloads in that shape, not the live tools) | [coding agents](coding-agents.md) |
 | The Hermes Agent plugin (`integrations/hermes/`; tested against a stand-in for the sequential path of Hermes's agent loop and its plugin hook dispatch as v0.22.5's source defines them, not a running Hermes) | [Hermes Agent](integrations/hermes.md) |
-| CrewAI (tested against a stand-in, not the real library) and Browser Use (its real-library contract runs nightly only) | [CrewAI](integrations/crewai.md), [Browser Use](integrations/browser-use.md) |
+| CrewAI (unit tests against a stand-in, and the example against real CrewAI 1.15.x in a CI job of its own; not yet run through `tests/adapter_contract.py`) | [CrewAI](integrations/crewai.md) |
+| Browser Use (its real-library contract runs nightly only) | [Browser Use](integrations/browser-use.md) |
 | Pydantic AI (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Pydantic AI](integrations/pydantic-ai.md) |
 | Google ADK (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Google ADK](integrations/google-adk.md) |
 | Haystack (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Haystack](integrations/haystack.md) |

@@ -81,10 +81,10 @@ from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
-from .signer.service import data_dir_at, dev_data_dir, load_config, lookup, read_vkeys, reader
+from .signer.service import data_dir_at, dev_data_dir, dev_witnesses, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
-from .verify import v2
+from .verify import anchoring, cosignature_failure, v2
 from .why.server import Store
 
 POLL_S = 1.0
@@ -442,6 +442,10 @@ class Translator(observe.Translator):
         # under the agent's retry of that call, which used its approval (signer _reusable), names it as `held`
         info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": call or asked,
                 **({"held": asked} if t.startswith("approval") and call and asked and asked != call else {}),
+                # which call and approval a record is of: the page reads them as held_calls does
+                **({"attempt": e["attempt"]} if e.get("attempt") is not None else {}),
+                **({"approval_id": d["approval_id"]} if d.get("approval_id") else {}),
+                **({"decision_id": d["decision_id"]} if t == "tool.result" and d.get("decision_id") else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
@@ -557,7 +561,6 @@ class Translator(observe.Translator):
             return alert("med", f"APPROVAL REQUESTED · {tool}",
                          f"requested by {d.get('requester')} · rules "
                          + ", ".join(f"{x['id']} {x['reason']}".strip() for x in rules)
-                         + f" · expires {_hms(d.get('expires_at'))}"
                          + (" · signer executes (t2)" if d.get("executor") == "t2" else ""), "HOLD",
                          approval="requested", rules=rules, binding_digest=d.get("binding_digest"), approval_id=aid,
                          expires=d.get("expires_at"), **({"agents": {k: d["agent"].get(k) for k in ("eligible", "reason")}}
@@ -826,11 +829,17 @@ def review(records, rep, verdict):
     used that call's approval, is that call: its use is the held call's outcome, counted once (`retries` counts them). Counts keep each snapshot
     small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
-           "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
+           "anchoring": anchoring(rep), "label": OPERATOR_SIDE, "agent": None, "records": len(records),
+           "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0, "retries": 0,
            "state": "open", "first": {}}
-    perms, calls, asked = {}, {}, set()   # tool_use_id -> its outcome; approval_id -> its tool_use_id; calls held
+    from .why.import_v2 import _call_id, held_calls
+    # a call is its decision's run_seq: perms -> its outcome, asked: those held; calls: approval_id -> its tool_use_id;
+    # cur: tool_use_id, and (tool_use_id, attempt) -> its latest call; ids: call -> its tool_use_id; folds and owners as
+    # held_calls has them
+    perms, calls, asked, cur, ids = {}, {}, set(), {}, {}
+    folds, owners = held_calls(records)
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -843,15 +852,20 @@ def review(records, rep, verdict):
                 out["analyzes"] = d["analyzes"]
             if d.get("parent_run"):   # the run that started this one: panel 1 shows it under its parent
                 out["parent"] = d["parent_run"]
+        elif t == "policy.decision" and e.get("run_seq") in folds:
+            out["retries"] += 1   # the held call's retry with its id (LangGraph): that call
+            cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = folds[e["run_seq"]]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
-            key = d.get("decision")
+            key, seq = d.get("decision"), e.get("run_seq")
+            cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = seq
+            ids[seq] = d.get("tool_use_id")
             if key != "allow":
-                perms[d.get("tool_use_id")] = "within a grant" if isinstance((e.get("ext") or {}).get("grant"), dict) \
+                perms[seq] = "within a grant" if isinstance((e.get("ext") or {}).get("grant"), dict) \
                     else {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
-                asked.add(d.get("tool_use_id"))
+                asked.add(seq)
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -887,14 +901,24 @@ def review(records, rep, verdict):
             out["state"] = "closing"
         if t == "approval.request":
             calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
-        own = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id"))
-        call = t.startswith("approval") and (calls.get(d.get("approval_id")) or own)
-        if own != call and own in perms and call in perms:   # the agent's retry of a held call, under its approval
-            del perms[own]   # (signer _reusable): one held call, whose outcome the retry's use is
-            asked.discard(own)
-            out["retries"] += 1
-        if call in perms and (t == "approval" or t in OUTCOMES):
-            perms[call] = held_outcome(perms[call], t, d)
+        if t.startswith("approval"):
+            # an approval's records are the call's its request was for; a use refused, the call's that tried it
+            own, refused = _call_id(rec), t in ("approval.refused", "approval.binding_mismatch")
+            # the call that tried it: the latest under its id and attempt (any attempt, for a record naming none)
+            mine = cur.get(own if e.get("attempt") is None else (own, e.get("attempt")))
+            held = owners.get(d.get("approval_id"))
+            if own and own != calls.get(d.get("approval_id"), own) and mine in perms and held in perms:
+                del perms[mine]   # the agent's retry of a held call under its approval (signer _reusable), with another
+                asked.discard(mine)   # id: one held call, whose outcome the retry's use is
+                out["retries"] += 1
+            if refused and held in perms:   # the call that tried it comes to it, unless it repeats the approval's state
+                now = held_outcome(perms[held], t, d)
+                if now != perms[held] and mine in asked:
+                    perms[mine] = now
+            else:
+                call = mine if refused or held is None else held
+                if call in asked and (t == "approval" or t in OUTCOMES):   # a held call's: a deny or flag has none
+                    perms[call] = held_outcome(perms[call], t, d)
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
@@ -904,7 +928,7 @@ def review(records, rep, verdict):
     out["hold_examples"] = {}
     for c, o in ended.items():
         if c in asked:
-            out["hold_examples"].setdefault(o, c)
+            out["hold_examples"].setdefault(o, ids[c])
     return out
 
 
@@ -1019,7 +1043,7 @@ class StoreFeed:
             self.threads.append(threading.Thread(target=self._mirrors, daemon=True))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
-        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), self.vkeys)
+        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), self.vkeys, cfg.get("witnesses") or ())
         self.threads.append(threading.Thread(target=self._watch, daemon=True))
         for t in self.threads:
             t.start()
@@ -1243,7 +1267,7 @@ class StoreFeed:
         e, hidden = {"run_id": run_id}, False
         if code:
             rv = {"verdict": "failed", "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
-                  "label": OPERATOR_SIDE, "agent": None}
+                  "anchoring": anchoring(rep) if cosignature_failure(rep) else None, "label": OPERATOR_SIDE, "agent": None}
             try:   # placed at its run's last record's time, as a run that verifies is; only the time is read
                 e["ts"] = collections.deque(reader.iter_run(tenant, run_id), 1)[0]["event"]["ts"]
             except (ValueError, KeyError, IndexError, TypeError, StorageCorrupt):
@@ -1584,10 +1608,11 @@ def store_trust(cfg, log_vkey=None):
     return vkeys, note
 
 
-def write_trust(path, vkeys):
-    """A verify.v2 trust config at `path` that pins the log vkeys `vkeys` and no witness; returns `path`."""
+def write_trust(path, vkeys, witnesses=()):
+    """A verify.v2 trust config at `path` that pins log vkeys `vkeys` and witnesses; returns `path`."""
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"logs": vkeys, "witnesses": [], "algs": [RecordSigner.alg], "witnesses_required": 0}, f)
+        json.dump({"logs": vkeys, "witnesses": [{"vkey": w["vkey"], "class": w["class"]} for w in witnesses],
+                   "algs": [RecordSigner.alg], "witnesses_required": 0}, f)
     return path
 
 
@@ -1884,7 +1909,8 @@ def main(argv=None):
             tls.load_cert_chain(a.tls_cert, a.tls_key)
         v1 = a.ledger is not None or a.bundle
         alone = a.why and not (v1 or a.dev or a.config or a.data_dir)   # why logs alone, as `tracekit why serve`
-        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
+        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir} if a.data_dir else \
+            {"data_dir": (d := dev_data_dir(create=False)), "witnesses": dev_witnesses(d)}   # pinned as `last` pins them
         view = cfg.get("view") or {}
         login = view.get("oidc") and OidcLogin(view["oidc"], (cfg.get("http") or {}).get("oidc"))
         desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),

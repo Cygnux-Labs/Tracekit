@@ -1,3 +1,6 @@
 # frozen evidence: byte-exact on every platform (no line-ending conversion on checkout)
 tests/golden/** binary
 tracekit/pcm/tools.json -text
+# the conformance kit: tests/kit/cases.json names each file it reads by its SHA-256, so byte-exact on every platform
+tests/kit/** -text
+sdk/typescript/src/verify/sample/** -text
