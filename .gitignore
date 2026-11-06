@@ -25,3 +25,6 @@ _claude_snapshots/
 
 # local planning notes (not committed)
 planning/
+
+# agent-flow tool state (audit logs, gate runs) stays local
+.agent-flow/
