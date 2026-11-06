@@ -15,6 +15,7 @@ dist/
 !docs/sample/*.tkb
 !docs/demos/*/run.tkb
 !tests/golden/v1/*.tkb
+!tests/kit/vectors/*.tkb
 .pytest_cache/
 .venv/
 venv/

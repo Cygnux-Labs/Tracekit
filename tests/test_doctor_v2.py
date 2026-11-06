@@ -3,6 +3,7 @@ setup detection, --json and the exit codes. The v1 doctor's own tests are in tes
 import base64
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -17,7 +18,8 @@ import types
 import unittest
 from unittest import mock
 
-from tracekit import __version__, agent_hooks, cli, client, doctor, install
+from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
+from tracekit.format import checkpoint
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
 
@@ -643,7 +645,12 @@ class DevFresh(unittest.TestCase):
         got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev")}
         self.assertEqual(got["D-KEYS-MODE"]["fix"], "start the dev signer: tracekit up")
         self.assertIn("assurance stays dev", got["D-WITNESS-CONFIGURED"]["detail"])
-        self.assertIn("the dev signer takes no witnesses", got["D-WITNESS-CONFIGURED"]["fix"])
+        self.assertIn("the dev signer uses the public witness, which isn't deployed yet: nothing to do until a release "
+                      "names it; to anchor now", got["D-WITNESS-CONFIGURED"]["fix"])
+        open(os.path.join(d, "no-witness"), "w").close()
+        self.assertEqual(doctor.v2_checks({"data_dir": d}, "dev")[[r["id"] for r in got.values()].index(
+            "D-WITNESS-CONFIGURED")]["fix"], "--no-witness turned the dev signer's witness off: tracekit init --dev --v2 "
+                                             "--public-witness turns it back on")
 
     def test_keys_it_cannot_read_name_the_doctor_command_root_can_run(self):
         """System-mode init puts no `tracekit` command on root's PATH, so the fix `sudo tracekit doctor` found none."""
@@ -659,6 +666,35 @@ class DevFresh(unittest.TestCase):
         for cfg, level in (({}, "dev"), ({"anchors": {"rekor": {"url": "https://rekor.example"}}}, "local")):
             got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d, **cfg})}
             self.assertIn(f"assurance stays {level}", got["D-WITNESS-CONFIGURED"]["detail"])
+
+
+class WitnessFresh(unittest.TestCase):
+    def test_a_witness_a_moment_behind_is_not_stale_and_one_record_is_one(self):
+        """After every start doctor warned "1 records behind": the signer had not sent the witness its new note yet."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, "store"))
+        note = os.path.join(d, "store", "checkpoint.note")
+        with open(note, "w", encoding="utf-8") as f:
+            f.write(f"example.org/log\n1\n{base64.b64encode(bytes(32)).decode()}\n\n— example.org/log AAAAAAAA\n")
+        w = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
+             "class": "public"}
+
+        def fresh(age):
+            os.utime(note, (time.time() - age,) * 2)
+            return next(r for r in doctor.v2_checks({"data_dir": d, "witnesses": [w]}, "dev")
+                        if r["id"] == "D-WITNESS-FRESH")
+        row = fresh(5)
+        self.assertEqual((row["status"], row["detail"]), ("ok", "w.example/w1 is 1 record behind, as for a moment after "
+                                                                "each checkpoint (a problem only after 300 s)"))
+        row = fresh(600)
+        self.assertEqual((row["status"], row["detail"]), ("warn", "w.example/w1 is 1 record behind"))
+
+
+def dev_key_fingerprint():
+    """The SHA-256 of the dev log key init made, which the signer will use."""
+    with open(os.path.join(autospawn.data_dir(), "keys", "log.key"), "rb") as f:
+        return hashlib.sha256(crypto.public_from_secret(f.read())).hexdigest()
 
 
 class NoHooksChosen(unittest.TestCase):
@@ -680,7 +716,9 @@ class NoHooksChosen(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
                                           "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None):
-            self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, f"v2 hooks: not installed\n{install.DEV_MODE_LINE}\n"))
+            self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, (
+                f"v2 hooks: not installed\n{install.DEV_MODE_LINE}\n"
+                f"log key SHA-256 fingerprint: {dev_key_fingerprint()}\n{public_witness.NOT_CONFIGURED}\n")))
             code, out = run("doctor", "--json")
             rows = {r["id"]: r for r in json.loads(out)}
             self.assertEqual((code, rows["D-HOOKS-PRESENT"]), (0, {
@@ -715,10 +753,23 @@ class NoHooksChosen(unittest.TestCase):
                 self.assertEqual(cli.main(["init", "--dev", "--v2"]), 0)
             self.assertTrue(install._v2_hooks_in(settings))
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks"]), 0)
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks", "--no-witness"]), 0)
             self.assertEqual(out.getvalue(), f"Tracekit v2 hooks removed from {settings}, and the file with them: init "
                                              f"made it, and nothing else is in it\nv2 hooks: not installed\n"
-                                             f"{install.DEV_MODE_LINE}\n")
+                                             f"{install.DEV_MODE_LINE}\nlog key SHA-256 fingerprint: "
+                                             f"{dev_key_fingerprint()}\n{public_witness.LOST}\n")
+            marker = os.path.join(autospawn.data_dir(), "no-witness")
+            self.assertTrue(os.path.isfile(marker))
+            # every later init keeps the opt-out and says so, whatever else it sets up; only --public-witness undoes it
+            for argv in (["--no-hooks"], ["--agent", "codex", "--no-hooks"], ["--agent", "codex", "--project", "--no-hooks"]):
+                with self.subTest(argv), contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(cli.main(["init", "--dev", "--v2", *argv]), 0)
+                    self.assertTrue(os.path.isfile(marker))
+                    self.assertTrue(out.getvalue().endswith(f"{public_witness.LOST}\n"), out.getvalue())
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks", "--public-witness"]), 0)
+            self.assertFalse(os.path.exists(marker))
+            self.assertTrue(out.getvalue().endswith(f"{public_witness.NOT_CONFIGURED}\n"), out.getvalue())
             self.assertFalse(install._v2_hooks_in(settings))
             self.assertEqual(client.client_config(), {"no_hooks": True})
 

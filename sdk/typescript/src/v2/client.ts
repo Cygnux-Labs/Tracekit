@@ -672,6 +672,20 @@ export class RunHandle {
     return this.call("approval_wait", { approval_id: approvalId, ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }) });
   }
 
+  /** Call right before running a call that was not denied: `{ ok: true }` when it may run now. `args` as for `decide`;
+   * `approvalIdHint` is the approval id the framework saved, if any. Never rejects: any failure (a signer that can't be
+   * reached, is incompatible or refuses) is `{ ok: false, reason }` (once decided there is no fail mode: the call
+   * doesn't run). */
+  async approvalConsume(toolCallId: string, tool: string, args: unknown, approvalIdHint?: string, fields: Frame = {}): Promise<Frame> {
+    try {
+      return await this.call("approval_consume", { tool_call_id: toolCallId, tool, args, args_source: typeof args === "string" ? "raw" : "parsed",
+        ...(approvalIdHint ? { approval_id_hint: approvalIdHint } : {}), ...fields });
+    } catch (e) {
+      warn(`tracekit: ${tool} is blocked: approval_consume failed: ${(e as Error).message}`);
+      return { ok: false, rule_ids: [], reason: `approval_consume failed: ${(e as Error).message}`.slice(0, 1024) };
+    }
+  }
+
   /** Records content that entered the run other than as a tool result (a mail, a ticket, a page the app fetched) for
    * the signer's provenance index; the task or user prompt goes in with trust "trusted". Only its commitment is recorded. */
   observe(value: unknown, source: string, trust: "trusted" | "untrusted" = "untrusted", fields: Frame = {}): Promise<Frame> {

@@ -341,7 +341,8 @@ def timeline(run: Run) -> List[Dict[str, Any]]:
             text = f"{ev['agent']} called {ev['model']} to {ev.get('purpose') or 'decide'} using {len(srcs)} inputs"
         elif t == "action":
             args = run.value(ev["args_ref"])
-            text = f"{ev['agent']} ran {ev['tool']}" + ("" if _committed(args) else f"({_short(args, 70)})")
+            text = f"{ev['agent']} {'was blocked from running' if ev.get('status') == 'blocked' else 'ran'} {ev['tool']}" \
+                + ("" if _committed(args) else f"({_short(args, 70)})")
         elif t == "message":
             text = f"{ev['agent']} sent a message to {ev['to']}"
         elif t == "run.end":
