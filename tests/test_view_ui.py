@@ -22,6 +22,8 @@ from factories import wait_for  # noqa: E402
 from tracekit import cli, observe, view  # noqa: E402
 from tracekit.sdk.client import Client  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
+from tracekit.why import import_v2  # noqa: E402
+from tracekit.why.core import load_run  # noqa: E402
 from test_view import page_js, v2rec  # noqa: E402
 
 PAGE = observe.read_text(observe.UI)
@@ -2860,6 +2862,54 @@ class ApproveThenRetry(unittest.TestCase):
             const D = hzData();
             process.stdout.write(JSON.stringify([D.ev.map(e => [e.seq, e.act, e.hold]), D.calls]));"""))
         self.assertEqual(hz, [[[2, "approved", True]], 1])
+
+    def results(self, name, *steps):
+        """Records of call c1 as the signer writes them (`steps`: (type, data); a decision's data merged into a deny-shaped
+        one, a result's the decision_id it names): (the page's calls as [seq, decision, its result's seq], the why log's
+        actions as (decision, status))."""
+        top = {"run": name, "tool_call_id": "c1", "attempt": 0, "tenant": "t", "log_id": "L"}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}, **top)]
+        for n, (typ, data) in enumerate(steps, 2):
+            recs.append(v2rec(n, typ, {"tool_use_id": "c1", "tool": "Bash", "rule_ids": ["TK-D001"], "policy_hash": "p",
+                                       "decision_id": f"d{n}", "args_commitment": "hmac-sha256:x", **data}
+                              if typ == "policy.decision" else {"tool_use_id": "c1", "ok": True, "decision_id": data,
+                                                                "output": {"hash": "sha256:o", "size": 1}}
+                              if typ == "tool.result" else data, **top))
+        recs.append(v2rec(len(recs) + 1, "run.final", {"head_run_seq": len(recs) + 1}, **top))
+        tr, rows = view.Translator(), []
+        for r in recs:
+            rows += [{**x, "ts": r["event"]["run_seq"], "session_id": name, "tk_seq": r["event"]["run_seq"]} for x in tr.feed(r)]
+        page = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                   "heldCall", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun",
+                                   "callState", "ingest"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agentOf = r => ({{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }});
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows)};
+            foldsOf(ALL, FOLDS);
+            for (const r of ALL) {{ sessionOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify(S.actList.map(a => [a.pre.tk_seq, a.v2.decision, a.post?.tk_seq ?? null])));"""))
+        why = load_run(import_v2.convert(recs, tempfile.mkdtemp(), {}))
+        return page, [(a["policy"]["decision"], a["status"]) for a in why.of_type("action")]
+
+    def test_a_deny_that_ran_anyway_is_filed_as_it_ran(self):
+        """The signer takes a result for any open decision, a deny's too (an agent that ran it anyway), and signs which
+        (decision_id). Filed by "the latest call that could have run, never a deny", a deny's result went nowhere and the
+        why log read a deny that ran blocked."""
+        needs_node(self)
+        self.assertEqual(self.results("deny-ran", ("policy.decision", {"decision": "deny"}), ("tool.result", "d2")),
+                         ([[2, "deny", 3]], [("deny", "ok")]))
+
+    def test_a_deny_that_ran_after_an_approved_call_is_filed_as_it_ran(self):
+        """As a deny that ran: one after an approved call that ran under the same id gave its result to that call."""
+        needs_node(self)
+        self.assertEqual(self.results("deny-ran-after", ("policy.decision", {"decision": "ask"}),
+                                      ("approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}),
+                                      ("approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve"}),
+                                      ("approval.consumed", {"approval_id": "X"}), ("tool.result", "d2"),
+                                      ("policy.decision", {"decision": "deny"}), ("tool.result", "d7")),
+                         ([[2, "ask", 6], [7, "deny", 8]], [("deny", "ok")]))
 
     def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
         """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an

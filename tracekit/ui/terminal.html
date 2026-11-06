@@ -3553,9 +3553,9 @@
     const ended = a => S.sessions.get(a.agent.session)?.end != null;
     // An approved call runs only by using its approval (`used`)
     const used = answers => answers.some(x => x.v2.approval === "consumed");
-    // a v2 row's call id and attempt, its approval's key, and whether it is a use the signer refused (of the call that
-    // tried it, not the call the approval is for)
-    const callKey = r => r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id) + "|" + (r.v2?.attempt ?? ""), aidKey = r => r.session_id + "|" + r.v2?.approval_id, refusedUse = r => /^approval\.(refused|binding_mismatch)$/.test(r.v2?.type);
+    // a v2 row's call id and attempt, its approval's key, its decision's key (a decision's own, or the one a result names),
+    // and whether it is a use the signer refused (of the call that tried it, not the call the approval is for)
+    const callKey = r => r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id) + "|" + (r.v2?.attempt ?? ""), aidKey = r => r.session_id + "|" + r.v2?.approval_id, didKey = r => r.session_id + "|" + r.v2?.decision_id, refusedUse = r => /^approval\.(refused|binding_mismatch)$/.test(r.v2?.type);
     // a run's held calls as why/import_v2.held_calls reads them. Returns the owners: approval key -> the decision row its
     // request was for (the latest under the request's call id and attempt). Into `out`: each decision row that is a held
     // call's retry with its own id (LangGraph's resume) -> the held call's row. A consume names a call id and attempt, not
@@ -3581,7 +3581,9 @@
     // a call's acts under its id (latest last), and the one a row of `r`'s id and attempt is of that passes `ok`
     const actsOf = r => (S.byId ||= new Map()).get(tuid(r)) || [];
     const latestAct = (r, ok = () => true) => actsOf(r).findLast(a => (r.v2?.attempt == null || a.v2?.attempt === r.v2.attempt) && ok(a));
-    // what could have run: an allow, a flag, an ask whose approval was used (a result is never a deny's)
+    // a result is the call of the decision it names (decision_id, as the signer signed it: a deny or a hold nobody answered
+    // that ran anyway ran); one that names none, the latest under its id and attempt that could have run: an allow, a
+    // flag, an ask whose approval was used
     const couldRun = (v2, answers) => v2?.decision === "allow" || v2?.decision === "flag" || v2?.decision === "ask" && used(answers);
     // what ingest folds: foldsOf of the rows it reads
     const FOLDS = new Map();
@@ -3644,6 +3646,7 @@
         const held = FOLDS.has(r) && S.actList.find(a => a.pre === FOLDS.get(r));
         if (held) {
           (held.subs ||= []).push(pushTape({ ts: r.ts, agent: held.agent, ev: "HOLD", text: "the agent sent this call again, with its id", rec: r, under: held }));
+          (S.did ||= new Map()).set(didKey(r), held);   // a result naming the retry's decision is the held call's
           return;
         }
         const a = agentOf(r), pol = r.policy || {};
@@ -3655,6 +3658,7 @@
         };
         if (act.denied) act.flags.unshift("denied");
         S.actions.set(act.id, act); S.actList.push(act); (S.byId ||= new Map()).set(act.id, [...(S.byId.get(act.id) || []), act]);
+        if (r.v2?.decision_id) (S.did ||= new Map()).set(didKey(r), act);
         a.actions++; a.status = "running"; a.current = act.denied ? null : act;
         S.tools.set(act.tool, (S.tools.get(act.tool) || 0) + 1);
         const fm = FILE_TOOLS[act.tool];
@@ -3676,8 +3680,8 @@
         return;
       }
       if (ev === "PostToolUse") {
-        // v2: the latest call under its id and attempt that could have run (couldRun), never a deny
-        const act = r.v2 ? latestAct(r, a => couldRun(a.v2, a.approvals)) : S.actions.get(r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input || {}));
+        // v2: the call of the decision it names, else the latest that could have run (couldRun)
+        const act = r.v2 ? (r.v2.decision_id ? S.did?.get(didKey(r)) : latestAct(r, a => couldRun(a.v2, a.approvals))) : S.actions.get(r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input || {}));
         if (!act) return;
         act.post = r; act.end = r.ts; act.ms = r.duration_ms ?? Math.round((r.ts - act.start) * 1000);
         const resp = r.tool_response;
@@ -5094,20 +5098,22 @@
     // its own (view.review counts them once)
     function permOf(recs) {
       // by: a call id -> its decisions' rows (an allow's too, which is listed nowhere), as ingest files records under them
-      const by = new Map(), ended = new Set(), rows = [], again = new Map(), owners = foldsOf(recs, again), rowOf = new Map();
+      // dids: a decision's key -> its call's row (a folded retry's, its held call's)
+      const by = new Map(), ended = new Set(), rows = [], again = new Map(), owners = foldsOf(recs, again), rowOf = new Map(), dids = new Map();
       for (const r of recs) {
         if (r.analysis) continue;
         const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), owner = rowOf.get(owners.get(aidKey(r)));
         const latest = (ok = () => true) => (by.get(k) || []).findLast(x => (r.v2?.attempt == null || x.rec.v2.attempt === r.v2.attempt) && ok(x));
         const held = r.v2?.held && (owner || by.get(r.session_id + "|" + r.v2.held)?.at(-1));
         if (r.event === "SessionEnd") ended.add(r.session_id);
-        else if (again.has(r)) continue;   // a held call's retry with its id (foldsOf): that call's row
+        else if (again.has(r)) dids.set(didKey(r), rowOf.get(again.get(r)));   // a held call's retry with its id (foldsOf): that call's row
         else if (r.event === "PreToolUse" && r.v2) {
           const row = { rec: r, answers: [], k };
           by.set(k, [...(by.get(k) || []), row]);
+          dids.set(didKey(r), row);
           if (r.v2.decision !== "allow") { rows.push(row); rowOf.set(r, row); }
         }
-        else if (r.event === "PostToolUse") { const row = latest(x => couldRun(x.rec.v2, x.answers)); if (row) row.post = r; }
+        else if (r.event === "PostToolUse") { const row = r.v2?.decision_id ? dids.get(didKey(r)) : latest(x => couldRun(x.rec.v2, x.answers)); if (row) row.post = r; }
         else if (r.v2?.approval) {
           // an approval's records are the call's its request was for; a use refused, the call's that tried it
           const row = owner?.k === k && !refusedUse(r) ? owner : latest();

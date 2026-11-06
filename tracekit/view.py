@@ -444,6 +444,7 @@ class Translator(observe.Translator):
                 # which call and approval a record is of: the page reads them as held_calls does
                 **({"attempt": e["attempt"]} if e.get("attempt") is not None else {}),
                 **({"approval_id": d["approval_id"]} if d.get("approval_id") else {}),
+                **({"decision_id": d["decision_id"]} if t == "tool.result" and d.get("decision_id") else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
@@ -801,7 +802,8 @@ def review(records, rep, verdict):
            "state": "open", "first": {}}
     from .why.import_v2 import _call_id, held_calls
     # a call is its decision's run_seq: perms -> its outcome, asked: those held; calls: approval_id -> its tool_use_id;
-    # cur: tool_use_id -> its latest call, ids: call -> its tool_use_id; folds and owners as held_calls has them
+    # cur: tool_use_id, and (tool_use_id, attempt) -> its latest call; ids: call -> its tool_use_id; folds and owners as
+    # held_calls has them
     perms, calls, asked, cur, ids = {}, {}, set(), {}, {}
     folds, owners = held_calls(records)
     for rec in records:
@@ -818,12 +820,13 @@ def review(records, rep, verdict):
                 out["parent"] = d["parent_run"]
         elif t == "policy.decision" and e.get("run_seq") in folds:
             out["retries"] += 1   # the held call's retry with its id (LangGraph): that call
-            cur[d.get("tool_use_id")] = folds[e["run_seq"]]
+            cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = folds[e["run_seq"]]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key, seq = d.get("decision"), e.get("run_seq")
-            cur[d.get("tool_use_id")], ids[seq] = seq, d.get("tool_use_id")
+            cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = seq
+            ids[seq] = d.get("tool_use_id")
             if key != "allow":
                 perms[seq] = {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
@@ -866,7 +869,9 @@ def review(records, rep, verdict):
         if t.startswith("approval"):
             # an approval's records are the call's its request was for; a use refused, the call's that tried it
             own, refused = _call_id(rec), t in ("approval.refused", "approval.binding_mismatch")
-            mine, held = cur.get(own), owners.get(d.get("approval_id"))
+            # the call that tried it: the latest under its id and attempt (any attempt, for a record naming none)
+            mine = cur.get(own if e.get("attempt") is None else (own, e.get("attempt")))
+            held = owners.get(d.get("approval_id"))
             if own and own != calls.get(d.get("approval_id"), own) and mine in perms and held in perms:
                 del perms[mine]   # the agent's retry of a held call under its approval (signer _reusable), with another
                 asked.discard(mine)   # id: one held call, whose outcome the retry's use is

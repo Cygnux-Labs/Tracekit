@@ -137,23 +137,24 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...). The agent's retry
     of a held call that consumed that call's approval (signer _reusable) has its approval and `retry_of`, the held call;
     the held call, blocked at once, `ran_by`, the retry. A call is the id's latest decision, or the held call a decision
-    folds into (held_calls); an approval's records are the call's its request was for, and a result the latest call under
-    its id and attempt that could have run (an allow, a flag, an ask whose approval was used), never a deny: one that is
-    not the id's latest call is not in the log."""
+    folds into (held_calls); an approval's records are the call's its request was for, and a result the call of the
+    decision it names (decision_id): one that is not the id's latest call is not in the log."""
     calls: Dict[str, Dict[str, Any]] = {}
     asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
     folds, owners = held_calls(recs)
-    appr, used, decs = {}, set(), {}   # call (run_seq) -> its approval; calls whose approval was used; (id, attempt) -> calls
-    for r in recs:
+    appr, used, decs, did = {}, set(), {}, {}   # call (run_seq) -> its approval; calls whose approval was used;
+    for r in recs:                               # (id, attempt) -> calls; decision_id -> its call
         e, t, d = r["event"], r["event"]["type"], r["event"]["data"]
         aid, tid = d.get("approval_id"), _call_id(r)
         if t == "policy.decision":
-            seq = folds.get(e["run_seq"], e["run_seq"])
+            seq = did[d.get("decision_id")] = folds.get(e["run_seq"], e["run_seq"])
             calls[tid] = {"decision": r, "seq": seq}   # a later attempt replaces an earlier one
             decs.setdefault((tid, e.get("attempt")), []).append((seq, d["decision"]))
         elif t == "tool.result" and tid in calls:
-            ran = next((s for s, dec in reversed(decs.get((tid, e.get("attempt")), ())) if dec in ("allow", "flag") or s in used),
-                       None)
+            # the decision it completes, as the signer signed it (any open decision: a deny or a hold nobody answered
+            # that ran anyway ran); without one, the latest under its id and attempt that could have run
+            ran = did.get(d.get("decision_id")) if d.get("decision_id") else next(
+                (s for s, dec in reversed(decs.get((tid, e.get("attempt")), ())) if dec in ("allow", "flag") or s in used), None)
             if ran == calls[tid]["seq"]:
                 calls[tid]["result"] = r
         elif t == "approval" and aid in owners:

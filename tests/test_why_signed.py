@@ -229,6 +229,36 @@ class SignedRuntime(unittest.TestCase):
         run.complete("c1", attempt=0)
         return self.seen(run)
 
+    def ran_anyway(self, name, steps):
+        """A run's calls that ran though no approval let them: (the page's calls with their result, the why log's actions
+        as (decision, status))."""
+        run = self.client.run(name)
+        steps(run)
+        why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+        return self.seen(run)["ran"], [(a["policy"]["decision"], a["status"]) for a in why.of_type("action")]
+
+    def test_a_hold_nobody_answered_that_ran_anyway_is_filed_as_it_ran(self):
+        """The signer takes a result for any open decision and signs which (decision_id). Filed by "the latest call that
+        could have run", a hold nobody answered that ran anyway read blocked in the why log (a HIGH "not approved").
+        (A deny's result: tests/test_view_ui.py, the SDK sends none.)"""
+        needs_node(self)
+
+        def unanswered(run):
+            run.decide("c1", "Bash", self.ASK)
+            run.call("approval_request", tool_call_id="c1")
+            run.complete("c1")
+        self.assertEqual(self.ran_anyway("ran-unanswered", unanswered), (["ask"], [("ask", "ok")]))
+
+    def test_an_attempt_1_hold_that_ran_anyway_is_filed_as_it_ran(self):
+        """As a hold nobody answered: attempt 1's, after attempt 0's approved call ran, read blocked."""
+        needs_node(self)
+
+        def attempt1(run):
+            self.approved(run)
+            run.decide("c1", "Bash", self.ASK, attempt=1)
+            run.complete("c1", attempt=1)
+        self.assertEqual(self.ran_anyway("ran-attempt1", attempt1), (["ask", "ask"], [("ask", "ok")]))
+
     def test_a_deny_under_an_approved_id_stays_blocked_when_the_approval_is_used(self):
         """A consume names a call id and attempt, not a decision: the id's latest decision before it, a deny, was folded
         into the approved call, and a result and a consume could land on a BLOCKED row."""
@@ -255,7 +285,8 @@ class SignedRuntime(unittest.TestCase):
             self.assertFalse(run.approval_consume("c1", "Bash", other)["ok"])
         self.assertEqual(self.used_after("changed-then-use", changed), {
             "decisions": {"ask": 2}, "retries": 0, "calls": [["ask", "APPROVED · RAN"], ["ask", "REFUSED: ARGUMENTS CHANGED"]],
-            "perm": [["ask", "REFUSED: ARGUMENTS CHANGED"], ["ask", "APPROVED · RAN"]], "ran": ["ask"], "why": []})
+            "perm": [["ask", "REFUSED: ARGUMENTS CHANGED"], ["ask", "APPROVED · RAN"]], "ran": ["ask"],
+            "why": [("ask", None)]})   # the SDK's result names its last decision, the changed one: the signer says it ran
 
     def test_a_later_attempt_stays_its_own_call_when_the_earlier_attempts_approval_is_used(self):
         """Attempt 1 of the call, held, was folded into attempt 0 on load (not live) when attempt 0's approval was used.

@@ -481,6 +481,23 @@ class Translate(unittest.TestCase):
         self.assertEqual((dict(rv["decisions"]), rv["retries"], dict(rv["permissions"]), dict(rv["holds"])),
                          ({"ask": 1}, 1, {"approved · ran": 1}, {"approved · ran": 1}))
 
+    def test_a_refused_use_is_the_call_of_its_own_attempt(self):
+        """Attempt 0 approved, attempt 1 asked with its own request, then attempt 0's approval was refused for changed
+        arguments: the review filed the refusal under the id's latest call (attempt 1) while the page and HORIZON file it
+        under the call of the attempt that tried it."""
+        def rec(seq, typ, data, attempt=None):
+            return v2rec(seq, typ, data, tool_call_id="c1", **({} if attempt is None else {"attempt": attempt}))
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}), rec(2, "policy.decision", ask, 0),
+                rec(3, "approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, 0),
+                rec(4, "approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve"}),
+                rec(5, "policy.decision", ask, 1),
+                rec(6, "approval.request", {"approval_id": "Y", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, 1),
+                rec(7, "approval.binding_mismatch", {"tool_use_id": "c1", "approval_id": "X"}, 0),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual(dict(rv["permissions"]), {"refused: arguments changed": 1, "not answered": 1})
+
     def test_a_use_refused_only_for_its_approvals_state_changes_no_outcome(self):
         """A second use of an approval whose call ran turned "approved · ran" into "refused" (TK-APPROVAL-CONSUMED); an
         agent's approval within the delay people may revoke it in read "refused", then APPROVAL ALREADY ENDED, while it
