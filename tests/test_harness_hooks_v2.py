@@ -189,7 +189,8 @@ class Mapping(HarnessCase):
                                                      "tool_input": {"prompt": "p", "url": "https://x.example"}})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Crush's {name}", err)
-                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+                self.assertLess(err.index('"permissions deny agent agentic_fetch" in crushrc'),
+                                err.index('"disabled_tools": ["agent", "agentic_fetch"]'))
                 self.assertEqual(self.sent, [])
 
     def test_crush_argument_names_crush_reads_otherwise_are_denied_before_the_signer(self):
