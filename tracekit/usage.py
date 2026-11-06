@@ -9,8 +9,8 @@ Recorded on ``model.exchange`` responses as::
 counting (OpenAI reports cached tokens inside prompt_tokens; Anthropic reports them separately; both normalise to the
 same shape). ``reasoning_tokens`` is a breakdown of ``output_tokens``, not an addition to it.
 
-Tracekit ships no prices: they change, and a stale built-in table would produce confident wrong numbers. ``tracekit
-cost`` uses a JSON file you maintain::
+``tracekit cost`` ships no prices: they change, and a stale built-in table would produce confident wrong numbers. It
+uses a JSON file you maintain (the viewer's TIPS page prices Anthropic's models from tips.PRICES, dated, and says so)::
 
     {"currency": "USD", "per": 1000000,
      "models": {"gpt-4o*": {"input": 2.5, "output": 10, "cache_read": 1.25},
@@ -36,7 +36,7 @@ def _int(v):
         return None
     try:
         n = int(v)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: a JSON number past a float (1e999 reads as inf)
         return None
     return n if 0 <= n < 10 ** 12 else None
 

@@ -37,9 +37,11 @@ bundle once it verifies (what `tracekit observe` runs), on this server, token an
 
     tracekit view [--dev | --config signer.yaml | --data-dir DIR | --ledger [HOME] | --bundle FILE] [--log-vkey VKEY]
                   [--host H] [--port N] [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR]
-                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID]
+                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID] [--transcripts DIR]
 
-`--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held.
+`--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held. The TIPS page
+(tracekit/tips.py) reads the store's rows and, with the dev store or `--transcripts DIR`, Claude Code's transcripts,
+read-only, for the token only.
 """
 import argparse
 import atexit
@@ -1498,6 +1500,12 @@ class StoreFeed:
                     * bool(again) + [self.stopped] * bool(self.stopped), None)
 
 
+def shown(feed):
+    """The rows the live view holds now (a run being checked again holds RETRACTED in its rows' place)."""
+    with feed.lock:
+        return [r for r in feed.records if r is not observe.RETRACTED]
+
+
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):
     """Import one verified v2 run as a why run under `why_dir` (why.import_v2, from the records only), replacing an
     earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs; with `records` None (the
@@ -1844,10 +1852,18 @@ def main(argv=None):
     ap.add_argument("--webhook", help="POST each new high why alert here as JSON (Slack-compatible)")
     ap.add_argument("--approval", metavar="ID", help="print the link that opens the call approval ID held "
                                                      "(`tracekit approvals show ID` names it)")
+    ap.add_argument("--transcripts", metavar="DIR", help="Claude Code transcripts the TIPS page reads, read-only "
+                                                         "(default with the dev store: $CLAUDE_CONFIG_DIR/projects or "
+                                                         "~/.claude/projects)")
     a = ap.parse_args(argv)
     if a.approval and not re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval):
         print(f"tracekit view: --approval takes an approval id (apr- and 32 hex digits), not {a.approval!r}",
               file=sys.stderr)
+        return 2
+    transcripts = a.transcripts and os.path.abspath(os.path.expanduser(a.transcripts))
+    if transcripts and not os.path.isdir(transcripts):
+        print(f"tracekit view: --transcripts {transcripts}: no such folder (Claude Code keeps its transcripts in "
+              "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
     from .cli import experimental
@@ -1909,6 +1925,10 @@ def main(argv=None):
                     if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
+            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
+                from . import audit, tips
+                feed.tips = tips.Page(functools.partial(shown, feed),
+                                      transcripts or (audit.default_root() if dev else None))
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -1925,6 +1945,9 @@ def main(argv=None):
              f"  (bundle: {a.bundle}, verified, read-only)" if a.bundle else
              f"  (ledger: {feed.path}, read-only)" if v1 else f"  (why logs alone: {why.root})" if alone else
              f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
+    if getattr(feed, "tips", None) and feed.tips.root:   # the folder it reads, only when there is one
+        print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
+              else "  tips: no Claude Code transcripts found", flush=True)
     if why and mirror:
         why.watch()
         print("  graphs: each verified run, imported from the store (read-only) into a temp dir", flush=True)

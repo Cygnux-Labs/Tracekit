@@ -3344,7 +3344,8 @@ class NothingLost(unittest.TestCase):
             "desk": ["desk", "calls", "desk"], "runs": ["runs", "calls", "desk"], "live": ["run", "calls", "desk"],
             "approvals": ["approvals", "calls", "desk"], "permissions": ["permissions", "calls", "permissions"],
             "horizon": ["horizon", "calls", "desk"], "map": ["horizon", "calls", "desk"],   # MAP: HORIZON's first name
-            "influence": ["influence", "calls", "influence"], "overview": ["run", "overview", "overview"],
+            "influence": ["influence", "calls", "influence"], "tips": ["tips", "calls", "desk"],
+            "overview": ["run", "overview", "overview"],
             "calls": ["run", "calls", "desk"], "waterfall": ["run", "waterfall", "desk"], "graph": ["run", "graph", "graph"],
             "why": ["run", "why", "why"], "agents": ["run", "agents", "agents"], "evidence": ["run", "evidence", "evidence"],
             "timeline": ["run", "calls", "timeline"]})   # the why log's TIMELINE: CALLS with its events
@@ -3392,7 +3393,7 @@ class NothingLost(unittest.TestCase):
         const el = {}, $ = id => el[id] ??= { hidden: false, textContent: "" };
         """ + "".join(f"function {f}() {{}}\n" for f in (
         "renderTop", "renderPages", "renderWaiting", "renderTicker", "renderNeeds", "renderRunHead", "renderRunsPage",
-        "renderApprovalsPage", "renderHorizon", "renderAgents", "renderTape", "renderAlerts", "renderMix", "renderLanes",
+        "renderApprovalsPage", "renderTipsPage", "renderHorizon", "renderAgents", "renderTape", "renderAlerts", "renderMix", "renderLanes",
         "renderWaterfall", "renderReason", "renderFiles", "renderWhyView", "renderNode", "renderWhyPanel", "renderDetail",
         "renderReview", "syncLink", "joinEgress")) + """
         const W = { runs: [{ run_id: "w1" }], calls: {}, alerts: [{ run_id: "w1", node: "ev:5" }] };
@@ -3419,7 +3420,7 @@ class NothingLost(unittest.TestCase):
               }
             }
             process.stdout.write(JSON.stringify(out));"""))
-        pages = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence"]
+        pages = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence", "tips"]
         views = {"overview": "overview", "calls": "desk", "waterfall": "desk", "graph": "graph", "why": "why",
                  "agents": "agents", "evidence": "evidence", "timeline": "timeline"}
 

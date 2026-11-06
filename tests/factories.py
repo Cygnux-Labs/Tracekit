@@ -44,6 +44,45 @@ def tool_call(tid, cmd="ls", run="r1"):
     return ev("tool.call", {"tool_use_id": tid, "name": "Bash", "input": {"command": {"value": cmd, "redacted": False}}}, run)
 
 
+def v2rec(seq, typ, data, run="r1", **top):
+    """A v2 signed record as the viewer reads it from a store (its signature left out), `seq` its run_seq and second."""
+    return {"event": {"seq": seq, "run_seq": seq, "run_id": run, "agent_id": "main", "type": typ, "data": data,
+                      "ts": f"2026-10-10T17:00:{seq:02d}.000000Z", "prev_hash": "sha256:p", **top},
+            "hash": f"sha256:{seq}"}
+
+
+def iso(t):
+    """Epoch seconds as a transcript writes its times (UTC, Z)."""
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def cc_assistant(mid, t, read=0, write=0, life="5m", new=0, out=200, tools=(), model="claude-opus-5-5"):
+    """A Claude Code transcript's assistant line: message `mid` at `t` (epoch seconds) whose context is `read` tokens
+    read from the prompt cache, `write` written to it (lasting `life`: "5m" or "1h") and `new` sent uncached; it calls
+    each of `tools`, (tool_use id, tool name, input)."""
+    return {"type": "assistant", "timestamp": iso(t), "message": {
+        "id": mid, "model": model, "role": "assistant",
+        "content": [{"type": "tool_use", "id": i, "name": n, "input": inp} for i, n, inp in tools] or
+        [{"type": "text", "text": "done"}],
+        "usage": {"input_tokens": new, "output_tokens": out, "cache_read_input_tokens": read,
+                  "cache_creation_input_tokens": write,
+                  "cache_creation": {"ephemeral_5m_input_tokens": write * (life == "5m"),
+                                     "ephemeral_1h_input_tokens": write * (life == "1h")}}}}
+
+
+def cc_result(tool_use_id, t):
+    """A Claude Code transcript's user line that returns tool `tool_use_id`'s result at `t`."""
+    return {"type": "user", "timestamp": iso(t), "message": {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": tool_use_id, "content": "ok"}]}}
+
+
+def write_jsonl(path, lines):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.writelines(json.dumps(x) + "\n" for x in lines)
+    return path
+
+
 def make_signer(home, **cfg):
     """An in-process Signer over `home`; `cfg` overrides the config.json defaults."""
     os.makedirs(home, exist_ok=True)
