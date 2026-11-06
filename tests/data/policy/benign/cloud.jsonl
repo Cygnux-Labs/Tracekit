@@ -120,3 +120,15 @@
 {"tool": "Bash", "args": {"command": "aws configservice describe-configuration-recorder-status"}, "expect": "allow", "note": "reading AWS audit logging and detection settings"}
 {"tool": "bash", "args": {"command": "aws securityhub describe-hub"}, "expect": "allow", "note": "reading AWS audit logging and detection settings"}
 {"tool": "shell", "args": {"command": "aws accessanalyzer list-analyzers"}, "expect": "allow", "note": "reading AWS audit logging and detection settings"}
+{"tool": "Bash", "args": {"command": "aws guardduty update-detector --detector-id 12abc34d567e8fa901bc2d34e56789f0 --enable"}, "expect": "allow", "note": "reading or enabling AWS audit logging and detection settings"}
+{"tool": "bash", "args": {"command": "aws guardduty update-detector --detector-id 12abc34d567e8fa901bc2d34e56789f0 --features Name=S3_DATA_EVENTS,Status=ENABLED"}, "expect": "allow", "note": "reading or enabling AWS audit logging and detection settings"}
+{"tool": "shell", "args": {"command": "aws guardduty create-filter --detector-id 12abc34d567e8fa901bc2d34e56789f0 --name filter1 --action NOOP"}, "expect": "allow", "note": "reading or enabling AWS audit logging and detection settings"}
+{"tool": "terminal", "args": {"command": "aws cloudtrail update-trail --name audit-logs --enable-log-file-validation"}, "expect": "allow", "note": "modifying AWS audit trail without diverting or disabling it"}
+{"tool": "run_shell_command", "args": {"command": "aws cloudtrail update-trail --name audit-logs --s3-key-prefix logs/"}, "expect": "allow", "note": "modifying AWS audit trail without diverting or disabling it"}
+{"tool": "local_shell", "args": {"command": "aws configservice describe-delivery-channels"}, "expect": "allow", "note": "reading AWS audit logging and detection settings"}
+{"tool": "Bash", "args": {"command": "aws securityhub get-enabled-standards"}, "expect": "allow", "note": "reading AWS audit logging and detection settings"}
+{"tool": "bash", "args": {"command": "aws route53resolver list-resolver-query-log-configs"}, "expect": "allow", "note": "reading AWS audit logging and detection settings"}
+{"tool": "shell", "args": {"command": "aws organizations describe-organization"}, "expect": "allow", "note": "reading AWS organization settings"}
+{"tool": "terminal", "args": {"command": "aws guardduty update-detector --detector-id 12abc34d567e8fa901bc2d34e56789f0 --features '[{\"Name\":\"S3_DATA_EVENTS\",\"Status\":\"ENABLED\"}]'"}, "expect": "allow", "note": "reading or enabling AWS audit logging and detection settings"}
+{"tool": "run_shell_command", "args": {"command": "aws guardduty update-filter --detector-id 12abc34d567e8fa901bc2d34e56789f0 --filter-name filter1 --action NOOP"}, "expect": "allow", "note": "reading or enabling AWS audit logging and detection settings"}
+{"tool": "local_shell", "args": {"command": "aws cloudtrail update-trail --name audit-logs --include-global-service-events --is-multi-region-trail"}, "expect": "allow", "note": "modifying AWS audit trail without diverting or disabling it"}
