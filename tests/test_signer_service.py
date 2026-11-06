@@ -353,6 +353,63 @@ class TestService(unittest.TestCase):
         self.assertEqual([g["data"]["kind"] for g in gaps], ["degraded_unanchored"])
         self.assertEqual((gaps[0]["tenant"], gaps[0]["run_id"]), SIGNER_RUN)
 
+    def test_silent_startup_witness_keeps_writes_and_verifies_the_signed_gap(self):
+        from tracekit.bundle_v2 import export
+        from tracekit.verify import v2
+
+        release = threading.Event()
+        witness_key = checkpoint.vkey("witness.example.org/silent", checkpoint.COSIGNATURE, b"\x01" * 32)
+
+        class Silent(Unreachable):
+            name = "witness.example.org/silent"
+            vkey = witness_key
+
+            def latest(self, empty_note, log_vkey):
+                release.wait(10)
+                raise OSError("silent")
+
+            def add_checkpoint(self, note, log_vkey, start_size=0):
+                raise OSError("silent")
+
+        start = time.monotonic()
+        with mock.patch.object(svc, "CLOSE_WAIT_S", 0.05):
+            s = self.open(witnesses=[Silent()], witness_start_s=0.05, grace_s=0)
+        self.assertLess(time.monotonic() - start, 1)
+        with open(os.path.join(self.dir, svc.WITNESSED), encoding="ascii") as f:
+            self.assertEqual(json.load(f), {s.witnesses[0].name: None})   # configured, no answer
+        run = self.register(s)
+        s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": run["run_id"],
+                                  "run_token": run["run_token"]})
+        self.assertGreater(s.log.storage.tree.size, 0)
+        release.set()
+        s.close()
+        bundle_path, trust_path = os.path.join(self.dir, "signer.tkb"), os.path.join(self.dir, "trust.json")
+        note = s.log.storage.checkpoint_latest("records")[1]
+        export(s.log.storage, SIGNER_RUN[0], SIGNER_RUN[1], note, bundle_path)
+        with open(trust_path, "w", encoding="utf-8") as f:
+            json.dump({"logs": [s.vkey], "witnesses": [{"vkey": witness_key, "class": "public"}],
+                       "algs": ["ed25519"], "witnesses_required": 0}, f)
+        rep, code = v2.verify(bundle_path, trust_path)
+        self.assertEqual(code, 0, rep.checks)
+        signed_gaps = [r["event"] for r in records(self.dir) if r["event"]["type"] == "capture.gap"]
+        self.assertEqual([g["data"]["kind"] for g in signed_gaps], ["degraded_unanchored"])
+        self.assertTrue(rep.assurance.startswith("dev;"))
+
+    def test_every_start_records_its_witnesses_none_with_none(self):
+        """init and up --wait read it: a start with no witness wrote nothing, so they read an older start's."""
+        self.open()
+        with open(os.path.join(self.dir, svc.WITNESSED), encoding="ascii") as f:
+            self.assertEqual(json.load(f), {})
+
+    def test_a_key_made_while_the_signer_starts_is_the_one_it_uses(self):
+        """`tracekit init --dev --v2` makes keys/log.key outside the signer's lock, to print its fingerprint."""
+        path = os.path.join(self.dir, "log.key")
+
+        def make():
+            svc._write_new(path, b"\1" * 32)   # init, between the signer's read and its write
+            return b"\2" * 32
+        self.assertEqual(svc._secret(path, make), b"\1" * 32)
+
     def test_quotas_and_refusal_summaries(self):
         s = self.open(limits=Limits(open_runs=1, events_per_s=0.001, burst=3, streams_per_run=1))
         run = self.register(s)
