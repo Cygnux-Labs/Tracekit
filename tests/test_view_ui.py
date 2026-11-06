@@ -1357,6 +1357,20 @@ class WhyCauses(unittest.TestCase):
         needs_node(self)
         self.assertEqual(self.body(WHY_RUN)[0], WHY_TEXT)
 
+    def test_blocked_calls_are_attempts_in_the_heading_and_copied_explanation(self):
+        needs_node(self)
+        for status, heading, verb in ((None, "RAN", "run"), ("ok", "RAN", "run"), ("error", "RAN", "run"),
+                                      ("blocked", "WAS BLOCKED FROM RUNNING", "try to run")):
+            with self.subTest(status=status):
+                run = {**WHY_RUN, "nodes": [{**n, "status": status} if n["id"] == "ev:call" else n
+                                           for n in WHY_RUN["nodes"]]}
+                text, page = self.body(run)
+                question = f"Why did executor {verb} send_email?"
+                self.assertEqual(text.splitlines()[0], question)
+                self.assertIn(f'<div class="sec">executor {heading}</div>', page)
+                copied = html.unescape(re.search(r'data-copy="([^"]*)"', page).group(1))
+                self.assertEqual(copied.splitlines()[0], question)
+
     def test_each_cause_links_its_node_and_record_and_has_its_ready_command(self):
         needs_node(self)
         page = self.body(WHY_RUN)[1]
