@@ -896,11 +896,11 @@ class CodingPack(unittest.TestCase):
             "dd if=in.safetensors of=/models/out.safetensors",
             "cp src.pth dst.pth",
             "cp src.ckpt dst.ckpt",
-            "cp 'a\nb.safetensors' /models/out.safetensors",
+            "cp x 'a\nb.safetensors'",
             "echo x > MODEL.SAFETENSORS",
             "python train.py > out.pt",
         ]
-        # TK-A058: publishing to a model hub
+        # TK-A060: publishing to a model hub
         held_hub = [
             "huggingface-cli upload acme/model ./out",
             "hf upload acme/model ./out",
