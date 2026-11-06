@@ -532,7 +532,8 @@ can't be checked, as `tracekit verify` does.
 - **`--share`** prints the report's counts alone, to post as a [field report](field-reports.md): the window's length
   in days, the version, whether the store and how many runs verify, the runs that verify by agent, the calls by
   decision, the holds by outcome (and how many retries it counted with their held calls), the number of gaps, and
-  each denied or flagged rule with its count. An agent name or rule id that isn't Tracekit's own is counted as
+  each denied or flagged rule with its count, and each rule's holds with how many were approved (by a person or the
+  run's own user) and how many never approved were rejected or expired (from the signed approval records). An agent name or rule id that isn't Tracekit's own is counted as
   `other` or `custom rule` ([field reports](field-reports.md#what-is-shared-and-what-isnt)). No source, tenant, run
   id, identity, time, call or rule description; it reads no content, so it adds no `content.accessed` record.
 

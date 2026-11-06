@@ -29,6 +29,7 @@ REPO = "https://github.com/Cygnux-Labs/Tracekit"
 EXCLUDED = {
     "RELEASING.md": "the maintainers' release procedure",
     "launch-checklist.md": "the 1.0 launch's internal checklist",
+    "field-reports/": "the field reports people send as pull requests, and its README: data, not pages",
 }
 # the sidebar: docs paths in order; a glob adds the pages it matches that no earlier entry placed, sorted
 SECTIONS = [
@@ -160,7 +161,12 @@ def pages(root=ROOT):
     docs = os.path.join(root, "docs")
     found = (os.path.relpath(p, docs).replace(os.sep, "/")
              for p in glob.glob(os.path.join(docs, "**", "*.md"), recursive=True))
-    return sorted(p for p in found if p not in EXCLUDED)
+    return sorted(p for p in found if not excluded(p))
+
+
+def excluded(p):
+    """Whether docs path `p` is no wiki page: EXCLUDED names it, or a folder of it (an entry ending in /)."""
+    return any(p == x or x.endswith("/") and p.startswith(x) for x in EXCLUDED)
 
 
 def build(ref, root=ROOT):
