@@ -189,11 +189,12 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
 
 - The ledger stays on the signer host.
 - Witnesses get only checkpoint hashes, `seq`, `kid` and timestamps, never content.
-- v2 witnesses, the public witness (`witnesses: [public]`, off by default) included, get each log's origin (signer.yaml
-  `origin`, default `tracekit.local/<log id>`; each tenant's registry log is `<origin>/registry/<hash>`, never the
-  tenant's name) and log vkey, its tree sizes and root hashes, the log's signature, and the time each checkpoint is
-  sent, so they learn how often and how much each log grows. The public witness stores per origin the key, the latest
-  size and root and the last time it cosigned, and the client address only in memory, for its rate limits.
+- v2 witnesses, the public witness included (the default once it is deployed; `--no-witness` opts out), get each
+  log's origin (signer.yaml `origin`, default `tracekit.local/<log id>`; each tenant's registry log is
+  `<origin>/registry/<hash>`, never the tenant's name) and log vkey, its tree sizes and root hashes, the log's
+  signature, and the time each checkpoint is sent, so they learn how often and how much each log grows. The public
+  witness stores per origin the key, the latest size and root and the last time it cosigned, and the client address
+  only in memory, for its rate limits ([what the public witness sees](public-witness-privacy.md)).
 - A bundle contains the selected runs' events (per the table above); records from other runs are **elided** to `seq`, `hash`, `prev_hash`, `sig`.
 - A v2 bundle holds snapshots of the policies the run's records cite, and only where a verifier checks against one:
   the policy (its rules, patterns, agent bounds and detection rules) an agent's approval was decided under, and the

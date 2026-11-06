@@ -197,8 +197,10 @@ def open_note(note, log_keys, witness_keys=()):
                 raise NoteError(f"bad SLH-DSA signature from pinned key {name}")
             hybrids.discard((name, raw[:4]))
         else:
-            ts = struct.unpack(">Q", sig[:8])[0] if len(sig) == 72 else None
-            if ts is None or not crypto.verify_v2("ed25519", crypto.spki(public), _cosigned(text, ts), sig[8:]):
+            if len(sig) != 72:   # not a timestamp and a signature: damaged, whatever the log holds
+                raise NoteError(f"malformed cosignature from pinned witness {name}")
+            ts = struct.unpack(">Q", sig[:8])[0]
+            if not crypto.verify_v2("ed25519", crypto.spki(public), _cosigned(text, ts), sig[8:]):
                 raise NoteError(f"bad cosignature from pinned witness {name}")
             cosigs.append((k, ts))
     if not logged:

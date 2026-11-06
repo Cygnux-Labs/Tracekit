@@ -657,6 +657,29 @@ class Agreement(SignerBundles):
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"))
         self.assertIn("2 pinned cosignature(s), 2 required", [c["detail"] for c in rep.checks])
 
+    def test_a_damaged_cosignature_reads_alike_in_both(self):
+        """A cosignature of the wrong length is malformed and one that fails to verify bad, with the same detail in
+        both verifiers: tracekit verify then says only what is known of each, never a rewrite alone."""
+        with open(self.trusts["witnessed"]) as f:
+            name = checkpoint.parse_vkey(json.load(f)["witnesses"][0]["vkey"])[0]
+        for said, change in (("malformed", lambda raw: raw[:4] + raw[12:]),   # no time: 64 bytes
+                             ("bad", lambda raw: raw[:-1] + bytes([raw[-1] ^ 1]))):   # a flipped bit
+
+            def damaged(files, m, change=change):
+                k = json.loads(files["proofs/records.json"])["checkpoint"]
+                lines = files[k].decode().split("\n")
+                i = next(i for i, ln in enumerate(lines) if ln.startswith(f"— {name} "))
+                dash, who, blob = lines[i].split(" ")
+                lines[i] = f"{dash} {who} {base64.b64encode(change(base64.b64decode(blob))).decode()}"
+                files[k] = "\n".join(lines).encode()
+            with self.subTest(said):
+                bundle, want = self.mutate(edit=damaged), [f"{said} cosignature from pinned witness {name}"]
+                code, rep = self.agree(bundle, self.trusts["witnessed"])
+                self.assertEqual(code, 1)
+                self.assertEqual([c["detail"] for c in rep.checks if c["check"] == "checkpoint"], want)
+                self.assertEqual([c["detail"] for c in ts_verify(bundle, self.trusts["witnessed"])["checks"]
+                                  if c["check"] == "checkpoint"], want)
+
     def test_a_witness_is_one_key_under_one_name_with_one_class_in_both(self):
         """Two keys pinned under one witness name, or one witness with two classes: both verifiers refuse the trust
         config, with the same line; one witness listed twice with one class counts once in both."""

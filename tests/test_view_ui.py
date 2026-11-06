@@ -3274,6 +3274,20 @@ class RunChip(unittest.TestCase):
         self.assertEqual(out, ["Being checked again: the store's bytes changed after the viewer read them, so its last "
                                "verdict no longer stands.", "Pending: no checkpoint covers this run's last record yet."])
 
+    def test_a_run_its_witness_saw_another_version_of_says_so_in_the_reviews_own_words(self):
+        """The headline read "checkpoint — bad cosignature from pinned witness witness.…" under the ANCHORING line's
+        plain sentence; any other failure still reads its failing check."""
+        needs_node(self)
+        changed = ("the witness's (witness.example.org/w1) cosignature doesn't match this log: the log was changed after "
+                   "the witness saw it, or the cosignature is damaged")
+        out = json.loads(page_js(["failLines", "runSentence"], f"""
+            process.stdout.write(JSON.stringify([
+              runSentence({{ verdict: "failed", anchoring: {json.dumps("FAILED: " + changed + ".")},
+                             report: "[FAIL] checkpoint — bad cosignature from pinned witness.example.org/w1\\n" }}),
+              runSentence({{ verdict: "failed", anchoring: null, report: "[FAIL] inclusion — gone\\n" }})]));"""))
+        self.assertEqual(out, [f"Failed verification: {changed}. None of its records are shown.",
+                               "Failed verification: inclusion — gone. None of its records are shown."])
+
     def test_every_verified_indicator_reads_checks_stopped_while_the_viewer_checks_nothing(self):
         """The run chip said checks stopped, but the verdict chips (run header, RUNS, panel 1, a call's detail, the run
         review), EVIDENCE's stamp, HORIZON's HUD, ALL RUNS' count and the review's summary still read VERIFIED."""

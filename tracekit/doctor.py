@@ -104,10 +104,12 @@ def collect(config=None, issuer_key=None):
         return out
     from . import agent_hooks
     from .sdk import autospawn
-    from .signer.service import dev_content
+    from .signer.service import dev_content, dev_witnesses
+    dev_data = autospawn.data_dir()
     project = os.path.join(os.getcwd(), ".claude")
     mine, harnesses = client.client_config(), _dev_harnesses()
-    rows = v2_checks({"data_dir": autospawn.data_dir(), "content": dev_content().get("content")}, "dev",
+    rows = v2_checks({"data_dir": dev_data, "content": dev_content().get("content"),
+                      "witnesses": dev_witnesses(dev_data)}, "dev",
                      settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=harnesses,
                      no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
@@ -1092,7 +1094,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     ws = cfg.get("witnesses") or []
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "
         f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
-        if prod else f"the dev signer takes no witnesses: serve one from a signer.yaml with witnesses: ({wiki_url('docs/witnesses.md')})",
+        if prod else ("--no-witness turned the dev signer's witness off: tracekit init --dev --v2 --public-witness turns "
+                      "it back on" if os.path.exists(os.path.join(data, service.NO_WITNESS)) else
+                      "the dev signer uses the public witness, which isn't deployed yet: nothing to do until a release "
+                      "names it; to anchor now, run a signer from a signer.yaml that lists your own witness "
+                      f"({wiki_url('docs/witnesses.md')})"),
         bad=sev)
     if ws:
         operator = all(w["class"] == "operator" for w in ws)
@@ -1102,6 +1108,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     store = os.path.join(data, "store")
     try:
         note = read_text(os.path.join(store, "checkpoint.note"))
+        noted = os.path.getmtime(os.path.join(store, "checkpoint.note"))
     except FileNotFoundError:
         note = None
     except OSError as e:
@@ -1113,14 +1120,20 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             queue = read_json(os.path.join(store, "witness-queue.json"))
         except FileNotFoundError:
             queue = {}
-        size, stale = int(note.split("\n", 2)[1]), []
+        size, stale, behind = int(note.split("\n", 2)[1]), [], []
         for w in ws:
             name = TlogWitness(w["url"], w["vkey"]).name
             st = queue.get(name, {}).get(RECORDS)
             lag = size - (st or {}).get("size", 0)
-            if lag > 0 and (st is None or (st.get("since") and now - st["since"] >= service.WITNESS_GAP_S)):
-                stale.append(f"{name} is {lag} records behind")
-        add("D-WITNESS-FRESH", not stale, "; ".join(stale) or "every witness has cosigned the latest checkpoint",
+            # failing since (`since`), or not asked yet (just started or added: since the latest note), for a while
+            since = st.get("since") if st else noted
+            said = f"{name} is {lag} record{'s' if lag != 1 else ''} behind"
+            if lag > 0 and since and now - since >= service.WITNESS_GAP_S:
+                stale.append(said)
+            elif lag > 0:   # the signer sends each new checkpoint at once: a start or a busy log is a moment behind
+                behind.append(f"{said}, as for a moment after each checkpoint (a problem only after "
+                              f"{int(service.WITNESS_GAP_S)} s)")
+        add("D-WITNESS-FRESH", not stale, "; ".join(stale or behind) or "every witness has cosigned the latest checkpoint",
             f"check the witness is reachable and accepts this log ({wiki_url('docs/witnesses.md')})", bad=WARN)
         try:
             cosigs = checkpoint.open_note(note, service.read_vkeys(data), [w["vkey"] for w in ws])[3]

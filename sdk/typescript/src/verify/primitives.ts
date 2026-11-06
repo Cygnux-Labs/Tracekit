@@ -281,8 +281,10 @@ export async function openNote(data: Uint8Array, logKeys: string[], witnessKeys:
       unchecked = true;
       hybrids.delete(id);
     } else {
-      const ts = sig.length === 72 ? new DataView(sig.buffer, sig.byteOffset).getBigUint64(0) : null;
-      if (ts === null || !await verifyV2("ed25519", spkiOf(p.pub), bytes(`cosignature/v1\ntime ${ts}\n${text}`), sig.subarray(8)))
+      // not a timestamp and a signature: damaged, whatever the log holds (tracekit/format/checkpoint.py)
+      if (sig.length !== 72) throw new NoteError(`malformed cosignature from pinned witness ${name}`);
+      const ts = new DataView(sig.buffer, sig.byteOffset).getBigUint64(0);
+      if (!await verifyV2("ed25519", spkiOf(p.pub), bytes(`cosignature/v1\ntime ${ts}\n${text}`), sig.subarray(8)))
         throw new NoteError(`bad cosignature from pinned witness ${name}`);
       cosigs.push([k, ts]);
     }

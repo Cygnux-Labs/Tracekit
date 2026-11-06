@@ -225,7 +225,9 @@ CASES = [
     ("no witnesses", "D-WITNESS-CONFIGURED", lambda L: L.signer_yaml(witnesses=[])),
     ("only operator witnesses", "D-WITNESS-OWNERSHIP",
      lambda L: L.signer_yaml(witnesses=[dict(L.yaml["witnesses"][0], **{"class": "operator"})])),
-    ("witness never cosigned", "D-WITNESS-FRESH", lambda L: L.queue({})),
+    # never asked, an hour after the checkpoint: a witness not asked yet is only a moment behind after a start
+    ("witness never cosigned", "D-WITNESS-FRESH",
+     lambda L: (L.queue({}), os.utime(L.path("data/store/checkpoint.note"), (time.time() - 3600,) * 2))),
     ("witness failing for an hour", "D-WITNESS-FRESH",
      lambda L: L.queue({L.wname: {"records": {"size": 2, "since": time.time() - 3600}}})),
     ("clock an hour behind the witness", "D-CLOCK-SKEW", lambda L: L.note(int(time.time()) + 3600)),

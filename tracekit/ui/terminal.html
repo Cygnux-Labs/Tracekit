@@ -5614,7 +5614,9 @@
     }
     // one sentence a person reads first: the verdict, what the run's calls came to, its findings
     function runSentence(r) {
-      if (r.verdict === "failed") return "Failed verification: " + (failLines(r.report).join(" · ").replace(/^\[FAIL\]\s*/, "") || "see the verifier report") + ". None of its records are shown.";
+      // a pinned witness's cosignature the check refused: the ANCHORING line's plain words, the check's in the report below
+      const changed = r.verdict === "failed" && /^FAILED: (.*)\.$/.exec(r.anchoring || "");
+      if (r.verdict === "failed") return "Failed verification: " + (changed ? changed[1] : failLines(r.report).join(" · ").replace(/^\[FAIL\]\s*/, "") || "see the verifier report") + ". None of its records are shown.";
       if (r.verdict === "pending" && /^RE-CHECKING/.test(r.integrity || "")) return "Being checked again: the store's bytes changed after the viewer read them, so its last verdict no longer stands.";
       if (r.verdict !== "verified") return "Pending: no checkpoint covers this run's last record yet.";
       const acts = S.actList, held = acts.filter(heldCall), by = new Map();
@@ -5655,7 +5657,7 @@
     function reviewHtml(r, cmds = true) {
       const d = r.decisions || {}, f = r.first || {};
       const line = (seq, k, text, cls, tip) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}" title="${esc(tip || "")}">${esc(text)}</dd>`;
-      let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd>` + vchip(r.verdict) + `${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
+      let left = `<div class="summary">${esc(runSentence(r))}</div><div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN` + cp(r.id) + `</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd>` + vchip(r.verdict) + `${esc(r.integrity && r.integrity.toLowerCase() !== String(r.verdict) ? " " + r.integrity : "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}${r.anchoring ? `<dt>ANCHORING</dt><dd class="${/^ANCHORED/.test(r.anchoring) ? "s-ok" : "s-flag"}">${esc(r.anchoring)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
       if (r.analyzes) left += `<dt>FINDINGS ABOUT</dt><dd class="go" data-run="${esc(r.analyzes)}">${esc("run " + r.analyzes + ": its signed findings are the rows of this run")}</dd>`;
       // live constraints: what the person's request said not to do; a call that breaks one waits for a person
       if (r.constraints?.length) left += line(r.constraints[0].seq, "CONSTRAINTS", r.constraints.map(c => c.kind).join(" · ") + ` · held ${plural(r.constraint_holds, "call")} for approval`, "s-flag");

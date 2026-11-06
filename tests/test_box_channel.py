@@ -503,7 +503,10 @@ class TestEndToEnd(unittest.TestCase):
             "PROOF AGAINST THE BOXED AGENT (micro-VM): the signing key was outside its box for this run.",
             "This run's records are the agent's own account of its calls; the box's doors (its connections and file "
             "writes) are the record of what it could do.",
-            "Before you run anything the box wrote, review it: code you run on this machine can reach the key."])
+            "Before you run anything the box wrote, review it: code you run on this machine can reach the key.",
+            "NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could "
+            "rewrite it unseen (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).",
+            f"Pinned log key SHA-256 fingerprint: {rep.log_fingerprint}."])
 
 
 class TestVerifier(unittest.TestCase):

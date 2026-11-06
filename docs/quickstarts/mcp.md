@@ -65,6 +65,8 @@ An offline run of all this (a mock model, no API key), with an approval: `python
 VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: <64 hex digits>.
 ```
 
 `VERIFIED` means every record was signed by the log key in `trust.json`, the run is one unbroken chain, and a
