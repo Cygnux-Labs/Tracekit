@@ -30,20 +30,9 @@ body:
       label: How long, and on what
       description: For example, five working days on a macOS laptop; two weeks in CI on Linux.
   - type: textarea
-    id: false-alarms
+    id: notes
     attributes:
-      label: False alarms
-      description: Calls held or denied that shouldn't have been. The rule id, and what the call was doing in your own words.
-  - type: textarea
-    id: misses
-    attributes:
-      label: Misses
-      description: Calls that should have been held and weren't. What the call did, and what you expected Tracekit to do.
-  - type: textarea
-    id: broke
-    attributes:
-      label: Anything that broke
-      description: An error, a hang, a hook that blocked your work, a run that didn't verify. Your OS and `tracekit --version` help.
+      label: Anything you'd like to tell us (optional)
   - type: checkboxes
     id: private
     attributes:

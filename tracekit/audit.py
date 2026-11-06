@@ -10,6 +10,7 @@ import collections
 import hashlib
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -241,7 +242,8 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
               *(["  top: " + ", ".join(f"{r} {report['reasons'][r]} ({k})" if report["reasons"].get(r) else f"{r} ({k})"
                                        for r, k in sorted(stopped.items(), key=lambda x: (-x[1], x[0]))[:3])]
                 if stopped else []),
-              "  to guard from now on: tracekit init --dev --v2"]
+              "  to guard from now on: " + ("tracekit init --dev --v2" if shutil.which("tracekit") else
+                                            "pip install tracekit-ai, then tracekit init --dev --v2")]
     # a transcript the agent wrote can hold control characters: print them as text, as tracekit report does
     return "\n".join(_escaped(line) for line in lines) + "\n"
 

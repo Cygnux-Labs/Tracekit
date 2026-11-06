@@ -67,21 +67,21 @@ class TestFeedback(unittest.TestCase):
         link = out.splitlines()[0]
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query)
         self.assertEqual(query, {"template": ["field-report.yml"], "title": ["False alarm: TK-D004, custom rule"],
-                                 "false-alarms": ["rules: TK-D004, custom rule\ntool: \"Bash\"\npolicy: sha256:"
+                                 "notes": ["rules: TK-D004, custom rule\ntool: \"Bash\"\npolicy: sha256:"
                                                   + "ab" * 32 + "\nverdict: ask (held for a person)\n"
                                                   "why: my own scratch dir"]})
         # the command, its arguments and paths, the run, requester and reason: in neither the link nor what it prints
         for leak in ("rm -rf", "alice", "acme", "evil", "ssh", "aws", "/home", "run-", "tc-", "cleaning", "cd" * 32):
             self.assertNotIn(leak, out)
             self.assertNotIn(leak, urllib.parse.unquote(link))
-        self.assertIn("\ntitle: False alarm: TK-D004, custom rule\nfalse-alarms:\n  rules: TK-D004, custom rule\n", out)
+        self.assertIn("\ntitle: False alarm: TK-D004, custom rule\nnotes:\n  rules: TK-D004, custom rule\n", out)
 
     def test_harmless_reads_no_field_but_the_allowed_ones(self):
         """A field of the approval other than its rule ids, tool and policy hash can't reach the issue, whatever the
         signer adds to it later."""
         title, fields = feedback.false_alarm({"rule_ids": ["TK-A001"], "tool": "Bash", "policy_hash": "sha256:p"})
-        self.assertEqual((title, list(fields)), ("False alarm: TK-A001", ["false-alarms"]))
-        self.assertEqual([line.split(":")[0] for line in fields["false-alarms"].splitlines()],
+        self.assertEqual((title, list(fields)), ("False alarm: TK-A001", ["notes"]))
+        self.assertEqual([line.split(":")[0] for line in fields["notes"].splitlines()],
                          ["rules", "tool", "policy", "verdict"])
 
     def test_the_field_report_names_the_machine_and_the_hooks_and_sends_nothing(self):
@@ -95,13 +95,21 @@ class TestFeedback(unittest.TestCase):
         browser.assert_called_once_with(out.splitlines()[0])
         query = urllib.parse.parse_qs(urllib.parse.urlsplit(out.splitlines()[0]).query)
         self.assertEqual(query["title"], ["Field report"])
-        self.assertEqual(query["agent"], ["Coding-agent hooks installed: codex\n(filed with `tracekit feedback`, for #385)"])
-        self.assertTrue(query["how-long"][0].startswith(f"Tracekit {__version__}, "), query)
+        # the machine and the hooks go in "agent"; "How long, and on what" is the person's to fill in
+        self.assertRegex(query["agent"][0], rf"^Tracekit {re.escape(__version__)}, .+, Python \S+\nCoding-agent hooks "
+                         r"installed: codex\n\(filed with `tracekit feedback`, for #385\)$")
+        self.assertNotIn("how-long", query)
         self.assertNotIn("share", query)   # no dev store in this HOME
         self.assertIn("tracekit audit --share --since 7d", err)
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
             cli.main(["feedback", "--why", "x"])   # --why goes with --harmless
 
+
+    def test_every_field_it_fills_is_one_of_the_forms_and_the_form_asks_for_no_problems(self):
+        with open(os.path.join(REPORTS, "..", "..", ".github", "ISSUE_TEMPLATE", "field-report.yml"), encoding="utf-8") as f:
+            ids = set(re.findall(r"^\s+id: (\S+)$", f.read(), re.M))
+        self.assertLessEqual({"share", "agent", "notes"}, ids)   # field_report's and false_alarm's
+        self.assertFalse({"false-alarms", "misses", "broke"} & ids)   # people share counts; we find the issues
 
     def test_file_writes_a_report_shaped_file_once_and_says_where_it_goes(self):
         with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}):

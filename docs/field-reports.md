@@ -1,9 +1,9 @@
 # Field reports
 
 Every number Tracekit publishes so far comes from us: our own agents, our evals and our demos. A field report is a
-week of your real use, as counts only, posted as a GitHub issue. It tells us what Tracekit held or denied that it
-shouldn't have (false alarms), what it let through that it should have held (misses), and what broke. Each one is a
-measurement from outside our machines, and its false alarms and misses tell us which shipped rules to change.
+week of your real use, as counts only, posted as a GitHub issue or a pull request. You use Tracekit as you always do
+and share the counts; we read from them which shipped rules to change (a rule people approve nearly every time is a
+false alarm). Each one is a measurement from outside our machines.
 
 ## Run Tracekit for a week
 
@@ -46,8 +46,7 @@ section that matched the call too; `not placed` is an engine check, or a rule of
 may or may not be why ([weekly report](viewer.md#weekly-report)). The holds count a call held at once and the agent's
 retry of it, which ran under its approval, as one hold, so the line says how many such asks it counted with their
 held calls. `Holds by rule` reads the signed approval records: a rule people approve nearly every time (TK-A001
-above) is likely a false alarm, and one they reject or let expire is doing its job. It exits 1, as `tracekit report` does, when the store or a run fails to verify: post the report anyway,
-and say so under what broke.
+above) is likely a false alarm, and one they reject or let expire is doing its job. It exits 1, as `tracekit report` does, when the store or a run fails to verify: post the report anyway.
 
 ## Without a hook: replay past transcripts
 
@@ -89,9 +88,7 @@ record to your store.
 
 1. Run one of the commands above and read what it prints.
 2. Open a [field report](https://github.com/Cygnux-Labs/Tracekit/issues/new?template=field-report.yml) and paste it.
-3. Name the agent or framework and the kind of work, then list the false alarms (calls held or denied that shouldn't
-   have been: the rule id and what the call was doing, in your own words), the misses (calls that should have been
-   held), and anything that broke.
+3. Name the agent or framework and the kind of work. Anything else you'd like to tell us is optional.
 
 `tracekit feedback` prints that form's link pre-filled for [#385](https://github.com/Cygnux-Labs/Tracekit/issues/385)
 (your Tracekit, OS, Python, which agents' hooks are installed, and the week's `report --share` counts when the dev

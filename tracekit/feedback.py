@@ -55,8 +55,8 @@ def field_report():
     week = _week()
     return "Field report", {
         **({"share": week} if week else {}),
-        "agent": f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n(filed with `tracekit feedback`, for #385)",
-        "how-long": f"Tracekit {__version__}, {platform.platform(terse=True)}, Python {platform.python_version()}"}
+        "agent": f"Tracekit {__version__}, {platform.platform(terse=True)}, Python {platform.python_version()}\n"
+                 f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n(filed with `tracekit feedback`, for #385)"}
 
 
 # a report file's lines outside its counts block (tests/test_feedback.py checks each file in docs/field-reports/)
@@ -85,7 +85,7 @@ def false_alarm(x, why=None):
     rules = list(dict.fromkeys(r if r in ours else "custom rule" for r in x["rule_ids"]))
     lines = [f"rules: {', '.join(rules)}", f"tool: {json.dumps(x['tool'])}", f"policy: {x['policy_hash']}",
              "verdict: ask (held for a person)", *([f"why: {' '.join(why.split())}"] if why and why.strip() else [])]
-    return f"False alarm: {', '.join(rules)}", {"false-alarms": "\n".join(lines)}
+    return f"False alarm: {', '.join(rules)}", {"notes": "\n".join(lines)}
 
 
 def main(argv=None):

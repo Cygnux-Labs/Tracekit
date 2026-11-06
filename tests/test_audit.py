@@ -224,6 +224,7 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no such folder", err)
 
+    @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")   # installed: init is on PATH
     def test_the_text_ends_with_the_weeks_summary(self):
         """The report's last lines say the week in one read: calls, held and blocked, the rules that stopped them most
         (a flag is no stop) and how to guard from now on."""
@@ -242,6 +243,13 @@ class TestAudit(unittest.TestCase):
             "\nyour agent's transcripts: 1 tool call; Tracekit would have held 0 and blocked 0\n"
             "  to guard from now on: tracekit init --dev --v2\n"))
         self.assertNotIn("your agent's", _run(str(self.root), "--json")[1] + _run(str(self.root), "--share")[1])
+
+    def test_without_tracekit_on_path_the_guard_line_says_to_install_it(self):
+        """`uvx --from tracekit-ai tracekit audit` runs with no tracekit on PATH: init alone would not be found."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        with mock.patch("shutil.which", return_value=None):
+            out = _run(str(self.root))[1]
+        self.assertTrue(out.endswith("\n  to guard from now on: pip install tracekit-ai, then tracekit init --dev --v2\n"))
 
     def test_the_default_folder_is_in_claude_config_dir_when_it_is_set(self):
         _write_jsonl(self.root / "config" / "projects" / "p" / "s.jsonl", [_call("Bash", {"command": "rm -rf /"})])
