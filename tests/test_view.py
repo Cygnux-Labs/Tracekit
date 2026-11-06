@@ -245,7 +245,9 @@ class Translate(unittest.TestCase):
             v2rec(4, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c6"))
         req, ans, used = rows[1:]
         self.assertEqual((req["tape"], req["title"]), ("HOLD", "APPROVAL REQUESTED · create_refund"))
-        self.assertEqual(req["text"], "requested by uid:501 · rules TK-M001 sending money · expires 18:00:34 UTC")
+        # the expiry is in the row's v2 (the page says it in local time), not in the tape's text, which said it in UTC
+        self.assertEqual(req["text"], "requested by uid:501 · rules TK-M001 sending money")
+        self.assertEqual(req["v2"]["expires"], "2026-10-10T18:00:34.000000Z")
         self.assertEqual((req["v2"]["approval"], req["v2"]["tool_use_id"], req["v2"]["approval_id"]),
                          ("requested", "c6", "apr-1"))
         self.assertEqual((ans["tape"], ans["severity"], ans["title"]), ("APPROVE", "high", "APPROVED · create_refund"))
@@ -465,6 +467,36 @@ class Translate(unittest.TestCase):
         self.assertEqual((grant["v2"]["tool_use_id"], "held" in grant["v2"]), ("c2", False))
         self.assertEqual(self.feed(*self.HELD, v2rec(4, "ext", {"name": "pcm.grant", "approval_id": "apr-1"}))[-1]
                          ["v2"]["tool_use_id"], "c1")
+
+    def test_a_retry_with_the_held_calls_own_id_is_that_call_not_another(self):
+        """LangGraph's retry sends the held call again with its id, and its consume names no `held`: the review counted
+        it as a fourth call of three and a second decision of the held call."""
+        recs = [*self.HELD, self.approved(4),
+                v2rec(5, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                             "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}),
+                v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1"),
+                v2rec(7, "tool.result", {"tool_use_id": "c1", "ok": True}, tool_call_id="c1"),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual((dict(rv["decisions"]), rv["retries"], dict(rv["permissions"]), dict(rv["holds"])),
+                         ({"ask": 1}, 1, {"approved · ran": 1}, {"approved · ran": 1}))
+
+    def test_a_refused_use_is_the_call_of_its_own_attempt(self):
+        """Attempt 0 approved, attempt 1 asked with its own request, then attempt 0's approval was refused for changed
+        arguments: the review filed the refusal under the id's latest call (attempt 1) while the page and HORIZON file it
+        under the call of the attempt that tried it."""
+        def rec(seq, typ, data, attempt=None):
+            return v2rec(seq, typ, data, tool_call_id="c1", **({} if attempt is None else {"attempt": attempt}))
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}), rec(2, "policy.decision", ask, 0),
+                rec(3, "approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, 0),
+                rec(4, "approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve"}),
+                rec(5, "policy.decision", ask, 1),
+                rec(6, "approval.request", {"approval_id": "Y", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, 1),
+                rec(7, "approval.binding_mismatch", {"tool_use_id": "c1", "approval_id": "X"}, 0),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual(dict(rv["permissions"]), {"refused: arguments changed": 1, "not answered": 1})
 
     def test_a_use_refused_only_for_its_approvals_state_changes_no_outcome(self):
         """A second use of an approval whose call ran turned "approved · ran" into "refused" (TK-APPROVAL-CONSUMED); an
@@ -1070,7 +1102,7 @@ class View(unittest.TestCase):
         post = next(r for r in rows if r["event"] == "PostToolUse")
         effect = next(r for r in rows if r.get("v2", {}).get("effect", {}).get("kind") == "net")
         out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS",
-                                  "subject", "rel", "ingest", "joinEgress", "whyRef", "netEffects", "effectHow", "dict",
+                                  "subject", "rel", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest", "joinEgress", "whyRef", "netEffects", "effectHow", "dict",
                                   "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
                                   "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"], f"""
             let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
