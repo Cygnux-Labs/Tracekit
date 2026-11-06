@@ -539,7 +539,8 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 - each entry's data is exactly its stated size and matches its CRC-32.
 
 `tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file), and refuses a bundle past the
-zip limits above, which no verifier would read.
+zip limits above, which no verifier would read. It dates every entry 1980-01-01 00:00, so a bundle shows nothing of the
+exporter's clock or time zone and the same files export to the same bytes; verifiers don't read entry dates.
 
 **A run in parts** (from 1.4.0). A run whose records fit 64 MiB is one file, `runs/<id>.jsonl`, as before. A longer
 one is written as `runs/<id>.part-0001.jsonl`, `runs/<id>.part-0002.jsonl`, ...: the run's file cut between records,
