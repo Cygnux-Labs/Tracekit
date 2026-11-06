@@ -203,7 +203,7 @@ def main(argv=None):
 # `tracekit help` and a bare `tracekit`: each command under what a person runs it for (tests/test_cli.py checks that
 # every command is in exactly one group), then what Tracekit does that is not a command of its own
 _GROUPS = (
-    ("Start here", "init up down status doctor demo"),
+    ("Start here", "init up down status doctor demo feedback"),
     ("See what agents did", "view last report audit why graph cost analyze"),
     ("Approvals", "approvals pending approve reject"),
     ("Evidence", "export verify verify-model pcm"),
