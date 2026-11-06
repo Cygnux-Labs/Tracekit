@@ -797,7 +797,9 @@ def review(records, rep, verdict):
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0, "retries": 0,
            "state": "open", "first": {}}
+    from .why.import_v2 import other_args
     perms, calls, asked = {}, {}, {}   # tool_use_id -> its outcome; approval_id -> its tool_use_id; held call -> (tool, attempt)
+    other = other_args(records)   # decisions whose arguments differ from the approved call's
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -811,7 +813,7 @@ def review(records, rep, verdict):
             if d.get("parent_run"):   # the run that started this one: panel 1 shows it under its parent
                 out["parent"] = d["parent_run"]
         elif t == "policy.decision" and d.get("decision") == "ask" and perms.get(d.get("tool_use_id")) == "approved" \
-                and asked.get(d.get("tool_use_id")) == (d.get("tool"), e.get("attempt")):
+                and asked.get(d.get("tool_use_id")) == (d.get("tool"), e.get("attempt")) and e.get("run_seq") not in other:
             out["retries"] += 1   # the agent's retry of the approved call, unused, with its id (LangGraph): that call
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1

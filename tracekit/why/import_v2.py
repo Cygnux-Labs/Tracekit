@@ -97,6 +97,20 @@ def cite(rec: Dict[str, Any]) -> Dict[str, Any]:
     return c
 
 
+def other_args(recs: List[Dict[str, Any]]) -> set:
+    """The run_seqs of decisions whose use of an approval the signer refused for changed arguments (an
+    approval.binding_mismatch before the call's next decision): another call under the approved call's id. A record
+    holds its arguments only as a commitment salted per decision, so the signer's check is what says they changed."""
+    out, last = set(), {}
+    for r in recs:
+        t, d = r["event"]["type"], r["event"]["data"]
+        if t == "policy.decision":
+            last[d.get("tool_use_id")] = r["event"]["run_seq"]
+        elif t == "approval.binding_mismatch" and d.get("tool_use_id") in last:
+            out.add(last[d["tool_use_id"]])
+    return out
+
+
 def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     """tool_call_id -> {"decision", "result": records, "approval": {decision, approver, self_approved}}; an approval
     that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...). The agent's retry
@@ -104,16 +118,18 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     the held call, blocked at once, `ran_by`, the retry."""
     calls: Dict[str, Dict[str, Any]] = {}
     asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
-    used = set()   # calls whose approval a use consumed
+    used, other = set(), other_args(recs)   # calls whose approval a use consumed; decisions with changed arguments
     for r in recs:
         t, d = r["event"]["type"], r["event"]["data"]
         if t == "policy.decision":
             was = calls.get(d["tool_use_id"]) or {}
             calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
-            # the agent's retry of the approved call with its id (LangGraph) asks again for the same tool and attempt while
-            # the approval stands unused: it is that call, with its approval; any other decision is a call of its own
+            # the agent's retry of the approved call with its id (LangGraph) asks again for the same tool, attempt and
+            # arguments while the approval stands unused: it is that call, with its approval; any other decision is a
+            # call of its own
             if d["decision"] == "ask" and (was.get("approval") or {}).get("decision") == "approve" \
-                    and d["tool_use_id"] not in used and (was["decision"]["event"]["data"]["tool"],
+                    and d["tool_use_id"] not in used and r["event"]["run_seq"] not in other \
+                    and (was["decision"]["event"]["data"]["tool"],
                                                           was["decision"]["event"].get("attempt")) == \
                     (d["tool"], r["event"].get("attempt")):
                 calls[d["tool_use_id"]]["approval"] = was["approval"]

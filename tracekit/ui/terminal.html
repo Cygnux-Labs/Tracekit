@@ -3556,8 +3556,20 @@
     // call's approval records). Any other decision under the id (deny, flag, allow, a new attempt) is a call of its own.
     // An approved call runs only by using its approval (`used`)
     const used = answers => answers.some(x => x.v2.approval === "consumed");
-    const sameRetry = (r, held, answers = []) => r.event === "PreToolUse" && r.v2?.decision === "ask" && held?.tool_name === r.tool_name
-      && held.v2?.attempt === r.v2.attempt && answers.filter(x => x.v2.approval in ANSWER).pop()?.v2.approval === "approve" && !used(answers);
+    // `other`: decisions with changed arguments (otherArgs)
+    const sameRetry = (r, held, answers = [], other) => r.event === "PreToolUse" && r.v2?.decision === "ask" && held?.tool_name === r.tool_name
+      && held.v2?.attempt === r.v2.attempt && answers.filter(x => x.v2.approval in ANSWER).pop()?.v2.approval === "approve" && !used(answers) && !other?.has(r);
+    // the decisions in `rows` whose use of an approval the signer refused for changed arguments (binding_mismatch before
+    // the call's next decision): another call under the approved call's id. A record holds its arguments only as a
+    // commitment salted per decision, so the signer's check is what says they changed (why/import_v2.other_args)
+    function otherArgs(rows) {
+      const out = new Set(), last = new Map();
+      for (const r of rows) {
+        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id);
+        if (r.event === "PreToolUse") last.set(k, r); else if (r.v2?.approval === "binding_mismatch" && last.has(k)) out.add(last.get(k));
+      }
+      return out;
+    }
     // a call held for a person (decided ask), the agent's retry of one counted with it: DESK's HELD, HORIZON's HOLDS
     const heldCall = a => a.v2?.decision === "ask" && !a.retryOf;
     // a run's calls held for a person, as its review counts them (view.review's holds)
@@ -3613,11 +3625,12 @@
       }
       if (ev === "PreToolUse") {
         // the agent's retry of an approved call with its own id (sameRetry): a row under that call, which its result and the
-        // approval's use are, not a call of its own
+        // approval's use are, not a call of its own; until the signer refuses that use for changed arguments (below)
         const was = r.v2 ? S.actions.get(tuid(r)) : null;
-        if (sameRetry(r, was?.pre, was?.approvals)) {
+        if (!r.other && sameRetry(r, was?.pre, was?.approvals)) {
           const row = pushTape({ ts: r.ts, agent: was.agent, ev: "HOLD", text: "the agent sent this call again, with its id", rec: r, under: was });
           (was.subs ||= []).push(row);
+          was.again = row;
           return;
         }
         const a = agentOf(r), pol = r.policy || {};
@@ -3693,7 +3706,14 @@
       if (ev === "tk_note") { pushTape({ ts: r.ts, agent: agentOf(r), ev: r.tape, text: r.title + " · " + r.text, rec: r }); return; }
       if (ev === "tk_alert") {
         // a verifier report of a run with no record shown (it failed) is no agent: no lane, not counted
-        const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" }, act = r.v2?.approval && S.actions.get(tuid(r));
+        const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" };
+        let act = r.v2?.approval && S.actions.get(tuid(r));
+        // the signer refused the retry's use for changed arguments: that decision was another call, under the same id
+        if (r.v2?.approval === "binding_mismatch" && act?.again && !used(act.approvals)) {
+          const row = act.again;
+          act.again = null; act.subs = act.subs.filter(x => x !== row);
+          row.rec.other = true; ingest(row.rec); act = S.actions.get(tuid(r));
+        }
         if (act) act.approvals.push(r);
         // the agent's retry of a held call, using that call's approval: the held call's answer is the retry's, and the
         // held call ran as its retry
@@ -4145,11 +4165,11 @@
     function hzData() {
       const key = [ALL.length, ALL[ALL.length - 1], RUNS.size, chainState.ok];
       if (key.every((x, i) => x === hzKey[i])) return hzD;
-      const ans = new Map(), retry = new Map(), again = new Set(), held = new Map(), raw = [], places = dict(), parent = dict(), cwds = new Set();
+      const ans = new Map(), retry = new Map(), again = new Set(), held = new Map(), other = otherArgs(ALL), raw = [], places = dict(), parent = dict(), cwds = new Set();
       for (const r of ALL) {
         // the agent's retry with an approved call's id (sameRetry): no move of its own
         const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), h = held.get(k);
-        if (sameRetry(r, h?.rec, h?.answers)) again.add(r);
+        if (sameRetry(r, h?.rec, h?.answers, other)) again.add(r);
         else if (r.event === "PreToolUse" && r.v2) held.set(k, { rec: r, answers: [] });
         else if (r.v2?.approval) h?.answers.push(r);
         if (r.v2?.approval in ANSWER) ans.set(r.session_id + "|" + r.v2.tool_use_id, r.v2.approval);
@@ -5062,12 +5082,12 @@
     // its approval, out: [class, words], tabs}], in their order, newest first. A retry is its held call's row, not one of
     // its own (view.review counts them once)
     function permOf(recs) {
-      const by = new Map(), ended = new Set(), rows = [];
+      const by = new Map(), ended = new Set(), rows = [], other = otherArgs(recs);
       for (const r of recs) {
         if (r.analysis) continue;
         const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), held = r.v2?.held && by.get(r.session_id + "|" + r.v2.held);
         if (r.event === "SessionEnd") ended.add(r.session_id);
-        else if (sameRetry(r, by.get(k)?.rec, by.get(k)?.answers)) continue;   // the agent's retry with the call's id: its row
+        else if (sameRetry(r, by.get(k)?.rec, by.get(k)?.answers, other)) continue;   // the agent's retry with the call's id: its row
         else if (r.event === "PreToolUse" && r.v2 && r.v2.decision !== "allow") { const row = { rec: r, answers: [] }; by.set(k, row); rows.push(row); }
         else if (r.event === "PostToolUse" && by.has(k)) by.get(k).post = r;
         else if (r.v2?.approval && by.has(k)) {

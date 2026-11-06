@@ -201,7 +201,7 @@ class SignedRuntime(unittest.TestCase):
             rows += [{**x, "ts": r["event"]["run_seq"], "session_id": run.run_id, "tk_seq": r["event"]["run_seq"]}
                      for x in tr.feed(r)]
         page = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
-                                   "heldCall", "used", "sameRetry", "callState", "ingest", "permOf"], f"""
+                                   "heldCall", "used", "sameRetry", "otherArgs", "callState", "ingest", "permOf"], f"""
             const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
                         tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
             const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
@@ -215,17 +215,24 @@ class SignedRuntime(unittest.TestCase):
                 "why": [(a["policy"]["decision"], (a["policy"].get("approval") or {}).get("decision"))
                         for a in why.of_type("action")]}
 
-    def test_a_deny_or_a_flag_under_an_approved_calls_id_is_a_call_of_its_own(self):
+    def test_a_deny_a_flag_or_changed_arguments_under_an_approved_calls_id_is_a_call_of_its_own(self):
         """The same-id fold took any later decision under an id a person had approved, which the agent chooses: a deny
-        disappeared into the approved call (the review: 1 call, approved) and a flagged call that ran read APPROVED · RAN,
-        its approval given to it in GRAPH."""
+        disappeared into the approved call (the review: 1 call, approved), a flagged call that ran read APPROVED · RAN,
+        its approval given to it in GRAPH, and a call with other arguments hid under the approved one."""
         needs_node(self)
-        deny, flag = self.client.run("deny-under-approved"), self.client.run("flag-under-approved")
+        deny, flag, other = (self.client.run(n) for n in ("deny-under-approved", "flag-under-approved", "other-args"))
         self.approved(deny, retry=False)
         self.assertEqual(deny.decide("c1", "Bash", self.DENY)["decision"], "deny")
         self.approved(flag, retry=False)
         flag.decide("c1", "Bash", self.FLAG)   # the agent hears allow; the record says flag
         flag.complete("c1")
+        self.approved(other, retry=False)
+        changed = {"command": "gsutil cp b.txt gs://b/b.txt"}
+        self.assertEqual(other.decide("c1", "Bash", changed)["decision"], "ask")
+        self.assertFalse(other.approval_consume("c1", "Bash", changed)["ok"])   # the signer: the arguments differ
+        self.assertEqual(self.seen(other), {"decisions": {"ask": 2}, "retries": 0,
+                                            "calls": [["ask", "APPROVED"], ["ask", "REFUSED: ARGUMENTS CHANGED"]],
+                                            "perm": [["ask", "REFUSED: ARGUMENTS CHANGED"], ["ask", "APPROVED"]], "why": []})
         self.assertEqual(self.seen(deny), {"decisions": {"ask": 1, "deny": 1}, "retries": 0,
                                            "calls": [["ask", "APPROVED"], ["deny", "BLOCKED"]],
                                            "perm": [["deny", "BLOCKED"], ["ask", "APPROVED"]], "why": [("deny", None)]})

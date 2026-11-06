@@ -776,7 +776,7 @@ class Permissions(unittest.TestCase):
                 hold(13, "c6"), answer(14, "c6", "requested", approval_id="apr-6"),
                 {**hold(15, "c7"), "v2": {"decision": "allow"}}, {**hold(16, "c8"), "analysis": True},
                 hold(17, "c9", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 18}]
-        out = json.loads(page_js(["ANSWER", "permRows", "used", "sameRetry", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "permRows", "used", "sameRetry", "otherArgs", "permOf"], f"""
             const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
             const rows = r => r.map(x => [x.rec.tool_use_id, x.tabs.filter(Boolean).join(" "), x.out[1], x.ans?.v2.approver ?? null,
                                           x.req?.v2.approval_id ?? null]);
@@ -811,7 +811,7 @@ class Permissions(unittest.TestCase):
                                                       "rule_ids": ["TK-APPROVAL-REJECTED"]}, run=run))
             recs += [x for r in mine for x in tr.feed(r)]
             reviewed.append(dict(view.review(mine, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]))
-        out = json.loads(page_js(["ANSWER", "permRows", "used", "sameRetry", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "permRows", "used", "sameRetry", "otherArgs", "permOf"], f"""
             const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
             process.stdout.write(JSON.stringify(permRows().map(x => [x.rec.session_id, x.out[1]])));"""))
         self.assertEqual(reviewed, [{"rejected": 1}, {"revoked": 1}])
@@ -850,7 +850,7 @@ class Permissions(unittest.TestCase):
         the live view showed nothing, in its views or PERMISSIONS."""
         needs_node(self)
         rows = [{**hold(5, "c1"), "v2": {"decision": "deny", "rules": [{"id": "T-DENY", "reason": "rm"}]}}]
-        out = json.loads(page_js(["ANSWER", "loadRun", "permRows", "used", "sameRetry", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "loadRun", "permRows", "used", "sameRetry", "otherArgs", "permOf"], f"""
             const LOADED = new Map(), RUNS = new Map([["r1", {{ verdict: "verified", records: 9, tenant: "default", permissions: {{ blocked: 1 }} }}],
                                                       ["r2", {{ verdict: "failed", records: 4 }}]]);
             const ALL = [], asked = [], seen = [], document = {{ URL: "http://127.0.0.1/" }};
@@ -1471,7 +1471,7 @@ class Horizon(unittest.TestCase):
             "bytes_out": 0, "bytes_in": 20, "connections": 0,
             "first_ts": "2026-10-10T17:00:01Z", "last_ts": "2026-10-10T17:00:02Z"}, run=run))]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map([["verified", {{ verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             process.stdout.write(JSON.stringify(hzData().ev.map(e => [e.run, e.at, e.act, e.gr])));"""))
@@ -1499,7 +1499,7 @@ class Horizon(unittest.TestCase):
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1540,7 +1540,7 @@ class Horizon(unittest.TestCase):
     def hz_cap(self, recs):
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1561,7 +1561,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData", "hzSecs"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData", "hzSecs"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1574,7 +1574,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(i, "w", 100 + i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData", "hzChain"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData", "hzChain"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true, n: 0 }}, STOPPED = "";
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1595,7 +1595,7 @@ class Horizon(unittest.TestCase):
                 hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
                                   "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
@@ -1830,7 +1830,7 @@ class HorizonZoom(unittest.TestCase):
     stage drawn only when something changed."""
 
     DATA = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData"]
+            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"]
     # HZ comes with HZMAX: its line ends in a comment, so page_js takes the next line, HZ's, with it
     DRAW = ["HZACT", "HZSYM", "HZWORST", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW, "hzZoom", "hzAim", "hzFlyTo",
             "hzFocus"]
@@ -2330,7 +2330,7 @@ class InvisibleCharacters(unittest.TestCase):
         req = {"event": "tk_alert", "session_id": "r1", "tk_seq": 8, "ts": 1760000001,
                "v2": {"tool_use_id": "c1", "approval": "requested", "approval_id": "apr-1"}}
         out = json.loads(page_js(["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
-                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "sameRetry", "permOf", "heldRows", "renderApprovalsPage"], f"""
+                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "sameRetry", "otherArgs", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req])}, RUNS = new Map(), html = {{}}, el = {{}};
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
@@ -2689,7 +2689,7 @@ class PlainPages(unittest.TestCase):
         older = {**done, "session_id": "e1", "ts": 1759990000}   # read later: a fresh load
         approve = {**answer, "session_id": "e1", "ts": 1759990001, "v2": {"tool_use_id": "c1", "approval": "approve"}}
         out = json.loads(page_js(["esc", "j", "fmtT", "fmtD", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
-                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "sameRetry", "permOf", "heldRows", "renderApprovalsPage"], f"""
+                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "sameRetry", "otherArgs", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req, done, answer, older, approve])}, RUNS = new Map(), html = {{}}, el = {{}}, TZ = "GMT+5:30";
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
@@ -2762,7 +2762,7 @@ class PlainPages(unittest.TestCase):
 GRAPH_FNS = ["dict", "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE", "whyRef",
              "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"]
 APPROVALS_FNS = ["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting", "OPENHOLD", "waitingElsewhere",
-                 "waitingCount", "used", "sameRetry", "permOf", "heldRows", "renderApprovalsPage"]
+                 "waitingCount", "used", "sameRetry", "otherArgs", "permOf", "heldRows", "renderApprovalsPage"]
 
 
 def retried(run, final=True, retry=True, again="c2"):
@@ -2799,7 +2799,7 @@ class ApproveThenRetry(unittest.TestCase):
         needs_node(self)
         recs = retried("fin") + retried("open", final=False)
         out = json.loads(page_js(["tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended", "heldCall",
-                                  "used", "sameRetry", "callState", "ingest", "wfBars", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
+                                  "used", "sameRetry", "otherArgs", "callState", "ingest", "wfBars", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
             const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
                         tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
             const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
@@ -2831,7 +2831,7 @@ class ApproveThenRetry(unittest.TestCase):
         needs_node(self)
         recs = retried("lg", again="c1")
         out = json.loads(page_js(["tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended", "heldCall",
-                                  "used", "sameRetry", "callState", "ingest", "OPENHOLD", "plural", "runSentence", "permOf", "toastOf"], f"""
+                                  "used", "sameRetry", "otherArgs", "callState", "ingest", "OPENHOLD", "plural", "runSentence", "permOf", "toastOf"], f"""
             const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
                         tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
             const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
@@ -2853,7 +2853,7 @@ class ApproveThenRetry(unittest.TestCase):
         self.assertEqual(out["perm"], [["c1", "APPROVED · RAN"]])
         self.assertEqual(out["toasts"], 1)   # the hold's, not the retry's
         hz = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
-                                 "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData"], f"""
+                                 "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map([["lg", {{ id: "lg", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -2879,7 +2879,7 @@ class ApproveThenRetry(unittest.TestCase):
         """HORIZON drew the retry that ran as held (◯) and its HUD counted HOLDS by held marks, DESK's HELD by decisions."""
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
-                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "hzData"], f"""
+                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
             const ALL = {json.dumps(retried("fin"))}, RUNS = new Map([["fin", {{ id: "fin", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
