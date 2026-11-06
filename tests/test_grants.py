@@ -2,6 +2,7 @@
 and the exact reason it holds the rest, the attacks it must hold (the agent issuing, widening or extending a grant,
 amounts in other units, payee look-alikes, totals split across calls, an expired or revoked grant), its totals across a
 restart, the operator's ceiling, and what the verifier re-checks in the bundle, forged ones included."""
+import importlib.util
 import itertools
 import json
 import os
@@ -617,7 +618,7 @@ class TestPolicy(unittest.TestCase):
                  "tracekit grant " + " -x" * 21800, "tracekit grant --signer s" + " -y" * 21800]
         pol, errors = policy_compile.build(svc.DEFAULT_POLICY)   # the dev pack, the laptop default
         self.assertEqual(errors, [])
-        for backend in ("re2", "regex"):
+        for backend in ("re2", "regex") if importlib.util.find_spec("re2") else ("regex",):
             e = Engine(pol, backend)
             for line in lines:
                 with self.subTest(backend=backend, line=line[:60]):
