@@ -38,7 +38,11 @@ class Help(unittest.TestCase):
         self.assertIn("  report          what the agents did this week, on one page, from the v2", lines)
         self.assertIn("  why             causal investigation and replay of multi-agent runs", lines)
         self.assertIn("                  (experimental)", lines)
+        self.assertIn("held or denied; read-only, not a signed record (experimental)", " ".join(out.split()))
         self.assertEqual(lines[-1], "`tracekit help <command>` shows a command's options.")
+
+    def test_the_v1_commands_are_in_a_legacy_group_of_their_own(self):
+        self.assertEqual(dict(cli._GROUPS)["Legacy (v1)"].split(), ["daemon", "observe", "ingest", "otel", "proxy"])
 
     def test_bare_tracekit_prints_the_overview(self):
         self.assertEqual(run([]), run(["help"]))
@@ -50,6 +54,15 @@ class Help(unittest.TestCase):
                 self.assertEqual(code, 0)
                 self.assertIn(f"usage: tracekit {name}", out)
                 self.assertEqual((code, out, err), run([name, "--help"]))
+        self.assertIn("Every command, grouped by what it is for", run(["help", "help"])[1])
+
+    def test_help_on_a_moved_command_says_where_it_went(self):
+        for name in cli._MOVED:
+            with self.subTest(name=name):
+                code, out, err = run(["help", name])
+                self.assertEqual((code, out, err), run([name]))
+                self.assertEqual(code, 2)
+                self.assertIn("moved to a separate package", err)
 
     def test_an_unknown_command_lists_the_names_and_exits_2(self):
         code, out, err = run(["help", "nosuch"])
