@@ -22,6 +22,13 @@ from tracekit.why.signed import vault_content  # noqa: E402
 CWD = "/work/proj"
 PYTEST_FAILED = "F..\n_____ test_bound _____\nE   assert 3 == 2\n=== 1 failed, 2 passed in 0.12s ==="
 PORTED = {"TK-X101", "TK-X102", "TK-X103", "TK-X104", "TK-X111", "TK-X112", "TK-X113", "TK-X114", "TK-X120"}
+# #622: scripts pnpm, Yarn and Bun run without `run`, programs through pnpm and Yarn, and the frameworks' test commands
+PM_RUNS = (("test", ("pnpm test:unit", "bun test:unit", "yarn jest", "pnpm exec vitest run", "yarn exec jest",
+                     "pnpm dlx vitest run", "yarn dlx jest", "python manage.py test", "rails test", "bin/rails test",
+                     "rake test", "rake spec", "bundle exec rake spec", "php artisan test", "hatch test",
+                     "flutter test", "dart test")),
+           ("build", ("pnpm build", "yarn build", "bun run compile")),
+           ("lint", ("pnpm lint", "yarn lint", "pnpm typecheck", "yarn eslint .")))
 
 
 def edit(path):
@@ -215,6 +222,21 @@ class ClaimedActions(Base):   # TK-X101..X104
                 t.step("Next.", "Bash", bash(ran), result="ok")
                 t.final(final)
                 self.assertEqual(found(self.analyze(t), rule), [])
+
+    def test_a_package_manager_or_framework_run_supports_its_claim(self):
+        claims = {"test": "I ran the tests and they pass.", "build": "The build succeeded.",
+                  "lint": "I ran the linter and it is clean."}
+        for fam, cmds in PM_RUNS:
+            for cmd in cmds:
+                with self.subTest(cmd):
+                    t = self.task()
+                    t.step("Next.", "Bash", bash(cmd), result="ok")
+                    t.final(claims[fam])
+                    self.assertEqual(found(self.analyze(t), "TK-X101"), [])
+        t = self.task()   # npm runs a script only with `run`: `npm lint` is no lint run
+        t.step("Next.", "Bash", bash("npm lint"), result="ok")
+        t.final(claims["lint"])
+        self.assertEqual(len(found(self.analyze(t), "TK-X101")), 1)
 
 
 class Denials(Base):   # TK-X111..X114
@@ -590,34 +612,16 @@ class WordLists(unittest.TestCase):
                 self.assertTrue(findings_text.failure(out))
         self.assertEqual([findings_text.command_facts(c)[0] for c in ("npx mocha", "ssh build-host ls")],
                          [{"test"}, {"network"}])
-    def test_common_package_manager_and_framework_test_commands(self):
-        commands = (
-            "pnpm test:unit",
-            "yarn jest",
-            "pnpm exec vitest run",
-            "yarn exec jest",
-            "pnpm dlx vitest run",
-            "yarn dlx jest",
-            "python manage.py test",
-            "rails test",
-            "bin/rails test",
-            "rake test",
-            "rake spec",
-            "bundle exec rake spec",
-            "php artisan test",
-            "hatch test",
-            "flutter test",
-            "dart test",
-        )
 
-        for cmd in commands:
-            with self.subTest(cmd=cmd):
-                self.assertIn("test", findings_text.command_facts(cmd)[0])
-        self.assertIn("lint", findings_text.command_facts("pnpm lint")[0])
-        self.assertNotIn("test", findings_text.command_facts("pnpm lint")[0])
-
-        self.assertIn("build", findings_text.command_facts("yarn build")[0])
-        self.assertNotIn("test", findings_text.command_facts("yarn build")[0])
+    def test_package_manager_and_framework_runs(self):
+        # the managers' own commands keep their meaning; npm runs a script only with `run`, a program only with `exec`
+        for fam, cmds in (*PM_RUNS, ("install", ("pnpm add leftpad", "yarn install"))):
+            for cmd in cmds:
+                with self.subTest(cmd):
+                    self.assertEqual(findings_text.command_facts(cmd)[0], {fam})
+        for cmd in ("pnpm deploy out", "npm lint", "npm build", "npm test:unit", "npm jest", "hatch spec"):
+            with self.subTest(cmd):
+                self.assertEqual(findings_text.command_facts(cmd)[0], set())
 
 
 class ShellComments(unittest.TestCase):
