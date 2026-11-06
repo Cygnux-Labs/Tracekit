@@ -51,7 +51,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "openshell-middleware": "openshell", "follow": "follow",
               "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli",
               "report": "report", "audit": "audit",
-              "verify-model": "model_receipt"}  # subcommands with their own parsers
+              "verify-model": "model_receipt", "feedback": "feedback"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "a2a-gateway": "the A2A gateway",
@@ -254,6 +254,9 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
                        "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("feedback", help="print a pre-filled GitHub issue, a field report or (--harmless ID) a false "
+                       "alarm, and exactly what it holds; sends nothing (--open opens it in your browser)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("verify-model", help="check a model file against the receipt a coding-agent hook recorded when "
                        "a call wrote it, and name the tensors that changed: `verify-model OLD NEW --bundle B --run R "
@@ -1140,7 +1143,8 @@ def _stop_lines(c, x):
                "to refuse it" + ("" if c.signer else "; in the agent's Claude Code session, with a leading `! `")]
               if x["state"] == "requested" else []),
             f"record      tracekit view --approval {x['approval_id']}"
-            + (" (with the --config or --data-dir of this signer)" if c.signer else "")]
+            + (" (with the --config or --data-dir of this signer)" if c.signer else ""),
+            f"a false alarm? tracekit feedback --harmless {x['approval_id']}{cmd.removeprefix('tracekit approvals')}"]
 
 
 def _approvals(a):

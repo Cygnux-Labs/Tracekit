@@ -224,6 +224,25 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("no such folder", err)
 
+    def test_the_text_ends_with_the_weeks_summary(self):
+        """The report's last lines say the week in one read: calls, held and blocked, the rules that stopped them most
+        (a flag is no stop) and how to guard from now on."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "rm -rf /"}),
+                                             _call("Bash", {"command": "terraform destroy -auto-approve"}),
+                                             _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=1),
+                                             _call("Bash", {"command": "ls"})])
+        _, out, _ = _run(str(self.root), "--since", "7d")
+        self.assertTrue(out.endswith(
+            "\n\nyour agent's week: 4 tool calls; Tracekit would have held 2 and blocked 1\n"
+            "  top: TK-A001 destroying a deployment, database or volume (2), TK-D004 recursive delete of root or home (1)\n"
+            "  to guard from now on: tracekit init --dev --v2\n"), out)
+        self.assertIn("\nyour agent's 2 days: 4 tool calls;", _run(str(self.root), "--since", "2d")[1])
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        self.assertTrue(_run(str(self.root))[1].endswith(
+            "\nyour agent's transcripts: 1 tool call; Tracekit would have held 0 and blocked 0\n"
+            "  to guard from now on: tracekit init --dev --v2\n"))
+        self.assertNotIn("your agent's", _run(str(self.root), "--json")[1] + _run(str(self.root), "--share")[1])
+
     def test_the_default_folder_is_in_claude_config_dir_when_it_is_set(self):
         _write_jsonl(self.root / "config" / "projects" / "p" / "s.jsonl", [_call("Bash", {"command": "rm -rf /"})])
         home = self.root / "home"   # no .claude: a fallback to ~/.claude/projects finds nothing

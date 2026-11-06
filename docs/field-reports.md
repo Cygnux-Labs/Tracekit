@@ -88,6 +88,12 @@ record to your store.
    have been: the rule id and what the call was doing, in your own words), the misses (calls that should have been
    held), and anything that broke.
 
+`tracekit feedback` prints that form's link pre-filled for [#385](https://github.com/Cygnux-Labs/Tracekit/issues/385)
+(your Tracekit, OS, Python, which agents' hooks are installed, and the week's `report --share` counts when the dev
+signer has a store) and exactly what the link holds; it sends nothing, and `--open` opens it in your browser. For one
+false alarm, `tracekit feedback --harmless <approval-id> [--why "one line"]` fills in the held call's rule ids, tool
+name, policy hash and verdict, never its command, arguments or paths (`tracekit approvals show` prints the line).
+
 A way an agent could get a call past the policy is a security problem: report it privately, as
 [SECURITY.md](../SECURITY.md) says, not in a field report.
 
