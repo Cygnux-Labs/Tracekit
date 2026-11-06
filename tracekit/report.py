@@ -160,15 +160,16 @@ def _placed(tr, d):
             for rule in tr.rules(d) or [{"id": "no rule", "reason": ""}]]
 
 
-def _hold_rules(tr, rules, held, waits, outcomes):
-    """Each hold (`outcomes`: tool_use_id -> what it came to, view.review's) into `rules` by rule, as an "ask" row:
-    how many it held, how many its first answer (`waits`, _tally's) approved, a person's or the run's own user's (an
-    agent's is neither), and how many of those never approved were rejected or expired. An approval the signer let
-    expire unused was still approved."""
+def _hold_rules(tr, rules, records, waits, outcomes):
+    """Each hold (`outcomes`: its decision's run_seq -> what it came to, view.review's of `records`) into `rules` by
+    rule, as an "ask" row: how many it held, how many its call's first answer (`waits`, _tally's) approved, a person's
+    or the run's own user's (an agent's is neither), and how many of those never approved were rejected or expired. An
+    approval the signer let expire unused was still approved."""
     first = {w["call"]: w for w in waits}
-    for call, outcome in outcomes.items():
-        w = first.get(call) or {}
-        for rule, why in _placed(tr, held[call][2]["event"]["data"]) if call in held else ():
+    decided = {x["event"]["run_seq"]: x["event"]["data"] for x in records if x["event"]["type"] == "policy.decision"}
+    for seq, outcome in outcomes.items():
+        w = first.get(decided[seq].get("tool_use_id")) or {}
+        for rule, why in _placed(tr, decided[seq]):
             g = rules.setdefault(("ask", rule["id"], why), {
                 "decision": "ask", "rule": rule["id"], "why": why, "reason": rule["reason"], "count": 0,
                 "examples": [], "approved": 0, "rejected_or_expired": 0})
@@ -322,7 +323,7 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
                            gaps=sum(rv["gaps"].values()))
                 held, held_waits = _tally(key, mine, tr, rules, unread)
                 waits += held_waits
-                _hold_rules(tr, rules, held, held_waits, outcomes)
+                _hold_rules(tr, rules, mine, held_waits, outcomes)
                 for outcome, call in rv["hold_examples"].items():   # the first call of each outcome, of any run
                     if outcome not in hold_examples and call in held:
                         hold_examples[outcome] = key, held[call][2]
