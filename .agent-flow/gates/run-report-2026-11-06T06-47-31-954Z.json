@@ -1,0 +1,20 @@
+{
+  "ok": false,
+  "environment_error": false,
+  "results": [
+    {
+      "name": "lint",
+      "command": "PY=$(r=\"$(git rev-parse --path-format=absolute --git-common-dir)/../.venv/bin/python\"; [ -x \"$r\" ] && echo \"$r\" || echo python3); PYTHONPATH=\"$PWD\" make lint PY=\"$PY\"",
+      "cwd": "C:/Users/jayab/.pr-go/work/Cygnux-Labs_Tracekit-643-12616-955a89",
+      "expected_exit": 0,
+      "exit_code": 2,
+      "ok": false,
+      "required": true,
+      "timed_out": false,
+      "duration_ms": 14744,
+      "started_at": "2026-11-06T06:47:31.956Z",
+      "log": ".agent-flow/gates/run-lint-2026-11-06T06-47-31-954Z.log",
+      "log_sha256": "8e6e787b270167cee7969c8d3cf8bdc9972738c4d79704bf8c5a524d0c4a732b"
+    }
+  ]
+}
