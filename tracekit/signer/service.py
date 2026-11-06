@@ -2075,7 +2075,7 @@ class SignerService:
         spend = {}
         if reason is None:
             try:
-                deadline = time.monotonic() + engine.REGEX_TIMEOUT_S
+                deadline = [engine.REGEX_TIMEOUT_S]
                 failed = [c for r in rules for c, ok in self.policy.bounds(r, args, deadline) if not ok]
             except TimeoutError:
                 failed = ["a bound's pattern ran out of time"]
@@ -3561,7 +3561,7 @@ class SignerService:
         shown = loads_strict(copy["args"]) if copy["args_source"] == "raw" else copy["args"]
         rules = self._agent_rules(a["agent"]["rules"])
         try:
-            deadline = time.monotonic() + engine.REGEX_TIMEOUT_S
+            deadline = [engine.REGEX_TIMEOUT_S]
             conditions = [{"rule": r["id"], "condition": c[:1024], "passed": ok}
                           for r in rules for c, ok in self.policy.bounds(r, real, deadline)]
         except TimeoutError:
