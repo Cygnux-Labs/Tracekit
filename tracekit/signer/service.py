@@ -2873,16 +2873,20 @@ class SignerService:
             held = f and verdict != "deny" and self._constrained(run, f)   # tighten only: never lowered
             if held:
                 verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"] * ("TK-CONSTRAINT" not in rule_ids)
-            if unreadable and verdict in ("allow", "flag"):
-                verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
-            if sums:
-                data["detect"] = {**data.get("detect", {}), **sums}
             granted, grant_why = self._grant_release(key, run, tool, holder[0], rule_ids, args, digest, gw) \
                 if verdict == "ask" else (None, None)
-            if grant_why:   # signed with the decision: what the grant released, or exactly why it held the call
-                data["reasons"] = [grant_why[:4096]]
             if granted:
                 verdict, rule_ids = "flag", rule_ids + ["TK-GRANT"]
+            if unreadable and verdict in ("allow", "flag"):   # what a grant released too: every operator limit holds
+                if granted:
+                    rule_ids = [i for i in rule_ids if i != "TK-GRANT"]
+                    granted, grant_why = None, (f"grant {granted['id']}: an operator's sum limit can't read this call, "
+                                                "so a person decides")
+                verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
+            if grant_why:   # signed with the decision: what the grant released, or exactly why it held the call
+                data["reasons"] = [grant_why[:4096]]
+            if sums:
+                data["detect"] = {**data.get("detect", {}), **sums}
             names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
             seen = reconcile.compared(tool, args) if (run.get("rec") or {}).get("claude_code") else args
             l2 = {n: event_hash({"tool": n, "args": args}) for n in names} if digest and len(names) > 1 else \
@@ -4436,7 +4440,7 @@ class SignerService:
         if not intent or digest is None or not run.get("grants") or run.get("held") or run.get("quarantined") \
                 or self._approved_twin(key, tool, via, rule_ids, digest):
             return None, None
-        gid, fields, used, why = grantlib.decide(run["grants"], intent, args, _iso(time.time()))
+        gid, fields, used, why = grantlib.decide(run["grants"], intent, tool, args, _iso(time.time()))
         if gid is None:
             return None, why
         cur = fields["currency"]
@@ -4489,10 +4493,13 @@ class SignerService:
             v = c["value"]
             return dict(c, value=([f(x) for x in v] if isinstance(v, list) else f(v)) if f else v)
         caveats = [norm(c) for c in req.get("caveats", [])]
-        problems = grantlib.problems(intent, caveats, req["limits"], req["expires_at"], now, self.grant_ceilings)
+        aid, first = req.get("approval_id"), None
+        held = aid and self._visible(identity, aid)
+        # the tools whose calls it covers: those named, and the held call's it is issued from
+        tools = list(dict.fromkeys(req.get("tools", []) + ([held["tool"]] if held else [])))
+        problems = grantlib.problems(intent, caveats, req["limits"], req["expires_at"], now, self.grant_ceilings, tools)
         if problems:
             raise RPCError("invalid_request", "; ".join(problems))
-        aid, first = req.get("approval_id"), None
         grant = {"pcm_grant": 0, "ts": now, "issuer": {
             "kind": "person", "id": subject(identity), "run": key[1], "tenant": key[0],
             **({"approval_id": aid} if aid else {}), **({"person": who} if who else {})},
@@ -4500,19 +4507,19 @@ class SignerService:
             "expires_at": req["expires_at"], "delegable": False, "parent": None}
         used = grantlib.zero(req["limits"])
         if aid:   # its first use: the held call it is issued from
-            a = self._visible(identity, aid)
+            a = held
             if a["run_key"] != key or a["state"] != "requested":
                 raise RPCError("invalid_request", f"{aid} is not a pending approval of run {key[1]}")
             if self._grant_intent(a["rule_ids"]) != intent:
                 raise RPCError("forbidden", f"{a['tool_call_id'][:128]} is held by {', '.join(a['rule_ids'])}, not "
                                             f"only by rules a {intent} grant releases: approve it on its own")
             copy = self._unseal(aid) or {}   # the real arguments where kept (exec_args), else the shown copy
-            held = copy.get("exec_args", copy.get("args"))
+            args = copy.get("exec_args", copy.get("args"))
             try:
-                held = loads_strict(held) if copy.get("args_source") == "raw" and isinstance(held, str) else held
+                args = loads_strict(args) if copy.get("args_source") == "raw" and isinstance(args, str) else args
             except StrictJSONError:
-                held = None
-            fields, why = grantlib.read(intent, held)
+                args = None
+            fields, why = grantlib.read(intent, args)
             used, out = grantlib.check({"grant": grant, "limits": req["limits"], "used": used}, fields, now) \
                 if fields else (None, why)
             if used is None:
@@ -4522,7 +4529,7 @@ class SignerService:
         self.quotas.take_event(identity)
         grant = self._pcm_signed("pcm-grant", grant)
         gid = grantlib.grant_id(grant)
-        data = {"name": "intent.grant", "id": gid, "grant": grant, "limits": req["limits"], "used": used,
+        data = {"name": "intent.grant", "id": gid, "grant": grant, "tools": tools, "limits": req["limits"], "used": used,
                 "self_approved": same, **({"first": first} if first else {}),
                 **({"description": req["description"]} if req.get("description") else {})}
 
@@ -4533,7 +4540,7 @@ class SignerService:
                 raise RPCError("forbidden", self._why_contained(run))
             if aid and self.log.approvals[aid]["state"] != "requested":
                 raise RPCError("approval_not_pending", self.log.approvals[aid]["state"])
-            return {"grant_id": gid, "grant": grant, "used": used, "self_approved": same,
+            return {"grant_id": gid, "grant": grant, "tools": tools, "used": used, "self_approved": same,
                     "run_seq": tx.emit(run, "ext", data, source="signer", request_id=req["request_id"])}
         return self.log.submit(identity, "grant_issue", req, fn, key)
 
@@ -4547,7 +4554,8 @@ class SignerService:
                     or not self._may_see(identity, {"run_key": key}):
                 continue
             out += [{"grant_id": gid, "run_id": key[1], "state": grantlib.state(e, now),
-                     **{k: e[k] for k in ("grant", "limits", "used", "self_approved", "description") if k in e}}
+                     **{k: e[k] for k in ("grant", "tools", "limits", "used", "self_approved", "description")
+                        if k in e}}
                     for gid, e in list(run["grants"].items())]
         return {"grants": out[:1000]}
 

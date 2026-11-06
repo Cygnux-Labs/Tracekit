@@ -670,7 +670,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     .map(([k, ts]) => `${k.split("+")[0]} (${witnesses.get(k)}) at ${fmt(ts)}`);
   rep.firsts = new Set(firsts.map((e) => at(e, "seq")));
   await checkExt(rep, [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
-    .values()], get(manifest, "verifier_version"));
+    .values()], get(manifest, "verifier_version"), floats);
 }
 
 /**
@@ -770,17 +770,28 @@ function checkBox(rep: Report, events: J[]) {
   ...rep.anchored.map((a) => `anchored by ${a}`)]);
 }
 
+/** Whether the parser read `o[k]` as a number token with a fraction or exponent: Python's float, never an int. */
+const isFloat = (floats: Floats, o: J, k: string | number) => !!floats.get(o)?.has(k);
+const NO_FLOATS: Floats = new WeakMap();   // for values this verifier computed
+/** A number as Python prints it: a float-written whole number with `.0`. */
+// lean: integral floats below 1e16 only; Python's repr of others (1e+16, 1e-05) differs from JavaScript's
+const pyNum = (v: number, float: boolean) => float && Number.isInteger(v) && Math.abs(v) < 1e16 ? `${v}.0` : JSON.stringify(v);
 /** Python's json.dumps(v), as the reference's messages print values: ", " and ": " between items, and every character
- * past ASCII escaped. */
-function dumps(v: J): string {
-  if (Array.isArray(v)) return `[${v.map(dumps).join(", ")}]`;
-  if (isObj(v)) return `{${Object.entries(v).map(([k, x]) => `${dumps(k)}: ${dumps(x)}`).join(", ")}}`;
+ * past ASCII escaped; `float`: v was written as a float. */
+function dumps(v: J, floats = NO_FLOATS, float = false): string {
+  if (Array.isArray(v)) return `[${v.map((x, i) => dumps(x, floats, isFloat(floats, v, i))).join(", ")}]`;
+  if (isObj(v)) return `{${Object.entries(v).map(([k, x]) => `${dumps(k)}: ${dumps(x, floats, isFloat(floats, v, k))}`)
+    .join(", ")}}`;
+  if (typeof v === "number") return pyNum(v, float);
   return JSON.stringify(v).replace(/[\x7f-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
 }
 /** Python's str(v), as an f-string prints a value: a list or an object with its items' repr (`['g-1', None]`). */
-const pyStr = (v: J): string => Array.isArray(v) ? `[${v.map((x) => typeof x === "string" ? quoted(x) : pyStr(x)).join(", ")}]`
-  : isObj(v) ? `{${Object.entries(v).map(([k, x]) => `${quoted(k)}: ${typeof x === "string" ? quoted(x) : pyStr(x)}`)
-    .join(", ")}}` : str(v);
+function pyStr(v: J, floats = NO_FLOATS, float = false): string {
+  const item = (x: J, f: boolean) => typeof x === "string" ? quoted(x) : pyStr(x, floats, f);
+  return Array.isArray(v) ? `[${v.map((x, i) => item(x, isFloat(floats, v, i))).join(", ")}]`
+    : isObj(v) ? `{${Object.entries(v).map(([k, x]) => `${quoted(k)}: ${item(x, isFloat(floats, v, k))}`).join(", ")}}`
+      : typeof v === "number" ? pyNum(v, float) : str(v);
+}
 
 // intent grants (docs/intent-grants.md), as tracekit/grants.py and tracekit/pcm read them; payments are the one intent
 /** The minor units of each currency an amount is shown in (grants.DECIMALS). */
@@ -793,7 +804,8 @@ const PAYMENT = { pcm_schema: 0, name: "payment.send", grant: true, fields: {
   payee: { type: "id", pattern: "[A-Za-z0-9._:@/+=-]{1,128}" } } } as const;
 const FIELDS: Record<string, J> = PAYMENT.fields;
 const CAVEAT_OPS: Record<string, string[]> = { int: ["==", "<=", ">=", "<", ">"], id: ["==", "in"] };
-const GRANT_KEYS = ["name", "id", "grant", "limits", "used", "self_approved", "first", "description"];
+const GRANT_KEYS = ["name", "id", "grant", "tools", "limits", "used", "self_approved", "first", "description"];
+const MAX_TOOLS = 16;   // the tools one grant names (grants.MAX_TOOLS)
 const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/, NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
 // rpc_schema.TS, whose \d Python's re reads as any decimal digit
 const TS_RE = /^\p{Nd}{4}-\p{Nd}{2}-\p{Nd}{2}T\p{Nd}{2}:\p{Nd}{2}:\p{Nd}{2}\.\p{Nd}{6}Z$/u;
@@ -804,8 +816,9 @@ const shaped = (o: J, need: string[], may: string[] = []) => isObj(o) && need.ev
 const short = (v: J, n: number, re?: RegExp) => typeof v === "string" && [...v].length <= n && (!re || re.test(v));
 const opt = (o: J, k: string, ok: (v: J) => boolean) => !Object.hasOwn(o, k) || ok(o[k]);
 /** A PCM grant as rpc_schema.PCM_GRANT has it. */
-const isPcmGrant = (g: J) => shaped(g, ["pcm_grant", "ts", "issuer", "subject", "intent", "caveats", "expires_at",
-  "delegable", "parent", "sig"]) && g.pcm_grant === 0 && short(g.ts, 27, TS_RE) && short(g.expires_at, 27, TS_RE)
+const isPcmGrant = (g: J, floats: Floats) => shaped(g, ["pcm_grant", "ts", "issuer", "subject", "intent", "caveats",
+  "expires_at", "delegable", "parent", "sig"]) && g.pcm_grant === 0 && !isFloat(floats, g, "pcm_grant")
+  && short(g.ts, 27, TS_RE) && short(g.expires_at, 27, TS_RE)
   && shaped(g.issuer, ["kind", "id", "run", "tenant"], ["person", "approval_id"])
   && ["person", "agent"].includes(g.issuer.kind) && short(g.issuer.id, 256) && opt(g.issuer, "person", (v) => short(v, 256))
   && short(g.issuer.run, 128, ID_RE) && short(g.issuer.tenant, 128, ID_RE)
@@ -816,16 +829,23 @@ const isPcmGrant = (g: J) => shaped(g, ["pcm_grant", "ts", "issuer", "subject", 
   && (g.parent === null || short(g.parent, 71, /^sha256:[0-9a-f]{64}$/))
   && shaped(g.sig, ["key", "sig"]) && short(g.sig.key, 300) && g.sig.key !== "" && short(g.sig.sig, 88);
 /** A grant's limits as rpc_schema._LIMITS has them. */
-const isLimits = (v: J) => Array.isArray(v) && v.length >= 1 && v.length <= 4 && v.every((x) => shaped(x, ["op", "max"],
-  ["field"]) && ["sum", "count"].includes(x.op) && opt(x, "field", (f) => short(f, 64, NAME_RE))
-  && Number.isSafeInteger(x.max) && x.max >= 1);
-/** pcm._FITS: whether `v` is a valid value of field `f`. */
+const isLimits = (v: J, floats: Floats) => Array.isArray(v) && v.length >= 1 && v.length <= 4 && v.every((x) =>
+  shaped(x, ["op", "max"], ["field"]) && ["sum", "count"].includes(x.op) && opt(x, "field", (f) => short(f, 64, NAME_RE))
+  && Number.isSafeInteger(x.max) && !isFloat(floats, x, "max") && x.max >= 1);
+/** pcm._FITS: whether `v` is a valid value of field `f`; `float`: v was written as a float, which is no int. */
 // lean: the int and id rules, the types payment.send uses; port the rest with an intent whose fields use them
-const fits = (f: J, v: J) => f.type === "int" ? Number.isInteger(v) && f.min <= v && v <= f.max
+const fits = (f: J, v: J, float: boolean) => f.type === "int" ? Number.isInteger(v) && !float && f.min <= v && v <= f.max
   : typeof v === "string" && [...v].length <= 128 && new RegExp(`^(?:${f.pattern})$`).test(v);
-/** pcm.check_args finding nothing: `fields` are payment.send's, each a valid value. */
-const isCall = (fields: J) => isObj(fields) && Object.keys(fields).every((k) => Object.hasOwn(FIELDS, k))
-  && Object.entries(FIELDS).every(([k, f]) => Object.hasOwn(fields, k) && fits(f, fields[k]));
+/** pcm.check_args of payment.send: what is wrong with call `fields`, an object. */
+function argErrors(fields: J, floats: Floats): string[] {
+  const out = Object.keys(fields).filter((k) => !Object.hasOwn(FIELDS, k)).map((k) => `args.${k}: not in the schema`);
+  for (const [k, f] of Object.entries(FIELDS)) {
+    if (!Object.hasOwn(fields, k)) out.push(`args.${k}: missing`);
+    else if (!fits(f, fields[k], isFloat(floats, fields, k)))
+      out.push(`args.${k}: ${dumps(fields[k], floats, isFloat(floats, fields, k)).slice(0, 64)} is not a valid ${f.type}`);
+  }
+  return out;
+}
 /** A grant's short id (grants.grant_id): `g-` and the first 16 hex digits of its hash. */
 const grantId = async (g: J) => "g-" + (await sha256hex(bytes(canonicalize(g)))).slice(0, 16);
 
@@ -840,26 +860,34 @@ function number(minor: J, cur: J): string {
 const show = (minor: J, cur: J) => `${number(minor, cur)} `
   + (typeof cur === "string" && Object.hasOwn(DECIMALS, cur) && Number.isInteger(minor) ? cur : `${str(cur)} (minor units)`);
 
-/** grants.problems for a payment grant, as a verifier asks (no ceiling), of caveats and limits already of their shape. */
-function grantProblems(caveats: J[], limits: J[], expiresAt: string, now: string): string[] {
+/** grants.problems for a payment grant, as a verifier asks (no ceiling), of caveats and limits already of their shape;
+ * `tools`: the record's, the tools whose calls the grant covers. */
+function grantProblems(caveats: J[], limits: J[], tools: J, expiresAt: string, now: string, floats: Floats): string[] {
   const out: string[] = [], pinned = new Map<string, J>(), seen = new Set<string>();
   for (const c of caveats) {   // pcm.check_caveats
     const f = Object.hasOwn(FIELDS, c.field) ? FIELDS[c.field] : null, vals = c.op === "in" ? c.value : [c.value];
-    const said = `${c.field} ${c.op} ${dumps(c.value).slice(0, 64)}`;
+    const said = `${c.field} ${c.op} ${dumps(c.value, floats, isFloat(floats, c, "value")).slice(0, 64)}`;
     if (!f) out.push(`${said}: no field ${c.field} in payment.send`);
     else if (!CAVEAT_OPS[f.type].includes(c.op)) out.push(`${said}: ${c.op} does not apply to a ${f.type} field`);
-    else if (!(Array.isArray(vals) && vals.length >= 1 && vals.length <= 64 && vals.every((x) => fits(f, x))
-      && new Set(vals).size === vals.length)) out.push(`${said}: not a valid ${f.type} value`);
+    else if (!(Array.isArray(vals) && vals.length >= 1 && vals.length <= 64 && vals.every((x, i) => fits(f, x,
+      c.op === "in" ? isFloat(floats, vals, i) : isFloat(floats, c, "value"))) && new Set(vals).size === vals.length))
+      out.push(`${said}: not a valid ${f.type} value`);
   }
+  if (!(Array.isArray(tools) && tools.length > 0 && tools.length <= MAX_TOOLS && new Set(tools).size === tools.length
+    && tools.every((t) => typeof t === "string" && t !== "" && [...t].length <= 256)))
+    out.push(`a grant names the tools whose calls it covers: 1 to ${MAX_TOOLS} distinct tool names`);
   for (const c of caveats) if (c.op === "==" || c.op === "in") pinned.set(c.field, c);
-  if (pinned.get("currency")?.op !== "==") out.push("a payment grant names its one currency (currency == USDC)");
+  const cur = pinned.get("currency");
+  if (cur?.op !== "==") out.push("a payment grant names its one currency (currency == USDC)");
+  else if (typeof cur.value === "string" && !Object.hasOwn(DECIMALS, cur.value))   // else check_caveats said it
+    out.push(`tracekit knows the units of ${Object.keys(DECIMALS).sort().join(", ")}; ${cur.value} isn't one of them`);
   if (!pinned.has("payee")) out.push("a payment grant names its payees (payee in [...])");
   for (const x of limits) {   // the rest of a limit's rule is its shape's (isLimits)
     const k = JSON.stringify([x.op, x.field ?? null]);
     const f = x.field ?? "amount";
     if ((x.op === "sum") !== Object.hasOwn(x, "field") || !(Object.hasOwn(FIELDS, f) && FIELDS[f].type === "int"))
-      out.push(`limit ${dumps(x).slice(0, 96)}: a limit is {op: sum, field, max} of a whole-number field (amount) or `
-        + "{op: count, max}, max a whole number above zero");
+      out.push(`limit ${dumps(x, floats).slice(0, 96)}: a limit is {op: sum, field, max} of a whole-number field (amount) `
+        + "or {op: count, max}, max a whole number above zero");
     else if (seen.has(k)) out.push(`limit ${x.op} ${x.field ?? ""}: given twice`.replace(/  /g, " "));
     seen.add(k);
   }
@@ -885,8 +913,8 @@ function brokenBy(c: J, fields: J): string {
 
 /**
  * grants.check: [the totals after a call with `fields`, null] when grant `gid`'s entry `g` ({grant, limits, used,
- * revoked}) releases it at `now`, else [null, why not]. Its caveats passed grantProblems and the fields isCall, so each
- * caveat compares values of one type (pcm.satisfies).
+ * revoked}) releases it at `now`, else [null, why not]. Its caveats passed grantProblems and the fields argErrors, so
+ * each caveat compares values of one type (pcm.satisfies).
  */
 function grantCheck(gid: string, g: J, fields: J, now: string): [J[] | null, string | null] {
   if (g.revoked) return [null, `grant ${gid} was revoked`];
@@ -909,14 +937,15 @@ function grantCheck(gid: string, g: J, fields: J, now: string): [J[] | null, str
 /**
  * Why `e` is not an intent.grant record as the signer writes one (SignerService._grant_issue), or null: a PCM grant of
  * payment.send (`payment`, its schema ref), issued by a person for this very run and tenant, never passed on, its id its
- * hash's; caveats and limits a grant may have, an expiry within 24 h of its issue; and its totals those of no call, or
- * of the held call it was issued from (`first`), which must be within it.
+ * hash's; caveats, tools and limits a grant may have, an expiry within 24 h of its issue; and its totals those of no
+ * call, or of the held call it was issued from (`first`), which must be within it.
  */
-async function grantIssued(e: J, payment: string): Promise<string | null> {
+async function grantIssued(e: J, payment: string, floats: Floats): Promise<string | null> {
   const d = get(e, "data");
   if (get(e, "source") !== "signer" || !isObj(d) || !Object.keys(d).every((k) => GRANT_KEYS.includes(k))
-    || typeof get(d, "id") !== "string" || !Array.isArray(get(d, "used")) || !isPcmGrant(get(d, "grant"))
-    || !isLimits(get(d, "limits")) || typeof get(d, "self_approved") !== "boolean")
+    || typeof get(d, "id") !== "string" || !Array.isArray(get(d, "used"))
+    || !d.used.every((u: J, i: number) => Number.isInteger(u) && !isFloat(floats, d.used, i)) || !isPcmGrant(get(d, "grant"), floats)
+    || !isLimits(get(d, "limits"), floats) || typeof get(d, "self_approved") !== "boolean")
     return "an intent.grant record that is not as the signer writes one";
   const g = d.grant;
   if (g.intent !== payment) return `a grant of intent ${cut(g.intent, 80)}, which this verifier doesn't know`;
@@ -924,19 +953,20 @@ async function grantIssued(e: J, payment: string): Promise<string | null> {
   if (d.id !== id) return `grant ${cut(d.id, 24)} is not its grant's id (${id})`;
   if (g.issuer.kind !== "person" || g.issuer.run !== get(e, "run_id") || g.issuer.tenant !== get(e, "tenant")
     || g.parent !== null || g.delegable !== false) return `grant ${id} is not a person's, for this run and tenant, kept to its run`;
-  const bad = grantProblems(g.caveats, d.limits, g.expires_at, g.ts);
+  const bad = grantProblems(g.caveats, d.limits, get(d, "tools"), g.expires_at, g.ts, floats);
   if (bad.length) return `grant ${id}: ${cut(bad.join("; "), 300)}`;
   let used: J[] | null = d.limits.map(() => 0);
   const f = get(d, "first");
   if (f !== null) {
     const fields = isObj(f) ? get(f, "fields") : null;
-    if (!(isCall(fields) && typeof get(f, "approval_id") === "string" && typeof get(f, "tool_call_id") === "string"))
-      return `grant ${id}: its first use is not a held call's`;
+    if (!(isObj(fields) && !argErrors(fields, floats).length && typeof get(f, "approval_id") === "string"
+      && typeof get(f, "tool_call_id") === "string")) return `grant ${id}: its first use is not a held call's`;
     const [after, why] = grantCheck(id, { grant: g, limits: d.limits, used, revoked: false }, fields, g.ts);
     if (why) return `grant ${id} was issued from a held call outside it (${why})`;
     used = after;
   }
-  if (!same(d.used, used)) return `grant ${id} starts with totals ${dumps(d.used).slice(0, 64)}, not ${dumps(used)}`;
+  if (!same(d.used, used))
+    return `grant ${id} starts with totals ${dumps(d.used, floats).slice(0, 64)}, not ${dumps(used)}`;
   if (Object.hasOwn(d, "description") && !short(d.description, 512))
     return `grant ${id}: its description is not a string of at most 512 characters`;
   return null;
@@ -946,32 +976,36 @@ async function grantIssued(e: J, payment: string): Promise<string | null> {
  * intent.grant, intent.revoked and ext.grant (docs/intent-grants.md): the grants people issued for a run, their
  * revocations, and the calls they released. Each grant is checked as grantIssued says; each released call against its
  * grant, as the signer decided it: a policy.decision flagged with TK-GRANT, its grant recorded earlier in the same run
- * and not revoked before it, decided before the grant expired, its fields those of the intent and within every caveat,
- * its totals the previous call's plus its own and within every limit, and its tier the record's (T2: an executor or
- * gateway decided and ran the call; T1: the arguments the harness reported). What is wrong here is a warning, as for
- * every ext name.
+ * and not revoked before it, decided before the grant expired, of a tool the grant covers, its fields those of the
+ * intent (whole numbers where they count) and within every caveat, its totals the previous call's plus its own, whole
+ * numbers within every limit, and its tier the record's (T2: an executor or gateway decided and ran the call; T1: the
+ * arguments the harness reported). A release that breaks its grant fails the line: the records are the signer's own word
+ * that the call was within it. A record in a shape the signer never writes, or a release whose grant this bundle doesn't
+ * hold, is a warning, as for every ext name. `floats`: the parser's, so a number written as a float is no whole number.
  */
-export async function checkGrants(rep: Report, events: J[]) {
+export async function checkGrants(rep: Report, events: J[], floats: Floats) {
   const payment = `payment.send@sha256:${await sha256hex(bytes(canonicalize(PAYMENT)))}`;
-  const live = new Map<string, J>(), problems: string[] = [], tiers: Record<string, number> = { T1: 0, T2: 0 };
+  const live = new Map<string, J>(), bad: string[] = [], broken: string[] = [], issuers = new Set<string>();
+  const tiers: Record<string, number> = { T1: 0, T2: 0 };
   let issued = 0, selfish = 0, revoked = 0;
   const seq = (e: J) => Number.isInteger(get(e, "seq")) ? e.seq : -1;
   for (const e of [...events].sort((a, b) => seq(a) - seq(b))) {
-    const where = `seq ${pyStr(get(e, "seq"))}`, d = get(e, "data");
+    const where = `seq ${pyStr(get(e, "seq"), floats, isFloat(floats, e, "seq"))}`, d = get(e, "data");
     const key = (id: string) => JSON.stringify([get(e, "tenant"), get(e, "run_id"), id]);   // a grant's id is a string
     const name = get(e, "type") === "ext" && isObj(d) ? get(d, "name") : null;
     if (name === "intent.grant") {
-      const why = await grantIssued(e, payment);
+      const why = await grantIssued(e, payment, floats);
       if (why) {
-        problems.push(`${where}: ${why}`);
+        bad.push(`${where}: ${why}`);
         continue;
       }
-      live.set(key(d.id), { grant: d.grant, limits: d.limits, used: d.used, revoked: false });
+      live.set(key(d.id), { grant: d.grant, tools: d.tools, limits: d.limits, used: d.used, revoked: false });
       issued++;
       selfish += Number(d.self_approved);
+      if (!d.self_approved) issuers.add(d.grant.issuer.person || d.grant.issuer.id);
     } else if (name === "intent.revoked") {
       const g = typeof get(d, "id") === "string" ? live.get(key(d.id)) : undefined;
-      if (get(e, "source") !== "signer" || !g || g.revoked) problems.push(`${where}: revokes no grant still live in its run`);
+      if (get(e, "source") !== "signer" || !g || g.revoked) bad.push(`${where}: revokes no grant still live in its run`);
       else {
         g.revoked = true;
         revoked++;
@@ -980,31 +1014,41 @@ export async function checkGrants(rep: Report, events: J[]) {
     if (!(isObj(get(e, "ext")) && Object.hasOwn(e.ext, "grant"))) continue;
     const x = e.ext.grant, g = isObj(x) && typeof get(x, "id") === "string" ? live.get(key(x.id)) : undefined;
     if (!(get(e, "type") === "policy.decision" && isObj(d) && get(d, "decision") === "flag"
-      && Array.isArray(get(d, "rule_ids")) && d.rule_ids.includes("TK-GRANT") && shaped(x, ["id", "fields", "used", "tier"])))
-      problems.push(`${where}: ext.grant is not on a decision a grant released, as the signer writes it`);
-    else if (!g) problems.push(`${where}: names grant ${cut(pyStr(x.id), 24)}, which this bundle doesn't hold earlier in `
-      + "the run (export the whole run to check it)");
-    else if (!isCall(x.fields)) problems.push(`${where}: the fields it records are not a payment.send call's`);
+      && Array.isArray(get(d, "rule_ids")) && d.rule_ids.includes("TK-GRANT") && shaped(x, ["id", "fields", "used", "tier"]))) {
+      bad.push(`${where}: ext.grant is not on a decision a grant released, as the signer writes it`);
+      continue;
+    }
+    const errs = !g ? [] : isObj(x.fields) ? argErrors(x.fields, floats) : ["not an object"];
+    if (!g) bad.push(`${where}: names grant ${cut(pyStr(x.id, floats, isFloat(floats, x, "id")), 24)}, which this bundle `
+      + "doesn't hold earlier in the run (export the whole run to check it)");
+    else if (errs.length) broken.push(`${where}: the fields it records are not a payment.send call's (${cut(errs[0], 120)})`);
+    else if (!g.tools.includes(get(d, "tool")))
+      broken.push(`${where}: released a call of ${dumps(get(d, "tool"), floats, isFloat(floats, d, "tool")).slice(0, 64)}, `
+        + `a tool grant ${x.id} doesn't cover`);
     else {
       const [used, why] = grantCheck(x.id, g, x.fields, get(e, "ts") || "");
-      if (why) problems.push(`${where}: released a call the grant holds (${why})`);
-      else if (!same(x.used, used)) problems.push(`${where}: records totals ${dumps(x.used).slice(0, 64)}, not ${dumps(used)}`);
+      if (why) broken.push(`${where}: released a call the grant holds (${why})`);
+      else if (!(Array.isArray(x.used) && x.used.every((u: J, i: number) => Number.isInteger(u) && !isFloat(floats, x.used, i))
+        && same(x.used, used)))
+        broken.push(`${where}: records totals ${dumps(x.used, floats).slice(0, 64)}, not ${dumps(used)}`);
       else if (x.tier !== (get(e, "tier") === "T2" ? "T2" : "T1"))
-        problems.push(`${where}: says tier ${cut(pyStr(x.tier), 8)}, the record ${truthy(get(e, "tier")) ? pyStr(e.tier) : "T1"}`);
+        bad.push(`${where}: says tier ${cut(pyStr(x.tier, floats, isFloat(floats, x, "tier")), 8)}, the record `
+          + (truthy(get(e, "tier")) ? pyStr(e.tier, floats, isFloat(floats, e, "tier")) : "T1"));
       else {
         g.used = used;
         tiers[x.tier]++;
       }
     }
   }
-  rep.check("intent grants", !problems.length, `${issued} grant(s)` + (selfish ? ` (${selfish} self-approved: issued by `
-    + "the run's own user, which the agent can be)" : " by people") + (revoked ? `, ${revoked} revoked` : "")
-    + `; ${tiers.T1 + tiers.T2} call(s) released within them (${tiers.T2} at T2, decided and run by an executor or `
-    + `gateway; ${tiers.T1} at T1, on the arguments the harness reported), each re-checked against its grant and its `
-    + "running totals", problems.slice(0, 20), true);
+  rep.check("intent grants", !bad.length && !broken.length, `${issued} grant(s)`
+    + (issuers.size ? ` by ${cut([...issuers].sort(byCodePoint).join(", "), 200)}` : "")
+    + (selfish ? ` (${selfish} self-approved: issued by the run's own user, which the agent can be)` : "")
+    + (revoked ? `, ${revoked} revoked` : "") + `; ${tiers.T1 + tiers.T2} call(s) released within them (${tiers.T2} at `
+    + `T2, decided and run by an executor or gateway; ${tiers.T1} at T1, on the arguments the harness reported), each `
+    + "re-checked against its grant and its running totals", [...broken, ...bad].slice(0, 20), !broken.length);
 }
 
-type ExtCheck = (rep: Report, events: J[]) => void | Promise<void>;
+type ExtCheck = (rep: Report, events: J[], floats: Floats) => void | Promise<void>;
 /**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9). Names that
@@ -1022,9 +1066,10 @@ const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {
 
 /**
  * A line per ext name the records carry: its EXT_CHECKS check, or a `not interpreted` warning. The records were checked
- * like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version.
+ * like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version; `floats`: the
+ * parser's.
  */
-async function checkExt(rep: Report, events: J[], full: J) {
+async function checkExt(rep: Report, events: J[], full: J, floats: Floats) {
   const carry = new Map<string, J[]>();   // name -> the events carrying it
   for (const e of events)
     for (const n of new Set(extNames(e).map((x) => cut(str(x), 64)))) {
@@ -1039,7 +1084,8 @@ async function checkExt(rep: Report, events: J[], full: J) {
     const interpret = EXT_CHECKS.get(n);
     if (interpret) {
       if (!done.has(interpret))   // once, over every name it reads
-        await interpret(rep, [...new Set([...carry].filter(([k]) => EXT_CHECKS.get(k) === interpret).flatMap(([, v]) => v))]);
+        await interpret(rep, [...new Set([...carry].filter(([k]) => EXT_CHECKS.get(k) === interpret).flatMap(([, v]) => v))],
+          floats);
       done.add(interpret);
     } else if (shown < MAX_UNREAD) {
       shown++;

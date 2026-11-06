@@ -190,8 +190,11 @@ deny:
     class: shell
     # each command's argv (wrappers and runners such as uvx, uv tool run, pipx run, hatch run and conda run, `sh -c`,
     # `eval` and a path to the binary resolved): `tracekit approve|reject`, `tracekit approvals [OPTIONS]
-    # approve|reject` (with --grant too) and `tracekit grant [OPTIONS] add` (a grant releases calls like an approval;
-    # listing grants and revoking one, which only narrows, aren't held), also as `python -m tracekit[.cli]` (python,
+    # approve|reject` (with --grant too) and `tracekit grant [--signer S] ACTION` for every ACTION but a literal `list` or
+    # `revoke` (a grant releases calls like an approval; listing grants and revoking one, which only narrows, aren't
+    # held), so an action read from stdin (`xargs tracekit grant`, whose argv ends before it) or computed (`$A`,
+    # `$(…)`), and `--help`, are denied too; RE2 has no lookahead, so "not list or revoke" is spelled out letter by
+    # letter, as TK-A043's "not POST" is; also as `python -m tracekit[.cli]` (python,
     # pythonw, py, pyw or pypy, with a version and a free-threaded build's `t`; up to eight options, with a value, before -m; or -Im) or a runner's module (`uv run -m
     # tracekit.cli`), and after a `--` (Python 3.14's argparse takes one before the command). The hold line names these
     # commands for a person, and the agent reads it too: the dev signer takes the agent's own answer, labelled
@@ -205,7 +208,7 @@ deny:
     # a value (`uvx -qc c.txt tracekit`), a runner's own options before its subcommand (`uv -q run`) or a runner
     # policy2/shell.py doesn't name (mamba, `hatch env run`); when that must hold too, run system mode, whose signer
     # refuses the agent's own answer
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant( --[\w\W]*?)? add)( |$)'
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (approve|reject|approvals( --[\w\W]*?)? (approve|reject)|grant(?: --signer(?:=| )[^ ]*)?(?: (?:[^lr -][^ ]*|l(?:[^i ][^ ]*)?|li(?:[^s ][^ ]*)?|lis(?:[^t ][^ ]*)?|list[^ ]+|r(?:[^e ][^ ]*)?|re(?:[^v ][^ ]*)?|rev(?:[^o ][^ ]*)?|revo(?:[^k ][^ ]*)?|revok(?:[^e ][^ ]*)?|revoke[^ ]+)|(?: -[^ ]*)*$))( |$)'
     reason: answering an approval or issuing a grant from the agent's session
     remedy: Wait for a person to approve or reject the held call, or to grant calls like it, from their own terminal; `tracekit approvals list` and `show`, and `tracekit grant list` and `revoke`, stay allowed.
     rationale: An approval is a person's decision; an agent that answers its own held calls turns every ask into an allow.

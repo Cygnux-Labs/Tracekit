@@ -9,8 +9,9 @@ must hold:
   E23.1 workload   30 payments, 24 within alice's grant and 6 outside it (an unknown payee, over the most for one
                    payment, past the total): the person's stops with the grant are the held call it was issued from
                    plus the 6, against 30 without one; nothing outside the limits runs
-  E23.2 attacks    arguments a grant must not read as within it: amounts in other units, payee look-alikes, a second
-                   payee, extra arguments that move money, another currency
+  E23.2 attacks    calls a grant must not read as within it: amounts in other units (hundredths of a USDC past the
+                   cap), a currency with no known unit, payee look-alikes, a second payee, arguments that can move money
+                   or pick what is paid (a fee, a split, a memo, an invoice or order id), another currency, another tool
   E23.3 authority  the agent issuing a grant for its own run, passing one on, or asking for one that lasts past a day
   E23.4 split      100 payments of 7 USDC under a 50 USDC total: what runs stays within the total
   E23.5 ended      a revoked grant and an expired one release nothing
@@ -38,8 +39,9 @@ from tracekit.signer.rpc_schema import RPCError  # noqa: E402
 from tracekit.verify import v2  # noqa: E402
 
 AGENT, ALICE = CallerIdentity("uid", "1002", True), CallerIdentity("uid", "1001", True)
-POLICY = {"tools": {"mcp__payments__send_money": "mcp"},
-          "ask": [{"id": "PAY", "tool": "mcp__payments__send_money", "pattern": "^",
+SEND, INVOICE = "mcp__payments__send_money", "mcp__payments__pay_invoice"
+POLICY = {"tools": {SEND: "mcp", INVOICE: "mcp"},
+          "ask": [{"id": "PAY", "tool": "mcp__payments__(send_money|pay_invoice)", "pattern": "^",
                    "approval": {"grant": "payment.send"}}]}
 P1, P2, P3 = "0x" + "11" * 20, "0x" + "22" * 20, "0x" + "33" * 20
 USDC = 10 ** 6
@@ -60,13 +62,13 @@ class World:
     def call(self, method, who=AGENT, **req):
         return self.s.call(who, method, {"request_id": f"r{next(_n)}", **req})
 
-    def pay(self, args, tcid=None):
+    def pay(self, args, tcid=None, tool=SEND):
         """The decision on one payment: allow (it runs) or ask (a person's stop)."""
         return self.call("decide", **self.run, stream="s", client_seq=next(self.seq), tool_call_id=tcid or
-                         f"t{next(_n)}", tool="mcp__payments__send_money", args_source="parsed", args=args)
+                         f"t{next(_n)}", tool=tool, args_source="parsed", args=args)
 
     def grant(self, who=ALICE, total=500, each=20, payees=(P1, P2), seconds=3600, **kw):
-        return self.call("grant_issue", who, run_id=self.run["run_id"], intent="payment.send",
+        return self.call("grant_issue", who, run_id=self.run["run_id"], intent="payment.send", tools=[SEND],
                          caveats=[{"field": "currency", "op": "==", "value": "USDC"},
                                   {"field": "payee", "op": "in", "value": list(payees)},
                                   {"field": "amount", "op": "<=", "value": each * USDC}],
@@ -116,8 +118,13 @@ def e23_2(d):
                "one character off": money(USDC, P1[:-1] + "2"), "a second payee": money(USDC, P1, destination=P3),
                "a payee in an object": {"amount": USDC, "currency": "USDC", "account": {"id": P1}},
                "a fee to another address": money(USDC, fee={"to": P3, "amount": 10 ** 9}),
-               "a split": money(USDC, splits=[{"to": P3}]), "a memo object": money(USDC, memo={"to": P3})}
+               "a split": money(USDC, splits=[{"to": P3}]), "a memo object": money(USDC, memo={"to": P3}),
+               "a memo that routes funds": money(USDC, memo="exchange-acct-77"), "an invoice id": money(USDC,
+               invoice_id="in_big"), "an order id": money(USDC, order_id="ord_x"), "hundredths of a USDC past the cap":
+               {"amount_cents": 2001, "currency": "USDC", "to": P1}, "a currency with no known unit":
+               {"amount": 1, "currency": "XYZ", "to": P1}}
     held = {k: w.pay(v)["decision"] == "ask" for k, v in attacks.items()}
+    held["another tool"] = w.pay(money(USDC), tool=INVOICE)["decision"] == "ask"
     return {"attacks": len(held), "held": sum(held.values()), "released": sorted(k for k, v in held.items() if not v),
             "ok": all(held.values())}
 

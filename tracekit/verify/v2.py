@@ -308,7 +308,7 @@ def _box(rep, events):
     rep.check("boxed agent", True, lines[0], lines[1:])
 
 
-_GRANT_KEYS = {"name", "id", "grant", "limits", "used", "self_approved", "first", "description"}
+_GRANT_KEYS = {"name", "id", "grant", "tools", "limits", "used", "self_approved", "first", "description"}
 
 
 def _grant_issued(e):
@@ -319,6 +319,7 @@ def _grant_issued(e):
     d = e.get("data")
     if e.get("source") != "signer" or not isinstance(d, dict) or not set(d) <= _GRANT_KEYS \
             or not isinstance(d.get("id"), str) or not isinstance(d.get("used"), list) \
+            or not all(type(u) is int for u in d["used"]) \
             or not isinstance(d.get("grant"), dict) or rpc_schema.validate(rpc_schema.PCM_GRANT, d["grant"]) \
             or rpc_schema.validate(rpc_schema._LIMITS, d.get("limits")) or type(d.get("self_approved")) is not bool:
         return "an intent.grant record that is not as the signer writes one"
@@ -330,7 +331,7 @@ def _grant_issued(e):
     if (g["issuer"]["kind"], g["issuer"]["run"], g["issuer"]["tenant"], g["parent"], g["delegable"]) != \
             ("person", e.get("run_id"), e.get("tenant"), None, False):
         return f"grant {d['id']} is not a person's, for this run and tenant, kept to its run"
-    bad = grants.problems(intent, g["caveats"], d["limits"], g["expires_at"], g["ts"])
+    bad = grants.problems(intent, g["caveats"], d["limits"], g["expires_at"], g["ts"], tools=d.get("tools"))
     if bad:
         return f"grant {d['id']}: {'; '.join(bad)[:300]}"
     used, f = grants.zero(d["limits"]), d.get("first")
@@ -353,25 +354,31 @@ def _grants(rep, events):
     """intent.grant, intent.revoked and ext.grant (docs/intent-grants.md): the grants people issued for a run, their
     revocations, and the calls they released. Each grant is checked as _grant_issued says; each released call against
     its grant, as the signer decided it: a policy.decision flagged with TK-GRANT, its grant recorded earlier in the same
-    run and not revoked before it, decided before the grant expired, its fields those of the intent and within every
-    caveat, its totals the previous call's plus its own and within every limit, and its tier the record's (T2: an
-    executor or gateway decided and ran the call; T1: the arguments the harness reported). The records verified like
-    every other; what is wrong here is a warning, as for every ext name."""
-    live, problems, issued, selfish, revoked, tiers = {}, [], 0, 0, 0, collections.Counter()
+    run and not revoked before it, decided before the grant expired, of a tool the grant covers, its fields those of
+    the intent (whole numbers where they count) and within every caveat, its totals the previous call's plus its own,
+    whole numbers within every limit, and its tier the record's (T2: an executor or gateway decided and ran the call;
+    T1: the arguments the harness reported). A release that breaks its grant fails the line: the records are the
+    signer's own word that the call was within it. A record in a shape the signer never writes, or a release whose
+    grant this bundle doesn't hold, is a warning, as for every ext name."""
+    live, bad, broken, issued, selfish, revoked = {}, [], [], 0, 0, 0
+    issuers, tiers = set(), collections.Counter()
     for e in sorted(events, key=lambda e: e["seq"] if type(e.get("seq")) is int else -1):
         at, d, run = f"seq {e.get('seq')}", e.get("data"), (e.get("tenant"), e.get("run_id"))
         name = d.get("name") if e.get("type") == "ext" and isinstance(d, dict) else None
         if name == "intent.grant":
             why = _grant_issued(e)
             if why:
-                problems.append(f"{at}: {why}")
+                bad.append(f"{at}: {why}")
                 continue
-            live[(run, d["id"])] = {"grant": d["grant"], "limits": d["limits"], "used": d["used"], "revoked": False}
+            live[(run, d["id"])] = {"grant": d["grant"], "tools": d["tools"], "limits": d["limits"], "used": d["used"],
+                                    "revoked": False}
             issued, selfish = issued + 1, selfish + d["self_approved"]
+            if not d["self_approved"]:
+                issuers.add(d["grant"]["issuer"].get("person") or d["grant"]["issuer"]["id"])
         elif name == "intent.revoked":
             g = live.get((run, d.get("id"))) if isinstance(d.get("id"), str) else None
             if e.get("source") != "signer" or g is None or g["revoked"]:
-                problems.append(f"{at}: revokes no grant still live in its run")
+                bad.append(f"{at}: revokes no grant still live in its run")
             else:
                 g["revoked"], revoked = True, revoked + 1
         x = e["ext"].get("grant", e) if isinstance(e.get("ext"), dict) else e
@@ -382,31 +389,36 @@ def _grants(rep, events):
         ok = e.get("type") == "policy.decision" and isinstance(d, dict) and d.get("decision") == "flag" \
             and isinstance(d.get("rule_ids"), list) and "TK-GRANT" in d["rule_ids"] and isinstance(x, dict) \
             and set(x) == {"id", "fields", "used", "tier"}
+        errs = ok and g and (["not an object"] if not isinstance(x["fields"], dict) else
+                      pcm.check_args(grants.INTENTS[intent], x["fields"]))
         if not ok:
-            problems.append(f"{at}: ext.grant is not on a decision a grant released, as the signer writes it")
+            bad.append(f"{at}: ext.grant is not on a decision a grant released, as the signer writes it")
         elif g is None:
-            problems.append(f"{at}: names grant {str(x['id'])[:24]}, which this bundle doesn't hold earlier in the run "
-                            "(export the whole run to check it)")
-        elif not isinstance(x["fields"], dict) or pcm.check_args(grants.INTENTS[intent], x["fields"]):
-            problems.append(f"{at}: the fields it records are not a {intent} call's")
+            bad.append(f"{at}: names grant {str(x['id'])[:24]}, which this bundle doesn't hold earlier in the run "
+                       "(export the whole run to check it)")
+        elif errs:
+            broken.append(f"{at}: the fields it records are not a {intent} call's ({errs[0][:120]})")
+        elif d.get("tool") not in g["tools"]:
+            broken.append(f"{at}: released a call of {json.dumps(d.get('tool'))[:64]}, a tool grant {x['id']} doesn't "
+                          "cover")
         else:
             used, why = grants.check(g, x["fields"], e.get("ts") or "")
             if why:
-                problems.append(f"{at}: released a call the grant holds ({why})")
-            elif x["used"] != used:
-                problems.append(f"{at}: records totals {json.dumps(x['used'])[:64]}, not {json.dumps(used)}")
+                broken.append(f"{at}: released a call the grant holds ({why})")
+            elif not (isinstance(x["used"], list) and all(type(u) is int for u in x["used"]) and x["used"] == used):
+                broken.append(f"{at}: records totals {json.dumps(x['used'])[:64]}, not {json.dumps(used)}")
             elif x["tier"] != ("T2" if e.get("tier") == "T2" else "T1"):
-                problems.append(f"{at}: says tier {str(x['tier'])[:8]}, the record {e.get('tier') or 'T1'}")
+                bad.append(f"{at}: says tier {str(x['tier'])[:8]}, the record {e.get('tier') or 'T1'}")
             else:
                 g["used"] = used
                 tiers[x["tier"]] += 1
-    rep.check("intent grants", not problems,
-              f"{issued} grant(s)" + (f" ({selfish} self-approved: issued by the run's own user, which the agent can be)"
-                                      if selfish else " by people")
+    rep.check("intent grants", not (bad or broken),
+              f"{issued} grant(s)" + (f" by {', '.join(sorted(issuers))[:200]}" if issuers else "")
+              + (f" ({selfish} self-approved: issued by the run's own user, which the agent can be)" if selfish else "")
               + (f", {revoked} revoked" if revoked else "") + f"; {sum(tiers.values())} call(s) released within them "
               f"({tiers['T2']} at T2, decided and run by an executor or gateway; {tiers['T1']} at T1, on the arguments "
               "the harness reported), each re-checked against its grant and its running totals",
-              problems[:20], warn=True)
+              (broken + bad)[:20], warn=not broken)
 
 
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),

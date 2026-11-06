@@ -52,12 +52,13 @@ for an hour:
 $ tracekit approvals approve apr-99c7fe5d7ff4ef1014c764c787b56c4f --grant \
     --payee 0x1111111111111111111111111111111111111111 --payee 0x2222222222222222222222222222222222222222 \
     --max '200 USDC' --total '500 USDC' --for 1h --note "this week's two contractors"
-grant g-2f9deebdfc669a5b issued for run 1c2fd065d4cddefa68a4aca823c9631a: payments to 0x1111111111111111111111111111111111111111, 0x2222222222222222222222222222222222222222, up to 200 USDC each, 380 of 500 USDC left, until 2026-11-06T07:20:58.856118Z. Recorded as self-approved: the dev signer runs as your own user and can't tell you from your agent
+grant g-2f9deebdfc669a5b issued for run 1c2fd065d4cddefa68a4aca823c9631a: payments through "mcp__payments__send_money" to 0x1111111111111111111111111111111111111111, 0x2222222222222222222222222222222222222222, up to 200 USDC each, 380 of 500 USDC left, until 2026-11-06T07:20:58.856118Z. Recorded as self-approved: the dev signer runs as your own user and can't tell you from your agent
 approved: apr-99c7fe5d7ff4ef1014c764c787b56c4f, by you. ...
 ```
 
-The held payment is the grant's first: its 120 USDC count toward the total. The agent's retry of it runs on the
-approval, and the grant doesn't count it again.
+The grant covers the held call's tool, `mcp__payments__send_money`, and no other. The held payment is the grant's
+first: its 120 USDC count toward the total. The agent's retry of it runs on the approval, and the grant doesn't count
+it again.
 
 **4. Payments within the grant run.** 200 USDC to the second contractor, then 150 USDC to the first: no stop. Each
 decision is signed as `flag` with `TK-GRANT`, and says what it released and what is left
@@ -74,7 +75,7 @@ Why: grant g-2f9deebdfc669a5b: payee "0x3333333333333333333333333333333333333333
 
 ```text
 $ tracekit grant list
-g-2f9deebdfc669a5b  live  run=1c2fd065d4cddefa68a4aca823c9631a  payment.send  self-approved (the run's own user, which the agent can be)  to 0x1111111111111111111111111111111111111111, 0x2222222222222222222222222222222222222222, up to 200 USDC each, 30 of 500 USDC left  until 2026-11-06T07:20:58.856118Z  "this week's two contractors"
+g-2f9deebdfc669a5b  live  run=1c2fd065d4cddefa68a4aca823c9631a  payment.send  tools="mcp__payments__send_money"  self-approved (the run's own user, which the agent can be)  to 0x1111111111111111111111111111111111111111, 0x2222222222222222222222222222222222222222, up to 200 USDC each, 30 of 500 USDC left  until 2026-11-06T07:20:58.856118Z  "this week's two contractors"
 ```
 
 **7. Verify.** `tracekit last` exports the run and verifies it; with `--detail` the report has the grant's line:
@@ -94,15 +95,16 @@ and each payment it released reads `WITHIN GRANT`, with the payment and what the
 | Command | What it does |
 |---|---|
 | `tracekit approvals show ID` | For a held payment, how a grant reads it (amount, currency, payee) and a command to approve it with a grant, limits taken from the call for you to edit; or why a grant can't read it |
-| `tracekit approvals approve ID --grant LIMITS` | Issues a grant from the held call, then approves the call: the call is the grant's first payment |
-| `tracekit grant add --run RUN LIMITS` | Issues a grant for a run before it asks |
-| `tracekit grant list [--run RUN] [--json]` | The grants of the open runs you may see: who issued each, its limits, what is left, and its state (`live`, `used_up`, `expired`, `revoked`) |
+| `tracekit approvals approve ID --grant LIMITS` | Issues a grant from the held call, then approves the call: the call is the grant's first payment, and its tool one the grant covers |
+| `tracekit grant add --run RUN --tool TOOL LIMITS` | Issues a grant for a run before it asks, covering the tools you name |
+| `tracekit grant list [--run RUN] [--json]` | The grants of the open runs you may see: who issued each, its tools and limits, what is left, and its state (`live`, `used_up`, `expired`, `revoked`) |
 | `tracekit grant revoke GRANT_ID [--reason TEXT]` | Ends a grant: every payment it would release is held again |
 
 `LIMITS` are these flags:
 
 | Flag | Meaning |
 |---|---|
+| `--tool TOOL` | A tool whose calls the grant covers, as the policy names it (`mcp__payments__send_money`); repeat it for each (required for `grant add`; from a held call, its tool is one already) |
 | `--payee ADDRESS` | A payee the agent may pay; repeat it for each (required) |
 | `--total '500 USDC'` | The most all the grant's payments add up to (required) |
 | `--max '200 USDC'` | The most one payment may be (default: the total) |
@@ -110,8 +112,8 @@ and each payment it released reads `WITHIN GRANT`, with the payment and what the
 | `--for 4h` | How long it lasts: minutes or hours, 24h at most (default 1h) |
 | `--note TEXT` | Your own words for what it is for, shown in `grant list` and the viewer |
 
-Amounts are written as you say them, a number and a currency (`500 USDC`, `12.50 USD`). Tracekit knows the minor units
-of USD, EUR, GBP, INR, CAD, AUD, CHF, SGD, JPY, USDC and USDT; records hold whole minor units (`500 USDC` is
+Amounts are written as you say them, a number and a currency (`500 USDC`, `12.50 USD`). Tracekit knows the units of
+USD, EUR, GBP, INR, CAD, AUD, CHF, SGD, JPY, USDC and USDT; records hold whole smallest units (`500 USDC` is
 500000000). `--signer` names another signer, as for `tracekit approvals`.
 
 From code, the signer's calls are `grant_issue`, `grant_list` and `grant_revoke` (signer protocol 22), for example
@@ -119,8 +121,8 @@ From code, the signer's calls are `grant_issue`, `grant_list` and `grant_revoke`
 
 | Call | Request | Answer |
 |---|---|---|
-| `grant_issue` | `run_id`, `intent` (`payment.send`), `caveats`, `limits`, `expires_at`; `approval_id` (a pending approval of the run: the held call it is issued from), `description` | `grant_id`, the signed `grant`, `used` (its totals so far), `self_approved`, `run_seq` |
-| `grant_list` | `run_id` | `grants`: each one's `grant_id`, `run_id`, `grant`, `limits`, `used`, `state`, `self_approved`, `description` |
+| `grant_issue` | `run_id`, `intent` (`payment.send`), `caveats`, `limits`, `expires_at`; `tools` (the tools it covers), `approval_id` (a pending approval of the run: the held call it is issued from, whose tool joins `tools`), `description` | `grant_id`, the signed `grant`, `tools`, `used` (its totals so far), `self_approved`, `run_seq` |
+| `grant_list` | `run_id` | `grants`: each one's `grant_id`, `run_id`, `grant`, `tools`, `limits`, `used`, `state`, `self_approved`, `description` |
 | `grant_revoke` | `grant_id`, `reason` | `grant_id`, `run_id`, `run_seq` |
 
 `caveats` are PCM caveats (`{field, op, value}`): `currency == USDC`, `payee in [...]` (or `==`), and optionally
@@ -130,8 +132,9 @@ From code, the signer's calls are `grant_issue`, `grant_list` and `grant_revoke`
 
 A grant is a [PCM grant](pcm.md#grants) in PCM's own format: signed by the signer's log key, issued by a person for
 one run (`issuer.run`) to the run's agent (`subject`), for an intent, within caveats, until `expires_at`. It can't be
-passed on (`delegable: false`), so it reaches nothing past its run. A grant made in Tracekit can ride in a PCM message as
-it is. The signer writes it into the run in an `intent.grant` record, with its limits, its totals so far and the note:
+passed on (`delegable: false`), so it reaches nothing past its run. A grant made in Tracekit can ride in a PCM message
+as it is. The signer writes it into the run in an `intent.grant` record, with the tools it covers, its limits, its
+totals so far and the note:
 
 ```json
 {"name": "intent.grant", "id": "g-2f9deebdfc669a5b",
@@ -143,6 +146,7 @@ it is. The signer writes it into the run in an `intent.grant` record, with its l
                        {"field": "payee", "op": "in", "value": ["0x1111…", "0x2222…"]},
                        {"field": "amount", "op": "<=", "value": 200000000}],
            "expires_at": "2026-11-06T07:20:58.856118Z", "delegable": false, "parent": null, "sig": {"key": "…", "sig": "…"}},
+ "tools": ["mcp__payments__send_money"],
  "limits": [{"op": "sum", "field": "amount", "max": 500000000}], "used": [120000000], "self_approved": true,
  "first": {"approval_id": "apr-99c7fe5d7ff4ef1014c764c787b56c4f", "tool_call_id": "pay-1",
            "fields": {"amount": 120000000, "currency": "USDC", "payee": "0x1111…"}},
@@ -163,28 +167,33 @@ refused. Source: AP2 at
 
 ## What a grant reads
 
-A grant reads a payment call whose rules opt into payment grants: `TK-A044` (MCP money tools) in the coding pack, which
-the dev and server packs extend, and `TK-M001` and `TK-M002` in the server packs. It reads:
+A grant reads a payment call of a tool it covers, whose rules opt into payment grants: `TK-A044` (MCP money tools) in
+the coding pack, which the dev and server packs extend, and `TK-M001` and `TK-M002` in the server packs. It reads:
 
-- **amount**: exactly one of `amount` and `amount_cents`, a whole number above zero, in the currency's smallest unit
-  (cents, or a token's base unit, as Stripe takes them);
-- **currency**: `currency`, letters and digits, compared in upper case;
+- **currency**: `currency`, compared in upper case, one of those whose unit Tracekit knows: USD, EUR, GBP, INR, CAD,
+  AUD, CHF, SGD and JPY (ISO 4217's digits after the decimal point) and USDC and USDT (6);
+- **amount**: exactly one of `amount`, a whole number of the currency's smallest unit (cents, or a token's base unit, as
+  Stripe takes them), and `amount_cents`, hundredths of its whole unit, which must come to a whole number of that
+  smallest unit (150 JPY cents is 1.5 yen, so it is held), above zero;
 - **payee**: every payee key the call has (`payee`, `to`, `recipient`, `destination`, `account`, `account_number`,
   `iban`), which must all name one payee, of letters, digits and `._:@/+=-`. An EVM address is compared in lower case;
-- **descriptive arguments** that move no money: `memo`, `description`, `note`, `reference`, `idempotency_key`,
-  `invoice_id`, `order_id` and `statement_descriptor`, as plain strings or numbers.
+- **free text** that moves no money: `description` and `note`, as plain strings.
 
-A call with anything else (another argument, an amount as a string or a decimal, a second payee, a payee in an object)
-is held as it would be without a grant, and the hold says what the grant couldn't read.
+A call with anything else is held as it would be without a grant, and the hold names what the grant couldn't read: a
+call of a tool the grant doesn't cover, another argument (`memo`, which routes funds on some chains, an invoice or
+order id, which picks what is paid, an idempotency key, a fee or a split), an amount as a string or a decimal, a
+currency without a known unit, a second payee, a payee in an object.
 
 ## How the signer decides a payment
 
 1. The policy decides the call as usual. A grant can release only an `ask`; a deny stays a deny.
 2. Every rule that held the call (flags aside) must opt into the grant's intent. A call held by any other rule, by
    `TK-HOLD`, `TK-CONSTRAINT` or `TK-SHELL-PARSE`, or in a held or quarantined run, is held as without a grant.
-3. The grant reads the call's amount, currency and payee.
+3. A grant that covers the call's tool reads its amount, currency and payee.
 4. Every caveat must pass, and the totals must stay within every limit. The signer checks the totals as it writes the
    decision, so two payments at once can't both spend the last of a total. A payment counts when it is decided.
+   What a grant releases still passes every limit the operator's policy sets: a sum limit that can't read the call
+   holds it (`TK-LIMIT-SUM`), and one it takes past its maximum holds the run, as for any call.
 5. Within the grant: the call runs. The decision is `flag`, its rule ids those that held the call and `TK-GRANT`,
    with the payment and what is left; its `ext.grant` records the grant's id, the payment's fields, the totals after
    it and its tier.
@@ -198,6 +207,9 @@ is held as it would be without a grant, and the hold says what the grant couldn'
 | in EUR | held | `grant g-…: currency "EUR" is not "USDC"` |
 | 200 USDC with 400 used | held | `grant g-…: 400 of 500 USDC used; this call needs 200 USDC` |
 | amount `"120"` | held | `grant g-…: amount "120" is not a whole number of the currency's smallest unit …, so a person decides` |
+| `amount_cents` 19999999 (199,999.99 USDC) | held | `grant g-…: amount 199999.99 USDC is over 200 USDC each` |
+| with an `invoice_id` | held | `grant g-…: argument "invoice_id" is not one a payment grant reads, so a person decides` |
+| through another tool | held | `grant g-… covers mcp__payments__send_money, not mcp__payments__pay_invoice` |
 | after `tracekit grant revoke` | held | `grant g-… was revoked` |
 | past `--for` | held | `grant g-… expired at …` |
 
@@ -210,9 +222,10 @@ As who may answer the run's approvals ([approvals](approvals.md#who-may-answer))
 
 - With signer.yaml's `approvals`: an approver of the run's tenant, never the run's own user or principal (unless
   `approvals: {self_approval: allow}`). The grant names the person `approvals.persons` maps them to.
-- On the dev signer: the run's own user, as the dev signer takes approvals. The grant is recorded `self_approved`, and
-  the verifier says so, because the agent runs as that user too. The dev pack denies the agent's own
-  `tracekit grant add` and `tracekit approvals approve --grant` commands (`TK-D012`), as it denies its own approvals.
+- On the dev signer: any identity that may answer the run's approvals, which there is any identity of the run's
+  tenant. The grant records who issued it; one from the run's own user is recorded `self_approved`, and the verifier
+  says so, because the agent runs as that user too. The dev pack denies the agent's own `tracekit grant` commands (any
+  but `list` and `revoke`) and `tracekit approvals approve --grant` (`TK-D012`), as it denies its own approvals.
 - Never an agent approver, and never in a held, quarantined or ending run.
 
 `tracekit grant list` and `tracekit grant revoke` are open to anyone who may see the run, the run's own user
@@ -250,32 +263,37 @@ ceiling of 1000 USDC a grant`), and with a ceiling set, a grant in a currency it
 
 | Record | What it holds |
 |---|---|
-| `ext` record `intent.grant` | the grant, its limits, its totals at issue, `self_approved`, the held call it was issued from (`first`), the note |
+| `ext` record `intent.grant` | the grant, the tools it covers, its limits, its totals at issue, `self_approved`, the held call it was issued from (`first`), the note |
 | `ext` record `intent.revoked` | the grant's id, who revoked it, the reason |
 | `policy.decision` with `ext.grant` | a payment the grant released: `{id, fields, used, tier}` |
 
 These go in format v2's non-critical `ext` slot ([format v2](format-v2.md#9-bundle-layout)): a verifier older than
 1.6 verifies the run and says it doesn't interpret these names. `tracekit verify` and the TypeScript verifier check:
 
-- each grant: a person's, for its own run and tenant, never passed on, its id its hash's, within 24 hours, with the
-  caveats and limits a payment grant has, and its first totals those of the held call it came from;
-- each released payment: a `flag` decision with `TK-GRANT`, of a grant recorded earlier in the run and not revoked
-  before it, decided before the grant expired, its fields within every caveat, its totals the previous ones plus its
-  own and within every limit, and its tier the record's;
+- each grant: issued as a person's, for its own run and tenant, never passed on, its id its hash's, within 24 hours,
+  naming its tools, with the caveats and limits a payment grant has in a currency with a known unit, and its first
+  totals those of the held call it came from;
+- each released payment: a `flag` decision with `TK-GRANT`, of a tool its grant covers, of a grant recorded earlier in
+  the run and not revoked before it, decided before the grant expired, its fields whole numbers within every caveat,
+  its totals the previous ones plus its own, whole numbers within every limit, and its tier the record's;
 - each revocation: of a grant still live in its run.
 
-The `intent grants` line says how many grants there are and who issued them, and how many payments they released, at
-which tier: T2 when an executor or gateway decided and ran the call ([executor](executor.md)), T1 when the harness
-reported the arguments. Anything wrong is a warning on that line; the records' signatures and chain are checked as for
-every record.
+The `intent grants` line says how many grants there are and who issued them (`by alice`, or how many were
+self-approved), and how many payments they released, at which tier: T2 when an executor or gateway decided and ran the
+call ([executor](executor.md)), T1 when the harness reported the arguments. A released payment that breaks its grant
+(outside its caveats, past a limit or after it ended, wrong totals, another tool, an amount that isn't a whole number)
+fails the line and the verification: the records are the signer's own word that the payment was within the grant. A
+record in a shape the signer never writes, or a release whose grant this bundle doesn't hold, is a warning.
 
-The fields a decision records are the signer's reading of the arguments, which the bundle holds as commitments. To
-read them again, open the arguments (`tracekit signer reveal`) and run the reader in `tracekit/grants.py` on them.
+The fields a decision records are the signer's reading of the arguments, which the bundle holds as commitments, and
+the verifier doesn't open them. Checking the fields against the arguments is a manual step: open the arguments
+(`tracekit signer reveal`) and run `grants.read` in `tracekit/grants.py` on them.
 
 ## Limits
 
-See [limits](limits.md#intent-grants-experimental): one run per grant, payments only, amounts in whole minor units,
-payments typed into a shell command stay held, and what a dev-mode grant proves.
+See [limits](limits.md#intent-grants-experimental): one run per grant, payments only, amounts in whole smallest units,
+only `description` and `note` beside them, payments typed into a shell command stay held, and what a dev-mode grant
+proves.
 
 ## Later
 

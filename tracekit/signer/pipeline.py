@@ -257,12 +257,14 @@ def constraint_state(e):
 
 def grant_state(set_, run, e):
     """Follow record `e` of `run` in its intent grants (docs/intent-grants.md), `run["grants"]`: grant id -> {grant,
-    limits, used, revoked, self_approved, description?}. An `intent.grant` record adds one, an `intent.revoked` record
+    tools, limits, used, revoked, self_approved, description?}. An `intent.grant` record adds one, an `intent.revoked` record
     ends it, and a decision a grant released (`ext.grant`) sets its totals. `set_`: as agent_state's."""
     typ, d, x = e["type"], e["data"], (e.get("ext") or {}).get("grant")
     gs = run.get("grants") or {}
     if typ == "ext" and d.get("name") == "intent.grant":
-        set_(run, "grants", {**gs, d["id"]: {"grant": d["grant"], "limits": d["limits"], "used": d["used"],
+        # a grant without `tools` (before grants named them) covers no tool: it releases nothing
+        set_(run, "grants", {**gs, d["id"]: {"grant": d["grant"], "tools": d.get("tools", []), "limits": d["limits"],
+                                             "used": d["used"],
                                              "revoked": False, "self_approved": d["self_approved"],
                                              **({"description": d["description"]} if "description" in d else {})}})
     elif typ == "ext" and d.get("name") == "intent.revoked" and d.get("id") in gs:

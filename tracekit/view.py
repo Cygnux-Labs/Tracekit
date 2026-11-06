@@ -721,6 +721,8 @@ class Translator(observe.Translator):
                 bounds = grants.words(g, d["limits"], d.get("used"))
             except (KeyError, TypeError, IndexError):   # a record the signer never writes: its id alone
                 bounds = "limits unreadable"
+            tools = ", ".join(map(str, d.get("tools") or [])) or "no tool"
+            bounds = f"through {tools} {bounds}"
             issued = {"id": d.get("id"), "by": who, "words": bounds, "until": g.get("expires_at"),
                       **({"description": d["description"]} if isinstance(d.get("description"), str) else {})}
             return note(f"GRANT ISSUED · {d.get('id')}", f"{who} · payments {bounds} · until {g.get('expires_at')}"

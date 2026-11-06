@@ -14,8 +14,10 @@ from tracekit.format.canon import MAX_SAFE_INT, event_hash
 from tracekit.policy2.classes import PAYEE_KEYS
 
 MAX_S = 86400   # a grant's longest life, as PCM's (SPEC 7.4)
-# the minor units of each currency a person may type an amount in (ISO 4217's, and 6 for the USD stablecoins)
-# lean: a fixed table; add a currency here when a payment tool uses it
+# each currency's unit: the digits of its smallest unit after the decimal point (ISO 4217's exponent for money, 6 for
+# the USD stablecoins). A call's `amount` counts that smallest unit (cents for USD, the base unit for USDC) and its
+# `amount_cents` hundredths of the whole unit; a currency this table doesn't name is read in no unit, so it stays held
+# lean: a fixed table; add a currency here, with its exponent, when a payment tool uses it
 DECIMALS = {"USD": 2, "EUR": 2, "GBP": 2, "INR": 2, "CAD": 2, "AUD": 2, "CHF": 2, "SGD": 2, "JPY": 0, "USDC": 6,
             "USDT": 6}
 _CURRENCY, _PAYEE = r"[A-Z][A-Z0-9]{2,9}", r"[A-Za-z0-9._:@/+=-]{1,128}"
@@ -25,11 +27,11 @@ PAYMENT = {"pcm_schema": 0, "name": "payment.send", "grant": True,
                       "payee": {"type": "id", "pattern": _PAYEE}}}
 INTENTS = {"payment.send": PAYMENT}
 REFS = {pcm.schema_ref(doc): name for name, doc in INTENTS.items()}   # schema ref -> intent name
-# what a payment call may carry besides amount, currency and payees: words that describe the payment and move no money
-# lean: a closed list, so any other argument (a fee, a split, a second recipient) holds the call; add a key here when a
-# payment tool's plain descriptive argument holds calls that should run
-EXTRA = frozenset({"memo", "description", "note", "reference", "idempotency_key", "invoice_id", "order_id",
-                   "statement_descriptor"})
+# what a payment call may carry besides amount, currency and payees: free text that describes the payment and moves no
+# money. A closed list, as AP2's rule that an unknown constraint fails: any other argument holds the call, `memo` (which
+# routes funds on some chains), invoice and order ids (which pick what is paid) and fees and splits included
+EXTRA = frozenset({"description", "note"})
+MAX_TOOLS = 16   # the tools one grant names
 LIMIT_OPS = ("sum", "count")
 
 
@@ -95,9 +97,10 @@ def payee(v):
 
 def read(intent, args):
     """(fields, None) of call arguments `args` as intent `intent` reads them, else (None, why they can't be read).
-    payment.send: exactly one of amount and amount_cents, a whole number above zero (minor units); a currency (its
-    letters in upper case); every payee key (classes.PAYEE_KEYS) present naming one payee; and nothing else but EXTRA's
-    plain values. Anything else is a call the grant can't read, so it stays held."""
+    payment.send: a currency DECIMALS names (its letters in upper case); exactly one of `amount` (a whole number of the
+    currency's smallest unit) and `amount_cents` (hundredths of its whole unit, which must come to a whole number of
+    its smallest unit), above zero; every payee key (classes.PAYEE_KEYS) present naming one payee; and nothing else
+    but EXTRA's plain strings. Anything else is a call the grant can't read, so it stays held."""
     if intent != "payment.send":
         return None, f"no grant reads {intent!r} calls"
     if not isinstance(args, dict):
@@ -112,6 +115,15 @@ def read(intent, args):
     cur = args.get("currency")
     if not isinstance(cur, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{2,9}", cur):
         return None, "no currency in the call" if cur is None else f"currency {json.dumps(cur)[:32]} is not a code"
+    cur, d = cur.upper(), DECIMALS.get(cur.upper())
+    if d is None:
+        return None, f"currency {cur} has no unit tracekit knows ({', '.join(sorted(DECIMALS))})"
+    if keys[0] == "amount_cents":   # hundredths of the whole unit, as the currency's smallest unit
+        if d < 2 and amount % 10 ** (2 - d):
+            return None, f"amount_cents {amount} is not a whole number of {cur}'s smallest unit"
+        amount = amount * 10 ** (d - 2) if d >= 2 else amount // 10 ** (2 - d)
+        if amount > MAX_SAFE_INT:
+            return None, f"amount_cents {args['amount_cents']} is too large to compare"
     payees = {k: args[k] for k in PAYEE_KEYS if k in args}
     if not payees:
         return None, "no payee in the call"
@@ -126,25 +138,31 @@ def read(intent, args):
     other = sorted(set(args) - {keys[0], "currency", *payees} - EXTRA)
     if other:
         return None, f"argument {json.dumps(other[0])[:64]} is not one a payment grant reads"
-    bad = sorted(k for k in set(args) & EXTRA if not isinstance(args[k], (str, int)) or isinstance(args[k], bool))
+    bad = sorted(k for k in set(args) & EXTRA if not isinstance(args[k], str))
     if bad:
-        return None, f"argument {bad[0]} is not a plain string or number"
-    return {"amount": amount, "currency": cur.upper(), "payee": who}, None
+        return None, f"argument {bad[0]} is not a plain string"
+    return {"amount": amount, "currency": cur, "payee": who}, None
 
 
-def problems(intent, caveats, limits, expires_at, now, ceilings=None):
+def problems(intent, caveats, limits, expires_at, now, ceilings=None, tools=None):
     """What is wrong with a grant a person asks for, at ISO time `now`: an unknown intent; caveats that are not valid
-    for its schema document (pcm.check_caveats); for payments, a currency not pinned with ==, payees not named with ==
-    or in, or no `sum` limit of amount; limits that are not distinct sum/count entries with a whole max above zero; an
-    expiry not after now or more than MAX_S later; and a total over the operator's ceiling for the currency
-    (`ceilings`: {intent: {currency: minor units}}, from signer.yaml's grants section). Empty when it may be issued."""
+    for its schema document (pcm.check_caveats); for payments, a currency not pinned with ==, or one DECIMALS doesn't
+    know, payees not named with == or in, or no `sum` limit of amount; limits that are not distinct sum/count entries
+    with a whole max above zero; `tools` (the tools whose calls it covers) not 1 to MAX_TOOLS distinct names; an expiry
+    not after now or more than MAX_S later; and a total over the operator's ceiling for the currency (`ceilings`:
+    {intent: {currency: minor units}}, from signer.yaml's grants section). Empty when it may be issued."""
     doc = INTENTS.get(intent)
     if doc is None:
         return [f"no intent {intent!r}: grants cover {', '.join(INTENTS)}"]
     out = pcm.check_caveats(doc, caveats)
+    if not (isinstance(tools, list) and 0 < len(tools) <= MAX_TOOLS and len(set(map(str, tools))) == len(tools)
+            and all(isinstance(t, str) and 0 < len(t) <= 256 for t in tools)):
+        out.append(f"a grant names the tools whose calls it covers: 1 to {MAX_TOOLS} distinct tool names")
     pinned = {c["field"]: c for c in caveats if c["op"] in ("==", "in")}
     if (pinned.get("currency") or {}).get("op") != "==":
         out.append("a payment grant names its one currency (currency == USDC)")
+    elif isinstance(cur := pinned["currency"]["value"], str) and cur not in DECIMALS:   # a non-string: check_caveats'
+        out.append(f"tracekit knows the units of {', '.join(sorted(DECIMALS))}; {cur} isn't one of them")
     if "payee" not in pinned:
         out.append("a payment grant names its payees (payee in [...])")
     seen = set()
@@ -273,12 +291,16 @@ def check(entry, fields, now):
     return used, None
 
 
-def decide(grants, intent, args, now):
-    """Which of a run's grants (id -> entry) releases a call of intent `intent` with `args` at ISO time `now`:
-    (grant id, fields, totals after it, None), or (None, fields, None, why every live grant of the intent holds it).
-    The first grant in issue order that has room releases it."""
+def decide(grants, intent, tool, args, now):
+    """Which of a run's grants (id -> entry) releases a call of tool `tool` and intent `intent` with `args` at ISO time
+    `now`: (grant id, fields, totals after it, None), or (None, fields, None, why every grant of the intent holds it).
+    Only a grant that names the tool reads the call; the first in issue order that has room releases it."""
+    ours = [(gid, e) for gid, e in grants.items() if REFS.get(e["grant"]["intent"]) == intent]
+    mine = [(gid, e) for gid, e in ours if tool in e["tools"]]
+    if ours and not mine:
+        gid, e = ours[0]
+        return None, None, None, f"grant {gid} covers {', '.join(e['tools'])}, not {tool}"
     fields, unread = read(intent, args)
-    mine = [(gid, e) for gid, e in grants.items() if REFS.get(e["grant"]["intent"]) == intent]
     if fields is None:
         return None, None, None, f"grant {mine[0][0]}: {unread}, so a person decides" if mine else unread
     whys = []

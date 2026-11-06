@@ -651,8 +651,10 @@ run is listed as skipped). Firefox and Safari are not run.
 `eval/e23_grants.py` runs a payout agent against one in-process signer whose payment rule opts into
 [intent grants](intent-grants.md), with a named approver. Seven parts: 30 payments, 24 within the grant and 6 outside it
 (an unknown payee, over the most for one payment, past the total), where the person's stops fall from 30 to 7 and
-nothing outside the limits runs; 19 argument attacks a grant must not read as within it (amounts in other units, payee
-look-alikes, a second payee, extra arguments that move money, another currency), all held; the agent issuing a grant
+nothing outside the limits runs; 25 calls a grant must not read as within it (amounts in other units, hundredths of a
+USDC past the cap, a currency with no known unit, payee look-alikes, a second payee, arguments that can move money or
+pick what is paid, such as a fee, a split, a memo, an invoice or order id, another currency, another tool), all held;
+the agent issuing a grant
 for its own run, passing one on, or asking for one past a day, all refused; 100 payments of 7 USDC under a 50 USDC
 total, of which 7 run; a revoked and an expired grant, which release nothing; totals across a signer restart; and the
 run's bundle, whose `intent grants` line re-checks every release. Results: `eval/results/e23_grants.json`.

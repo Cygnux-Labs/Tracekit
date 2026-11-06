@@ -275,8 +275,9 @@ GRANT_ID = _str(18, pattern=r"^g-[0-9a-f]{16}" + _END)
 _LIMITS = {"type": "array", "minItems": 1, "maxItems": 4, "items": _obj(
     ["op", "max"], op={"enum": ["sum", "count"]}, field=_str(64, pattern=r"^[a-z][a-z0-9_]*" + _END),
     max={"type": "integer", "minimum": 1, "maximum": MAX_SAFE_INT})}
-_GRANT_VIEW = _obj(["grant_id", "run_id", "grant", "limits", "used", "state", "self_approved"], grant_id=GRANT_ID,
-                   run_id=ID, grant=PCM_GRANT, limits=_LIMITS, used={"type": "array", "maxItems": 4, "items": SEQ},
+_TOOLS = {"type": "array", "maxItems": 16, "items": _str(256, minLength=1)}   # the tools whose calls a grant covers
+_GRANT_VIEW = _obj(["grant_id", "run_id", "grant", "tools", "limits", "used", "state", "self_approved"],
+                   grant_id=GRANT_ID, run_id=ID, grant=PCM_GRANT, tools=_TOOLS, limits=_LIMITS, used={"type": "array", "maxItems": 4, "items": SEQ},
                    state={"enum": ["live", "revoked", "expired", "used_up"]}, self_approved={"type": "boolean"},
                    description=_str(512))
 
@@ -458,11 +459,11 @@ REQUESTS = {
     # a box_daemons identity names its open box run (version 21): every later frame of this connection is the box's
     "channel_open": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
     # intent grants (version 22, docs/intent-grants.md): a person (who may answer the run's approvals) grants the run's
-    # agent a kind of costly call within caveats and limits until expires_at; with approval_id, the held call it is
-    # issued from is its first use. Listed and revoked by those who may see the run
+    # agent a kind of costly call of `tools` within caveats and limits until expires_at; with approval_id, the held
+    # call it is issued from is its first use, and its tool one of the grant's. Listed and revoked by those who may see the run
     "grant_issue": _obj(["request_id", "run_id", "intent", "caveats", "limits", "expires_at"], request_id=ID, run_id=ID,
                         approval_id=ID, intent=INTENT, caveats=_CAVEATS, limits=_LIMITS, expires_at=TS,
-                        description=_str(512)),
+                        description=_str(512), tools=_TOOLS),
     "grant_list": _obj([], run_id=ID),
     "grant_revoke": _obj(["request_id", "grant_id"], request_id=ID, grant_id=GRANT_ID, reason=REASON),
 }
@@ -587,9 +588,9 @@ RESPONSES = {
                          pending={"type": "array", "maxItems": 16, "items": SEQ}),
     "channel_open": _obj(["identity"], identity=IDENTITY),   # the box's: box:<uid>/<box id>
     # used: its totals so far, one per limit (the held call it was issued from counts)
-    "grant_issue": _obj(["grant_id", "grant", "used", "self_approved", "run_seq"], grant_id=GRANT_ID, grant=PCM_GRANT,
-                        used={"type": "array", "maxItems": 4, "items": SEQ}, self_approved={"type": "boolean"},
-                        run_seq=SEQ),
+    "grant_issue": _obj(["grant_id", "grant", "tools", "used", "self_approved", "run_seq"], grant_id=GRANT_ID,
+                        grant=PCM_GRANT, tools=_TOOLS, used={"type": "array", "maxItems": 4, "items": SEQ},
+                        self_approved={"type": "boolean"}, run_seq=SEQ),
     "grant_list": _obj(["grants"], grants={"type": "array", "maxItems": 1000, "items": _GRANT_VIEW}),
     "grant_revoke": _obj(["grant_id", "run_id", "run_seq"], grant_id=GRANT_ID, run_id=ID, run_seq=SEQ),
 }

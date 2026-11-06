@@ -954,7 +954,8 @@ class Agreement(SignerBundles):
 
     def test_both_verifiers_re_check_intent_grants_alike(self):
         """Intent grants (docs/intent-grants.md): a person's grant, the two payments it released, one it held and its
-        revocation read the same in both; so does each record a faulty signer could write, problem for problem."""
+        revocation read the same in both; so does each record a faulty signer could write, problem for problem: a
+        release its grant doesn't allow fails, any other record the signer never writes warns."""
         alice, payer, usdc = CallerIdentity("uid", "990001", True), CallerIdentity("uid", "990101", True), 10 ** 6
         p1, p2, d = "0x" + "a1" * 20, "0x" + "b2" * 20, os.path.join(self.d, f"grants-{uuid.uuid4().hex}")
         s = svc.SignerService(d, approvals={"approvers": ["uid:990001"], "persons": {"uid:990001": "alice"}},
@@ -966,7 +967,8 @@ class Agreement(SignerBundles):
             "request_id": uuid.uuid4().hex, "run_id": r["run_id"], "intent": "payment.send",
             "caveats": [{"field": "currency", "op": "==", "value": "USDC"}, {"field": "payee", "op": "in", "value": [p1, p2]},
                         {"field": "amount", "op": "<=", "value": 200 * usdc}],
-            "limits": [{"op": "sum", "field": "amount", "max": 500 * usdc}], "expires_at": svc._iso(time.time() + 3600)})["grant_id"]
+            "limits": [{"op": "sum", "field": "amount", "max": 500 * usdc}], "expires_at": svc._iso(time.time() + 3600),
+            "tools": ["send_money"]})["grant_id"]
         for i, (amount, to) in enumerate(((120, p1), (80, p2), (400, p1))):   # the last is over 200 USDC each: held
             s.call(payer, "decide", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"],
                                      "stream": "s", "client_seq": i, "tool_call_id": f"t{i}", "tool": "send_money",
@@ -979,7 +981,7 @@ class Agreement(SignerBundles):
             json.dump({"logs": [s.vkey], "algs": ["ed25519"]}, f)
         _, rep = self.agree(bundle, trust)
         [line] = [c for c in rep.checks if c["check"] == "intent grants"]
-        self.assertEqual((line["status"], line["detail"]), ("pass", "1 grant(s) by people, 1 revoked; 2 call(s) released "
+        self.assertEqual((line["status"], line["detail"]), ("pass", "1 grant(s) by alice, 1 revoked; 2 call(s) released "
                          "within them (0 at T2, decided and run by an executor or gateway; 2 at T1, on the arguments the "
                          "harness reported), each re-checked against its grant and its running totals"))
         self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "intent grants"], [line])
@@ -993,14 +995,17 @@ class Agreement(SignerBundles):
             if rehash:
                 e["data"]["id"] = grants.grant_id(e["data"]["grant"])
             return e
+        def extra(n, amount, used):   # a release after `again` the signer would never sign: another call's record
+            return edit(again, lambda e: (e.update(seq=again["seq"] + n), e["ext"]["grant"].update(
+                fields=dict(e["ext"]["grant"]["fields"], amount=amount * usdc, payee=p1), used=[used * usdc])))
         cases = [("pass", [grant, release, again, revoke]),
                  ("pass", [edit(grant, lambda e: e["data"].update(self_approved=True)), release]),
                  ("warn", [release]), ("warn", [revoke]), ("warn", [dict(grant, seq=release["seq"] + 1), release]),
-                 ("warn", [grant, edit(release, lambda e: e["ext"]["grant"].update(used=[1]))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(used=[1]))]),
                  ("warn", [grant, edit(release, lambda e: e["ext"]["grant"].update(tier="T2"))]),
-                 ("warn", [grant, edit(release, lambda e: e["ext"]["grant"].update(
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(
                      fields=dict(e["ext"]["grant"]["fields"], amount=900 * usdc), used=[900 * usdc]))]),
-                 ("warn", [grant, edit(release, lambda e: e["ext"]["grant"]["fields"].update(currency="usdc"))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"]["fields"].update(currency="usdc"))]),
                  ("warn", [grant, edit(release, lambda e: e["data"].update(decision="allow"))]),
                  ("warn", [edit(grant, lambda e: e["data"]["grant"].update(expires_at="2099-01-01T00:00:00.000000Z")),
                            release]),
@@ -1013,9 +1018,9 @@ class Agreement(SignerBundles):
                  ("warn", [edit(grant, lambda e: e["data"].update(used=[5]))]),
                  ("warn", [edit(grant, lambda e: e["data"].update(first={"approval_id": "a", "tool_call_id": "t", "fields": {
                      "amount": 600 * usdc, "currency": "USDC", "payee": p1}}))]),
-                 ("warn", [edit(grant, lambda e: e["data"].update(limits=[
+                 ("fail", [edit(grant, lambda e: e["data"].update(limits=[
                      {"op": "sum", "field": "amount", "max": 100 * usdc}])), release]),
-                 ("warn", [edit(grant, lambda e: e["data"].update(limits=[
+                 ("fail", [edit(grant, lambda e: e["data"].update(limits=[
                      {"op": "sum", "field": "amount", "max": 500 * usdc}, {"op": "count", "max": 1}], used=[0, 0])),
                            edit(release, lambda e: e["ext"]["grant"].update(used=[120 * usdc, 1])), again]),
                  ("warn", [edit(grant, lambda e: e.update(source="agent"))]),
@@ -1025,10 +1030,22 @@ class Agreement(SignerBundles):
                  ("warn", [grant, edit(revoke, lambda e: e["data"].update(id={"id": gid}))]),
                  ("warn", [edit(grant, lambda e: e["data"].update(limits=[
                      {"op": "sum", "field": "amount", "max": 500 * usdc}, {"op": "sum", "field": "payee", "max": 5}],
-                     used=[0, 0]))])]
-        script = ('const { Report, checkGrants } = await import(%s);\nconst out = [];\n'
-                  'for (const events of JSON.parse(await new Response(process.stdin).text())) {\n'
-                  '  const rep = new Report();\n  await checkGrants(rep, events);\n  out.push(rep.checks);\n}\n'
+                     used=[0, 0]))]),
+                 # whole numbers written as floats: Python's floats, never ints
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"]["fields"].update(amount=120.0 * usdc))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(used=[120.0 * usdc]))]),
+                 ("warn", [edit(grant, lambda e: e["data"]["grant"]["caveats"][2].update(value=200.0 * usdc), rehash=True)]),
+                 ("warn", [edit(grant, lambda e: e["data"].update(used=[0.0]))]),
+                 # tools, currencies, a release's shape, and a release past the total
+                 ("fail", [grant, edit(release, lambda e: e["data"].update(tool="wire_money"))]),
+                 ("warn", [edit(grant, lambda e: e["data"].pop("tools"))]),
+                 ("warn", [edit(grant, lambda e: e["data"]["grant"]["caveats"][0].update(value="XYZ"), rehash=True)]),
+                 ("warn", [edit(grant, lambda e: e["data"]["grant"]["caveats"][0].update(value=["USDC"]), rehash=True)]),
+                 ("warn", [grant, edit(release, lambda e: e["ext"]["grant"].pop("fields"))]),
+                 ("fail", [grant, release, again, extra(1, 200, 400), extra(2, 200, 600)])]
+        script = ('const { Report, checkGrants, strictParse } = await import(%s);\nconst out = [], floats = new WeakMap();\n'
+                  'for (const events of strictParse(await new Response(process.stdin).text(), floats)) {\n'
+                  '  const rep = new Report();\n  await checkGrants(rep, events, floats);\n  out.push(rep.checks);\n}\n'
                   'console.log(JSON.stringify(out));\n') % json.dumps(
                       "file://" + os.path.join(TS, "dist", "verify", "index.js").replace(os.sep, "/"))
         p = subprocess.run(["node", "--input-type=module", "-e", script], input=json.dumps([es for _, es in cases]),
@@ -1040,7 +1057,7 @@ class Agreement(SignerBundles):
                 py = Report()
                 v2._grants(py, json.loads(json.dumps(events)))
                 self.assertEqual(ts_checks, py.checks)
-                self.assertEqual(py.failures, [])   # a warning, never a failure: the records verified like any other
+                self.assertEqual(py.failures, ["intent grants"] if status == "fail" else [])
                 self.assertEqual(py.checks[0]["status"], status, py.checks)
 
     def test_the_browser_page_reports_what_the_cli_does(self):

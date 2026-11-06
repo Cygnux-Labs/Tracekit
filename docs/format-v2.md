@@ -615,7 +615,8 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
   the boxed agent only) and never widens it.
 - `intent.grant`, `intent.revoked` and `grant` are non-critical: a payment a grant released is a `flag` decision
   either way, so a verifier that doesn't read them says the call ran without a stop, which is true; one that reads them
-  adds an `intent grants` line that re-checks each release against its grant ([intent grants](intent-grants.md)).
+  adds an `intent grants` line that re-checks each release against its grant ([intent grants](intent-grants.md)), and
+  fails the verification when the signer released a payment its own grant holds.
 - `review.cites` and `effect.observed.sensor` stay critical: a verifier that passed over a signed finding's citations
   would label it `imported`, a false line; and a sensor's effects are records of what the agent's own processes did,
   in its run, which a verifier must read to verify that run. So does `capture.gap.sensor`: a 1.3 verifier counts every
@@ -736,13 +737,16 @@ line and verdict is in [verdicts](verdicts.md).
     policy`, passing with `OpenShell changed the sandbox policy or configuration n time(s) (<change>: <count>, ... the
     first 8 in code-point order), as OpenShell reported it`, a warning listing the records (the first 20) that carry it
     other than as an `ext` record of source `signer` with a `change` of `[a-z0-9_.-]{1,64}` and a non-empty
-    `observer`. `intent.grant`, `intent.revoked` and `grant` (1.6.0), read together: `intent grants`, a warning
-    listing the records (the first 20) where a grant isn't a person's PCM grant for its own run and tenant, never
-    passed on, its `id` its hash's, valid for its intent with an expiry within 24 h of its `ts`, and its first totals
-    those of no call or of the held call it came from; a revocation names no grant live earlier in its run; or a
-    released payment isn't a `flag` with `TK-GRANT` of a grant recorded earlier in its run and not revoked, decided
-    before it expired, its fields within every caveat, its totals the previous plus its own within every limit, and
-    its tier the record's. Else it passes with the grants, who issued them, and the payments released at T2 and T1.
+    `observer`. `intent.grant`, `intent.revoked` and `grant` (1.6.0), read together: `intent grants`, failing,
+    listing the records (the first 20), where a released payment (a `flag` with `TK-GRANT` of a grant recorded earlier
+    in its run) breaks its grant: its fields aren't whole numbers of the intent's, its tool isn't one the grant
+    covers, its grant was revoked or expired before it or its fields break a caveat or a limit, or its totals aren't
+    the previous plus its own as whole numbers. A warning, listing the records, where a grant isn't a person's PCM
+    grant for its own run and tenant, never passed on, its `id` its hash's, naming 1 to 16 tools, valid for its intent
+    in a currency with a known unit with an expiry within 24 h of its `ts`, and its first totals those of no call or of
+    the held call it came from; a revocation names no grant live earlier in its run; a release names a grant the bundle
+    doesn't hold earlier in its run, or isn't a `flag` with `TK-GRANT`; or its tier isn't the record's. Else it passes
+    with the grants, who issued them, and the payments released at T2 and T1.
     `box` (1.6.0): `boxed agent`, a warning listing the records (the first 20) when any record carries it
     other than on a `run.registered` whose `data.identity.scheme` is `uid`, as an object with exactly `id`
     (`[A-Za-z0-9._:-]{1,128}`), `image_digest` (`sha256:` and 64 hex digits), `allow` (a list of strings), `engine`

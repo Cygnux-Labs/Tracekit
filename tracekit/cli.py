@@ -1456,6 +1456,9 @@ def _approvals(a):
 
 def _grant_flags(q, required):
     """The flags that say a payment grant's limits, on `grant add` and `approvals approve --grant`."""
+    q.add_argument("--tool", action="append", required=required, help="a tool whose calls the grant covers, as the "
+                   "policy names it (mcp__payments__send_money); repeat it for each. From a held call, its tool is "
+                   "one already")
     q.add_argument("--payee", action="append", required=required, help="a payee the agent may pay (repeat it for "
                    "each); the grant holds a payment to anyone else")
     q.add_argument("--total", required=required, help="the most all its payments add up to, such as '500 USDC'")
@@ -1487,6 +1490,7 @@ def _grant_req(a, run_id, approval_id=None):
             "limits": [{"op": "sum", "field": "amount", "max": total}]
             + ([{"op": "count", "max": a.count}] if a.count else []),
             "expires_at": until.strftime("%Y-%m-%dT%H:%M:%S.%fZ"), **({"approval_id": approval_id} if approval_id else {}),
+            **({"tools": list(dict.fromkeys(a.tool))} if a.tool else {}),
             **({"description": a.note} if a.note else {})}
 
 
@@ -1495,8 +1499,8 @@ def _grant_issued(r, dev):
     limits asked for); `dev`: the same-user dev signer issued it."""
     from . import grants
     g = r["grant"]
-    return (f"grant {r['grant_id']} issued for run {g['issuer']['run']}: payments "
-            f"{grants.words(g, r['limits'], r['used'])}, "
+    return (f"grant {r['grant_id']} issued for run {g['issuer']['run']}: payments through "
+            f"{', '.join(json.dumps(t) for t in r['tools'])} {grants.words(g, r['limits'], r['used'])}, "
             f"until {g['expires_at']}" + ("" if not r["self_approved"] else
                                           ". Recorded as self-approved: " + ("the dev signer runs as your own user and "
                                                                              "can't tell you from your agent" if dev else
@@ -1522,7 +1526,8 @@ def _grant(a):
                 g = x["grant"]
                 who = "self-approved (the run's own user, which the agent can be)" if x["self_approved"] else \
                     f"by {g['issuer'].get('person') or g['issuer']['id']}"
-                print(f"{x['grant_id']}  {x['state']}  run={x['run_id']}  {g['intent'].split('@')[0]}  {who}  "
+                print(f"{x['grant_id']}  {x['state']}  run={x['run_id']}  {g['intent'].split('@')[0]}  "
+                      f"tools={','.join(json.dumps(t) for t in x['tools'])}  {who}  "
                       f"{grants.words(g, x['limits'], x['used'])}  until {g['expires_at']}"
                       + (f"  {json.dumps(x['description'])}" if x.get("description") else ""))
             if not gs and not a.json:
