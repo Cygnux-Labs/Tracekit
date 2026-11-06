@@ -125,7 +125,8 @@ def main(argv=None):
                                                          "traffic only through a local egress observer (an owner-match "
                                                          f"firewall rule; undone by uninstall; {wiki_url('docs/egress.md')})")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
-    p.add_argument("--no-hooks", action="store_true")
+    p.add_argument("--no-hooks", action="store_true", help="install no agent hooks (an SDK agent, or the Claude Code "
+                   "plugin's own hooks)")
     p.add_argument("--no-thinking-summaries", action="store_true", help="with --v2: leave Claude Code's "
                    "showThinkingSummaries and Codex's model_reasoning_summary alone (init turns them on so `tracekit "
                    "analyze --v2` can read the model's reasoning)")
