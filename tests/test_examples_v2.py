@@ -103,12 +103,13 @@ class DemoServer(unittest.TestCase):
                            timeout=120, cwd=ROOT)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         verified, tampered = p.stdout.split("tamper test")
-        # each scripted call's verdict and first rule under the dev pack as shipped
+        # each scripted call's verdict and first rule under the server pack as shipped
+        self.assertIn("\n  policy: server pack\n", verified)
         self.assertEqual(re.findall(r"': (\w+) ?(\S*)", verified),
-                         [("allow", ""), ("ask", "TK-SHELL-PARSE"), ("deny", "TK-D002"), ("allow", "TK-F005"),
-                          ("allow", "TK-F002"), ("deny", "TK-D003")])
-        self.assertRegex(verified, r"\n    rejected apr-[0-9a-f]{32}: it never runs\n")
-        self.assertIn("\nVERIFIED: 6 tool calls in 16 signed records, none changed, removed or added after signing.\n"
+                         [("allow", ""), ("ask", "TK-SHELL-PARSE"), ("deny", "TK-D002"), ("deny", "TK-S004"),
+                          ("ask", "TK-P003"), ("deny", "TK-D003")])
+        self.assertEqual(len(re.findall(r"^    rejected apr-[0-9a-f]{32}: it never runs$", verified, re.M)), 2)
+        self.assertIn("\nVERIFIED: 6 tool calls in 17 signed records, none changed, removed or added after signing.\n"
                       "NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could "
                       "have rewritten the record.\n", verified)   # what dev mode means
         self.assertNotIn("PASS", verified)

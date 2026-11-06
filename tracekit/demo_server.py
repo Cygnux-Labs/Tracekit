@@ -1,7 +1,7 @@
 """`tracekit demo --server`: the v2 signer end to end in a temp dir, nothing touched outside it.
 
-A dev signer (keys and store in the temp dir, policy: the dev pack) with an in-process test witness that cosigns its
-checkpoints. A scripted agent run of hard cases, each decided by the dev pack as shipped: `ls`, a delete hidden in
+A dev signer (keys and store in the temp dir, policy: the server pack) with an in-process test witness that cosigns its
+checkpoints. A scripted agent run of hard cases, each decided by the server pack as shipped: `ls`, a delete hidden in
 base64 (held: the policy can't read it, and a person rejects it), a downloaded script piped to a shell, a read of the
 cloud credentials, a web page observed as untrusted that names a collector host and a send of .env to that host, and a
 force-push to main. The run is exported, verified against a trust config pinning the log key and the witness, then a
@@ -21,7 +21,7 @@ from tracekit.demo import say
 from tracekit.deploy import files
 from tracekit.format import checkpoint
 from tracekit.sdk.client import Client, result_field
-from tracekit.signer.service import SignerService, _dev_token
+from tracekit.signer.service import DEFAULT_POLICY, SignerService, _dev_token, load_policy
 from tracekit.storage.file import FileReader
 from tracekit.tlog_witness import log_signed, signed_by
 from tracekit.transport import answering_hello, hello
@@ -141,9 +141,11 @@ def main(keep=False, detail=False):
     service = srv = None
     try:
         say(f"setup: dev signer and an in-process test witness in {d}")
+        print("  policy: server pack")
         witness = Witness()
         service = SignerService(os.path.join(d, "data"), witnesses=[witness], isolation="same-user", grace_s=0.5,
-                                fsck_every_s=0)
+                                fsck_every_s=0,
+                                policy=load_policy(os.path.join(os.path.dirname(DEFAULT_POLICY), "server.yaml")))
         path, srv = _serve(d, service)
         client = Client(path)
         say("agent run (SCRIPTED: fixed tool calls, not a model)")
