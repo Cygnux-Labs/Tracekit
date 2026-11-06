@@ -127,7 +127,8 @@ applies only when the signer cannot be reached at the decision; a refusal, or a 
 never lets the call run. Recording a finished call never throws and never changes its result (a failure is a
 `TracekitWarning`). The frameworks are optional peer dependencies: the adapters import none of them, and the client
 keeps no runtime dependencies. No adapter wraps a provider client, so the SDKs' own `APIPromise` (`.withResponse()`)
-and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offline examples: `examples/v2_*.mjs`.
+and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offline examples: `examples/v2_*.mjs`, and
+[a Mastra workflow](examples/mastra/) that suspends on a held call and resumes with its approval id.
 
 - **A server: a run per conversation.** Register a run per conversation and make it current around each request with
   `withRun(run, () => runner.run(...))`: every adapter decides the calls made inside it in that run (its complete and

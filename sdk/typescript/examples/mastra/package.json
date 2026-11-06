@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "dependencies": {
+    "@mastra/core": "1.79.0",
+    "zod": "4.6.7"
+  }
+}
