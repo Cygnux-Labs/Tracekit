@@ -417,30 +417,30 @@ ask:
     reason: dropping or resetting a database through a framework command
     remedy: Wait for a person to approve the held call, or reset a disposable copy of the database and leave the real one.
     rationale: A framework's reset or drop command wipes the database its configuration points at, which may not be a throwaway one; a person confirms it.
-  - id: TK-A056
+  - id: TK-A058
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
     # model weights files (.safetensors, .gguf, .pt, .pth, .ckpt) written or edited through file tools; reads are allowed
     pattern: '\.(safetensors|gguf|pt|pth|ckpt)$'
-    reason: overwriting model weights
-    remedy: Have a person approve the held call, or save the weights under a new name.
-    rationale: Overwriting model weights changes what every user of that model gets; a person confirms it.
-  - id: TK-A057
+    reason: writing a model weights file
+    remedy: Have a person approve the held call.
+    rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
+  - id: TK-A059
     class: shell
     field: effects
     # each file a command writes (redirections, cp, mv, tee …), as TK-D008 reads them, ending in model weights
     # extensions (.safetensors, .gguf, .pt, .pth, .ckpt); reads, listings and non-weights files aren't held
-    pattern: '^WRITE_TARGET:[^\n]*?\.(safetensors|gguf|pt|pth|ckpt)$'
-    reason: overwriting model weights
-    remedy: Have a person approve the held call, or save the weights under a new name.
-    rationale: Overwriting model weights changes what every user of that model gets; a person confirms it.
-  - id: TK-A058
+    pattern: '^WRITE_TARGET:[\w\W]*?\.(?:safetensors|gguf|pt|pth|ckpt)$'
+    reason: writing a model weights file
+    remedy: Have a person approve the held call.
+    rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
+  - id: TK-A060
     class: shell
     field: argv
     # publishing model weights to a hub or registry: huggingface-cli upload, hf upload, ollama push, after up to eight
     # options; downloads (download, pull) aren't held
-    pattern: '^(?:(?:huggingface-cli|hf)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload|ollama(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push)(?: |$)'
+    pattern: '^(?:(?:huggingface-cli|hf)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?:-large-folder)?|ollama(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push)(?: |$)'
     reason: publishing model weights to a model hub
     remedy: Have a person approve the held call, or work with local models and leave the hub''s copy as it is.
     rationale: Publishing model weights to a model hub changes what every user of that model gets; a person confirms it.

@@ -876,10 +876,10 @@ class CodingPack(unittest.TestCase):
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
     def test_writing_or_publishing_model_weights_asks_in_every_pack(self):
-        """TK-A056 (fs Write/Edit to weights), TK-A057 (shell write target), TK-A058 (hub publish):
+        """TK-A058 (fs Write/Edit to weights), TK-A059 (shell write target), TK-A060 (hub publish):
         every weights write and hub publish is held in all four packs and both engines;
         reads, downloads and writes to unrelated files are not held by these rules."""
-        # TK-A056 / TK-A057: file tool writes and shell writes to weights files
+        # TK-A058 / TK-A059: file tool writes and shell writes to weights files
         held_fs = [
             ("Write", {"file_path": "/w/models/model.safetensors", "content": "w"}),
             ("Write", {"file_path": "/w/models/model.gguf", "content": "w"}),
@@ -896,6 +896,9 @@ class CodingPack(unittest.TestCase):
             "dd if=in.safetensors of=/models/out.safetensors",
             "cp src.pth dst.pth",
             "cp src.ckpt dst.ckpt",
+            "cp 'a\nb.safetensors' /models/out.safetensors",
+            "echo x > MODEL.SAFETENSORS",
+            "python train.py > out.pt",
         ]
         # TK-A058: publishing to a model hub
         held_hub = [
@@ -903,6 +906,8 @@ class CodingPack(unittest.TestCase):
             "hf upload acme/model ./out",
             "ollama push acme/model",
             "huggingface-cli --token secret upload acme/model ./out",
+            "huggingface-cli upload-large-folder acme/model ./out",
+            "hf upload-large-folder acme/model ./out",
             "hf -v upload acme/model ./out",
             "ollama --insecure push mymodel",
         ]
@@ -923,33 +928,31 @@ class CodingPack(unittest.TestCase):
             "ollama run acme/model",
             "cp model.safetensors model.safetensors.bak",
         ]
-        for pack in ("coding.yaml", "dev.yaml", "server.yaml", "strict.yaml"):
-            for engine in ("re2", "regex") if HAVE_RE2 else ("regex",):
-                e = Engine(pc.build(os.path.join(PACKS, pack))[0], engine)
-                for tool, args in held_fs:
-                    with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
-                        d = e.decide(tool, args)
-                        self.assertIn("TK-A056", d["rule_ids"], d)
-                        self.assertIn(d["verdict"], ("ask", "deny"), d)
-                for cmd in held_shell:
-                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
-                        d = e.decide("Bash", {"command": cmd})
-                        self.assertIn("TK-A057", d["rule_ids"], d)
-                        self.assertIn(d["verdict"], ("ask", "deny"), d)
-                for cmd in held_hub:
-                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
-                        d = e.decide("Bash", {"command": cmd})
-                        self.assertIn("TK-A058", d["rule_ids"], d)
-                        self.assertIn(d["verdict"], ("ask", "deny"), d)
-                for tool, args in benign_fs:
-                    with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
-                        d = e.decide(tool, args)
-                        self.assertNotIn("TK-A056", d["rule_ids"], d)
-                for cmd in benign_shell:
-                    with self.subTest(pack=pack, engine=engine, cmd=cmd):
-                        d = e.decide("Bash", {"command": cmd})
-                        self.assertNotIn("TK-A057", d["rule_ids"], d)
-                        self.assertNotIn("TK-A058", d["rule_ids"], d)
+        for pack, engine, e in self.every_pack():
+            for tool, args in held_fs:
+                with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
+                    d = e.decide(tool, args)
+                    self.assertIn("TK-A058", d["rule_ids"], d)
+                    self.assertIn(d["verdict"], ("ask", "deny"), d)
+            for cmd in held_shell:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn("TK-A059", d["rule_ids"], d)
+                    self.assertIn(d["verdict"], ("ask", "deny"), d)
+            for cmd in held_hub:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn("TK-A060", d["rule_ids"], d)
+                    self.assertIn(d["verdict"], ("ask", "deny"), d)
+            for tool, args in benign_fs:
+                with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
+                    d = e.decide(tool, args)
+                    self.assertNotIn("TK-A058", d["rule_ids"], d)
+            for cmd in benign_shell:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertNotIn("TK-A059", d["rule_ids"], d)
+                    self.assertNotIn("TK-A060", d["rule_ids"], d)
 
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
