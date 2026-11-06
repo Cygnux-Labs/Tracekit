@@ -134,15 +134,15 @@ class DemoServer(unittest.TestCase):
         # the kept store is no dev signer's: `tracekit view --dev` does not show it, so the command that does is printed
         self.assertIn(f"\n  see the run: tracekit view --data-dir {_quote(os.path.join(kept, 'data'))}\n", tampered)
 
-    def test_e22_finds_the_kept_folder(self):
-        """E22 took everything after "kept " as the folder, so the lines --keep prints after it became part of the path
-        and building its corpus failed."""
-        sys.path[:0] = [os.path.join(ROOT, "eval")]
+    def test_e22_reads_the_kept_dir_from_its_line_alone(self):
+        """Since the demo prints how to verify and view the kept files after "kept DIR" (#600), E22 read those lines as
+        part of the dir, and the nightly run failed."""
+        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
         import e22_verifier_agreement as e22
         with tempfile.TemporaryDirectory() as d:
             corpus = e22.Corpus(d)
             corpus.demo()
-            self.assertEqual([(c["name"], os.path.exists(c["bundle"])) for c in corpus.cases],
+            self.assertEqual([(c["name"], os.path.isfile(c["bundle"])) for c in corpus.cases],
                              [("demo run", True), ("demo tampered", True)])
 
 

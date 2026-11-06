@@ -122,7 +122,7 @@ class Corpus:
 
     def demo(self):
         d = self.dir("demo")
-        kept = tk("demo", "--server", "--keep").stdout.rsplit("\nkept ", 1)[1].split("\n", 1)[0]
+        kept = tk("demo", "--server", "--keep").stdout.rsplit("kept ", 1)[1].splitlines()[0]
         for n in ("run.tkb", "tampered.tkb", "trust.json"):
             shutil.copy(os.path.join(kept, n), d)
         shutil.rmtree(kept, True)
