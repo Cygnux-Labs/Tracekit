@@ -97,17 +97,22 @@ def cite(rec: Dict[str, Any]) -> Dict[str, Any]:
     return c
 
 
-def other_args(recs: List[Dict[str, Any]]) -> set:
-    """The run_seqs of decisions whose use of an approval the signer refused for changed arguments (an
-    approval.binding_mismatch before the call's next decision): another call under the approved call's id. A record
-    holds its arguments only as a commitment salted per decision, so the signer's check is what says they changed."""
-    out, last = set(), {}
+def retries(recs: List[Dict[str, Any]]) -> set:
+    """The run_seqs of decisions the signer filed as a held call's retry with the call's own id (LangGraph's resume): an
+    approval.consumed names the id while its approval was requested for an earlier decision under it, so the id's latest
+    decision before the consume is that retry, the held call itself. The signer's consume says so; nothing else does."""
+    out, last, req = set(), {}, {}
     for r in recs:
-        t, d = r["event"]["type"], r["event"]["data"]
+        e, t, d = r["event"], r["event"]["type"], r["event"]["data"]
         if t == "policy.decision":
-            last[d.get("tool_use_id")] = r["event"]["run_seq"]
-        elif t == "approval.binding_mismatch" and d.get("tool_use_id") in last:
-            out.add(last[d["tool_use_id"]])
+            last[d.get("tool_use_id")] = e["run_seq"]
+        elif t == "approval.request":
+            call = (d.get("binding") or {}).get("tool_call_id")
+            req[d.get("approval_id")] = call, last.get(call)   # the held call, its decision
+        elif t == "approval.consumed":
+            call, held = req.get(d.get("approval_id"), (None, None))
+            if e.get("tool_call_id") == call and last.get(call) not in (None, held):
+                out.add(last[call])
     return out
 
 
@@ -118,23 +123,14 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
     the held call, blocked at once, `ran_by`, the retry."""
     calls: Dict[str, Dict[str, Any]] = {}
     asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
-    used, other = set(), other_args(recs)   # calls whose approval a use consumed; decisions with changed arguments
+    again = retries(recs)
     for r in recs:
         t, d = r["event"]["type"], r["event"]["data"]
         if t == "policy.decision":
             was = calls.get(d["tool_use_id"]) or {}
             calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
-            # the agent's retry of the approved call with its id (LangGraph) asks again for the same tool, attempt and
-            # arguments while the approval stands unused: it is that call, with its approval; any other decision is a
-            # call of its own
-            if d["decision"] == "ask" and (was.get("approval") or {}).get("decision") == "approve" \
-                    and d["tool_use_id"] not in used and r["event"]["run_seq"] not in other \
-                    and (was["decision"]["event"]["data"]["tool"],
-                                                          was["decision"]["event"].get("attempt")) == \
-                    (d["tool"], r["event"].get("attempt")):
+            if r["event"]["run_seq"] in again and was.get("approval"):   # the held call's retry with its id: its approval
                 calls[d["tool_use_id"]]["approval"] = was["approval"]
-            else:
-                used.discard(d["tool_use_id"])
         elif t == "tool.result" and d["tool_use_id"] in calls:
             calls[d["tool_use_id"]]["result"] = r
         elif t == "approval" and d.get("tool_use_id") in calls:
@@ -143,7 +139,6 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             asked[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
         elif t == "approval.consumed":
             held, retry = asked.get(d.get("approval_id")), r["event"].get("tool_call_id")
-            used.add(held)
             if retry != held and retry in calls and (calls.get(held) or {}).get("approval"):
                 calls[retry]["approval"] = {**calls[held]["approval"], "retry_of": held}
                 calls[held]["approval"]["ran_by"] = retry

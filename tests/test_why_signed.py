@@ -201,12 +201,13 @@ class SignedRuntime(unittest.TestCase):
             rows += [{**x, "ts": r["event"]["run_seq"], "session_id": run.run_id, "tk_seq": r["event"]["run_seq"]}
                      for x in tr.feed(r)]
         page = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
-                                   "heldCall", "used", "sameRetry", "otherArgs", "callState", "ingest", "permOf"], f"""
+                                   "heldCall", "used", "foldsOf", "FOLDS", "callState", "ingest", "permOf"], f"""
             const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
                         tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
             const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
             const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
             const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows)};
+            foldsOf(ALL, FOLDS);   // as the page loads them
             for (const r of ALL) {{ sessionOf(r); ingest(r); }}
             process.stdout.write(JSON.stringify([S.actList.map(a => [a.v2.decision, callState(a)[1]]),
                                                  permOf(ALL).map(r => [r.rec.v2.decision, r.out[1]])]));"""))
@@ -239,6 +240,39 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual(self.seen(flag), {"decisions": {"ask": 1, "flag": 1}, "retries": 0,
                                            "calls": [["ask", "APPROVED"], ["flag", "⚑ OK"]],
                                            "perm": [["flag", "RAN · FLAGGED"], ["ask", "APPROVED"]], "why": [("flag", None)]})
+
+    def test_only_the_signers_consume_files_a_decision_with_a_held_call(self):
+        """A fold guessed from the id the agent names: once a retry with another id had used c1's approval, c1 sent again
+        and unapproved hid under c1, and c2 sent again read approved in the why log."""
+        needs_node(self)
+        cmd, ran = {"command": 'echo "again'}, self.client.run("re-runs")
+        ran.decide("c1", "Bash", cmd)
+        aid = ran.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        ran.decide("c2", "Bash", cmd)
+        hint = ran.call("approval_request", tool_call_id="c2")["approval_id"]
+        self.assertTrue(ran.approval_consume("c2", "Bash", cmd, approval_id_hint=hint)["ok"])
+        ran.complete("c2")
+        ran.decide("c1", "Bash", cmd)   # each sent again, under its id, and never approved
+        ran.decide("c2", "Bash", cmd)
+        ran.close()
+        self.assertTrue(wait_for(lambda: self.records()[ran.run_id][-1]["event"]["type"] == "run.final"))
+        self.assertEqual(self.seen(ran), {
+            "decisions": {"ask": 4}, "retries": 1,
+            "calls": [["ask", "APPROVED · RETRY RAN"], ["ask", "APPROVED · RAN"], ["ask", "NOT ANSWERED"], ["ask", "NOT ANSWERED"]],
+            "perm": [["ask", "NOT ANSWERED"], ["ask", "NOT ANSWERED"], ["ask", "APPROVED · RETRY RAN"]],
+            "why": [("ask", None), ("ask", None)]})
+
+    def test_an_allowed_call_under_an_approved_id_leaves_a_later_hold_its_own(self):
+        """An allowed call under c1, then a hold under c1: the hold hid under c1's approval, unused, as its retry."""
+        needs_node(self)
+        later = self.client.run("allow-then-hold")
+        self.approved(later, retry=False)
+        self.assertEqual(later.decide("c1", "Bash", {"command": "ls"})["decision"], "allow")
+        self.assertEqual(later.decide("c1", "Bash", self.ASK)["decision"], "ask")
+        self.assertEqual(self.seen(later), {"decisions": {"ask": 2, "allow": 1}, "retries": 0,
+                                            "calls": [["ask", "APPROVED"], ["allow", "RUNNING"], ["ask", "TO ANSWER"]],
+                                            "perm": [["ask", "TO ANSWER"], ["ask", "APPROVED"]], "why": []})
 
     def test_a_later_attempt_of_the_call_is_a_call_of_its_own(self):
         """A call re-run with its id at a new attempt (rejected, approved and run, or still waiting) folded into the first

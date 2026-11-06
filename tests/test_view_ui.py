@@ -171,7 +171,7 @@ def text(html):
 
 class WhyThisDecision(unittest.TestCase):
     def detail(self, call):
-        return json.loads(page_js(["esc", "short", "cp", "shq", "word", "ANSWER", "lastAnswer", "ended", "used", "sameRetry", "callState", "whyDecision"], f"""
+        return json.loads(page_js(["esc", "short", "cp", "shq", "word", "ANSWER", "lastAnswer", "ended", "used", "foldsOf", "FOLDS", "callState", "whyDecision"], f"""
             const S = {{ sessions: new Map() }}, label = () => "coder·5e67", DESK = () => true;
             const a = {json.dumps(call)}; a.agent = {{ session: "r1" }}; a.approvals ??= []; a.flags ??= [];
             process.stdout.write(JSON.stringify(whyDecision(a)));"""))
@@ -244,7 +244,7 @@ class WhyThisDecision(unittest.TestCase):
 class SaidVsDid(unittest.TestCase):
     """Rule 2, words are not proof: what the model said of an outcome sat beside nothing; every "tests pass" was re-run
     by hand to check it."""
-    NAMES = ["esc", "ANSWER", "lastAnswer", "ended", "used", "sameRetry", "callState", "MARKS", "TEXT_RULES", "didFact", "reportsOn",
+    NAMES = ["esc", "ANSWER", "lastAnswer", "ended", "used", "foldsOf", "FOLDS", "callState", "MARKS", "TEXT_RULES", "didFact", "reportsOn",
              "saidMark"]
     RUN = """
         const S = { asked: new Map(), actList: [], reasoning: [], cited: new Map(), sessions: new Map([["r1", {}]]), tape: [] };
@@ -417,7 +417,7 @@ class WaitingForYou(unittest.TestCase):
 
     def test_a_new_hold_or_high_alert_toasts_as_text_and_the_snapshot_does_not(self):
         needs_node(self)
-        out = json.loads(page_js(["vis", "OPENHOLD", "tuid", "used", "sameRetry", "toastOf"], f"""
+        out = json.loads(page_js(["vis", "OPENHOLD", "tuid", "used", "foldsOf", "FOLDS", "toastOf"], f"""
             const made = [], box = {{ children: [], prepend(t) {{ this.children.unshift(t); }} }};
             Object.defineProperty(box, "lastChild", {{ get() {{ return {{ remove: () => box.children.pop() }}; }} }});
             const document = {{ createElement: tag => {{ const e = {{ tag, kids: [], dataset: {{}}, append(...k) {{ this.kids.push(...k); }},
@@ -776,7 +776,7 @@ class Permissions(unittest.TestCase):
                 hold(13, "c6"), answer(14, "c6", "requested", approval_id="apr-6"),
                 {**hold(15, "c7"), "v2": {"decision": "allow"}}, {**hold(16, "c8"), "analysis": True},
                 hold(17, "c9", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 18}]
-        out = json.loads(page_js(["ANSWER", "permRows", "used", "sameRetry", "otherArgs", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "permRows", "used", "foldsOf", "FOLDS", "permOf"], f"""
             const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
             const rows = r => r.map(x => [x.rec.tool_use_id, x.tabs.filter(Boolean).join(" "), x.out[1], x.ans?.v2.approver ?? null,
                                           x.req?.v2.approval_id ?? null]);
@@ -811,7 +811,7 @@ class Permissions(unittest.TestCase):
                                                       "rule_ids": ["TK-APPROVAL-REJECTED"]}, run=run))
             recs += [x for r in mine for x in tr.feed(r)]
             reviewed.append(dict(view.review(mine, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]))
-        out = json.loads(page_js(["ANSWER", "permRows", "used", "sameRetry", "otherArgs", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "permRows", "used", "foldsOf", "FOLDS", "permOf"], f"""
             const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
             process.stdout.write(JSON.stringify(permRows().map(x => [x.rec.session_id, x.out[1]])));"""))
         self.assertEqual(reviewed, [{"rejected": 1}, {"revoked": 1}])
@@ -850,7 +850,7 @@ class Permissions(unittest.TestCase):
         the live view showed nothing, in its views or PERMISSIONS."""
         needs_node(self)
         rows = [{**hold(5, "c1"), "v2": {"decision": "deny", "rules": [{"id": "T-DENY", "reason": "rm"}]}}]
-        out = json.loads(page_js(["ANSWER", "loadRun", "permRows", "used", "sameRetry", "otherArgs", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "loadRun", "permRows", "used", "foldsOf", "FOLDS", "permOf"], f"""
             const LOADED = new Map(), RUNS = new Map([["r1", {{ verdict: "verified", records: 9, tenant: "default", permissions: {{ blocked: 1 }} }}],
                                                       ["r2", {{ verdict: "failed", records: 4 }}]]);
             const ALL = [], asked = [], seen = [], document = {{ URL: "http://127.0.0.1/" }};
@@ -877,7 +877,7 @@ class Permissions(unittest.TestCase):
         loaded = [{"session_id": "r1", "tk_seq": s, "event": "SESS"} for s in (1, 2, 3)]
         live = [{"session_id": "r1", "tk_seq": 2, "event": "SESS"}, {"session_id": "r1", "tk_seq": 4, "event": "HOLD"},
                 {"session_id": "r1", "analysis": True, "event": "tk_alert"}, {"session_id": "r2", "tk_seq": 9, "event": "SESS"}]
-        out = json.loads(page_js(["runRows", "rebuild", "accept"], f"""
+        out = json.loads(page_js(["runRows", "foldsOf", "FOLDS", "rebuild", "accept"], f"""
             const LOADED = new Map([["r1", {json.dumps(loaded)}]]), ALL = {json.dumps(live)}, RUNS = new Map(), got = [], seen = [];
             let scope = "r1", R = null, rpos = 0, tapeShown = 0, V2 = true, DROPPED = 0, MAXREC = 50000;
             const S = {{ tape: [] }}, reset = () => {{ got.length = 0; }}, ingest = r => got.push(r.tk_seq ?? "a"), inScope = r => r.session_id === scope;
@@ -1040,7 +1040,7 @@ class Waterfall(unittest.TestCase):
 
     def test_by_call_draws_a_row_per_call_and_by_agent_the_lanes(self):
         needs_node(self)
-        out = json.loads(page_js(["esc", "fmtDur", "tickStep", "tickText", "ANSWER", "lastAnswer", "ended", "used", "sameRetry", "callState",
+        out = json.loads(page_js(["esc", "fmtDur", "tickStep", "tickText", "ANSWER", "lastAnswer", "ended", "used", "foldsOf", "FOLDS", "callState",
                                   "WFMAX", "wfBars", "renderWaterfall"], CALLS_JS + """
             const V2 = true, R = null, fmtT = ts => "t" + ts, label = a => a.name, actMatch = a => !a.hide;
             const el = {}, $ = id => el[id] ??= { style: { setProperty() {} }, clientWidth: 900 }, put = (id, h) => { $(id).html = h; };
@@ -1235,7 +1235,7 @@ class GraphGrades(unittest.TestCase):
                               "first_ts": stamp(first), "last_ts": stamp(last), "attribution": "token"}, run=run)]:
                 rows.extend(tr.feed(rec))
         out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                  "used", "sameRetry", "ingest", "joinEgress"], f"""
+                                  "used", "foldsOf", "FOLDS", "ingest", "joinEgress"], f"""
             let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
             {json.dumps(rows)}.forEach(ingest); joinEgress();
             process.stdout.write(JSON.stringify([...S.effects.values()].map(e => e.call)));"""))
@@ -1272,7 +1272,7 @@ class GraphGrades(unittest.TestCase):
     def test_graph_redraws_when_eviction_replaces_a_linked_egress_total(self):
         needs_node(self)
         out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                  "used", "sameRetry", "ingest", "accept", "rebuild", "runRows", "inScope", "joinEgress", "renderWhyView",
+                                  "used", "foldsOf", "FOLDS", "ingest", "accept", "rebuild", "runRows", "inScope", "joinEgress", "renderWhyView",
                                   "whyRef", "netEffects", "effectHow", "dict", "esc", "plural", "ANSWER", "DECIDED",
                                   "decided", "signedNode", "edgeGrade", "GRADE", "reach", "GTYPE", "GRAPH_MAX", "pct",
                                   "graphView"], """
@@ -1471,7 +1471,7 @@ class Horizon(unittest.TestCase):
             "bytes_out": 0, "bytes_in": 20, "connections": 0,
             "first_ts": "2026-10-10T17:00:01Z", "last_ts": "2026-10-10T17:00:02Z"}, run=run))]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map([["verified", {{ verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             process.stdout.write(JSON.stringify(hzData().ev.map(e => [e.run, e.at, e.act, e.gr])));"""))
@@ -1499,7 +1499,7 @@ class Horizon(unittest.TestCase):
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1540,7 +1540,7 @@ class Horizon(unittest.TestCase):
     def hz_cap(self, recs):
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1561,7 +1561,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData", "hzSecs"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData", "hzSecs"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1574,7 +1574,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(i, "w", 100 + i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData", "hzChain"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData", "hzChain"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true, n: 0 }}, STOPPED = "";
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1595,7 +1595,7 @@ class Horizon(unittest.TestCase):
                 hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
                                   "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
@@ -1830,7 +1830,7 @@ class HorizonZoom(unittest.TestCase):
     stage drawn only when something changed."""
 
     DATA = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"]
+            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData"]
     # HZ comes with HZMAX: its line ends in a comment, so page_js takes the next line, HZ's, with it
     DRAW = ["HZACT", "HZSYM", "HZWORST", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW, "hzZoom", "hzAim", "hzFlyTo",
             "hzFocus"]
@@ -2330,7 +2330,7 @@ class InvisibleCharacters(unittest.TestCase):
         req = {"event": "tk_alert", "session_id": "r1", "tk_seq": 8, "ts": 1760000001,
                "v2": {"tool_use_id": "c1", "approval": "requested", "approval_id": "apr-1"}}
         out = json.loads(page_js(["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
-                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "sameRetry", "otherArgs", "permOf", "heldRows", "renderApprovalsPage"], f"""
+                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "foldsOf", "FOLDS", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req])}, RUNS = new Map(), html = {{}}, el = {{}};
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
@@ -2689,7 +2689,7 @@ class PlainPages(unittest.TestCase):
         older = {**done, "session_id": "e1", "ts": 1759990000}   # read later: a fresh load
         approve = {**answer, "session_id": "e1", "ts": 1759990001, "v2": {"tool_use_id": "c1", "approval": "approve"}}
         out = json.loads(page_js(["esc", "j", "fmtT", "fmtD", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
-                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "sameRetry", "otherArgs", "permOf", "heldRows", "renderApprovalsPage"], f"""
+                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "foldsOf", "FOLDS", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req, done, answer, older, approve])}, RUNS = new Map(), html = {{}}, el = {{}}, TZ = "GMT+5:30";
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
@@ -2762,7 +2762,7 @@ class PlainPages(unittest.TestCase):
 GRAPH_FNS = ["dict", "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE", "whyRef",
              "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"]
 APPROVALS_FNS = ["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting", "OPENHOLD", "waitingElsewhere",
-                 "waitingCount", "used", "sameRetry", "otherArgs", "permOf", "heldRows", "renderApprovalsPage"]
+                 "waitingCount", "used", "foldsOf", "FOLDS", "permOf", "heldRows", "renderApprovalsPage"]
 
 
 def retried(run, final=True, retry=True, again="c2"):
@@ -2799,7 +2799,7 @@ class ApproveThenRetry(unittest.TestCase):
         needs_node(self)
         recs = retried("fin") + retried("open", final=False)
         out = json.loads(page_js(["tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended", "heldCall",
-                                  "used", "sameRetry", "otherArgs", "callState", "ingest", "wfBars", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
+                                  "used", "foldsOf", "FOLDS", "callState", "ingest", "wfBars", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
             const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
                         tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
             const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
@@ -2827,33 +2827,34 @@ class ApproveThenRetry(unittest.TestCase):
     def test_a_retry_with_the_held_calls_own_id_is_that_call_on_every_view(self):
         """LangGraph's retry reuses the held call's id and its consume names no held call: the tape opened a second call
         for it (NOT ANSWERED, and the approved one never ran), DESK counted 4 calls and 2 holds for 3 calls and 1,
-        PERMISSIONS listed the hold twice, HORIZON drew two moves, and a person's approval set off a HELD toast."""
+        PERMISSIONS listed the hold twice and HORIZON drew two moves. The signer's consume is what files the retry with the
+        held call: read as records arrive, the retry is a call of its own until its consume, then that call's row, every
+        record read once."""
         needs_node(self)
         recs = retried("lg", again="c1")
-        out = json.loads(page_js(["tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended", "heldCall",
-                                  "used", "sameRetry", "otherArgs", "callState", "ingest", "OPENHOLD", "plural", "runSentence", "permOf", "toastOf"], f"""
-            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
-                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+        out = json.loads(page_js(["reset", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                  "heldCall", "used", "foldsOf", "FOLDS", "callState", "ingest", "accept", "rebuild", "runRows",
+                                  "inScope", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
+            let S; reset();
             const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
-            const sessionOf = r => {{ if (!S.sessions.has(r.session_id)) S.sessions.set(r.session_id, {{ prompts: [], end: null }}); return S.sessions.get(r.session_id); }};
-            const pushTape = r => r, alert = () => {{}}, STOPPED = "", ALL = {json.dumps(recs)};
-            const toasts = [], document = {{ createElement: () => ({{ dataset: {{}}, append() {{}}, remove() {{}} }}) }};
-            const $ = () => ({{ children: toasts, prepend: t => toasts.push(t) }}), DESK = () => null, vis = s => s, setTimeout = () => {{}};
-            let toasting = true;
-            for (const r of ALL) {{ sessionOf(r); if (r.event === "SessionEnd") S.sessions.get(r.session_id).end = r.ts; toastOf(r); ingest(r); }}
-            process.stdout.write(JSON.stringify({{
-              calls: S.actList.map(a => [a.id, callState(a)[1], heldCall(a)]),
-              under: S.actList[0].subs.map(s => s.text),
-              sentence: runSentence({{ verdict: "verified" }}),
-              perm: permOf(ALL).map(r => [r.rec.tool_use_id, r.out[1]]),
-              toasts: toasts.length }}));"""))
-        self.assertEqual(out["calls"], [["lg|c1", "APPROVED · RAN", True]])
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => {{ S.tape.push(r); return r; }}, alert = () => {{}}, toastOf = () => {{}}, STOPPED = "";
+            const RUNS = new Map(), LOADED = new Map(), ALL = [];
+            let V2 = true, scope = null, R = null, DROPPED = 0, MAXREC = 50000, tapeShown = 0;
+            const seen = () => [S.actList.map(a => [a.pre.tk_seq, callState(a)[1]]), S.recs.length === ALL.length, S.tape.filter(t => !t.under).length];
+            const live = [];
+            for (const r of {json.dumps(recs)}) {{ accept(r); if (r.tk_seq === 5 || r.tk_seq === 6) live.push(seen()); }}
+            foldsOf(ALL, FOLDS); reset(); for (const r of ALL) ingest(r);   // read at once, as the page loads
+            process.stdout.write(JSON.stringify({{ live, load: seen(), under: S.actList[0].subs.map(s => s.text),
+              sentence: runSentence({{ verdict: "verified" }}), perm: permOf(ALL).map(r => [r.rec.tool_use_id, r.out[1]]) }}));"""))
+        # the retry (record 5) is its own row until the consume (6) files it with the held call (2)
+        self.assertEqual(out["live"], [[[[2, "APPROVED"], [5, "TO ANSWER"]], True, 3], [[[2, "APPROVED"]], True, 2]])
+        self.assertEqual(out["load"], [[[2, "APPROVED · RAN"]], True, 3])
         self.assertIn("the agent sent this call again, with its id", out["under"])
         self.assertEqual(out["sentence"], "Verified. 1 call: 1 ran, 0 blocked, 1 held (1 approved).")
         self.assertEqual(out["perm"], [["c1", "APPROVED · RAN"]])
-        self.assertEqual(out["toasts"], 1)   # the hold's, not the retry's
         hz = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
-                                 "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
+                                 "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map([["lg", {{ id: "lg", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -2879,7 +2880,7 @@ class ApproveThenRetry(unittest.TestCase):
         """HORIZON drew the retry that ran as held (◯) and its HUD counted HOLDS by held marks, DESK's HELD by decisions."""
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
-                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "sameRetry", "otherArgs", "hzData"], f"""
+                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "hzData"], f"""
             const ALL = {json.dumps(retried("fin"))}, RUNS = new Map([["fin", {{ id: "fin", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
