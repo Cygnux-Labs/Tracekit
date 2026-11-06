@@ -166,3 +166,30 @@ class DocCommands(unittest.TestCase):
                     with self.subTest(block=i, pyyaml_blocked=blocked), \
                             mock.patch.dict("sys.modules", {"yaml": None} if blocked else {}):
                         self.assertIn("data_dir", service.load_config(path))
+
+class DocTableCells(unittest.TestCase):
+    def test_every_table_row_has_same_cell_count_as_header(self):
+        """Each table row must have as many cells as its header; bare | inside code splits rows on GitHub.
+        Split on | that is not escaped with \\ , skip fenced code blocks."""
+        pages = [os.path.join(ROOT, "README.md")] + glob.glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True)
+        bad = []
+        for path in sorted(pages):
+            text = read(path)
+            text = FENCE.sub("", text)
+            lines = text.splitlines()
+            i = 0
+            while i < len(lines) - 1:
+                if lines[i].startswith("|") and re.match(r"^\|[\s:-|]+\|$", lines[i+1].strip()):
+                    def cell_count(l):
+                        protected = re.sub(r"\\|", "ESCAPED", l)
+                        return max(0, protected.count("|"))
+                    header_cells = cell_count(lines[i])
+                    j = i + 2
+                    while j < len(lines) and lines[j].startswith("|"):
+                        if cell_count(lines[j]) != header_cells:
+                            bad.append(f"{os.path.relpath(path, ROOT)}:{j + 1}")
+                        j += 1
+                    i = j
+                else:
+                    i += 1
+        self.assertEqual(bad, [])
