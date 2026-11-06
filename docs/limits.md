@@ -775,6 +775,21 @@ What Tracekit guarantees and doesn't, per deployment, on one page: [guarantees](
 | Nothing enforces PCM between agents yet: the A2A gateway forwards PCM parts without checking them, and there is no `transfer` payload. | The A2A gateway is merged; enforcing PCM in it, and a `transfer` payload, are a follow-up. | Call `pcm.verify` in the receiving agent before it acts. | [PCM](pcm.md#agent-to-agent-transport) |
 | TypeScript has the four RPC schemas, so its client can call them, but no PCM verifier. | No TypeScript agent receives PCM yet. | Verify in Python, or with `tracekit pcm verify`. | [PCM](pcm.md#python-sdk) |
 
+## Intent grants (experimental)
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| A grant covers one run: a new run of the same agent asks again. | A grant's totals are counted in its run's records, so that run's bundle is enough to recount them. | Grant each run (`tracekit grant add --run RUN`). A grant over several runs is a later step. | [intent grants](intent-grants.md#the-grant) |
+| Grants cover payments only (`payment.send`). | Payments are the first intent; production changes and messages to people come next. | Approve other held calls one at a time. | [intent grants](intent-grants.md#later) |
+| A grant reads an integer `amount` as the currency's smallest unit (cents, a token's base unit). A tool that takes whole dollars as integers is read 100 times smaller. | The arguments carry no unit; the smallest unit is Stripe's convention, and the one a grant compares exactly. | Before you grant, read the `grant` line of `tracekit approvals show`: it prints the amount as the grant reads it. If it reads wrong, approve that tool's calls one at a time. | [what a grant reads](intent-grants.md#what-a-grant-reads) |
+| A payment typed into a shell command (`curl` to a payments API, the Stripe CLI) stays held. | Its amount and payee are text in a command line; a grant reads a tool's structured arguments. | Pay through an MCP or framework tool with structured arguments. | [what a grant reads](intent-grants.md#what-a-grant-reads) |
+| On the dev signer, a grant is self-approved: the agent runs as your user, so it could issue one as it could answer an approval. | The dev signer can't tell you from your agent. The dev pack denies the agent's own `tracekit grant add` and `approvals approve` commands (`TK-D012`) as a tripwire. | Run [system mode](deploy.md#laptop-system-mode), or a signer with `approvals`, where only a named approver issues grants. | [who may issue](intent-grants.md#who-may-issue-a-grant) |
+| A release at T1 rests on the arguments the harness reported: the agent's own process runs the call. | A hook sees a call before it runs; the agent's process runs it. | Run payments through the [tool executor](executor.md) or the [MCP gateway](mcp-gateway.md) (T2): the call runs with the arguments the signer decided. | [records](intent-grants.md#records-and-verification) |
+| A payment counts when it is decided, also when the payment then fails. | Counting at the decision keeps two payments at once from spending the same room. | Revoke the grant and issue a new one when failed payments used up its total. | [how the signer decides](intent-grants.md#how-the-signer-decides-a-payment) |
+| The fields a release records are the signer's reading of the arguments; the verifier checks them against the grant, and against the arguments once they are opened. | The bundle holds the arguments as commitments. | Open them with `tracekit signer reveal` and read them with `tracekit/grants.py`. | [records](intent-grants.md#records-and-verification) |
+| Amounts you type know the minor units of USD, EUR, GBP, INR, CAD, AUD, CHF, SGD, JPY, USDC and USDT. | A fixed table in `tracekit/grants.py`. | Ask for the currency you need in an issue. | [commands](intent-grants.md#commands) |
+| The Go verifier in `contrib/` reports the grant records as not interpreted. | It hasn't been ported yet. | Verify with `tracekit verify` or the TypeScript verifier. | [records](intent-grants.md#records-and-verification) |
+
 ## Tracekit Box (experimental)
 
 A Tracekit Box daemon named in signer.yaml's `box_daemons` labels its box's run (`ext.box`), and opens each box's agent channel, through which the coding agent's hooks inside the box record its calls as the box's own identity, `box:<uid>/<box id>`.

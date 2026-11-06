@@ -1,7 +1,8 @@
 # Evaluation
 
-Twenty-one experiments, E1 to E22 (there is no E13). `make eval` runs the offline ones: E1 to E4 (E4 on v1 and v2
-bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20 and E21, and E9 `--quick` on Linux.
+Twenty-two experiments, E1 to E23 (there is no E13). `make eval` runs the offline ones: E1 to E4 (E4 on v1 and v2
+bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20, E21 and E23, and E9 `--quick` on
+Linux.
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
 `make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
 and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
@@ -644,6 +645,17 @@ records passed 64 MiB (it now writes the run in parts, [format v2](format-v2.md#
 rewrite let a log origin widen it past a phone's screen. Not in `make eval`: it takes minutes and needs node, the TypeScript build, Playwright with
 Chrome and each framework (`--python NAME=PY` runs an example with an interpreter that has it; an example that can't
 run is listed as skipped). Firefox and Safari are not run.
+
+## E23: intent grants
+
+`eval/e23_grants.py` runs a payout agent against one in-process signer whose payment rule opts into
+[intent grants](intent-grants.md), with a named approver. Seven parts: 30 payments, 24 within the grant and 6 outside it
+(an unknown payee, over the most for one payment, past the total), where the person's stops fall from 30 to 7 and
+nothing outside the limits runs; 19 argument attacks a grant must not read as within it (amounts in other units, payee
+look-alikes, a second payee, extra arguments that move money, another currency), all held; the agent issuing a grant
+for its own run, passing one on, or asking for one past a day, all refused; 100 payments of 7 USDC under a 50 USDC
+total, of which 7 run; a revoked and an expired grant, which release nothing; totals across a signer restart; and the
+run's bundle, whose `intent grants` line re-checks every release. Results: `eval/results/e23_grants.json`.
 
 ## What is not measured
 
