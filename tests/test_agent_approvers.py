@@ -57,7 +57,7 @@ def policy(**agent):
 def bounds(args, fields=FIELDS):
     rule = {"id": "R", "approval": {"agent": {"allow": {"fields": fields}}}}
     eng = Engine({"ask": [dict(rule, pattern="^")]})
-    return all(ok for _, ok in eng.bounds(rule, args, time.monotonic() + 1))
+    return all(ok for _, ok in eng.bounds(rule, args, [1]))
 
 
 class TestBounds(unittest.TestCase):
@@ -89,7 +89,7 @@ class TestBounds(unittest.TestCase):
         rule = {"id": "R", "approval": {"agent": {"allow": {"fields": {"memo": FIELDS["memo"]}}}}}
         eng = Engine({"ask": [dict(rule, pattern="^")]}, backend="regex")
         with self.assertRaises(TimeoutError):
-            eng.bounds(rule, {"memo": "ok"}, time.monotonic() - 1)
+            eng.bounds(rule, {"memo": "ok"}, [0])
 
 
 class TestLint(unittest.TestCase):
