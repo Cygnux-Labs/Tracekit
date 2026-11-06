@@ -1539,6 +1539,26 @@ class InitV2(unittest.TestCase):
                                                                    else "return_value": system}):
                 self.assertEqual(any(v1 in line for line in cli._kept()), named)
 
+    def test_uninstall_prints_windows_commands_powershell_runs(self):
+        """Review of #628: on Windows the dev signer's runtime dir (%LOCALAPPDATA%\\tracekit\\run) is inside its data
+        dir, so Remove-Item named it again after deleting its parent, and a Python path with a space came out quoted,
+        which PowerShell runs only after `&`."""
+        from tracekit import client
+        os.environ.pop("TRACEKIT_RUNTIME_DIR", None)   # Windows' own: %LOCALAPPDATA%\tracekit\run (setUp restores it)
+        data = os.path.join(os.environ["LOCALAPPDATA"], "tracekit")
+        run, config = os.path.join(data, "run"), os.path.join(self.home, ".tracekit-client")
+        for d in (run, config):
+            os.makedirs(d, 0o700)
+        with mock.patch.object(os, "name", "nt"), mock.patch.object(sys, "platform", "win32"), \
+                mock.patch.object(sys, "executable", "C:\\Program Files\\Python\\python.exe"), \
+                mock.patch.object(autospawn, "_short", lambda d: d), \
+                mock.patch.object(client, "system_config", return_value=None), \
+                mock.patch.object(client, "client_config", return_value={}):
+            lines = cli._kept()
+        self.assertIn(f"  {run}  (the dev signer's runtime dir)", lines)   # kept, and said so
+        self.assertEqual(lines[-2:], [f"  Remove-Item -Recurse -Force {data}, {config}",
+                                      '  & "C:\\Program Files\\Python\\python.exe" -m pip uninstall tracekit-ai'])
+
     def test_uninstall_leaves_a_persons_own_thinking_setting(self):
         settings = os.path.join(self.home, "settings.json")
         for before in ({}, {install.THINKING: True}, {install.THINKING: False}):

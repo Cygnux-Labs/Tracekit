@@ -367,7 +367,8 @@ def policy_reasons(paths=(), kept=None):
         if os.path.basename(p) == hashlib.sha256(data).hexdigest() + ".json":
             out.policies["sha256:" + os.path.basename(p)[:-5]] = json.loads(data)
     for h, pol in out.policies.items():
-        out[h] = {r["id"]: {"reason": r.get("reason") or (r.get("label") or "").replace("_", " "),   # side effect
+        # a rule with no reason gives its label as words: side_effect reads "side effect"
+        out[h] = {r["id"]: {"reason": r.get("reason") or (r.get("label") or "").replace("_", " "),
                             **{k: r[k] for k in ("remedy",) if k in r}}
                   for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out

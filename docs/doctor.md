@@ -20,7 +20,7 @@ Doctor works out which setup it's looking at and runs the checks that apply:
 - **`--k8s`:** the Kubernetes checks below, of the pod doctor runs in (it needs `get` on its pod and service account) or
   of the manifests under `--manifests DIR`. With `--config` it runs that signer's checks too.
 
-Exit codes: 1 when any check fails, else 0. A warning is advice: it doesn't fail doctor. `info` says what a setup doesn't have and needn't (the dev signer's witnesses, Claude Code's hooks where there is no Claude Code). A dev run whose only warning is `D-PROCESS-BOUNDARY` ends with `dev setup OK`.
+Exit codes: 1 when any check fails, else 0. A warning is advice: it doesn't fail doctor. `info` says what a setup doesn't have and needn't (a witness for the dev signer, which uses the public witness by default and has none only until a release names it or after `--no-witness`; Claude Code's hooks where there is no Claude Code). A dev run whose only warning is `D-PROCESS-BOUNDARY` ends with `dev setup OK`.
 
 **Doctor output is advice, not evidence.** It describes the host at the moment you run it. Nothing it prints is signed,
 and a verifier never reads it. What a bundle proves comes from its signatures, its checkpoints and the verifier's own
@@ -69,7 +69,7 @@ skipped with the reason) and checks that doctor flags each one. It also checks t
 | `D-POLICY-ENGINE` | the policy, compiled by policy2 | it doesn't compile, or neither `google-re2` nor `regex` is installed | `tracekit policy lint FILE`; `pip install tracekit-ai` (a `--no-deps` install leaves the engine out) |
 | `D-DURABILITY` | `durability` | it's `ack-on-write` in a production profile, so a power loss can drop records that were already acknowledged (warn) | `durability: ack-on-fsync` |
 | `D-FAIL-MODES` | `fail_modes` and `client.json` `fail_mode` | a tool class, or the system config, fails open (warn) | set them to `closed` unless an outage must not stop the agent |
-| `D-WITNESS-CONFIGURED` | `witnesses` | there are none, so checkpoints aren't cosigned and assurance stays `dev` (`local` when `anchors` is set) (dev: info, as the dev signer takes none) | add a witness (`docs/witnesses.md`) |
+| `D-WITNESS-CONFIGURED` | `witnesses` | there are none, so checkpoints aren't cosigned and assurance stays `dev` (`local` when `anchors` is set) (dev: info: the dev signer uses the public witness by default, so it has none only until a release names it or after `init --dev --v2 --no-witness`) | add a witness (`docs/witnesses.md`) |
 | `D-WITNESS-OWNERSHIP` | the witnesses' ownership classes | every witness is `operator`: the default production profile needs at least one `public`, `customer` or `tracekit` witness (dev: warn) | add a non-operator witness |
 | `D-WITNESS-FRESH` | `store/witness-queue.json` against the latest checkpoint | a witness has never cosigned the latest checkpoint, or has been failing for longer than the witness gap window (300 s) (warn) | check the witness is reachable and accepts this log |
 | `D-CLOCK-SKEW` | this clock against the latest cosignature timestamp | this clock is more than 300 s behind it (warn) | sync the clock (NTP) |

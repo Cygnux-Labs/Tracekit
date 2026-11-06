@@ -48,7 +48,8 @@ _PY = sys.executable if sys.executable and not sys.executable.startswith(install
 REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
           f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
           + (" --experimental-macos" if sys.platform == "darwin" else ""))
-DEV_INFO = {"D-WITNESS-CONFIGURED"}   # what the dev signer can't have: info in the dev profile, not a warning
+DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
+# witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
 FAIL_CLOSED = "call blocked (fail-closed)"   # the pre-tool wrapper's words (install._blocking); before 1.3 every event's
 # wrapper had them, so a hook that couldn't run blocked a prompt or a tool result too (D-HOOKS-EVENT warns)

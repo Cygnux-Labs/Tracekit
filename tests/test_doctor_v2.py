@@ -792,9 +792,9 @@ class NoHooksChosen(unittest.TestCase):
 
 
 class FirstDay(unittest.TestCase):
-    """A new user's healthy dev setup got three warnings: no hooks where there is no Claude Code, no witness (which the
-    dev signer can't have), and the dev profile's own process boundary. Only the last is a warning now, and a healthy
-    run ends saying so."""
+    """A new user's healthy dev setup got three warnings: no hooks where there is no Claude Code, no witness (the dev
+    signer's default, the public witness, isn't named until a release does), and the dev profile's own process
+    boundary. Only the last is a warning now, and a healthy run ends saying so."""
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -1753,7 +1753,7 @@ class DevProfile(unittest.TestCase):
             got = {r["id"]: r["status"] for r in doctor.v2_checks({"data_dir": d}, "dev",
                                                                    settings=os.path.join(d, "none"))}
         self.assertEqual(got["D-PROCESS-BOUNDARY"], "warn")
-        self.assertEqual(got["D-WITNESS-CONFIGURED"], "info")   # the dev signer can't have one
+        self.assertEqual(got["D-WITNESS-CONFIGURED"], "info")   # none: the public witness, its default, isn't named
         self.assertEqual(got["D-HOOKS-PRESENT"], "warn")
         self.assertEqual(got["D-DURABILITY"], "ok")
         self.assertNotIn("D-AGENT-PRIV", got)

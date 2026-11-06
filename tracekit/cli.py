@@ -1066,12 +1066,14 @@ def _kept():
     if not where:
         return []
     paths = [d for d, _ in where]
-    up = os.path.dirname(data)
     if sys.platform == "darwin":   # data/ and run/ in Tracekit's own Application Support dir (autospawn.data_dir)
-        paths = [up] + [d for d in paths if not d.startswith(up + os.sep)]
+        paths.insert(0, os.path.dirname(data))
+    # a dir inside another one the command deletes isn't named again (Windows' run\ is inside its data dir)
+    paths = [d for d in paths if not any(d.startswith(p + os.sep) for p in paths)]
     pip = ("uv tool uninstall" if re.search(r"[/\\]uv[/\\]tools[/\\]", sys.executable) else   # as claude_code.upgrade
            "pipx uninstall" if re.search(r"[/\\]pipx[/\\]venvs[/\\]", sys.executable) else
-           f"{_quote(sys.executable)} -m pip uninstall")
+           # PowerShell (Remove-Item's shell) runs a quoted program only after &
+           ("& " if os.name == "nt" else "") + f"{_quote(sys.executable)} -m pip uninstall")
     remove = (f"Remove-Item -Recurse -Force {', '.join(map(_quote, paths))}" if os.name == "nt"
               else f"rm -rf {' '.join(map(_quote, paths))}")
     return (["kept:"] + [f"  {d}  ({what})" for d, what in where]
