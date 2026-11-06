@@ -122,7 +122,7 @@ func TestWitnessCountsOnce(t *testing.T) {
 			ws = append(ws, map[string]any{"vkey": fixtureVKey(k.Name, 4, k.Pub), "class": "customer"})
 		}
 		raw := trustWith(t, trust, ws, 1)
-		if _, _, _, err := loadTrust(raw); (tc.want == "") != (err == nil) {
+		if _, _, _, _, err := loadTrust(raw); (tc.want == "") != (err == nil) {
 			t.Fatalf("trust %v: %v", tc.pins, err)
 		}
 		if r := VerifyBundle(fixtureZip(files), raw); tc.want != "" && (r.ExitCode != 2 || r.Integrity != TrustUnusable || r.Detail != "trust config: "+tc.want) {

@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from differential_golden import cases, go_args, python_command, invoke, compare
+from differential_golden import cases, go_args, python_command, invoke, compare, compare_ts
 
 
 class Discovery(unittest.TestCase):
@@ -148,6 +148,19 @@ class Discovery(unittest.TestCase):
         self.assertFalse(compare(python, {**go, "warning_checks": ["keys"]}, "v2")[0])   # a warning Python lacks
         # v1 is compared whole: Go's v1 verifier reports every check it performs, failed or not
         self.assertFalse(compare({**python, "warning_checks": []}, go, "v1")[0])
+
+    def test_typescript_matches_whole_or_names_an_add_on(self):
+        python = {"exit_code": 0, "integrity": "VERIFIED", "assurance": "witnessed",
+                  "warning_checks": ["fail-open classes"], "failed_checks": []}
+        self.assertEqual(compare_ts(python, dict(python)), (True, False))
+        # the TypeScript verifier runs every check the reference does: these are not exempt as Go's are
+        self.assertEqual(compare_ts(python, {**python, "warning_checks": []}), (False, False))
+        self.assertEqual(compare_ts(python, {**python, "assurance": "dev"}), (False, False))
+        add_on = {"exit_code": 2, "integrity": "UNVERIFIABLE (not checked by this verifier: rekor anchor)",
+                  "assurance": "none", "warning_checks": [], "failed_checks": []}
+        self.assertEqual(compare_ts(python, add_on), (True, True))
+        self.assertEqual(compare_ts(python, {**add_on, "integrity": "UNVERIFIABLE (needs tracekit >= 9.0)"}),
+                         (False, False))
 
     def test_non_json_invocation_is_reported_as_error(self):
         import os

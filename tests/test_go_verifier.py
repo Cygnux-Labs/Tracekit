@@ -8,6 +8,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -61,6 +62,25 @@ class EveryStructuralMutationOfARunSet(InGo, tb.EveryStructuralMutationOfARunSet
 @unittest.skipIf(SKIP, SKIP)
 class EveryStructuralMutationOfARunInParts(InGo, tb.EveryStructuralMutationOfARunInParts):
     pass
+
+
+# kit cases tkverify is known to answer otherwise, each with its ruling (README.md, "Known differences")
+KIT_KNOWN = {
+    # format-v2.md §6, §10: a trust config may pin the log keys of several origins; tkverify takes exactly one
+    "a trust config: two-logs",
+}
+
+
+@unittest.skipIf(SKIP, SKIP)
+class Kit(unittest.TestCase):
+    def test_the_kit(self):
+        """The conformance kit (tests/kit): every case but the proposed rules' and KIT_KNOWN, for a verifier of format
+        1.4.0 (formatVersion in verify.go)."""
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "kit"))
+        import run_kit as kit
+        failing = {c["name"] for c, ok, _, _ in kit.score_all([tkverify(), "-bundle", "{bundle}", "-trust", "{trust}",
+                                                                "-json"], "1.4.0") if not ok and not c.get("proposed")}
+        self.assertEqual(failing, KIT_KNOWN)
 
 
 @unittest.skipIf(SKIP, SKIP)

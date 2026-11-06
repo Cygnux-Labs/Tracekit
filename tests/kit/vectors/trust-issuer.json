@@ -1,0 +1,25 @@
+{
+ "logs": [
+  "tracekit.example.org/log/test+dd5817f1+AZsfhHkc/HZjBFhU04netcqVRJ2HXydqg4QLBgqznPxx"
+ ],
+ "witnesses": [
+  {
+   "vkey": "witness.example.org/w1+257cc7f1+BGG3op9v3HIXXDPBmFc/0CioJHhGCXc+pyvvFPlBZdYO",
+   "class": "customer"
+  },
+  {
+   "vkey": "ops.example.org/w+98ae3e0a+BM5yG5KffImn2ea/Y2Zj2CDbLSOTDB+OVHZS3/xUnnnM",
+   "class": "operator"
+  }
+ ],
+ "algs": [
+  "ed25519"
+ ],
+ "witnesses_required": 1,
+ "issuers": [
+  {
+   "vkey": "issuer.example.org+ec41c90b+ATQLdo6KwLkMTwfhkjoTpO4195e6/dr3y0sB5tzOZ3R1",
+   "issuance_log_vkey": "issuer.example.org/issuance+ef309e26+AeZqtBZFDSJbteg3+wRy6N0q8r9xOy3juIwnchd42I2X"
+  }
+ ]
+}

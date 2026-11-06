@@ -382,11 +382,11 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
 
   /** Signature, schema and log membership of one record under `keys`, the SPKIs valid at its position. */
   const checkRecord = async (r: J, keys: Uint8Array[], problems: string[]) => {
-    const err = await verifyRecord(r, keys, trust.algs);
+    const err = await verifyRecord(r, keys, trust.algs, floats);
     if (err) {
       const seq = err === "unknown kid" ? get(r.event, "seq") : null;   // a well-formed record by then
       const retired = [...timeline.values()].filter((k) => Number.isInteger(seq) && k.until !== null && k.until < seq);
-      if (retired.length && !await verifyRecord(r, retired.map((k) => k.spki), trust.algs))
+      if (retired.length && !await verifyRecord(r, retired.map((k) => k.spki), trust.algs, floats))
         problems.push(`seq ${seq}: signed by key ${cut(r.kid, 80)} after its key.retire`);
       else problems.push(`seq ${repr(get(get(r, "event", {}), "seq"))}: ${err}`);
       return;
@@ -415,18 +415,22 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
           keyProblems.push(`seq ${e.seq}: key ${cut(str(k.kid), 80)} has no certificate, and the trust config pins issuers`);
           continue;
         }
+        if (has(k, "cert") && !trust.issuers.length) {   // §11 step 5: no pinned issuer can have signed it
+          keyProblems.push(`seq ${e.seq}: key ${cut(str(k.kid), 80)}: certificate not signed by a pinned issuer`);
+          continue;
+        }
         // lean: a certified key is taken as declared and the bundle left UNVERIFIABLE; port docs/issuer.md's checks
         // (issuance log notes, validity, tenants, revocations) when certified record keys are in use
         if (has(k, "cert")) rep.unsupport("record-key certificates");
         declared.set(k.kid, { spki: der, from: e.seq, until: null });
       }
     }
-    await checkRecord(r, [...keysAt(e.seq), ...[...declared.values()].map((k) => k.spki)], keyProblems);
-    if (e.type === "key.retire") {
+    if (e.type === "key.retire") {   // first: a key.retire is a record too, valid only under a key valid at its seq
       const kid = at(at(e, "data"), "kid");
       if (!timeline.has(kid)) keyProblems.push(`seq ${e.seq}: retires an unknown key`);
       else timeline.get(kid)!.until = at(e.data, "last_seq");
     }
+    await checkRecord(r, [...keysAt(e.seq), ...[...declared.values()].map((k) => k.spki)], keyProblems);
     for (const [kid, k] of declared) timeline.set(kid, k);
   }
 
@@ -1138,10 +1142,11 @@ function honoured(events: J[], pointers: Set<string>): string[] {
 }
 
 /** §4: null when `r` is a v2 record signed by one of `keys` (SPKI DER) with an allowed algorithm that is the key's own,
- * else why not. */
-export async function verifyRecord(r: J, keys: Uint8Array[], algs: string[]): Promise<string | null> {
+ * else why not. `floats`: where the parser read number tokens with a fraction or exponent (`v` is the integer 2). */
+export async function verifyRecord(r: J, keys: Uint8Array[], algs: string[], floats?: Floats): Promise<string | null> {
   if (!isObj(r) || Object.keys(r).length !== 6 || !["v", "event", "hash", "alg", "kid", "sig"].every((k) => Object.hasOwn(r, k))
-      || !same(r.v, 2) || !isObj(r.event) || !["hash", "alg", "kid", "sig"].every((k) => typeof r[k] === "string"))
+      || !same(r.v, 2) || floats?.get(r)?.has("v") || !isObj(r.event)
+      || !["hash", "alg", "kid", "sig"].every((k) => typeof r[k] === "string"))
     return "not a v2 record";
   let h: string;
   try {
