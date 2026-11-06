@@ -650,11 +650,18 @@ class WeeklyReport(unittest.TestCase):
 
 
 def _hold_and_answer(tcid, held_at, answered_at, seq=0, **answer):
-    """The records of one hold (its decision at run_seq `seq`) and its first answer, as the signer writes them."""
+    """The records of one hold (its decision at run_seq `seq`), its approval request (apr-`seq`) and its first answer,
+    as the signer writes them."""
     def rec(ts, type, seq, **data):
         return {"event": {"ts": ts, "type": type, "run_seq": seq, "data": data}}
     return [rec(held_at, "policy.decision", seq, decision="ask", tool_use_id=tcid, tool="pay"),
-            rec(answered_at, "approval", seq + 1, tool_use_id=tcid, **answer)]
+            rec(held_at, "approval.request", seq + 1, approval_id=f"apr-{seq}", binding={"tool_call_id": tcid}),
+            rec(answered_at, "approval", seq + 2, tool_use_id=tcid, approval_id=f"apr-{seq}", **answer)]
+
+
+def _expired(seq, aid, at="2026-11-05T11:00:00Z"):
+    """The signer's record that approval `aid` expired."""
+    return {"event": {"ts": at, "type": "approval.expired", "run_seq": seq, "data": {"approval_id": aid}}}
 
 
 class Oversight(unittest.TestCase):
@@ -666,14 +673,13 @@ class Oversight(unittest.TestCase):
         keeps in its rows, holds counts only."""
         records = (_hold_and_answer("t0", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z", decision="approve",
                                     approver="uid:1", self_approved=True)
-                   + _hold_and_answer("t1", "2026-11-05T10:00:00Z", "2026-11-05T10:00:04Z", 2, decision="reject",
+                   + _hold_and_answer("t1", "2026-11-05T10:00:00Z", "2026-11-05T10:00:04Z", 3, decision="reject",
                                       approver="uid:1")
-                   + [{"event": {"ts": "2026-11-05T11:00:00Z", "type": "approval.expired", "run_seq": 4,
-                                 "data": {"tool_use_id": "t0"}}}])
+                   + [_expired(6, "apr-0")])
         outcomes = {}
         rv = view.review(records, types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified", outcomes)
-        self.assertEqual(outcomes, {0: "expired", 2: "rejected"})   # each hold's decision
-        self.assertFalse([k for k, v in rv.items() if isinstance(v, dict) and set(v) & {0, 2, "t0", "t1"}])
+        self.assertEqual(outcomes, {0: "expired", 3: "rejected"})   # each hold's decision
+        self.assertFalse([k for k, v in rv.items() if isinstance(v, dict) and set(v) & {0, 3, "t0", "t1"}])
         self.assertEqual(self.hold_rules(records, outcomes), [("ask", 2, 1, 1)])
 
     def hold_rules(self, records, outcomes):
@@ -684,22 +690,29 @@ class Oversight(unittest.TestCase):
         return [(g["decision"], g["count"], g["approved"], g["rejected_or_expired"]) for g in rules.values()]
 
     def test_two_holds_of_one_call_id_are_two_in_the_rules_as_in_the_holds_line(self):
-        """A call rejected and then held again under its id, with an approval of its own, is two holds: the rule rows
-        count each held decision, as review's holds line does."""
-        records = (_hold_and_answer("t0", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z", decision="reject",
-                                    approver="uid:1")
-                   + [{"event": {"ts": "2026-11-05T10:01:00Z", "type": "policy.decision", "run_seq": 2,
-                                 "data": {"decision": "ask", "tool_use_id": "t0", "tool": "pay"}}},
-                      {"event": {"ts": "2026-11-05T11:01:00Z", "type": "approval.expired", "run_seq": 3,
-                                 "data": {"tool_use_id": "t0"}}}])
-        outcomes = {}
-        rv = view.review(records, types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified", outcomes)
-        self.assertEqual(rv["holds"], {"rejected": 1, "expired": 1})
-        self.assertEqual(self.hold_rules(records, outcomes), [("ask", 2, 0, 2)])
+        """A call answered and then held again under its id, with an approval of its own, is two holds: the rule rows
+        count each held decision, as review's holds line does, each with the answer to its own approval request. Both
+        read the first hold's answer: rejected then approved counted the approval nowhere, approved then expired
+        counted two approvals."""
+        first = lambda answer: _hold_and_answer("t0", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z",  # noqa: E731
+                                                decision=answer, approver="uid:1")
+        for name, records, holds in (
+                ("rejected, then approved", first("reject") + _hold_and_answer(
+                    "t0", "2026-11-05T10:01:00Z", "2026-11-05T10:01:05Z", 3, decision="approve", approver="uid:1"),
+                 {"rejected": 1, "approved": 1}),
+                ("approved, then expired", first("approve") + _hold_and_answer(
+                    "t0", "2026-11-05T10:01:00Z", None, 3)[:2] + [_expired(5, "apr-3")],
+                 {"approved": 1, "expired": 1})):
+            with self.subTest(name):
+                outcomes = {}
+                rv = view.review(records, types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified",
+                                 outcomes)
+                self.assertEqual(rv["holds"], holds)
+                self.assertEqual(self.hold_rules(records, outcomes), [("ask", 2, 1, 1)])
 
     def oversight(self, *answers):
         records = [r for i, (took, answer) in enumerate(answers) for r in _hold_and_answer(
-            f"t{i}", "2026-11-05T10:00:00Z", "2026-11-05T10:00:%06.3fZ" % took, **answer)]
+            f"t{i}", "2026-11-05T10:00:00Z", "2026-11-05T10:00:%06.3fZ" % took, 3 * i, **answer)]
         held, waits = weekly._tally(("default", "r"), records, None, {}, collections.Counter())
         self.assertEqual(len(held), len(answers))
         return weekly._oversight(collections.Counter({"approved": len(answers)}), waits, 3600)
@@ -729,7 +742,7 @@ class Oversight(unittest.TestCase):
     def test_a_hold_with_no_answer_is_unanswered(self):
         records = _hold_and_answer("a", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z", decision="approve",
                                    approver="uid:1") + _hold_and_answer("b", "2026-11-05T10:00:00Z",
-                                                                         "2026-11-05T10:00:04Z", decision="timeout")
+                                                                         "2026-11-05T10:00:04Z", 3, decision="timeout")
         _, waits = weekly._tally(("default", "r"), records, None, {}, collections.Counter())
         o = weekly._oversight(collections.Counter({"approved": 1, "expired": 1}), waits, 100)
         self.assertEqual((o["approved"], o["unanswered"]), (1, 1))

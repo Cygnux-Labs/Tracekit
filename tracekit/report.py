@@ -162,13 +162,13 @@ def _placed(tr, d):
 
 def _hold_rules(tr, rules, records, waits, outcomes):
     """Each hold (`outcomes`: its decision's run_seq -> what it came to, view.review's of `records`) into `rules` by
-    rule, as an "ask" row: how many it held, how many its call's first answer (`waits`, _tally's) approved, a person's
-    or the run's own user's (an agent's is neither), and how many of those never approved were rejected or expired. An
+    rule, as an "ask" row: how many it held, how many its first answer (`waits`, _tally's) approved, a person's or the
+    run's own user's (an agent's is neither), and how many of those never approved were rejected or expired. An
     approval the signer let expire unused was still approved."""
     first = {w["call"]: w for w in waits}
     decided = {x["event"]["run_seq"]: x["event"]["data"] for x in records if x["event"]["type"] == "policy.decision"}
     for seq, outcome in outcomes.items():
-        w = first.get(decided[seq].get("tool_use_id")) or {}
+        w = first.get(seq) or {}
         for rule, why in _placed(tr, decided[seq]):
             g = rules.setdefault(("ask", rule["id"], why), {
                 "decision": "ask", "rule": rule["id"], "why": why, "reason": rule["reason"], "count": 0,
@@ -184,12 +184,20 @@ def _tally(key, records, tr, rules, unread):
     that decision, False for one of another section that also matched, None for one this report can't place: an
     engine check, which has no section, or any rule of a policy it can't read) and `unread` (the denies and flags
     decided under a policy it can't read). Returns the calls held for a person (decided ask: tool_use_id -> when, its
-    tool and its decision record) and, for each one answered, how long it waited for its first answer. What became of
-    each hold is view.review's."""
-    held, waits = {}, {}   # tool_use_id -> (when it was held, its tool, its record); tool_use_id -> its wait
+    tool and its decision record) and, for each hold answered (its decision's run_seq: `call`), how long it waited for
+    its first answer, an answer to the approval request made for that decision, as view.review files it. What became
+    of each hold is view.review's."""
+    from .why.import_v2 import _call_id, held_calls
+    folds, owners = held_calls(records)
+    # tool_use_id -> (when it was held, its tool, its record); a hold -> (when it was held, its tool); a hold -> its wait;
+    # tool_use_id, and (tool_use_id, attempt) -> its latest decision (a retry with its id: the held call's)
+    held, asked, waits, cur = {}, {}, {}, {}
     for x in records:
         e = x["event"]
         t, d = e["type"], e.get("data") or {}
+        if t == "policy.decision":
+            seq = cur[d.get("tool_use_id")] = cur[d.get("tool_use_id"), e.get("attempt")] = \
+                folds.get(e.get("run_seq"), e.get("run_seq"))
         if t == "policy.decision" and d.get("decision") in ("deny", "flag"):
             unread[d["decision"]] += d.get("policy_hash") not in tr.reasons
             for rule, why in _placed(tr, d):
@@ -201,14 +209,17 @@ def _tally(key, records, tr, rules, unread):
                     g["examples"].append((key, x))
         elif t == "policy.decision" and d.get("decision") == "ask":
             held.setdefault(d.get("tool_use_id"), (ts_seconds(e["ts"]), d.get("tool"), x))
-        elif t == "approval" and d.get("decision") in ("approve", "reject") and d.get("tool_use_id") in held:
-            asked, tool, _ = held[d["tool_use_id"]]
-            took = ts_seconds(e["ts"]) - asked
-            waits.setdefault(d["tool_use_id"], {"call": d["tool_use_id"], "seconds": round(took), "took": took,
-                                                "tool": tool, "run_id": key[1],
-                                                "approved": d["decision"] == "approve",
-                                                "by": "agent" if d.get("approver_kind") == "agent" else
-                                                "self" if d.get("self_approved") else "person"})
+            asked.setdefault(seq, (ts_seconds(e["ts"]), d.get("tool")))
+        elif t == "approval" and d.get("decision") in ("approve", "reject"):
+            # the decision its request was for; with no request in the window, the latest under its call id and attempt
+            own = _call_id(x)
+            seq = owners.get(d.get("approval_id"), cur.get(own if e.get("attempt") is None else (own, e.get("attempt"))))
+            if seq in asked:
+                took = ts_seconds(e["ts"]) - asked[seq][0]
+                waits.setdefault(seq, {"call": seq, "seconds": round(took), "took": took, "tool": asked[seq][1],
+                                       "run_id": key[1], "approved": d["decision"] == "approve",
+                                       "by": "agent" if d.get("approver_kind") == "agent" else
+                                       "self" if d.get("self_approved") else "person"})
     return held, list(waits.values())
 
 
