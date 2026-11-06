@@ -14,7 +14,7 @@ import time
 import zipfile
 
 from tracekit import crypto
-from tracekit.bundle_v2 import export
+from tracekit.bundle_v2 import export, zip_entry
 from tracekit.demo import say
 from tracekit.deploy import files
 from tracekit.format import checkpoint
@@ -105,7 +105,7 @@ def tamper(src, dst):
     bundle[name] = bundle[name].replace(b'"decision":"deny"', b'"decision":"allow"', 1)
     with zipfile.ZipFile(dst, "w") as z:
         for n, v in bundle.items():
-            z.writestr(n, v)
+            z.writestr(zip_entry(n), v)
 
 
 def report(rep, code, detail):

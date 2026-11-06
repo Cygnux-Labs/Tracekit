@@ -404,16 +404,22 @@ class Engines(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 1)   # ten rules took 0.2 s each when every match had its own timeout
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S0"], True))
 
-    def test_the_shell_parse_is_not_charged_to_the_fallback_time(self):
+    def test_reading_the_call_is_not_charged_to_the_fallback_time(self):
         """The fallback's time started before the shell parse: on a slow CPU, 64 KiB of one-word lines (0.4 s to parse
-        on a laptop) spent it before the first match and denied, marked nondeterministic. The parse is bounded by the
-        64 KiB input, not by this deadline."""
-        e = Engine({"tools": {"Bash": "shell"}, "flag": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
-        parse = engine._shell
-        with mock.patch.object(engine, "REGEX_TIMEOUT_S", 0.2), \
-                mock.patch.object(engine, "_shell", lambda *a: (time.sleep(0.3), parse(*a))[1]):
-            d = e.decide("Bash", {"command": "rm x"})
-        self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("flag", ["S"], None))
+        on a laptop) spent it before the first match and denied, marked nondeterministic. Started after the parse, it
+        still ran while the engine built the subjects (each command's targets, effects, Tracekit's own words: 140 ms of
+        those lines on a laptop, against 7 ms of matches) and parsed a second reading: CI's py3.13 Linux runner spent
+        it all there and denied the same lines. Only the regex matches spend this time; reading the call isn't charged
+        to it."""
+        e = Engine({"tools": {"Bash": "shell"}, "deny": [{"id": "S", "class": "shell", "pattern": "^rm "}]}, "regex")
+        # _shell: the parse, and the second reading's of a deny with a $; _prepare: each field's subjects
+        for name in ("_shell", "_prepare"):
+            read = getattr(engine, name)
+            with self.subTest(name):
+                with mock.patch.object(engine, "REGEX_TIMEOUT_S", 0.2), \
+                        mock.patch.object(engine, name, lambda *a, read=read: (time.sleep(0.3), read(*a))[1]):
+                    d = e.decide("Bash", {"command": 'rm "$D"'})
+                self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S"], None))
 
     def test_a_redirection_to_a_lone_surrogate_is_decided_on_both_engines(self):
         """An ASCII command whose $'…' makes a lone surrogate, as a redirection's target, reached the persistent-target
@@ -810,6 +816,24 @@ class Speed(unittest.TestCase):
                 # follows the machine, as the pattern budgets do (#518): CI's Linux runner took 2.03 s under 3.9
                 self.assertLess(time.perf_counter() - start, 2 * SLOWER * scale)
 
+    def test_tk_c010s_options_after_an_aws_command_through_call_aws_decide_in_linear_time(self):
+        """#581 review: TK-C010 read the words after update-trail, update-detector and a filter command as a separator
+        then a word, so in a JSON value a backslash could start either (`\\\\t`): 64 KiB of backslashes took ~400 ms a
+        decision on the fallback engine, four times as long each time the input doubled. A word then its separator,
+        TK-C001's reading, splits the run one way. TK-C010 is in RESCAN, so the generic fillers never built it."""
+        n, scale = MAX_SUBJECT - 200, machine_scale()
+        for backend in BACKENDS:
+            e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], backend)
+            for cmd in ("cloudtrail update-trail", "guardduty update-detector", "guardduty create-filter",
+                        "guardduty update-filter"):
+                for unit in ("\\", "a\\"):
+                    args = {"cli_command": f"aws {cmd} " + unit * (n // (2 * len(unit)))}
+                    with self.subTest(backend=backend, cmd=cmd, unit=unit):
+                        start = time.perf_counter()
+                        d = e.decide("mcp__aws-api__call_aws", args)
+                        self.assertNotIn("nondeterministic", d)
+                        self.assertLess(time.perf_counter() - start, self.BUDGET_S * scale)
+
     def test_the_corpus_decides_within_budget(self):
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
         calls = list(corpus_calls())
@@ -976,6 +1000,35 @@ class Shell(unittest.TestCase):
         # as each name its bracket can make
         self.assertEqual([c["glob"] for c in shell.parse("ls []x]; ls x[]")], [True, True, True, True, False])   # ] first
         self.assertIn(["ls", "]"], argvs("ls []x]"))   # is in the set
+
+    def test_a_command_sent_to_the_background(self):
+        """`background` on each command a pipeline ending in `&` runs, nested ones too (tracekit.findings_box reads
+        it); never for a quoted `&`, a heredoc's text, &&, &> or |&."""
+        def background(command):
+            return [c["argv"][0] for c in shell.parse(command) if c.get("background")]
+        for command, want in (("npm run dev &", ["npm"]), ("(npm run dev &)", ["npm"]), ("a | b & c", ["a", "b"]),
+                              ("sh -c 'npm start &'", ["npm"]), ("(a; b) &", ["a", "b"]), ("nohup a &", ["nohup", "a"]),
+                              ("cat <<EOF\nx &\nEOF\nb &", ["b"]), ("a # c &\nb", []), ("npm run dev \\\n&", ["npm"]),
+                              ('echo "&"', []), ("git commit -qm'a & b'", []), ("a && b", []), ("a &> f", []),
+                              ("a |& b", []), ("echo $'a & b'", []), ("sh -c 'npm start' &", ["sh", "npm"]),
+                              # #608's review: a block or an and-or list sent to the background, from its start
+                              ("{ npm run dev; } &", ["npm"]),
+                              ("while true; do curl -s https://example.com/health; sleep 30; done &",
+                               ["true", "curl", "sleep"]),
+                              ("if true; then npm run dev; fi &", ["true", "npm"]), ("for f in 1 2; do a; done &", ["a"]),
+                              ("case x in y) a;; esac &", ["a"]), ("x; { a; b; } &", ["a", "b"]),
+                              ("{ a; } && c &", ["a", "c"]), ("x || { a; } | b &", ["x", "a", "b"]),
+                              ("a && b &", ["a", "b"]), ("curl -s https://example.com && x=1 &", ["curl"]),
+                              ("a; b &", ["b"]), ("{ a & b; }", ["a"]), ("if a; then b; fi; c", []),
+                              ("{ a; }; c &", ["c"]),
+                              # a subshell or case arms in the same pipeline as a block: a nested list keeps the
+                              # enclosing and-or list's state
+                              ("{ npm run dev; } | (x=1) &", ["npm"]),
+                              ("{ npm run dev; } | case q in y) x=1;; esac &", ["npm"]),
+                              ("{ a; } | (x) &", ["a", "x"]), ("a && (x) | { b; } &", ["a", "x", "b"]),
+                              ("a && case q in y) x;; esac | { b; } &", ["a", "x", "b"])):
+            with self.subTest(command):
+                self.assertEqual(background(command), want)
 
     def test_ordinary_commands(self):
         cases = {

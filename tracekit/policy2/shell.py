@@ -10,7 +10,9 @@ are stages of one pipeline, in order. `opaque`: what the command runs cannot be 
 expansion in its name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of
 a stream). `stdin`: the herestring and heredoc text the command reads (the names `xargs rm <<< x` deletes). A command
 of the line itself also has `out` and `in`, the files its redirections write and read, and `stage`, its place in its
-pipeline (0 first).
+pipeline (0 first). `background`: True when the and-or list it is in ends in `&` (`a && b &` sends both), when it is in
+a block whose closing word that `&` follows (`{ a; } &`, `while …; do a; done &`, if, for, select, case: from the
+and-or list the block opened in), or when one it runs in does (a subshell, an `sh -c` string); absent otherwise.
 Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 
 `analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
@@ -972,6 +974,7 @@ class _Parser:
         # what follows it. Each known one maps to the literals it may hold ([]: not known; IFS: bash's default, which
         # no assignment gives back)
         self.known, self.blocks = {"PWD": [], "IFS": []}, []
+        self.list_start = self.closed = 0   # list(): the and-or list being read, a block's opening a pipeline closed
         self.called = False   # simple(): the command calls a function (_Parser.call)
         self.charge(len(src))
 
@@ -993,6 +996,14 @@ class _Parser:
 
     def leave(self):
         self.ctx["depth"] -= 1
+
+    def close_block(self):
+        """The innermost block ends: what it made known is forgotten, and where its and-or list began goes back to
+        list() (a block sent to the background runs from its opening)."""
+        _, names, opened = self.blocks.pop()
+        for name in names:
+            self.known.pop(name, None)
+        self.closed = min(self.closed, opened)
 
     def nested(self, text, via):
         # a new shell sets $PWD and IFS; a trap runs later
@@ -1052,14 +1063,24 @@ class _Parser:
     def list(self, end):
         """Commands up to `end`: None (the text's end), ")" or "esac" (a case arm's ;;, ;&, ;;& or the esac)."""
         self.enter()
-        arm = end == "esac"
+        arm, start = end == "esac", None   # start: where the commands of the and-or list being read begin
+        # a list nested in a pipeline (a subshell, a case arm) leaves the enclosing list's and-or state as it found it
+        enclosing = self.list_start, self.closed
         while True:
             self.gap()
             if not self.peek() or self.peek() == ")" or arm and (self.at(";;") or self.at(";&") or
                                                                _ESAC.match(self.s, self.i)):
                 break
+            start = len(self.ctx["cmds"]) if start is None else start
+            self.list_start = self.closed = start
             self.pipeline()
+            start = min(start, self.closed)   # a block the pipeline closed: from the and-or list it opened in
             self.blank()
+            if self.peek() == "&" and not self.at("&&"):   # the and-or list runs in the background: each command it
+                for cmd in self.ctx["cmds"][start:]:      # runs, a block's from its opening, nested ones too
+                    cmd["background"] = True
+            if not (self.at("&&") or self.at("||")):
+                start = None
             self.out.append(self.s[self.i:self.i + 2] if self.at("&&") or self.at("||") else
                             self.peek() if self.peek() in (";", "&") else ";")
             if self.at("&&") or self.at("||"):
@@ -1078,6 +1099,7 @@ class _Parser:
         if (self.peek() == ")") != (end == ")"):
             raise ParseError("unmatched )" if end is None else "missing )")
         self.i += end == ")"
+        self.list_start, self.closed = enclosing
         self.leave()
 
     def case(self):
@@ -1091,7 +1113,7 @@ class _Parser:
         self.gap()
         if (self.word() or (None, None))[1] != "in":
             raise ParseError("case without in")
-        self.blocks.append(("case", []))
+        self.blocks.append(("case", [], self.list_start))
         while True:
             self.gap()
             if _ESAC.match(self.s, self.i):
@@ -1110,8 +1132,7 @@ class _Parser:
                     break
             self.list("esac")
             self.i += next((len(op) for op in (";;&", ";;", ";&") if self.at(op)), 0)
-        for name in self.blocks.pop()[1]:
-            self.known.pop(name, None)
+        self.close_block()
         self.leave()
 
     def define(self, name, at):
@@ -1307,10 +1328,9 @@ class _Parser:
                 if text in ("while", "until"):   # its condition and body run again after the body's later commands
                     self.known = self.stable()
                 if text in ("if", "while", "until", "{"):
-                    self.blocks.append((text, []))
+                    self.blocks.append((text, [], self.list_start))
                 elif text in ("fi", "done", "}") and self.blocks:
-                    for name in self.blocks.pop()[1]:
-                        self.known.pop(name, None)
+                    self.close_block()
                 continue
             if not words and raw == text and text in ("for", "select"):
                 loop_header = text   # the loop words are not run; `do` starts the body
@@ -1549,7 +1569,7 @@ class _Parser:
             self.known = self.stable()
             if literal and not self.ctx["any_set"] and name != "IFS":
                 self.known[name] = rest[1:]   # select sets it to nothing on a reply that picks no item
-            self.blocks.append((kind, [name]))
+            self.blocks.append((kind, [name], self.list_start))
             return
         if words[:1] in (["shift"], ["set"]):   # a function's arguments may move or be replaced
             for name in [k for k in self.known if k.isdigit() or k == "@"]:
