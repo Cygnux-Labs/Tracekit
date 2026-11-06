@@ -39,11 +39,13 @@ const client = new Client();                              // or new Client({ sig
 const run = await client.registerRun("research-bot");
 const d = await run.decide(call.id, "Bash", call.function.arguments);   // the raw model string, or a parsed value
 if (d.decision === "allow") {
-  const out = await runShell(call);
-  await run.complete(call.id, "ok", { result: out });      // never throws: a recording failure is a warning
+  if ((await run.approvalConsume(call.id, "Bash", call.function.arguments)).ok)   // never throws: ok false means it doesn't run
+    await run.complete(call.id, "ok", { result: await runShell(call) });   // never throws: a recording failure is a warning
 } else if (d.decision === "ask") {
   const { approval_id } = await run.approvalRequest(call.id);
   const { state } = await run.approvalWait(approval_id, 300_000);   // on a connection of its own
+  if (state === "approved" && (await run.approvalConsume(call.id, "Bash", call.function.arguments, approval_id)).ok)
+    await run.complete(call.id, "ok", { result: await runShell(call) });
 }
 await run.close();
 await client.close();                                     // waits for what is in flight
