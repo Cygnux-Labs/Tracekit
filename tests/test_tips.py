@@ -380,6 +380,32 @@ class Holds(unittest.TestCase):
         self.assertEqual(t["fix"]["copy"], "tracekit approvals list")
         self.assertTrue(t["fix"]["text"].startswith("TK-SHELL-PARSE held 1 of them"))
 
+    def test_a_retry_counts_with_its_held_call_as_the_review_and_permissions_count_it(self):
+        """Tips counted each decision `ask` a hold of its own: the agent's retry of a held call a person approved, with
+        another id (signer _reusable) or its own (LangGraph), was a second hold nobody answered, where the run review and
+        PERMISSIONS count one call approved and run."""
+        ask = lambda seq, call: v2rec(seq, "policy.decision", {"tool_use_id": call, "tool": "pay", "decision": "ask"})  # noqa: E731
+        req = lambda seq, aid, call: v2rec(seq, "approval.request", {"approval_id": aid, "binding": {"tool": "pay", "tool_call_id": call}})  # noqa: E731
+        ok = lambda seq, aid, call: v2rec(seq, "approval", {"tool_use_id": call, "approval_id": aid, "decision": "approve", "approver": "uid:501"})  # noqa: E731
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}),
+                ask(2, "c1"), req(3, "apr-1", "c1"), ok(4, "apr-1", "c1"),   # its retry c2 uses c1's approval
+                ask(5, "c2"), v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c2"),
+                ask(7, "c3"), req(8, "apr-3", "c3"), ok(9, "apr-3", "c3"),   # its retry has its id
+                ask(10, "c3"), v2rec(11, "approval.consumed", {"approval_id": "apr-3"}, tool_call_id="c3"),
+                ask(12, "c4"), req(13, "apr-4", "c4"),   # nobody answered
+                v2rec(14, "run.final", {"head_run_seq": 14})]
+        reviewed = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]
+        perm = json.loads(page_js(["ANSWER", "used", "foldsOf", "callKey", "couldRun", "permOf"], f"""
+            process.stdout.write(JSON.stringify(permOf({json.dumps(rows(*recs))}).map(r => [r.rec.tool_use_id, r.out[1]])));"""))
+        built = tips.build(rows(*recs), None, NOW)
+        self.assertEqual(reviewed, {"approved · ran": 2, "not answered": 1})
+        self.assertEqual(perm, [["c4", "NOT ANSWERED"], ["c3", "APPROVED · RAN"], ["c1", "APPROVED · RETRY RAN"]])
+        self.assertEqual(built["sources"]["signed"]["holds"], 3)
+        self.assertTrue(built["tips"][2]["line"].startswith("Tracekit held 3 calls for a person; 1 never got an answer"),
+                        built["tips"][2]["line"])
+        self.assertEqual(built["tips"][2]["where"], [{"where": "main session", "answered": 2, "open": 1,
+                                                      "blocked_s": 0, "joined": 0}])
+
     def test_with_no_signed_records_or_no_holds_it_says_so(self):
         self.assertIn("No signed records", tips.build([], None, NOW)["tips"][2]["why"])
         t = tips.build(rows(self.RECS[0]), None, NOW)["tips"][2]

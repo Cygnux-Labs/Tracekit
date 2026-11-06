@@ -31,6 +31,7 @@ import time
 from .audit import _entry_time, _iter_transcripts, _safe_open
 from .hook import transcript_entries
 from .usage import Prices, _int
+from .why import import_v2
 
 # Anthropic's list prices, USD per million tokens, as of 2026-11-05: https://platform.claude.com/docs/en/about-claude/pricing
 # Cache writes cost 1.25x input for the 5-minute lifetime and 2x for 1 hour; reads 0.1x input, except where shown:
@@ -219,18 +220,39 @@ def read_transcripts(root, since):
 
 
 def held_calls(rows, since):
-    """The calls held for a person (signed decisions `ask`) in the viewer's rows, each with when a person (or an agent
-    approver) answered it, from the signed approval records: [{id, t, run, agent, sub, tool, rules, answered}]."""
-    answers = {}
+    """The calls held for a person (signed decisions `ask`) in the viewer's rows, as view.review counts them, each with
+    when a person (or an agent approver) first answered its approval request, from the signed approval records:
+    [{id, t, run, agent, sub, tool, rules, answered}]. The agent's retry of a held call is that call: with its id,
+    why.import_v2.held_calls folds it; with another, under the held call's approval, that approval's rows name the held
+    call (`held`)."""
+    runs = collections.defaultdict(list)   # a call id is unique only within its run
     for r in rows:
         v = r.get("v2") or {}
-        if v.get("type") == "approval" and v.get("approval") in ("approve", "reject") and v.get("tool_use_id"):
-            answers[v["tool_use_id"]] = min(answers.get(v["tool_use_id"], r["ts"]), r["ts"])
-    return [{"id": r.get("tool_use_id"), "t": r["ts"], "run": r.get("session_id"), "sub": bool(r.get("agent_id")),
-             "agent": r.get("agent"), "tool": r.get("tool_name"), "rules": (r.get("v2") or {}).get("rules") or [],
-             "answered": answers.get(r.get("tool_use_id"))}
-            for r in rows if r.get("event") == "PreToolUse" and (r.get("v2") or {}).get("decision") == "ask"
-            and (r.get("ts") or 0) >= since]
+        if v.get("run_seq") is not None and (r.get("event") == "PreToolUse" or v.get("type", "").startswith("approval")):
+            runs[r.get("tenant"), r.get("session_id")].append(r)
+    out = []
+    for recs in runs.values():
+        # each row as the record held_calls reads: view.Translator's rows name its call, attempt and approval
+        folds, owners = import_v2.held_calls([{"event": {
+            "type": r["v2"]["type"], "run_seq": r["v2"]["run_seq"], "attempt": r["v2"].get("attempt"),
+            "data": {"tool_use_id": r["v2"].get("tool_use_id"), "tool": r.get("tool_name"),
+                     "decision": r["v2"].get("decision"), "approval_id": r["v2"].get("approval_id")}}} for r in recs])
+        latest, answered = {}, {}   # (call id, attempt) and call id -> its latest decision; a held call -> its answer
+        for r in recs:
+            v = r["v2"]
+            if r["event"] == "PreToolUse":
+                latest[v.get("tool_use_id")] = latest[v.get("tool_use_id"), v.get("attempt")] = v["run_seq"]
+            elif v.get("held"):   # the retry with another id: no hold of its own
+                folds[latest.get(v["tool_use_id"] if v.get("attempt") is None else (v["tool_use_id"], v["attempt"]))] = None
+            if v["type"] == "approval" and v.get("approval") in ("approve", "reject") and v.get("approval_id") in owners:
+                held = owners[v["approval_id"]]
+                answered[held] = min(answered.get(held, r["ts"]), r["ts"])
+        out += [{"id": r.get("tool_use_id"), "t": r["ts"], "run": r.get("session_id"), "sub": bool(r.get("agent_id")),
+                 "agent": r.get("agent"), "tool": r.get("tool_name"), "rules": r["v2"].get("rules") or [],
+                 "answered": answered.get(r["v2"]["run_seq"])}
+                for r in recs if r["event"] == "PreToolUse" and r["v2"].get("decision") == "ask"
+                and r["v2"]["run_seq"] not in folds and (r.get("ts") or 0) >= since]
+    return out
 
 
 def _series(values, n=POINTS):
@@ -586,8 +608,9 @@ def holds_tip(holds, calls, signed):
                where=where,
                rules=[{"id": i, "n": n, "reason": words[i].get("reason") or "", "remedy": words[i].get("remedy") or ""}
                       for i, n in rules.most_common(6)],
-               math=[f"Held calls: {len(holds)} signed decisions `ask` in the window; {len(holds) - len(open_)} answered "
-                     f"(a signed approval or rejection), {len(open_)} never."]
+               math=[f"Held calls: {len(holds)} signed decisions `ask` in the window, the agent's retry of a held call "
+                     f"counted with it, as the run review counts them; {len(holds) - len(open_)} answered (a signed "
+                     f"approval or rejection), {len(open_)} never."]
                + ([f"In the main session a person answered in a median {_dur(statistics.median(answered))} "
                    f"({len(answered)} answered)."] if answered else [])
                + [f"Time blocked: each held call's tool_use to its tool_result in the transcript, joined by tool_use_id: "
