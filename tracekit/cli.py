@@ -1103,16 +1103,19 @@ def _gist(c, aid, n=60):
     return text if len(text) <= n else text[:n - 3] + "..."
 
 
-def _expires_left(expires_at):
-    """How long until `expires_at` (or since), as `show` and `list` print it: ` (in 55 min)` or ` (3 min ago)`.
-    Another signer's time format is left as it is."""
+def _expires_left(x):
+    """How long approval `x` has left, as `show` and `list` print it: ` (in 55 min)` while it is requested or approved,
+    ` (3 min ago)` once its time passed; nothing for one rejected, consumed or abandoned before then, whose expiry no
+    longer counts. Another signer's time format is left as it is."""
     import datetime
     try:
-        left = (datetime.datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%S.%fZ")
+        left = (datetime.datetime.strptime(x["expires_at"], "%Y-%m-%dT%H:%M:%S.%fZ")
                 .replace(tzinfo=datetime.timezone.utc) - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-        return f" (in {left // 60:.0f} min)" if left >= 0 else f" ({-left // 60:.0f} min ago)"
     except ValueError:   # another signer's time format: as it is
         return ""
+    if left < 0:
+        return f" ({-left // 60:.0f} min ago)"
+    return f" (in {left // 60:.0f} min)" if x["state"] in ("requested", "approved") else ""
 
 
 def _stop_lines(c, x):
@@ -1134,7 +1137,7 @@ def _stop_lines(c, x):
              for i in x["rule_ids"] if i != "TK-UNKNOWN-TOOL" and i not in flags]
     why = "; ".join(f"{r['reason']} ({i})" for i, r in rules if r.get("reason"))
     instead = " ".join(dict.fromkeys(r["remedy"] for _, r in rules if r.get("remedy")))
-    left = _expires_left(x["expires_at"])
+    left = _expires_left(x)
     cmd = approvals_cmd(c.signer)
     why = why or ("not on this machine: `tracekit policy compile <file>` prints the reasons of the signer's policy, "
                   + x["policy_hash"])
@@ -1175,7 +1178,7 @@ def _approvals(a):
             for x in [] if a.json else shown:
                 state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
                 print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
-                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}{_expires_left(x['expires_at'])}" + (
+                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}{_expires_left(x)}" + (
                           f"  {json.dumps(_gist(c, x['approval_id']))}" if x["state"] in ("requested", "approved")
                           else ""))
             if a.json:

@@ -711,7 +711,6 @@ class TestCli(unittest.TestCase):
             run.decide(tcid, "Bash", {"command": f"stripe refunds create --charge ch_{tcid[-1]}"})
             aids.append(run.call("approval_request", tool_call_id=tcid)["approval_id"])
         run.call("approval_abandon", approval_id=aids[0])   # expired
-        service.log.approvals[aids[0]]["expires_at"] = svc._iso(time.time() - 180)  # 3 min ago: list --all
         sock = cfg["socket"]
         shown = tracekit("approvals", "--signer", sock, "show", aids[1])
         self.assertEqual(shown.returncode, 0, shown.stderr)
@@ -731,7 +730,10 @@ class TestCli(unittest.TestCase):
         listed = tracekit("approvals", "--signer", sock, "list", "--all").stdout.splitlines()
         self.assertEqual([line.split()[:2] for line in listed], [[aids[2], "requested"], [aids[1], "requested"],
                                                                  [aids[0], "expired"]])
-        self.assertRegex(listed[2], r" expires \S+Z \(\d+ min ago\)")
+        self.assertTrue(listed[2].endswith("Z"), listed[2])   # abandoned before its time: no "in 59 min"
+        service.log.approvals[aids[0]]["expires_at"] = svc._iso(time.time() - 180)
+        listed = tracekit("approvals", "--signer", sock, "list", "--all").stdout.splitlines()
+        self.assertRegex(listed[2], r" expires \S+Z \(3 min ago\)$")
 
     def test_a_refusal_and_an_empty_list_say_how_to_get_further(self):
         d = ts.tmpdir(self)
