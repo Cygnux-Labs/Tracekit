@@ -1387,26 +1387,6 @@ class CodingPack(unittest.TestCase):
             d = e.decide("Bash", {"command": "echo x > ~/.local/share/kilo/log/a.txt"})   # its logs aren't sessions
             self.assertNotIn("TK-D008", d["rule_ids"])
 
-    def test_xdg_config_home_opencode_and_kilo_folders_are_harness_config_in_every_pack(self):
-        """#558: TK-F015 flags shell writes to $XDG_CONFIG_HOME/opencode and $XDG_CONFIG_HOME/kilo (both spellings
-        and the casefolded form), as it does to ~/.config/opencode. Reads and the variable's name alone are not
-        flagged."""
-        commands = ('echo x > "$XDG_CONFIG_HOME/opencode/plugin/x.js"',
-                    'echo x > "$XDG_CONFIG_HOME/OpenCode/plugin/x.js"',
-                    'echo x > "${XDG_CONFIG_HOME}/kilo/plugin/x.js"',
-                    'echo x > "$xdg_config_home/opencode/plugin/x.js"',
-                    'rm -rf "$XDG_CONFIG_HOME"',
-                    'tee ${XDG_CONFIG_HOME}/opencode/x')
-        benign = ('echo $XDG_CONFIG_HOME', 'ls $XDG_CONFIG_HOME/opencode/',
-                  'echo x > ~/.config/opencode-old/x')
-        for pack, engine, e in self.every_pack():
-            for command in commands:
-                with self.subTest(pack=pack, engine=engine, command=command):
-                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
-            for command in benign:
-                with self.subTest(pack=pack, engine=engine, command=command):
-                    self.assertNotIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
-
     def test_transcript_rule_holds_deletes_of_the_folders_that_hold_transcripts(self):
         """Deleting ~/.claude, ~/.codex, ~/.gemini or OpenCode's data folder (or a folder above it in the home)
         deletes the transcripts in it; TK-F015 only flagged it. Writing into those folders outside the transcripts,
@@ -2120,8 +2100,8 @@ class CodingPack(unittest.TestCase):
                     r"cp x 'C:\Users\u\.config\opencode\plugin\x.js'", "rm -rf ~/.config/opencode",
                     'echo x > "$XDG_CONFIG_HOME/opencode/plugin/x.js"',
                     'echo x > "$XDG_CONFIG_HOME/OpenCode/plugin/x.js"',
-                    'echo x > "${XDG_CONFIG_HOME}/kilo/plugin/x.js"',
-                    'rm -rf "$XDG_CONFIG_HOME"',
+                    'echo x > "${XDG_CONFIG_HOME}/kilo/plugin/x.js"', 'echo x > "$xdg_config_home/opencode/x.js"',
+                    'rm -rf "$XDG_CONFIG_HOME"', 'rm -rf "$XDG_CONFIG_HOME/"',
                     'tee ${XDG_CONFIG_HOME}/opencode/x')
         benign = [("Bash", {"command": c}) for c in (
             "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
@@ -2129,7 +2109,9 @@ class CodingPack(unittest.TestCase):
             "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt",
             "cat .qwen/settings.json", "ls ~/.qwen", 'cat "$QWEN_HOME/settings.json"', "echo x > qwen-settings.json",
             "cp x .qwen-backup/settings.json", "ls ~/.config/opencode/plugin", "echo x > ~/.config/opencode-old/x",
-            'echo $XDG_CONFIG_HOME', 'ls $XDG_CONFIG_HOME/opencode/')]
+            'echo $XDG_CONFIG_HOME', 'ls $XDG_CONFIG_HOME/opencode/',
+            # #611 review: only OpenCode's and Kilo's folders under $XDG_CONFIG_HOME, or the folder itself
+            'echo x > "$XDG_CONFIG_HOME/nvim/init.lua"', 'echo x > "$XDG_CONFIG_HOME/opencode-old/x"')]
         benign += [(tool, args) for tool, args in (
             ("Read", {"file_path": "opencode.json"}),
             ("Read", {"file_path": "/home/u/.qwen/settings.json"}),
