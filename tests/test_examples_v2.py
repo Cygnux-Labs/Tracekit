@@ -124,6 +124,8 @@ class DemoServer(unittest.TestCase):
         from tracekit.cli import _quote
         self.assertIn(f"\n  verify the bundle again: tracekit verify {_quote(os.path.join(kept, 'run.tkb'))} --trust "
                       f"{_quote(os.path.join(kept, 'trust.json'))}\n", tampered)
+        # the kept store is no dev signer's: `tracekit view --dev` does not show it, so the command that does is printed
+        self.assertIn(f"\n  see the run: tracekit view --data-dir {_quote(os.path.join(kept, 'data'))}\n", tampered)
 
 
 if __name__ == "__main__":

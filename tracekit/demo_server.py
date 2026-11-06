@@ -153,7 +153,8 @@ def main(keep=False, detail=False):
             service.close()
         if keep:
             print(f"\nkept {d}" + (f"\n  verify the bundle again: tracekit verify {_quote(out)} --trust {_quote(trust)}"
-                                   if os.path.exists(trust) else ""))
+                                   if os.path.exists(trust) else "")
+                  + f"\n  see the run: tracekit view --data-dir {_quote(os.path.join(d, 'data'))}")
         else:
             shutil.rmtree(d, ignore_errors=True)
             print(f"\ndeleted {d} (--keep keeps it)")

@@ -546,7 +546,9 @@
       white-space: nowrap
     }
 
+    /* what is held keeps its row's width; the commands go on the line under it */
     .need .do {
+      grid-column: 2/-1;
       white-space: nowrap
     }
 
@@ -598,6 +600,7 @@
 
     .p>h2 small {
       margin-left: auto;
+      font-size: 10px;
       color: var(--muted);
       font-weight: 400;
       letter-spacing: 0;
@@ -921,6 +924,17 @@
       width: 44px
     }
 
+    /* DESK's tape gives the target the room: a call's duration is on its run's page */
+    .pg-desk .c-ms {
+      display: none
+    }
+
+    @media (min-width:701px) {
+      .pg-desk.v2 .c-st {
+        width: 96px
+      }
+    }
+
     .scoped .c-agent {
       display: none
     }
@@ -1146,7 +1160,7 @@
     }
 
     .empty {
-      color: var(--faint);
+      color: var(--muted);
       padding: 10px 8px
     }
 
@@ -1783,10 +1797,7 @@
 
     .hzcap {
       font-size: 11px;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap
+      min-width: 0
     }
 
     .hzstep {
@@ -2470,8 +2481,11 @@
       padding: 2px 8px 4px
     }
 
+    /* a long chain scrolls in its own box, so the run's review below it stays near */
     .walk {
-      padding: 2px 0 6px
+      padding: 2px 0 6px;
+      max-height: 60vh;
+      overflow: auto
     }
 
     .walk .rec {
@@ -2863,13 +2877,19 @@
         max-height: none
       }
 
+      /* a run's review and views and the run list grow the page, not a box inside it */
+      .p.runsp,
+      .p.detail,
+      .pg-run .p.whyv {
+        max-height: none
+      }
+
       .hztl {
         grid-template-columns: auto minmax(0, 1fr)
       }
 
       .hzcap {
-        grid-column: 1/-1;
-        white-space: normal
+        grid-column: 1/-1
       }
 
       .hzmain {
@@ -2940,23 +2960,33 @@
         row-gap: 4px
       }
 
-      /* NEEDS YOU: its label above, each item's words then its commands on their own lines */
+      /* NEEDS YOU: its label above, then one line an item: what it is and OPEN, whose record (and the approvals page)
+         has the commands that answer it */
       .needs {
         flex-direction: column;
         max-height: none
       }
 
       .need {
-        grid-template-columns: auto minmax(0, 1fr)
-      }
-
-      .need .what {
-        white-space: normal
+        grid-template-columns: auto minmax(0, 1fr) auto
       }
 
       .need .do {
-        grid-column: 1/3;
-        white-space: normal
+        grid-column: auto
+      }
+
+      .need .do code,
+      .need .do .cp[data-copy] {
+        display: none
+      }
+    }
+
+    /* a touch screen has no keyboard: its key hints go (HELP stays in the command bar) */
+    @media (hover: none) and (pointer: coarse) {
+      .foot .keys,
+      .foot kbd,
+      .rviews kbd {
+        display: none
       }
     }
 
@@ -3011,10 +3041,27 @@
         display: contents
       }
 
+      /* its readouts above the map, not over it: a phone's map is too small to share */
       .hzstage {
         order: -1;
-        height: 440px;
-        border: 1px solid var(--line2)
+        height: 560px;
+        border: 1px solid var(--line2);
+        display: grid;
+        grid-template: auto minmax(0, 1fr) / auto minmax(0, 1fr)
+      }
+
+      .hzhud {
+        position: static;
+        padding: 12px 14px 0
+      }
+
+      .hzhud.bl {
+        display: none
+      }
+
+      .hzstage canvas {
+        position: static;
+        grid-area: 2/1/3/-1
       }
 
       .hzside {
@@ -3119,6 +3166,51 @@
 
       .apprp tr.row td:nth-child(n+3) {
         grid-column: 1/-1
+      }
+
+      /* RUNS: a run is a card: its id and agent (or when it started), its counts under their names, its verdict; so is a
+         why log's run */
+      #runsp thead,
+      #whyruns thead {
+        display: none
+      }
+
+      #runsp tr.row,
+      #whyruns tr.row {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        border-bottom: 1px solid var(--line)
+      }
+
+      #runsp tr.row td,
+      #whyruns tr.row td {
+        border: 0;
+        max-width: none
+      }
+
+      #runsp tr.row td:first-child,
+      #whyruns tr.row td:first-child {
+        grid-column: span 2
+      }
+
+      #runsp tr.row td:nth-child(2),
+      #runsp tr.row td:nth-child(3),
+      #whyruns tr.row td:nth-child(2) {
+        grid-column: span 3
+      }
+
+      #runsp tr.row td:last-child {
+        grid-column: 1/-1
+      }
+
+      #runsp td[data-h]::before,
+      #whyruns td[data-h]::before {
+        content: attr(data-h);
+        display: block;
+        font-size: 10px;
+        font-weight: 400;
+        letter-spacing: .07em;
+        color: var(--muted)
       }
 
       #toasts {
@@ -3276,7 +3368,7 @@
             data-jump="hold" type="button">NEXT HOLD</button><button data-jump="gap" type="button">NEXT GAP</button><button
             id="rlive" type="button">LIVE</button></span>
       </div>
-      <span><kbd>/</kbd>command</span><span><kbd>ESC</kbd>clear</span><span><kbd>F</kbd>flagged</span><span><kbd>?</kbd>help</span><span><kbd>T</kbd><button class="chip" id="theme" type="button"
+      <span class="keys"><kbd>/</kbd>command</span><span class="keys"><kbd>ESC</kbd>clear</span><span class="keys"><kbd>F</kbd>flagged</span><span class="keys"><kbd>?</kbd>help</span><span><kbd>T</kbd><button class="chip" id="theme" type="button"
           title="auto follows this computer's setting; light and dark stay picked in this browser">THEME AUTO</button></span>
     </footer>
   </div>
@@ -3459,10 +3551,48 @@
     // a retry's, that of the held call whose approval it used
     const lastAnswer = a => (a.retryOf || a).approvals?.filter(x => x.v2.approval in ANSWER).pop()?.v2.approval;
     const ended = a => S.sessions.get(a.agent.session)?.end != null;
+    // An approved call runs only by using its approval (`used`)
+    const used = answers => answers.some(x => x.v2.approval === "consumed");
+    // a v2 row's call id and attempt, its approval's key, its decision's key (a decision's own, or the one a result names),
+    // and whether it is a use the signer refused (of the call that tried it, not the call the approval is for)
+    const callKey = r => r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id) + "|" + (r.v2?.attempt ?? ""), aidKey = r => r.session_id + "|" + r.v2?.approval_id, didKey = r => r.session_id + "|" + r.v2?.decision_id, refusedUse = r => /^approval\.(refused|binding_mismatch)$/.test(r.v2?.type);
+    // a run's held calls as why/import_v2.held_calls reads them. Returns the owners: approval key -> the decision row its
+    // request was for (the latest under the request's call id and attempt). Into `out`: each decision row that is a held
+    // call's retry with its own id (LangGraph's resume) -> the held call's row. A consume names a call id and attempt, not
+    // a decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it
+    // has no approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of
+    // that approval under the id does. When in doubt it is a call of its own
+    function foldsOf(rows, out = new Map()) {
+      const decs = new Map(), at = new Map(), owners = new Map(), mism = new Map(), cons = new Map();   // call key -> its decisions
+      out.clear();
+      rows.forEach((r, i) => {
+        const a = r.v2?.approval, k = callKey(r);
+        if (r.event === "PreToolUse" && r.v2) { at.set(r, i); decs.set(k, [...(decs.get(k) || []), r]); }
+        else if (a === "requested" && decs.has(k)) owners.set(aidKey(r), decs.get(k).at(-1));
+        else if (a === "binding_mismatch") mism.set(aidKey(r), i);   // the latest
+        else if (a === "consumed") cons.set(aidKey(r), [...(cons.get(aidKey(r)) || []), [i, k]]);
+      });
+      const own = new Set(owners.values());
+      for (const [aid, h] of owners) for (const d of decs.get(callKey(h)))
+        if (at.get(d) > at.get(h) && d.v2.decision === "ask" && d.tool_name === h.tool_name && !own.has(d) && !(mism.get(aid) > at.get(d))
+            && (cons.get(aid) || []).some(([c, k]) => c > at.get(d) && k === callKey(h))) out.set(d, h);
+      return owners;
+    }
+    // a call's acts under its id (latest last), and the one a row of `r`'s id and attempt is of that passes `ok`
+    const actsOf = r => (S.byId ||= new Map()).get(tuid(r)) || [];
+    const latestAct = (r, ok = () => true) => actsOf(r).findLast(a => (r.v2?.attempt == null || a.v2?.attempt === r.v2.attempt) && ok(a));
+    // a result is the call of the decision it names (decision_id, as the signer signed it: a deny or a hold nobody answered
+    // that ran anyway ran); one that names none, the latest under its id and attempt that could have run: an allow, a
+    // flag, an ask whose approval was used
+    const couldRun = (v2, answers) => v2?.decision === "allow" || v2?.decision === "flag" || v2?.decision === "ask" && used(answers);
+    // what ingest folds: foldsOf of the rows it reads
+    const FOLDS = new Map();
     // a call held for a person (decided ask), the agent's retry of one counted with it: DESK's HELD, HORIZON's HOLDS
     const heldCall = a => a.v2?.decision === "ask" && !a.retryOf;
     // a run's calls held for a person, as its review counts them (view.review's holds)
     const runHeld = r => Object.values(r.holds || {}).reduce((x, y) => x + y, 0);
+    // how long a run has taken: an open run's, up to now (its last record may be a hold that still waits)
+    const runLength = r => fmtDur((r.state === "open" ? nowTs() : Date.parse(r.last_ts) / 1000) - Date.parse(r.first_ts) / 1000);
     // a call's final state: [class, words]; only a call that may still be running is RUNNING. A held call blocked at once,
     // approved, then sent again by the agent: RETRY RAN, its retry APPROVED · RAN
     function callState(a) {
@@ -3470,7 +3600,7 @@
       if (a.error) return ["s-err", "FAILED"];
       if (a.v2?.decision === "ask") {
         const ap = lastAnswer(a);
-        if (ap === "approve") return ["s-ok", a.ranBy?.post ? "APPROVED · RETRY RAN" : a.post ? "APPROVED · RAN" : "APPROVED"];
+        if (ap === "approve") return ["s-ok", a.ranBy ? "APPROVED · RETRY RAN" : used(a.approvals) ? "APPROVED · RAN" : "APPROVED"];
         if (ap) return ["s-deny", ANSWER[ap]];
         return ["s-flag", ended(a) ? "NOT ANSWERED" : "TO ANSWER"];
       }
@@ -3483,7 +3613,7 @@
       if (S.firstTs === null) S.firstTs = r.ts;
       S.lastTs = Math.max(S.lastTs || 0, r.ts);
       const ev = r.event;
-      if (ev === "SessionStart") { sessionOf(r); agentOf(r); pushTape({ ts: r.ts, agent: agentOf(r), ev: "SESS", text: "session start · " + (r.source || ""), rec: r }); return; }
+      if (ev === "SessionStart") { sessionOf(r); agentOf(r); pushTape({ ts: r.ts, agent: agentOf(r), ev: "SESS", text: "start · " + (r.source || ""), rec: r }); return; }
       if (ev === "UserPromptSubmit") {
         const s = sessionOf(r), a = agentOf(r); s.prompts.push(r.prompt || ""); a.status = "running";
         pushTape({ ts: r.ts, agent: a, ev: "PROMPT", text: r.prompt, rec: r }); return;
@@ -3511,6 +3641,14 @@
         return;
       }
       if (ev === "PreToolUse") {
+        // a held call's retry with its id, as the signer's consume filed it (foldsOf): a row under that call, which its
+        // result and the approval's use are, not a call of its own
+        const held = FOLDS.has(r) && S.actList.find(a => a.pre === FOLDS.get(r));
+        if (held) {
+          (held.subs ||= []).push(pushTape({ ts: r.ts, agent: held.agent, ev: "HOLD", text: "the agent sent this call again, with its id", rec: r, under: held }));
+          (S.did ||= new Map()).set(didKey(r), held);   // a result naming the retry's decision is the held call's
+          return;
+        }
         const a = agentOf(r), pol = r.policy || {};
         const act = {
           id: r.v2 ? tuid(r) : r.tool_use_id || ("s" + r.seq), pre: r, post: null, agent: a, tool: r.tool_name || "?", input: r.tool_input || {},
@@ -3519,7 +3657,8 @@
           reasons: pol.reasons || [], start: r.ts, end: null, ms: null, error: false, child: null, v2: r.v2, approvals: []
         };
         if (act.denied) act.flags.unshift("denied");
-        S.actions.set(act.id, act); S.actList.push(act);
+        S.actions.set(act.id, act); S.actList.push(act); (S.byId ||= new Map()).set(act.id, [...(S.byId.get(act.id) || []), act]);
+        if (r.v2?.decision_id) (S.did ||= new Map()).set(didKey(r), act);
         a.actions++; a.status = "running"; a.current = act.denied ? null : act;
         S.tools.set(act.tool, (S.tools.get(act.tool) || 0) + 1);
         const fm = FILE_TOOLS[act.tool];
@@ -3541,7 +3680,8 @@
         return;
       }
       if (ev === "PostToolUse") {
-        const act = S.actions.get(r.v2 ? tuid(r) : r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input || {}));
+        // v2: the call of the decision it names, else the latest that could have run (couldRun)
+        const act = r.v2 ? (r.v2.decision_id ? S.did?.get(didKey(r)) : latestAct(r, a => couldRun(a.v2, a.approvals))) : S.actions.get(r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input || {}));
         if (!act) return;
         act.post = r; act.end = r.ts; act.ms = r.duration_ms ?? Math.round((r.ts - act.start) * 1000);
         const resp = r.tool_response;
@@ -3570,7 +3710,7 @@
       if (ev === "SessionEnd") {
         const s = sessionOf(r); s.end = r.ts;
         for (const a of S.agents.values()) if (a.session === s.id) { a.status = "done"; a.current = null; }
-        pushTape({ ts: r.ts, agent: agentOf(r), ev: "SESS", text: "session end · " + (r.reason || ""), rec: r }); return;
+        pushTape({ ts: r.ts, agent: agentOf(r), ev: "SESS", text: "end · " + (r.reason || ""), rec: r }); return;
       }
       if (ev === "judge_verdict") {
         const v = r.verdict || {}, a = agentOf(r);
@@ -3584,11 +3724,15 @@
       if (ev === "tk_note") { pushTape({ ts: r.ts, agent: agentOf(r), ev: r.tape, text: r.title + " · " + r.text, rec: r }); return; }
       if (ev === "tk_alert") {
         // a verifier report of a run with no record shown (it failed) is no agent: no lane, not counted
-        const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" }, act = r.v2?.approval && S.actions.get(tuid(r));
+        const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" };
+        // an approval's records are the call's its request was for; a use refused, the call's that tried it
+        const owner = (S.req ||= new Map()).get(aidKey(r));
+        const act = r.v2?.approval && (owner?.id === tuid(r) && !refusedUse(r) ? owner : latestAct(r));
+        if (r.v2?.approval === "requested" && act) S.req.set(aidKey(r), act);
         if (act) act.approvals.push(r);
         // the agent's retry of a held call, using that call's approval: the held call's answer is the retry's, and the
         // held call ran as its retry
-        const held = act && r.v2.held && S.actions.get(r.session_id + "|" + r.v2.held);
+        const held = act && r.v2.held && (owner || S.actions.get(r.session_id + "|" + r.v2.held));
         if (held) { act.retryOf = held; if (r.v2.approval === "consumed") held.ranBy = act; }
         // v2: an effect is shown under the call its process names, unchecked (the agent's claim), until the run's analysis joins it (TK-X206), which may say otherwise
         const ef = r.v2?.effect;
@@ -3635,9 +3779,13 @@
       return true;
     }
     const KINDS = { dec: ["Decisions", row => !!row.act], apr: ["Approvals", row => ["HOLD", "APPROVE", "REJECT"].includes(row.ev)],
-                    gap: ["Gaps & alerts", row => ["GAP", "ALERT", "BLOCK", "FINDING"].includes(row.ev) || (row.ev === "VERIFY" && row.rec.severity === "high")] };
+                    gap: ["Gaps & alerts", row => ["GAP", "ALERT", "BLOCK", "FINDING"].includes(row.ev) || (row.ev === "VERIFY" && row.rec.severity === "high")],
+                    own: ["Tracekit's own", row => !!row.agent?.signer] };
+    // the tape's words for its event codes, where a code alone means nothing to a newcomer
+    const EVWORD = { SESS: "RUN", STATE: "NOTE", SIGNER: "LOG", FINDING: "CHECK" };
     function rowMatch(row) {
       if (F.kind && !KINDS[F.kind][1](row)) return false;
+      if (V2 && !F.kind && !F.agent && row.agent?.signer) return false;   // the signer's bookkeeping: under Tracekit's own
       if (row.act) return actMatch(row.act);
       if (!agentMatch(row.agent)) return false;
       if (F.tool || F.file || F.flag) return false;
@@ -3709,7 +3857,7 @@
       if (!r) return put("runhead", crumb + `<h1>${esc(WRUN ? "why log " + WRUN : "no run")}</h1>`);
       const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
       const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, [exp, trust, ver] = runCmds(r);
-      put("runhead", crumb + `<h1>${esc(r.agent || "run")}</h1><div class="meta">${esc([r.id, r.tenant && r.tenant !== "default" ? "tenant " + r.tenant : "", t0 ? `started ${fmtD(t0)} ${fmtT(t0)} ${TZ}` : "", t1 ? fmtDur(t1 - t0) : "", r.state, r.records != null ? plural(r.records, "record") : ""].filter(Boolean).join(" · "))}</div>`
+      put("runhead", crumb + `<h1>${esc(r.agent || "run")}</h1><div class="meta">${esc([r.id, r.tenant && r.tenant !== "default" ? "tenant " + r.tenant : "", t0 ? `started ${fmtD(t0)} ${fmtT(t0)} ${TZ}` : "", t1 ? runLength(r) : "", r.state, r.records != null ? plural(r.records, "record") : ""].filter(Boolean).join(" · "))}</div>`
         + `<div class="cnt">` + vchip(r.verdict) + `<span class="tag">${esc(plural(calls, "call"))}</span>${d.deny ? `<span class="tag deny">${esc(d.deny)} blocked</span>` : ""}${runHeld(r) ? `<span class="tag held">${esc(runHeld(r))} held</span>` : ""}${d.flag ? `<span class="tag flag">${esc(d.flag)} flagged</span>` : ""}${gaps ? `<span class="tag deny">${esc(plural(gaps, "gap"))}</span>` : ""}</div>`
         + (r.decisions ? `<div class="acts"><span>EXPORT <code class="shell">${esc(exp)}</code>` + cp(exp) + `</span><span>TRUST <code class="shell">${esc(trust)}</code>` + cp(trust) + `</span><span>VERIFY <code class="shell">${esc(ver)}</code>` + cp(ver) + `</span></div>` : ""));
     }
@@ -3720,12 +3868,12 @@
       put("runsp", `<table class="wt"><thead><tr><th>RUN</th><th>AGENT</th><th>STARTED (${esc(TZ)})</th><th>LENGTH</th><th>STATE</th><th>CALLS</th><th>BLOCKED</th><th>HELD</th><th>FLAGGED</th><th>GAPS</th><th>VERDICT</th></tr></thead><tbody>`
         + list.map(r => {
           const d = r.decisions || {}, gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
-          return `<tr class="row" data-openrun="${esc(r.id)}" tabindex="0"><td title="${esc(r.id)}">${esc(r.id.slice(0, 8))}${r.tenant && r.tenant !== "default" ? `<br><span class="dim">tenant ${esc(r.tenant)}</span>` : ""}</td><td class="s-flag">${esc(r.agent || "run")}</td><td class="dim">${esc(t0 ? fmtD(t0) + " " + fmtT(t0) : "")}</td><td class="dim">${esc(t1 ? fmtDur(t1 - t0) : "")}</td><td>${esc(r.state || "")}</td>`
-            + `<td>${esc(Object.values(d).reduce((x, y) => x + y, 0))}</td><td class="${d.deny ? "s-deny" : "dim"}">${esc(d.deny || 0)}</td><td class="${runHeld(r) ? "s-flag" : "dim"}">${esc(runHeld(r))}</td><td class="${d.flag ? "s-flag" : "dim"}">${esc(d.flag || 0)}</td><td class="${gaps ? "s-err" : "dim"}">${esc(gaps)}</td><td>` + vchip(r.verdict, r.label) + `</td></tr>`;
+          return `<tr class="row" data-openrun="${esc(r.id)}" tabindex="0"><td title="${esc(r.id)}">${esc(r.id.slice(0, 8))}${r.tenant && r.tenant !== "default" ? `<br><span class="dim">tenant ${esc(r.tenant)}</span>` : ""}</td><td class="s-flag">${esc(r.agent || "run")}</td><td class="dim">${esc(t0 ? fmtD(t0) + " " + fmtT(t0) : "")}</td><td class="dim">${esc(t1 ? runLength(r) : "")}</td><td>${esc(r.state || "")}</td>`
+            + `<td data-h="CALLS">${esc(Object.values(d).reduce((x, y) => x + y, 0))}</td><td data-h="BLOCKED" class="${d.deny ? "s-deny" : "dim"}">${esc(d.deny || 0)}</td><td data-h="HELD" class="${runHeld(r) ? "s-flag" : "dim"}">${esc(runHeld(r))}</td><td data-h="FLAGGED" class="${d.flag ? "s-flag" : "dim"}">${esc(d.flag || 0)}</td><td data-h="GAPS" class="${gaps ? "s-err" : "dim"}">${esc(gaps)}</td><td>` + vchip(r.verdict, r.label) + `</td></tr>`;
         }).join("") + `</tbody></table>` + (list.length ? "" : `<div class="empty">No runs yet.</div>`)
         + (DROPPED ? `<p class="dim" style="padding:0 8px">${esc(`The live view keeps the newest ${MAXREC} records; ${DROPPED} older ones left it. Every run stays in this list with its verdict.`)}</p>` : "")
         + (document.querySelector('.nav a[href="/runs"]') ? `<p style="padding:0 8px">Every log of this deployment, searchable: the <a href="/runs">runs page</a>.</p>` : ""));
-      $("runssum").textContent = `${plural(list.length, "run")} · verdicts: operator-side`;
+      $("runssum").textContent = `${plural(list.length, "run")} · checked by this viewer`;
       if (WHY && $("whyruns")._w !== WHY) { $("whyruns")._w = WHY; runsView($("whyruns")); }
     }
     // the calls held for a person (decided ask) in every run the page has, with what came of each (PERMISSIONS' words)
@@ -3781,7 +3929,7 @@
         : r.verdict === "pending" ? ["wait", "PENDING"] : ["bad", "NOT CHECKED"];
       return { ok, checks, stamp, total: Math.max(r.records || 0, all.length), rows: rows.map(x => {
         const a = (x.event === "PreToolUse" || x.event === "PostToolUse") && S.actions.get(tuid(x));   // a call: its tool and target
-        return { seq: x.tk_seq, hash: x.hash || "", type: x.v2?.type || x.event, what: a ? (a.pre === x ? `${a.tool} · ${a.target}` : `${a.tool} · result`) : x.title || x.v2?.type || x.event };
+        return { seq: x.tk_seq, hash: x.hash || "", type: x.v2?.type || x.event, what: a ? (x.event === "PreToolUse" ? `${a.tool} · ${a.target}` : `${a.tool} · result`) : x.title || x.v2?.type || x.event };
       }) };
     }
     /* ---------------- HORIZON: where the agents went, around a black hole drawn on a canvas (the Cygnux mark) ---------------- */
@@ -4032,20 +4180,25 @@
     function hzData() {
       const key = [ALL.length, ALL[ALL.length - 1], RUNS.size, chainState.ok];
       if (key.every((x, i) => x === hzKey[i])) return hzD;
-      const ans = new Map(), retry = new Map(), raw = [], places = dict(), parent = dict(), cwds = new Set();
+      const ans = new Map(), retry = new Map(), cur = new Map(), again = new Map(), owners = foldsOf(ALL, again), raw = [], places = dict(), parent = dict(), cwds = new Set();
       for (const r of ALL) {
-        if (r.v2?.approval in ANSWER) ans.set(r.session_id + "|" + r.v2.tool_use_id, r.v2.approval);
-        if (r.v2?.approval && r.v2.held) retry.set(r.session_id + "|" + r.v2.tool_use_id, r.session_id + "|" + r.v2.held);   // the held call it retried
+        // an answer is the call's its approval's request was for (a use refused, the call's that tried it: the latest
+        // under its id and attempt), as the tape files it; a held call's retry with its id (foldsOf) is no move of its own
+        if (r.event === "PreToolUse") { if (!again.has(r)) cur.set(callKey(r), r).set(tuid(r), r); continue; }
+        const owner = owners.get(aidKey(r)), mine = cur.get(r.v2?.attempt == null ? tuid(r) : callKey(r));
+        const d = owner && tuid(owner) === tuid(r) && !refusedUse(r) ? owner : mine;
+        if (d && r.v2?.approval in ANSWER) ans.set(d, r.v2.approval);
+        if (mine && r.v2?.approval && r.v2.held) retry.set(mine, owner || cur.get(r.session_id + "|" + r.v2.held));   // the held call it retried
       }
       for (const r of ALL) {
         const fx = r.v2?.effect, d = r.v2?.decision ?? (r.policy?.decision === "deny" ? "deny" : "allow"), rules = r.v2?.rules || [];
-        if (r.analysis || r.signer || !(r.event === "PreToolUse" || fx?.kind === "connect" || fx?.kind === "net" || fx?.kind === "file")) continue;
+        if (r.analysis || r.signer || again.has(r) || !(r.event === "PreToolUse" || fx?.kind === "connect" || fx?.kind === "net" || fx?.kind === "file")) continue;
         // a why log's row (r.why) is the agent's own unsigned record: never signed, whatever the chain check says
-        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), a = ans.get(retry.get(k) || k), ok = !r.why && (V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true);
+        const a = ans.get(retry.get(r) || r), ok = !r.why && (V2 ? RUNS.get(r.session_id)?.verdict === "verified" : chainState.ok === true);
         let p = hzWhere.get(r);
         if (!p) hzWhere.set(r, p = fx ? (/^(connect|net)$/.test(fx.kind) ? hzHost(String(fx.target).replace(/:\d+$/, "")) : hzPath(String(fx.target), r.cwd))
           : hzPlace(r.tool_name, r.tool_input, r.cwd) || [category({ tool: r.tool_name, flags: [] }) === "net" ? "outside" : "machine", r.tool_name, true]);
-        raw.push({ t: r.ts_signed ?? r.ts, unread: !!r.ts_unread, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules), hold: d === "ask" && !retry.has(k),
+        raw.push({ t: r.ts_signed ?? r.ts, unread: !!r.ts_unread, seq: lseq(r), run: r.session_id, cwd: r.cwd, p, bare: !fx && !Object.keys(r.tool_input || {}).length, rest: hzRest(rules), hold: d === "ask" && !retry.has(r),
           ag: vis(RUNS.get(r.session_id)?.agent || r.agent || "agent"), gr: !ok ? "unverified" : fx ? "observed" : "signed",
           act: fx ? (/^(connect|net)$/.test(fx.kind) ? "net" : "seen") : d === "deny" ? "blocked" : d === "ask" ? (a === "approve" ? "approved" : "held") : d === "flag" ? "flag"
             : p[0] === "outside" ? "net" : FILE_TOOLS[r.tool_name] === "W" || p[3] === "write" ? "write" : /^(Read|Glob|Grep|LS)$/.test(r.tool_name) ? "read" : "run",
@@ -4239,7 +4392,7 @@
       visit(D.top || Object.keys(D.places));
       // taken, so no callout covers them: the HUD's readouts, which sit over the stage, and the rings' names, upper left;
       // then the open folders' names
-      const placed = [...cv.parentNode.querySelectorAll(".hzhud")].map(h => [h.offsetLeft, h.offsetTop, h.offsetLeft + h.offsetWidth, h.offsetTop + h.offsetHeight]), hud = [...placed];
+      const placed = [...cv.parentNode.querySelectorAll(".hzhud")].map(h => [h.offsetLeft - cv.offsetLeft, h.offsetTop - cv.offsetTop, h.offsetLeft - cv.offsetLeft + h.offsetWidth, h.offsetTop - cv.offsetTop + h.offsetHeight]), hud = [...placed];
       const box = (a, b) => a[0] < b[2] && a[2] > b[0] && a[1] < b[3] && a[3] > b[1];
       x.font = font(600, 9); x.textAlign = "left"; x.letterSpacing = "2.5px";
       const dots = nodes.concat(opened).map(k => [...pt(k), D.folds?.[k] ? D.folds[k].rho * R4 * K + 9 : D.places[k].rest ? 30 : 9]).filter(p => on(p, 0)), hits = a => 99 * placed.filter(b => box(a, b)).length
@@ -4582,17 +4735,20 @@
       const note = r.verdict === "failed" ? "None of its records are shown: a run that fails verification shows only its report."
         : !e.ok ? "Its records are shown once a checkpoint covers the run and the viewer's check verifies it." : "Its records left the live view; the bundle has every one.";
       const left = e.total - e.rows.length;
-      put("whyv", `<div class="evid"><div><div class="sec">CHAIN · EACH SIGNED RECORD IN ORDER</div>`
-        + (e.ok && e.rows.length ? `<div class="dim pad"><span class="s-ok">■</span> covered by the viewer's check · click a record to open it</div>` : `<div class="dim pad">${esc(note)}</div>`) + `<div class="walk">`
-        + e.rows.map((x, i) => `<div class="rec${e.ok ? " ok" : ""}" data-tkseq="${esc(x.seq)}" title="${esc(x.type + " · " + x.hash)}" style="--i:${esc(Math.min(i, 40))}"><span class="node"></span><span class="dim">${esc(x.seq)}</span><span class="what">${esc(x.what)}</span><span class="dim">${esc(x.hash.replace(/^sha256:/, "").slice(0, 7))}…</span></div>`).join("") + `</div>`
-        + (left ? `<div class="dim pad">${esc(`${left} of its ${e.total} records are not listed: the walk lists the newest ${WALK_MAX} rows this page holds, and a record with no row of its own is not one. The bundle has every one.`)}</div>` : "")
-        + `</div><div><div class="sec">CHECKS · THE VIEWER'S VERIFIER REPORT</div><ul class="checks">` + e.checks.map(c => {
+      // the verdict and its checks first; the chain walk (up to WALK_MAX rows) after them
+      put("whyv", `<div class="evid"><div><div class="sec">CHECKS · THE VIEWER'S VERIFIER REPORT</div>`
+        + `<div class="stamp ${esc(e.stamp[0])}">${esc(e.stamp[1])}</div><div class="dim pad">THE VIEWER'S CHECK, OPERATOR-SIDE: tracekit view exported this run's bundle and ran the verifier on it. This is its result; the page itself checks nothing.</div>`
+        + `<ul class="checks">` + e.checks.map(c => {
           const [cls, m] = MARK[c.status] || ["dim", "·"];
           return `<li><span class="${esc(cls)}">${esc(m)}</span><span><span class="${esc(c.status === "pass" ? "" : cls)}">${esc(c.check)}</span>${c.detail ? `<span class="dim"> — ${esc(c.detail)}</span>` : ""}` + c.problems.map(p => `<div class="${esc(cls)}">${esc(p)}</div>`).join("") + `</span></li>`;
         }).join("") + `</ul>` + (e.checks.length ? "" : `<div class="dim pad">${esc(r.report || "No report yet.")}</div>`)
-        + `<div class="stamp ${esc(e.stamp[0])}">${esc(e.stamp[1])}</div><div class="dim pad">THE VIEWER'S CHECK, OPERATOR-SIDE: tracekit view exported this run's bundle and ran the verifier on it. This is its result; the page itself checks nothing.</div>`
         + `<dl class="kv">` + cmdLines(r) + `</dl>`
-        + `<div class="tip">Download the bundle and check it with tracekit verify from the signed release: that, not this page, is the evidence.</div></div></div>`
+        + `<div class="tip">Download the bundle and check it with tracekit verify from the signed release: that, not this page, is the evidence.</div>`
+        + `</div><div><div class="sec">CHAIN · EACH SIGNED RECORD IN ORDER</div>`
+        + (e.ok && e.rows.length ? `<div class="dim pad"><span class="s-ok">■</span> covered by the viewer's check · click a record to open it</div>` : `<div class="dim pad">${esc(note)}</div>`) + `<div class="walk">`
+        + e.rows.map((x, i) => `<div class="rec${e.ok ? " ok" : ""}" data-tkseq="${esc(x.seq)}" title="${esc(x.type + " · " + x.hash)}" style="--i:${esc(Math.min(i, 40))}"><span class="node"></span><span class="dim">${esc(x.seq)}</span><span class="what">${esc(x.what)}</span><span class="dim">${esc(x.hash.replace(/^sha256:/, "").slice(0, 7))}…</span></div>`).join("") + `</div>`
+        + (left ? `<div class="dim pad">${esc(`${left} of its ${e.total} records are not listed: the walk lists the newest ${WALK_MAX} rows this page holds, and a record with no row of its own is not one. The bundle has every one.`)}</div>` : "")
+        + `</div></div>`
         + reviewHtml(r, false) + (r.decisions && r.report ? `<div class="sec">VERIFIER REPORT · AS THE VIEWER PRINTED IT</div><pre>${esc(r.report)}</pre>` : ""));
       $("wvsum").textContent = "the server's result · the bundle is the evidence";
     }
@@ -4726,15 +4882,15 @@
       const n = v => list.filter(r => r.verdict === v).length;
       let html = fam ? "" : `<div class="run${scope ? "" : " sel"}" data-run="" tabindex="0"><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(plural(list.length, "run"))}</span>` + verifiedCount(n("verified")) + `${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
       for (const [r, depth] of treeOrder(list, r => r.id, r => r.parent)) {
-        const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
+        const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000;
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
         html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}" tabindex="0" style="${esc(indent(depth))}"><span class="nm">${depth ? `<span class="dim">└ </span>` : ""}${esc(r.agent || "run")}</span>` + vchip(r.verdict, (r.integrity || "") + " · " + r.label) + `
-          <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(fmtD(t0))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
+          <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(fmtD(t0))} ${esc(fmtT(t0))}</span><span>${esc(runLength(r))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
           ${r.decisions ? `<span class="meta"><span>${esc(plural(calls, "call"))}</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${runHeld(r) ? "s-flag" : ""}">${esc(runHeld(r))} held</span><span class="${d.flag ? "s-flag" : ""}">${esc(d.flag || 0)} flagged</span><span class="${gaps ? "s-err" : ""}">${esc(plural(gaps, "gap"))}</span></span>` : ""}</div>`;
       }
       put("agents", html);
       $("agtitle").textContent = fam ? "AGENTS" : "RUNS";
-      $("agsum").textContent = fam ? plural(list.length, "run") : "verdicts: operator-side";
+      $("agsum").textContent = fam ? plural(list.length, "run") : "checked by this viewer";
     }
     // a run's family: its root (following parent runs, a loop stops it) and every run started from there
     function family(id) {
@@ -4799,12 +4955,12 @@
       }
       // a row that is no signed record says where it comes from; a gap's code is in its tooltip
       const src = srcOf(row.rec), tag = src === "ANALYSIS" || (src === "WHY" && V2) ? src : "", code = row.rec?.v2?.kind;
-      return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}" tabindex="0"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent" title="${esc(label(row.agent))}">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
+      return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}" tabindex="0"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent" title="${esc(label(row.agent))}">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(EVWORD[row.ev] || row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
     }
     // the tape's kind chips (v2 runs); with why logs, a way to the why log's own events (agents, types, search): on a
     // run's page, and on every page when no v2 runs are on the tape (tracekit view --why DIR, the why report)
     function kindChips() {
-      return (V2 ? [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" ") : "")
+      return (V2 ? [["", "All"], ...Object.entries(KINDS).filter(([k]) => k !== "own" || PAGE !== "run").map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" ") : "")
         + (WHY && (PAGE === "run" || !V2) ? ` <button class="fchip" data-rv="timeline" type="button">WHY LOG EVENTS</button>` : "");
     }
     function renderTape() {
@@ -4813,7 +4969,8 @@
       const key = [S, S.tape.length, S.recs.length, F.agent, F.tool, F.file, F.flag, F.find, F.kind, tapeMax, selected, DROPPED];
       if (key.every((x, i) => x === tapeKey[i])) return;
       tapeKey = key;
-      const rows = S.tape.filter(r => !r.under && rowMatch(r)), shown = rows.slice(-tapeMax).reverse();
+      // by time, as the rows of several runs arrive run by run
+      const rows = S.tape.filter(r => !r.under && rowMatch(r)).sort((x, y) => x.ts - y.ts || x.i - y.i), shown = rows.slice(-tapeMax).reverse();
       const fresh = rows.length - tapeShown; tapeShown = rows.length;
       // the same signer note in a row is one line ×N, and so are content reads in a row by one principal for one
       // purpose (tracekit view's, tracekit report's), of any run (a hundred records a read): the line shows the newest.
@@ -4834,7 +4991,8 @@
       if (older) html += `<tr><td colspan="7" class="more"><button type="button" data-older="1">SHOW ${esc(Math.min(TAPE_PAGE, older))} OLDER · ${esc(older)} NOT SHOWN</button></td></tr>`;
       else if (DROPPED) html += `<tr><td colspan="7" class="more dim">${esc(DROPPED)} older rows left the live view (it keeps the newest ${esc(MAXREC)}); each run's verdict stays under RUNS, and a run's bundle has all its records</td></tr>`;
       put("tape", html || `<tr><td colspan="7" class="empty">${anyFilter() ? "Nothing matches the filter." : "Waiting for events…"}</td></tr>`);
-      $("tapesum").textContent = (anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`) + (older ? ` · newest ${shown.length} shown` : "") + (DROPPED ? ` · ${DROPPED} older rows left the live view` : "");
+      const own = anyFilter() || !V2 ? 0 : S.tape.filter(r => r.agent?.signer).length;   // under Tracekit's own
+      $("tapesum").textContent = (anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length - own} events · newest first`) + (older ? ` · newest ${shown.length} shown` : "") + (DROPPED ? ` · ${DROPPED} older rows left the live view` : "");
     }
     function renderAlerts() {
       if (PAGE !== "desk") return;   // DESK's only, as the ticker
@@ -4844,7 +5002,7 @@
       const wait = waiting().filter(w => !scope || w.rec.session_id === scope);
       put("alerts", wait.map(w => `<div class="al" data-orun="${esc(w.open[0])}" data-oseq="${esc(w.open[1])}" tabindex="0"><span class="sev wait">HELD</span><span class="tx"><span class="src">TO ANSWER</span>${esc(w.rec.tool_name)} · ${esc(w.rec.agent)}</span><span class="sub">${esc(fmtT(w.rec.ts))} · ${esc((w.rec.v2.rules || []).map(x => x.id).join(" ") || "held")} · ${esc(w.req ? "approval " + w.req.v2.approval_id : "no approval requested yet")}</span></div>`).join("")
         + why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
-        + list.map(g => g.all.length === 1 ? row(g.al, 1) : `<div class="al grp${OPENGRP.has(g.key) ? " on" : ""}" data-grp="${esc(g.key)}" tabindex="0"><span class="sev ${esc(g.al.sev)}">${esc(String(g.al.sev).toUpperCase())}</span><span class="tx">${src(g.al) ? `<span class="src">${esc(src(g.al))}</span>` : ""}${esc(g.key)}<span class="n">× ${esc(g.all.length)}</span> in ${esc(plural(g.runs, "run"))}</span><span class="sub">${esc(String(g.al.text).slice(0, 160))} · newest ${esc(fmtT(g.al.ts))} · ${esc(OPENGRP.has(g.key) ? "▾ listed below" : "▸ click to list")}</span></div>`
+        + list.map(g => g.all.length === 1 ? row(g.al, 1) : `<div class="al grp${OPENGRP.has(g.key) ? " on" : ""}" data-grp="${esc(g.key)}" tabindex="0"><span class="sev ${esc(g.al.sev)}">${esc(String(g.al.sev).toUpperCase())}</span><span class="tx">${src(g.al) ? `<span class="src">${esc(src(g.al))}</span>` : ""}${esc(g.al.text)}<span class="n">× ${esc(g.all.length)}</span> in ${esc(plural(g.runs, "run"))}</span><span class="sub">${esc(String(g.al.sub || "").slice(0, 160))} · newest ${esc(fmtT(g.al.ts))} · ${esc(OPENGRP.has(g.key) ? "▾ listed below" : "▸ click to list")}</span></div>`
           + (OPENGRP.has(g.key) ? g.all.slice(-GRP_PAGE * (OPENGRP.get(g.key))).reverse().map(al => row(al, 1, " in")).join("") + (g.all.length > GRP_PAGE * OPENGRP.get(g.key) ? `<div class="al in" data-grpmore="${esc(g.key)}">SHOW ${esc(Math.min(GRP_PAGE, g.all.length - GRP_PAGE * OPENGRP.get(g.key)))} MORE · ${esc(g.all.length - GRP_PAGE * OPENGRP.get(g.key))} NOT SHOWN</div>` : "") : "")).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
       $("alsum").textContent = (wait.length ? `${wait.length} ${OPENHOLD} · ` : "") + `${S.alerts.length + why.length} total · ${highCount()} high`;
     }
@@ -4939,22 +5097,35 @@
     // its approval, out: [class, words], tabs}], in their order, newest first. A retry is its held call's row, not one of
     // its own (view.review counts them once)
     function permOf(recs) {
-      const by = new Map(), ended = new Set(), rows = [];
+      // by: a call id -> its decisions' rows (an allow's too, which is listed nowhere), as ingest files records under them
+      // dids: a decision's key -> its call's row (a folded retry's, its held call's)
+      const by = new Map(), ended = new Set(), rows = [], again = new Map(), owners = foldsOf(recs, again), rowOf = new Map(), dids = new Map();
       for (const r of recs) {
         if (r.analysis) continue;
-        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), held = r.v2?.held && by.get(r.session_id + "|" + r.v2.held);
+        const k = r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id), owner = rowOf.get(owners.get(aidKey(r)));
+        const latest = (ok = () => true) => (by.get(k) || []).findLast(x => (r.v2?.attempt == null || x.rec.v2.attempt === r.v2.attempt) && ok(x));
+        const held = r.v2?.held && (owner || by.get(r.session_id + "|" + r.v2.held)?.at(-1));
         if (r.event === "SessionEnd") ended.add(r.session_id);
-        else if (r.event === "PreToolUse" && r.v2 && r.v2.decision !== "allow") { const row = { rec: r, answers: [] }; by.set(k, row); rows.push(row); }
-        else if (r.event === "PostToolUse" && by.has(k)) by.get(k).post = r;
-        else if (r.v2?.approval && by.has(k)) {
-          by.get(k).answers.push(r);
-          if (held) { by.get(k).retry = true; if (r.v2.approval === "consumed") held.ranBy = by.get(k); }
+        else if (again.has(r)) dids.set(didKey(r), rowOf.get(again.get(r)));   // a held call's retry with its id (foldsOf): that call's row
+        else if (r.event === "PreToolUse" && r.v2) {
+          const row = { rec: r, answers: [], k };
+          by.set(k, [...(by.get(k) || []), row]);
+          dids.set(didKey(r), row);
+          if (r.v2.decision !== "allow") { rows.push(row); rowOf.set(r, row); }
+        }
+        else if (r.event === "PostToolUse") { const row = r.v2?.decision_id ? dids.get(didKey(r)) : latest(x => couldRun(x.rec.v2, x.answers)); if (row) row.post = r; }
+        else if (r.v2?.approval) {
+          // an approval's records are the call's its request was for; a use refused, the call's that tried it
+          const row = owner?.k === k && !refusedUse(r) ? owner : latest();
+          if (!row) continue;
+          row.answers.push(r);
+          if (held) { row.retry = true; if (r.v2.approval === "consumed") held.ranBy = row; }
         }
       }
       return rows.filter(row => !row.retry).reverse().map(row => {
         const d = row.rec.v2.decision, ans = row.answers.filter(x => x.v2.approval in ANSWER).pop(), a = ans?.v2.approval, done = ended.has(row.rec.session_id);
         const [tab, out] = d === "deny" ? ["", ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
-          : a === "approve" ? ["approved", ["s-ok", row.ranBy?.post ? "APPROVED · RETRY RAN" : row.post ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
+          : a === "approve" ? ["approved", ["s-ok", row.ranBy ? "APPROVED · RETRY RAN" : used(row.answers) ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
           : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "TO ANSWER"]];
         return { ...row, ans, who: row.answers.filter(x => x.v2.approver).pop(), req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
       });
@@ -4978,7 +5149,7 @@
           const cmds = r.tabs.includes("waiting") && r.req ? ["approve", "reject"].map(d => `tracekit approvals ${d} ${word(r.req.v2.approval_id)}`) : [];
           return `<tr class="row" data-tkseq="${esc(r.rec.tk_seq)}"><td class="dim">${esc(fmtD(r.rec.ts) + " " + fmtT(r.rec.ts))}</td><td class="s-flag">${esc(r.rec.agent)}</td><td>${esc(r.rec.tool_name)}</td><td title="${esc(args)}" class="${args ? "" : "dim"}">${esc(args ? args.slice(0, 160) : "kept as a commitment only")}</td>`
             + `<td class="${esc((DEC[v.decision] || DEC.flag)[0])}">${esc((DEC[v.decision] || DEC.flag)[1])}</td><td>${esc((v.rules || []).map(x => (x.id + " " + (x.reason || "")).trim()).join("; ") || "–")}</td><td class="${esc(r.out[0])}">${esc(r.out[1])}</td>`
-            + `<td class="dim">${esc(r.ans ? (r.who ? `${r.who.v2.approver} · ${fmtT(r.who.ts)}` : `${["expired", "abandoned", "timeout"].includes(r.ans.v2.approval) ? "nobody answered" : "–"} · ${fmtT(r.ans.ts)}`) + (r.ranBy ? ` · its retry ${r.ranBy.rec.v2.tool_use_id} ran` : "") : v.decision === "deny" ? "nobody may: never held" : r.tabs.includes("waiting") && !r.req ? "no approval requested yet" : "–")}</td><td>` + cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join("<br>") + `</td></tr>`;
+            + `<td class="dim">${esc(r.ans ? (r.who ? `${r.who.v2.approver} · ${fmtT(r.who.ts)}` : `${["expired", "abandoned", "timeout"].includes(r.ans.v2.approval) ? "nobody answered" : "–"} · ${fmtT(r.ans.ts)}`) + (r.ranBy ? ` · its retry ${r.ranBy.rec.v2.tool_use_id} ran` : "") : v.decision === "deny" ? "no one: the policy blocked it" : r.tabs.includes("waiting") && !r.req ? "no approval requested yet" : "–")}</td><td>` + cmds.map(c => `<code class="shell">${esc(c)}</code>` + cp(c)).join("<br>") + `</td></tr>`;
         }).join("") || `<tr><td colspan="9" class="empty">Nothing here.</td></tr>`) + `</tbody></table>`
         + (pages > 1 ? `<div class="wbar"><button type="button" data-ppage="-1">◀</button><span>${esc(`${from + 1}–${from + shown.length} of ${list.length} · newest first`)}</span><button type="button" data-ppage="1">▶</button></div>` : ""));
       $("wvsum").textContent = `${plural(rows.length, "decision")} · ${n("waiting")} ${OPENHOLD}`;
@@ -5494,7 +5665,7 @@
           + line(null, "COVERAGE", c ? `${c.layers.join("+") || "no layers"} · reconciled ${c.reconciled}` + Object.entries(c.unreconciled).map(([k, n]) => ` · unreconciled ${k} ${n}`).join("") + (c.provider_executed ? ` · provider-run tools ${c.provider_executed}` : "") : "not final yet: run.final records it")
           // the analyzer's opinion of the run (tracekit analyze --v2), beside its integrity, never in it
           + (r.findings ? line(null, "FINDINGS", r.findings.line) + (r.findings.monitorability ? line(null, "MONITORABILITY", r.findings.monitorability + " (the share of actions whose reasoning can be read)") : "")
-            + (r.findings.not_checkable?.length ? `<dt>NOT CHECKABLE</dt><dd class="s-flag">` + r.findings.not_checkable.map(g => `<div title="${esc(g.code)}">${esc(`${g.rule} for ${g.n}: ${g.text}`)}</div>`).join("") + `<div class="dim">never counted as a pass: tracekit analyze --v2 says what makes each checkable</div></dd>` : "") : "");
+            + (r.findings.not_checkable?.length ? `<dt>NOT CHECKABLE</dt><dd class="dim">` + r.findings.not_checkable.map(g => `<div title="${esc(g.code)}">${esc(`${g.rule} for ${g.n}: ${g.text}`)}</div>`).join("") + `<div class="dim">never counted as a pass: tracekit analyze --v2 says what makes each checkable</div></dd>` : "") : "");
         if (cmds) left += cmdLines(r);
         right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", runHeld(r), d.ask ? "s-flag" : "")
           + ((d.ask || 0) > runHeld(r) ? line(null, "RETRIED", `${(d.ask || 0) - runHeld(r)} · the agent's retry of a held call, under that call's approval`) : "");   // decided ask too
@@ -5691,6 +5862,7 @@
         // restarted numbers its records anew, so resuming from the old position would miss or repeat records
         if (ALL.length) { if (R) stopRun(true); ALL.length = 0; RUNS.clear(); WD.clear(); LOADED.clear(); selected = null; reset(); }
         DROPPED = snap.dropped || 0; MAXREC = snap.max || MAXREC;
+        foldsOf(snap.records, FOLDS);   // the snapshot's retries are filed with their held calls as it is read, no read again
         toasting = false; snap.records.forEach(accept); toasting = true; tapeShown = S.tape.length; liveOk = true; liveErr = ""; SOURCE = snap.source || ""; SIGNER = snap.signer || null; SNAPPED = true; loadWhy(); schedule();
         followLink();
         es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
@@ -5751,12 +5923,21 @@
         if (LOADED.delete(r.session_id)) n ||= 1;   // and its rows read from the store
       }
       if (ALL.length > MAXREC * 1.1) { const k = ALL.length - MAXREC; ALL.splice(0, k); DROPPED += k; n += k; }
+      // a request, a consume or a mismatch arriving live can change which decisions are held calls' retries (foldsOf;
+      // a snapshot is read with them known): the rows are read again when it did, so a retry shows as its own call until
+      // its consume, then under its held call
+      if (!n && inScope(r) && ["requested", "consumed", "binding_mismatch"].includes(r.v2?.approval) && toasting) {
+        const now = new Map(); foldsOf(runRows(), now);
+        if (now.size !== FOLDS.size || [...now].some(([d, h]) => FOLDS.get(d) !== h)) n = 1;
+      }
       if (n) { if (R && scope === r.session_id) stopRun(true); if (!R) rebuild(); }
       else if (!R && inScope(r)) ingest(r);
     }
     function rebuild() {
       reset();
-      if (R) for (let i = 0; i < rpos; i++) ingest(R[i]); else for (const r of runRows()) if (inScope(r)) ingest(r);
+      const rows = R || runRows();
+      foldsOf(rows, FOLDS);
+      if (R) for (let i = 0; i < rpos; i++) ingest(R[i]); else for (const r of rows) if (inScope(r)) ingest(r);
       tapeShown = S.tape.length;
     }
     // the selected run's rows: read from the store when its records left the live view (then the live view's rows of it
@@ -5807,10 +5988,10 @@
       updRp(); schedule();
     }
     const JUMP = { deny: r => r.v2?.decision === "deny", hold: r => r.v2?.decision === "ask" || r.v2?.type === "approval.request", gap: r => r.tape === "GAP" };
-    // the next deny, hold or gap; with none ahead, the page stays as it is and says so
+    // the next deny, hold or gap; with none ahead, the page stays as it is and says so beside the buttons
     function jump(k) {
       const list = R || runRecs(), from = R ? rpos : 0, i = list.findIndex((r, i) => i >= from && JUMP[k](r));
-      if (i < 0) { $("cmd").placeholder = `no ${{ deny: "denied call", hold: "held call", gap: "gap" }[k]} ${R ? "after this point" : "in this run"}`; return; }
+      if (i < 0) { $("pos").textContent = `${R ? `${rpos}/${R.length}` : "live"} · no ${{ deny: "denied call", hold: "held call", gap: "gap" }[k]} ${R ? "after this point" : "in this run"}`; return; }
       if (rplay) { rplay = false; clearTimeout(rtimer); }   // a jump stops the playback where it lands
       if (!R) startRun();
       seekRun(i + 1);
@@ -5995,7 +6176,7 @@
           + (n.ablated && n.ablated.length ? `<p class="dim">removed by the replay's intervention: ${esc(n.ablated.length)}</p>` : "")
           + `<div class="sec">WHAT IT PRODUCED</div><pre>${esc(n.output)}</pre>`;
       } else if (n.type === "action") {
-        const dc = decided(n.policy), pr = n.policy && n.policy.rule_ids || [];
+        const dc = decided(n.policy, n.mode === "live"), pr = n.policy && n.policy.rule_ids || [];
         const pol = dc && `${dc[0]} (${n.policy.decision})` + (pr.length ? " · " + pr.map((r, i) => (r + " " + ((n.policy.reasons || [])[i] || "")).trim()).join("; ") : "");
         const ap = n.policy && n.policy.approval;
         const g = n.guard ? n.guard.verdict + (n.guard.alerts && n.guard.alerts.length ? ": " + n.guard.alerts.map(a => a.title).join("; ") : "") : null;
@@ -6076,7 +6257,7 @@
     // one run's header on its views, as Causeway's: the task, LOG INTACT, REPLAYABLE, its counts
     function runHead(d) {
       const s = d.summary;
-      return `<div class="wverdict"><b>${esc((taskText(s.task) || d.run_id).slice(0, 140))}</b><br>${s.integrity === "ok" ? `<span class="s-ok">LOG INTACT</span>` : `<span class="s-deny">LOG FAILED INTEGRITY</span>`} · ${s.replayable ? `<span class="s-run">REPLAYABLE</span>` : `<span class="dim">NOT REPLAYABLE</span>`} · <span class="dim">${esc([plural(s.agents.length, "agent"), plural(s.decisions, "model call"), plural(s.actions, "tool call"), plural(s.messages, "message")].join(" · "))}</span></div>`;
+      return `<div class="wverdict"><b>${esc((taskText(s.task) || d.run_id).slice(0, 140))}</b><br>${s.integrity === "ok" ? `<span class="s-ok">LOG INTACT</span>` : `<span class="s-deny">LOG FAILED INTEGRITY</span>`} · ${s.replayable ? `<span class="s-run">REPLAYABLE</span>` : `<span class="dim">CAN'T REPLAY: NO PROGRAM RECORDED</span>`} · <span class="dim">${esc([plural(s.agents.length, "agent"), plural(s.decisions, "model call"), plural(s.actions, "tool call"), plural(s.messages, "message")].join(" · "))}</span></div>`;
     }
     // RUNS: every why run (Causeway's runs list); a row opens its OVERVIEW
     function runsView(el) {
@@ -6086,9 +6267,9 @@
         + `<table class="wt"><thead><tr><th>RUN</th><th>STARTED (${esc(TZ)})</th><th>AGENTS</th><th>MODEL CALLS</th><th>TOOL CALLS</th><th>WHY ALERTS</th><th>TESTS</th><th>LOG</th></tr></thead><tbody>`
         // a signed run's import is tk-<run id>-<hash>: shown by the run's own short id, as everywhere else
         + R.map(r => `<tr class="row" data-wgo="${esc(r.run_id)}"><td title="${esc(r.run_id)}">${esc(r.run_id.startsWith("tk-") ? r.run_id.slice(3, 11) : r.run_id)}${r.finished === false ? ` <span class="s-run">running</span>` : ""}${r.guard ? ` <span class="dim">${esc("guard: " + r.guard)}</span>` : ""}<br><span class="dim">${esc(taskText(r.task).slice(0, 90))}</span></td>
-          <td class="dim">${esc(r.started ? fmtD(Date.parse(r.started) / 1000) + " " + fmtT(Date.parse(r.started) / 1000) : "")}</td><td>${esc(r.agents.length)}</td><td>${esc(r.decisions)}</td><td>${esc(r.actions)}</td>
-          <td>${r.alerts.high ? `<span class="s-deny">${esc(r.alerts.high + " high")}</span> ` : ""}${r.alerts.review ? `<span class="s-flag">${esc(r.alerts.review + " review")}</span>` : ""}${!r.alerts.high && !r.alerts.review ? `<span class="dim">none</span>` : ""}</td>
-          <td>${esc(r.tests)}${r.confirmed_causes ? ` <span class="dim">${esc(`(${r.confirmed_causes} causal)`)}</span>` : ""}</td><td>${r.integrity === "ok" ? `<span class="s-ok">intact</span>` : `<span class="s-deny">failed</span>`}</td></tr>`).join("") + `</tbody></table>`;
+          <td class="dim">${esc(r.started ? fmtD(Date.parse(r.started) / 1000) + " " + fmtT(Date.parse(r.started) / 1000) : "")}</td><td data-h="AGENTS">${esc(r.agents.length)}</td><td data-h="MODEL CALLS">${esc(r.decisions)}</td><td data-h="TOOL CALLS">${esc(r.actions)}</td>
+          <td data-h="WHY ALERTS">${r.alerts.high ? `<span class="s-deny">${esc(r.alerts.high + " high")}</span> ` : ""}${r.alerts.review ? `<span class="s-flag">${esc(r.alerts.review + " review")}</span>` : ""}${!r.alerts.high && !r.alerts.review ? `<span class="dim">none</span>` : ""}</td>
+          <td data-h="TESTS">${esc(r.tests)}${r.confirmed_causes ? ` <span class="dim">${esc(`(${r.confirmed_causes} causal)`)}</span>` : ""}</td><td data-h="LOG">${r.integrity === "ok" ? `<span class="s-ok">intact</span>` : `<span class="s-deny">failed</span>`}</td></tr>`).join("") + `</tbody></table>`;
       $("wvsum").textContent = `${R.length} runs`;
     }
     // OVERVIEW: what the agents did, what needs attention, the run's numbers, how to read the evidence (Causeway's)
@@ -6150,10 +6331,10 @@
       return { nodes, edges };
     }
     const DECIDED = { deny: ["DENIED", "--red"], ask: ["HELD", "--amber"], flag: ["FLAGGED", "--amber"], allow: ["ALLOWED", "--muted"] };
-    function decided(p) {   // a tool call's signed decision: [word, colour], an approval's answer over a hold
+    function decided(p, ran) {   // a tool call's signed decision: [word, colour], an approval's answer over a hold; ran: it ran
       if (!p || !p.decision) return null;
       const ap = p.approval && p.approval.decision;   // a held call whose retry ran under its approval: RETRY RAN
-      return ap === "approve" ? [p.approval.ran_by ? "APPROVED · RETRY RAN" : "APPROVED", "--green"] : ap ? [ANSWER[ap] || String(ap).toUpperCase(), "--red"] : DECIDED[p.decision] || [String(p.decision).toUpperCase(), "--muted"];
+      return ap === "approve" ? [p.approval.ran_by ? "APPROVED · RETRY RAN" : ran ? "APPROVED · RAN" : "APPROVED", "--green"] : ap ? [ANSWER[ap] || String(ap).toUpperCase(), "--red"] : DECIDED[p.decision] || [String(p.decision).toUpperCase(), "--muted"];
     }
     const GTYPE = { input: "Input", decision: "Model call", action: "Tool call", message: "Message" };
     // an edge's proof, as GRAPH draws it: tested, inferred, observed (a kernel or egress sensor saw it), blocked (into a call
@@ -6219,7 +6400,7 @@
         if (e.evidence === "tested") svg += `<text x="${esc(x2 - 36)}" y="${esc(y2 - 6)}" style="${esc(`fill:var(--${k});font-size:11px;font-weight:700${keep && !keep.edges.has(i) ? ";opacity:.13" : ""}`)}">${esc(sgn(e.effect))}</text>`;
       });
       N.forEach(n => {
-        const [x, y] = pos[n.id], unt = n.trust === "untrusted" && n.type === "input", dc = n.type === "action" && decided(n.policy), rule = dc && (n.policy.rule_ids || [])[0];
+        const [x, y] = pos[n.id], unt = n.trust === "untrusted" && n.type === "input", dc = n.type === "action" && decided(n.policy, n.mode === "live"), rule = dc && (n.policy.rule_ids || [])[0];
         // a state too long to share its line with the rule (APPROVED · RETRY RAN) keeps it, and the rule goes up beside the tool
         const up = rule && (dc[0] + " " + rule).length > 21;
         if (n.fx) {   // what a sensor saw: half a node's height, its record opens on a click
@@ -6232,7 +6413,7 @@
           + `${n.sensitive ? `<circle cx="${esc(BW - 10)}" cy="10" r="4" style="fill:var(--amber)"><title>sensitive</title></circle>` : ""}<title>${esc(n.label + (dc ? ` · ${dc[0]} ${(n.policy.rule_ids || []).join(", ")}` : "") + ` · ${GTYPE[n.type] || n.type} · ${n.agent}`)}</title></g>`;
       });
       // the legend names only what this graph shows
-      const types = new Set(N.map(n => n.type)), marks = new Map(N.map(n => n.type === "action" && decided(n.policy)).filter(Boolean));
+      const types = new Set(N.map(n => n.type)), marks = new Map(N.map(n => n.type === "action" && decided(n.policy, n.mode === "live")).filter(Boolean));
       const swatch = (style, text) => `<span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="${esc(style)}"/></svg> ${esc(text)}</span>`;
       const legend = `<span class="legend">` + [["input", "--cyan", "input"], ["decision", "--magenta", "model call"], ["action", "--green", "tool call"], ["message", "--amber", "message"]].filter(([k]) => types.has(k)).map(([, c, l]) => `<span style="${esc(`--c:var(${c})`)}">${esc(l)}</span>`).join("") + `</span>`
         + Object.entries(GRADE).filter(([g]) => G.includes(g)).map(([, [k, dash, text]]) => swatch(`stroke:var(--${k});stroke-width:1.5` + (dash ? ";stroke-dasharray:" + dash : ""), text)).join("")
