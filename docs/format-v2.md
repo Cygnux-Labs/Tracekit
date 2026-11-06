@@ -575,7 +575,7 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
-| 1.6.0 | — | — | — | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more |
+| 1.6.0 | — | — | — | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
@@ -613,6 +613,10 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
 - `box` is non-critical: a box channel's run records `signer_isolation: unknown`, so a verifier that doesn't read the
   label claims nothing for it; one that reads it adds a `boxed agent` line, which narrows what the run proves (against
   the boxed agent only) and never widens it.
+- `intent.grant`, `intent.revoked` and `grant` are non-critical: a payment a grant released is a `flag` decision
+  either way, so a verifier that doesn't read them says the call ran without a stop, which is true; one that reads them
+  adds an `intent grants` line that re-checks each release against its grant ([intent grants](intent-grants.md)), and
+  fails the verification when the signer released a payment its own grant holds.
 - `review.cites` and `effect.observed.sensor` stay critical: a verifier that passed over a signed finding's citations
   would label it `imported`, a false line; and a sensor's effects are records of what the agent's own processes did,
   in its run, which a verifier must read to verify that run. So does `capture.gap.sensor`: a 1.3 verifier counts every
@@ -733,7 +737,18 @@ line and verdict is in [verdicts](verdicts.md).
     policy`, passing with `OpenShell changed the sandbox policy or configuration n time(s) (<change>: <count>, ... the
     first 8 in code-point order), as OpenShell reported it`, a warning listing the records (the first 20) that carry it
     other than as an `ext` record of source `signer` with a `change` of `[a-z0-9_.-]{1,64}` and a non-empty
-    `observer`. `box` (1.6.0): `boxed agent`, a warning listing the records (the first 20) when any record carries it
+    `observer`. `intent.grant`, `intent.revoked` and `grant` (1.6.0), read together with every `policy.decision`
+    whose `rule_ids` name `TK-GRANT`: `intent grants`, failing, listing the records (the first 20), where a released
+    payment (a `flag` with `TK-GRANT`) names no grant the bundle holds earlier in its run, or one whose record fails
+    the grant rules below, or breaks its grant: its fields aren't whole numbers of the intent's, its tool isn't one
+    the grant covers, its grant was revoked or expired before it or its fields break a caveat or a limit, its totals
+    aren't the previous plus its own as whole numbers, or its tier isn't the record's; and where a decision names
+    `TK-GRANT` without `ext.grant`. A warning, listing the records, where a grant isn't a person's PCM grant for its own
+    run and tenant, never passed on, its `id` its hash's, naming 1 to 16 tools, valid for its intent in a currency with
+    a known unit with an expiry within 24 h of its `ts`, and its first totals those of no call or of the held call it
+    came from; a revocation names no grant live earlier in its run; or an `ext.grant` isn't on a `flag` with
+    `TK-GRANT`. Else it passes with the grants, who issued them, and the payments released at T2 and T1.
+    `box` (1.6.0): `boxed agent`, a warning listing the records (the first 20) when any record carries it
     other than on a `run.registered` whose `data.identity.scheme` is `uid`, as an object with exactly `id`
     (`[A-Za-z0-9._:-]{1,128}`), `image_digest` (`sha256:` and 64 hex digits), `allow` (a list of strings), `engine`
     (`firecracker`, read as `micro-VM`) and optionally `channel` (`agent`). Else only the labels on the first record of

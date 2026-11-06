@@ -1,0 +1,48 @@
+{
+  "E23.1 workload": {
+    "ok": true,
+    "outside_released": 0,
+    "payments": 30,
+    "released": 23,
+    "stops_with_grant": 7,
+    "stops_without_grant": 30
+  },
+  "E23.2 attacks": {
+    "attacks": 25,
+    "held": 25,
+    "ok": true,
+    "released": []
+  },
+  "E23.3 authority": {
+    "ok": true,
+    "refused": 3,
+    "tries": 3
+  },
+  "E23.4 split": {
+    "ok": true,
+    "payments": 100,
+    "released": 7,
+    "spent_usdc": 49
+  },
+  "E23.5 ended": {
+    "expired": "ask",
+    "ok": true,
+    "revoked": "ask"
+  },
+  "E23.6 restart": {
+    "after": [
+      "allow",
+      "ask"
+    ],
+    "before": [
+      "allow"
+    ],
+    "ok": true
+  },
+  "E23.7 verify": {
+    "exit": 0,
+    "integrity": "VERIFIED TO HEAD 4 (open)",
+    "intent_grants": "1 grant(s) by alice; 2 call(s) released within them (0 at T2, decided and run by an executor or gateway; 2 at T1, on the arguments the harness reported), each re-checked against its grant and its running totals",
+    "ok": true
+  }
+}

@@ -416,7 +416,7 @@ class TestContractVersion(unittest.TestCase):
     test_only_for_a_box_run), and a version 20 signer refuses both, so the client gets no label."""
 
     def test_version_21_adds_optional_fields_and_one_method(self):
-        self.assertEqual(rpc_schema.RPC_VERSION, 21)
+        self.assertGreaterEqual(rpc_schema.RPC_VERSION, 21)   # 22 adds intent grants
         self.assertEqual(rpc_schema.RPC_MIN, 15)
         self.assertNotIn("box", REQUESTS["register_run"]["required"])
         self.assertEqual(rpc_schema.validate(REQUESTS["register_run"], {"request_id": "r", "agent": {"name": "a"}}), [])

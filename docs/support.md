@@ -49,6 +49,7 @@ experimental.
 | Verified tool results (signer.yaml `verify_tool_results`) | [gateway](gateway.md#verified-tool-results) |
 | Tracekit Box's agent channel (signer.yaml `box_daemons`, `channel_open`, `ext.box` and verify's `boxed agent` line; tested against a stand-in daemon on the signer's Unix socket, not Tracekit Box itself) | [limits](limits.md#tracekit-box-experimental) |
 | The kernel sensor import (`tracekit sensor import`), Linux: checked against event lines shaped as Tetragon's and Falco's source writes them, not a live sensor | [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md) |
+| Intent grants: `tracekit grant`, `tracekit approvals approve --grant`, the `grant_*` RPCs, signer.yaml `grants`, a rule's `approval: {grant: ...}` and verify's `intent grants` line | [intent grants](intent-grants.md) |
 | OTLP import and export, the v1 OTLP receiver, ingest gateway and model proxy (these three need `--experimental`) | [OpenTelemetry](otel.md) |
 | Witnesses, the public witness, Rekor and RFC 3161 anchors, `tracekit monitor`, the record-key issuer, external and KMS log keys, SLH-DSA hybrid checkpoints | [witnesses](witnesses.md), [monitor](monitor.md), [issuer](issuer.md) |
 | Cost, usage, coverage and findings (`tracekit cost`, `tracekit analyze`), and the intent, reasoning and action checks of v2 runs (`tracekit analyze --v2`, signed into a findings run with `review_finding`; `--review`, a reviewer model) | [findings](findings.md) |

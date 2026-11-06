@@ -138,6 +138,14 @@ Lint errors: `approval.agent` with `passkey: required`, or on a `from: untrusted
 arguments the agent reported rather than what runs. The signer refuses to start with a policy that has agent rules
 and no `approvals.agents`.
 
+### Intent grants (`approval.grant`)
+
+`approval: {grant: payment.send}` lets a person's [intent grant](intent-grants.md) release the rule's held calls within
+the grant's limits; anything else the rule holds stays held. A call held by several rules is released only when each
+of them (flags aside) opts in. Lint error: `approval.grant` with `passkey: required`. `TK-GRANT` is the signer's id for
+a call a grant released, so no rule may use it. The shipped packs opt in `TK-A044` (coding) and `TK-M001` and
+`TK-M002` (server).
+
 `policy_hash` is `sha256:` of the compiled policy as sorted-key, compact JSON (`policy2.compile.canonical`).
 
 ## Classes and fields
