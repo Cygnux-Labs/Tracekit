@@ -27,6 +27,7 @@ REPO = "https://github.com/Cygnux-Labs/Tracekit"
 
 # docs pages that aren't user docs
 EXCLUDED = {
+    "intent-grants.md": "a design proposal; nothing in it is built",
     "RELEASING.md": "the maintainers' release procedure",
     "launch-checklist.md": "the 1.0 launch's internal checklist",
 }
