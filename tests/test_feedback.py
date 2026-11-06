@@ -11,34 +11,50 @@ import unittest
 import urllib.parse
 from unittest import mock
 
-from tracekit import __version__, cli, feedback
+from tracekit import __version__, cli, feedback, view
 from tracekit.privacy import redact_text
-
-from tracekit.report import HOLDS_BY_RULE
+from tracekit.report import AGENTS, APPROVAL_RULES, DECISIONS, HOLDS_BY_RULE, tracekit_rules
 
 REPORTS = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "field-reports")
 COUNTS_CAP, LINE_CAP = 4000, 300   # the counts block's characters; any other line's
-N, ITEM = r"[\d,]+", r"[\w .·:-]+ [\d,]+"
-RULE = r"(?:[\w.-]+|custom rule|no rule)"
+N = r"[\d,]+"
+
+
+def _one(words):
+    """A pattern for any one of `words`, as they are."""
+    return "(?:" + "|".join(map(re.escape, sorted(words, key=len, reverse=True))) + ")"
+
+
+def _counts(words):
+    """`word n, word n, ...` of `words` (report._counts)."""
+    return rf"{_one(words)} {N}(?:, {_one(words)} {N})*"
+
+
+# what --share may name: Tracekit's own agents, decisions, hold outcomes, gap kinds and rule ids, any other agent,
+# gap kind or rule as `other` or `custom rule` (report.share, report.share_rules, view.held_outcome)
+RULE = _one(tracekit_rules() | APPROVAL_RULES | {"custom rule", "no rule"})
+OUTCOMES = {*view.OUTCOMES.values(), *view.ANSWERS.values(), view.OPEN, "not answered"}
 # the lines tracekit report --share and tracekit audit --share print (report.share, audit.share)
 SHARE = [re.compile(x) for x in (
     r"Tracekit [\w.+-]+ field report \(tracekit (?:report|audit) --share\): (?:[\d.]+ (?:day|hour)s?|every transcript)",
     rf"a replay against today's policy, not a signed record: {N} Claude Code sessions?",
     r"Integrity: the store \w+, \d+ of \d+ runs verify",
-    rf"Runs that verify, by agent: (?:{ITEM}(?:, {ITEM})*|none)",
-    rf"Tool calls: {N}   {ITEM}(?:, {ITEM})*",
-    rf"Holds: {N}(?:   {ITEM}(?:, {ITEM})*)?(?:   \({N} of the agent's retries of a held call, counted with it\))?",
-    rf"Gaps \(signed records that something may be missing\): {N}(?:   {ITEM}(?:, {ITEM})*)?",
+    rf"Runs that verify, by agent: (?:{_counts(AGENTS | {'other'})}|none)",
+    rf"Tool calls: {N}   {_counts(DECISIONS)}",
+    rf"Holds: {N}(?:   {_counts(OUTCOMES)})?(?:   \({N} of the agent's retries of a held call, counted with it\))?",
+    rf"Gaps \(signed records that something may be missing\): {N}(?:   {_counts(set(view.GAP_WORDS) | {'other'})})?",
     r"(?:Denied and flagged calls, by rule|Calls by decision and rule) \(one call can match several rules\):(?: none)?",
-    rf"  (?:allow|flag|ask|deny) {RULE} {N}(?: \((?:also matched, not why|not placed)\))?",
+    rf"  {_one(DECISIONS)} {RULE} {N}(?: \((?:also matched, not why|not placed)\))?",
     re.escape(HOLDS_BY_RULE) + "(?: none)?", rf"  {RULE} {N}, {N}, {N}")]
-# the lines above the counts and their values; "Run by" and the note are free text
-VALUES = {"Tracekit": r"[\w.+-]+", "OS": r"[A-Za-z]+-[\d.]+", "Python": r"[\w.+-]+", "Hooks installed": r"none|[\w-]+(?:, [\w-]+)*"}
+# the lines above the counts and their values (the shapes feedback._os gives the OS); "Run by" and the note are free text
+VALUES = {"Tracekit": r"[\w.+-]+", "OS": r"[A-Za-z]+(?:-[\w.]+)*", "Python": r"[\w.+-]+",
+          "Hooks installed": r"none|[\w-]+(?:, [\w-]+)*"}
 PRIVATE = [(re.compile(x), what) for x, what in (
     (r"\b[a-zA-Z][\w+.-]*://\S*", "the URL"), (r"`[^`\n]+`", "the command in backticks"),
-    (r"\b[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}\b", "the host or file name"), (r"[\w.~-]*(?:/[\w.-]+)+", "the path"),
-    (r"\b[A-Za-z]:\\\S*|\$HOME\b|%USERPROFILE%", "the path"), (r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "the email address"))]
-
+    # lean: strict, so a note's "Node.js" is refused too: privacy over a name that has a dot
+    (r"\b[\w-]+(?:\.[\w-]+)*\.[a-zA-Z]{2,}\b", "(write names without dots, e.g. Node) the host or file name"),
+    (r"[\w.~-]*(?:/[\w.-]+)+", "the path"), (r"\b[A-Za-z]:\\\S*|\$HOME\b|%USERPROFILE%", "the path"),
+    (r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+", "the email address"))]
 
 def report_problems(text):
     """What to remove from a field report file (docs/field-reports/README.md) so that it holds only a report's lines
@@ -96,7 +112,7 @@ def _run(*argv, approval=APPROVAL):
     return code, out.getvalue(), err.getvalue()
 
 
-@mock.patch("tracekit.feedback._week", lambda: None)
+@mock.patch("tracekit.feedback._week", mock.Mock(side_effect=AssertionError("--harmless reads no store")))
 @mock.patch("tracekit.feedback._hooks", lambda: [])
 class TestHarmless(unittest.TestCase):
     def test_harmless_holds_the_rule_ids_tool_policy_and_verdict_and_never_the_call(self):
@@ -109,7 +125,8 @@ class TestHarmless(unittest.TestCase):
         # the form's required fields are filled, as the field report fills them, so it can be submitted
         self.assertEqual(sorted(query), ["agent", "share", "template", "title"])
         self.assertEqual(query["title"], ["False alarm: TK-D004, custom rule"])
-        self.assertTrue(query["share"][0].startswith("no dev store on this machine"))
+        # no store is read for one call (and --signer's may not be this machine's)
+        self.assertEqual(query["share"], ["not included: a single false alarm"])
         # the command, its arguments and paths, the run, requester and reason: in neither the link nor what it prints
         for leak in ("rm -rf", "alice", "acme", "evil", "ssh", "aws", "/home", "run-", "tc-", "cleaning", "cd" * 32):
             self.assertNotIn(leak, out)
@@ -192,6 +209,17 @@ class TestFeedback(unittest.TestCase):
             "(optional):\n", "(optional): two holds a week felt right\n")
         self.assertEqual(report_problems(filled), [])
 
+    def test_counts_name_only_what_share_prints(self):
+        """An agent, an outcome or a rule --share never prints (a script's name, a command, a policy's own rule id)
+        is no count line; a FreeBSD release is an OS feedback._os gives."""
+        ok = "\n".join(["# Tracekit field report", "", "OS: FreeBSD-14.0-RELEASE", "", "## Counts", "", "```text", WEEK])
+        self.assertEqual(report_problems(ok + "\n```\n"), [])
+        for line in ("Runs that verify, by agent: acme payroll bot 1", "  acme-payroll-guard 1, 0, 0",
+                     "Holds: 3   psql -h prod drop customers 1"):
+            with self.subTest(line):
+                self.assertEqual(report_problems(f"{ok}\n{line}\n```\n"),
+                                 [f"line 18 ({line[:40]!r}): the counts hold only what tracekit report --share prints"])
+
     def test_every_field_report_in_docs_is_report_shaped(self):
         for name in sorted(os.listdir(REPORTS)):
             if name.endswith(".md") and name != "README.md":
@@ -211,7 +239,8 @@ class TestFeedback(unittest.TestCase):
                      "line 22 ('  deny TK-D004 2 rm", "line 25 ('and another line')", "1544 characters of the counts",
                      "the command in backticks '`cat ~/.aws/config`'", "the path '~/.aws/config'",
                      "the path '/Users/alice/acme/x.py'", "the path 'src/billing/run.py'",
-                     "the URL 'https://ci.acme.example/1'", "the host or file name 'db.acme-prod.internal'",
+                     "the URL 'https://ci.acme.example/1'",
+                     "(write names without dots, e.g. Node) the host or file name 'db.acme-prod.internal'",
                      "the email address 'alice@acme.example'", "a secret-looking string"):
             self.assertTrue(any(p.startswith(what) for p in problems), (what, problems))
 

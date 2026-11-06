@@ -2,12 +2,14 @@
 
 It sends nothing and makes no network call: the person reads the link, opens it (--open hands it to the browser) and
 submits it, or doesn't. A false alarm (--harmless) holds the approval's rule ids, tool name, policy hash and verdict,
-never its command, arguments or paths. --file writes a field report to send as a pull request instead.
+and the Tracekit, OS, Python and hook names, never its command, arguments or paths; all of it is printed before
+anything is submitted. --file writes a field report to send as a pull request instead.
 """
 from __future__ import annotations
 
 import argparse
 import platform
+import re
 import sys
 import time
 import urllib.parse
@@ -53,13 +55,14 @@ def _os():
     is the kernel's whole build string."""
     if platform.system() != "Linux":
         return platform.platform(terse=True)
-    return "Linux-" + ".".join(platform.release().split(".")[:2])
+    m = re.match(r"\d+(\.\d+)?", platform.release())
+    return "Linux" + (f"-{m.group()}" if m else "")
 
 
-def _about():
-    """The form's two required fields, which every link fills: `share`, tracekit report --share's week (a line saying
-    there is none without a dev store), and `agent`, this machine's Tracekit, OS, Python and hooks (#385)."""
-    return {"share": _week() or "no dev store on this machine (tracekit audit --share --since 7d prints a replay's counts)",
+def _about(share):
+    """The form's two required fields, which every link fills: `share` and `agent`, this machine's Tracekit, OS, Python
+    and hooks (#385)."""
+    return {"share": share,
             "agent": f"Tracekit {__version__}, {_os()}, Python {platform.python_version()}\n"
                      f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n(filed with `tracekit feedback`, for #385)"}
 
@@ -110,7 +113,8 @@ def main(argv=None):
                                  "nothing: you open the link, read it and submit it.")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--harmless", metavar="APPROVAL_ID", help="report this held call as a false alarm: its rule ids, "
-                   "tool name, policy hash and verdict, never its command, arguments or paths")
+                   "tool name, policy hash and verdict, and the Tracekit, OS, Python and hook names, never its command, "
+                   "arguments or paths; all of it is printed before anything is submitted")
     g.add_argument("--file", metavar="PATH", help="write a field report to this new file instead, to fill in and send as "
                    "a pull request (docs/field-reports/README.md)")
     ap.add_argument("--why", help="with --harmless, one line on why the call was harmless")
@@ -145,9 +149,12 @@ def main(argv=None):
             return 1
         finally:
             c.close()
-        fields = {**_about(), **fields}   # the form's required fields, so the report can be submitted
+        # the form's required fields, so it can be submitted; no store is read: one call is no week's counts, and
+        # --signer's store may not be this machine's
+        fields = {**_about("not included: a single false alarm"), **fields}
     else:
-        title, fields = "Field report", _about()
+        title, fields = "Field report", _about(_week() or "no dev store on this machine (tracekit audit --share "
+                                                          "--since 7d prints a replay's counts)")
     link = url(title, fields)
     print(link, "", "the link holds exactly this, and nothing is sent until you submit it on GitHub:",
           f"title: {title}", sep="\n")
