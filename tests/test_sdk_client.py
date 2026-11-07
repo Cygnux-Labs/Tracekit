@@ -218,16 +218,16 @@ class DevSigner(unittest.TestCase):
 
     def test_cli_up_status_down(self):
         self.assertIn(f"dev signer {__version__} running", self.cli("up", "--wait"))
-        status = json.loads(self.cli("status"))
+        status = json.loads(self.cli("status", "--json"))
         self.assertIn("client_config", status)   # the v1 sections are still there
         self.assertTrue(status["signer_v2"]["running"])
         self.assertIn("dev signer stopped", self.cli("down"))
-        self.assertFalse(json.loads(self.cli("status"))["signer_v2"]["running"])
+        self.assertFalse(json.loads(self.cli("status", "--json"))["signer_v2"]["running"])
         self.assertIn("no dev signer running", self.cli("down"))
 
     def test_status_survives_an_unusable_runtime_dir(self):
         with mock.patch.object(autospawn, "runtime_dir", side_effect=PermissionError("read-only")):
-            status = json.loads(self.cli("status"))
+            status = json.loads(self.cli("status", "--json"))
         self.assertIn("client_config", status)
         self.assertFalse(status["signer_v2"]["running"])
 

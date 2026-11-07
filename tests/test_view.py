@@ -590,10 +590,12 @@ class Translate(unittest.TestCase):
         path = os.path.join(ts.tmpdir(self), "p.yaml")
         with open(path, "w", encoding="utf-8") as f:
             f.write("deny:\n  - id: X-1\n    pattern: 'rm'\n    reason: removing files\n    remedy: Move it aside.\n"
-                    "flag:\n  - id: X-2\n    pattern: 'ls'\n    label: listing\n")
+                    "flag:\n  - id: X-2\n    pattern: 'ls'\n    label: listing\n"
+                    "  - id: X-3\n    pattern: 'git push'\n    label: side_effect\n")
         h = policy_compile.policy_hash(policy_compile.build(path)[0])
         self.assertEqual(view.policy_reasons([path])[h], {"X-1": {"reason": "removing files", "remedy": "Move it aside."},
-                                                          "X-2": {"reason": "listing"}})
+                                                          "X-2": {"reason": "listing"},
+                                                          "X-3": {"reason": "side effect"}})   # report printed side_effect
         self.assertEqual(SERVER[SERVER_HASH]["TK-DB001"], {"reason": "dropping a database object"})
 
     def test_a_calls_signed_provenance_rides_on_its_row(self):
@@ -1168,7 +1170,7 @@ class View(unittest.TestCase):
         self.assertEqual(rep["title"], f"RUN {run_id} · Integrity VERIFIED · Assurance dev")
         self.assertIn("tenant default · agent e2e · final · decisions allow 1, ask 1, deny 1 · approvals 1 · gaps 0",
                       rep["text"])
-        self.assertIn("same user as the dev signer", rep["text"])
+        self.assertIn("in dev mode it runs as you, as the signer does", rep["text"])
         self.assertIn(view.OPERATOR_SIDE, rep["text"])
         self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", rep["text"])   # verify.v2's own report
         rows = self.rows(feed, run_id)
@@ -1316,8 +1318,23 @@ class View(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(cli.main(["last"]), 1)
         self.assertTrue(err.getvalue().startswith(f"tracekit last: no runs in the dev signer's store "
-                                                  f"({os.path.join(nope, 'store')}) yet: "), err.getvalue())
+                                                  f"({os.path.join(nope, 'store')}) yet. "), err.getvalue())
         self.assertFalse(os.path.exists(nope))
+        # a new user who had added instrument() was told to add it: it records only the frameworks it lists
+        self.assertIn("`tracekit.instrument()` records only the frameworks it lists", err.getvalue())
+        self.assertIn(f"as {wiki_url('docs/quickstarts/custom.md')} shows", err.getvalue())
+
+    def test_last_says_it_waits_for_a_run_that_just_closed(self):
+        """`tracekit last` waited up to LAST_WAIT_S for a closing run in silence; it says so, once."""
+        closing = [v2rec(0, "run.registered", {"agent": {"name": "a"}}, "r1"), v2rec(1, "run.closing", {}, "r1")]
+        fake = mock.Mock(runs={("default", "r1"): {"seqs": [1]}})
+        fake.iter_run.side_effect = lambda *key: iter(closing)
+        with mock.patch.object(svc, "reader", return_value=fake), \
+                mock.patch.object(svc, "signer_config", return_value={"data_dir": self.d}), \
+                mock.patch.object(cli, "LAST_WAIT_S", 0.6), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["last"]), 1)
+        self.assertEqual(err.getvalue().count("tracekit last: run r1 (a) just closed; waiting up to 0.6 s while the "
+                                              "signer finalises it\n"), 1)
 
     @pytest.mark.unverified_bundles
     def test_tampered_record_shows_only_the_failure(self):
@@ -1639,6 +1656,27 @@ class View(unittest.TestCase):
             self.assertEqual(view.main(["--data-dir", self.d, "--approval", aid + "&x=<b>"]), 2)
         self.assertIn("--approval takes an approval id", err.getvalue())
 
+    def test_the_start_lines_are_plain_and_the_link_is_one_a_browser_opens(self):
+        """A new user's walkthrough: the viewer's lines said "trust pins this store's own log.vkey: dev assurance",
+        an any-address bind printed http://0.0.0.0:..., which a browser doesn't open, --host and --port had no help, and
+        --approval's help said it prints a link where it starts the viewer and prints one."""
+        with mock.patch.object(view, "server") as server, mock.patch.dict(os.environ, {"TRACEKIT_VIEW_TOKEN": "t"}), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            server.return_value.server_address = ("0.0.0.0", 7778)
+            self.assertEqual(view.main(["--data-dir", self.d, "--host", "0.0.0.0", "--insecure-http"]), 0)
+        first, second = out.getvalue().splitlines()[:2]
+        self.assertEqual(first, "tracekit view on http://127.0.0.1:7778/  (open it in a browser; Ctrl-C stops the "
+                                "viewer)")
+        self.assertIn("read-only; each run is checked against the key this store names", second)
+        self.assertNotIn("log.vkey", second)
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            view.main(["--help"])
+        help_text = " ".join(out.getvalue().split())
+        for words in ("--host HOST the address to serve on", "--port PORT the port to serve on",
+                      "--approval ID start the viewer and print a link that opens the call approval ID held"):
+            self.assertIn(words, help_text)
+
     def test_the_tips_line_names_a_transcripts_folder_only_when_there_is_one(self):
         """With no Claude Code folder, `tracekit view --dev` printed "tips: Claude Code's transcripts in
         .../.claude/projects, read-only" for a folder that doesn't exist."""
@@ -1675,7 +1713,8 @@ class View(unittest.TestCase):
             server.return_value.server_address = ("127.0.0.1", 7778)
             runs.return_value.logs = ["a.dsn", "b.dsn"]
             self.assertEqual(view.main(["--config", "signer.yaml"]), 0)
-        self.assertIn(f"http://127.0.0.1:7778/?token={server.call_args[0][3]}  (2 Postgres logs", out.getvalue())
+        self.assertIn(f"http://127.0.0.1:7778/?token={server.call_args[0][3]}  (open it in a browser; Ctrl-C stops "
+                      "the viewer)\n  reading 2 Postgres logs, read-only\n", out.getvalue())
         with self.assertRaises(ValueError):
             view.server(None, "127.0.0.1", 0, None)
 
@@ -2305,7 +2344,7 @@ class OneViewer(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIsInstance(feed, observe.Feed)
         # the bundle it shows, not the temp ledger it was unpacked to
-        self.assertIn(f"(bundle: {os.path.join(self.SAMPLE, 'demo-run.tkb')}, verified, read-only)", out)
+        self.assertIn(f"reading the bundle {os.path.join(self.SAMPLE, 'demo-run.tkb')}, verified, read-only", out)
         self.assertNotIn(feed.path, out)
         srv = view.server(feed, "127.0.0.1", 0, token)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -2341,7 +2380,7 @@ class OneViewer(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual((store.root, store.tape, store.allow, args[0]), (root, True, {"m:SYSTEM"}, store.out))
         self.assertIsNotNone(store.webhook)
-        self.assertIn(f"(why logs alone: {root})", out)
+        self.assertIn(f"reading why logs alone: {root}", out)
 
     def test_one_nav_reaches_every_page_this_server_has(self):
         runs = mock.Mock()

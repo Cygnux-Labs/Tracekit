@@ -69,12 +69,13 @@ def agent(client):
         for call_id, command in CALLS:
             args = {"command": command}
             d = run.decide(call_id, "Bash", args)
-            print(f"  Bash {command!r}: {d['decision']} {' '.join(d['rule_ids'])}")
+            print(f"  Bash {command!r}: {' '.join([d['decision'], *d['rule_ids']])}")
             hint = None
             if d["decision"] == "ask":
                 hint = run.call("approval_request", tool_call_id=call_id)["approval_id"]
                 a = client.approval_decide({"approval_id": hint, "decision": "approve"})   # `tracekit approvals approve`
-                print(f"    approved {hint} (self-approved: {a['self_approved']})")
+                print(f"    approved {hint}" + (", by the run's own user: a self-approval, so the run's assurance stays "
+                                                 "dev" if a["self_approved"] else ""))
             if d["decision"] != "deny" and run.approval_consume(call_id, "Bash", args, approval_id_hint=hint)["ok"]:
                 run.complete(call_id)   # the pretend command ran
         return run.run_id

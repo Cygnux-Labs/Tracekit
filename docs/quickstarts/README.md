@@ -6,7 +6,8 @@ reference page covers the rest.
 
 | Integration | Quickstart | Reference |
 |---|---|---|
-| Coding agents | | [coding-agents.md](../coding-agents.md) |
+| Claude Code | [claude-code.md](claude-code.md) | [the plugin](../../plugin/README.md) |
+| Other coding agents (Codex, Cursor, Gemini CLI, ...) | | [coding-agents.md](../coding-agents.md) |
 | Hermes Agent | | [integrations/hermes.md](../integrations/hermes.md) |
 | OpenAI Agents SDK | [openai-agents.md](openai-agents.md) | [integrations/openai-agents.md](../integrations/openai-agents.md) |
 | Claude Agent SDK | [claude-agent-sdk.md](claude-agent-sdk.md) | [integrations/claude-agent-sdk.md](../integrations/claude-agent-sdk.md) |

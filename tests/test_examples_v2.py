@@ -106,6 +106,9 @@ class DemoServer(unittest.TestCase):
                       "NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could "
                       "have rewritten the record.\n", verified)   # what dev mode means
         self.assertNotIn("PASS", verified)
+        # the held call's approval, by the run's own user: it said "(self-approved: True)" (review of #628)
+        self.assertRegex(verified, r"\n    approved \S*apr-[0-9a-f]{32}, by the run's own user: a self-approval, so the "
+                                   r"run's assurance stays dev\n")
         self.assertIn("\nTAMPERED at event 4: its content was changed after it was signed.\n", tampered)
         self.assertRegex(tampered, r"\ndeleted .+ \(--keep keeps it\)\n$")
 

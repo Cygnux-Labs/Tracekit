@@ -56,6 +56,8 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                                   "plainly."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
+                           "quote": {"reason": "a quote on the line is never closed",
+                                     "remedy": "Close the quote."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
                                       "remedy": "Split it into plain commands; pipes, &&, if, for, case and functions "
                                                 "are read."}}},

@@ -4,10 +4,23 @@ Every tool call is decided by the v2 signer before it runs and recorded after, a
 to the agent you have in three steps. It uses the dev signer, which runs as your own user (see [what dev assurance
 means](../quickstart-v2.md#what-dev-assurance-means)).
 
+## Try it first, with no API key
+
+```sh
+git clone --depth 1 https://github.com/Cygnux-Labs/Tracekit && cd Tracekit
+python3 -m venv .venv && . .venv/bin/activate
+pip install . 'claude-agent-sdk>=0.2.165,<0.3'
+python examples/v2/claude_agent_sdk/agent.py --scripted
+```
+
+A mock CLI stands in for Claude: `ls` is allowed, `sudo rm -rf /` is denied and the agent goes on, and `echo
+"unterminated` is held until a second process approves it. Then the run is exported and verified.
+
 ## 1. Install
 
 ```sh
 pip install tracekit-ai 'claude-agent-sdk>=0.2.165,<0.3'
+export ANTHROPIC_API_KEY=...     # the SDK runs the Claude Code it bundles, which calls Claude
 ```
 
 ## 2. One line in your agent
@@ -55,8 +68,7 @@ async for message in query(prompt="Use the Bash tool to list the files here.", o
 The example runs a mock CLI (`transport=`) so it needs no `claude` binary and no API key. An ask holds the call inside
 the PreToolUse hook for up to nine minutes; SessionEnd closes the run.
 
-An offline run of all this (a mock model, no API key), with an approval: `python examples/v2/claude_agent_sdk/agent.py
---scripted` from a checkout.
+The no-key example at the top of this page wires it this way, with an approval.
 
 ## Read the verify report
 

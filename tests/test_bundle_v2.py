@@ -983,7 +983,8 @@ class TestVerifyV2(Case):
                                         "TAMPERED at event 6: "),
                  "v1 sample, every check": (["verify", os.path.join(sample, "demo-run.tkb"), *key, "--detail"], 0,
                                             "Integrity: VERIFIED."),
-                 "v2 bundle": (["verify", v2_bundle, "--trust", self.trust], 0, "VERIFIED: 5 signed records, ")}
+                 "v2 bundle": (["verify", v2_bundle, "--trust", self.trust], 0,
+                               "VERIFIED: no tool calls recorded; 5 signed records, ")}
         for why, (argv, want, verdict) in cases.items():
             with self.subTest(why):
                 p = subprocess.run([sys.executable, "-c", blocker, *argv], capture_output=True, text=True,
