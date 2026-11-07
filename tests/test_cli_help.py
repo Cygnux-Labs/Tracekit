@@ -32,15 +32,10 @@ def _options(parser, path=()):
             yield " ".join(path), action
 
 
-# `init --no-hooks` has no help yet; it is written with the upkeep change for #464.
-EXEMPT = {("init", "--no-hooks")}
-
-
 class CliHelpTest(unittest.TestCase):
     def test_every_option_and_argument_has_help(self):
         missing = [f"{path} {action.option_strings or action.dest}" for path, action in _options(_top_parser())
-                   if not action.help and (path, action.option_strings[0] if action.option_strings else action.dest)
-                   not in EXEMPT]
+                   if not action.help]
         self.assertEqual(missing, [], f"no help= for: {missing}")
 
 

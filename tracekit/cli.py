@@ -325,7 +325,9 @@ def _parser():
     p.add_argument("--experimental-macos", action="store_true", help="allow system mode on macOS (not yet validated on hardware)")
     p.add_argument("--proxy", action="store_true", help="also run the model proxy and point Claude Code at it (C3; needs --experimental)")
     p.add_argument("--experimental", action="store_true", help="allow experimental surfaces (--proxy)")
-    p.add_argument("--proxy-port", type=int, default=8787, help="with --proxy: the port the model proxy listens on (default: 8787)")
+    p.add_argument("--proxy-port", type=int, default=8787,
+                   help="with --proxy: the port the model proxy listens on "
+                        "(default: 8787)")
     p.add_argument("--fail-closed", action="store_true", help="proxy: refuse to forward when the signer can't record")
     p.add_argument("--managed", action="store_true", help="system mode, Claude Code: hooks in its admin-managed "
                    "settings (managed-settings.json), which the agent's user can't edit or turn off; they run in "
@@ -366,7 +368,8 @@ def _parser():
                    "with it")
     p = sub.add_parser("uninstall", help="remove Tracekit's hooks (your signed runs and keys stay: it says where, and "
                                          "how to delete them too)")
-    p.add_argument("--project", action="store_true", help="remove the hooks in ./.claude/settings.json instead of ~/.claude")
+    p.add_argument("--project", action="store_true",
+                   help="remove the hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
     p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
