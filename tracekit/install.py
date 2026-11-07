@@ -1954,7 +1954,7 @@ def _installed_hooks():
             try:
                 s = read_json(p)
                 hooks.append({"settings": p, **_hook_summary(s)})
-            except (ValueError, AttributeError, TypeError):   # not JSON, or JSON that isn't a settings object
+            except (ValueError, AttributeError, TypeError, OSError):   # not JSON, not a settings object, or no read access
                 hooks.append({"settings": p, "error": "unreadable"})
     for p in MANAGED_SETTINGS.values():
         if os.path.exists(p):

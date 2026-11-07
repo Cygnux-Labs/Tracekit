@@ -1150,9 +1150,10 @@ def _status_lines(st, v2, plugin=None, chosen=False):
               for h in st["hooks"] if "error" in h]
     if plugin:   # its hooks are the ones init writes, and init writes none while it is on
         found.append(f"hooks       the Claude Code plugin {plugin[1]}'s, enabled in {plugin[0]}")
-    lines += found or ["hooks       none, as init --no-hooks chose: SDK runs (tracekit.instrument()) are still "
-                       "recorded; init without --no-hooks adds Claude Code's" if chosen else
-                       "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"]
+    lines += found or ([] if any("error" in h for h in st["hooks"]) else   # unknown, not none
+                       ["hooks       none, as init --no-hooks chose: SDK runs (tracekit.instrument()) are still "
+                        "recorded; init without --no-hooks adds Claude Code's" if chosen else
+                        "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"])
     if st.get("signer"):   # its error is a problem only for v1 hooks, which use it (or may, in a file it can't read)
         v1 = any("v1" in h.get("versions", ()) or "error" in h for h in st["hooks"])
         lines.append("v1 signer   " + ("answering" if not st["signer"].get("error") else st["signer"]["error"] if v1
