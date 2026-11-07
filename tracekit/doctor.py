@@ -601,6 +601,35 @@ def _hook_run(scale=1, unit="s"):
             f"{(APPROVAL_WAIT_S - 2 * 30) * scale} {unit}, only with {WAIT_ENV} set)")
 
 
+def _openhands_checks(add, path, home, fix):
+    """OpenHands (#563): the working directory's .openhands/hooks.json, when it exists, is read in place of the user's
+    (HookConfig.load reads the first that exists), and calls are paired by (tool, arguments) in order, which a
+    tool_concurrency_limit above 1 (agent_settings.json in the user's OpenHands folder) can mis-pair."""
+    from . import agent_hooks
+    project = agent_hooks.config_path("openhands", os.getcwd())
+    if os.path.realpath(path) != os.path.realpath(project) and os.path.exists(project):
+        try:
+            ours = any(agent_hooks._version(h.get("command")) == "v2"
+                       for groups in _harness_hooks("openhands", _json(project) or {}).values() for g in groups
+                       for h in g.get("hooks") or () if isinstance(h, dict))
+        except (OSError, ValueError, AttributeError, TypeError):
+            ours = False
+        add("D-OPENHANDS-PROJECT", ours,
+            f"{project} replaces {path} here: the OpenHands CLI reads only the first of them that exists, so in this "
+            "directory it runs no Tracekit hook" if not ours else f"{project} has Tracekit's v2 hooks",
+            f"{fix} --project (in this directory), or don't run OpenHands on this repo", bad=WARN)
+    settings = os.path.join(os.path.dirname(agent_hooks.config_path("openhands", home=home)), "agent_settings.json")
+    try:
+        limit = (_json(settings) or {}).get("tool_concurrency_limit", 1)
+    except (OSError, ValueError, AttributeError):
+        limit = 1
+    if type(limit) is int and limit > 1:
+        add("D-OPENHANDS-CONCURRENCY", False,
+            f"tool_concurrency_limit {limit} in {settings}: OpenHands gives no call id, so two identical calls running "
+            "at once can have their results recorded against each other",
+            f"set tool_concurrency_limit to 1 in {settings}", bad=WARN)
+
+
 def _harness_hook_checks(add, harnesses, prod, home=None):
     """Event arguments and approval timeouts of the other coding agents' v2 command hooks (home: the agent user's home
     directory, where agy's sign-in settings are)."""
@@ -622,6 +651,8 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness == "codex":
             _codex_trust(add, path, hooks, home, FAIL if prod else WARN)
+        if harness == "openhands":
+            _openhands_checks(add, path, home, fix)
         unnamed =sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
         blocking = sorted({ev for ev, h in cmds if ev not in agent_hooks.PRE
                            and (FAIL_CLOSED in h["command"] or h.get("failClosed") is True)})   # Cursor's failClosed
