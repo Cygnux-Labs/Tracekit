@@ -114,6 +114,20 @@ class DevModeLine(unittest.TestCase):
             f"hooks       {hooks[0]['settings']} isn't a settings file Tracekit can read, so its hooks are unknown",
             "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"])
 
+    def test_status_says_a_v1_signer_no_hook_uses_is_not_running_and_one_v1_hooks_use_is_unreachable(self):
+        """A v1 signer a config names that doesn't answer read as an error (`unreachable at …: [Errno 2] …`) to a user
+        with v2 hooks alone, who doesn't need it. With v1 hooks installed, which use it, it is one."""
+        down = {"ok": False, "error": "unreachable at /v1.sock: [Errno 2] No such file or directory"}
+
+        def line(signer, *versions):
+            hooks = [{"settings": "s.json", "events": ["PreToolUse"], "versions": list(versions)}]
+            return [x for x in cli._status_lines({"hooks": hooks, "signer": signer}, {"dev": True, "error": "x"})
+                    if x.startswith("v1 signer")]
+        self.assertEqual(line(down, "v2"), ["v1 signer   not running (only v1 hooks use it; none are installed)"])
+        self.assertEqual(line(down), ["v1 signer   not running (only v1 hooks use it; none are installed)"])
+        self.assertEqual(line(down, "v1", "v2"), ["v1 signer   " + down["error"]])
+        self.assertEqual(line({"ok": True}, "v2"), ["v1 signer   answering"])
+
     def test_status_names_the_plugins_hooks_and_a_no_hooks_choice(self):
         """Review of #628: status told a plugin user, and one whose init chose --no-hooks, that `tracekit init --dev
         --v2` adds hooks, though init adds none while the plugin is on."""

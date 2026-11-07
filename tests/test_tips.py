@@ -2,12 +2,15 @@
 
     python3 -m pytest tests/test_tips.py -v
 """
+import contextlib
 import hashlib
 import http.client
 import io
 import json
 import os
+import re
 import shutil
+import socket
 import sys
 import tempfile
 import threading
@@ -16,9 +19,12 @@ from datetime import datetime, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from factories import cc_assistant, cc_result, iso, v2rec, write_jsonl  # noqa: E402
+import test_signer_service as tsvc  # noqa: E402
+from factories import cc_assistant, cc_result, iso, v2rec, wait_for, write_jsonl  # noqa: E402
 from test_view import page_js  # noqa: E402
-from tracekit import observe, tips, view  # noqa: E402
+from tracekit import cli, observe, tips, view  # noqa: E402
+from tracekit.sdk.client import Client  # noqa: E402
+from tracekit.signer import service as svc  # noqa: E402
 
 NOW = datetime(2026, 10, 11, tzinfo=timezone.utc).timestamp()   # a day after v2rec's records
 T0 = NOW - 86400
@@ -529,6 +535,92 @@ class Sources(unittest.TestCase):
         with mock.patch("sys.stderr", err):
             self.assertEqual(view.main(["--data-dir", tmp(self), "--transcripts", missing]), 2)
         self.assertIn(f"--transcripts {missing}: no such folder", err.getvalue())
+
+
+@unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
+class Command(unittest.TestCase):
+    """`tracekit tips`: the TIPS page's tips without the viewer, from a real signer's store (a run with a held call
+    nobody answered) and Claude Code's transcripts (a long main session)."""
+
+    def setUp(self):
+        for name in ("TICK_S", "CHECKPOINT_S", "CHECKPOINT_MIN_S"):   # a checkpoint every 0.05 s, as test_report's
+            p = mock.patch.object(svc, name, 0.05)
+            p.start()
+            self.addCleanup(p.stop)
+        d = tsvc.tmpdir(self)
+        self.cfg = {"data_dir": os.path.join(d, "data"), "socket": os.path.join(d, "s.sock")}
+        service = svc.open_service(self.cfg, policy=tsvc.PAY_ASKS)
+        self.addCleanup(service.close)
+        for srv in svc.serve(self.cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        client = Client(self.cfg["socket"])
+        self.addCleanup(client.close)
+        run = client.run(agent="claude-code")
+        self.assertEqual(run.decide("c1", "pay", {"cents": 5})["decision"], "ask")
+        run.call("approval_request", tool_call_id="c1")
+        run.close()
+        st = service.log.storage
+        self.assertTrue(wait_for(lambda: (st.checkpoint_latest() or (0,))[0] == st.tree.size, 20))
+        self.cc = tmp(self)
+        write_jsonl(os.path.join(self.cc, "projects", "p", "s.jsonl"), growing())
+
+    def tips(self, *args):
+        """(exit code, stdout, stderr) of `tracekit tips --since 2026-10-01` as the dev signer's user, its transcripts
+        in the folder setUp wrote: before growing()'s session and the store's records."""
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(svc, "dev_data_dir", return_value=self.cfg["data_dir"]), \
+                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc}), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = cli.main(["tips", "--since", "2026-10-01", *args])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_each_tip_says_its_title_evidence_saving_and_fix_in_plain_words(self):
+        code, out, err = self.tips()
+        self.assertEqual(code, 0, err)
+        self.assertIn("tracekit tips is experimental", err)
+        got = json.loads(self.tips("--json")[1])
+        head, *cards = out.split("\n\n")
+        self.assertIn(f": {got['sources']['signed']['records']} signed records; Claude Code's transcripts in ",
+                      " ".join(head.split()))   # the header wraps at 100 columns
+        self.assertIn(", read-only, since 2026-10-01 00:00 UTC.", " ".join(head.split()))
+        self.assertEqual(len(cards), 3)
+        for i, (card, t) in enumerate(zip(cards, got["tips"]), 1):
+            lines, flat = card.splitlines(), " ".join(card.split())
+            self.assertEqual(lines[0], f"TIP {i} · {tips.NAMES[t['id']]}" + (f" · from {t['from']}" if t.get("from")
+                                                                              else ""))
+            if not t["ok"]:   # why it has none
+                self.assertEqual(lines[1:], [f"  {t['why']}"])
+                continue
+            self.assertEqual(lines[1], t["title"])   # then its evidence, saving and fix
+            self.assertIn(" ".join(t["line"].split()), flat)
+            self.assertIn(f"Fix: {' '.join(t['fix']['text'].split())}", flat)
+            self.assertEqual(lines[-1], f"    {t['fix']['copy']}")
+        context, _, holds = cards
+        context = " ".join(context.split())   # lines wrap at 100 columns
+        self.assertIn("Would have saved: about $", context)
+        self.assertIn("an estimate. Time: not measured.", context)
+        self.assertEqual(holds.splitlines()[1], "1 held call nobody answered")
+
+    def test_json_is_what_the_page_reads(self):
+        code, out, err = self.tips("--json")
+        self.assertEqual(code, 0, err)
+        got = json.loads(out)
+        self.assertEqual(list(got), ["window", "prices", "root", "sources", "tips"])
+        self.assertEqual([(t["id"], t["ok"]) for t in got["tips"]], [("context", True), ("cache", False),
+                                                                     ("holds", True)])
+        self.assertEqual((got["sources"]["signed"]["holds"], got["sources"]["transcripts"]["files"]), (1, 1))
+        self.assertEqual(got["window"][0], datetime(2026, 10, 1, tzinfo=timezone.utc).timestamp())
+
+    def test_with_nothing_read_it_says_what_it_read_in_one_line(self):
+        empty = {"data_dir": os.path.join(tmp(self), "data")}
+        svc.open_service(empty).close()   # a signer started once: its key, no run
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["tips", "--data-dir", empty["data_dir"]]), 0)
+        store = tips._shown(os.path.join(empty["data_dir"], "store"))
+        self.assertRegex(out.getvalue(), rf"^tracekit tips: read {re.escape(store)}: 0 signed records, since "
+                                         r"\d{4}-\d\d-\d\d \d\d:\d\d UTC: nothing yet\n$")
 
 
 class Api(unittest.TestCase):

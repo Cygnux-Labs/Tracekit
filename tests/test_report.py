@@ -771,7 +771,7 @@ class Rules(unittest.TestCase):
         weekly._tally(("default", "r1"), [rec], view.Translator(view.policy_reasons()), rules, unread)
         self.assertEqual({(g["rule"], g["why"], g["reason"]) for g in rules.values()},
                          {("TK-D002", True, "running a downloaded script"),
-                          ("TK-SHELL-PARSE", None, "a shell command that does not parse")})
+                          ("TK-SHELL-PARSE", None, "a shell command Tracekit can't read, so a person decides")})
         self.assertEqual(unread["deny"], 0)
 
     def test_share_prints_tracekit_rule_ids_and_counts_the_others_as_one(self):

@@ -1,4 +1,5 @@
-"""Tips: what each step of a coding agent cost, and how to cut it, for `tracekit view`'s TIPS page (docs/viewer.md#tips).
+"""Tips: what each step of a coding agent cost, and how to cut it, for `tracekit view`'s TIPS page (docs/viewer.md#tips)
+and `tracekit tips` (main).
 
 Three tips, each worked out from what the agents' own records show, over the last WINDOW_S:
 
@@ -658,12 +659,13 @@ def _same(signed, agents, calls):
     return held
 
 
-def build(rows, root=None, now=None):
-    """The TIPS page's data: what was read (`sources`), the window, the price table's date and the three tips. A signed
-    step the transcripts also hold counts once, from the transcripts (`sources.signed.also`). The signed records are
-    the viewer's live view, its newest rows, so they may span less than the window: `sources.signed.span`."""
+def build(rows, root=None, now=None, since=None):
+    """The TIPS page's data: what was read (`sources`), the window (from `since`, by default WINDOW_S before `now`), the
+    price table's date and the three tips. A signed step the transcripts also hold counts once, from the transcripts
+    (`sources.signed.also`). The signed records are the viewer's live view, its newest rows, so they may span less than
+    the window: `sources.signed.span`."""
     now = time.time() if now is None else now
-    since = now - WINDOW_S
+    since = now - WINDOW_S if since is None else since
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
     agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
@@ -704,3 +706,124 @@ class Page:
                 self.body = json.dumps(build(self.rows(), self.root), ensure_ascii=False)
                 self.at = time.monotonic()
             return self.body
+
+
+def signed_rows(cfg, since, say=None):
+    """(rows, failed): tracekit view's rows of the client runs in the store of config `cfg` with a record at or after
+    `since`, each run checked with the verifier first, as the viewer checks it; `failed`: the runs that didn't verify,
+    which give no rows. `say(text)`: told how many runs are checked before the checks."""
+    import tempfile
+
+    from . import view
+    from .signer.pipeline import SIGNER_RUN
+    from .why.core import ts_seconds
+
+    def recent(run):
+        # lean: a run is placed by its last record's time as the store says it, before the check; place it by the
+        # records a checkpoint covers, as tracekit report does, if a store edited to hide a run matters here
+        try:
+            return ts_seconds(next(r.iter_range(run["seqs"][-1], run["seqs"][-1] + 1))["event"]["ts"]) >= since
+        except (KeyError, TypeError, ValueError):   # a time it can't read: checked, and fails there if it must
+            return True
+    vkeys, _ = view.store_trust(cfg)
+    tr = view.Translator(view.policy_reasons([], os.path.join(cfg["data_dir"], "policies")))
+    rows, failed = [], 0
+    with tempfile.TemporaryDirectory(prefix="tk-tips-") as tmp:
+        trust = view.write_trust(os.path.join(tmp, "trust.json"), vkeys)
+        r = view.reader(cfg)
+        try:
+            note = r.checkpoint_latest()
+            keys = [k for k, run in sorted(r.runs.items()) if note and k[1] != SIGNER_RUN[1] and recent(run)]
+            if say and keys:
+                say(f"checking {len(keys)} run{'s' * (len(keys) != 1)} with the verifier, as tracekit view does: a "
+                    "busy week takes minutes")
+            for key in keys:
+                _, code, _, records = view.check(r, *key, note[1], trust)
+                failed += bool(code)
+                rows += [x for rec in records for x in tr.feed(rec)]
+        finally:
+            r.close()
+    return rows, failed
+
+
+NAMES = {"context": "CONTEXT", "cache": "CACHE", "holds": "HOLDS NOBODY ANSWERED"}   # the page's names of the tips
+
+
+def _wrap(text, indent="  "):
+    import textwrap
+    return textwrap.fill(text, 100, initial_indent=indent, subsequent_indent=indent, break_on_hyphens=False,
+                         break_long_words=False)
+
+
+def text(t, store, failed=0, root=None):
+    """`tracekit tips` in plain words: what it read from `store` (its name) and the transcripts (looked for in `root`),
+    then each tip's title, evidence, estimated saving and fix, or why it has none; one line when nothing was read."""
+    s, tr = t["sources"]["signed"], t["sources"]["transcripts"]
+    since = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t["window"][0]))
+    read = f"{store}: {s['records']:,} signed records" + (
+        f", {failed} run{'s' * (failed != 1)} left out: {'they' if failed != 1 else 'it'} didn't verify (tracekit view "
+        "shows why)" if failed else "") + (
+        f"; Claude Code's transcripts in {t['root']}: {tr['files']:,} file{'s' * (tr['files'] != 1)}" if t["root"] else
+        f"; no Claude Code transcripts in {_shown(root)}" if root else "")
+    if not (s["records"] or tr["steps"]):
+        return f"tracekit tips: read {read}, since {since}: nothing yet"
+    out = [_wrap(f"Read {read}, read-only, since {since}. Dollars are Anthropic's list prices of {t['prices']}: a "
+                 "subscription bills none of them, but the same tokens fill its usage limit. An estimate, "
+                 "operator-side, not evidence.", "")]
+    for i, x in enumerate(t["tips"], 1):
+        out += ["", f"TIP {i} · {NAMES[x['id']]}" + (f" · from {x['from']}" if x.get("from") else "")]
+        if not x["ok"]:
+            out.append(_wrap(x["why"]))
+            continue
+        sv = x["saving"]
+        usd = None if sv["usd"] is None else _about(sv["usd"]) + (
+            f" ({sv['pct']}% of these sessions' input side)" if sv.get("pct") else "")
+        minutes = "not measured" if sv["minutes"] is None else f"about {_dur(sv['minutes'] * 60)}" if sv["minutes"] \
+            else "none"
+        out += [x["title"], _wrap(x["line"]),
+                _wrap((f"Would have saved: {usd}, an estimate. " if usd else "") + f"Time: {minutes}.")]
+        if x.get("fix"):
+            out.append(_wrap("Fix: " + x["fix"]["text"]))
+            if x["fix"]["copy"]:
+                out.append("    " + x["fix"]["copy"])
+    return "\n".join(out)
+
+
+def main(argv=None):
+    """`tracekit tips [--dev | --data-dir DIR] [--since 7d] [--json]` (docs/viewer.md#tracekit-tips)."""
+    import argparse
+    import sys
+
+    from .audit import default_root
+    from .report import when
+    from .signer.service import dev_data_dir
+    from .storage.base import StorageCorrupt, StorageUnavailable
+    from .view import store_name
+    ap = argparse.ArgumentParser(prog="tracekit tips", description="the TIPS page of tracekit view without the viewer: "
+                                 "what each step of your coding agents cost and how to cut it, from the dev signer's "
+                                 "store and Claude Code's transcripts, read-only. No network, no model.")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--dev", action="store_true", help="the same-user dev signer's store and Claude Code's transcripts "
+                                                      "(the default)")
+    g.add_argument("--data-dir", help="a signer data dir (holds store/ and log.vkey): its store alone, as tracekit view "
+                                      "--data-dir reads it")
+    ap.add_argument("--since", type=when, default="7d", help="7d, 24h, 30m, or an ISO date or time, UTC unless it says "
+                                                             "(default: 7d)")
+    ap.add_argument("--json", action="store_true", help="print the tips as one JSON object, as the TIPS page reads them")
+    a = ap.parse_args(argv)
+    now = time.time()
+    if a.since >= now:
+        ap.error("--since must be in the past")
+    try:
+        cfg = {"data_dir": os.path.abspath(a.data_dir) if a.data_dir else dev_data_dir(create=False)}
+        rows, failed = signed_rows(cfg, a.since, lambda s: print(f"tracekit tips: {s}", file=sys.stderr, flush=True))
+    except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
+        print(f"tracekit tips: {e}", file=sys.stderr)
+        return 1
+    root = None if a.data_dir else default_root()
+    t = build(rows, root, now, a.since)
+    if a.json and failed:   # the text says it in its first line
+        print(f"tracekit tips: {failed} run{'s' * (failed != 1)} left out: they didn't verify (tracekit view shows why)",
+              file=sys.stderr)
+    print(json.dumps(t, indent=2) if a.json else text(t, _shown(store_name(cfg)), failed, root))
+    return 0

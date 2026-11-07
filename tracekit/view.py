@@ -294,7 +294,8 @@ class ApprovalDesk:
 
 
 ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PARSE": "SQL no dialect reads",
-                "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE": "a shell command that does not parse",
+                "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE":
+                    "a shell command Tracekit can't read, so a person decides",
                 "TK-ENGINE-ERROR": "the policy engine failed on these arguments, so the call was denied",
                 "TK-LIMIT-SUM": "a sum limit counts this call: send the amount as a non-negative integer in minor "
                                 "units, with its three-letter currency code",
