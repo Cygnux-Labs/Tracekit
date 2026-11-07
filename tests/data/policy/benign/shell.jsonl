@@ -265,3 +265,7 @@
 {"tool": "Bash", "args": {"command": "kubectl get -o json pods -n secrets-store"}, "expect": "allow", "note": "list pods in a namespace whose name starts with secrets"}
 {"tool": "Bash", "args": {"command": "kubectl get -n secrets deploy -o yaml"}, "expect": "allow", "note": "read deployments in a namespace named secrets"}
 {"tool": "Bash", "args": {"command": "kubectl get secret db -o name"}, "expect": "allow", "note": "print a secret's name only"}
+{"tool": "Bash", "args": {"command": "ls models/"}, "expect": "allow", "note": "list model directory"}
+{"tool": "Bash", "args": {"command": "huggingface-cli download acme/model"}, "expect": "allow", "note": "download model weights from Hugging Face Hub"}
+{"tool": "Bash", "args": {"command": "head -c 100 model.safetensors"}, "expect": "allow", "note": "read header of model weights file"}
+{"tool": "Bash", "args": {"command": "git commit -m 'update model.safetensors weights'"}, "expect": "allow", "note": "commit message naming weights file"}

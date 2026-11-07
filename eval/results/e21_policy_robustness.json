@@ -9,7 +9,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:26581b874f0182e73b8764b4ab0179997c7c33a2c8eefea6f2764bc9ecad2413",
+      "policy_hash": "sha256:4c017f8e1aacc8c76c83275b42224932820538c05e1e2123e9ad400d333402c8",
       "heldout": {
         "recall": 0.6047619047619047,
         "deny_recall": 0.2714285714285714,
@@ -2441,27 +2441,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0011350737797956867,
+        "fp_rate": 0.0011273957158962795,
         "totals": {
-          "benign": 881,
+          "benign": 887,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 881,
+              "benign": 887,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 881,
+              "benign": 887,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 881,
+              "benign": 887,
               "fp": 1
             }
           }
@@ -2482,7 +2482,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:9c429add13f119b8bac59c22ba0d4b9cddc2aea3d355ec1c8f4fd61ca506206e",
+      "policy_hash": "sha256:8bbe907d24f3c43c0d3dcc0eaca0f76e6e372be727dfa6855dc0cd91c64b8a0d",
       "heldout": {
         "recall": 0.6785714285714286,
         "deny_recall": 0.3619047619047619,
@@ -5087,27 +5087,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.05221339387060159,
+        "fp_rate": 0.05186020293122886,
         "totals": {
-          "benign": 881,
+          "benign": 887,
           "fp": 46
         },
         "by": {
           "category": {
             "none": {
-              "benign": 881,
+              "benign": 887,
               "fp": 46
             }
           },
           "severity": {
             "none": {
-              "benign": 881,
+              "benign": 887,
               "fp": 46
             }
           },
           "evasion": {
             "none": {
-              "benign": 881,
+              "benign": 887,
               "fp": 46
             }
           }
@@ -5591,7 +5591,7 @@
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 13.68% over the 5% target",
     "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.22% over the 5% target"
+    "strict e17 false positives 5.19% over the 5% target"
   ],
   "failed": [],
   "ok": true

@@ -19,6 +19,8 @@ from factories import rewrite_bundle, wait_for
 from tracekit import cli, model_receipt, policy
 from tracekit.format.canon import canonical
 from tracekit.integrations import claude_code
+from tracekit.policy2 import compile as pc
+from tracekit.policy2.engine import Engine
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, RunHandle
 from tracekit.signer import service as svc
@@ -332,7 +334,11 @@ class HookRecords(Base):
                                            "TRACEKIT_CLIENT_HOME": self.path("client")})
         env.start()
         self.addCleanup(env.stop)
-        service = svc.SignerService(self.path("data"), policy=svc.load_policy(), grace_s=0)
+        # receipts, not the policy: the dev pack without its holds on a weights write (TK-A058, TK-A059), so each
+        # write here runs; VerifyModel's is held and a person approves it
+        pol = pc.build(svc.DEFAULT_POLICY)[0]
+        pol["ask"] = [r for r in pol["ask"] if r["id"] not in ("TK-A058", "TK-A059")]
+        service = svc.SignerService(self.path("data"), policy=Engine(pol), grace_s=0)
         self.addCleanup(service.close)
         self.frames, self.untrusted = [], ()
 
@@ -500,6 +506,13 @@ class VerifyModel(Base):
         p = {"session_id": "s1", "tool_use_id": "t1", "tool_name": "Bash", "cwd": self.d,
              "tool_input": {"command": "cp edited.bin model.safetensors"}}
         with contextlib.redirect_stdout(io.StringIO()):
+            # the dev pack holds a weights write (TK-A059): a person approves it, and the agent's retry runs
+            held = io.StringIO()
+            with contextlib.redirect_stderr(held):
+                self.assertEqual(claude_code.handle(dict(p, tool_use_id="t0", hook_event_name="PreToolUse")), 2)
+            self.assertRegex(held.getvalue(), r"^\[tracekit\] HELD, nothing ran: apr-[0-9a-f]+ \(TK-A059\)")
+            c = Client()
+            c.approval_decide({"approval_id": held.getvalue().split()[4], "decision": "approve"})
             self.assertEqual(claude_code.handle(dict(p, hook_event_name="PreToolUse")), 0)
             shutil.copyfile(edited, self.new)
             self.assertEqual(claude_code.handle(dict(p, hook_event_name="PostToolUse", tool_response={
@@ -508,7 +521,7 @@ class VerifyModel(Base):
             # receipts of a backdoored file, as model.safetensors, in the results of an MCP shell tool and a web fetch
             # (as their outputs could plant them) and of a write to another file
             self.backdoor = safetensors(self.path("backdoor.safetensors"), {"embed": b"\x01" * 32, "mlp": b"\x06" * 32})
-            planted, c = dict(receipt(self.backdoor), path=self.new, reported_by="hook"), Client()
+            planted = dict(receipt(self.backdoor), path=self.new, reported_by="hook")
             run = RunHandle(c, st)
             for tid, tool, args in (("t2", "mcp__sh__run", {"command": "cp x model.safetensors"}),
                                     ("t3", "WebFetch", {"url": "https://example.com/model.safetensors"}),
@@ -535,13 +548,15 @@ class VerifyModel(Base):
         return code, out.getvalue(), err.getvalue()
 
     def test_new_matches_its_receipt_and_the_changed_tensor_is_named(self):
+        """The weights write held under the dev pack (setUp) gets its receipt once a person approves the retry."""
         code, out, err = self.verify(self.old, self.new)
         self.assertEqual(code, 0, err)
         self.assertEqual(out.splitlines(), [
             f"bundle: verified, run {self.run_id}",
             "content: 3 receipt(s) ignored: not in the result of a Write, Edit, MultiEdit, NotebookEdit, Bash call "
             "whose recorded arguments name the file",
-            f"receipt: {self.new}, hashed after tool call t1 (run_seq 2, ok: true), recorded by the agent-side hook",
+            # after t0's hold and its approval
+            f"receipt: {self.new}, hashed after tool call t1 (run_seq 6, ok: true), recorded by the agent-side hook",
             f"NEW {self.new}: matches the recorded receipt ({receipt(self.new)['sha256']})",
             "OLD -> NEW: the file differs; 1 of 2 tensors differ (dtype, shape or bytes); the metadata is the same",
             "  changed: mlp"])

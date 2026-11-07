@@ -59,3 +59,5 @@
 {"tool": "Write", "args": {"file_path": ".github/workflows/publish.yml", "content": "steps:\n  - run: npm publish\n    env:\n      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}\n"}, "expect": "allow", "note": "publish with a secret in the environment"}
 {"tool": "Write", "args": {"file_path": ".github/workflows/ci.yml", "content": "steps:\n  - run: curl -fsSL https://example.com/install.sh -o install.sh\n"}, "expect": "allow", "note": "download in workflow"}
 {"tool": "Read", "args": {"file_path": ".github/dependabot.yml"}, "expect": "allow", "note": "read dependency configuration"}
+{"tool": "Read", "args": {"file_path": "/w/models/model.safetensors"}, "expect": "allow", "note": "read model weights"}
+{"tool": "Write", "args": {"file_path": "/w/models/config.json", "content": "{}"}, "expect": "allow", "note": "write ordinary model configuration"}
