@@ -913,11 +913,10 @@ def config_path(harness, project=None, home=None):
                      os.path.join(os.environ["APPDATA"], "devin", "config.json")
                      if os.name == "nt" and not home and os.environ.get("APPDATA") else
                      os.path.join(base, ".config", "devin", "config.json"),
-            # OpenHands reads <working dir>/.openhands/hooks.json, else $OH_PERSISTENCE_DIR (default ~/.openhands)
-            # /hooks.json (openhands.sdk.hooks.config HookConfig.load): the first that exists, not both
-            "openhands": os.path.join(base, ".openhands", "hooks.json") if project else
-                         os.path.join((None if home else os.environ.get("OH_PERSISTENCE_DIR")) or
-                                      os.path.join(base, ".openhands"), "hooks.json")}[harness]
+            # the OpenHands CLI (1.16.0, on SDK 1.28.1) reads <working dir>/.openhands/hooks.json, else
+            # ~/.openhands/hooks.json, the first that exists (HookConfig.load); $OH_PERSISTENCE_DIR is honoured on SDK
+            # main only, so it isn't followed here
+            "openhands": os.path.join(base, ".openhands", "hooks.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
