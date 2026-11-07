@@ -27,6 +27,7 @@ import re
 import statistics
 import threading
 import time
+from datetime import datetime
 
 from .audit import _entry_time, _iter_transcripts, _safe_open
 from .hook import transcript_entries
@@ -50,6 +51,19 @@ PRICES = {"currency": "USD", "per": 1_000_000, "as_of": "2026-11-05", "models": 
     "claude-sonnet-4-6*": {"input": 3, "output": 15, "cache_read": 0.3, "cache_write": 3.75, "cache_write_1h": 6},
     "claude-haiku-5-5*": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.2},
     "claude-haiku-4-5*": {"input": 1, "output": 5, "cache_read": 0.1, "cache_write": 1.25, "cache_write_1h": 2}}}
+# OpenAI's list prices, USD per million tokens, as of 2026-11-07: https://platform.openai.com/docs/pricing (standard
+# processing; Batch is half). OpenAI's cache lifetimes are 30 minutes and 12 hours: the 30-minute write is priced
+# here as the API's default write (`cache_write`) and the 12-hour one as `cache_write_1h`, so the cache tip's 1-hour
+# replay is a lower bound for a 12-hour write. Cached input is a read at `cache_read`. A model with no row is left
+# out with a note naming it, never given a guessed price.
+PRICES["models"].update({
+    "gpt-6-astra*": {"input": 10, "output": 50, "cache_read": 1, "cache_write": 12.5, "cache_write_1h": 25},
+    "gpt-6-rosalind*": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 37.5},
+    "gpt-6-cyber*": {"input": 20, "output": 100, "cache_read": 2, "cache_write": 25, "cache_write_1h": 50},
+    "gpt-6.1-sol*": {"input": 2, "output": 10, "cache_read": 0.1, "cache_write": 2.5, "cache_write_1h": 5},
+    "gpt-5.6-sol*": {"input": 4, "output": 20, "cache_read": 0.4, "cache_write": 5, "cache_write_1h": 10},
+    "gpt-6.1-terra*": {"input": 1, "output": 5, "cache_read": 0.05, "cache_write": 1.25, "cache_write_1h": 2.5},
+    "gpt-6-luna*": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.25}})
 _RATES = Prices(PRICES)
 
 WINDOW_S = 7 * 86400
@@ -69,6 +83,14 @@ POLLS = {"sleep", "until", "while", "watch"}
 KEYWORDS = {"for", "if", "case", "select", "function", "do", "then"}
 BUILDS = {"pytest", "make", "npm", "npx", "tox", "cargo", "go", "gradle", "mvn"}
 PERSON = {"AskUserQuestion", "ExitPlanMode"}   # tools that wait for a person's answer: no poll keeps that cache
+
+
+def _iso(ts):
+    """An ISO-8601 timestamp as a datetime, or None (Codex writes `2026-10-28T15:10:06.018Z`)."""
+    try:
+        return datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _ctx(s):
@@ -219,6 +241,67 @@ def read_transcripts(root, since):
     return agents, calls, files, unreadable
 
 
+def read_codex_sessions(root, since):
+    """Codex CLI's session files under root (~/.codex/sessions), read-only, from `since` on -> (agents, files read,
+    unreadable): one agent per rollout file, each step a token_usage_record (confirmed from real sessions: payload.usage
+    carries input_tokens, cached_input_tokens, cache_write_input_tokens and output_tokens, the reasoning included). The
+    model is the file's last turn_context. A usage record names no cache lifetime, so its writes are `w` (priced at
+    the API's default write), and no tool_use ids or request latencies are written, so a Codex agent keeps no call and
+    the holds tip covers none of them."""
+    agents, unreadable, files = {}, [], 0
+    if not root or not os.path.isdir(root):
+        return agents, files, unreadable
+    for path, session in _iter_transcripts(root, unreadable):
+        try:
+            if os.lstat(path).st_mtime < since:   # not written in the window: nothing in it can be
+                continue
+        except OSError:
+            continue
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        files += 1
+        name, mine, model, sid = os.path.basename(path)[:-len(".jsonl")], {}, None, None
+        try:
+            for line in f:   # a rollout file is JSON lines, one record each, unlike a transcript's entries
+                try:
+                    e = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(e, dict):
+                    continue
+                if e.get("type") == "session_meta":
+                    sid = ((e.get("payload") or {}).get("session_id")) if isinstance(e.get("payload"), dict) else None
+                elif e.get("type") == "turn_context" and isinstance(e.get("payload"), dict) and \
+                        isinstance(e["payload"].get("model"), str):
+                    model = e["payload"]["model"]
+                elif e.get("type") == "token_usage_record" and isinstance((e.get("payload") or {}).get("usage"), dict):
+                    at = _iso(e.get("timestamp"))
+                    u = e["payload"]["usage"]
+                    rid = e["payload"].get("response_id")
+                    if at is None or at.timestamp() < since:
+                        continue
+                    s = _step(at.timestamp(), rid if isinstance(rid, str) else name, model)
+                    for k, v in (("in", _int(u.get("input_tokens"))), ("out", _int(u.get("output_tokens"))),
+                                 ("cr", _int(u.get("cached_input_tokens"))),
+                                 ("w", _int(u.get("cache_write_input_tokens")))):
+                        s[k] = max(s[k], v or 0)
+                    mine[s["id"] + "@" + str(len(mine))] = s
+        except OSError as x:
+            unreadable.append({"path": path, "error": f"cannot read: {x}"})
+        finally:
+            f.close()
+        if mine:
+            key = sid or session or name
+            a = agents.setdefault(key, {"key": key, "kind": "main", "source": "codex",
+                                        "label": f"session {key[:8]}", "steps": []})
+            a["steps"] += mine.values()
+    for a in agents.values():
+        a["steps"].sort(key=lambda s: s["t"])
+    return agents, files, unreadable
+
+
 def held_calls(rows, since):
     """The calls held for a person (signed decisions `ask`) in the viewer's rows, as view.review counts them, each with
     when a person (or an agent approver) first answered its approval request, from the signed approval records:
@@ -350,11 +433,12 @@ def _k(n):
     return f"{n / 1000:,.0f}k"
 
 
-FROM = {"signed": "signed records", "transcripts": "Claude Code's transcripts (read-only)"}
+FROM = {"signed": "signed records", "transcripts": "Claude Code's transcripts (read-only)",
+        "codex": "Codex's session files (read-only)"}
 
 
 def _from(kinds):
-    return " and ".join(FROM[k] for k in ("signed", "transcripts") if k in kinds)
+    return " and ".join(FROM[k] for k in ("signed", "transcripts", "codex") if k in kinds)
 
 
 def context_tip(agents):
@@ -511,6 +595,10 @@ def cache_tip(agents, calls, held=(), asked=()):
     if not waits:
         tip["why"] = noprice[0] if noprice else \
             "No step records how long its cache lasts: the tip reads that from Claude Code's transcripts (each write " \
+            "says 5 minutes or 1 hour); Codex's session files name no lifetime either (OpenAI writes last 30 minutes " \
+            "or 12 hours, and a session record doesn't say which)." \
+            if unknown and not tip["bins"] and any(a["source"] == "codex" for a in agents) else \
+            "No step records how long its cache lasts: the tip reads that from Claude Code's transcripts (each write " \
             "says 5 minutes or 1 hour)." if unknown and not tip["bins"] else \
             "No wait outlived the prompt cache: no step had to write its whole context again."
         return tip
@@ -658,24 +746,26 @@ def _same(signed, agents, calls):
     return held
 
 
-def build(rows, root=None, now=None):
+def build(rows, root=None, now=None, codex=None):
     """The TIPS page's data: what was read (`sources`), the window, the price table's date and the three tips. A signed
     step the transcripts also hold counts once, from the transcripts (`sources.signed.also`). The signed records are
-    the viewer's live view, its newest rows, so they may span less than the window: `sources.signed.span`."""
+    the viewer's live view, its newest rows, so they may span less than the window: `sources.signed.span`. Codex CLI's
+    session files are read from `codex` (~/.codex/sessions) when that folder exists."""
     now = time.time() if now is None else now
     since = now - WINDOW_S
     rows = [r for r in rows if r and not r.get("signer")]
     signed = signed_steps(rows, since)
     agents, calls, files, unreadable = read_transcripts(root, since) if root and os.path.isdir(root) else \
         ({}, {}, 0, [])
-    same = _same(signed, agents, calls)
+    codex_agents, codex_files, codex_bad = read_codex_sessions(codex, since)
+    same = _same(signed, {**agents, **codex_agents}, calls)   # a signed Codex run its sessions also hold counts once
     also = {"runs": len(same), "steps": sum(map(len, same.values()))}
     for k, idx in same.items():
         signed[k]["steps"] = [s for i, s in enumerate(signed[k]["steps"]) if i not in idx]
     signed = {k: a for k, a in signed.items() if a["steps"]}
     times = [r["ts"] for r in rows if r.get("tk_seq") is not None and (r.get("ts") or 0) >= since]
     holds = held_calls(rows, since)
-    every = list(signed.values()) + list(agents.values())
+    every = list(signed.values()) + list(agents.values()) + list(codex_agents.values())
     return {"window": [since, now], "prices": PRICES["as_of"],
             "root": _shown(root) if root and os.path.isdir(root) else None,
             "sources": {"signed": {"agents": len(signed), "steps": sum(len(a["steps"]) for a in signed.values()),
@@ -683,7 +773,9 @@ def build(rows, root=None, now=None):
                                    "span": [min(times), max(times)] if times else None,
                                    "holds": len(holds)},
                         "transcripts": {"files": files, "agents": len(agents), "unreadable": len(unreadable),
-                                        "steps": sum(len(a["steps"]) for a in agents.values())}},
+                                        "steps": sum(len(a["steps"]) for a in agents.values())},
+                        "codex": {"files": codex_files, "agents": len(codex_agents), "unreadable": len(codex_bad),
+                                  "steps": sum(len(a["steps"]) for a in codex_agents.values())}},
             "tips": [context_tip(every), cache_tip(every, calls, {h["id"] for h in holds if h["answered"] is None},
                                                    {h["id"] for h in holds if h["answered"] is not None}),
                      holds_tip(holds, calls, bool(rows))]}
@@ -694,13 +786,13 @@ class Page:
     at most once every `ttl` seconds unless asked `fresh` (READ AGAIN), one request at a time (a week of transcripts
     takes seconds to read)."""
 
-    def __init__(self, rows, root, ttl=60):
-        self.rows, self.root, self.ttl = rows, root, ttl
+    def __init__(self, rows, root, ttl=60, codex=None):
+        self.rows, self.root, self.ttl, self.codex = rows, root, ttl, codex
         self.lock, self.at, self.body = threading.Lock(), 0.0, None
 
     def __call__(self, fresh=False):
         with self.lock:
             if fresh or self.body is None or time.monotonic() - self.at > self.ttl:
-                self.body = json.dumps(build(self.rows(), self.root), ensure_ascii=False)
+                self.body = json.dumps(build(self.rows(), self.root, codex=self.codex), ensure_ascii=False)
                 self.at = time.monotonic()
             return self.body
