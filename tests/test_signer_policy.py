@@ -2097,13 +2097,21 @@ class CodingPack(unittest.TestCase):
                     r"cp x 'C:\repo\.qwen\settings.json'", 'echo x > "$QWEN_HOME/settings.json"',
                     "tee ${QWEN_HOME}/settings.json", 'rm -rf "$QWEN_HOME"',
                     "echo x > ~/.config/opencode/plugin/tracekit.js", "rm ~/.config/opencode/plugins/tracekit.js",
-                    r"cp x 'C:\Users\u\.config\opencode\plugin\x.js'", "rm -rf ~/.config/opencode")
+                    r"cp x 'C:\Users\u\.config\opencode\plugin\x.js'", "rm -rf ~/.config/opencode",
+                    'echo x > "$XDG_CONFIG_HOME/opencode/plugin/x.js"',
+                    'echo x > "$XDG_CONFIG_HOME/OpenCode/plugin/x.js"',
+                    'echo x > "${XDG_CONFIG_HOME}/kilo/plugin/x.js"', 'echo x > "$xdg_config_home/opencode/x.js"',
+                    'rm -rf "$XDG_CONFIG_HOME"', 'rm -rf "$XDG_CONFIG_HOME/"',
+                    'tee ${XDG_CONFIG_HOME}/opencode/x')
         benign = [("Bash", {"command": c}) for c in (
             "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
             "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
             "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt",
             "cat .qwen/settings.json", "ls ~/.qwen", 'cat "$QWEN_HOME/settings.json"', "echo x > qwen-settings.json",
-            "cp x .qwen-backup/settings.json", "ls ~/.config/opencode/plugin", "echo x > ~/.config/opencode-old/x")]
+            "cp x .qwen-backup/settings.json", "ls ~/.config/opencode/plugin", "echo x > ~/.config/opencode-old/x",
+            'echo $XDG_CONFIG_HOME', 'ls $XDG_CONFIG_HOME/opencode/',
+            # #611 review: only OpenCode's and Kilo's folders under $XDG_CONFIG_HOME, or the folder itself
+            'echo x > "$XDG_CONFIG_HOME/nvim/init.lua"', 'echo x > "$XDG_CONFIG_HOME/opencode-old/x"')]
         benign += [(tool, args) for tool, args in (
             ("Read", {"file_path": "opencode.json"}),
             ("Read", {"file_path": "/home/u/.qwen/settings.json"}),
