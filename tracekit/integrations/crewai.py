@@ -15,6 +15,7 @@ import uuid
 import warnings
 
 from tracekit.sdk.client import refusal, result_field
+from tracekit.integrations import version_check
 
 ERRORS = ("Error executing tool:",                                   # native tool calls
           "I encountered an error while trying to use the tool.")        # the text path (its tool_usage_exception)
@@ -25,6 +26,7 @@ _call = contextvars.ContextVar("tracekit_crewai_call", default=None)
 def hooks(run):
     """(before, after): CrewAI tool hooks recording into `run` (a RunHandle; instrument()'s routes to the current run).
     Register them with crewai.hooks.register_before_tool_call_hook / register_after_tool_call_hook."""
+    version_check.warn_untested("CrewAI", "crewai>=1.15.27,<1.16")
 
     def before(ctx):
         st = {"id": f"crewai-{uuid.uuid4().hex}", "decision": None, "blocked": None}
@@ -36,45 +38,44 @@ def hooks(run):
             if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
                 if d["decision"] == "allow":
                     return None
-                st["blocked"] = f"Tool call refused by Tracekit: {d['reason']}"
+                st["blocked"] = why
                 return False
-            st["decision"], aid = d, None
-            if d["decision"] == "deny":
-                st["blocked"] = f"Tool call blocked by Tracekit policy: {why}"
-                return False
-            if d["decision"] == "ask":
-                aid = run.call("approval_request", tool_call_id=st["id"])["approval_id"]
-                state = run.call("approval_wait", approval_id=aid, timeout_ms=WAIT_MS)["state"]
-                if state != "approved":
-                    st["blocked"] = f"Tool call held by Tracekit policy and not approved: {state}; {refusal(d, aid)}"
-                    if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
-                        run.call("approval_abandon", approval_id=aid, reason="no answer within the hook's wait")
+            if why == "ask":
+                w = run.approval_wait(d["approval_request"]["approval_id"], WAIT_MS)
+                if w.get("state") == "approved":
+                    if not run.approval_consume(d["approval_request"]["approval_id"], st["id"]).get("ok"):
+                        st["blocked"] = "approval consumed by another call"
+                        return False
+                    why = "allow"
+                else:
+                    st["blocked"] = w.get("reason") or "not approved"
                     return False
-            c = run.approval_consume(st["id"], tool, args, approval_id_hint=aid)
-            if not c["ok"]:
-                st["blocked"] = f"Tool call blocked by Tracekit policy: {c.get('reason') or why}"
+            if why != "allow":
+                st["blocked"] = why
                 return False
+            st["decision"] = d
             return None
-        except Exception as e:   # CrewAI would run the tool over a raised exception
-            st["blocked"] = f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})"[:4096]
+        except Exception as e:
+            st["blocked"] = f"{type(e).__name__}: {e}"
             return False
 
     def after(ctx):
         st = _call.get()
-        if st is None:
-            return None
-        _call.set(None)
-        if st["blocked"]:
-            return st["blocked"]
-        if st["decision"] is not None:
-            out = ctx.tool_result
-            try:
-                if isinstance(out, str) and out.lstrip().startswith(ERRORS):
-                    run.complete(st["id"], "error", error=out[:4096])
+        if st is None or st["id"] is None:
+            return
+        try:
+            if st["blocked"]:
+                run.complete(st["id"], "error", error=st["blocked"])
+                ctx.tool_output = st["blocked"]
+            else:
+                out = ctx.tool_output
+                if isinstance(out, str) and any(out.startswith(e) for e in ERRORS):
+                    run.complete(st["id"], "error", error=out)
                 else:
-                    run.complete(st["id"], result=result_field(st["decision"].get("send_result"), out))
-            except Exception as e:   # complete never raises for the signer; anything else is ours: never the crew's
-                warnings.warn(f"tracekit: the result of {st['id']} was not recorded: {type(e).__name__}: {e}",
-                              stacklevel=2)
-        return None
+                    run.complete(st["id"], "result", result=result_field(out))
+        except Exception:
+            pass
+        finally:
+            _call.set(None)
+
     return before, after
