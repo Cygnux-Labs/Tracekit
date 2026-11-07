@@ -130,7 +130,8 @@ def summary(rep, code, integrity, assurance, stream=None):
     if still_open:
         said.append("the run has not ended, so more may follow" if "TO HEAD" in integrity else
                     "not every run has ended, so more may follow")
-    counted = ([f"{rep.calls} tool call{'s' if rep.calls != 1 else ''} in "] if rep.calls else []) + (
+    counted = ([f"{rep.calls} tool call{'s' if rep.calls != 1 else ''} in "] if rep.calls else
+               ["no tool calls recorded; "] if rep.calls == 0 else []) + (
         [f"{rep.events} signed record{'s' if rep.events != 1 else ''}, "] if rep.events is not None else [])
     say(f"{head}: {''.join(counted)}" + "; ".join(said + gaps + against) + ".")
     if getattr(rep, "findings", None):   # v2's signed findings: an opinion of the run, worth a line of their own

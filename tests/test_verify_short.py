@@ -175,9 +175,15 @@ class V2(tb.Case):
                          (0, "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after "
                              f"signing.\n{DEV}{ANCHORED}\nPinned log key SHA-256 fingerprint: {self.fingerprint}.\n"))
 
-    def test_a_run_with_no_tool_call_counts_its_signed_records(self):
-        self.assertEqual(verify(self.bundle("same-user", calls=()), "--trust", self.trust)[1].splitlines()[0],
-                         "VERIFIED: 2 signed records, none changed, removed or added after signing.")
+    def test_a_run_with_no_tool_call_says_so_and_counts_its_signed_records(self):
+        """A new user's first run with nothing recorded read only "VERIFIED: 3 signed records", as if calls were in
+        them; the exit code and --json stay as they were."""
+        bundle = self.bundle("same-user", calls=())
+        self.assertEqual(verify(bundle, "--trust", self.trust)[1].splitlines()[0],
+                         "VERIFIED: no tool calls recorded; 2 signed records, none changed, removed or added after "
+                         "signing.")
+        code, out = verify(bundle, "--trust", self.trust, "--json")
+        self.assertEqual((code, json.loads(out)["integrity"]), (0, "VERIFIED"))
 
     def test_an_isolation_the_signer_could_not_tell_shows_nothing(self):
         code, out = verify(self.bundle("unknown"), "--trust", self.trust)

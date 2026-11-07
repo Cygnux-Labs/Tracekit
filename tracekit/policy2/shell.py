@@ -35,6 +35,10 @@ class ParseError(ValueError):
     cause = "syntax"   # the TK-SHELL-PARSE cause it gives (compile.ENGINE_REASONS)
 
 
+class _Unclosed(ParseError):
+    cause = "quote"   # a ' " or $' the line doesn't close
+
+
 class _Expansion(str):
     """A parameter expansion or command substitution as written, which bash may expand to nothing; `empty`: what it
     expands to when its variable is empty or unset (a default's word: ${X:-w} is w, with w's own expansions empty),
@@ -1866,7 +1870,7 @@ class _Parser:
                 alone = False
                 j = s.find("'", self.i + 1)
                 if j < 0:
-                    raise ParseError("unterminated '")
+                    raise _Unclosed("unterminated '")
                 buf.append(s[self.i + 1:j])
                 self.i = j + 1
             elif c == '"' or self.at('$"'):   # $"...": "..." translated
@@ -2013,7 +2017,7 @@ class _Parser:
             if self.i >= len(s):
                 if term is None:
                     break
-                raise ParseError(f"unterminated {term}")
+                raise (_Unclosed if term == '"' else ParseError)(f"unterminated {term}")
             c = s[self.i]
             if term == "}" and c == "\\":
                 self.i += 2
@@ -2068,7 +2072,7 @@ class _Parser:
         if nxt == "'" and not in_dq:
             m = re.compile(r"((?:\\.|[^'\\])*)'", re.S).match(s, self.i + 2)
             if not m:
-                raise ParseError("unterminated $'")
+                raise _Unclosed("unterminated $'")
             self.i = m.end()
             return _ansi_c(m.group(1))
         if nxt == '"' and not in_dq:

@@ -400,6 +400,8 @@ class InstallAndUninstall(unittest.TestCase):
                 json.dump(admin, f)
 
     def read(self, path):
+        if not os.path.exists(path):   # init made it, and taking Tracekit's hooks out left nothing: deleted
+            return {}
         with open(path) as f:
             return json.load(f)
 
@@ -539,7 +541,7 @@ class InstallAndUninstall(unittest.TestCase):
                 _, _, sc, _ = self.init_real({})
                 sc["hooks"]["user"] = "alice" if "project" in kw else "agent"
                 out = self.init_real(sc, **kw)[3]
-                self.assertIn(f"Tracekit v2 hooks removed from {self.user}\n", out)
+                self.assertIn(f"Tracekit v2 hooks removed from {self.user}", out)
                 self.assertEqual(install._hook_summary(self.read(self.user))["versions"], [])
 
     def test_uninstall_takes_tracekits_hooks_out_of_the_managed_settings_the_config_forgot(self):
@@ -727,8 +729,7 @@ class HookEnv(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(json.load(f)["env"], {"TRACEKIT_SIGNER": "/run/s.sock"})
         install.install_hooks(path, uninstall=True, signer="/run/s.sock")
-        with open(path) as f:
-            self.assertNotIn("env", json.load(f))
+        self.assertFalse(os.path.exists(path))   # install_hooks made it: no env, and no file
         with open(path, "w") as f:
             json.dump({"env": {"TRACEKIT_SIGNER": "/mine.sock"}}, f)
         install.install_hooks(path, uninstall=True, signer="/run/s.sock")
