@@ -9,10 +9,10 @@ a decision before each call (an `ask` waits for a person), and a hook records th
 ## Install
 
 ```bash
-pip install tracekit-ai "inspect-ai>=0.3.287,<0.4"
+pip install tracekit-ai "inspect-ai>=0.3.288,<0.4"
 ```
 
-Tested in CI with Inspect AI 0.3.287 on its `mockllm` model, against a stand-in signer (`tracekit.testing.FakeSigner`).
+Tested in CI with Inspect AI 0.3.288 on its `mockllm` model, against a stand-in signer (`tracekit.testing.FakeSigner`).
 
 ## Setup
 
@@ -45,8 +45,10 @@ Importing the module registers one Inspect hook for the process. It does nothing
 - **Records what ran.** An approver never sees a call's result, so the hook completes each allowed call when Inspect
   emits its `ToolEvent`: `ok` with the result, or `error` with the event's message (a `ToolError` the tool raised, or
   an error Inspect made for the call). A refused call is never completed: its `ToolEvent` carries the `approval` error.
-- **Leaves a cancelled call open.** A call cut short by a sample limit gets no `ToolEvent`. It stays decided and never
-  completed, and the signer closes the run with a `decided_not_completed` gap for it ([limits](../limits.md)).
+- **Completes a cancelled call as an error.** A call a sample limit cuts short while it runs gets a `ToolEvent` with a
+  `cancelled` error and is completed as `error`. One cut short before it starts (while it waits for an approval) gets
+  no `ToolEvent`: it stays decided, and the signer closes the run with a `decided_not_completed` gap for it
+  ([limits](../limits.md)).
 - **Reads the shell tool as a shell.** A framework's tool name is matched ignoring case, so Inspect's `bash` is decided
   as `Bash` and its `command` is read as shell code ([limits](../limits.md#policy)).
 

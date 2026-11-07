@@ -175,10 +175,14 @@ class Approver(unittest.TestCase):
                          [("call-1", "ok"), ("call-3", "error"), ("call-4", "ok")])
         self.assertEqual(ti._allowed, {})
 
-    def test_a_call_cancelled_by_a_sample_limit_is_left_open_and_forgotten(self):
+    def test_a_call_cancelled_by_a_sample_limit_is_completed_as_cancelled(self):
         self.serve()
-        self.sample([("slow", {"text": "x"})], time_limit=1)
-        self.assertEqual((ac.RAN, self.recorded("tool.result")), (["slow"], []))   # the signer closes it as a gap
+        self.sample([("slow", {"text": "x"})], time_limit=5)   # long enough that slow starts on a loaded runner
+        self.assertEqual(ac.RAN, ["slow"])
+        self.assertEqual([d["tool_call_id"] for d in self.recorded("policy.decision")], ["call-1"])
+        [done] = self.recorded("tool.result")
+        self.assertEqual((done["tool_call_id"], done["status"], done["error"]),
+                         ("call-1", "error", "Tool call was cancelled."))
         self.assertEqual(ti._allowed, {})
 
     def test_it_needs_a_run_handle(self):

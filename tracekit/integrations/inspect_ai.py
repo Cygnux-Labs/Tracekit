@@ -9,8 +9,8 @@ call before it runs (an `ask` waits for a person), and a hook that records the o
 A call Tracekit refuses is rejected with its reason: it never runs and the model gets the reason as an `approval` tool
 error. An allowed call is approved, which ends Inspect's approval chain, so list Tracekit's approver first (or alone) and
 let an approver before it `escalate`. An approver never sees a call's result, so a hook completes each call it allowed
-when Inspect emits its ToolEvent: `ok` with the result, or `error` with the event's message. A call that never gets a
-ToolEvent (cancelled by a sample limit) is left open for the signer to close as a gap when the run ends.
+when Inspect emits its ToolEvent: `ok` with the result, or `error` with the event's message (a call a sample limit cancels while it runs ends
+as `error`). A call that never gets a ToolEvent is left open for the signer to close as a gap when the run ends.
 
 Inspect registers a hook once per process, for every eval in it, and runs samples at once: the hook is enabled only
 after a Tracekit approver was made, and finds a call by its id, which must be unique across the eval.
