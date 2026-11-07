@@ -95,49 +95,48 @@ def upstream():
 
 def paged_upstream():
     """A two-page upstream: tools, resources and prompts each span two cursor pages."""
-    s = LowServer("paged-up")
-
     tool_p1 = mcp_types.Tool(name="tool_p1", description="page 1 tool",
                               inputSchema={"type": "object", "properties": {}})
     tool_p2 = mcp_types.Tool(name="tool_p2", description="page 2 tool",
                               inputSchema={"type": "object", "properties": {}})
-
-    @s.list_tools()
-    async def list_tools(req):
-        cursor = req.params.cursor if req.params else None
-        if cursor is None:
-            return mcp_types.ListToolsResult(tools=[tool_p1], nextCursor="page2")
-        return mcp_types.ListToolsResult(tools=[tool_p2])
-
-    @s.call_tool()
-    async def call_tool(name, arguments):
-        return [mcp_types.TextContent(type="text", text=f"ran:{name}")]
-
     res_p1 = mcp_types.Resource(uri="note://res-p1", name="res-p1", mimeType="text/plain")
     res_p2 = mcp_types.Resource(uri="note://res-p2", name="res-p2", mimeType="text/plain")
-
-    @s.list_resources()
-    async def list_resources(req):
-        cursor = req.params.cursor if req.params else None
-        if cursor is None:
-            return mcp_types.ListResourcesResult(resources=[res_p1], nextCursor="page2")
-        return mcp_types.ListResourcesResult(resources=[res_p2])
-
-    @s.read_resource()
-    async def read_resource(uri):
-        return [ReadResourceContents(content=f"content:{uri}", mime_type="text/plain")]
-
     prompt_p1 = mcp_types.Prompt(name="prompt_p1", description="page 1 prompt")
     prompt_p2 = mcp_types.Prompt(name="prompt_p2", description="page 2 prompt")
 
-    @s.list_prompts()
-    async def list_prompts(req):
-        cursor = req.params.cursor if req.params else None
+    async def on_list_tools(ctx, params):
+        cursor = params.cursor if params else None
         if cursor is None:
-            return mcp_types.ListPromptsResult(prompts=[prompt_p1], nextCursor="page2")
+            return mcp_types.ListToolsResult(tools=[tool_p1], next_cursor="2")
+        return mcp_types.ListToolsResult(tools=[tool_p2])
+
+    async def on_call_tool(ctx, params):
+        return mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text=f"ran:{params.name}")])
+
+    async def on_list_resources(ctx, params):
+        cursor = params.cursor if params else None
+        if cursor is None:
+            return mcp_types.ListResourcesResult(resources=[res_p1], next_cursor="2")
+        return mcp_types.ListResourcesResult(resources=[res_p2])
+
+    async def on_read_resource(ctx, params):
+        return mcp_types.ReadResourceResult(
+            contents=[mcp_types.TextResourceContents(
+                uri=str(params.uri), text=f"content:{params.uri}", mimeType="text/plain")])
+
+    async def on_list_prompts(ctx, params):
+        cursor = params.cursor if params else None
+        if cursor is None:
+            return mcp_types.ListPromptsResult(prompts=[prompt_p1], next_cursor="2")
         return mcp_types.ListPromptsResult(prompts=[prompt_p2])
 
-    return s
+    return LowServer("paged-up",
+                     on_list_tools=on_list_tools,
+                     on_call_tool=on_call_tool,
+                     on_list_resources=on_list_resources,
+                     on_read_resource=on_read_resource,
+                     on_list_prompts=on_list_prompts)
 
 
 @unittest.skipUnless(HAVE_MCP, "mcp not installed")
@@ -319,21 +318,7 @@ class McpGateway(unittest.TestCase):
         self.assertEqual((e["source"], e["tier"], e["data"]["source"], e["data"]["trust"]),
                          ("gateway", "T2", "mcp:up/resource", "untrusted"))
 
-
-@unittest.skipUnless(HAVE_MCP, "mcp not installed")
-class McpGatewayPagination(McpGateway):
-    """Gateway behaviour with a two-page upstream: all pages listed, errors correct."""
-
-    def setUp(self):
-        super().setUp()
-        old = self.srv.mcp["upstreams"]
-        old.close()
-        new_ups = mcp_gateway.Upstreams({"up": paged_upstream()})
-        self.srv.mcp["upstreams"] = new_ups
-        self.addCleanup(new_ups.close)
-
     def _swap_upstream(self, srv):
-        """Replace the upstream mid-test; registered for cleanup."""
         old = self.srv.mcp["upstreams"]
         old.close()
         ups = mcp_gateway.Upstreams({"up": srv})
@@ -342,6 +327,7 @@ class McpGatewayPagination(McpGateway):
 
     def test_all_three_lists_show_every_page(self):
         """Every tool, resource and prompt from every cursor page reaches the agent."""
+        self._swap_upstream(paged_upstream())
         async def lists(c):
             tools = await c.list_tools()
             resources = await c.list_resources()
@@ -354,12 +340,14 @@ class McpGatewayPagination(McpGateway):
 
     def test_last_page_tool_is_callable(self):
         """A tool from the second page can be called through the gateway."""
+        self._swap_upstream(paged_upstream())
         out = self.agent(lambda c: c.call_tool("up__tool_p2", {}))
         self.assertFalse(out.is_error)
         self.assertIn("ran:tool_p2", out.content[0].text)
 
     def test_last_page_resource_is_readable(self):
         """A resource URI from the second page is remembered and can be read."""
+        self._swap_upstream(paged_upstream())
         async def list_and_read(c):
             await c.list_resources()
             return await c.read_resource("note://res-p2")
@@ -368,6 +356,7 @@ class McpGatewayPagination(McpGateway):
 
     def test_each_list_gives_one_observed_per_upstream(self):
         """Listing across multiple pages produces one input.observed per upstream per list."""
+        self._swap_upstream(paged_upstream())
         async def lists(c):
             await c.list_tools()
             await c.list_resources()
@@ -380,30 +369,28 @@ class McpGatewayPagination(McpGateway):
                                      ("mcp:up/prompts", "untrusted")])
 
     def test_repeated_cursor_is_an_error(self):
-        """A cursor returned twice raises an error naming the upstream."""
-        bad = LowServer("bad")
-
-        @bad.list_tools()
-        async def list_tools(req):
-            return mcp_types.ListToolsResult(tools=[], nextCursor="same-forever")
-
-        self._swap_upstream(bad)
+        """A cursor returned twice raises an error naming the upstream with advice."""
+        async def on_list_tools(ctx, params):
+            return mcp_types.ListToolsResult(tools=[], next_cursor="same-forever")
+        self._swap_upstream(LowServer("bad", on_list_tools=on_list_tools))
         with self.assertRaises(Exception) as e:
             self.agent(lambda c: c.list_tools())
-        err = messages(e.exception)
-        self.assertIn("'up'", err)
-        self.assertIn("repeated", err)
-        self.assertIn("give the upstream larger pages or fix its cursor", err)
+        self.assertIn("upstream 'up': tools/list returned a repeated cursor; "
+                      "the gateway lists at most 100 pages per upstream; "
+                      "give the upstream larger pages or fix its cursor",
+                      messages(e.exception))
 
-    def test_page_bound_is_an_error(self):
-        """Exceeding the page cap raises an error naming the upstream and giving advice."""
+    def test_page_bound_error_forgets_page1_resources(self):
+        """Hitting the page cap on resources/list returns an error and remembers nothing."""
+        self._swap_upstream(paged_upstream())
         with mock.patch.object(mcp_gateway, "MAX_LIST_PAGES", 1):
             with self.assertRaises(Exception) as e:
-                self.agent(lambda c: c.list_tools())
-        err = messages(e.exception)
-        self.assertIn("'up'", err)
-        self.assertIn("exceeded 1 pages", err)
-        self.assertIn("give the upstream larger pages or fix its cursor", err)
+                self.agent(lambda c: c.list_resources())
+        self.assertIn("upstream 'up': resources/list exceeded 1 pages; "
+                      "the gateway lists at most 1 pages per upstream; "
+                      "give the upstream larger pages or fix its cursor",
+                      messages(e.exception))
+        self.assertNotIn("note://res-p1", self.srv.mcp["resources"])
 
 
 class RegistryListing(unittest.TestCase):

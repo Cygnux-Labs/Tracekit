@@ -185,22 +185,22 @@ class _McpGateway(_Handler):
         if method in LISTS:
             call, kind = LISTS[method]
             listed = []
+            deadline = time.monotonic() + UPSTREAM_TIMEOUT_S
             for up in ups.clients:
-                deadline = time.monotonic() + UPSTREAM_TIMEOUT_S
                 cursor, n, seen, all_items = None, 0, set(), []
                 while True:
                     result = ups.call(up, call, cursor=cursor,
-                                      timeout=max(1.0, deadline - time.monotonic()))
+                                      timeout=deadline - time.monotonic())
                     items = getattr(result, kind)
                     if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
                         items = [t for t in items if not t.name.startswith(PROMPT)]
                     all_items.extend(items)
-                    cursor = getattr(result, "nextCursor", None)
+                    cursor = result.next_cursor
                     n += 1
                     if cursor is None:
                         break
                     if cursor in seen:
-                        raise _Error(-32603, f"upstream {up!r}: {kind}/list cursor {cursor!r} repeated; "
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list returned a repeated cursor; "
                                      f"the gateway lists at most {MAX_LIST_PAGES} pages per upstream; "
                                      "give the upstream larger pages or fix its cursor")
                     seen.add(cursor)
