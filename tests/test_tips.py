@@ -780,5 +780,45 @@ class Page(unittest.TestCase):
         self.assertIn("not measured", out[1])
 
 
+class Codex(unittest.TestCase):
+    """Codex CLI's session files (tests/fixtures/codex, a made-up rollout): the context tip works for a Codex-only
+    week; the cache tip can't, because a session record names no cache lifetime."""
+    ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "codex")
+
+    def test_a_codex_only_week_reads_the_sessions_and_gets_the_context_tip(self):
+        body = tips.build([], codex=self.ROOT, now=NOW)
+        self.assertEqual(body["sources"]["codex"]["files"], 1)
+        self.assertEqual((body["sources"]["codex"]["agents"], body["sources"]["codex"]["steps"]), (1, 300))
+        t = body["tips"][0]
+        self.assertTrue(t["ok"], t.get("why"))
+        self.assertEqual(t["from"], "Codex's session files (read-only)")
+        self.assertEqual(t["agent"], "session 9f0c9a11")
+        self.assertTrue(t["title"].startswith("Trim the history it sends at about 300k tokens"))
+        self.assertIsNone(t["fix"]["copy"])   # /compact is a Claude Code command
+        self.assertGreater(t["saving"]["usd"], 0)
+        self.assertTrue(any("gpt-6-astra" in m for m in t["math"]))
+        self.assertIn("gpt-6-astra*", tips.PRICES["models"])   # priced, so dollars are shown, never guessed
+
+    def test_the_cache_tip_is_left_off_for_codex_whose_records_name_no_cache_lifetime(self):
+        t = tips.build([], codex=self.ROOT, now=NOW)["tips"][1]
+        self.assertFalse(t["ok"])
+        self.assertIn("Codex's session files name no lifetime", t["why"])
+
+    def test_a_codex_model_with_no_price_shows_tokens_but_no_dollars(self):
+        d = tmp(self)
+        with open(os.path.join(d, "rollout-x.jsonl"), "w") as f:
+            f.write(json.dumps({"timestamp": "2026-10-10T09:00:00Z", "type": "turn_context",
+                                "payload": {"model": "gpt-made-up"}}) + "\n")
+            for i in range(60):
+                f.write(json.dumps({"timestamp": f"2026-10-10T09:{i // 60:02d}:{i % 60:02d}Z",
+                                    "type": "token_usage_record",
+                                    "payload": {"session_id": "s1", "response_id": f"r{i}", "usage": {
+                                        "input_tokens": 60_000 + 3_000 * i, "cached_input_tokens": 0,
+                                        "cache_write_input_tokens": 0, "output_tokens": 200}}}) + "\n")
+        agents, _files, _bad = tips.read_codex_sessions(d, 0)
+        self.assertEqual(next(iter(agents.values()))["steps"][0]["model"], "gpt-made-up")
+        self.assertIsNone(tips._RATES.rate("gpt-made-up"))
+
+
 if __name__ == "__main__":
     unittest.main()

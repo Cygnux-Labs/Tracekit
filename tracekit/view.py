@@ -1968,7 +1968,8 @@ def main(argv=None):
             if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
                 from . import audit, tips
                 feed.tips = tips.Page(functools.partial(shown, feed),
-                                      transcripts or (audit.default_root() if dev else None))
+                                      transcripts or (audit.default_root() if dev else None),
+                                      codex=os.path.join(os.path.expanduser("~"), ".codex", "sessions"))
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -1990,6 +1991,8 @@ def main(argv=None):
     if getattr(feed, "tips", None) and feed.tips.root:   # the folder it reads, only when there is one
         print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
               else "  tips: no Claude Code transcripts found", flush=True)
+        if os.path.isdir(feed.tips.codex):   # Codex CLI's sessions too, for the context tip
+            print(f"  tips · Codex CLI's sessions in {feed.tips.codex}, read-only", flush=True)
     if why and mirror:
         why.watch()
         print("  graphs: each verified run is drawn as a graph too, from a copy in a temp dir", flush=True)
