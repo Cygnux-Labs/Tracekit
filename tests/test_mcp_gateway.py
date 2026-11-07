@@ -270,6 +270,66 @@ class McpGateway(unittest.TestCase):
         self.assertEqual((e["source"], e["tier"], e["data"]["source"], e["data"]["trust"]),
                          ("gateway", "T2", "mcp:up/resource", "untrusted"))
 
+    def test_all_pages_of_tools_are_listed(self):
+        """A tool that exists only on page 2 of an upstream is visible through the gateway."""
+        from mcp import types as mcp_types
+        EXTRA = mcp_types.Tool(name="page2_tool", description="only on page 2",
+                               inputSchema={"type": "object", "properties": {}})
+        original = self.srv.mcp["upstreams"].call
+
+        def paged(up, method, *a, **kw):
+            if method != "list_tools":
+                return original(up, method, *a, **kw)
+            cursor = kw.get("params") and kw["params"].cursor
+            real = original(up, method)
+            if cursor is None:
+                return mcp_types.ListToolsResult(tools=real.tools, next_cursor="p2")
+            return mcp_types.ListToolsResult(tools=[EXTRA], next_cursor=None)
+
+        self.srv.mcp["upstreams"].call = paged
+        names = {t.name for t in self.agent(lambda c: c.list_tools()).tools}
+        self.assertIn("up__page2_tool", names)
+        self.assertIn("up__echo", names)
+
+    def test_a_resource_from_a_later_page_is_remembered(self):
+        """Resources beyond the first page are remembered so they can be read."""
+        from mcp import types as mcp_types
+        LATER_URI = "note://page2-resource"
+        original = self.srv.mcp["upstreams"].call
+
+        def paged(up, method, *a, **kw):
+            if method != "list_resources":
+                return original(up, method, *a, **kw)
+            cursor = kw.get("params") and kw["params"].cursor
+            if cursor is None:
+                return mcp_types.ListResourcesResult(
+                    resources=[mcp_types.Resource(uri="note://inbox", name="inbox", mimeType="text/plain")],
+                    next_cursor="p2")
+            return mcp_types.ListResourcesResult(
+                resources=[mcp_types.Resource(uri=LATER_URI, name="page2", mimeType="text/plain")],
+                next_cursor=None)
+
+        self.srv.mcp["upstreams"].call = paged
+        self.agent(lambda c: c.list_resources())
+        self.assertIn(LATER_URI, self.srv.mcp["resources"])
+
+    def test_list_errors_when_upstream_exceeds_page_bound(self):
+        """A JSON-RPC error names the upstream when its cursor never ends."""
+        from mcp import types as mcp_types
+        original = self.srv.mcp["upstreams"].call
+
+        def infinite(up, method, *a, **kw):
+            if method != "list_tools":
+                return original(up, method, *a, **kw)
+            return mcp_types.ListToolsResult(tools=[], next_cursor="forever")
+
+        self.srv.mcp["upstreams"].call = infinite
+        with mock.patch.object(mcp_gateway, "MAX_LIST_PAGES", 3):
+            with self.assertRaises(Exception) as e:
+                self.agent(lambda c: c.list_tools())
+        self.assertIn("up", messages(e.exception))
+        self.assertIn("exceeded", messages(e.exception))
+
 
 class RegistryListing(unittest.TestCase):
     """server.json, the gateway's MCP Registry entry (here, not test_version.py: the release's wheel check runs that

@@ -65,6 +65,7 @@ PROTOCOL = "2025-06-18"   # answered to an initialize that names no protocol ver
 UPSTREAM_TIMEOUT_S = 600
 BLOCKED = "Tool call blocked by policy: "
 MAX_RESOURCES = 10000   # resource URI -> its upstream, as listed: the most recently listed or read
+MAX_LIST_PAGES = 100    # cursor pages fetched from one upstream per tools/list, resources/list or prompts/list
 PROMPT = "prompt:"   # prompts are decided as mcp:<upstream>/prompt:<name>, so no tool name may start with it
 LISTS = {"tools/list": ("list_tools", "tools"), "prompts/list": ("list_prompts", "prompts"),
          "resources/list": ("list_resources", "resources")}
@@ -110,12 +111,12 @@ class Upstreams:
             fut.cancel()   # else the call keeps running (and holding its buffers) after its answer was given up
             raise
 
-    def call(self, name, method, *a):
+    def call(self, name, method, *a, **kw):
         with self._locks[name]:
             if not self._stop.is_set() and (self._held[name].done() or _closed(self.clients[name])):
                 self._held[name].cancel()   # its session ended (the upstream exited or went away): a new one
                 self._open(name)
-        return self._run(getattr(self.clients[name], method)(*a))
+        return self._run(getattr(self.clients[name], method)(*a, **kw))
 
     def close(self):
         self.loop.call_soon_threadsafe(self._stop.set)
@@ -180,18 +181,29 @@ class _McpGateway(_Handler):
                     "serverInfo": {"name": "tracekit-mcp-gateway", "version": __version__}}
         if method == "ping":
             return {}
-        # lean: the first page of each upstream's tools, resources and prompts; follow nextCursor if one lists more
         if method in LISTS:
+            from mcp import types as mcp_types
             call, kind = LISTS[method]
             listed = []
             for up in ups.clients:
-                items = getattr(ups.call(up, call), kind)
-                if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
-                    items = [t for t in items if not t.name.startswith(PROMPT)]
-                if kind == "resources":
-                    for r in items:
-                        _remember(gw, str(r.uri), up)
-                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name) for i in items]
+                cursor, n, all_items = None, 0, []
+                while True:
+                    kw = {"params": mcp_types.PaginatedRequestParams(cursor=cursor)} if cursor is not None else {}
+                    result = ups.call(up, call, **kw)
+                    items = getattr(result, kind)
+                    if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
+                        items = [t for t in items if not t.name.startswith(PROMPT)]
+                    if kind == "resources":
+                        for r in items:
+                            _remember(gw, str(r.uri), up)
+                    all_items.extend(items)
+                    cursor = getattr(result, "next_cursor", None)
+                    n += 1
+                    if cursor is None:
+                        break
+                    if n >= MAX_LIST_PAGES:
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list exceeded {MAX_LIST_PAGES} pages")
+                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name) for i in all_items]
                 # the model reads what the upstream wrote in them: an untrusted input
                 listed += self._observe(gw, key, up, kind, page, trusted=False)
             return {kind: listed}
