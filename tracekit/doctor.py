@@ -615,7 +615,7 @@ def _openhands_checks(add, path, home, fix):
         except (OSError, ValueError, AttributeError, TypeError):
             ours = False
         add("D-OPENHANDS-PROJECT", ours,
-            f"{project} replaces {path} here: OpenHands reads only the first of them that exists, so in this "
+            f"{project} replaces {path} here: the OpenHands CLI reads only the first of them that exists, so in this "
             "directory it runs no Tracekit hook" if not ours else f"{project} has Tracekit's v2 hooks",
             f"{fix} --project (in this directory), or don't run OpenHands on this repo", bad=WARN)
     settings = os.path.join(os.path.dirname(agent_hooks.config_path("openhands", home=home)), "agent_settings.json")
