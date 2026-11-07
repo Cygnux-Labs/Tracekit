@@ -498,12 +498,13 @@ limits and `respond` this way; measure new rules and labels by running the polic
 ### Choosing thresholds
 
 The server pack's thresholds are judgment, checked against the shipped runs: the golden v2 bundles
-(`tests/golden/v2/`, decided under a test policy) and the server demo (`tracekit demo --server`, decided under the dev
-pack). Those runs are small (at most 3 decisions and 1 destructive command in any minute) and open no incident;
-`TK-L001` (every call) and `TK-L002` (`destructive`, `TK-F003`, the same rule in the dev pack) sit well above them: 300
-calls a minute (an agent working makes a few dozen) and 30 destructive commands a minute. `TK-Q001` was not
-backtested: none of those runs reads a secret or sends anything, and the golden bundles record a test policy's rule
-ids; its ten minutes are a judgment of how long a secret read and its use stay related. Before enforcing anything,
+(`tests/golden/v2/`, decided under a test policy) and the server demo (`tracekit demo --server`, decided under this
+pack). Those runs are small (at most 6 decisions in any minute, none of them labelled `destructive`) and open no
+incident; `TK-L001` (every call) and `TK-L002` (`destructive`, `TK-F003`, the same rule in the dev pack) sit well above
+them: 300 calls a minute (an agent working makes a few dozen) and 30 destructive commands a minute. No run exercises
+`TK-Q001`: the server demo's credentials read is denied and its send to the host a web page named is held and
+rejected, so neither counts as a step, and the golden bundles record a test policy's rule ids; its ten minutes are a
+judgment of how long a secret read and its use stay related. Before enforcing anything,
 record runs under the pack in shadow, backtest your own store and set `max` above the busiest minute you see.
 
 ## Live constraints
