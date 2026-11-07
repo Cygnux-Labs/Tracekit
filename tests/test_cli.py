@@ -70,6 +70,16 @@ class Help(unittest.TestCase):
         self.assertTrue(err.startswith("tracekit help: no command named 'nosuch'; the commands are:\n"), err)
         self.assertEqual(err.replace("\n", " ").split(":", 2)[2].replace(",", " ").split(), COMMANDS)
 
+    def test_a_command_that_does_not_exist_gets_one_line_and_a_close_name(self):
+        """argparse answered `tracekit tipz` with every command's name in one line: a close name instead, if any."""
+        self.assertEqual(run(["statsu"]), (2, "", 'tracekit: no command "statsu". Did you mean "status"?\n'
+                                                  "tracekit help lists every command.\n"))
+        self.assertEqual(run(["zzzzzz", "--json"]), (2, "", 'tracekit: no command "zzzzzz".\n'
+                                                            "tracekit help lists every command.\n"))
+        code, _, err = run(["status", "--nosuch"])   # a known command's option: argparse's error, as before
+        self.assertEqual(code, 2)
+        self.assertIn("unrecognized arguments: --nosuch", err)
+
 
 if __name__ == "__main__":
     unittest.main()

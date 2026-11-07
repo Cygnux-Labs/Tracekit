@@ -142,7 +142,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "why": "why.cli", "reviewer": "reviewer", "srt-decider": "srt_decider",
               "openshell-middleware": "openshell", "follow": "follow",
               "sensor": "sensor", "ingest": "ingest", "graph": "graph", "pcm": "pcm.cli",
-              "report": "report", "audit": "audit",
+              "report": "report", "audit": "audit", "tips": "tips",
               "verify-model": "model_receipt", "feedback": "feedback"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
@@ -155,7 +155,8 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
                  "srt-decider": "the srt-proxy decider", "follow": "tracekit follow",
                  "sensor": "the kernel sensor import", "graph": "tracekit graph", "pcm": "tracekit pcm",
-                 "report": "tracekit report", "audit": "tracekit audit", "verify-model": "tracekit verify-model"}
+                 "report": "tracekit report", "audit": "tracekit audit", "tips": "tracekit tips",
+                 "verify-model": "tracekit verify-model"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 GRANTS = "intent grants (tracekit grant, approvals approve --grant)"   # experimental, as their --help ends
 
@@ -195,6 +196,12 @@ def main(argv=None):
         finally:
             experimental(_EXPERIMENTAL[args[0]], help=True)
     ap, sub = _parser()
+    if args and not args[0].startswith("-") and args[0] not in sub.choices:   # argparse would list every command
+        import difflib
+        near = difflib.get_close_matches(args[0], sub.choices, 1)
+        print(f'tracekit: no command "{args[0]}".' + (f' Did you mean "{near[0]}"?' if near else ""),
+              "tracekit help lists every command.", sep="\n", file=sys.stderr)
+        return 2
     a = ap.parse_args(argv)
     try:
         if a.cmd in (None, "help"):
@@ -218,7 +225,7 @@ def main(argv=None):
 # every command is in exactly one group), then what Tracekit does that is not a command of its own
 _GROUPS = (
     ("Start here", "init up down status doctor demo feedback"),
-    ("See what agents did", "view last report audit why graph cost analyze"),
+    ("See what agents did", "view last report audit tips why graph cost analyze"),
     ("Approvals", "approvals grant pending approve reject"),
     ("Evidence", "export verify verify-model pcm"),
     ("Policy", "policy"),
@@ -444,6 +451,10 @@ def _parser():
     p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
                        "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("tips", help="what each step of your coding agents cost and how to cut it, as tracekit view's "
+                       "TIPS page says it, from the dev signer's store and Claude Code's transcripts (--since, --json)",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("feedback", help="print a pre-filled GitHub issue, a field report or (--harmless ID) a false "
                        "alarm, and exactly what it holds; sends nothing (--open opens it in your browser)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -460,9 +471,10 @@ def _parser():
 
     sub.add_parser("pending", help="list tool calls waiting for approval")
     for name in ("approve", "reject"):
-        p = sub.add_parser(name, help=f"{name} a held tool call (run from a terminal outside the agent's session)")
-        p.add_argument("approval_id", nargs="?", help="id from `tracekit pending` (default: the only pending one), or "
-                       f"a v2 one (apr-...), answered as `tracekit approvals {name}` does")
+        p = sub.add_parser(name, help=f"{name} a held tool call, short for `tracekit approvals {name}` (run from a "
+                           "terminal outside the agent's session)")
+        p.add_argument("approval_id", nargs="?", help="id from `tracekit pending`; on a v1 signer (tracekitd), also a "
+                       "prefix of one, or none for the only pending one")
 
     p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`, "
                        "`approvals slack serve --config slack.yaml`")
@@ -928,9 +940,15 @@ def _run(a):
         return _approvals(argparse.Namespace(action=a.cmd, approval_id=a.approval_id, signer=None, reason=None))
     if a.cmd in ("pending", "approve", "reject"):
         from . import client
-        if a.cmd == "pending" and client.socket_path() == client.DEFAULT_SOCKET \
+        if client.socket_path() == client.DEFAULT_SOCKET \
                 and not os.path.exists(client.DEFAULT_SOCKET):   # no v1 signer here: the v2 signer's held calls
-            return _approvals(argparse.Namespace(action="list", signer=None, json=False, all=False))
+            if a.cmd == "pending":
+                return _approvals(argparse.Namespace(action="list", signer=None, json=False, all=False))
+            if not a.approval_id:
+                print(f"tracekit {a.cmd}: name the approval: tracekit {a.cmd} <id> (tracekit pending lists them)",
+                      file=sys.stderr)
+                return 2
+            return _approvals(argparse.Namespace(action=a.cmd, approval_id=a.approval_id, signer=None, reason=None))
         try:
             pend = client.rpc({"op": "approval_list"}).get("pending", [])
             if a.cmd == "pending":
@@ -1132,11 +1150,14 @@ def _status_lines(st, v2, plugin=None, chosen=False):
               for h in st["hooks"] if "error" in h]
     if plugin:   # its hooks are the ones init writes, and init writes none while it is on
         found.append(f"hooks       the Claude Code plugin {plugin[1]}'s, enabled in {plugin[0]}")
-    lines += found or ["hooks       none, as init --no-hooks chose: SDK runs (tracekit.instrument()) are still "
-                       "recorded; init without --no-hooks adds Claude Code's" if chosen else
-                       "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"]
-    if st.get("signer"):
-        lines.append(f"v1 signer   {st['signer'].get('error') or 'answering'}")
+    lines += found or ([] if any("error" in h for h in st["hooks"]) else   # unknown, not none
+                       ["hooks       none, as init --no-hooks chose: SDK runs (tracekit.instrument()) are still "
+                        "recorded; init without --no-hooks adds Claude Code's" if chosen else
+                        "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"])
+    if st.get("signer"):   # its error is a problem only for v1 hooks, which use it (or may, in a file it can't read)
+        v1 = any("v1" in h.get("versions", ()) or "error" in h for h in st["hooks"])
+        lines.append("v1 signer   " + ("answering" if not st["signer"].get("error") else st["signer"]["error"] if v1
+                                       else "not running (only v1 hooks use it)"))
     if st.get("proxy"):
         lines.append(f"proxy       {st['proxy']['url']}: {'reachable' if st['proxy']['reachable'] else 'unreachable'}")
     return lines

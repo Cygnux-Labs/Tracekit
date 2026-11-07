@@ -97,7 +97,8 @@ class DevModeLine(unittest.TestCase):
 
     def test_status_reads_any_settings_file_and_says_how_to_add_hooks(self):
         """Review of #628: a settings file that isn't JSON (or isn't a settings object) crashed `tracekit status` with
-        KeyError: 'versions', and one with no Tracekit hooks printed "(0 events)" instead of how to add them."""
+        KeyError: 'versions', and one with no Tracekit hooks printed "(0 events)" instead of how to add them. Review of
+        #654: one it may not read crashed it too, and "none" after an unreadable file contradicted "unknown"."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         project = os.path.join(d, ".claude")
@@ -108,11 +109,35 @@ class DevModeLine(unittest.TestCase):
                 mock.patch("os.getcwd", return_value=d), \
                 mock.patch.object(install, "MANAGED_SETTINGS", {"linux": os.path.join(d, "none")}):
             hooks = install._installed_hooks()
+            with mock.patch.object(install, "read_json", side_effect=PermissionError(13, "Permission denied")):
+                self.assertEqual(install._installed_hooks(), hooks)
+            managed = os.path.join(project, "settings.json")   # JSON, not a settings object, as a managed file
+            with mock.patch.object(install, "MANAGED_SETTINGS", {"linux": managed}):
+                self.assertEqual(install._installed_hooks()[-1], {"settings": managed, "managed": True,
+                                                                  "error": "unreadable"})
         self.assertEqual(hooks, [{"settings": os.path.join(project, "settings.json"), "error": "unreadable"}])
         none = {"settings": "b.json", "events": [], "versions": []}
         self.assertEqual(cli._status_lines({"hooks": hooks + [none]}, {"dev": True, "error": "not started"})[1:], [
-            f"hooks       {hooks[0]['settings']} isn't a settings file Tracekit can read, so its hooks are unknown",
+            f"hooks       {hooks[0]['settings']} isn't a settings file Tracekit can read, so its hooks are unknown"])
+        self.assertEqual(cli._status_lines({"hooks": [none]}, {"dev": True, "error": "not started"})[1:], [
             "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"])
+
+    def test_status_says_a_v1_signer_no_hook_uses_is_not_running_and_one_v1_hooks_use_is_unreachable(self):
+        """A v1 signer a config names that doesn't answer read as an error (`unreachable at …: [Errno 2] …`) to a user
+        with v2 hooks alone, who doesn't need it. With v1 hooks installed, which use it, it is one."""
+        down = {"ok": False, "error": "unreachable at /v1.sock: [Errno 2] No such file or directory"}
+
+        def line(signer, *versions):
+            hooks = [{"settings": "s.json", "events": ["PreToolUse"], "versions": list(versions)}]
+            return [x for x in cli._status_lines({"hooks": hooks, "signer": signer}, {"dev": True, "error": "x"})
+                    if x.startswith("v1 signer")]
+        self.assertEqual(line(down, "v2"), ["v1 signer   not running (only v1 hooks use it)"])
+        self.assertEqual(line(down), ["v1 signer   not running (only v1 hooks use it)"])
+        unread = [{"settings": "s.json", "error": "unreadable"}]   # its hooks may be v1
+        self.assertIn("v1 signer   " + down["error"], cli._status_lines({"hooks": unread, "signer": down},
+                                                                       {"dev": True, "error": "x"}))
+        self.assertEqual(line(down, "v1", "v2"), ["v1 signer   " + down["error"]])
+        self.assertEqual(line({"ok": True}, "v2"), ["v1 signer   answering"])
 
     def test_status_names_the_plugins_hooks_and_a_no_hooks_choice(self):
         """Review of #628: status told a plugin user, and one whose init chose --no-hooks, that `tracekit init --dev
