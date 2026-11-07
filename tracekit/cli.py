@@ -369,7 +369,8 @@ def _parser():
     p = sub.add_parser("uninstall", help="remove Tracekit's hooks (your signed runs and keys stay: it says where, and "
                                          "how to delete them too)")
     p.add_argument("--project", action="store_true",
-                   help="remove the hooks in ./.claude/settings.json instead of ~/.claude")
+                   help="remove hooks from the selected agent's project settings file "
+                        "instead of its user settings file")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
     p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
@@ -438,8 +439,9 @@ def _parser():
     p = sub.add_parser("proxy", help="run the model proxy in the foreground (experimental)")
     p.add_argument("--home", help="signer home directory (default: the configured one, else /var/lib/tracekit)")
     p.add_argument("--experimental", action="store_true", help="required: the proxy is being rebuilt")
-    p.add_argument("--port", type=int, help="port to listen on (default: 8787)")
-    p.add_argument("--upstream", help="API URL to forward requests to (default: https://api.anthropic.com)")
+    p.add_argument("--port", type=int, help="port to listen on (default: signer config, else 8787)")
+    p.add_argument("--upstream", help="API URL to forward requests to "
+                                       "(default: signer config, else https://api.anthropic.com)")
 
     p = sub.add_parser("observe", help="the old name of `tracekit view --ledger`: the v1 ledger or a v1 bundle in a "
                                        "read-only web page")

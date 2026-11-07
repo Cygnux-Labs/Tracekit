@@ -1,24 +1,7 @@
 import argparse
 import unittest
-from unittest import mock
 
 from tracekit import cli
-
-
-def _top_parser():
-    """The parser `cli.main` builds: it parses argv, so capture it there and stop before any command runs."""
-    seen = []
-
-    def capture(self, *args, **kwargs):
-        seen.append(self)
-        raise SystemExit(0)
-
-    with mock.patch.object(argparse.ArgumentParser, "parse_args", capture):
-        try:
-            cli.main(["status"])
-        except SystemExit:
-            pass
-    return seen[0]
 
 
 def _options(parser, path=()):
@@ -34,7 +17,8 @@ def _options(parser, path=()):
 
 class CliHelpTest(unittest.TestCase):
     def test_every_option_and_argument_has_help(self):
-        missing = [f"{path} {action.option_strings or action.dest}" for path, action in _options(_top_parser())
+        parser, _ = cli._parser()
+        missing = [f"{path} {action.option_strings or action.dest}" for path, action in _options(parser)
                    if not action.help]
         self.assertEqual(missing, [], f"no help= for: {missing}")
 
