@@ -1962,7 +1962,7 @@ def _installed_hooks():
                 s = read_json(p)
                 hooks.append({"settings": p, "managed": True, **_hook_summary(s),
                               "allowManagedHooksOnly": bool(s.get("allowManagedHooksOnly"))})
-            except (ValueError, OSError):
+            except (ValueError, AttributeError, TypeError, OSError):
                 hooks.append({"settings": p, "managed": True, "error": "unreadable"})
     return hooks
 

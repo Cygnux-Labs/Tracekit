@@ -111,6 +111,10 @@ class DevModeLine(unittest.TestCase):
             hooks = install._installed_hooks()
             with mock.patch.object(install, "read_json", side_effect=PermissionError(13, "Permission denied")):
                 self.assertEqual(install._installed_hooks(), hooks)
+            managed = os.path.join(project, "settings.json")   # JSON, not a settings object, as a managed file
+            with mock.patch.object(install, "MANAGED_SETTINGS", {"linux": managed}):
+                self.assertEqual(install._installed_hooks()[-1], {"settings": managed, "managed": True,
+                                                                  "error": "unreadable"})
         self.assertEqual(hooks, [{"settings": os.path.join(project, "settings.json"), "error": "unreadable"}])
         none = {"settings": "b.json", "events": [], "versions": []}
         self.assertEqual(cli._status_lines({"hooks": hooks + [none]}, {"dev": True, "error": "not started"})[1:], [
