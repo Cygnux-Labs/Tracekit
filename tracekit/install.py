@@ -1328,6 +1328,14 @@ def _install_venv(requirement, extra=""):
         os.umask(old)
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
+    built = b"#!" + os.path.join(new, "bin", "").encode()
+    for entry in os.scandir(os.path.join(new, "bin")):   # pip's scripts name the build path's python; they run from OPT
+        if entry.is_file(follow_symlinks=False):
+            with open(entry.path, "rb") as f:
+                text = f.read()
+            if text.startswith(built):
+                with open(entry.path, "wb") as f:
+                    f.write(b"#!" + os.path.join(OPT, "bin", "").encode() + text[len(built):])
     for dirpath, dirnames, filenames in os.walk(new):
         for p in [dirpath] + [os.path.join(dirpath, n) for n in dirnames + filenames]:
             os.lchown(p, 0, 0)

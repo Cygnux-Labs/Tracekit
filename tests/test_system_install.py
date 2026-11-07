@@ -334,6 +334,28 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.assertNotEqual(seen["src"], install.ROOT)
         self.assertFalse(os.path.exists(seen["src"]))
 
+    def test_console_scripts_run_the_opt_interpreter_after_the_swap(self):
+        """#463: pip writes its scripts while the venv is at OPT.new; after the rename they must name OPT's python."""
+        opt = self.opt()
+
+        def run(cmd, **kw):
+            if "venv" in cmd:
+                b = os.path.join(cmd[-1], "bin")
+                os.makedirs(b)
+                os.symlink(sys.executable, os.path.join(b, "python"))
+                for name, python in (("pip", "python3"), ("tracekit", "python")):
+                    with open(os.path.join(b, name), "w") as f:
+                        f.write(f"#!{b}/{python}\nimport sys\n")
+        with mock.patch.object(install, "OPT", opt), mock.patch.object(install.subprocess, "run", side_effect=run), \
+                mock.patch.object(install.os, "lchown"), \
+                mock.patch.object(install, "_opt_default_policy", return_value=POLICY):
+            install._install_venv(["tracekit-ai==0"])
+        b = os.path.join(opt, "bin")
+        for name, python in (("pip", "python3"), ("tracekit", "python")):
+            with open(os.path.join(b, name)) as f:
+                self.assertEqual(f.read(), f"#!{b}/{python}\nimport sys\n")
+        self.assertEqual(os.readlink(os.path.join(b, "python")), sys.executable)
+
     def test_hook_command_runs_the_opt_interpreter(self):
         self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.hook;", install._hook_command(python=install.OPT_PYTHON))
 
