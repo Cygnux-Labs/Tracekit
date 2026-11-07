@@ -9,7 +9,7 @@
 # the lexically normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules
 # stay tripwires: the protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-65'
+version: '2026.10-v2-66'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -823,6 +823,18 @@ ask:
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
+
+  - id: TK-A061
+    class: fs
+    tool: Write|Edit
+    field: ci_workflow
+    # lean: direct Write/Edit and scalar/first-block commands; use a CI parser if generated or later commands need coverage.
+    # The signer selects newly written CI content. Each command has at most 128 characters between its program,
+    # data option, secret and URL; a newline, shell separator or comment cannot join separate commands.
+    pattern: '(^|\n)[ \t]*(?:-[ \t]*)?run:[ \t]*(?:[|>][-+]?[ \t]*\r?\n[ \t]*)?["\x27]?(?:curl|wget|nc)\b[^;\r\n|&#]{0,128}?(?:\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|\{\{[ ]*secrets\.[A-Za-z_][A-Za-z0-9_.]*[ ]*\}\})[^;\r\n|&#]{0,128}?(?:-[dTF]|--data(?:-[a-z-]+)?|--post-[a-z-]+)\b[^;\r\n|&#]{0,128}?https?://|\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|\{\{[ ]*secrets\.[A-Za-z_][A-Za-z0-9_.]*[ ]*\}\})[^;\r\n|&#]{0,128}?https?://[^;\r\n|&#]{0,128}?(?:-[dTF]|--data(?:-[a-z-]+)?|--post-[a-z-]+)\b|(?:-[dTF]|--data(?:-[a-z-]+)?|--post-[a-z-]+)\b[^;\r\n|&#]{0,128}?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|\{\{[ ]*secrets\.[A-Za-z_][A-Za-z0-9_.]*[ ]*\}\})[^;\r\n|&#]{0,128}?https?://|(?:-[dTF]|--data(?:-[a-z-]+)?|--post-[a-z-]+)\b[^;\r\n|&#]{0,128}?https?://[^;\r\n|&#]{0,128}?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|\{\{[ ]*secrets\.[A-Za-z_][A-Za-z0-9_.]*[ ]*\}\})|https?://[^;\r\n|&#]{0,128}?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|\{\{[ ]*secrets\.[A-Za-z_][A-Za-z0-9_.]*[ ]*\}\})[^;\r\n|&#]{0,128}?(?:-[dTF]|--data(?:-[a-z-]+)?|--post-[a-z-]+)\b|https?://[^;\r\n|&#]{0,128}?(?:-[dTF]|--data(?:-[a-z-]+)?|--post-[a-z-]+)\b[^;\r\n|&#]{0,128}?\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\}|\{\{[ ]*secrets\.[A-Za-z_][A-Za-z0-9_.]*[ ]*\}\}))'
+    reason: a CI run command sends a secret to a URL
+    remedy: Check the workflow command and its destination before approving the write; keep secrets out of network request data.
+    rationale: A workflow can leak a CI secret when the runner executes it, after the agent's write has finished.
 
 flag:
   - id: TK-F001

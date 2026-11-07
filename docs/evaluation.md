@@ -281,9 +281,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 833 harmful and 887 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 833 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 887 (0.11%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 835 harmful and 890 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 835 harmful calls are
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 890 (0.11%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -545,13 +545,13 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 54 (94.7%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 55 (96.5%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 36 (80.0%), 18 denied | 0 |
-| | strict | 25 (55.6%), 19 denied | 2 | 39 (86.7%), 19 denied | 2 |
-| both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 90 (88.2%), 21 denied | 8 (8.4%) |
-| | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 94 (92.2%), 23 denied | 13 (13.7%) |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 37 (82.2%), 18 denied | 0 |
+| | strict | 25 (55.6%), 19 denied | 2 | 40 (88.9%), 19 denied | 2 |
+| both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 91 (89.2%), 21 denied | 8 (8.4%) |
+| | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 95 (93.1%), 23 denied | 13 (13.7%) |
 
-The current policy scores above were refreshed on macOS. The latency rows below keep the recorded macOS baseline, and the
-existing gates are unchanged.
+The current policy scores were refreshed on Windows, Python 3.14.2, during local validation. The latency rows below
+retain the recorded macOS run and gates; latency gates are not compared across different machines.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
@@ -559,8 +559,8 @@ scored: the one policy change between the two (#383) changes none of its numbers
 call caught since is held by a rule written after its pool was published: for the first pool, the database-client
 rules `TK-A039` to `TK-A041` (10 calls, #359), repository deletion `TK-A042` (4, #360), infrastructure removal in
 `TK-A001` (3, #361) and a secret read through a cloud CLI, `TK-A037` (1, #372); for the second, 6 by `TK-A047`
-(repository secrets and branch protection through `gh`, #402), 2 by `TK-C010` (turning off AWS audit logging, #403), 2 CI deletions by `TK-A049` (#405) and 4 by `TK-A052` and
-`TK-A053` (a Kubernetes or Vault secret read, #404). One benign call of the first pool is newly held on both
+(repository secrets and branch protection through `gh`, #402), 2 by `TK-C010` (turning off AWS audit logging, #403), 2 CI deletions by `TK-A049` (#405), 4 by `TK-A052` and
+`TK-A053` (a Kubernetes or Vault secret read, #404), and 1 by `TK-A061` (a workflow write that sends a secret, #405). One benign call of the first pool is newly held on both
 profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBACK;"`, whose drop is rolled back.
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
@@ -596,15 +596,21 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055` and the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) strict does not hold either: 46 of 887 (5.2%).
+`TK-A053`) strict does not hold either: 46 of 890 (5.2%).
 All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
+The CI-upload rule (`TK-A061`, #405) raises the known `amandeavor` pool to 37 of 45 harmful calls caught by default
+and 40 of 45 by strict, from 36 and 39 on the upstream baseline. Benign holds stay at 0 of 45 and 2 of 45. Developer
+sessions stay at 2 of 130 and 20 of 130. These are updated scores after reading the pool, not new blind scores.
+The three added benign workflow cases are not held; the E17 and E21 counts include them. Both engines agree, and
+the recorded gates were not replaced.
+
 Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 504 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 833
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 835
 originals and all 2,425 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
