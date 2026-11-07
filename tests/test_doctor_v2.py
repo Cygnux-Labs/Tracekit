@@ -608,6 +608,40 @@ class AntigravityHooks(unittest.TestCase):
             self.assertEqual(row["fix"], "tracekit init --dev --v2 --agent antigravity")
             self.assertEqual(got["D-AGY-HOOKS-RUN"]["status"], "ok", got["D-AGY-HOOKS-RUN"])
 
+    def test_openhands_project_hooks_and_concurrent_calls_are_warned_about(self):
+        # #563 review: a working directory's .openhands/hooks.json replaces the user's (a repo can switch Tracekit off),
+        # and with tool_concurrency_limit above 1 identical calls running at once can be mis-paired
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d:
+            repo = os.path.join(d, "repo")
+            os.makedirs(os.path.join(repo, ".openhands"))
+            with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), mock.patch("os.getcwd", return_value=repo), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                os.environ.pop("OH_PERSISTENCE_DIR", None)
+                path = agent_hooks.install("openhands", v2=True)
+                self.assertEqual(path, os.path.join(d, ".openhands", "hooks.json"))
+
+                def rows():
+                    return {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none.json"),
+                                                                 harnesses={"openhands": path})}
+                got = rows()
+                for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
+                    self.assertEqual(got[rid]["status"], "ok", got[rid])
+                self.assertNotIn("D-OPENHANDS-PROJECT", got)
+                self.assertNotIn("D-OPENHANDS-CONCURRENCY", got)
+                project = os.path.join(repo, ".openhands", "hooks.json")
+                with open(project, "w") as f:
+                    json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "true"}]}]}}, f)
+                with open(os.path.join(d, ".openhands", "agent_settings.json"), "w") as f:
+                    json.dump({"tool_concurrency_limit": 4}, f)
+                got = rows()
+                self.assertEqual(got["D-OPENHANDS-PROJECT"]["status"], "warn")
+                self.assertIn(f"{project} replaces {path}", got["D-OPENHANDS-PROJECT"]["detail"])
+                self.assertEqual(got["D-OPENHANDS-CONCURRENCY"]["status"], "warn")
+                self.assertIn("tool_concurrency_limit 4", got["D-OPENHANDS-CONCURRENCY"]["detail"])
+                agent_hooks.install("openhands", project=repo, v2=True)   # Tracekit's own project hooks: fine
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "ok")
+
     def test_agy_sign_ins_and_a_disabled_hook_that_run_no_hook_are_warned_about(self):
         # agy loads its hooks and never runs them when signed in with a Gemini API key (antigravity-cli#893) or
         # Application Default Credentials (#1310), or when the named hook is disabled: a run with no record at all

@@ -1596,7 +1596,7 @@ class Installer(unittest.TestCase):
         for h in (x for x in agent_hooks.HARNESSES if x not in agent_hooks.PLUGIN_TOOLS):
             ev, bad = {"cursor": "preToolUse", "codex": "PreToolUse", "gemini": "BeforeTool", "goose": "PreToolUse", "qwen": "PreToolUse",
                        "droid": "PreToolUse", "antigravity": "PreToolUse", "crush": "PreToolUse",
-                       "devin": "PreToolUse"}[h], {"command": "echo mine"}
+                       "devin": "PreToolUse", "openhands": "PreToolUse"}[h], {"command": "echo mine"}
             path = agent_hooks.config_path(h, d)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             config = {ev: bad} if h in ("droid", "devin") else {
