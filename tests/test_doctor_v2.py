@@ -598,7 +598,7 @@ class AntigravityHooks(unittest.TestCase):
             os.makedirs(os.path.join(repo, ".openhands"))
             with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), mock.patch("os.getcwd", return_value=repo), \
                     contextlib.redirect_stdout(io.StringIO()):
-                os.environ.pop("OH_PERSISTENCE_DIR", None)
+                os.environ["OH_PERSISTENCE_DIR"] = os.path.join(d, "elsewhere")   # SDK main only: not the CLI's
                 path = agent_hooks.install("openhands", v2=True)
                 self.assertEqual(path, os.path.join(d, ".openhands", "hooks.json"))
 

@@ -14,7 +14,7 @@ tracekit init --dev --v2 --agent goose      # ~/.agents/plugins/tracekit/hooks/h
 tracekit init --dev --v2 --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
 tracekit init --dev --v2 --agent crush      # $CRUSH_GLOBAL_CONFIG, else $XDG_CONFIG_HOME (or ~/.config)/crush: crush.json; --project: ./crush.json
 tracekit init --dev --v2 --agent devin      # ~/.config/devin/config.json (Windows %APPDATA%\devin\config.json); --project: .devin/hooks.v1.json
-tracekit init --dev --v2 --agent openhands  # $OH_PERSISTENCE_DIR, else ~/.openhands: hooks.json; --project: .openhands/hooks.json
+tracekit init --dev --v2 --agent openhands  # ~/.openhands/hooks.json; --project: .openhands/hooks.json
 # --project writes the project-level file instead; tracekit uninstall --agent X removes Tracekit's hooks and keeps your other settings
 sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent codex   # system mode: the signer as its own user
 ```
@@ -127,20 +127,21 @@ Devin then reads none of Claude Code's hooks, rules, skills, commands or MCP ser
 says where to set it back to `true`. Desktop runs no hooks in Restricted Mode. Tested through Devin's documented
 payloads and Tracekit's installer; not tested in a live Devin session.
 
-OpenHands (the `openhands` CLI, and the SDK with a local workspace;
+OpenHands (the `openhands` CLI, whose last release, 1.16.0 on SDK 1.28.1, its README marks as no longer maintained;
 [hooks](https://docs.openhands.dev/openhands/usage/customization/hooks)) runs hooks in Claude Code's format under
-`hooks` in `~/.openhands/hooks.json` (`$OH_PERSISTENCE_DIR/hooks.json` when set), with `"matcher": "*"`, a 600 s
-`PreToolUse` timeout and 30 s for the rest, each command wrapped by `install._blocking`. Its payload is Claude Code's
+`hooks` in `~/.openhands/hooks.json`, with `"matcher": "*"`, a 600 s `PreToolUse` timeout and 30 s for the rest, each
+command wrapped by `install._blocking`. The SDK never reads `hooks.json` by itself: an SDK app runs these hooks only
+when it passes them, `Conversation(..., hook_config=HookConfig.load(working_dir=...))`. Its payload is Claude Code's
 under other keys (`event_type`, `working_dir`, `message`), with no call id: pre and post events are paired by tool and
 arguments, first in first out. Only exit 2 (or a JSON `deny`) blocks a call: any other exit and a timeout let it run,
 so a held call that nobody answers is denied before the 600 s are up, and the agent makes the identical call again
 once it is approved. `tool_input` is the tool's Action (with its class name under `kind`, which is dropped); a
-`file_editor` with no `path` or an `apply_patch` with no file header is denied in the hook. **A working directory's
-`.openhands/hooks.json` replaces the user's**: OpenHands reads only the first of the two that exists, so a repo with
-its own file runs no Tracekit hook (`D-OPENHANDS-PROJECT` warns; [limits](limits.md#signer-and-capture)). Hooks run
-where the agent server runs: the CLI and a local SDK workspace run them on your machine; in a Docker sandbox (the GUI,
-OpenHands Cloud) they can't reach the signer, which isn't covered. Tested through the SDK's own `HookManager` with its
-real tools and Tracekit's installer.
+`file_editor` with no `path` or an `apply_patch` with no file header is denied in the hook. **In the CLI, a working
+directory's `.openhands/hooks.json` replaces the user's**: `HookConfig.load` reads only the first of the two that
+exists, so a repo with its own file runs no Tracekit hook (`D-OPENHANDS-PROJECT` warns;
+[limits](limits.md#signer-and-capture)). Agent Canvas (the former GUI) merges project and user hooks and runs on your
+machine by default; hooks in a remote or Docker sandbox can't reach a local signer, which isn't covered. Tested through
+the SDK's own `HookManager` with its real tools and Tracekit's installer.
 
 | | Codex CLI | Cursor | Gemini CLI | OpenCode | goose | Qwen Code | Factory Droid | Devin | OpenHands |
 |---|---|---|---|---|---|---|---|---|---|
