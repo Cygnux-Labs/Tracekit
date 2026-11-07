@@ -15,8 +15,9 @@ from unittest import mock
 from factories import wait_for
 from test_signer_service import ME, tmpdir
 from test_witness_publish import signed_note
-from tracekit import crypto, install, merkle, public_witness
+from tracekit import cli, crypto, install, merkle, public_witness, view
 from tracekit import public_witness_server as pws
+from tracekit.sdk import autospawn
 from tracekit.format import checkpoint, registry
 from tracekit.signer import service as svc
 from tracekit.storage.base import RECORDS, registry_tree
@@ -367,20 +368,164 @@ class OptIn(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "--public-witness: the public witness is not deployed yet"):
                 install.init_system_v2("agent", public_witness=True)
 
+    def test_dev_witness_defaults_on_and_the_marker_disables_it(self):
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        self.assertEqual(svc.dev_witnesses(data), [{"url": public_witness.URL, "vkey": public_witness.VKEY,
+                                                    "class": "public"}])
+        svc.set_dev_witness(True, data)
+        self.assertTrue(os.path.isfile(os.path.join(data, svc.NO_WITNESS)))
+        self.assertEqual(svc.dev_witnesses(data), [])
+        svc.set_dev_witness(False, data)
+        self.assertFalse(os.path.exists(os.path.join(data, svc.NO_WITNESS)))
+        self.assertEqual(len(svc.dev_witnesses(data)), 1)
+
+    def test_the_dev_signer_is_cosigned_by_the_public_witness_by_default(self):
+        """The dev signer gets the witness's client, as a signer.yaml's signer does, not its signer.yaml entry."""
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        with mock.patch.object(svc, "dev_data_dir", return_value=data):
+            s = svc.open_dev()
+        self.addCleanup(s.close)
+        with open(os.path.join(data, svc.WITNESSED), encoding="ascii") as f:
+            self.assertEqual(json.load(f), {NAME: 0})   # it answered at start: a new log, registered then
+        self.assertEqual(cli._dev_anchoring(data)[1], "registered with the public witness; nothing cosigned yet")
+        s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        s.checkpoint()
+        self.assertTrue(wait_for(lambda: f"— {NAME} " in (s.log.storage.checkpoint_latest(RECORDS) or (0, ""))[1], 5))
+        # the viewer pins the dev signer's witness, as `tracekit last` does: its run review says the log is anchored
+        feed = view.StoreFeed({"data_dir": data, "witnesses": svc.dev_witnesses(data)})
+        self.addCleanup(feed.close)
+
+        def anchoring():
+            with feed.lock:
+                return next((r["review"]["anchoring"] for r in feed.records if (r.get("review") or {}).get("anchoring")),
+                            None)
+        self.assertTrue(wait_for(anchoring, 15))
+        self.assertRegex(anchoring(), rf"^ANCHORED: an independent witness \({NAME}\) cosigned this log at size \d+, so "
+                                      r"a later rewrite would fail this check\.$")
+        svc.set_dev_witness(True, data)   # the running signer still uses it
+        self.assertEqual(cli._dev_anchoring(data)[1], "public witness: off from the dev signer's next start "
+                                                      "(--no-witness); restart it with `tracekit up --replace` to apply")
+
+    def test_init_and_up_say_what_the_dev_signer_used_at_its_last_start(self):
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        apply = "restart it with `tracekit up --replace` to apply"
+        for heard, said in ((None, "public witness: on from the dev signer's next start"),
+                            ({}, f"public witness: on, but the dev signer last started without it; {apply}"),
+                            ({NAME: None}, "public witness: on, but it didn't answer when the dev signer started, so the "
+                                           "log isn't anchored until it does"),
+                            ({NAME: 7}, "anchored: the public witness held this log at size 7 when the dev signer "
+                                        "started")):
+            with self.subTest(heard):
+                with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
+                    f.write("" if heard is None else json.dumps(heard))
+                self.assertEqual(cli._dev_anchoring(data)[1], said)
+        svc.set_dev_witness(True, data)
+        self.assertEqual(cli._dev_anchoring(data)[1], f"public witness: off from the dev signer's next start "
+                                                      f"(--no-witness); {apply}")
+        with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
+            f.write("{}")   # restarted: off
+        self.assertEqual(cli._dev_anchoring(data)[1], public_witness.LOST)
+
+    def test_up_reads_the_dev_data_dir_and_makes_nothing_there(self):
+        """`tracekit up --wait` made the dev data dir and a log key in it whichever signer answered: on a CI runner, in
+        the real home (tests/test_sdk_client.py's fake signer)."""
+        home = os.path.join(self.dir, "home")
+        env = {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+               "LOCALAPPDATA": os.path.join(home, "data")}
+
+        def up():
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["up", "--wait"]), 0)
+            return out.getvalue().splitlines()[2:]   # after the running and dev-mode lines
+        with mock.patch.dict(os.environ, env), mock.patch.object(cli, "_signer_extra", return_value=True), \
+                mock.patch.object(autospawn, "ensure", return_value=(mock.Mock(), None, {"version": "9", "pid": 1})):
+            data = autospawn.data_dir()
+            self.assertEqual(up(), ["start the signer with `tracekit up --wait` to see its log key",
+                                    "public witness: on from the dev signer's next start"])
+            self.assertFalse(os.path.exists(data))
+            fingerprint = cli._dev_key_fingerprint(data)   # the key as init makes it: keys/ 0700, log.key 0600
+            with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
+                json.dump({NAME: 3}, f)
+            before = sorted(os.listdir(data))
+            self.assertEqual(up(), [f"log key SHA-256 fingerprint: {fingerprint}",
+                                    "anchored: the public witness held this log at size 3 when the dev signer started"])
+            self.assertEqual(sorted(os.listdir(data)), before)
+
+    def test_a_witnessed_file_that_is_not_one_is_never_printed(self):
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        for raw in (b"[]", b'"x"', b'{"%s": "\x1b[31m red"}' % NAME.encode(), b'{"%s": -1}' % NAME.encode(),
+                    b'{"%s": true}' % NAME.encode(), b"{", b"[" * 100000, b"\xff\xfe"):
+            with self.subTest(raw[:20]):
+                with open(os.path.join(data, svc.WITNESSED), "wb") as f:
+                    f.write(raw)
+                self.assertEqual(cli._dev_anchoring(data)[1], "public witness: on from the dev signer's next start")
+
+    def test_dev_signer_config_and_startup_status_use_the_same_witness_setting(self):
+        data = os.path.join(self.dir, "dev")
+        os.makedirs(data)
+        with mock.patch.object(svc, "dev_data_dir", return_value=data):
+            self.assertEqual(svc.signer_config(None)["witnesses"][0]["vkey"], public_witness.VKEY)
+        with open(os.path.join(data, svc.WITNESSED), "w", encoding="ascii") as f:
+            json.dump({public_witness.VKEY.split("+")[0]: 7}, f)
+        self.assertEqual(cli._dev_anchoring(data)[1], "anchored: the public witness held this log at size 7 when the "
+                                                      "dev signer started")
+
     def test_the_shortcut_refuses_an_origin_the_witness_does_not_take(self):
         with open(self.cfg, "w") as f:
             f.write(f'data_dir: {json.dumps(os.path.join(self.dir, "data"))}\norigin: "Example.org"\nwitnesses: [public]\n')
         with self.assertRaisesRegex(ValueError, "origin: the public witness takes origins shaped host/path"):
             svc.load_config(self.cfg)
 
+    def test_a_chosen_origin_sent_to_the_public_witness_is_warned_about(self):
+        cfg = svc.load_config(self.cfg)   # origin: tracekit.example.org/log/public
+        self.assertIn(f"origin {ORIGIN} goes to the public witness", public_witness.named_origin(cfg))
+        own = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
+               "class": "customer"}
+        for quiet in ({**cfg, "origin": None}, {**cfg, "origin": "tracekit.local/" + "0f" * 16}, {**cfg, "witnesses": [own]}):
+            self.assertIsNone(public_witness.named_origin(quiet))
+        with mock.patch.object(public_witness, "URL", ""):
+            self.assertIsNone(public_witness.named_origin(cfg))
+
+    def test_no_witness_and_public_witness_go_with_v2_one_at_a_time(self):
+        for argv in (["init", "--no-witness"], ["init", "--public-witness"],
+                     ["init", "--v2", "--user", "agent", "--public-witness", "--no-witness"],
+                     ["init", "--v2", "--dev", "--public-witness", "--no-witness"]):
+            with self.subTest(argv), contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(cli.main(argv), 2)
+                self.assertIn("--no-witness and --public-witness go with --v2, one at a time", err.getvalue())
+
+    def test_system_modes_no_witness_is_kept_by_every_later_init(self):
+        """A second `sudo tracekit init --v2` without --no-witness wrote `witnesses: ["public"]` again."""
+        marker = os.path.join(self.dir, "no-witness")
+
+        def write(path, data):
+            with open(path, "wb") as f:
+                f.write(data)
+        with mock.patch.object(install, "V2_NO_WITNESS", marker), mock.patch.object(install, "_write_root_file", write):
+            self.assertIsNone(install.system_witness(None))   # nothing chosen: the default
+            self.assertIs(install.system_witness(False), False)
+            self.assertTrue(os.path.isfile(marker))
+            self.assertIs(install.system_witness(None), False)   # a later init keeps it
+            self.assertIs(install.system_witness(True), True)   # until --public-witness
+            self.assertFalse(os.path.exists(marker))
+            self.assertIsNone(install.system_witness(None))
+
     @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
     def test_init_v2_writes_the_shortcut(self):
+        """Once the witness is configured, by default; never with --no-witness, nor while it is not."""
         import types
         agent = types.SimpleNamespace(pw_uid=64101, pw_gid=64101, pw_name="agent", pw_dir="/home/agent")
         with open(self.cfg, "w") as f:
-            f.write(install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102, public_witness=True))
+            f.write(install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102))
         self.assertEqual(svc.load_config(self.cfg)["witnesses"][0]["class"], "public")
-        self.assertNotIn("witnesses", install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102))
+        self.assertNotIn("witnesses", install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102,
+                                                             public_witness=False))
+        with mock.patch.object(public_witness, "URL", ""):
+            self.assertNotIn("witnesses", install.v2_signer_yaml(agent, 501, "p.yaml", "/run/s.sock", 64102))
 
 
 if __name__ == "__main__":

@@ -153,7 +153,9 @@ class InstallAndUninstall(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             sys_cfg = self.init_v2(sudo_why="no sudo rule: visudo refused it")
         self.assertNotIn("tailer", sys_cfg.call_args.args[0])
-        self.assertIn("each run of agent's sessions records a tailer_lost gap", out.getvalue())
+        # #464: only the Claude Code hook records that gap, and it stands for the transcript, not the tool uses
+        self.assertIn("each of agent's Claude Code sessions records a tailer_lost gap instead of its transcript",
+                      out.getvalue())
 
     def test_init_wires_signer_service_and_hook(self):
         self.init_v2()
@@ -398,6 +400,8 @@ class InstallAndUninstall(unittest.TestCase):
                 json.dump(admin, f)
 
     def read(self, path):
+        if not os.path.exists(path):   # init made it, and taking Tracekit's hooks out left nothing: deleted
+            return {}
         with open(path) as f:
             return json.load(f)
 
@@ -537,7 +541,7 @@ class InstallAndUninstall(unittest.TestCase):
                 _, _, sc, _ = self.init_real({})
                 sc["hooks"]["user"] = "alice" if "project" in kw else "agent"
                 out = self.init_real(sc, **kw)[3]
-                self.assertIn(f"Tracekit v2 hooks removed from {self.user}\n", out)
+                self.assertIn(f"Tracekit v2 hooks removed from {self.user}", out)
                 self.assertEqual(install._hook_summary(self.read(self.user))["versions"], [])
 
     def test_uninstall_takes_tracekits_hooks_out_of_the_managed_settings_the_config_forgot(self):
@@ -725,8 +729,7 @@ class HookEnv(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(json.load(f)["env"], {"TRACEKIT_SIGNER": "/run/s.sock"})
         install.install_hooks(path, uninstall=True, signer="/run/s.sock")
-        with open(path) as f:
-            self.assertNotIn("env", json.load(f))
+        self.assertFalse(os.path.exists(path))   # install_hooks made it: no env, and no file
         with open(path, "w") as f:
             json.dump({"env": {"TRACEKIT_SIGNER": "/mine.sock"}}, f)
         install.install_hooks(path, uninstall=True, signer="/run/s.sock")
@@ -836,6 +839,17 @@ class CliUninstall(unittest.TestCase):
                 ". Removing a dev setup (init --dev) needs no root: tracekit uninstall takes its hooks out and tracekit "
                 "down stops its signer"), str(cm.exception))
             self.assertNotIn("init --dev for", str(cm.exception))
+
+
+class CliHelp(unittest.TestCase):
+    def test_no_hooks_says_what_it_does(self):
+        """#464: `tracekit init --help` listed --no-hooks, the documented setup for an SDK agent or the Claude Code
+        plugin, with no description."""
+        from tracekit import cli
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            cli.main(["init", "--help"])
+        self.assertIn("install no agent hooks (an SDK agent, or the Claude Code plugin's own hooks)",
+                      " ".join(out.getvalue().split()))
 
 
 class CliManaged(unittest.TestCase):

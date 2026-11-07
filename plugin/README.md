@@ -59,7 +59,9 @@ without the `!`), Claude's retry of the same call runs.
   `TRACEKIT_SIGNER` is set. Before that, every event shows a notice and runs, unrecorded.
 
 The hooks `tracekit init --dev --v2` writes treat events the same way, but run the interpreter init ran with
-(`python -I -m tracekit.integrations.claude_code <event>`) instead of searching for one.
+(`python -I -m tracekit.integrations.claude_code <event>`; from a source checkout or a `pip install --user`, `python -I
+-c` with a one-line import that puts that directory first on the path, then the directory and the event as quoted
+arguments, all in plain text) instead of searching for one.
 
 ## Upgrading from the v1 plugin
 

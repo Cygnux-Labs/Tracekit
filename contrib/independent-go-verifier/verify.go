@@ -72,7 +72,7 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 		}
 		return rep
 	}
-	log, witnesses, quorum, err := loadTrust(trustBytes)
+	log, witnesses, quorum, ed25519Allowed, err := loadTrust(trustBytes)
 	if err != nil {
 		rep.Integrity = TrustUnusable
 		return fail(failure{"trust config", fmt.Errorf("trust config: %w", err)})
@@ -132,7 +132,7 @@ func VerifyBundle(bundle, trustBytes []byte) Verification {
 	if anchorErr != nil {
 		return fail(failed("rekor anchor", anchorErr))
 	}
-	if _, err = inspectFiles(files, log, witnesses, quorum); err != nil {
+	if _, err = inspectFiles(files, log, witnesses, quorum, ed25519Allowed); err != nil {
 		return fail(err)
 	}
 	if err = checkSemantics(files, runs, keyRecords); err != nil {
@@ -223,6 +223,66 @@ func warningChecks(files map[string][]byte, runs []runEvidence) []VerificationCh
 				}
 			}
 		}
+	}
+	return append(checks, extWarnings(files, runs)...)
+}
+
+// maxUnread is how many ext names get a `not interpreted` line each; one more line counts the others.
+const maxUnread = 20
+
+// ext is the non-critical slot (format-v2.md §9, criticality): its records are signed, chained and included like any,
+// and a verifier that doesn't interpret a name says so and still verifies the bundle. This one interprets none: each
+// name the key, registry and run records carry gets a `not interpreted` warning counting them, in code-point order.
+func extWarnings(files map[string][]byte, runs []runEvidence) []VerificationCheck {
+	carry := make(map[string]map[uint64]bool)
+	add := func(r validatedRecord) {
+		var names []string
+		if ext, ok := r.ev["ext"].(map[string]any); ok {
+			for name := range ext {
+				names = append(names, name)
+			}
+		}
+		if d, ok := r.ev["data"].(map[string]any); ok && r.ev["type"] == "ext" {
+			if name, ok := d["name"].(string); ok {
+				names = append(names, name)
+			}
+		}
+		for _, name := range names {
+			if carry[name] == nil {
+				carry[name] = make(map[uint64]bool)
+			}
+			carry[name][r.seq] = true
+		}
+	}
+	for _, file := range []string{"keys/records.jsonl", "registry/records.jsonl"} {
+		if lines, err := readLines(files[file]); err == nil {
+			for _, line := range lines {
+				if r, err := decodeRecord(line); err == nil {
+					add(r)
+				}
+			}
+		}
+	}
+	for _, run := range runs {
+		for _, r := range run.records {
+			add(r)
+		}
+	}
+	names := make([]string, 0, len(carry))
+	for name := range carry {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var checks []VerificationCheck
+	for i, name := range names {
+		if i == maxUnread {
+			checks = append(checks, VerificationCheck{"not interpreted", "warn", fmt.Sprintf("%d more ext name(s), on "+
+				"records whose signatures, chain and inclusion are checked above; what they mean is not checked", len(names)-i)})
+			break
+		}
+		checks = append(checks, VerificationCheck{"not interpreted", "warn", fmt.Sprintf("%d record(s) carry ext.%s: "+
+			"their signatures, chain and inclusion are checked above; what ext.%s means is not checked",
+			len(carry[name]), name, name)})
 	}
 	return checks
 }
@@ -563,12 +623,9 @@ func checkSemantics(files map[string][]byte, runs []runEvidence, keys []validate
 				if d["decision"] == "approve" && d["approver_kind"] == "agent" {
 					return unsupportedEvidence("agent approval semantics are not implemented")
 				}
-			case "run.registered", "run.start", "run.end", "run.closing", "run.final", "tool.call", "tool.result", "error", "trace.tamper", "capture.gap", "checkpoint", "user.prompt", "model.message", "model.exchange", "approval.request", "approval.consumed", "approval.expired", "approval.refused", "approval.binding_mismatch", "approval.abandoned", "approval.escalated", "approval.revoked", "approval.suggested", "approval.agents", "input.observed", "state.write", "reconcile.hook_missing", "reconcile.fabricated", "reconcile.args_mismatch", "reconcile.result_without_call", "reconcile.unexplained_effect", "reconcile.args_unparseable", "reconcile.result_mismatch", "refusal.summary", "policy.external", "content.accessed", "content.erased", "run.child", "effect.observed":
+			case "ext", "run.registered", "run.start", "run.end", "run.closing", "run.final", "tool.call", "tool.result", "error", "trace.tamper", "capture.gap", "checkpoint", "user.prompt", "model.message", "model.exchange", "approval.request", "approval.consumed", "approval.expired", "approval.refused", "approval.binding_mismatch", "approval.abandoned", "approval.escalated", "approval.revoked", "approval.suggested", "approval.agents", "input.observed", "state.write", "reconcile.hook_missing", "reconcile.fabricated", "reconcile.args_mismatch", "reconcile.result_without_call", "reconcile.unexplained_effect", "reconcile.args_unparseable", "reconcile.result_mismatch", "refusal.summary", "policy.external", "content.accessed", "content.erased", "run.child", "effect.observed":
 			default:
 				return unsupportedEvidence("event semantics not implemented: " + typ)
-			}
-			if _, ok := r.ev["ext"]; ok {
-				return unsupportedEvidence("extension semantics are not implemented")
 			}
 		}
 	}

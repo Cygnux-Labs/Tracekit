@@ -8,6 +8,7 @@ Run it as root for system mode: it then probes the files as the agent's user, in
 
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
+import ast
 import base64
 import errno
 import hashlib
@@ -16,6 +17,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -33,14 +35,21 @@ from .harness_helper import HELPER_CAPS, trusted_file
 from .deploy import files
 from .wiki import wiki_url
 
-OK, WARN, FAIL = "ok", "warn", "fail"
+OK, INFO, WARN, FAIL = "ok", "info", "warn", "fail"   # info: what this setup doesn't have, said once, not a fault
 NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", "fuse", "fuseblk", "9p", "macfuse",
               "osxfuse"}
 MAX_SKEW_S = 300
 # system mode's init from a root-owned clone of the release, as the plugin and CI run it: it works on every Python,
-# whether or not /opt/tracekit exists or can be trusted (docs/deploy.md also gives the routes through /opt's venv)
-REINIT = ("from a root-owned clone of the release (docs/deploy.md#laptop-system-mode), sudo /usr/bin/python3 -m tracekit "
-          "init --v2 --user <agent-user>" + (" --experimental-macos" if sys.platform == "darwin" else ""))
+# whether or not /opt/tracekit exists or can be trusted (docs/deploy.md also gives the routes through /opt's venv).
+# The Python is doctor's own when only root can change it (init refuses any other), and not /opt's venv, which init
+# can't run from on 3.9 or 3.10; else the system one
+_PY = sys.executable if sys.executable and not sys.executable.startswith(install.OPT + os.sep) \
+    and trusted_file(sys.executable) is None else "/usr/bin/python3"
+REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
+          f"{shlex.quote(_PY)} -m tracekit init --v2 --user <agent-user>"
+          + (" --experimental-macos" if sys.platform == "darwin" else ""))
+DEV_INFO = {"D-WITNESS-CONFIGURED"}   # info in the dev profile, not a warning: the dev signer uses the public
+# witness by default, and has none only until a release names it or after --no-witness
 ROOT_DOCTOR = "run doctor as root (system mode: sudo /opt/tracekit/bin/python -I -m tracekit doctor)"
 FAIL_CLOSED = "call blocked (fail-closed)"   # the pre-tool wrapper's words (install._blocking); before 1.3 every event's
 # wrapper had them, so a hook that couldn't run blocked a prompt or a tool result too (D-HOOKS-EVENT warns)
@@ -61,14 +70,21 @@ def report(results, as_json=False):
         print(json.dumps(results, indent=2))
     else:
         for r in results:
-            print(f"{'ok' if r['status'] == OK else r['status'].upper():<6}{r['detail']}  ({r['id']})"
+            print(f"{r['status'] if r['status'] in (OK, INFO) else r['status'].upper():<6}{r['detail']}  ({r['id']})"
                   + (f"\n      fix: {r['fix']}" if r["fix"] else ""))
     return 1 if any(r["status"] == FAIL for r in results) else 0
 
 
 def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
     if not (k8s or manifests):
-        return report(collect(config, issuer_key), as_json)
+        rows = collect(config, issuer_key)
+        code = report(rows, as_json)
+        # the dev profile's own warning (D-PROCESS-BOUNDARY: it runs as you) and nothing else: say it is healthy
+        if not as_json and any(r["detail"] == install.DEV_MODE_LINE for r in rows) and \
+                all(r["status"] in (OK, INFO) or r["id"] == "D-PROCESS-BOUNDARY" for r in rows):
+            print("dev setup OK: everything checks out for dev mode, which records but does not guard "
+                  "(D-PROCESS-BOUNDARY)")
+        return code
     out = k8s_checks(*load_manifests(manifests)) if manifests else in_pod()
     return report(out + (v2_checks(config, issuer_key=issuer_key) if config else []), as_json)
 
@@ -104,10 +120,12 @@ def collect(config=None, issuer_key=None):
         return out
     from . import agent_hooks
     from .sdk import autospawn
-    from .signer.service import dev_content
+    from .signer.service import dev_content, dev_witnesses
+    dev_data = autospawn.data_dir()
     project = os.path.join(os.getcwd(), ".claude")
     mine, harnesses = client.client_config(), _dev_harnesses()
-    rows = v2_checks({"data_dir": autospawn.data_dir(), "content": dev_content().get("content")}, "dev",
+    rows = v2_checks({"data_dir": dev_data, "content": dev_content().get("content"),
+                      "witnesses": dev_witnesses(dev_data)}, "dev",
                      settings=_dev_settings(), plugin=install.plugin_enabled(), harnesses=harnesses,
                      no_hooks=isinstance(mine, dict) and mine.get("no_hooks") is True,
                      sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
@@ -243,7 +261,7 @@ def _hook_argv(cmd):
                 cmd = list(itertools.takewhile(lambda w: w != ";", lex))
         except (ValueError, AttributeError):
             return None
-        cmd = [w.strip('"') for w in cmd if w != "&"]
+        cmd = [w.strip('"') if os.name == "nt" else w for w in cmd if w != "&"]   # POSIX's split took its quotes off
     ok = len(cmd) > 3 and all(isinstance(w, str) for w in cmd) and cmd[1:3] in (["-I", "-m"], ["-I", "-c"])
     return cmd if ok else None
 
@@ -252,8 +270,15 @@ def _probe_target(argv):
     """(interpreter, the directory a -c hook puts first on sys.path (install._dev_hook_argv's `r`: a working tree) or
     None) of the hook `argv`; ValueError for a path that isn't absolute, which would resolve against doctor's working
     directory, or one the hook's code can't decode."""
+    # the tree: on POSIX the code's first argument, on Windows a literal in the code (install._literal), and in a hook
+    # an earlier init wrote, base64 in the code
     m = argv[2] == "-c" and re.search(r"b64decode\('([A-Za-z0-9+/=]*)'\)", argv[3])
-    tree = base64.b64decode(m.group(1)).decode("utf-8") if m else None
+    lit = argv[2] == "-c" and re.match(r"import sys; r = ('[^']*');", argv[3])
+    try:
+        tree = base64.b64decode(m.group(1)).decode("utf-8") if m else ast.literal_eval(lit.group(1)) if lit else \
+            argv[4] if argv[2] == "-c" and argv[3].startswith("import sys; r = sys.argv[1];") and len(argv) > 4 else None
+    except (ValueError, SyntaxError) as e:
+        raise ValueError(f"a path the hook's code can't decode ({e})") from None
     for what, p in (("an interpreter", argv[0]), ("a path", tree)):
         if p is not None and not (p.isprintable() and os.path.isabs(p)):
             raise ValueError(f"{what} that isn't an absolute path ({p[:128]!r})")
@@ -762,7 +787,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     sev = FAIL if prod else WARN
 
     def add(id, ok, detail, fix, bad=FAIL):
-        out.append(result(id, OK if ok else bad, detail, fix))
+        out.append(result(id, OK if ok else INFO if not prod and id in DEV_INFO else bad, detail, fix))
 
     if isinstance(config, dict):
         cfg = config
@@ -776,6 +801,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             "make it and its directories root-owned and not group/world-writable (sudo chown 0:0; chmod go-w)")
     data = cfg["data_dir"]
     keys = os.path.join(data, "keys")
+    # dev, before the dev signer's first start (no store yet, as right after init): what that start makes is info,
+    # not a fault
+    first = not prod and not os.path.isdir(os.path.join(data, "store"))
+    later = "checked after the dev signer's first start (an agent's first call, or tracekit up)"
     policy = cfg.get("policy") or service.DEFAULT_POLICY
 
     if prod:
@@ -844,8 +873,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             except _Windows:
                 add("D-CONTENT-VAULT", False, f"{on}; keys/content.key present, its mode not checked", acl, bad=WARN)
             except OSError as e:
-                add("D-CONTENT-VAULT", False, f"{on}; keys/content.key: {e.strerror}", "start the signer once (it makes "
-                    "the key), or run doctor as root", bad=WARN)
+                add("D-CONTENT-VAULT", False, f"{on}; keys/content.key: " + (f"not made yet, {later}" if first else
+                    e.strerror), "" if first else "start the signer once (it makes the key), or run doctor as root",
+                    bad=INFO if first else WARN)
 
     if names is not None and cfg.get("log_key"):
         add("D-KEYS-DISTINCT", True, "the log key is held in AWS KMS", "")
@@ -857,7 +887,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 "the log key and the record key differ", "a log keeps its log key, so start a new signer on a new "
                 "data_dir (its keys are made distinct); export what you need from this one first")
         except OSError as e:
-            add("D-KEYS-DISTINCT", False, f"no keys yet ({e.strerror})", "start the signer once", bad=WARN)
+            add("D-KEYS-DISTINCT", False, f"the record key: not made yet, {later}" if first else
+                f"no keys yet ({e.strerror})", "" if first else "start the signer once", bad=INFO if first else WARN)
     if (cfg.get("log_key") or {}).get("aws_kms"):
         out += kms_checks(cfg["log_key"]["aws_kms"], issuer_key)
     if (cfg.get("storage") or {}).get("postgres") is not None:
@@ -873,7 +904,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-KEY-HYGIENE", not bad, "; ".join(bad) or "no core dumps, not dumpable, keys mlocked where the OS allows",
             "start the signer with `tracekit signer serve` and a LimitMEMLOCK of at least 64K", bad=WARN)
     except (OSError, ValueError, AttributeError) as e:
-        add("D-KEY-HYGIENE", False, f"no key hygiene report: {e}", "start the signer once", bad=WARN)
+        add("D-KEY-HYGIENE", False, f"the key hygiene report: not written yet, {later}" if first else
+            f"no key hygiene report: {e}", "" if first else "start the signer once", bad=INFO if first else WARN)
 
     if prod and agent:
         targets = [[data, "read"], [data, "write"], [keys, "read"], [keys, "write"]]
@@ -945,6 +977,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             add("D-HOOKS-PRESENT", True, others, "")
         elif hooks is not None and no_hooks and not any(hooks.values()):
             add("D-HOOKS-PRESENT", True, chosen, "")
+        elif hooks is not None and not prod and not any(hooks.values()) and not shutil.which("claude") \
+                and not os.path.isdir(os.path.dirname(install.user_settings())):   # no Claude Code here to hook
+            add("D-HOOKS-PRESENT", False, "no Claude Code here (no claude on PATH, no "
+                f"{os.path.dirname(install.user_settings())}), so no hooks: runs that SDK clients send "
+                "(tracekit.instrument()) are still recorded", f"once Claude Code is installed: {hook_fix}", bad=INFO)
         elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
             own = managed and agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
@@ -1013,7 +1050,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                                                f'set "{install.THINKING}": true in {settings} ({hook_fix} does)')
                     + ", and for headless runs pass `claude -p --thinking-display summarized`", bad=WARN)
             if signer:
-                env = (_json(settings) or {}).get("env")
+                env = _setting(settings, "env")   # none when uninstall deleted the file init made
                 env = env.get("TRACEKIT_SIGNER") if isinstance(env, dict) else None
                 add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",
@@ -1092,7 +1129,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     ws = cfg.get("witnesses") or []
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "
         f"so assurance stays {'local' if cfg.get('anchors') else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
-        if prod else f"the dev signer takes no witnesses: serve one from a signer.yaml with witnesses: ({wiki_url('docs/witnesses.md')})",
+        if prod else ("--no-witness turned the dev signer's witness off: tracekit init --dev --v2 --public-witness turns "
+                      "it back on" if os.path.exists(os.path.join(data, service.NO_WITNESS)) else
+                      "the dev signer uses the public witness, which isn't deployed yet: nothing to do until a release "
+                      "names it; to anchor now, run a signer from a signer.yaml that lists your own witness "
+                      f"({wiki_url('docs/witnesses.md')})"),
         bad=sev)
     if ws:
         operator = all(w["class"] == "operator" for w in ws)
@@ -1102,6 +1143,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     store = os.path.join(data, "store")
     try:
         note = read_text(os.path.join(store, "checkpoint.note"))
+        noted = os.path.getmtime(os.path.join(store, "checkpoint.note"))
     except FileNotFoundError:
         note = None
     except OSError as e:
@@ -1113,14 +1155,20 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             queue = read_json(os.path.join(store, "witness-queue.json"))
         except FileNotFoundError:
             queue = {}
-        size, stale = int(note.split("\n", 2)[1]), []
+        size, stale, behind = int(note.split("\n", 2)[1]), [], []
         for w in ws:
             name = TlogWitness(w["url"], w["vkey"]).name
             st = queue.get(name, {}).get(RECORDS)
             lag = size - (st or {}).get("size", 0)
-            if lag > 0 and (st is None or (st.get("since") and now - st["since"] >= service.WITNESS_GAP_S)):
-                stale.append(f"{name} is {lag} records behind")
-        add("D-WITNESS-FRESH", not stale, "; ".join(stale) or "every witness has cosigned the latest checkpoint",
+            # failing since (`since`), or not asked yet (just started or added: since the latest note), for a while
+            since = st.get("since") if st else noted
+            said = f"{name} is {lag} record{'s' if lag != 1 else ''} behind"
+            if lag > 0 and since and now - since >= service.WITNESS_GAP_S:
+                stale.append(said)
+            elif lag > 0:   # the signer sends each new checkpoint at once: a start or a busy log is a moment behind
+                behind.append(f"{said}, as for a moment after each checkpoint (a problem only after "
+                              f"{int(service.WITNESS_GAP_S)} s)")
+        add("D-WITNESS-FRESH", not stale, "; ".join(stale or behind) or "every witness has cosigned the latest checkpoint",
             f"check the witness is reachable and accepts this log ({wiki_url('docs/witnesses.md')})", bad=WARN)
         try:
             cosigs = checkpoint.open_note(note, service.read_vkeys(data), [w["vkey"] for w in ws])[3]

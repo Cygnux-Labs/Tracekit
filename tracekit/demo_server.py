@@ -69,12 +69,13 @@ def agent(client):
         for call_id, command in CALLS:
             args = {"command": command}
             d = run.decide(call_id, "Bash", args)
-            print(f"  Bash {command!r}: {d['decision']} {' '.join(d['rule_ids'])}")
+            print(f"  Bash {command!r}: {' '.join([d['decision'], *d['rule_ids']])}")
             hint = None
             if d["decision"] == "ask":
                 hint = run.call("approval_request", tool_call_id=call_id)["approval_id"]
                 a = client.approval_decide({"approval_id": hint, "decision": "approve"})   # `tracekit approvals approve`
-                print(f"    approved {hint} (self-approved: {a['self_approved']})")
+                print(f"    approved {hint}" + (", by the run's own user: a self-approval, so the run's assurance stays "
+                                                 "dev" if a["self_approved"] else ""))
             if d["decision"] != "deny" and run.approval_consume(call_id, "Bash", args, approval_id_hint=hint)["ok"]:
                 run.complete(call_id)   # the pretend command ran
         return run.run_id
@@ -153,7 +154,8 @@ def main(keep=False, detail=False):
             service.close()
         if keep:
             print(f"\nkept {d}" + (f"\n  verify the bundle again: tracekit verify {_quote(out)} --trust {_quote(trust)}"
-                                   if os.path.exists(trust) else ""))
+                                   if os.path.exists(trust) else "")
+                  + f"\n  see the run: tracekit view --data-dir {_quote(os.path.join(d, 'data'))}")
         else:
             shutil.rmtree(d, ignore_errors=True)
             print(f"\ndeleted {d} (--keep keeps it)")

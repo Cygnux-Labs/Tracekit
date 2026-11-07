@@ -23,7 +23,7 @@ from unittest import mock
 import pytest
 
 import test_signer_service as ts
-from factories import wait_for
+from factories import v2rec, wait_for
 from test_observe_render import XSS, script_of, unescaped
 from test_sensor import SENSOR
 from tracekit import cli, findings_v2, observe, view
@@ -42,6 +42,7 @@ from tracekit.why.graph import target_hits
 from tracekit.why import cli as why_cli, import_v2
 from tracekit.why.import_v2 import _target, store_records
 from tracekit.why.server import Feed as WhyFeed, IngestError, Store, tape
+from tracekit.wiki import wiki_url
 
 POLICY = Engine({"deny": [{"id": "T-DENY", "tool": "rm", "pattern": "^"}],
                  "ask": [{"id": "T-PAY", "tool": "pay", "pattern": "^"}]})
@@ -66,12 +67,6 @@ def page_js(names, script):
 
 
 UNCHANGED = {"update.return_value": False, "changed.return_value": [], "differs": []}   # a store only appended to
-
-
-def v2rec(seq, typ, data, run="r1", **top):
-    return {"event": {"seq": seq, "run_seq": seq, "run_id": run, "agent_id": "main", "type": typ, "data": data,
-                      "ts": f"2026-10-10T17:00:{seq:02d}.000000Z", "prev_hash": "sha256:p", **top},
-            "hash": f"sha256:{seq}"}
 
 
 class Translate(unittest.TestCase):
@@ -245,7 +240,9 @@ class Translate(unittest.TestCase):
             v2rec(4, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c6"))
         req, ans, used = rows[1:]
         self.assertEqual((req["tape"], req["title"]), ("HOLD", "APPROVAL REQUESTED · create_refund"))
-        self.assertEqual(req["text"], "requested by uid:501 · rules TK-M001 sending money · expires 18:00:34 UTC")
+        # the expiry is in the row's v2 (the page says it in local time), not in the tape's text, which said it in UTC
+        self.assertEqual(req["text"], "requested by uid:501 · rules TK-M001 sending money")
+        self.assertEqual(req["v2"]["expires"], "2026-10-10T18:00:34.000000Z")
         self.assertEqual((req["v2"]["approval"], req["v2"]["tool_use_id"], req["v2"]["approval_id"]),
                          ("requested", "c6", "apr-1"))
         self.assertEqual((ans["tape"], ans["severity"], ans["title"]), ("APPROVE", "high", "APPROVED · create_refund"))
@@ -466,6 +463,36 @@ class Translate(unittest.TestCase):
         self.assertEqual(self.feed(*self.HELD, v2rec(4, "ext", {"name": "pcm.grant", "approval_id": "apr-1"}))[-1]
                          ["v2"]["tool_use_id"], "c1")
 
+    def test_a_retry_with_the_held_calls_own_id_is_that_call_not_another(self):
+        """LangGraph's retry sends the held call again with its id, and its consume names no `held`: the review counted
+        it as a fourth call of three and a second decision of the held call."""
+        recs = [*self.HELD, self.approved(4),
+                v2rec(5, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                             "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}),
+                v2rec(6, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1"),
+                v2rec(7, "tool.result", {"tool_use_id": "c1", "ok": True}, tool_call_id="c1"),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual((dict(rv["decisions"]), rv["retries"], dict(rv["permissions"]), dict(rv["holds"])),
+                         ({"ask": 1}, 1, {"approved · ran": 1}, {"approved · ran": 1}))
+
+    def test_a_refused_use_is_the_call_of_its_own_attempt(self):
+        """Attempt 0 approved, attempt 1 asked with its own request, then attempt 0's approval was refused for changed
+        arguments: the review filed the refusal under the id's latest call (attempt 1) while the page and HORIZON file it
+        under the call of the attempt that tried it."""
+        def rec(seq, typ, data, attempt=None):
+            return v2rec(seq, typ, data, tool_call_id="c1", **({} if attempt is None else {"attempt": attempt}))
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}), rec(2, "policy.decision", ask, 0),
+                rec(3, "approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, 0),
+                rec(4, "approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve"}),
+                rec(5, "policy.decision", ask, 1),
+                rec(6, "approval.request", {"approval_id": "Y", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, 1),
+                rec(7, "approval.binding_mismatch", {"tool_use_id": "c1", "approval_id": "X"}, 0),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual(dict(rv["permissions"]), {"refused: arguments changed": 1, "not answered": 1})
+
     def test_a_use_refused_only_for_its_approvals_state_changes_no_outcome(self):
         """A second use of an approval whose call ran turned "approved · ran" into "refused" (TK-APPROVAL-CONSUMED); an
         agent's approval within the delay people may revoke it in read "refused", then APPROVAL ALREADY ENDED, while it
@@ -563,10 +590,12 @@ class Translate(unittest.TestCase):
         path = os.path.join(ts.tmpdir(self), "p.yaml")
         with open(path, "w", encoding="utf-8") as f:
             f.write("deny:\n  - id: X-1\n    pattern: 'rm'\n    reason: removing files\n    remedy: Move it aside.\n"
-                    "flag:\n  - id: X-2\n    pattern: 'ls'\n    label: listing\n")
+                    "flag:\n  - id: X-2\n    pattern: 'ls'\n    label: listing\n"
+                    "  - id: X-3\n    pattern: 'git push'\n    label: side_effect\n")
         h = policy_compile.policy_hash(policy_compile.build(path)[0])
         self.assertEqual(view.policy_reasons([path])[h], {"X-1": {"reason": "removing files", "remedy": "Move it aside."},
-                                                          "X-2": {"reason": "listing"}})
+                                                          "X-2": {"reason": "listing"},
+                                                          "X-3": {"reason": "side effect"}})   # report printed side_effect
         self.assertEqual(SERVER[SERVER_HASH]["TK-DB001"], {"reason": "dropping a database object"})
 
     def test_a_calls_signed_provenance_rides_on_its_row(self):
@@ -1070,7 +1099,7 @@ class View(unittest.TestCase):
         post = next(r for r in rows if r["event"] == "PostToolUse")
         effect = next(r for r in rows if r.get("v2", {}).get("effect", {}).get("kind") == "net")
         out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS",
-                                  "subject", "rel", "ingest", "joinEgress", "whyRef", "netEffects", "effectHow", "dict",
+                                  "subject", "rel", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest", "joinEgress", "whyRef", "netEffects", "effectHow", "dict",
                                   "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE",
                                   "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"], f"""
             let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
@@ -1141,7 +1170,7 @@ class View(unittest.TestCase):
         self.assertEqual(rep["title"], f"RUN {run_id} · Integrity VERIFIED · Assurance dev")
         self.assertIn("tenant default · agent e2e · final · decisions allow 1, ask 1, deny 1 · approvals 1 · gaps 0",
                       rep["text"])
-        self.assertIn("same user as the dev signer", rep["text"])
+        self.assertIn("in dev mode it runs as you, as the signer does", rep["text"])
         self.assertIn(view.OPERATOR_SIDE, rep["text"])
         self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", rep["text"])   # verify.v2's own report
         rows = self.rows(feed, run_id)
@@ -1153,6 +1182,9 @@ class View(unittest.TestCase):
                          {"verdict": "verified", "agent": "e2e", "state": "final",
                           "decisions": {"allow": 1, "deny": 1, "ask": 1}})
         self.assertEqual([(a["decision"], a["self_approved"]) for a in rep["review"]["approvals"]], [("approve", True)])
+        self.assertEqual(rep["review"]["anchoring"], "NOT ANCHORED: no independent witness or anchor cosigned the log, so "
+                                                     "whoever holds the signing key could rewrite it unseen "
+                                                     f"({wiki_url('docs/witnesses.md')}).")   # the run review's line
         self.assertEqual({r["agent"] for r in rows}, {"e2e"})
         self.assertEqual(next(r["target"] for r in rows if r.get("tool_name") == "rm"), "T-DENY")
         self.assertEqual([(r["tape"], r["v2"]["approval"]) for r in rows if r.get("v2", {}).get("approval")],
@@ -1286,8 +1318,23 @@ class View(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(cli.main(["last"]), 1)
         self.assertTrue(err.getvalue().startswith(f"tracekit last: no runs in the dev signer's store "
-                                                  f"({os.path.join(nope, 'store')}) yet: "), err.getvalue())
+                                                  f"({os.path.join(nope, 'store')}) yet. "), err.getvalue())
         self.assertFalse(os.path.exists(nope))
+        # a new user who had added instrument() was told to add it: it records only the frameworks it lists
+        self.assertIn("`tracekit.instrument()` records only the frameworks it lists", err.getvalue())
+        self.assertIn(f"as {wiki_url('docs/quickstarts/custom.md')} shows", err.getvalue())
+
+    def test_last_says_it_waits_for_a_run_that_just_closed(self):
+        """`tracekit last` waited up to LAST_WAIT_S for a closing run in silence; it says so, once."""
+        closing = [v2rec(0, "run.registered", {"agent": {"name": "a"}}, "r1"), v2rec(1, "run.closing", {}, "r1")]
+        fake = mock.Mock(runs={("default", "r1"): {"seqs": [1]}})
+        fake.iter_run.side_effect = lambda *key: iter(closing)
+        with mock.patch.object(svc, "reader", return_value=fake), \
+                mock.patch.object(svc, "signer_config", return_value={"data_dir": self.d}), \
+                mock.patch.object(cli, "LAST_WAIT_S", 0.6), contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["last"]), 1)
+        self.assertEqual(err.getvalue().count("tracekit last: run r1 (a) just closed; waiting up to 0.6 s while the "
+                                              "signer finalises it\n"), 1)
 
     @pytest.mark.unverified_bundles
     def test_tampered_record_shows_only_the_failure(self):
@@ -1609,6 +1656,45 @@ class View(unittest.TestCase):
             self.assertEqual(view.main(["--data-dir", self.d, "--approval", aid + "&x=<b>"]), 2)
         self.assertIn("--approval takes an approval id", err.getvalue())
 
+    def test_the_start_lines_are_plain_and_the_link_is_one_a_browser_opens(self):
+        """A new user's walkthrough: the viewer's lines said "trust pins this store's own log.vkey: dev assurance",
+        an any-address bind printed http://0.0.0.0:..., which a browser doesn't open, --host and --port had no help, and
+        --approval's help said it prints a link where it starts the viewer and prints one."""
+        with mock.patch.object(view, "server") as server, mock.patch.dict(os.environ, {"TRACEKIT_VIEW_TOKEN": "t"}), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            server.return_value.server_address = ("0.0.0.0", 7778)
+            self.assertEqual(view.main(["--data-dir", self.d, "--host", "0.0.0.0", "--insecure-http"]), 0)
+        first, second = out.getvalue().splitlines()[:2]
+        self.assertEqual(first, "tracekit view on http://127.0.0.1:7778/  (open it in a browser; Ctrl-C stops the "
+                                "viewer)")
+        self.assertIn("read-only; each run is checked against the key this store names", second)
+        self.assertNotIn("log.vkey", second)
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            view.main(["--help"])
+        help_text = " ".join(out.getvalue().split())
+        for words in ("--host HOST the address to serve on", "--port PORT the port to serve on",
+                      "--approval ID start the viewer and print a link that opens the call approval ID held"):
+            self.assertIn(words, help_text)
+
+    def test_the_tips_line_names_a_transcripts_folder_only_when_there_is_one(self):
+        """With no Claude Code folder, `tracekit view --dev` printed "tips: Claude Code's transcripts in
+        .../.claude/projects, read-only" for a folder that doesn't exist."""
+        for folder, line in ((os.path.join(self.d, "no-claude"), "  tips: no Claude Code transcripts found\n"),
+                             (self.d, f"  tips: Claude Code's transcripts in {self.d}, read-only\n")):
+            with self.subTest(line=line), mock.patch.object(view, "server") as server, \
+                    mock.patch.object(view, "dev_data_dir", return_value=self.d), \
+                    mock.patch("tracekit.audit.default_root", return_value=folder), \
+                    mock.patch.object(view.StoreFeed, "_watch", lambda feed: None), \
+                    mock.patch.object(view.StoreFeed, "_mirrors", lambda feed: None), \
+                    mock.patch.object(view.Store, "watch"), mock.patch.object(view.signal, "signal"), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                server.return_value.serve_forever.side_effect = KeyboardInterrupt
+                server.return_value.server_address = ("127.0.0.1", 7778)
+                self.assertEqual(view.main(["--dev"]), 0)
+            self.assertIn(line, out.getvalue())
+            self.assertEqual(out.getvalue().count("  tips: "), 1)
+
     def test_loopback_viewer_prints_a_token_url_and_needs_it(self):
         with mock.patch.object(view, "server") as server, mock.patch.dict(os.environ), \
                 contextlib.redirect_stdout(io.StringIO()) as out:
@@ -1627,7 +1713,8 @@ class View(unittest.TestCase):
             server.return_value.server_address = ("127.0.0.1", 7778)
             runs.return_value.logs = ["a.dsn", "b.dsn"]
             self.assertEqual(view.main(["--config", "signer.yaml"]), 0)
-        self.assertIn(f"http://127.0.0.1:7778/?token={server.call_args[0][3]}  (2 Postgres logs", out.getvalue())
+        self.assertIn(f"http://127.0.0.1:7778/?token={server.call_args[0][3]}  (open it in a browser; Ctrl-C stops "
+                      "the viewer)\n  reading 2 Postgres logs, read-only\n", out.getvalue())
         with self.assertRaises(ValueError):
             view.server(None, "127.0.0.1", 0, None)
 
@@ -2257,7 +2344,7 @@ class OneViewer(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIsInstance(feed, observe.Feed)
         # the bundle it shows, not the temp ledger it was unpacked to
-        self.assertIn(f"(bundle: {os.path.join(self.SAMPLE, 'demo-run.tkb')}, verified, read-only)", out)
+        self.assertIn(f"reading the bundle {os.path.join(self.SAMPLE, 'demo-run.tkb')}, verified, read-only", out)
         self.assertNotIn(feed.path, out)
         srv = view.server(feed, "127.0.0.1", 0, token)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -2293,7 +2380,7 @@ class OneViewer(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual((store.root, store.tape, store.allow, args[0]), (root, True, {"m:SYSTEM"}, store.out))
         self.assertIsNotNone(store.webhook)
-        self.assertIn(f"(why logs alone: {root})", out)
+        self.assertIn(f"reading why logs alone: {root}", out)
 
     def test_one_nav_reaches_every_page_this_server_has(self):
         runs = mock.Mock()

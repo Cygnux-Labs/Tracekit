@@ -115,6 +115,9 @@ def claims():
     ]
     limits = [
         f"E20 `c5_line`, {round(ho['forged_flagged']['F1'] * 24)} of 24 flagged",
+        f"{se17['fp']} of E17's {se17['benign']} benign calls, {pct(se17['fp'] / se17['benign'], 1)}, and "
+        f"{strict['sessions']['totals']['fp']} of E21's {strict['sessions']['totals']['benign']} developer-session "
+        f"calls, {pct(strict['sessions']['fp_rate'])}",
     ]
     return {"README.md": readme, "docs/evaluation.md": evaluation, "docs/limits.md": limits}
 

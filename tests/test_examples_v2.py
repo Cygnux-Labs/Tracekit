@@ -106,6 +106,9 @@ class DemoServer(unittest.TestCase):
                       "NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could "
                       "have rewritten the record.\n", verified)   # what dev mode means
         self.assertNotIn("PASS", verified)
+        # the held call's approval, by the run's own user: it said "(self-approved: True)" (review of #628)
+        self.assertRegex(verified, r"\n    approved \S*apr-[0-9a-f]{32}, by the run's own user: a self-approval, so the "
+                                   r"run's assurance stays dev\n")
         self.assertIn("\nTAMPERED at event 4: its content was changed after it was signed.\n", tampered)
         self.assertRegex(tampered, r"\ndeleted .+ \(--keep keeps it\)\n$")
 
@@ -124,6 +127,19 @@ class DemoServer(unittest.TestCase):
         from tracekit.cli import _quote
         self.assertIn(f"\n  verify the bundle again: tracekit verify {_quote(os.path.join(kept, 'run.tkb'))} --trust "
                       f"{_quote(os.path.join(kept, 'trust.json'))}\n", tampered)
+        # the kept store is no dev signer's: `tracekit view --dev` does not show it, so the command that does is printed
+        self.assertIn(f"\n  see the run: tracekit view --data-dir {_quote(os.path.join(kept, 'data'))}\n", tampered)
+
+    def test_e22_reads_the_kept_dir_from_its_line_alone(self):
+        """Since the demo prints how to verify and view the kept files after "kept DIR" (#600), E22 read those lines as
+        part of the dir, and the nightly run failed."""
+        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
+        import e22_verifier_agreement as e22
+        with tempfile.TemporaryDirectory() as d:
+            corpus = e22.Corpus(d)
+            corpus.demo()
+            self.assertEqual([(c["name"], os.path.isfile(c["bundle"])) for c in corpus.cases],
+                             [("demo run", True), ("demo tampered", True)])
 
 
 if __name__ == "__main__":
