@@ -1,0 +1,12 @@
+# gate lint
+# command: PY=$(r="$(git rev-parse --path-format=absolute --git-common-dir)/../.venv/bin/python"; [ -x "$r" ] && echo "$r" || echo python3); PYTHONPATH="$PWD" make lint PY="$PY"
+# cwd: C:/Users/jayab/.pr-go/work/Cygnux-Labs_Tracekit-643-12616-955a89
+# started: 2026-11-06T07:07:56.249Z
+# expected exit: 0
+
+python3 -m pyflakes tracekit tracekit_sdk.py tests eval examples contrib integrations
+Python was not found; run without arguments to install from the Microsoft Store, or disable this shortcut from Settings > Apps > Advanced app settings > App execution aliases.
+make: *** [Makefile:46: lint] Error 49
+
+
+# exit: 2

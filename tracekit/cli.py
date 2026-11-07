@@ -325,7 +325,7 @@ def _parser():
     p.add_argument("--experimental-macos", action="store_true", help="allow system mode on macOS (not yet validated on hardware)")
     p.add_argument("--proxy", action="store_true", help="also run the model proxy and point Claude Code at it (C3; needs --experimental)")
     p.add_argument("--experimental", action="store_true", help="allow experimental surfaces (--proxy)")
-    p.add_argument("--proxy-port", type=int, default=8787)
+    p.add_argument("--proxy-port", type=int, default=8787, help="with --proxy: the port the model proxy listens on (default: 8787)")
     p.add_argument("--fail-closed", action="store_true", help="proxy: refuse to forward when the signer can't record")
     p.add_argument("--managed", action="store_true", help="system mode, Claude Code: hooks in its admin-managed "
                    "settings (managed-settings.json), which the agent's user can't edit or turn off; they run in "
@@ -366,10 +366,11 @@ def _parser():
                    "with it")
     p = sub.add_parser("uninstall", help="remove Tracekit's hooks (your signed runs and keys stay: it says where, and "
                                          "how to delete them too)")
-    p.add_argument("--project", action="store_true")
+    p.add_argument("--project", action="store_true", help="remove the hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
     p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
-    p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude")
+    p.add_argument("--agent", choices=("claude", *agent_hooks.HARNESSES), default="claude",
+                   help="which coding agent's hooks to remove (default: Claude Code)")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway (experimental): `ingest token NAME` / `ingest serve`",
                        add_help=False)
@@ -430,12 +431,12 @@ def _parser():
                                     "OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("daemon", help="run the v1 signer, tracekitd, in the foreground (experimental)")
-    p.add_argument("--home")
+    p.add_argument("--home", help="signer home directory (default: the configured one, else /var/lib/tracekit)")
     p = sub.add_parser("proxy", help="run the model proxy in the foreground (experimental)")
-    p.add_argument("--home")
+    p.add_argument("--home", help="signer home directory (default: the configured one, else /var/lib/tracekit)")
     p.add_argument("--experimental", action="store_true", help="required: the proxy is being rebuilt")
-    p.add_argument("--port", type=int)
-    p.add_argument("--upstream")
+    p.add_argument("--port", type=int, help="port to listen on (default: 8787)")
+    p.add_argument("--upstream", help="API URL to forward requests to (default: https://api.anthropic.com)")
 
     p = sub.add_parser("observe", help="the old name of `tracekit view --ledger`: the v1 ledger or a v1 bundle in a "
                                        "read-only web page")
@@ -486,19 +487,19 @@ def _parser():
     q.add_argument("--all", action="store_true", help="the expired ones too")
     q = acts.add_parser("show", help="one approval: why its call was held, what to do instead, the commands that "
                         "answer it, and the signer's copy of the arguments in full")
-    q.add_argument("approval_id")
+    q.add_argument("approval_id", help="the approval to show, from `tracekit approvals list`")
     q.add_argument("--json", action="store_true", help="print one JSON object without a pager")
     for name in ("approve", "reject"):
         q = acts.add_parser(name, help=f"{name} a pending approval" + (
             "; with --grant, also grant the run calls like it within limits (docs/intent-grants.md)" * (name == "approve")))
-        q.add_argument("approval_id")
-        q.add_argument("--reason")
+        q.add_argument("approval_id", help="the approval to " + name + ", from `tracekit approvals list`")
+        q.add_argument("--reason", help="why, sent to the signer with the answer")
         if name == "approve":
             q.add_argument("--grant", action="store_true", help="also issue a payment grant from this held call: it "
                            "counts as the grant's first payment, and later payments within the limits run without a stop")
             _grant_flags(q, False)
     q = acts.add_parser("slack", help=f"the Slack approvals bridge ({wiki_url('docs/approvals.md', 'slack')})")
-    q.add_argument("slack_action", choices=["serve"])
+    q.add_argument("slack_action", choices=["serve"], help="serve: run the Slack bridge")
     q.add_argument("--config", required=True, help="slack.yaml")
 
     p = sub.add_parser("grant", help="intent grants on the v2 signer (experimental): approve a kind of costly call "
@@ -516,13 +517,13 @@ def _parser():
     q.add_argument("--json", action="store_true", help="print one JSON array, as the signer gives it")
     q = acts.add_parser("revoke", help="end a grant: every call it would release is held again")
     q.add_argument("grant_id", help="g-... from tracekit grant list")
-    q.add_argument("--reason")
+    q.add_argument("--reason", help="why, sent to the signer with the revocation")
 
     p = sub.add_parser("export", help="write a .tkb evidence bundle")
-    p.add_argument("-o", "--out", default="tracekit.tkb")
+    p.add_argument("-o", "--out", default="tracekit.tkb", help="the bundle to write (default: tracekit.tkb)")
     g = p.add_mutually_exclusive_group()
     g.add_argument("--last", action="store_true", help="the most recent run (default)")
-    g.add_argument("--run")
+    g.add_argument("--run", help="the run to export, by its id")
     g.add_argument("--since", help="RFC3339 time, e.g. 2026-09-30T00:00:00.000000Z")
     p.add_argument("--otel", action="store_true", help="also include otel.json (OTLP/JSON); with --v2, write it next "
                    "to the bundle as <name>.otel.json")
@@ -552,7 +553,7 @@ def _parser():
                    "as `tracekit verify --detail` does")
 
     p = sub.add_parser("verify", help="verify a .tkb offline")
-    p.add_argument("bundle")
+    p.add_argument("bundle", help="the .tkb bundle to verify")
     p.add_argument("--witness", action="append", default=[], help="independent witness copy to check against")
     p.add_argument("--key", help="trusted signer public key (signer.pub file) or key id ed25519:...")
     p.add_argument("--strict", action="store_true", help="exit 3 on warnings")
@@ -565,13 +566,13 @@ def _parser():
                    help="format v2: record-key revocations, JSON lines (an issuer's issuance.jsonl)")
     p.add_argument("--detail", action="store_true", help="print every check, then the Integrity and Assurance lines "
                    "(the full report; scripts that read the text use it, or --json)")
-    p.add_argument("--json", action="store_true")
+    p.add_argument("--json", action="store_true", help="print the report as JSON")
 
     p = sub.add_parser("policy", help="check a v2 policy and try it on past runs: `policy compile FILE` prints "
                                       "canonical JSON and its hash; `policy lint FILE`; `policy backtest --policy P "
                                       "(--store DIR | --bundle B...)` prints the incidents its detection would open")
-    p.add_argument("action", choices=("compile", "lint", "backtest"))
-    p.add_argument("file", nargs="?")
+    p.add_argument("action", choices=("compile", "lint", "backtest"), help="compile, lint or backtest")
+    p.add_argument("file", nargs="?", help="the policy file (compile and lint)")
     p.add_argument("--policy", help="backtest: the policy file")
     src = p.add_mutually_exclusive_group()
     src.add_argument("--store", help="backtest: a signer's store directory (data_dir/store)")
