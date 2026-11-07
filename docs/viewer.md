@@ -12,6 +12,7 @@ Using 1.4.x? Its viewer, as it was then, is on [Viewer 1.4](viewer-1.4.md).
 | `tracekit view --ledger [HOME]`, `tracekit view --bundle FILE` | the v1 ledger (`tracekitd`), or a v1 bundle once it verifies; loopback only |
 | `tracekit view --config signer.yaml` with `view.logs` | every log of a central deployment ([below](#central-viewer)) |
 | `tracekit report` (`--dev`, `--config signer.yaml`, `--data-dir DIR`) | not a page: a week of the signer's store as plain text or JSON ([below](#weekly-report)) |
+| `tracekit tips` (`--dev`, `--data-dir DIR`) | not a page: the TIPS page's tips as plain text or JSON ([below](#tracekit-tips)) |
 
 `tracekit observe` and `tracekit why serve` still work as before and print one line pointing here. A single bundle's
 self-contained `replay.html` stays a file you open without a server.
@@ -373,6 +374,41 @@ tips list sessions from every project under the transcripts folder. Dollars are 
 no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most
 once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
 are in [limits](limits.md#viewer).
+
+#### tracekit tips
+
+`tracekit tips` (experimental) prints the same three tips without the viewer, for a terminal or an agent. It reads
+the dev signer's store (or `--data-dir DIR`'s, without transcripts, as `tracekit view --data-dir` reads it) and Claude
+Code's transcripts, read-only, with no network and no model. It checks each run with a record in the window with the
+verifier first, as the viewer does, so a busy week takes a minute or two; a run that doesn't verify is left out and
+counted. Unlike the page, it reads every run in the window, not only the viewer's newest 50,000 rows.
+
+```bash
+tracekit tips                  # the last 7 days
+tracekit tips --since 24h      # 7d, 24h, 30m, or an ISO date or time (UTC unless it says)
+tracekit tips --json           # the TIPS page's data as one JSON object, for agents and scripts
+```
+
+```text
+TIP 1 · CONTEXT · from Claude Code's transcripts (read-only)
+Compact at about 500k tokens, not at 696k
+  Every step sends the whole context again. session s1's median step carried 339k tokens of it:
+  $0.12 before it did anything.
+  Would have saved: about $0.76 (5% of these sessions' input side), an estimate. Time: not measured.
+  Fix: Run /compact with a one-line focus at each task boundary (a PR merged, a release tagged), and
+  at about 500k tokens; start a new session for unrelated work.
+    /compact keep the open task, its files and the decisions made
+```
+
+Each tip prints its title, its evidence, what it would have saved (dollars where the model has a price, and time) and
+the fix, or why it has none; with nothing in the window, one line says what it read. `--json` prints what `/api/tips`
+serves: `window` (`[since, now]`, seconds since the epoch), `prices` (the price table's date), `root` (the transcripts
+folder, or null), `sources` (what was read: `signed` records, steps and holds, `transcripts` files and steps) and
+`tips`, one object per tip in the order above. Each tip has `id` (`context`, `cache` or `holds`) and `ok`; one
+without enough data has `why`, one with it has `title`, `line` (its evidence), `from` (its sources), `saving` (`usd`
+and `minutes`, each null when not measured; the context tip adds `pct`), `math` (the arithmetic, one step a line) and
+`fix` (`text` and `copy`, the command or line to paste, or null; null when there is nothing to fix), with the chart's
+and tables' data under the tip's own keys. A run that didn't verify is said on stderr.
 
 ### A v1 bundle
 

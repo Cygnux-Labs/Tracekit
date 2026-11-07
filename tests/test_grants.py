@@ -603,8 +603,10 @@ class TestPolicy(unittest.TestCase):
     def test_the_agent_own_grant_commands(self):
         """#642 reviews 4 and 6: every `tracekit grant` the agent runs is denied, whatever its options and action (an
         argparse prefix of --signer, a repeated or spaced value, an action from stdin or computed, list and revoke
-        too), in each program form the approval tripwire reads; on both engines, each line decided in well under a
-        second, a 64 KiB flood of options included."""
+        too), in each program form the approval tripwire reads; on both engines, each line decided within the fallback's
+        1 s, a 64 KiB flood of options included: never timed out (the engine's deadline is 1 s of wall clock in matches,
+        twice the old bound), and the parse, which the deadline doesn't cover, under 1 s of CPU time (a busy runner's
+        wall clock passed 0.5 s on the flood)."""
         t = " --run r --tool t --payee x --total '1 USDC'"
         lines = ["tracekit grant add" + t, "tracekit grant --signer s add" + t, "python3 -m tracekit grant add" + t,
                  "/usr/local/bin/tracekit grant add" + t, "uvx tracekit grant add" + t,
@@ -622,9 +624,10 @@ class TestPolicy(unittest.TestCase):
             e = Engine(pol, backend)
             for line in lines:
                 with self.subTest(backend=backend, line=line[:60]):
-                    start = time.perf_counter()
+                    start = time.process_time()
                     d = e.decide("Bash", {"command": line})
-                    self.assertLess(time.perf_counter() - start, 0.5)
+                    self.assertLess(time.process_time() - start, 1)
+                    self.assertNotIn("nondeterministic", d)
                     self.assertEqual(d["verdict"], "deny", d)
                     self.assertIn("TK-D012", d["rule_ids"])
         for line in ("tracekit approvals list", "tracekit help grant", "tracekit granted"):   # no grant command

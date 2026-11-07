@@ -20,6 +20,7 @@ import test_bundle_v2 as tb
 import test_rpc_contract as rc
 import test_signer_service as ts
 from tracekit import cli, schema
+from tracekit.client import DEFAULT_SOCKET
 from tracekit.bundle_v2 import export
 from tracekit.format.canon import canonical, event_hash
 from tracekit.identity.base import CallerIdentity
@@ -796,6 +797,37 @@ class TestCli(unittest.TestCase):
             out = tracekit("approve", aid, env=v1)
             self.assertEqual(out.returncode, 2, (aid, out.stderr))
             self.assertIn("signer unavailable", out.stderr)
+
+    @unittest.skipIf(os.path.exists(DEFAULT_SOCKET), "a v1 signer (tracekitd) runs at the default socket here")
+    def test_with_no_v1_signer_approve_and_reject_are_approvals_approve_and_reject(self):
+        """With no v1 signer here, `tracekit approve|reject` said "signer unavailable: [Errno 2] …" for any id not of
+        the v2 signer's full shape (a prefix, a typo) and with none: `pending` already listed the v2 signer's held
+        calls. They are `tracekit approvals approve|reject ID`, output and exit code alike."""
+        d = ts.tmpdir(self)
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "approvals": {"self_approval": "allow"}}
+        service = svc.open_service(cfg, policy=ts.PAY_ASKS)
+        self.addCleanup(service.close)
+        for srv in svc.serve(cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        client = Client(cfg["socket"])
+        self.addCleanup(client.close)
+        run = client.run(agent="a")
+        run.decide("tc-1", "pay", PAY)
+        aid = run.call("approval_request", tool_call_id="tc-1")["approval_id"]
+        env = dict(os.environ, TRACEKIT_SIGNER=cfg["socket"], TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
+        env.pop("TRACEKIT_SOCKET", None)
+        for cmd in ("approve", "reject"):
+            for x in (aid[:12], aid + "0"):
+                short, full = tracekit(cmd, x, env=env), tracekit("approvals", cmd, x, env=env)
+                self.assertEqual((short.returncode, short.stdout, short.stderr),
+                                 (full.returncode, full.stdout, full.stderr))
+                self.assertEqual(short.returncode, 1, short.stderr)
+                self.assertNotIn("signer unavailable", short.stderr)
+            out = tracekit(cmd, env=env)
+            self.assertEqual((out.returncode, out.stdout, out.stderr), (2, "", f"tracekit {cmd}: name the approval: "
+                                                                               f"tracekit {cmd} <id> (tracekit pending "
+                                                                               "lists them)\n"))
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
