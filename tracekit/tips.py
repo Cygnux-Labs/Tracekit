@@ -31,6 +31,7 @@ import time
 
 from .audit import _entry_time, _iter_transcripts, _safe_open
 from .hook import transcript_entries
+from .signer.service import _escaped
 from .usage import Prices, _int
 from .why import import_v2
 
@@ -766,7 +767,7 @@ def text(t, store, failed=0, root=None):
         f"; Claude Code's transcripts in {t['root']}: {tr['files']:,} file{'s' * (tr['files'] != 1)}" if t["root"] else
         f"; no Claude Code transcripts in {_shown(root)}" if root else "")
     if not (s["records"] or tr["steps"]):
-        return f"tracekit tips: read {read}, since {since}: nothing yet"
+        return _escaped(f"tracekit tips: read {read}, since {since}: nothing yet")
     out = [_wrap(f"Read {read}, read-only, since {since}. Dollars are Anthropic's list prices of {t['prices']}: a "
                  "subscription bills none of them, but the same tokens fill its usage limit. An estimate, "
                  "operator-side, not evidence.", "")]
@@ -786,7 +787,7 @@ def text(t, store, failed=0, root=None):
             out.append(_wrap("Fix: " + x["fix"]["text"]))
             if x["fix"]["copy"]:
                 out.append("    " + x["fix"]["copy"])
-    return "\n".join(out)
+    return "\n".join(_escaped(line) for line in "\n".join(out).split("\n"))   # a run's agent name is the agent's text
 
 
 def main(argv=None):

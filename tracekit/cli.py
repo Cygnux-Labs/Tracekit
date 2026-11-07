@@ -1153,10 +1153,10 @@ def _status_lines(st, v2, plugin=None, chosen=False):
     lines += found or ["hooks       none, as init --no-hooks chose: SDK runs (tracekit.instrument()) are still "
                        "recorded; init without --no-hooks adds Claude Code's" if chosen else
                        "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"]
-    if st.get("signer"):   # its error is a problem only for v1 hooks, which use it
-        v1 = any("v1" in h.get("versions", ()) for h in st["hooks"])
+    if st.get("signer"):   # its error is a problem only for v1 hooks, which use it (or may, in a file it can't read)
+        v1 = any("v1" in h.get("versions", ()) or "error" in h for h in st["hooks"])
         lines.append("v1 signer   " + ("answering" if not st["signer"].get("error") else st["signer"]["error"] if v1
-                                       else "not running (only v1 hooks use it; none are installed)"))
+                                       else "not running (only v1 hooks use it)"))
     if st.get("proxy"):
         lines.append(f"proxy       {st['proxy']['url']}: {'reachable' if st['proxy']['reachable'] else 'unreachable'}")
     return lines

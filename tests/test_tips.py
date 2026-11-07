@@ -602,6 +602,16 @@ class Command(unittest.TestCase):
         self.assertIn("an estimate. Time: not measured.", context)
         self.assertEqual(holds.splitlines()[1], "1 held call nobody answered")
 
+    def test_text_escapes_control_characters_an_agent_chose(self):
+        """A run's agent name is any string the agent picks; ESC and BEL reached the terminal raw, as report and audit
+        escape them."""
+        t = json.loads(self.tips("--json")[1])
+        t["tips"][0]["line"] = "agent \x1b]0;owned\x07\x1b[2J ran"
+        out = tips.text(t, "store")
+        self.assertNotIn("\x1b", out)
+        self.assertNotIn("\x07", out)
+        self.assertIn("agent \\u001b]0;owned\\u0007\\u001b[2J ran", out)
+
     def test_json_is_what_the_page_reads(self):
         code, out, err = self.tips("--json")
         self.assertEqual(code, 0, err)

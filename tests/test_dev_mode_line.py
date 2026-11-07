@@ -123,8 +123,11 @@ class DevModeLine(unittest.TestCase):
             hooks = [{"settings": "s.json", "events": ["PreToolUse"], "versions": list(versions)}]
             return [x for x in cli._status_lines({"hooks": hooks, "signer": signer}, {"dev": True, "error": "x"})
                     if x.startswith("v1 signer")]
-        self.assertEqual(line(down, "v2"), ["v1 signer   not running (only v1 hooks use it; none are installed)"])
-        self.assertEqual(line(down), ["v1 signer   not running (only v1 hooks use it; none are installed)"])
+        self.assertEqual(line(down, "v2"), ["v1 signer   not running (only v1 hooks use it)"])
+        self.assertEqual(line(down), ["v1 signer   not running (only v1 hooks use it)"])
+        unread = [{"settings": "s.json", "error": "unreadable"}]   # its hooks may be v1
+        self.assertIn("v1 signer   " + down["error"], cli._status_lines({"hooks": unread, "signer": down},
+                                                                       {"dev": True, "error": "x"}))
         self.assertEqual(line(down, "v1", "v2"), ["v1 signer   " + down["error"]])
         self.assertEqual(line({"ok": True}, "v2"), ["v1 signer   answering"])
 
