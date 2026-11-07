@@ -705,8 +705,9 @@ class Installer(unittest.TestCase):
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
-                    # through its own POSIX shell), and Devin's shell isn't documented: a path with a space keeps cmd.exe's
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin"):
+                    # through its own POSIX shell), OpenHands runs hooks with shell=True (cmd.exe), and Devin's shell
+                    # isn't documented: a path with a space keeps cmd.exe's
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
