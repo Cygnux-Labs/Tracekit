@@ -604,9 +604,9 @@ class TestPolicy(unittest.TestCase):
         """#642 reviews 4 and 6: every `tracekit grant` the agent runs is denied, whatever its options and action (an
         argparse prefix of --signer, a repeated or spaced value, an action from stdin or computed, list and revoke
         too), in each program form the approval tripwire reads; on both engines, each line decided within the fallback's
-        1 s, a 64 KiB flood of options included: never timed out (the engine's deadline is wall clock, so this holds on
-        any machine), and the parse, which the deadline doesn't cover, in CPU time (a busy runner's wall clock passed
-        0.5 s on the flood)."""
+        1 s, a 64 KiB flood of options included: never timed out (the engine's deadline is 1 s of wall clock in matches,
+        twice the old bound), and the parse, which the deadline doesn't cover, under 1 s of CPU time (a busy runner's
+        wall clock passed 0.5 s on the flood)."""
         t = " --run r --tool t --payee x --total '1 USDC'"
         lines = ["tracekit grant add" + t, "tracekit grant --signer s add" + t, "python3 -m tracekit grant add" + t,
                  "/usr/local/bin/tracekit grant add" + t, "uvx tracekit grant add" + t,
