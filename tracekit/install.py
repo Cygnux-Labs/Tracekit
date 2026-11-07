@@ -26,7 +26,7 @@ try:
 except ImportError:
     grp = pwd = None
 
-from .core import b64e, read_json, read_text
+from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
 from .wiki import wiki_url
@@ -108,8 +108,9 @@ V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
 # starts it through sudo, and the signer lets its uid make only the calls of TAILER_METHODS
 V2_TAILER, V2_TAILER_DARWIN = "tracekit-tailer", "_tracekit_tailer"
 TAILER_SUDOERS = "/etc/sudoers.d/tracekit-tailer"
-DEV_MODE_LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. "
-                 "For protection, use system mode or Box.")
+DEV_MODE_LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. To guard, run the "
+                 f"signer as another user (system mode: {wiki_url('docs/deploy.md')}) or the agent in Tracekit Box, "
+                 "a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
 TAILER_METHODS = ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]
 V2_RUN = {"linux": "/run/tracekit-signer", "darwin": "/Library/Application Support/tracekit-signer"}   # the socket's dir
 V2_UNIT_TEXT = """[Unit]
@@ -325,11 +326,16 @@ def _dev_hook_argv(module, func, args):
         installed = False
     if installed:
         return [sys.executable, "-I", "-m", module, *args]
-    # base64: a path or branch name can hold any quote or shell character
-    code = (f"import base64,sys; r=base64.b64decode('{b64e(ROOT.encode('utf-8'))}').decode('utf-8'); "
-            "sys.path.insert(0, r); ")
-    call = f"raise SystemExit({func}({', '.join(map(repr, args))}))"
+    # The tree, its branch and the hook's arguments, in plain text. On POSIX they go after the code as arguments the
+    # shell gets single-quoted (_dev_hook_command). On Windows the harness's shell (Git Bash for Claude Code,
+    # PowerShell, cmd.exe) would expand them there, so they go into the double-quoted code as Python literals with
+    # every character those shells read in double quotes written as an escape (_literal). The code's own strings take
+    # the quote each form leaves alone: ' inside Windows' double quotes, " inside POSIX's single quotes
+    nt = os.name == "nt"
+    q = "'" if nt else '"'
     branch = _branch(ROOT)
+    tree, was = (_literal(ROOT), branch and _literal(branch)) if nt else ("sys.argv[1]", "sys.argv[2]")
+    code = f"import sys; r = {tree}; sys.path.insert(0, r); "
     if branch:
         # lean: the hooks still run the working tree, so a branch switch there still breaks them and this only says
         # what happened; run them from a copy init makes if switching branches under them keeps happening
@@ -337,19 +343,33 @@ def _dev_hook_argv(module, func, args):
         # command without them; carry them here if those installs from a working tree hit this
         init = "tracekit init --dev" + (" --v2" if module in V2_HOOKS else "") + (
             "" if module in ("tracekit.hook", V2_HOOK) else f" --agent {args[0]}")
-        # exec: a try statement can't follow `;` on one line, and the command must stay one line (Windows); git that
-        # can't run (not on the hook's PATH) gives the plain traceback
-        code += (f"import os,shlex,subprocess; w=base64.b64decode('{b64e(branch.encode('utf-8'))}').decode('utf-8'); "
-                 "exec('''def h(t,e,b):\\n try: n=subprocess.run(['git','-C',r,'symbolic-ref','-q','--short','HEAD'],"
-                 "capture_output=True,text=True,env={k:v for k,v in os.environ.items() if not k.startswith('GIT_')})"
-                 ".stdout.strip() or 'a detached HEAD'\\n except OSError: return sys.__excepthook__(t,e,b)\\n "
-                 "print(f'tracekit: the hook runs Tracekit from the working tree {r}, which cannot import it now "
-                 "({t.__name__}: {e}): it is on {n} there, and was on {w} when the hooks were installed. Check out {w} "
-                 "there again (git -C {shlex.quote(r)} checkout {shlex.quote(w)}) if a branch switch broke it, or run "
-                 f"{init} again from a Tracekit installed outside a working tree (pip install, not pip install -e)', "
-                 "file=sys.stderr)'''); sys.excepthook=h; ")
-        call = "sys.excepthook=sys.__excepthook__; " + call
-    return [sys.executable, "-I", "-c", f"{code}from {module} import {func}; {call}"]
+        # a lambda: a try statement can't follow `;`, and the command stays one line (Windows); with no git on the
+        # hook's PATH, the plain traceback
+        code += (f"import os, shlex, shutil, subprocess; w = {was}; "
+                 f"n = lambda: subprocess.run([{q}git{q}, {q}-C{q}, r, {q}symbolic-ref{q}, {q}-q{q}, {q}--short{q}, "
+                 f"{q}HEAD{q}], capture_output=True, text=True, env={{k: v for k, v in os.environ.items() if not "
+                 f"k.startswith({q}GIT_{q})}}).stdout.strip() or {q}a detached HEAD{q}; "
+                 f"sys.excepthook = lambda t, e, b: print(f{q}tracekit: the hook runs Tracekit from the working tree "
+                 "{r}, which cannot import it now ({t.__name__}: {e}): it is on {n()} there, and was on {w} when the "
+                 "hooks were installed. Check out {w} there again (git -C {shlex.quote(r)} checkout {shlex.quote(w)}) "
+                 f"if a branch switch broke it, or run {init} again from a Tracekit installed outside a working tree "
+                 f"(pip install, not pip install -e){q}, file=sys.stderr) if shutil.which({q}git{q}) else "
+                 "sys.__excepthook__(t, e, b); ")
+    call = (f"raise SystemExit({func}({', '.join(map(_literal, args))}))" if nt else
+            f"raise SystemExit({func}(*sys.argv[{3 if branch else 2}:]))")
+    if branch:
+        call = "sys.excepthook = sys.__excepthook__; " + call
+    return [sys.executable, "-I", "-c", f"{code}from {module} import {func}; {call}",
+            *([] if nt else [ROOT, *([branch] if branch else []), *args])]
+
+
+def _literal(text):
+    """`text` as a single-quoted Python literal that reads the same through Git Bash's, PowerShell's and cmd.exe's
+    double quotes: letters, digits and . _ - : / , + = @ and a space as they are, every other character (a quote,
+    $, `, %, !, \\, &, a newline) as its \\x, \\u or \\U escape, whose backslash none of them reads."""
+    return "'" + "".join(c if c.isascii() and (c.isalnum() or c in "._-:/,+=@ ") else
+                         f"\\x{ord(c):02x}" if ord(c) < 0x100 else f"\\u{ord(c):04x}" if ord(c) < 0x10000 else
+                         f"\\U{ord(c):08x}" for c in text) + "'"
 
 
 def _branch(root):
@@ -372,7 +392,9 @@ def _dev_hook_command(module, func, args):
     py = f'"{argv[0]}"' if os.name == "nt" else shlex.quote(argv[0])
     if argv[2] == "-m":
         return " ".join([py, *argv[1:]])
-    return f'{py} -I -c "{argv[3]}"' if os.name == "nt" else f"{py} -I -c {shlex.quote(argv[3])}"
+    if os.name == "nt":   # the values are in the code (_dev_hook_argv): nothing after it for a shell to read
+        return f'{py} -I -c "{argv[3]}"'
+    return f"{py} -I -c {' '.join(map(shlex.quote, argv[3:]))}"
 
 
 def _hook_version(group):
@@ -679,6 +701,14 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
     _thinking(s, thinking, uninstall)
     if dry_run:
         return None
+    if raw is None and not uninstall:   # init made this file: uninstall deletes it again when nothing else is in it
+        s[CREATED_MARKER] = True
+    elif uninstall and s.pop(CREATED_MARKER, None) and not s:
+        files.remove(d, name)
+        if replaced:
+            print(f"Tracekit {' and '.join(sorted(replaced))} hooks removed from {settings_path}, and the file with "
+                  "them: init made it, and nothing else is in it")
+        return None
     if raw is not None:
         if _parse_settings(raw, settings_path) == s:
             return s.get(THINKING)
@@ -693,6 +723,7 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
 
 THINKING = "showThinkingSummaries"   # Claude Code keeps the model's thinking summaries in its transcript
 THINKING_MARKER = "_tracekit_thinking"   # init turned THINKING on, so uninstall turns it off again
+CREATED_MARKER = "_tracekit_created"   # init made the settings file
 
 
 def _thinking(s, on, uninstall):
@@ -1923,7 +1954,7 @@ def _installed_hooks():
             try:
                 s = read_json(p)
                 hooks.append({"settings": p, **_hook_summary(s)})
-            except ValueError:
+            except (ValueError, AttributeError, TypeError):   # not JSON, or JSON that isn't a settings object
                 hooks.append({"settings": p, "error": "unreadable"})
     for p in MANAGED_SETTINGS.values():
         if os.path.exists(p):
