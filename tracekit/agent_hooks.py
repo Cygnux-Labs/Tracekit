@@ -912,7 +912,12 @@ def config_path(harness, project=None, home=None):
             "devin": os.path.join(base, ".devin", "hooks.v1.json") if project else
                      os.path.join(os.environ["APPDATA"], "devin", "config.json")
                      if os.name == "nt" and not home and os.environ.get("APPDATA") else
-                     os.path.join(base, ".config", "devin", "config.json")}[harness]
+                     os.path.join(base, ".config", "devin", "config.json"),
+            # OpenHands reads <working dir>/.openhands/hooks.json, else $OH_PERSISTENCE_DIR (default ~/.openhands)
+            # /hooks.json (openhands.sdk.hooks.config HookConfig.load): the first that exists, not both
+            "openhands": os.path.join(base, ".openhands", "hooks.json") if project else
+                         os.path.join((None if home else os.environ.get("OH_PERSISTENCE_DIR")) or
+                                      os.path.join(base, ".openhands"), "hooks.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -1165,9 +1170,10 @@ def _command(harness, ev, v2, python):
     # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
     # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
     # can't parse: an interpreter path that needs no quotes goes bare, which both run
-    # assume Droid runs hooks under cmd.exe. goose (sh -c) and Crush keep _hook_command's form. Devin doesn't document
-    # its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that doesn't goes bare, which both run
-    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush"):
+    # assume Droid runs hooks under cmd.exe. goose (sh -c) and Crush keep _hook_command's form, and so does OpenHands
+    # (subprocess.run(shell=True): cmd.exe). Devin doesn't document its Windows shell: a path that needs quotes keeps
+    # cmd.exe's form, and one that doesn't goes bare, which both run
+    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
     c = m.group(1) + c[m.end():] if m else c if harness == "devin" else f"& {c}"
@@ -1346,7 +1352,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         removed = _merge(hooks, path, events, entry, uninstall, flat=True)
     else:
         events = (DROID_EVENTS if harness == "droid" else AGY_EVENTS if harness == "antigravity" else
-                  DEVIN_EVENTS if harness == "devin" else
+                  DEVIN_EVENTS if harness == "devin" else OPENHANDS_EVENTS if harness == "openhands" else
                   ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
                   else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
                   if harness == "qwen" else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
