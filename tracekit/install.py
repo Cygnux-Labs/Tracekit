@@ -1319,7 +1319,7 @@ def _install_venv(requirement, extra=""):
             tmp = tempfile.mkdtemp()
             requirement = [os.path.join(tmp, "Tracekit")]
             shutil.copytree(ROOT, requirement[0], ignore=shutil.ignore_patterns(".git"))
-        subprocess.run([sys.executable, "-m", "venv", "--clear", new], check=True)
+        subprocess.run([sys.executable, "-m", "venv", "--clear", "--prompt", "tracekit", new], check=True)
         name, eq, version = requirement[-1].partition("==")
         subprocess.run([new_python, "-m", "pip", "install", "--quiet", "--no-cache-dir", *requirement[:-1],
                         name + extra + eq + version], check=True)
@@ -1328,6 +1328,13 @@ def _install_venv(requirement, extra=""):
         os.umask(old)
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
+    for entry in os.scandir(os.path.join(new, "bin")):   # pip's scripts and activate name the build path; they run from OPT
+        if entry.is_file(follow_symlinks=False):
+            with open(entry.path, "rb") as f:
+                text = f.read()
+            if new.encode() in text:
+                with open(entry.path, "wb") as f:
+                    f.write(text.replace(new.encode(), OPT.encode()))
     for dirpath, dirnames, filenames in os.walk(new):
         for p in [dirpath] + [os.path.join(dirpath, n) for n in dirnames + filenames]:
             os.lchown(p, 0, 0)
