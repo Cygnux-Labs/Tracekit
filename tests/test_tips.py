@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from datetime import datetime, timezone
 from unittest import mock
@@ -99,7 +100,8 @@ class Context(unittest.TestCase):
         write_jsonl(os.path.join(root, "p", "sess-a.jsonl"), growing())
         t = tips.build([], root, NOW)["tips"][0]
         self.assertTrue(t["ok"], t.get("why"))
-        self.assertEqual((t["from"], t["agent"]), ("Claude Code's transcripts (read-only)", "session sess-a"))
+        self.assertEqual((t["from"], t["agent"], t["session"]),
+                         ("Claude Code's transcripts (read-only)", f"the session of {tips._days(T0, T0 + 2990)}", "sess-a"))
         best = max(c["usd"] for c in t["caps"])
         # the largest compaction point that keeps 80% of the best saving: compacting more often loses more detail
         self.assertEqual(t["cap"], max(c["cap"] for c in t["caps"] if c["usd"] >= tips.NEAR_BEST * best))
@@ -478,6 +480,33 @@ class Sources(unittest.TestCase):
         out = tips.build([], root, NOW)
         self.assertEqual(out["sources"]["transcripts"]["steps"], 3)
 
+    def test_a_session_is_named_by_the_days_it_ran_and_its_folder_never_its_id(self):
+        """A card named a session by its id ("session 56cf0511"), which tells a person nothing; the id stays in the
+        name's tooltip (the tip's `session`, a wait's)."""
+        root = tmp(self)
+        with mock.patch("time.localtime", time.gmtime):
+            self.assertEqual([tips._days(T0, T0 + s) for s in (3600, 6 * 86400, 25 * 86400)],
+                             ["10 Oct", "10–16 Oct", "10 Oct – 4 Nov"])
+            write_jsonl(os.path.join(root, "-Users-me-Tracekit", "56cf0511.jsonl"),
+                        [{**x, "cwd": "/Users/me/Tracekit/"} for x in growing()])
+            write_jsonl(os.path.join(root, "-Users-me-Tracekit", "56cf0511", "subagents", "agent-a1.jsonl"),
+                        [{**cc_assistant("s0", T0 + 86400, write=10), "cwd": "C:\\work\\shop"}])
+            write_jsonl(os.path.join(root, "p", "no-cwd.jsonl"), [cc_assistant("n0", T0 + 2 * 86400, write=10)])
+            agents = tips.read_transcripts(root, 0)[0]
+            signed = tips.signed_steps(uncached(), 0)
+            out = tips.build([], root, NOW)
+        self.assertEqual({k: a["label"] for k, a in agents.items()},
+                         {"56cf0511": "the Tracekit session of 10 Oct", "56cf0511/agent-a1": "a subagent of the shop "
+                          "session on 11 Oct", "no-cwd": "the session of 12 Oct"})
+        self.assertEqual([a["label"] for a in signed.values()], ["the bot run of 10 Oct"])
+        t = out["tips"][0]
+        self.assertEqual((t["agent"], t["session"]), ("the Tracekit session of 10 Oct", "56cf0511"))
+        self.assertTrue(t["line"].startswith("Every step sends the whole context again. In the Tracekit session of "
+                                             "10 Oct, the median step carried"), t["line"])
+        self.assertTrue(t["math"][0].startswith("The Tracekit session of 10 Oct (claude-opus-5-5): 300 steps"))
+        self.assertNotIn("56cf0511", t["line"] + " ".join(t["math"]))
+        self.assertEqual(out["sources"]["transcripts"]["sessions"], 2)   # a subagent's file is its session's
+
     def test_durations_read_as_plain_words(self):
         """A wait read 5m29s and a saving 8m00: words a person reads at a glance, with seconds only under 10 minutes."""
         self.assertEqual([tips._dur(s) for s in (45, 329, 480, 2520, 3600, 3900, 7200)],
@@ -598,17 +627,23 @@ class Page(unittest.TestCase):
                      saving: {usd: -2, pct: -4, minutes: null}, math: [], fix: null}, 0, 7)]))"""))
         self.assertEqual(out[0], ["$0", "under $0.0001", "$0.084", "$0.10", "$41.17", "$600", "costs $16.65 more"])
         self.assertIn("costs $16.65 more", out[1])
-        self.assertIn('WOULD HAVE SAVED<b class="tzero">nothing</b>', out[1])
+        self.assertIn('WOULD HAVE SAVED<b class="tzero">nothing</b>at API list prices in 7 days, an estimate</span>', out[1])
         self.assertNotRegex(out[1], r"\$-|\$0\.0000")
 
     def test_the_read_line_says_what_counted_once_and_that_every_project_is_listed(self):
-        out = page_js(self.NAMES + ["renderTipsPage"], """
+        out, head = json.loads(page_js(self.NAMES + ["renderTipsPage"], """
             let PAGE = "tips", TIPSON = true, TIPSERR = "", TIPSASKED = true, tipsKey = null, html = "";
-            const put = (id, h) => { html = h; }, $ = () => ({}), loadTips = () => {};
+            const sum = {}, put = (id, h) => { html = h; }, $ = () => sum, loadTips = () => {};
             let TIPS = {window: [0, 7 * 86400], prices: "2026-11-05", root: "~/.claude/projects", tips: [],
                         sources: {signed: {records: 9, steps: 2, holds: 0, also: {runs: 1, steps: 300}, span: [43200, 86400]},
-                                  transcripts: {files: 3, steps: 400, unreadable: 0}}};
-            renderTipsPage(); process.stdout.write(html);""")
+                                  transcripts: {files: 3, steps: 400, unreadable: 0, sessions: 2}}};
+            renderTipsPage(); process.stdout.write(JSON.stringify([html, sum.textContent]));"""))
+        # one line of what it read, the rest a click away
+        self.assertIn('<div class="tfrom"><span>From 2 Claude Code sessions and 9 signed records, the last 7 days.</span>',
+                      out)
+        self.assertLess(out.index("<summary>WHAT THIS IS BASED ON</summary><div>READ: 9 signed records"),
+                        out.index("</details>"))
+        self.assertEqual(head, "0 of 0 with enough data · advice from your own records; not part of the signed evidence")
         self.assertIn("300 more signed model steps of 1 run the transcripts also hold, counted once, from them", out)
         self.assertIn("transcripts in ~/.claude/projects, read-only", out)
         self.assertIn("the tips list sessions from every project under that folder", out)
@@ -632,8 +667,27 @@ class Page(unittest.TestCase):
         out = json.loads(page_js(self.NAMES, "process.stdout.write(JSON.stringify(["
                                  + card.replace("SLOWER", "null") + "," + card.replace("SLOWER", "0.6") + "]))"))
         self.assertNotIn("slower", out[0])
-        self.assertIn("compaction&#39;s effect on time isn&#39;t measured", out[0])
-        self.assertIn("steps above 200k answered a median 0.6 s slower here, a correlation, not a saving", out[1])
+        self.assertIn('<span class="dim">time: not estimated</span>', out[0])
+        self.assertIn('<span class="dim">time: not estimated; steps above 200k answered a median 0.6 s slower here, a '
+                      'correlation, not a saving</span>', out[1])
+
+    def test_a_card_gives_its_fix_first_then_the_evidence_then_the_saving_in_dollars_and_usage(self):
+        card = """tipCard({id: "context", ok: true, from: "f", cap: 200000, title: "Compact at about 200k tokens",
+            agent: "the FOLDER session of 1–7 Nov", session: "sess-a",
+            line: "Every step sends the whole context again. In the FOLDER session of 1–7 Nov, the median step",
+            chart: {x: [0, 1], actual: [1, 3], replay: [1, 2], n: 2, cap: 2, marks: [], read: 0.2}, caps: [],
+            saving: {usd: 5, pct: 9, minutes: null}, math: ["m"], fix: {text: "Compact", copy: "/compact keep it"}}, 0, 7)"""
+        # a folder is the agent's to name: "$&" in it is text, not a replacement pattern
+        card, odd = json.loads(page_js(self.NAMES, "process.stdout.write(JSON.stringify(["
+                                       + card.replace("FOLDER", "Tracekit") + "," + card.replace("FOLDER", "$&") + "]))"))
+        marks = ["THE FIX", 'data-copy="/compact keep it"', '<div class="tst">', "<svg", "WOULD HAVE SAVED",
+                 "time: not estimated", "THE ARITHMETIC"]
+        self.assertEqual([m for m in sorted(marks, key=card.index)], marks)
+        self.assertIn('In <span class="tname" title="session sess-a">the Tracekit session of 1–7 Nov</span>, the median', card)
+        self.assertIn('In <span class="tname" title="session sess-a">the $&amp; session of 1–7 Nov</span>, the median', odd)
+        self.assertIn("about $5.00</b>at API list prices in 7 days, an estimate: 9% of the cost of the tokens these "
+                      "sessions sent to the model. On a subscription it is usage, not dollars: the same tokens count "
+                      "toward its usage limit.</span>", card)
 
     def test_the_page_asks_for_tips_only_when_its_snapshot_says_it_has_them(self):
         """A link opened TIPS on a sign-in's page: its /api/tips 403 would end the page's session."""
@@ -658,7 +712,7 @@ class Page(unittest.TestCase):
         self.assertIn("No signed records &lt;here&gt;.", out[0])
         self.assertIn('data-copy="tracekit approvals list"', out[1])
         self.assertIn('data-page="approvals"', out[1])
-        self.assertIn("not measured", out[1])
+        self.assertIn('<span class="dim">time: not estimated</span>', out[1])
 
 
 if __name__ == "__main__":

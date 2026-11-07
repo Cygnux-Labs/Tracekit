@@ -347,14 +347,19 @@ confirmed it says "caused".
 
 ### TIPS
 
-**TIPS** reads the last 7 days and says what each step of your coding agents cost and how to cut it. Each tip is a
-card: one plain statement; its evidence, a chart drawn to scale or a table; what it would have saved in dollars and
-time, an estimate, with **THE ARITHMETIC** one click away; and the fix, with **COPY** where it is a command or a line
-to paste.
+**TIPS** reads the last 7 days and says what each step of your coding agents cost and how to cut it. The page opens
+with one line, how many Claude Code sessions and signed records it read; **WHAT THIS IS BASED ON** opens the rest. Each
+tip is a card: the fix first, with **COPY** where it is a command or a line to paste; then one plain statement and its
+evidence, a chart drawn to scale or a table; then what it would have saved, an estimate, with **THE ARITHMETIC** one
+click away. A saving is in dollars at API list prices and, for compaction, as a share of what the tokens those
+sessions sent to the model cost; a subscription bills none of it, but the same tokens count toward its usage limit.
+Time saved shows only where the records measure it, else *time: not estimated*. A card names a session by the days it
+ran and the folder it started in (its transcript's `cwd`), as in *the Tracekit session of 1–7 Nov*, in the local time
+of the machine that runs `tracekit view`; hover the name for the session's id.
 
 | Tip | Evidence | Fix |
 |---|---|---|
-| 1 · CONTEXT | every step sends the whole context again: each main session's context at every step as it ran, and replayed on the same growth compacting at a lower point (the largest of 100k to 500k tokens that keeps 80% of the best saving), each replayed step keeping its real cache behaviour (a rebuild after idle time, or a call with no cache, re-pays its whole replayed context; a context that shrinks by less than half shrinks the replay's by the same share); the right axis is what that much context cost a step, at the session's own average | Claude Code: `/compact` at each task boundary and at that point. Another agent: trim or summarise the history it sends there, and turn on prompt caching first when most of it goes uncached |
+| 1 · CONTEXT | every step sends the whole context again: each main session's context at every step as it ran, and replayed on the same growth compacting at a lower point (the largest of 100k to 500k tokens that keeps 80% of the best saving), each replayed step keeping its real cache behaviour (a rebuild after idle time, or a call with no cache, re-pays its whole replayed context; a context that shrinks by less than half shrinks the replay's by the same share); the right axis is what that much context cost a step, at the session's own average | Claude Code: compact (`/compact`, or auto-compact at a lower size) at that point and at each task boundary. Another agent: trim or summarise the history it sends there, and turn on prompt caching first when most of it goes uncached |
 | 2 · CACHE | each wait that outlived the prompt cache on a timeline, with what the step after it paid to write its whole context again; the waits by cause; subagent steps by the wait before them, and how many rebuilt. Each cache write records whether it lasts 5 minutes or 1 hour, counted from the start of the request that last read or wrote it, so a wait runs from one request's start to the next's. A wait for a person (an answered hold, a question) or an idle one is drawn but not counted, nor is the rewrite after a compaction; polling instead still pays for what the step adds | a line for `AGENTS.md`: keep each blocking call under the cache's lifetime less 30 s and poll in bounded loops, with the lifetimes the writes showed |
 | 3 · HOLDS NOBODY ANSWERED | held calls answered and not (the agent's retry of a held call counted with it, as PERMISSIONS and the run review count them), in the main session and in subagents, how long they blocked the agent, and the rules behind the ones nobody answered | when they waited: remove `TRACEKIT_APPROVAL_WAIT` from the `env` block of the Claude Code settings that set it (`~/.claude/settings.json` or `$CLAUDE_CONFIG_DIR/settings.json`, the project's `.claude/settings.json` or `.claude/settings.local.json`; **COPY** gives the `jq` edit of the first), unset it in the agent's shell, then restart the agent; otherwise the rule's remedy and `tracekit approvals list` |
 
@@ -364,15 +369,15 @@ transcripts, read-only, as `tracekit audit` reads them: `--transcripts DIR`, by 
 `$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A signed step the transcripts also hold counts once, from the
 transcripts: it is matched step by step, by a tool_use id or by identical token counts within 5 minutes of one
 transcript message no other step matched (the gateway signs each exchange under an id of its own, and a message
-without tool calls has no tool_use id). The page's first line says how many signed steps that was, and the time span
-of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7
+without tool calls has no tool_use id). **WHAT THIS IS BASED ON** says how many signed steps that was, and the time
+span of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7
 days. Holds come only from signed records; a transcript adds how long each blocked the agent and
-whether it ran in a subagent. Each card names every source it mixes, and the page's first line says what it read; the
+whether it ran in a subagent. Each card names every source it mixes, and **WHAT THIS IS BASED ON** says what it read; the
 tips list sessions from every project under the transcripts folder. Dollars are Anthropic's list prices, dated in
 `tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. The sessions of a model with
 no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most
-once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
-are in [limits](limits.md#viewer).
+once a minute, and at once on **READ AGAIN**. The tips are advice from your own records, not part of the signed
+evidence. Its limits are in [limits](limits.md#viewer).
 
 ### A v1 bundle
 

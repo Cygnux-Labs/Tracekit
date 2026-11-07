@@ -125,6 +125,26 @@ def _family(cmd):
         "a shell script"
 
 
+def _days(t0, t1):
+    """The days from t0 to t1 in local time, as a person names them: "6 Nov", "1–7 Nov", "30 Oct – 2 Nov"."""
+    # lean: the local time of the machine that runs tracekit view, where the page shows times in the browser's; a
+    # browser in another zone can read a session a day off at its edges. Send the span for the page to name if the
+    # TIPS page is read from another zone
+    a, b = time.localtime(t0), time.localtime(t1)
+    last = f"{b.tm_mday} {time.strftime('%b', b)}"
+    if a[:3] == b[:3]:
+        return last
+    return (f"{a.tm_mday}–" if a[:2] == b[:2] else f"{a.tm_mday} {time.strftime('%b', a)} – ") + last
+
+
+def _label(a, what, noun):
+    """An agent named by its project folder (a signed run's agent name) and the days it ran, never by an id: "the
+    Tracekit session of 1–7 Nov", "a subagent of the Tracekit session on 6 Nov". The page shows its key in a tooltip."""
+    whose = f"the {what} {noun}" if isinstance(what, str) and what else f"the {noun}"
+    days = _days(a["steps"][0]["t"], a["steps"][-1]["t"])
+    return f"a subagent of {whose} on {days}" if a["kind"] == "subagent" else f"{whose} of {days}"
+
+
 def signed_steps(rows, since):
     """{agent key: agent} from the viewer's rows of signed model exchanges that carry usage (observe.Translator's
     tk_model rows), each step at its record's time. The usage schema has no cache lifetime: its writes are `w`."""
@@ -136,8 +156,7 @@ def signed_steps(rows, since):
         sub = r.get("agent_id")
         key = r.get("session_id", "") + ("/" + sub if sub else "")
         a = agents.setdefault(key, {"key": key, "kind": "subagent" if sub else "main", "source": "signed",
-                                    "label": f"{r.get('agent') or 'agent'} run {str(r.get('session_id'))[:8]}"
-                                             + (f" · subagent {str(sub)[:8]}" if sub else ""), "steps": []})
+                                    "what": r.get("agent"), "steps": []})
         s = _step(r["ts"], (r.get("v2") or {}).get("exchange_id"), r.get("model"))
         s.update({"in": _int(u.get("input_tokens")) or 0, "out": _int(u.get("output_tokens")) or 0,
                   "cr": _int(u.get("cache_read_input_tokens")) or 0, "w": _int(u.get("cache_creation_input_tokens")) or 0,
@@ -145,6 +164,7 @@ def signed_steps(rows, since):
         a["steps"].append(s)
     for a in agents.values():
         a["steps"].sort(key=lambda s: s["t"])
+        a["label"] = _label(a, a.pop("what"), "run")
     return agents
 
 
@@ -170,9 +190,11 @@ def read_transcripts(root, since):
         sub = "subagents" in os.path.relpath(path, root).split(os.sep)
         name = os.path.basename(path)[:-len(".jsonl")]
         key = session + ("/" + name if sub else "")
-        mine, last_user = {}, None
+        mine, last_user, folder = {}, None, None
         try:
             for _n, e in transcript_entries(f, final=True):
+                if e and folder is None and isinstance(e.get("cwd"), str):   # the folder the session started in
+                    folder = re.split(r"[\\/]", e["cwd"].rstrip("\\/"))[-1] or None
                 at = e and _entry_time(e)
                 if at is None or at.timestamp() < since:
                     continue
@@ -211,11 +233,11 @@ def read_transcripts(root, since):
             f.close()
         if mine:
             a = agents.setdefault(key, {"key": key, "kind": "subagent" if sub else "main", "source": "transcripts",
-                                        "label": (f"subagent {name[6:14]} of session {session[:8]}" if sub else
-                                                  f"session {session[:8]}"), "steps": []})
+                                        "what": folder, "steps": []})
             a["steps"] += mine.values()
     for a in agents.values():
         a["steps"].sort(key=lambda s: s["t"])
+        a["label"] = _label(a, a.pop("what"), "session")
     return agents, calls, files, unreadable
 
 
@@ -411,12 +433,14 @@ def context_tip(agents):
     above, below = [d for c, d in lat if c > cap], [d for c, d in lat if c <= cap]
     slower = statistics.median(above) - statistics.median(below) if len(above) >= 10 and len(below) >= 10 else None
     x, act = _series(ctx)
-    tip.update(ok=True, cap=cap, agent=a["label"], **{"from": _from({x["a"]["source"] for x in rows})},
+    tip.update(ok=True, cap=cap, agent=a["label"], session=a["key"],
+               **{"from": _from({x["a"]["source"] for x in rows})},
                slower=round(slower, 1) if slower is not None and slower > 0 else None,
                title=f"{'Compact' if claude else 'Trim the history it sends'} at about {_k(cap)} tokens"
                + (f", not at {_k(at)}" if at else ""),
-               line=(f"Every step sends the whole context again. {a['label']}'s median step carried {_k(med)} tokens "
-                     f"of it: {_money(statistics.median(_input_usd(s, r) for s in steps))} before it did anything."),
+               line=(f"Every step sends the whole context again. In {a['label']}, the median step carried {_k(med)} "
+                     f"tokens of it: {_money(statistics.median(_input_usd(s, r) for s in steps))} before it did "
+                     "anything."),
                saving={"usd": round(saved[cap], 2), "pct": round(100 * saved[cap] / total) if total else 0,
                        "minutes": None},
                caps=[{"cap": c, "usd": round(saved[c], 2), "compactions": sum(x["replays"][c][1] for x in rows
@@ -424,13 +448,13 @@ def context_tip(agents):
                      for c in CAPS if any(c in x["replays"] for x in rows)],
                chart={"x": x, "actual": act, "replay": _series(sim)[1], "n": len(ctx), "cap": cap,
                       "marks": [[i, ctx[i - 1]] for i in top["drops"]], "read": round(per, 4)},
-               math=[f"{a['label']} ({top['model']}): {len(ctx):,} steps; its context was {_k(med)} tokens at the "
-                     f"median and {_k(max(ctx))} at most; it compacted {len(top['drops'])} "
-                     f"time{'s' * (len(top['drops']) != 1)}"
+               math=[f"{a['label'][:1].upper()}{a['label'][1:]} ({top['model']}): {len(ctx):,} steps; its context "
+                     f"was {_k(med)} tokens at the median and {_k(max(ctx))} at most; it compacted "
+                     f"{len(top['drops'])} time{'s' * (len(top['drops']) != 1)}"
                      + (f", at a median {_k(at)}, down to {_k(top['post'])}." if at else "."),
-                     f"Its input side as it ran (context read from cache, written to it, or sent uncached): "
-                     f"{_money(top['actual'])}, {_money(per)} per million tokens of context a step on average (the "
-                     "chart's right axis).",
+                     "The tokens it sent to the model as it ran (context read from cache, written to it, or sent "
+                     f"uncached) cost {_money(top['actual'])}, {_money(per)} per million tokens of context a step on "
+                     "average (the chart's right axis).",
                      f"Replayed on the same growth, compacting whenever it passed {_k(cap)}: {n} compactions, each down "
                      f"to {_k(top['post'])}, one summary call ({_k(SUMMARY)} output tokens at ${r['output']}/M plus a "
                      "re-read) and a cache write of what is left. Every other step keeps its real cache behaviour (a "
@@ -438,15 +462,16 @@ def context_tip(agents):
                      f"{_money(usd)}.",
                      f"Would have saved: {_money(top['actual'])} - {_money(usd)} = {_about(top['actual'] - usd)}; "
                      f"across the {len(rows)} main session{'s' * (len(rows) != 1)} of {MIN_STEPS}+ steps, "
-                     f"{_about(saved[cap])} of {_money(total)}.",
+                     f"{_about(saved[cap])} of {_money(total)}, what the tokens they sent to the model cost.",
                      f"{_k(cap)} is the largest compaction point that keeps {round(100 * NEAR_BEST)}% of the best "
                      "saving tried: compacting more often saves a little more and loses more detail.",
                      "An estimate: not counted is work redone when a summary drops a detail. Time isn't counted either"
                      + (f": above {_k(cap)} a step answered a median {slower:.1f} s slower here, a correlation, not a "
                         "measured saving." if slower is not None and slower > 0 else ".")]
                + ([f"No price for {', '.join(sorted(unpriced))}: those sessions are left out."] if unpriced else []),
-               fix={"text": f"Run /compact with a one-line focus at each task boundary (a PR merged, a release tagged), "
-                            f"and at about {_k(cap)} tokens; start a new session for unrelated work.",
+               fix={"text": f"Compact (Claude Code's /compact, or auto-compact at a lower size) at about {_k(cap)} "
+                            "tokens and at each task boundary (a PR merged, a release tagged); start a new session for "
+                            "unrelated work. Give /compact a one-line focus:",
                     "copy": "/compact keep the open task, its files and the decisions made"} if claude else
                {"text": (f"Most of what this agent sends ({round(100 * uncached)}%) goes uncached: mark the stable "
                          "start of each request for prompt caching first, which cuts more than compaction. "
@@ -502,7 +527,8 @@ def cache_tip(agents, calls, held=(), asked=()):
             alt = polls * ((ctx - grew) * r["cache_read"] + POLL_OUT * r["output"]) / 1e6 + kept   # polls before it grew
             fix = blocked and alt < now
             waits.append({"t": _start(p), "s": round(gap), "usd": round(now, 4), "alt": round(alt, 4),
-                          "tokens": _writes(s), "agent": a["label"], "kind": a["kind"], "life": life, "fix": fix,
+                          "tokens": _writes(s), "agent": a["label"], "session": a["key"], "kind": a["kind"],
+                          "life": life, "fix": fix,
                           "cause": ("a call held for a person" if c["id"] in held else c["family"]) if fix else
                           "idle: waiting for a person" if a["kind"] == "main" or person else
                           "idle: resumed after it handed back"})
@@ -683,6 +709,7 @@ def build(rows, root=None, now=None):
                                    "span": [min(times), max(times)] if times else None,
                                    "holds": len(holds)},
                         "transcripts": {"files": files, "agents": len(agents), "unreadable": len(unreadable),
+                                        "sessions": len({k.split("/")[0] for k in agents}),
                                         "steps": sum(len(a["steps"]) for a in agents.values())}},
             "tips": [context_tip(every), cache_tip(every, calls, {h["id"] for h in holds if h["answered"] is None},
                                                    {h["id"] for h in holds if h["answered"] is not None}),

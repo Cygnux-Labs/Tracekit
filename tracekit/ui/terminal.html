@@ -2847,8 +2847,8 @@
       color: var(--magenta)
     }
 
-    /* TIPS: a card per tip: its statement, the evidence (a chart drawn to scale, or a table), what it saves with the
-       arithmetic one click away, and the fix with its COPY */
+    /* TIPS: a card per tip: its fix with its COPY, then its statement, the evidence (a chart drawn to scale, or a
+       table), and what it saves with the arithmetic one click away */
     .tips {
       display: flex;
       flex-direction: column;
@@ -2865,8 +2865,19 @@
     }
 
     .tread {
+      display: grid;
+      gap: 4px;
       color: var(--muted);
       line-height: 1.5
+    }
+
+    .tfrom {
+      color: var(--text)
+    }
+
+    .tname {
+      border-bottom: 1px dotted var(--faint);
+      cursor: help
     }
 
     .tcard {
@@ -4165,7 +4176,7 @@
       return `<svg class="tchart" viewBox="0 0 ${esc(W)} ${esc(H)}" role="img" aria-label="${esc(`${t.waits.length} waits that outlived the prompt cache, by when they began and what the rebuild after each cost`)}">`
         + tipTicks(top).map(v => `<line class="tgrid" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(v)))}" y2="${esc(f(Y(v)))}"/><text x="${esc(L - 6)}" y="${esc(f(Y(v) + 3))}" text-anchor="end">${esc(tipUsd(v))}</text>`).join("")
         + [0, .25, .5, .75, 1].map(k => `<text x="${esc(f(X(t0 + k * span)))}" y="${esc(H - B + 14)}" text-anchor="${esc(k ? k === 1 ? "end" : "middle" : "start")}">${esc(lab(t0 + k * span))}</text>`).join("")
-        + [...t.waits].sort((a, b) => a.fix - b.fix).map(w => `<line class="tstem${w.fix ? "" : " tidle"}" x1="${esc(f(X(w.t)))}" x2="${esc(f(X(w.t)))}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(w.usd)))}"/><circle class="tdot${w.fix ? "" : " tidle"}" cx="${esc(f(X(w.t)))}" cy="${esc(f(Y(w.usd)))}" r="3.5"><title>${esc(`${fmtD(w.t)} ${fmtT(w.t)} ${TZ} · ${w.agent} · waited ${tipDur(w.s)} (its cache lasts ${tipDur(w.life)}) · wrote ${tipTok(w.tokens)} tokens again: ${tipUsd(w.usd)}${w.fix ? ` (polling: ${tipUsd(w.alt)})` : ""} · ${w.cause}`)}</title></circle>`).join("")
+        + [...t.waits].sort((a, b) => a.fix - b.fix).map(w => `<line class="tstem${w.fix ? "" : " tidle"}" x1="${esc(f(X(w.t)))}" x2="${esc(f(X(w.t)))}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(w.usd)))}"/><circle class="tdot${w.fix ? "" : " tidle"}" cx="${esc(f(X(w.t)))}" cy="${esc(f(Y(w.usd)))}" r="3.5"><title>${esc(`${fmtD(w.t)} ${fmtT(w.t)} ${TZ} · ${w.agent} (session ${w.session}) · waited ${tipDur(w.s)} (its cache lasts ${tipDur(w.life)}) · wrote ${tipTok(w.tokens)} tokens again: ${tipUsd(w.usd)}${w.fix ? ` (polling: ${tipUsd(w.alt)})` : ""} · ${w.cause}`)}</title></circle>`).join("")
         + `<line class="tax" x1="${esc(L)}" x2="${esc(W - R)}" y1="${esc(f(Y(0)))}" y2="${esc(f(Y(0)))}"/><text x="2" y="${esc(T - 8)}">REBUILD</text><text x="${esc(W - R)}" y="${esc(H - 1)}" text-anchor="end">${esc(TZ)}</text></svg>`;
     }
     const tipBar = (rows, key) => `<div class="tbars">` + rows.map(([label, parts, text]) => `<span>${esc(label)}</span><div class="tbar">` + parts.map(([w, cls, title]) => `<span class="${esc(cls)}" style="width:${esc((100 * w).toFixed(2))}%" title="${esc(title)}"></span>`).join("") + `</div><span class="dim">${esc(text)}</span>`).join("") + `</div>` + (key || "");
@@ -4187,16 +4198,23 @@
         + (t.rules.length ? `<table class="wt"><thead><tr><th>RULE</th><th>NOBODY ANSWERED</th><th>WHY IT HOLDS</th></tr></thead><tbody>` + t.rules.map(r => `<tr><td>${esc(r.id)}</td><td>${esc(r.n)}</td><td>${esc(r.reason)}</td></tr>`).join("") + `</tbody></table>` : "");
     }
     const TIPNAME = { context: "CONTEXT", cache: "CACHE", holds: "HOLDS NOBODY ANSWERED" };
-    const TIPTIME = { context: "compaction's effect on time isn't measured", cache: "a wait stays a wait; a held call's waiting time is counted in tip 3", holds: "the agent sat blocked on calls nobody answered" };
+    const TIPTIME = { cache: "a wait stays a wait; a held call's waiting time is counted in tip 3", holds: "the agent sat blocked on calls nobody answered" };
     function tipCard(t, i, days) {
       const head = `<div class="tsrc">TIP ${esc(i + 1)} · ${esc(TIPNAME[t.id] || t.id)}` + (t.from ? " · from " + esc(t.from) : "") + `</div>`;
       if (!t.ok) return `<section class="tcard tno">` + head + `<div class="tst">${esc(t.why || "Not enough data to say.")}</div>` + (t.id === "cache" ? tipBins(t) : "") + `</section>`;
-      const sv = t.saving || {};
-      return `<section class="tcard">` + head + `<h3>${esc(t.title)}</h3><div class="tst">${esc(t.line)}</div>` + tipEvidence(t)
-        + `<div class="tsave">` + (sv.usd != null ? `<span>WOULD HAVE SAVED<b class="${sv.usd >= 0.005 ? "" : "tzero"}">${esc(sv.usd >= 0.005 ? "about " + tipUsd(sv.usd) : "nothing")}</b>${esc(`in ${plural(days, "day")}, an estimate` + (sv.pct > 0 ? `: ${sv.pct}% of these sessions' input side` : ""))}</span>` : "")
-        + `<span>TIME<b class="${sv.minutes ? "" : "tzero"}">${esc(sv.minutes == null ? "not measured" : sv.minutes ? "about " + tipDur(sv.minutes * 60) : "none")}</b>${esc(t.id === "context" && t.slower > 0 ? `steps above ${tipTok(t.cap)} answered a median ${t.slower} s slower here, a correlation, not a saving` : TIPTIME[t.id] || "")}</span></div>`
-        + `<details class="tmath"><summary>THE ARITHMETIC</summary><ol>` + t.math.map(m => `<li>${esc(m)}</li>`).join("") + `</ol></details>`
-        + (t.fix ? `<div class="tfix"><div class="tsrc">THE FIX</div><div>${esc(t.fix.text)}${t.id === "holds" ? ' <button type="button" class="cp" data-page="approvals">APPROVALS</button>' : ""}</div>` + (t.fix.copy ? `<div><code class="shell">${esc(t.fix.copy)}</code>` + cp(t.fix.copy) + `</div>` : "") + `</div>` : "") + `</section>`;
+      const sv = t.saving || {}, saved = sv.usd >= 0.005;
+      // the session by its days and folder, its id on hover (a function: a folder's "$&" is no replacement pattern)
+      const line = t.session ? esc(t.line).replace(esc(t.agent), () => `<span class="tname" title="${esc("session " + t.session)}">${esc(t.agent)}</span>`) : esc(t.line);
+      const slower = t.id === "context" && t.slower > 0 ? `steps above ${tipTok(t.cap)} answered a median ${t.slower} s slower here, a correlation, not a saving` : "";
+      return `<section class="tcard">` + head + `<h3>${esc(t.title)}</h3>`
+        + (t.fix ? `<div class="tfix"><div class="tsrc">THE FIX</div><div>${esc(t.fix.text)}${t.id === "holds" ? ' <button type="button" class="cp" data-page="approvals">APPROVALS</button>' : ""}</div>` + (t.fix.copy ? `<div><code class="shell">${esc(t.fix.copy)}</code>` + cp(t.fix.copy) + `</div>` : "") + `</div>` : "")
+        + `<div class="tst">${line}</div>` + tipEvidence(t)
+        + `<div class="tsave">` + (sv.usd != null ? `<span>WOULD HAVE SAVED<b class="${saved ? "" : "tzero"}">${esc(saved ? "about " + tipUsd(sv.usd) : "nothing")}</b>${esc(`at API list prices in ${plural(days, "day")}, an estimate`
+          + (saved && sv.pct > 0 ? `: ${sv.pct}% of the cost of the tokens these sessions sent to the model` : "")
+          + (saved ? ". On a subscription it is usage, not dollars: the same tokens count toward its usage limit." : ""))}</span>` : "")
+        + (sv.minutes == null ? `<span class="dim">${esc("time: not estimated" + (slower ? "; " + slower : ""))}</span>`
+          : `<span>TIME<b class="${sv.minutes ? "" : "tzero"}">${esc(sv.minutes ? "about " + tipDur(sv.minutes * 60) : "none")}</b>${esc(TIPTIME[t.id] || "")}</span>`) + `</div>`
+        + `<details class="tmath"><summary>THE ARITHMETIC</summary><ol>` + t.math.map(m => `<li>${esc(m)}</li>`).join("") + `</ol></details></section>`;
     }
     // TIPS: what the store's signed records and Claude Code's transcripts say each step cost, and the three tips
     function renderTipsPage() {
@@ -4213,14 +4231,16 @@
       const s = TIPS.sources, [w0, w1] = TIPS.window, days = Math.round((w1 - w0) / 86400), tr = s.transcripts;
       const also = s.signed.also || {};
       const span = s.signed.span ? ` from ${fmtD(s.signed.span[0])} ${fmtT(s.signed.span[0]).slice(0, 5)} to ${fmtD(s.signed.span[1])} ${fmtT(s.signed.span[1]).slice(0, 5)}, the viewer's live view` : "";
-      put("tipsp", `<div class="tips"><div class="tread">READ: ${esc(plural(s.signed.records, "signed record") + span)} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
+      const from = `From ${TIPS.root ? plural(tr.sessions, "Claude Code session") + " and " : ""}${plural(s.signed.records, "signed record")}, the last ${plural(days, "day")}.`;
+      put("tipsp", `<div class="tips"><div class="tread"><div class="tfrom"><span>${esc(from)}</span> <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>`
+        + `<details class="tmore"><summary>WHAT THIS IS BASED ON</summary><div>READ: ${esc(plural(s.signed.records, "signed record") + span)} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
         + esc(also.steps ? ` · ${plural(also.steps, "more signed model step")} of ${plural(also.runs, "run")} the transcripts also hold, counted once, from them` : "")
         + esc(TIPS.root ? ` · Claude Code's transcripts in ${TIPS.root}, read-only: ${plural(tr.files, "file")}, ${plural(tr.steps, "step")}` + (tr.unreadable ? `, ${tr.unreadable} unreadable` : "")
           + "; the tips list sessions from every project under that folder"
           : " · no transcripts read: start tracekit view with --transcripts DIR (with --dev it reads Claude Code's own)")
         + esc(` · the last ${plural(days, "day")}, to ${fmtD(w1)} ${fmtT(w1)} ${TZ} · dollars at Anthropic's list prices of ${TIPS.prices}: a subscription bills none of them, but the same tokens fill its usage limit.`)
-        + ` <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>` + TIPS.tips.map((t, i) => tipCard(t, i, days)).join("") + `</div>`);
-      $("tipssum").textContent = `${TIPS.tips.filter(t => t.ok).length} of ${TIPS.tips.length} with enough data · operator-side, not evidence`;
+        + `</div></details></div>` + TIPS.tips.map((t, i) => tipCard(t, i, days)).join("") + `</div>`);
+      $("tipssum").textContent = `${TIPS.tips.filter(t => t.ok).length} of ${TIPS.tips.length} with enough data · advice from your own records; not part of the signed evidence`;
     }
     // the calls held for a person (decided ask) in every run the page has, with what came of each (PERMISSIONS' words)
     let heldKey = [], heldList = [];

@@ -3547,6 +3547,11 @@ class NothingLost(unittest.TestCase):
                              "is the evidence",
                              "Download the bundle and check it with tracekit verify from the signed release: that, "
                              "not this page, is the evidence", "THE VIEWER'S CHECK, OPERATOR-SIDE", "operator-side"],
+            "tips: the fix first, plain words": ["function renderTipsPage()", "WHAT THIS IS BASED ON", "READ AGAIN",
+                                                 "advice from your own records; not part of the signed evidence",
+                                                 "THE FIX", "WOULD HAVE SAVED", "at API list prices",
+                                                 "the same tokens count toward its usage limit", "time: not estimated",
+                                                 "THE ARITHMETIC", 'class="tname" title='],
             "security": ["const esc = s =>", "const vis = s =>", "[\\p{Cc}\\p{Cf}\\p{Zl}\\p{Zp}\\p{Default_Ignorable_Code_Point}]/gu"],
         }
         for feature, marks in rows.items():
