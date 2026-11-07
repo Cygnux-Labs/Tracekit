@@ -104,7 +104,7 @@ gateway, for the identity it decided the call for, alone; a run closed mid-call 
 - Custody covers only the tool calls routed through the gateway: an agent that can reach an upstream itself, or holds
   its credential, can call around it. Keep the credentials only in the gateway and fence the agents' egress
   ([Kubernetes](deploy-kubernetes.md#custody)).
-- Tools, resources and prompts are listed exhaustively across all cursor pages, up to a 100-page safety bound per upstream per list; exceeding it is a JSON-RPC error.
+- Tools, resources and prompts are listed up to 100 pages from each upstream; past that, the whole listing fails with an error naming the upstream.
 - A resource is read through the upstream that listed it: list resources before reading one; a URI from a resource
   template isn't routed.
 - No server-initiated messages: sampling, elicitation, subscriptions and progress notifications from an upstream don't

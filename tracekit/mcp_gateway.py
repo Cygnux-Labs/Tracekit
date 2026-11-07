@@ -46,6 +46,7 @@ import concurrent.futures
 import os
 import re
 import threading
+import time
 import uuid
 
 from tracekit import __version__, yamlmini
@@ -72,7 +73,7 @@ LISTS = {"tools/list": ("list_tools", "tools"), "prompts/list": ("list_prompts",
 
 
 class Upstreams:
-    """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, *a)` runs one
+    """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, ...)` runs one
     of the mcp Client's methods on it from any thread. A session that ended (a stdio upstream that exited, a remote
     one that went away) is opened again on the next call."""
 
@@ -111,12 +112,12 @@ class Upstreams:
             fut.cancel()   # else the call keeps running (and holding its buffers) after its answer was given up
             raise
 
-    def call(self, name, method, *a, **kw):
+    def call(self, name, method, *a, timeout=UPSTREAM_TIMEOUT_S, **kw):
         with self._locks[name]:
             if not self._stop.is_set() and (self._held[name].done() or _closed(self.clients[name])):
                 self._held[name].cancel()   # its session ended (the upstream exited or went away): a new one
                 self._open(name)
-        return self._run(getattr(self.clients[name], method)(*a, **kw))
+        return self._run(getattr(self.clients[name], method)(*a, **kw), timeout=timeout)
 
     def close(self):
         self.loop.call_soon_threadsafe(self._stop.set)
@@ -182,28 +183,36 @@ class _McpGateway(_Handler):
         if method == "ping":
             return {}
         if method in LISTS:
-            from mcp import types as mcp_types
             call, kind = LISTS[method]
             listed = []
             for up in ups.clients:
-                cursor, n, all_items = None, 0, []
+                deadline = time.monotonic() + UPSTREAM_TIMEOUT_S
+                cursor, n, seen, all_items = None, 0, set(), []
                 while True:
-                    kw = {"params": mcp_types.PaginatedRequestParams(cursor=cursor)} if cursor is not None else {}
-                    result = ups.call(up, call, **kw)
+                    result = ups.call(up, call, cursor=cursor,
+                                      timeout=max(1.0, deadline - time.monotonic()))
                     items = getattr(result, kind)
                     if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
                         items = [t for t in items if not t.name.startswith(PROMPT)]
-                    if kind == "resources":
-                        for r in items:
-                            _remember(gw, str(r.uri), up)
                     all_items.extend(items)
-                    cursor = getattr(result, "next_cursor", None)
+                    cursor = getattr(result, "nextCursor", None)
                     n += 1
                     if cursor is None:
                         break
+                    if cursor in seen:
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list cursor {cursor!r} repeated; "
+                                     f"the gateway lists at most {MAX_LIST_PAGES} pages per upstream; "
+                                     "give the upstream larger pages or fix its cursor")
+                    seen.add(cursor)
                     if n >= MAX_LIST_PAGES:
-                        raise _Error(-32603, f"upstream {up!r}: {kind}/list exceeded {MAX_LIST_PAGES} pages")
-                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name) for i in all_items]
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list exceeded {MAX_LIST_PAGES} pages; "
+                                     f"the gateway lists at most {MAX_LIST_PAGES} pages per upstream; "
+                                     "give the upstream larger pages or fix its cursor")
+                if kind == "resources":
+                    for r in all_items:
+                        _remember(gw, str(r.uri), up)
+                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name)
+                        for i in all_items]
                 # the model reads what the upstream wrote in them: an untrusted input
                 listed += self._observe(gw, key, up, kind, page, trusted=False)
             return {kind: listed}

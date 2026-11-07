@@ -22,8 +22,10 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import httpx2
-    from mcp import Client
+    from mcp import Client, types as mcp_types
     from mcp.client.streamable_http import streamable_http_client
+    from mcp.server.lowlevel import Server as LowServer
+    from mcp.server.lowlevel.helper_types import ReadResourceContents
     from mcp.server.mcpserver import MCPServer
 
     from tracekit import mcp_gateway
@@ -88,6 +90,53 @@ def upstream():
     @s.resource("note://outbox")
     def outbox() -> str:
         return "sent"
+    return s
+
+
+def paged_upstream():
+    """A two-page upstream: tools, resources and prompts each span two cursor pages."""
+    s = LowServer("paged-up")
+
+    tool_p1 = mcp_types.Tool(name="tool_p1", description="page 1 tool",
+                              inputSchema={"type": "object", "properties": {}})
+    tool_p2 = mcp_types.Tool(name="tool_p2", description="page 2 tool",
+                              inputSchema={"type": "object", "properties": {}})
+
+    @s.list_tools()
+    async def list_tools(req):
+        cursor = req.params.cursor if req.params else None
+        if cursor is None:
+            return mcp_types.ListToolsResult(tools=[tool_p1], nextCursor="page2")
+        return mcp_types.ListToolsResult(tools=[tool_p2])
+
+    @s.call_tool()
+    async def call_tool(name, arguments):
+        return [mcp_types.TextContent(type="text", text=f"ran:{name}")]
+
+    res_p1 = mcp_types.Resource(uri="note://res-p1", name="res-p1", mimeType="text/plain")
+    res_p2 = mcp_types.Resource(uri="note://res-p2", name="res-p2", mimeType="text/plain")
+
+    @s.list_resources()
+    async def list_resources(req):
+        cursor = req.params.cursor if req.params else None
+        if cursor is None:
+            return mcp_types.ListResourcesResult(resources=[res_p1], nextCursor="page2")
+        return mcp_types.ListResourcesResult(resources=[res_p2])
+
+    @s.read_resource()
+    async def read_resource(uri):
+        return [ReadResourceContents(content=f"content:{uri}", mime_type="text/plain")]
+
+    prompt_p1 = mcp_types.Prompt(name="prompt_p1", description="page 1 prompt")
+    prompt_p2 = mcp_types.Prompt(name="prompt_p2", description="page 2 prompt")
+
+    @s.list_prompts()
+    async def list_prompts(req):
+        cursor = req.params.cursor if req.params else None
+        if cursor is None:
+            return mcp_types.ListPromptsResult(prompts=[prompt_p1], nextCursor="page2")
+        return mcp_types.ListPromptsResult(prompts=[prompt_p2])
+
     return s
 
 
@@ -270,65 +319,91 @@ class McpGateway(unittest.TestCase):
         self.assertEqual((e["source"], e["tier"], e["data"]["source"], e["data"]["trust"]),
                          ("gateway", "T2", "mcp:up/resource", "untrusted"))
 
-    def test_all_pages_of_tools_are_listed(self):
-        """A tool that exists only on page 2 of an upstream is visible through the gateway."""
-        from mcp import types as mcp_types
-        EXTRA = mcp_types.Tool(name="page2_tool", description="only on page 2",
-                               inputSchema={"type": "object", "properties": {}})
-        original = self.srv.mcp["upstreams"].call
 
-        def paged(up, method, *a, **kw):
-            if method != "list_tools":
-                return original(up, method, *a, **kw)
-            cursor = kw.get("params") and kw["params"].cursor
-            real = original(up, method)
-            if cursor is None:
-                return mcp_types.ListToolsResult(tools=real.tools, next_cursor="p2")
-            return mcp_types.ListToolsResult(tools=[EXTRA], next_cursor=None)
+@unittest.skipUnless(HAVE_MCP, "mcp not installed")
+class McpGatewayPagination(McpGateway):
+    """Gateway behaviour with a two-page upstream: all pages listed, errors correct."""
 
-        self.srv.mcp["upstreams"].call = paged
-        names = {t.name for t in self.agent(lambda c: c.list_tools()).tools}
-        self.assertIn("up__page2_tool", names)
-        self.assertIn("up__echo", names)
+    def setUp(self):
+        super().setUp()
+        old = self.srv.mcp["upstreams"]
+        old.close()
+        new_ups = mcp_gateway.Upstreams({"up": paged_upstream()})
+        self.srv.mcp["upstreams"] = new_ups
+        self.addCleanup(new_ups.close)
 
-    def test_a_resource_from_a_later_page_is_remembered(self):
-        """Resources beyond the first page are remembered so they can be read."""
-        from mcp import types as mcp_types
-        LATER_URI = "note://page2-resource"
-        original = self.srv.mcp["upstreams"].call
+    def _swap_upstream(self, srv):
+        """Replace the upstream mid-test; registered for cleanup."""
+        old = self.srv.mcp["upstreams"]
+        old.close()
+        ups = mcp_gateway.Upstreams({"up": srv})
+        self.srv.mcp["upstreams"] = ups
+        self.addCleanup(ups.close)
 
-        def paged(up, method, *a, **kw):
-            if method != "list_resources":
-                return original(up, method, *a, **kw)
-            cursor = kw.get("params") and kw["params"].cursor
-            if cursor is None:
-                return mcp_types.ListResourcesResult(
-                    resources=[mcp_types.Resource(uri="note://inbox", name="inbox", mimeType="text/plain")],
-                    next_cursor="p2")
-            return mcp_types.ListResourcesResult(
-                resources=[mcp_types.Resource(uri=LATER_URI, name="page2", mimeType="text/plain")],
-                next_cursor=None)
+    def test_all_three_lists_show_every_page(self):
+        """Every tool, resource and prompt from every cursor page reaches the agent."""
+        async def lists(c):
+            tools = await c.list_tools()
+            resources = await c.list_resources()
+            prompts = await c.list_prompts()
+            return tools, resources, prompts
+        tools, resources, prompts = self.agent(lists)
+        self.assertSetEqual({t.name for t in tools.tools}, {"up__tool_p1", "up__tool_p2"})
+        self.assertSetEqual({str(r.uri) for r in resources.resources}, {"note://res-p1", "note://res-p2"})
+        self.assertSetEqual({p.name for p in prompts.prompts}, {"up__prompt_p1", "up__prompt_p2"})
 
-        self.srv.mcp["upstreams"].call = paged
-        self.agent(lambda c: c.list_resources())
-        self.assertIn(LATER_URI, self.srv.mcp["resources"])
+    def test_last_page_tool_is_callable(self):
+        """A tool from the second page can be called through the gateway."""
+        out = self.agent(lambda c: c.call_tool("up__tool_p2", {}))
+        self.assertFalse(out.is_error)
+        self.assertIn("ran:tool_p2", out.content[0].text)
 
-    def test_list_errors_when_upstream_exceeds_page_bound(self):
-        """A JSON-RPC error names the upstream when its cursor never ends."""
-        from mcp import types as mcp_types
-        original = self.srv.mcp["upstreams"].call
+    def test_last_page_resource_is_readable(self):
+        """A resource URI from the second page is remembered and can be read."""
+        async def list_and_read(c):
+            await c.list_resources()
+            return await c.read_resource("note://res-p2")
+        result = self.agent(list_and_read)
+        self.assertIn("note://res-p2", result.contents[0].text)
 
-        def infinite(up, method, *a, **kw):
-            if method != "list_tools":
-                return original(up, method, *a, **kw)
-            return mcp_types.ListToolsResult(tools=[], next_cursor="forever")
+    def test_each_list_gives_one_observed_per_upstream(self):
+        """Listing across multiple pages produces one input.observed per upstream per list."""
+        async def lists(c):
+            await c.list_tools()
+            await c.list_resources()
+            await c.list_prompts()
+        self.agent(lists)
+        observed = [(e["data"]["source"], e["data"]["trust"])
+                    for e in self.events() if e["type"] == "input.observed"]
+        self.assertEqual(observed, [("mcp:up/tools", "untrusted"),
+                                     ("mcp:up/resources", "untrusted"),
+                                     ("mcp:up/prompts", "untrusted")])
 
-        self.srv.mcp["upstreams"].call = infinite
-        with mock.patch.object(mcp_gateway, "MAX_LIST_PAGES", 3):
+    def test_repeated_cursor_is_an_error(self):
+        """A cursor returned twice raises an error naming the upstream."""
+        bad = LowServer("bad")
+
+        @bad.list_tools()
+        async def list_tools(req):
+            return mcp_types.ListToolsResult(tools=[], nextCursor="same-forever")
+
+        self._swap_upstream(bad)
+        with self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.list_tools())
+        err = messages(e.exception)
+        self.assertIn("'up'", err)
+        self.assertIn("repeated", err)
+        self.assertIn("give the upstream larger pages or fix its cursor", err)
+
+    def test_page_bound_is_an_error(self):
+        """Exceeding the page cap raises an error naming the upstream and giving advice."""
+        with mock.patch.object(mcp_gateway, "MAX_LIST_PAGES", 1):
             with self.assertRaises(Exception) as e:
                 self.agent(lambda c: c.list_tools())
-        self.assertIn("up", messages(e.exception))
-        self.assertIn("exceeded", messages(e.exception))
+        err = messages(e.exception)
+        self.assertIn("'up'", err)
+        self.assertIn("exceeded 1 pages", err)
+        self.assertIn("give the upstream larger pages or fix its cursor", err)
 
 
 class RegistryListing(unittest.TestCase):
