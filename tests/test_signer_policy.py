@@ -2332,6 +2332,29 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_openhands_config_changes_are_harness_config_in_every_pack(self):
+        # #563: a write or delete of OpenHands' project or user folder (.openhands/: hooks.json, agent_settings.json)
+        # could remove Tracekit's hook or raise tool_concurrency_limit; near names and reads stay unflagged
+        paths = ("/repo/.openhands/hooks.json", ".openhands/hooks.json", "/home/u/.openhands/hooks.json",
+                 "/home/u/.openhands/agent_settings.json", r"C:\repo\.openhands\hooks.json")
+        commands = ("echo '{}' > .openhands/hooks.json", "sed -i s/600/1/ ~/.openhands/hooks.json", "rm -rf .openhands",
+                    "rm -rf ~/.openhands")
+        benign = [("Bash", {"command": c}) for c in (
+            "cat .openhands/hooks.json", "ls ~/.openhands", "echo x > .openhands-old/x", "openhands --version")]
+        benign += [("Read", {"file_path": path}) for path in paths]
+        benign += [("Write", {"file_path": "/repo/src/openhands/x.py", "content": "{}"})]
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+
     def test_crush_config_changes_are_harness_config_in_every_pack(self):
         # #348: a write or delete of Crush's project or user config (crush.json, .crush.json, crushrc, .crushrc and
         # ~/.config/crush/) could remove Tracekit's hook; near names and reads stay unflagged
