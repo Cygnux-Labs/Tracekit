@@ -20,6 +20,7 @@ import test_bundle_v2 as tb
 import test_rpc_contract as rc
 import test_signer_service as ts
 from tracekit import cli, schema
+from tracekit.client import DEFAULT_SOCKET
 from tracekit.bundle_v2 import export
 from tracekit.format.canon import canonical, event_hash
 from tracekit.identity.base import CallerIdentity
@@ -721,13 +722,20 @@ class TestCli(unittest.TestCase):
                       f"`tracekit approvals --signer {sock} reject {aids[1]}` to refuse it\n", shown.stdout)
         self.assertIn(f"\nrecord      tracekit view --approval {aids[1]} (with the --config or --data-dir of this "
                       "signer)\n", shown.stdout)
+        self.assertIn(f"\na false alarm? tracekit feedback --harmless {aids[1]} --signer {sock}\n", shown.stdout)
         listed = tracekit("approvals", "--signer", sock, "list").stdout.splitlines()
         self.assertEqual([line.split()[0] for line in listed[:-1]], [aids[2], aids[1]])
         self.assertTrue(listed[0].endswith('  "stripe refunds create --charge ch_3"'), listed[0])
+        self.assertRegex(listed[0], r" expires \S+Z \(in 5\d min\)  ")
+        self.assertRegex(listed[1], r" expires \S+Z \(in 5\d min\)  ")
         self.assertEqual(listed[-1], "(1 expired, not shown: list them with --all)")
         listed = tracekit("approvals", "--signer", sock, "list", "--all").stdout.splitlines()
         self.assertEqual([line.split()[:2] for line in listed], [[aids[2], "requested"], [aids[1], "requested"],
                                                                  [aids[0], "expired"]])
+        self.assertTrue(listed[2].endswith("Z"), listed[2])   # abandoned before its time: no "in 59 min"
+        service.log.approvals[aids[0]]["expires_at"] = svc._iso(time.time() - 180)
+        listed = tracekit("approvals", "--signer", sock, "list", "--all").stdout.splitlines()
+        self.assertRegex(listed[2], r" expires \S+Z \(3 min ago\)$")
 
     def test_a_refusal_and_an_empty_list_say_how_to_get_further(self):
         d = ts.tmpdir(self)
@@ -790,6 +798,37 @@ class TestCli(unittest.TestCase):
             self.assertEqual(out.returncode, 2, (aid, out.stderr))
             self.assertIn("signer unavailable", out.stderr)
 
+    @unittest.skipIf(os.path.exists(DEFAULT_SOCKET), "a v1 signer (tracekitd) runs at the default socket here")
+    def test_with_no_v1_signer_approve_and_reject_are_approvals_approve_and_reject(self):
+        """With no v1 signer here, `tracekit approve|reject` said "signer unavailable: [Errno 2] …" for any id not of
+        the v2 signer's full shape (a prefix, a typo) and with none: `pending` already listed the v2 signer's held
+        calls. They are `tracekit approvals approve|reject ID`, output and exit code alike."""
+        d = ts.tmpdir(self)
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "approvals": {"self_approval": "allow"}}
+        service = svc.open_service(cfg, policy=ts.PAY_ASKS)
+        self.addCleanup(service.close)
+        for srv in svc.serve(cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        client = Client(cfg["socket"])
+        self.addCleanup(client.close)
+        run = client.run(agent="a")
+        run.decide("tc-1", "pay", PAY)
+        aid = run.call("approval_request", tool_call_id="tc-1")["approval_id"]
+        env = dict(os.environ, TRACEKIT_SIGNER=cfg["socket"], TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
+        env.pop("TRACEKIT_SOCKET", None)
+        for cmd in ("approve", "reject"):
+            for x in (aid[:12], aid + "0"):
+                short, full = tracekit(cmd, x, env=env), tracekit("approvals", cmd, x, env=env)
+                self.assertEqual((short.returncode, short.stdout, short.stderr),
+                                 (full.returncode, full.stdout, full.stderr))
+                self.assertEqual(short.returncode, 1, short.stderr)
+                self.assertNotIn("signer unavailable", short.stderr)
+            out = tracekit(cmd, env=env)
+            self.assertEqual((out.returncode, out.stdout, out.stderr), (2, "", f"tracekit {cmd}: name the approval: "
+                                                                               f"tracekit {cmd} <id> (tracekit pending "
+                                                                               "lists them)\n"))
+
 
 @unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
 class TestCliDevSigner(unittest.TestCase):
@@ -816,6 +855,54 @@ class TestCliDevSigner(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(cli.main(["approvals", "list"]), 0)
         self.assertIn(f"{aid}  consumed", buf.getvalue())
+
+
+class TestFirstDayCli(unittest.TestCase):
+    """What a new user's walkthrough found: `approvals show` gave TK-SHELL-PARSE's general reason where the hook gave
+    the cause's own, offered Claude Code's `! ` to runs that aren't Claude Code's, and `tracekit pending` failed with
+    "signer unavailable" with held v2 calls and no v1 signer."""
+
+    def setUp(self):
+        self.run_dir = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.addCleanup(shutil.rmtree, self.run_dir, True)
+        os.chmod(self.run_dir, 0o700)
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.run_dir,
+                                           "XDG_DATA_HOME": os.path.join(self.run_dir, "none"),
+                                           "HOME": os.path.join(self.run_dir, "home")})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def lines(self, command, run_id="run-1"):
+        from tracekit.policy2 import compile as pc
+        pol, _ = pc.build(os.path.join(ts.ROOT, "tracekit", "policy2", "packs", "dev.yaml"))
+        x = {"approval_id": "apr-" + "1" * 32, "state": "requested", "run_id": run_id, "tool": "Bash",
+             "rule_ids": ["TK-SHELL-PARSE"], "policy_hash": pc.policy_hash(pol), "args_source": "parsed",
+             "args": {"command": command}, "expires_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z",
+                                                                       time.gmtime(time.time() + 3600))}
+        return cli._stop_lines(mock.Mock(signer=None), x)
+
+    def test_show_gives_the_cause_the_hook_gives(self):
+        self.assertEqual(self.lines('echo "unterminated')[:2], [
+            "why         a quote on the line is never closed (TK-SHELL-PARSE)", "instead     Close the quote."])
+        self.assertTrue(self.lines("X=$(printf ls); $X")[0].startswith(
+            "why         its program is a variable the line doesn't set to plain text (TK-SHELL-PARSE)"))
+        self.assertRegex(self.lines("ls x 'y")[2], r"^expires     \S+Z \(in 5\d min\)$")
+
+    def test_the_bang_hint_is_for_claude_code_runs_only(self):
+        answer = next(line for line in self.lines('echo "x') if line.startswith("answer"))
+        self.assertNotIn("! ", answer)   # an SDK agent's run: no Claude Code session to paste it into
+        with open(os.path.join(self.run_dir, "claude-code-" + "a" * 64 + ".json"), "w") as f:
+            json.dump({"run_id": "run-1", "run_token": "t"}, f)   # the v2 hook's session state
+        answer = next(line for line in self.lines('echo "x') if line.startswith("answer"))
+        self.assertTrue(answer.endswith("; in the agent's Claude Code session, with a leading `! `"), answer)
+
+    def test_pending_without_a_v1_signer_lists_the_v2_signers_held_calls(self):
+        from tracekit import client
+        with mock.patch.object(client, "DEFAULT_SOCKET", os.path.join(self.run_dir, "no-tracekitd.sock")), \
+                mock.patch.object(client, "socket_path", return_value=client.DEFAULT_SOCKET), \
+                mock.patch.object(cli, "_approvals", return_value=0) as v2:
+            self.assertEqual(cli.main(["pending"]), 0)
+        self.assertEqual((v2.call_args[0][0].action, v2.call_args[0][0].signer), ("list", None))
 
 
 if __name__ == "__main__":

@@ -13,8 +13,9 @@ from unittest import mock
 from tracekit import cli, doctor, install
 from tracekit.sdk import autospawn
 
-LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. "
-        "For protection, use system mode or Box.")
+LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. To guard, run the signer "
+        "as another user (system mode: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) or the agent in Tracekit "
+        "Box, a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
 
 
 def run(argv):
@@ -81,7 +82,82 @@ class DevModeLine(unittest.TestCase):
         with mock.patch.object(install, "status", return_value={"client_config": None}), \
                 mock.patch.object(autospawn, "status", return_value={"socket": "s", "dev": dev}), \
                 mock.patch("tracekit.client.system_config", return_value=system):
-            return json.loads(run(["status"])[1]).get("dev_mode")
+            return json.loads(run(["status", "--json"])[1]).get("dev_mode")
+
+    def test_status_prints_a_summary_and_json_only_with_json(self):
+        """A new user's `tracekit status` printed a page of JSON; it prints what it found in lines, --json the JSON."""
+        hello = {"socket": "s.sock", "dev": True, "running": True, "version": "9", "pid": 7, "data_dir": "/d"}
+        with mock.patch.object(install, "status", return_value={"client_config": None, "hooks": [], "signer": None}), \
+                mock.patch.object(autospawn, "status", return_value=hello), \
+                mock.patch("tracekit.client.system_config", return_value=None):
+            self.assertEqual(run(["status"]), (0, "\n".join([
+                "signer      dev signer 9, running (pid 7), socket s.sock", "data        /d (its keys and signed runs)",
+                "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them", LINE,
+                "(tracekit status --json prints all of it)", ""])))
+
+    def test_status_reads_any_settings_file_and_says_how_to_add_hooks(self):
+        """Review of #628: a settings file that isn't JSON (or isn't a settings object) crashed `tracekit status` with
+        KeyError: 'versions', and one with no Tracekit hooks printed "(0 events)" instead of how to add them. Review of
+        #654: one it may not read crashed it too, and "none" after an unreadable file contradicted "unknown"."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        project = os.path.join(d, ".claude")
+        os.makedirs(project)
+        with open(os.path.join(project, "settings.json"), "w") as f:
+            f.write("[]")   # JSON, not a settings object
+        with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "CLAUDE_CONFIG_DIR": ""}), \
+                mock.patch("os.getcwd", return_value=d), \
+                mock.patch.object(install, "MANAGED_SETTINGS", {"linux": os.path.join(d, "none")}):
+            hooks = install._installed_hooks()
+            with mock.patch.object(install, "read_json", side_effect=PermissionError(13, "Permission denied")):
+                self.assertEqual(install._installed_hooks(), hooks)
+            managed = os.path.join(project, "settings.json")   # JSON, not a settings object, as a managed file
+            with mock.patch.object(install, "MANAGED_SETTINGS", {"linux": managed}):
+                self.assertEqual(install._installed_hooks()[-1], {"settings": managed, "managed": True,
+                                                                  "error": "unreadable"})
+        self.assertEqual(hooks, [{"settings": os.path.join(project, "settings.json"), "error": "unreadable"}])
+        none = {"settings": "b.json", "events": [], "versions": []}
+        self.assertEqual(cli._status_lines({"hooks": hooks + [none]}, {"dev": True, "error": "not started"})[1:], [
+            f"hooks       {hooks[0]['settings']} isn't a settings file Tracekit can read, so its hooks are unknown"])
+        self.assertEqual(cli._status_lines({"hooks": [none]}, {"dev": True, "error": "not started"})[1:], [
+            "hooks       none in Claude Code's settings: tracekit init --dev --v2 adds them"])
+
+    def test_status_says_a_v1_signer_no_hook_uses_is_not_running_and_one_v1_hooks_use_is_unreachable(self):
+        """A v1 signer a config names that doesn't answer read as an error (`unreachable at …: [Errno 2] …`) to a user
+        with v2 hooks alone, who doesn't need it. With v1 hooks installed, which use it, it is one."""
+        down = {"ok": False, "error": "unreachable at /v1.sock: [Errno 2] No such file or directory"}
+
+        def line(signer, *versions):
+            hooks = [{"settings": "s.json", "events": ["PreToolUse"], "versions": list(versions)}]
+            return [x for x in cli._status_lines({"hooks": hooks, "signer": signer}, {"dev": True, "error": "x"})
+                    if x.startswith("v1 signer")]
+        self.assertEqual(line(down, "v2"), ["v1 signer   not running (only v1 hooks use it)"])
+        self.assertEqual(line(down), ["v1 signer   not running (only v1 hooks use it)"])
+        unread = [{"settings": "s.json", "error": "unreadable"}]   # its hooks may be v1
+        self.assertIn("v1 signer   " + down["error"], cli._status_lines({"hooks": unread, "signer": down},
+                                                                       {"dev": True, "error": "x"}))
+        self.assertEqual(line(down, "v1", "v2"), ["v1 signer   " + down["error"]])
+        self.assertEqual(line({"ok": True}, "v2"), ["v1 signer   answering"])
+
+    def test_status_names_the_plugins_hooks_and_a_no_hooks_choice(self):
+        """Review of #628: status told a plugin user, and one whose init chose --no-hooks, that `tracekit init --dev
+        --v2` adds hooks, though init adds none while the plugin is on."""
+        def hooks(client_config, plugin, system=None):
+            with mock.patch.object(install, "status", return_value={"client_config": client_config, "hooks": [],
+                                                                     "signer": None}), \
+                    mock.patch.object(autospawn, "status", return_value={"socket": "s.sock", "dev": True}), \
+                    mock.patch("tracekit.client.system_config", return_value=system), \
+                    mock.patch.object(install, "plugin_enabled", return_value=plugin):
+                return [x for x in run(["status"])[1].splitlines() if x.startswith("hooks")]
+        self.assertEqual(hooks(None, ("/h/.claude/settings.json", "tracekit@tracekit")),
+                         ["hooks       the Claude Code plugin tracekit@tracekit's, enabled in /h/.claude/settings.json"])
+        chosen = ["hooks       none, as init --no-hooks chose: SDK runs (tracekit.instrument()) are still recorded; "
+                  "init without --no-hooks adds Claude Code's"]
+        self.assertEqual(hooks({"mode": "dev", "no_hooks": True}, None), chosen)
+        sc = {"signer": "/run/s.sock", "hooks": {"user": "agent", "no_hooks": True}}   # system mode's choice
+        self.assertEqual(hooks(sc, None, sc), chosen)
+        self.assertEqual(hooks(None, None), ["hooks       none in Claude Code's settings: tracekit init --dev --v2 adds "
+                                             "them"])
 
     def test_status_says_it_for_a_dev_signer_and_not_for_a_system_one(self):
         self.assertEqual(self.status(True, None), LINE)

@@ -161,6 +161,12 @@ def replace_retrying(src, dst, tries=20):
             time.sleep(0.05)
 
 
+def remove(d, name):
+    """Delete `name` in d; a symlink itself, never what it points to."""
+    path, at = _at(d, name)
+    os.unlink(path, **at)
+
+
 def backup(d, name, data):
     """Save data as a new `name.bak-<time>-<random>` file in d, created exclusively. Returns the backup name."""
     bak = f"{name}.bak-{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"

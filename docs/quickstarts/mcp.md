@@ -4,11 +4,27 @@ Every tool call is decided by the v2 signer before it runs and recorded after, a
 to the agent you have in three steps. It uses the dev signer, which runs as your own user (see [what dev assurance
 means](../quickstart-v2.md#what-dev-assurance-means)).
 
+## Try it first, with no MCP server
+
+```sh
+git clone --depth 1 https://github.com/Cygnux-Labs/Tracekit && cd Tracekit
+python3 -m venv .venv && . .venv/bin/activate
+pip install . 'mcp>=2.3,<2.4'
+python examples/v2/mcp/agent.py --scripted
+```
+
+A server runs in the same process: `list_files` is allowed, `tracekit_demo_denied` is denied (the dev policy's demo
+rule) and the client goes on, and `tracekit_demo_ask` is held until a second process approves it. Then the run is
+exported and verified.
+
 ## 1. Install
 
 ```sh
 pip install tracekit-ai 'mcp>=2.3,<2.4'
 ```
+
+No API key: the MCP client calls your server's tools. Replace `my-mcp-server` below with the command that starts
+yours.
 
 ## 2. One line in your agent
 
@@ -54,8 +70,7 @@ A denied call comes back as a result with `isError: true` and the refusal as its
 calls; the example's deny and ask come from the dev policy's demo rules (TK-DEMO-DENY, TK-DEMO-ASK). Write your own
 policy for real tools.
 
-An offline run of all this (a mock model, no API key), with an approval: `python examples/v2/mcp/agent.py
---scripted` from a checkout.
+The example at the top of this page wires it this way, with an approval.
 
 ## Read the verify report
 
@@ -65,6 +80,8 @@ An offline run of all this (a mock model, no API key), with an approval: `python
 VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: <64 hex digits>.
 ```
 
 `VERIFIED` means every record was signed by the log key in `trust.json`, the run is one unbroken chain, and a

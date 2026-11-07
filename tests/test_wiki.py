@@ -58,7 +58,7 @@ class Wiki(unittest.TestCase):
     def test_every_docs_page_is_one_page_and_one_sidebar_entry(self):
         docs = os.path.join(ROOT, "docs")
         paths = [os.path.relpath(p, docs).replace(os.sep, "/") for p in glob.glob(os.path.join(docs, "**", "*.md"), recursive=True)]
-        names = sorted(wiki.page_name(p) for p in paths if p not in wiki.EXCLUDED)
+        names = sorted(wiki.page_name(p) for p in paths if not wiki.excluded(p))
         self.assertIn("Integrations-OpenShell", names)
         self.assertIn("A2A", names)
         self.assertIn("C2C", names)

@@ -875,6 +875,85 @@ class CodingPack(unittest.TestCase):
                         if cmd in held:
                             self.assertIn(d["verdict"], ("ask", "deny"), d)
 
+    def test_writing_or_publishing_model_weights_asks_in_every_pack(self):
+        """TK-A058 (fs Write/Edit to weights), TK-A059 (shell write target), TK-A060 (hub publish):
+        every weights write and hub publish is held in all four packs and both engines;
+        reads, downloads and writes to unrelated files are not held by these rules."""
+        # TK-A058 / TK-A059: file tool writes and shell writes to weights files
+        held_fs = [
+            ("Write", {"file_path": "/w/models/model.safetensors", "content": "w"}),
+            ("Write", {"file_path": "/w/models/model.gguf", "content": "w"}),
+            ("Write", {"file_path": "/w/models/model.pt", "content": "w"}),
+            ("Write", {"file_path": "/w/models/model.pth", "content": "w"}),
+            ("Write", {"file_path": "/w/models/model.ckpt", "content": "w"}),
+            ("Edit", {"file_path": "/w/models/model.safetensors", "old_string": "a", "new_string": "b"}),
+            ("MultiEdit", {"file_path": "/w/models/model.safetensors", "edits": []}),
+        ]
+        held_shell = [
+            "cp new.safetensors /srv/models/prod/model.safetensors",
+            "mv tmp.gguf /models/final.gguf",
+            "tee /models/model.pt",
+            "dd if=in.safetensors of=/models/out.safetensors",
+            "cp src.pth dst.pth",
+            "cp src.ckpt dst.ckpt",
+            "cp x 'a\nb.safetensors'",
+            "echo x > MODEL.SAFETENSORS",
+            "python train.py > out.pt",
+        ]
+        # TK-A060: publishing to a model hub
+        held_hub = [
+            "huggingface-cli upload acme/model ./out",
+            "hf upload acme/model ./out",
+            "ollama push acme/model",
+            "huggingface-cli --token secret upload acme/model ./out",
+            "huggingface-cli upload-large-folder acme/model ./out",
+            "hf upload-large-folder acme/model ./out",
+            "hf -v upload acme/model ./out",
+            "ollama --insecure push mymodel",
+        ]
+        # benign: reads, downloads, non-weights writes
+        benign_fs = [
+            ("Read", {"file_path": "/w/models/model.safetensors"}),
+            ("Write", {"file_path": "/w/models/config.json", "content": "{}"}),
+            ("Write", {"file_path": "/w/models/model.safetensors.bak", "content": "w"}),
+        ]
+        benign_shell = [
+            "ls models/",
+            "head -c 100 model.safetensors",
+            "git commit -m 'update model.safetensors weights'",
+            "cat model.safetensors",
+            "huggingface-cli download acme/model",
+            "hf download acme/model",
+            "ollama pull acme/model",
+            "ollama run acme/model",
+            "cp model.safetensors model.safetensors.bak",
+        ]
+        for pack, engine, e in self.every_pack():
+            for tool, args in held_fs:
+                with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
+                    d = e.decide(tool, args)
+                    self.assertIn("TK-A058", d["rule_ids"], d)
+                    self.assertIn(d["verdict"], ("ask", "deny"), d)
+            for cmd in held_shell:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn("TK-A059", d["rule_ids"], d)
+                    self.assertIn(d["verdict"], ("ask", "deny"), d)
+            for cmd in held_hub:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn("TK-A060", d["rule_ids"], d)
+                    self.assertIn(d["verdict"], ("ask", "deny"), d)
+            for tool, args in benign_fs:
+                with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
+                    d = e.decide(tool, args)
+                    self.assertNotIn("TK-A058", d["rule_ids"], d)
+            for cmd in benign_shell:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertNotIn("TK-A059", d["rule_ids"], d)
+                    self.assertNotIn("TK-A060", d["rule_ids"], d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
@@ -2097,13 +2176,21 @@ class CodingPack(unittest.TestCase):
                     r"cp x 'C:\repo\.qwen\settings.json'", 'echo x > "$QWEN_HOME/settings.json"',
                     "tee ${QWEN_HOME}/settings.json", 'rm -rf "$QWEN_HOME"',
                     "echo x > ~/.config/opencode/plugin/tracekit.js", "rm ~/.config/opencode/plugins/tracekit.js",
-                    r"cp x 'C:\Users\u\.config\opencode\plugin\x.js'", "rm -rf ~/.config/opencode")
+                    r"cp x 'C:\Users\u\.config\opencode\plugin\x.js'", "rm -rf ~/.config/opencode",
+                    'echo x > "$XDG_CONFIG_HOME/opencode/plugin/x.js"',
+                    'echo x > "$XDG_CONFIG_HOME/OpenCode/plugin/x.js"',
+                    'echo x > "${XDG_CONFIG_HOME}/kilo/plugin/x.js"', 'echo x > "$xdg_config_home/opencode/x.js"',
+                    'rm -rf "$XDG_CONFIG_HOME"', 'rm -rf "$XDG_CONFIG_HOME/"',
+                    'tee ${XDG_CONFIG_HOME}/opencode/x')
         benign = [("Bash", {"command": c}) for c in (
             "cat opencode.json", "ls .opencode/plugin", "git commit -m 'add opencode.json'",
             "cat .claude/settings.json", "cat .gemini/settings.json", "echo x > opencode.json.backup",
             "cp .mcp.json backup/x", "cat .claude/settings.json > out.txt",
             "cat .qwen/settings.json", "ls ~/.qwen", 'cat "$QWEN_HOME/settings.json"', "echo x > qwen-settings.json",
-            "cp x .qwen-backup/settings.json", "ls ~/.config/opencode/plugin", "echo x > ~/.config/opencode-old/x")]
+            "cp x .qwen-backup/settings.json", "ls ~/.config/opencode/plugin", "echo x > ~/.config/opencode-old/x",
+            'echo $XDG_CONFIG_HOME', 'ls $XDG_CONFIG_HOME/opencode/',
+            # #611 review: only OpenCode's and Kilo's folders under $XDG_CONFIG_HOME, or the folder itself
+            'echo x > "$XDG_CONFIG_HOME/nvim/init.lua"', 'echo x > "$XDG_CONFIG_HOME/opencode-old/x"')]
         benign += [(tool, args) for tool, args in (
             ("Read", {"file_path": "opencode.json"}),
             ("Read", {"file_path": "/home/u/.qwen/settings.json"}),

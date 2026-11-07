@@ -38,7 +38,7 @@ Things to check on first use, because they depend on the machine:
 
 - The Python interpreter and the `tracekit` package must be readable by `_tracekit`. A Python under your home
   directory is not, and the daemon will fail to start; look at `/var/lib/tracekit/tracekitd.log`.
-- `tracekit status` should show `signer_isolation: separate-user` and the ledger owned by `_tracekit`.
+- `tracekit status --json` should show `signer_isolation: separate-user` and the ledger owned by `_tracekit`.
 - A quick isolation test: `echo x >> /var/lib/tracekit/ledger/ledger.jsonl` as your own user must fail.
 
 If any of that is wrong, please open an issue with the output. Until it has been validated on hardware the

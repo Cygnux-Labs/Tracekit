@@ -1,7 +1,8 @@
 # Evaluation
 
-Twenty-one experiments, E1 to E22 (there is no E13). `make eval` runs the offline ones: E1 to E4 (E4 on v1 and v2
-bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20 and E21, and E9 `--quick` on Linux.
+Twenty-two experiments, E1 to E23 (there is no E13). `make eval` runs the offline ones: E1 to E4 (E4 on v1 and v2
+bundles), E6, E10, E11, E12, E14 (as `--quick`; POSIX), E16, E17, E18, E19, E20, E21 and E23, and E9 `--quick` on
+Linux.
 E5 uses real Claude Code runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is
 `make eval-scale`; E22 (`eval/e22_verifier_agreement.py`) runs on its own. In CI, E8 (insider attacks, which needs root
 and a Linux system-mode signer) is a merge gate, and E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix
@@ -280,9 +281,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 828 harmful and 881 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 828 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 881 (0.11%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 833 harmful and 887 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 833 harmful calls are
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 887 (0.11%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -595,16 +596,16 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055` and the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) strict does not hold either: 46 of 881 (5.2%).
+`TK-A053`) strict does not hold either: 46 of 887 (5.2%).
 All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 500 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 504 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 828
-originals and all 2,405 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 833
+originals and all 2,425 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
@@ -644,6 +645,19 @@ records passed 64 MiB (it now writes the run in parts, [format v2](format-v2.md#
 rewrite let a log origin widen it past a phone's screen. Not in `make eval`: it takes minutes and needs node, the TypeScript build, Playwright with
 Chrome and each framework (`--python NAME=PY` runs an example with an interpreter that has it; an example that can't
 run is listed as skipped). Firefox and Safari are not run.
+
+## E23: intent grants
+
+`eval/e23_grants.py` runs a payout agent against one in-process signer whose payment rule opts into
+[intent grants](intent-grants.md), with a named approver. Seven parts: 30 payments, 24 within the grant and 6 outside it
+(an unknown payee, over the most for one payment, past the total), where the person's stops fall from 30 to 7 and
+nothing outside the limits runs; 25 calls a grant must not read as within it (amounts in other units, hundredths of a
+USDC past the cap, a currency with no known unit, payee look-alikes, a second payee, arguments that can move money or
+pick what is paid, such as a fee, a split, a memo, an invoice or order id, another currency, another tool), all held;
+the agent issuing a grant
+for its own run, passing one on, or asking for one past a day, all refused; 100 payments of 7 USDC under a 50 USDC
+total, of which 7 run; a revoked and an expired grant, which release nothing; totals across a signer restart; and the
+run's bundle, whose `intent grants` line re-checks every release. Results: `eval/results/e23_grants.json`.
 
 ## What is not measured
 

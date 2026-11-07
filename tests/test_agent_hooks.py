@@ -445,7 +445,9 @@ class Harnesses(DaemonCase):
                                                      "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))   # Crush blocks on exit 2, with the reason on stderr
                 self.assertIn(f"Crush's {name} runs a sub-agent", err)
-                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+                # crushrc's line first, then the legacy crush.json form
+                self.assertLess(err.index('"permissions deny agent agentic_fetch" in crushrc'),
+                                err.index('"disabled_tools": ["agent", "agentic_fetch"]'))
 
     def test_crush_denies_argument_names_crush_reads_otherwise(self):
         # Crush decodes a built-in tool's input into a Go struct (encoding/json): a name matches its field ignoring case

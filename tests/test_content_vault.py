@@ -338,6 +338,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual((self.check({"data_dir": d})["status"], self.check({"data_dir": d})["detail"]),
                          (doctor.OK, "off: the signer keeps commitments only, no content"))
         on = {"data_dir": d, "content": {"retain": True, "retention_days": 7}}
+        os.makedirs(os.path.join(d, "store"))   # a signer that started once (before that, dev says info: test_doctor_v2)
         self.assertEqual(self.check(on)["status"], doctor.WARN)   # no key yet
         svc.SignerService(d, content=on["content"]).close()
         r = self.check(on)

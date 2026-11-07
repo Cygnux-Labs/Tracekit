@@ -4,11 +4,26 @@ Every tool call is decided by the v2 signer before it runs and recorded after, a
 to the agent you have in three steps. It uses the dev signer, which runs as your own user (see [what dev assurance
 means](../quickstart-v2.md#what-dev-assurance-means)).
 
+## Try it first, with no API key
+
+```sh
+git clone --depth 1 https://github.com/Cygnux-Labs/Tracekit && cd Tracekit
+python3 -m venv .venv && . .venv/bin/activate
+pip install . 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
+python examples/v2/langchain/agent.py --scripted
+```
+
+A mock model drives a real graph: `ls` is allowed, `sudo rm -rf /` is denied and the agent goes on, and `echo
+"unterminated` is held until a second process approves it. Then the run is exported and verified.
+
 ## 1. Install
 
 ```sh
-pip install tracekit-ai 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
+pip install tracekit-ai 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3' langchain-openai
+export OPENAI_API_KEY=...        # the model below is OpenAI's
 ```
+
+Any model `create_agent` takes works: install its provider's package and set its key instead.
 
 ## 2. One line in your agent
 
@@ -70,8 +85,7 @@ first error) and through `.with_fallbacks()`, as LangGraph's customer-support tu
 exceptions around the node ends the pause: the call doesn't run and its approval expires
 ([limits](../limits.md#approvals)).
 
-An offline run of all this (a mock model, no API key), with an approval: `python examples/v2/langchain/agent.py
---scripted` from a checkout.
+The no-key example at the top of this page wires it this way, with an approval.
 
 ## Routing between assistants (handoffs)
 
@@ -95,6 +109,8 @@ flights), is neither gated nor recorded: put it in a ToolNode to have it decided
 VERIFIED: <n> tool calls in <m> signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: <64 hex digits>.
 ```
 
 `VERIFIED` means every record was signed by the log key in `trust.json`, the run is one unbroken chain, and a

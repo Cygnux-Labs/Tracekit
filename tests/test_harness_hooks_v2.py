@@ -189,7 +189,8 @@ class Mapping(HarnessCase):
                                                      "tool_input": {"prompt": "p", "url": "https://x.example"}})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Crush's {name}", err)
-                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+                self.assertLess(err.index('"permissions deny agent agentic_fetch" in crushrc'),
+                                err.index('"disabled_tools": ["agent", "agentic_fetch"]'))
                 self.assertEqual(self.sent, [])
 
     def test_crush_argument_names_crush_reads_otherwise_are_denied_before_the_signer(self):
@@ -596,6 +597,11 @@ class OnTheDevPolicy(HarnessCase):
 
 class Installer(unittest.TestCase):
     def setUp(self):
+        home = ac.tmpdir(self)
+        env = mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                           "LOCALAPPDATA": os.path.join(home, "data")})   # init makes the dev log key
+        env.start()
+        self.addCleanup(env.stop)
         agent = mock.patch.object(claude_code, "AGENT", claude_code.AGENT)   # the in-process hooks below set it
         agent.start()
         self.addCleanup(agent.stop)
@@ -929,6 +935,11 @@ class CodexReasoningSummary(unittest.TestCase):
 
     def setUp(self):
         self.d = ac.tmpdir(self)
+        self.home = ac.tmpdir(self)
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": os.path.join(self.home, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.home, "data")})   # init makes the dev log key
+        env.start()
+        self.addCleanup(env.stop)
         self.hooks = os.path.join(self.d, ".codex", "hooks.json")
         self.toml = os.path.join(self.d, ".codex", "config.toml")
         os.makedirs(os.path.dirname(self.toml))
@@ -1009,6 +1020,28 @@ class CodexReasoningSummary(unittest.TestCase):
             self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project"]), 0)
         self.assertEqual(self.read(), agent_hooks.CODEX_LINE)
         self.assertIn("Codex reasoning summaries: on", out.getvalue())
+
+    @unittest.skipIf(os.name == "nt", "uses POSIX advisory locks")
+    def test_init_does_not_open_a_store_held_by_another_process(self):
+        from tracekit.sdk.autospawn import data_dir
+
+        store = os.path.join(data_dir(), "store")
+        os.makedirs(store, exist_ok=True)
+        lock_path = os.path.join(store, "lock")
+        ready_r, ready_w = os.pipe()
+        code = ("import fcntl, os, sys, time; f=open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+                "os.write(int(sys.argv[2]), b'x'); time.sleep(30)")
+        holder = subprocess.Popen([sys.executable, "-c", code, lock_path, str(ready_w)], pass_fds=(ready_w,))
+        os.close(ready_w)
+        try:
+            self.assertEqual(os.read(ready_r, 1), b"x")
+            with mock.patch("os.getcwd", return_value=self.d), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project",
+                                           "--no-thinking-summaries"]), 0)
+        finally:
+            os.close(ready_r)
+            holder.terminate()
+            holder.wait(timeout=10)
 
 
 class CodexHookTrust(unittest.TestCase):
