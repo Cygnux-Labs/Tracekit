@@ -166,3 +166,25 @@ class DocCommands(unittest.TestCase):
                     with self.subTest(block=i, pyyaml_blocked=blocked), \
                             mock.patch.dict("sys.modules", {"yaml": None} if blocked else {}):
                         self.assertIn("data_dir", service.load_config(path))
+
+
+class DocTableCells(unittest.TestCase):
+    def test_every_table_row_has_as_many_cells_as_its_header(self):
+        """#644: a bare | inside a code span splits the cell on GitHub, so the row shows more cells than its header. An
+        escaped \\| is no border; fenced blocks are left out, kept as blank lines so line numbers stay true."""
+        sep = re.compile(r"^\|(\s*:?-+:?\s*\|)+$")
+
+        def cells(line):
+            return len(re.findall(r"(?<!\\)\|", line))
+        bad = []
+        for path in sorted([os.path.join(ROOT, "README.md")] + glob.glob(os.path.join(ROOT, "docs", "**", "*.md"),
+                                                                        recursive=True)):
+            lines = FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), read(path)).splitlines()
+            for i in range(len(lines) - 1):
+                if lines[i].startswith("|") and sep.match(lines[i + 1].strip()):
+                    j = i + 2
+                    while j < len(lines) and lines[j].startswith("|"):
+                        if cells(lines[j]) != cells(lines[i]):
+                            bad.append(f"{os.path.relpath(path, ROOT)}:{j + 1}")
+                        j += 1
+        self.assertEqual(bad, [])
