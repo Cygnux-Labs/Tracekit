@@ -925,7 +925,12 @@ class DevinTools(unittest.TestCase):
                      f"deploy() {{ {push}; }}\n", f"function deploy {{ {push}; }}\n", f"trap '{push}' DEBUG\n",
                      "bind -x '\"\\C-t\": true'\n", "enable -f ./x.so x\n", "set -o vi\n", "shopt -s expand_aliases\n",
                      "source ./x.sh\n", ". ./x.sh\n", "export PATH=/tmp/x:$PATH\n", "hash -p /tmp/x/git git\n",
-                     f"builtin alias gs='{push}'\n", f"eval \"alias gs='{push}'\"\n"):
+                     f"builtin alias gs='{push}'\n", f"eval \"alias gs='{push}'\"\n",
+                     # the last re-review of #673: exec makes the shell read commands from a file (or replaces it), and
+                     # a loader variable makes every later program load code
+                     "exec 0</w/notes.txt\n", "exec </w/notes.txt\n", "LD_PRELOAD=/tmp/x.so\n",
+                     "export DYLD_INSERT_LIBRARIES=x\n", "export LD_LIBRARY_PATH=/tmp\n", "LD_AUDIT=/tmp/a.so\n",
+                     "set +H\n"):
             with self.subTest(text=text):
                 p["tool_input"] = {"shell_id": "main", "input": text}
                 self.assertIn("sets or replays state of the running shell", agent_hooks._blocked("devin", p, json.dumps(p))
@@ -933,7 +938,9 @@ class DevinTools(unittest.TestCase):
         # the words as written elsewhere on a line, and ordinary typed lines
         for text in ("y\n", "q", "ls -la\n", "git status\n", "echo alias trap fc PS1\n", "git commit -m 'trap'\n",
                      "[ a != b ]\n", "wait $!\n", "[[ ! -f x ]] && echo ok\n", "echo hi!\n", "python3 -c 'print(1)'\n",
-                     "cd src\nls\n", "export FOO=bar\n", "echo\u00a0hi\n"):
+                     "cd src\nls\n", "export FOO=bar\n", "echo\u00a0hi\n",
+                     # set that changes no option (psql), and alias that defines none (a Python REPL)
+                     "set search_path to public;\n", "alias = 3\n", "alias\n"):
             with self.subTest(text=text):
                 p["tool_input"] = {"shell_id": "main", "input": text}
                 self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))

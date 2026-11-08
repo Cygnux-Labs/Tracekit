@@ -179,12 +179,14 @@ DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
 TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t\n=(])|^[ \t]*\^", re.M),
          "exec": re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")}
 # what a line typed into a running shell (write_to_process) may set or replay there that changes what a later line
-# runs, which the policy, deciding one call at a time, can't see: history replay (fc; history -s, -r or -n), an alias,
-# a key binding, a trap, a loaded builtin, a shell option (set, shopt), a hashed path, a sourced file, a function, and
-# the variables bash runs at each prompt (PROMPT_COMMAND, PS0 to PS4) or finds commands by (PATH, BASH_ENV)
+# runs, which the policy, deciding one call at a time, can't see: history replay (fc; history -s, -r or -n), an alias
+# defined, a key binding, a trap, a loaded builtin, the exec builtin (it can make the shell read commands from a file, or
+# replace it), a shell option (set -o, +H …; shopt), a hashed path, a sourced file, a function, and the variables bash
+# runs at each prompt (PROMPT_COMMAND, PS0 to PS4), finds commands by (PATH, BASH_ENV), or the loader loads code by
 # lean: exec isn't read so (a script there sources a venv or defines a function), though Devin may run it in that shell
-SHELL_STATE = {"fc", "alias", "bind", "trap", "enable", "shopt", "hash", "source", "."}
-STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV)(?:$|[\[=+])")
+SHELL_STATE = {"fc", "bind", "trap", "enable", "exec", "shopt", "hash", "source", "."}
+STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|DYLD_\w+)"
+                        r"(?:$|[\[=+])")
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -679,7 +681,8 @@ def _sets_state(text):
     except (shell.ParseError, RecursionError):
         return None
     for a in (c["argv"] for c in cmds):
-        if a[0] in SHELL_STATE or a[0] == "set" and a[1:] or a[0] == "history" and any(
+        if a[0] in SHELL_STATE or a[0] == "set" and any(w.startswith(("-", "+")) for w in a[1:]) or \
+                a[0] == "alias" and any(re.match(r"[^=]+=", w) for w in a[1:]) or a[0] == "history" and any(
                 re.fullmatch(r"-[a-z]*[nrs][a-z]*", w) for w in a[1:]):
             return a[0]
         hit = next((w for w in a[1:] if STATE_VARS.match(w)), None)
