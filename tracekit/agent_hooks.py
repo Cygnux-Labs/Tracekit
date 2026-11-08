@@ -178,6 +178,13 @@ DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
 # lean: exec's ! isn't denied (git commit -m 'fix!', wait $!): an exec Devin types into bash may expand one
 TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t\n=(])|^[ \t]*\^", re.M),
          "exec": re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")}
+# what a line typed into a running shell (write_to_process) may set or replay there that changes what a later line
+# runs, which the policy, deciding one call at a time, can't see: history replay (fc; history -s, -r or -n), an alias,
+# a key binding, a trap, a loaded builtin, a shell option (set, shopt), a hashed path, a sourced file, a function, and
+# the variables bash runs at each prompt (PROMPT_COMMAND, PS0 to PS4) or finds commands by (PATH, BASH_ENV)
+# lean: exec isn't read so (a script there sources a venv or defines a function), though Devin may run it in that shell
+SHELL_STATE = {"fc", "alias", "bind", "trap", "enable", "shopt", "hash", "source", "."}
+STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV)(?:$|[\[=+])")
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -663,6 +670,25 @@ def _blocked_agy_args(name, args):
     return None
 
 
+def _sets_state(text):
+    """The word of typed text that sets or replays state of the running shell (SHELL_STATE), read as the policy's
+    shell parser reads the line, else None; text it can't read goes to the signer, which holds it."""
+    from .policy2 import shell
+    try:
+        cmds, *_, learned = shell.analyse(text)
+    except (shell.ParseError, RecursionError):
+        return None
+    for a in (c["argv"] for c in cmds):
+        if a[0] in SHELL_STATE or a[0] == "set" and a[1:] or a[0] == "history" and any(
+                re.fullmatch(r"-[a-z]*[nrs][a-z]*", w) for w in a[1:]):
+            return a[0]
+        hit = next((w for w in a[1:] if STATE_VARS.match(w)), None)
+        if hit and (a[0] in shell._SETS_ANY or shell._sets_with_v(a)):   # export, declare, read, printf -v …
+            return hit
+    return next((n for n, _ in learned["assigned"] if STATE_VARS.match(n)), None) or next(iter(learned["functions"]),
+                                                                                        None)
+
+
 def _repeated(args):
     """The first argument name in `args` (a tool's input read with _Pairs, or a JSON string of one) that an earlier one
     has, ignoring case (as str.casefold folds it: K and ſ too), else None."""
@@ -710,6 +736,12 @@ def _blocked(harness, p, raw=""):
             return (f"Blocked by Tracekit: Devin's write_to_process types {typed.group().strip()!r}, which interactive "
                     "bash expands from its history (a ! before a word, a ^ starting a line), so Tracekit can't read "
                     "the line that runs; type the command itself.")
+        state = _sets_state(v) if name == "write_to_process" and not typed else None
+        if state:
+            return (f"Blocked by Tracekit: Devin's write_to_process types {state[:64]!r}, which sets or replays state "
+                    "of the running shell (history, an alias, a function, a prompt string, a trap, a key binding, a "
+                    "builtin, a shell option, PATH or a sourced file) that changes what a later line runs, and "
+                    "Tracekit decides each call alone; type the commands themselves.")
         if typed:
             return (f"Blocked by Tracekit: Devin's {name} {'types' if name == 'write_to_process' else 'sends'} a "
                     f"control character ({typed.group()!r}), which a terminal's line editor acts on (erasing, "

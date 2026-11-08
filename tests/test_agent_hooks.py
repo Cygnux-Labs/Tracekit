@@ -914,6 +914,30 @@ class DevinTools(unittest.TestCase):
                 p["tool_input"] = {"shell_id": "main", "input": text}
                 self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
 
+    def test_typed_text_that_sets_state_a_later_line_runs_is_denied(self):
+        # the re-review of #673: in the running shell write_to_process types into, a line can set state that changes
+        # what a later line runs, and the policy decides one call at a time: after ": git push --force origin main",
+        # "fc -s ': =' :" re-ran the push, as "history -s '…'" then "fc -s" did
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process"}
+        push = "git push --force origin main"
+        for text in ("fc -s ': =' :\n", f"history -s '{push}'\n", "fc -s\n", f"alias gs='{push}'\n",
+                     f"alias gs='{push}'\ngs\n", f"PROMPT_COMMAND='{push}'\n", f"export PS1='$({push})'\n", "read PS1\n",
+                     f"deploy() {{ {push}; }}\n", f"function deploy {{ {push}; }}\n", f"trap '{push}' DEBUG\n",
+                     "bind -x '\"\\C-t\": true'\n", "enable -f ./x.so x\n", "set -o vi\n", "shopt -s expand_aliases\n",
+                     "source ./x.sh\n", ". ./x.sh\n", "export PATH=/tmp/x:$PATH\n", "hash -p /tmp/x/git git\n",
+                     f"builtin alias gs='{push}'\n", f"eval \"alias gs='{push}'\"\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIn("sets or replays state of the running shell", agent_hooks._blocked("devin", p, json.dumps(p))
+                              or "")
+        # the words as written elsewhere on a line, and ordinary typed lines
+        for text in ("y\n", "q", "ls -la\n", "git status\n", "echo alias trap fc PS1\n", "git commit -m 'trap'\n",
+                     "[ a != b ]\n", "wait $!\n", "[[ ! -f x ]] && echo ok\n", "echo hi!\n", "python3 -c 'print(1)'\n",
+                     "cd src\nls\n", "export FOO=bar\n", "echo\u00a0hi\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+
     def test_an_exec_command_with_a_control_character_is_denied(self):
         # the re-review of #673: exec reads \r as a line end, should Devin type its command into a terminal, but DEL,
         # ^U and ^C in it went through; a tab and a line end stay (a heredoc or a multi-line command needs them)
