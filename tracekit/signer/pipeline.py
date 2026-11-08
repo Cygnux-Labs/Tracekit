@@ -360,12 +360,12 @@ class Tx:
 
     def event(self, run, req, typ, data, digests=None, **top):
         """A client event call: skipped client_seq values first become a signer-written gap, and make the run's
-        provenance index partial."""
+        provenance index partial. An event given its `ts` gives its gap the same, so no ts goes back."""
         stream, cseq, gap = req["stream"], req["client_seq"], skipped(run, req)
         if gap:
             self.emit(run, "capture.gap", {"kind": "client_counter_gap", "reason": gap,
                                            "missed_events": cseq - last_seq(run, stream) - 1},
-                      source="signer", stream=stream)
+                      source="signer", stream=stream, **({"ts": top["ts"]} if "ts" in top else {}))
             degrade(self, run.get("prov"), "partial", gap + LOST)
         self.set(run["streams"], stream, cseq)
         seq = self.emit(run, typ, data, digests=digests, request_id=req["request_id"], stream=stream, client_seq=cseq,

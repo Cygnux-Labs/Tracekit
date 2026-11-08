@@ -32,6 +32,7 @@ with `conflict`, and the same id from another identity is a different request.
 Per-run calls carry the `run_token` that `register_run` returned. Event calls carry `stream` and `client_seq`
 (one counter per client process); a skipped value becomes a signer-written gap record, a reused one is refused.
 """
+import json
 from typing import Protocol
 
 from tracekit.format.canon import MAX_SAFE_INT
@@ -85,6 +86,15 @@ RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
 # in a deny's or an ask's `reason` (decide), what follows it is the rules' remedies: what to do instead
 INSTEAD = ". Instead: "
+
+
+def quoted(v, n=64):
+    """Text the agent chose (an argument's name or value, a tool's or a file's name) as a reason quotes it: JSON (ASCII,
+    so no line break) cut to `n` characters, its ". Instead:" escaped, so it never starts or moves a line of what a
+    client makes of the reason (INSTEAD)."""
+    return json.dumps(v)[:n].replace(INSTEAD.rstrip(), INSTEAD.rstrip()[:-1] + "\\u003a")
+
+
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:[^\n]+" + _END)   # scheme:subject
 HOST = _str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END)   # a host name or IP address, lower case
 TS = _str(27, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z" + _END)

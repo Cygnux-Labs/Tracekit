@@ -79,12 +79,16 @@ VERSIONS = {
                                                         "model.exchange": ["said_only"], "capture.gap": ["sensor"]},
               "values": {"capture.gap": {"kind": ["constraint_refused"]}}, "ext": ["amended", "openshell.policy"],
               "layout": ["run parts"]},
-    "1.6.0": {"types": [], "fields": {}, "values": {}, "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
+    # an ext record's self_approved true: an intent.grant the run's own user issued, a self-approval that makes the
+    # assurance dev, which a verifier before 1.6.0 can't see
+    "1.6.0": {"types": [], "fields": {}, "values": {"ext": {"self_approved": [True]}},
+              "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
 # uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain
 # and inclusion whatever the ext holds, and interprets the names its rows list (format-v2.md §9)
 EXT = "1.4.0"
+EXT_NAME = "ext name "   # how _entries marks an ext name (non-critical): a record type has no space
 KEY_TYPES = ("signer.epoch", "key.retire")
 PART = re.compile(r"(runs/.+)\.part-([0-9]+)\.jsonl")   # a run's part: the run's file name, the part's number
 
@@ -129,12 +133,15 @@ def ext_names(event):
 
 
 def _entries(event, added):
-    """The entries of a VERSIONS row that `event` uses: `type`, `type.field`, `type.field=value` and `ext.<name>`."""
+    """The entries of a VERSIONS row that `event` uses: `type`, `type.field`, `type.field=value` and `ext name <name>`
+    (EXT_NAME: an ext name, never an entry of the `ext` record type, such as `ext.self_approved=True`). A value matches
+    by type too (1 is no True), as the TypeScript verifier's copy compares."""
     typ, data = event["type"], event["data"]
     return ([typ] if typ in added["types"] else []) \
         + [f"{typ}.{f}" for f in added["fields"].get(typ, ()) if f in data] \
-        + [f"{typ}.{f}={data[f]}" for f, vs in added["values"].get(typ, {}).items() if f in data and data[f] in vs] \
-        + [f"ext.{n}" for n in ext_names(event) if n in added.get("ext", ())]
+        + [f"{typ}.{f}={data[f]}" for f, vs in added["values"].get(typ, {}).items()
+           if f in data and any(type(v) is type(data[f]) and v == data[f] for v in vs)] \
+        + [EXT_NAME + n for n in ext_names(event) if n in added.get("ext", ())]
 
 
 def needs(events, layout=()):
@@ -146,7 +153,7 @@ def needs(events, layout=()):
     critical = full = VERIFIER_MIN_VERSION
     for version, added in VERSIONS.items():
         used = [x for e in events for x in _entries(e, added)] + [x for x in layout if x in added.get("layout", ())]
-        if any(not x.startswith("ext.") for x in used):
+        if any(not x.startswith(EXT_NAME) for x in used):
             critical = version
         if used:
             full = version
@@ -162,7 +169,7 @@ def raised_by(events, version, layout=()):
     seqs = {}
     for e in events:
         used = _entries(e, VERSIONS[version]) if version in VERSIONS else []
-        for x in [x for x in used if not x.startswith("ext.")] + (
+        for x in [x for x in used if not x.startswith(EXT_NAME)] + (
                 ["ext"] if version == EXT and ("ext" in e or e["type"] == "ext") else []):
             seqs.setdefault(x, []).append(e["seq"])
     return [f"{x}: seq {', '.join(map(str, s[:5]))}" + (f" and {len(s) - 5} more" if len(s) > 5 else "")

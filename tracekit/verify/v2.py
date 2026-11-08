@@ -46,7 +46,8 @@ Monitor reports (`tracekit monitor`) come from the verifier's side, never the bu
 A report signed by a pinned monitor, no older than its max_age_s, for the checkpoint's origin, checked to at least the
 checkpoint's size (and to its root at that size) and with no conflicts makes a witnessed assurance witnessed+monitored.
 A pinned monitor's report of conflicts for the origin, or of another root at the checkpoint's size, fails `monitor`.
-A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
+A run with any self-approval (dev mode: the approver was the requester), or an intent grant its own user issued
+(intent.grant self_approved), is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
 `executed_against_policy`; each is a `policy` warning. A call a gateway or executor decided whose run ended without its
@@ -157,7 +158,8 @@ import zlib
 
 from tracekit import __version__, crypto, grants, pcm
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, NOT_RATED, Report, _load_trusted_key
-from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, ext_names, run_files, run_name
+from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, VERIFIER_MIN_VERSION, VERSIONS, ext_names, needs, raised_by, \
+    run_files, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
@@ -614,6 +616,11 @@ def _version(v):
     return tuple(int(x) for x in re.findall(r"[0-9]+", v)[:3])
 
 
+# the newest bundle format version this verifier reads: its newest VERSIONS row, or its release when that is later (a
+# row lands with its checks, before the release that ships it); a bundle needing a later one is UNVERIFIABLE
+READS = max(__version__, *VERSIONS, key=_version)
+
+
 class Memo(set):
     """verify()'s memo for a caller that checks runs as they grow (tracekit view): the record_digests whose signature
     and schema held, and `runs`, of the RUNS_KEPT run files checked last whose records all held and none is a run.final:
@@ -656,7 +663,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
         need = manifest.get("verifier_min_version")
         if not (isinstance(need, str) and _VERSION.fullmatch(need)):
             raise Unusable("verifier_min_version is not a version number")
-        if _version(need) > _version(__version__):
+        if _version(need) > _version(READS):
             rep.integrity = f"UNVERIFIABLE (needs tracekit >= {need})"
             rep.check("bundle readable", False, rep.integrity, upgrade(need, path, trust_path))
             return rep, EXIT_BAD
@@ -693,7 +700,7 @@ def _ext(rep, events, full):
         for n in {str(x)[:64] for x in ext_names(e)}:
             carry.setdefault(n, []).append(e)
     later = f"; tracekit >= {full} checks it" if isinstance(full, str) and _VERSION.fullmatch(full) \
-        and _version(full) > _version(__version__) else ""
+        and _version(full) > _version(READS) else ""
     shown, more, done = 0, 0, set()
     also = {_grants: [e for e in events if _tk_grant(e)]}   # records a check reads beside its names' own
 
@@ -1008,8 +1015,10 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   warn=True)
         rep.integrity = "UNVERIFIABLE (key revoked)"
     every = [r for rs in runs.values() for r in rs]
-    self_approved = any(r["event"].get("type") == "approval" and r["event"]["data"].get("self_approved") is True
-                        for r in every)
+    # a grant the run's own user issued (intent.grant) approves the calls it releases: a self-approval too
+    self_approved = any((r["event"].get("type") == "approval" or r["event"].get("type") == "ext"
+                         and r["event"]["data"].get("name") == "intent.grant")
+                        and r["event"]["data"].get("self_approved") is True for r in every)
     against = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
                if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "executed_against_policy"]
     # read as `against` reads them, which raised first on a malformed record; tuples, as a kind may be unhashable; the
@@ -1153,8 +1162,24 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                     f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
                     for k, ts in sorted(cosigs, key=lambda c: c[1])]
     rep.firsts = {rs[0]["event"]["seq"] for rs in runs.values()}
-    _ext(rep, list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values()),
-         manifest.get("verifier_version"))
+    events = list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values())
+    _ext(rep, events, manifest.get("verifier_version"))
+    _minimum(rep, events, files, manifest["verifier_min_version"])
+
+
+def _minimum(rep, events, files, said):
+    """`verifier minimum`, a warning only when the manifest's verifier_min_version (`said`) is below what the records
+    and layout need (bundle_v2.needs, as export computes it). The manifest is never signed: edited down, it lets an
+    older verifier read records it can't interpret and claim more than they show (a self-issued grant's dev assurance,
+    a signed finding's citations). A record it can't read (no type, data or seq: other checks fail it) needs nothing."""
+    events = [e for e in events if isinstance(e, dict) and isinstance(e.get("type"), str) and "seq" in e
+              and isinstance(e.get("data"), dict) and (e["type"] != "ext" or "name" in e["data"])]
+    layout = ["run parts"] if any(PART.fullmatch(n) for n in files) else []
+    need = needs(events, layout)[0]
+    if need != VERIFIER_MIN_VERSION and _version(need) > _version(said):   # a row raised it (0.x bundles: the base)
+        rep.check("verifier minimum", False, f"the records need tracekit >= {need}, the manifest asks for {said}: a "
+                  f"verifier older than {need} may have read this bundle and claimed more than its records show",
+                  raised_by(events, need, layout)[:20], warn=True)
 
 
 def _approvals(rep, runs, policies):

@@ -2878,7 +2878,8 @@ class SignerService:
             held = f and verdict != "deny" and self._constrained(run, f)   # tighten only: never lowered
             if held:
                 verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"] * ("TK-CONSTRAINT" not in rule_ids)
-            granted, grant_why = self._grant_release(key, run, tool, holder[0], rule_ids, args, digest, gw) \
+            now = _iso(time.time())   # the instant a grant is checked at, which a release's record carries
+            granted, grant_why = self._grant_release(key, run, tool, holder[0], rule_ids, args, digest, gw, now) \
                 if verdict == "ask" else (None, None)
             if granted:
                 verdict, rule_ids = "flag", rule_ids + ["TK-GRANT"]
@@ -2900,7 +2901,8 @@ class SignerService:
             def record(did, verdict, rule_ids, again=False, ext=None):
                 """Write decision `did`, as the run's hold or quarantine leaves it, and make it the call's; `again`: the
                 call's second decision, written by the signer after the first fired a hold or quarantine; `ext`: the
-                record's ext field (`grant`: what an intent grant released)."""
+                record's ext field (`grant`: what an intent grant released, its ts the instant the grant was checked at,
+                which the verifiers compare its expiry with)."""
                 verdict, rule_ids, iid = self._contained(run, verdict, rule_ids)
                 commitment = self._commit(did, digest) if digest else None
                 d = dict(data, decision_id=did, nonce=secrets.token_hex(16), decision=verdict, rule_ids=rule_ids,
@@ -2917,7 +2919,7 @@ class SignerService:
                 tx.set(run["calls"], tcid, call)
                 tx.set(run["decisions"], did, call)
                 kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
-                          **top, **({"ext": ext} if ext else {}))
+                          **top, **({"ext": ext, "ts": now} if ext else {}))
                 seq = tx.emit(run, "policy.decision", d, **kw) if again else \
                     tx.event(run, req, "policy.decision", d, **kw)
                 written.append((seq, commitment))
@@ -4357,7 +4359,7 @@ class SignerService:
         parent, caveats, now = req["parent"], req.get("caveats", []), _iso(time.time())
         # lean: this signer's own grants only, and no approval, as a child only narrows; accept other pinned signers'
         # and gate delegation with the a2a policy class when the A2A gateway enforces PCM
-        if e := pcm.check_sig(parent, "pcm-grant", {"logs": [self.vkey]}):
+        if e := pcm.check_grant_sig(parent, {"logs": [self.vkey]}):
             raise RPCError("invalid_request", f"parent: {e}")
         if parent["issuer"]["tenant"] != key[0]:
             raise RPCError("forbidden", f"the grant was issued in tenant {parent['issuer']['tenant']}, not {key[0]}")
@@ -4434,9 +4436,10 @@ class SignerService:
                    and a["expires_at"] > now and self._opens(a["commitment"], a["label"], digest)
                    for a in list(self.log.approvals.values()))
 
-    def _grant_release(self, key, run, tool, via, rule_ids, args, digest, gw):
+    def _grant_release(self, key, run, tool, via, rule_ids, args, digest, gw, now):
         """(on the writer) What run `key`'s intent grants make of call `tool` with `args`, which the policy held (`ask`)
-        by `rule_ids`: ({id, fields, used, tier}, what it released, in words) when a grant releases it; (None, exactly why
+        by `rule_ids`, at ISO time `now` (the release's record's ts, so the verifiers check its expiry at the same
+        instant): ({id, fields, used, tier}, what it released, in words) when a grant releases it; (None, exactly why
         not) when the rules opt into an intent the run has grants for and none has room or can read the call; (None,
         None) when no grant applies: the rules don't all opt into one intent, the run has no grants, it is held or
         quarantined, or a person already approved this very call (_approved_twin). `tier`: T2 when an executor or
@@ -4445,7 +4448,7 @@ class SignerService:
         if not intent or digest is None or not run.get("grants") or run.get("held") or run.get("quarantined") \
                 or self._approved_twin(key, tool, via, rule_ids, digest):
             return None, None
-        gid, fields, used, why = grantlib.decide(run["grants"], intent, tool, args, _iso(time.time()))
+        gid, fields, used, why = grantlib.decide(run["grants"], intent, tool, args, now)
         if gid is None:
             return None, why
         cur = fields["currency"]
@@ -4532,7 +4535,7 @@ class SignerService:
                                                   "on its own, and grant the calls after it with tracekit grant add")
             first = {"approval_id": aid, "tool_call_id": a["tool_call_id"], "fields": fields}
         self.quotas.take_event(identity)
-        grant = self._pcm_signed("pcm-grant", grant)
+        grant = self._pcm_signed("intent-grant", grant)   # never a PCM grant: no receiver can check its limits
         gid = grantlib.grant_id(grant)
         data = {"name": "intent.grant", "id": gid, "grant": grant, "tools": tools, "limits": req["limits"], "used": used,
                 "self_approved": same, **({"first": first} if first else {}),

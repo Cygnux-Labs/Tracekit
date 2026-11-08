@@ -249,6 +249,8 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
   "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
   "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "
     + "record." },
+  "verifier minimum": { warn: "The bundle's manifest, which isn't signed, asks for an older verifier than its records "
+    + "need: an older verifier may have claimed more than they show. This one read every record." },
   "gateway amendments": {
     pass: "Requests the LLM gateway changed so the provider shows its reasoning; each record commits to the request "
       + "as sent.",

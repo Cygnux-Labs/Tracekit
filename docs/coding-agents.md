@@ -366,7 +366,7 @@ held for your approval ([held calls](#held-calls-approve-then-retry)), and you a
 
 ```text
 [tracekit] HELD, nothing ran: apr-… (TK-CONSTRAINT), expires 09:27 UTC.
-Why: the person's request in this run said not to modify billing.py; ask the person
+Why: the person's request in this run said not to modify "billing.py"; ask the person
 Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
 Agent: …
 ```
