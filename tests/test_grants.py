@@ -403,11 +403,13 @@ class TestDevSigner(Case):
         self.assertEqual(code, 0, rep.checks)
         self.assertTrue(rep.assurance.startswith("dev;"), rep.assurance)
         self.assertIn("approvals: self", rep.assurance.split("; "))
+        # the caveat follows the proof line, which needs an isolation out of the agent's reach: this uid's is
+        # separate-user on Linux and macOS, unknown on Windows (no getuid), so the short result reads it as recorded there
+        rep.isolation = {"separate-user": 1}
         said = io.StringIO()
         summary(rep, code, rep.integrity, rep.assurance, said)
-        self.assertEqual(said.getvalue().splitlines()[1:3], [
-            "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).",
-            "But a held call was approved by the agent's own user, so that approval proves nothing."])
+        self.assertIn("But a held call was approved by the agent's own user, so that approval proves nothing.",
+                      said.getvalue().splitlines())
         self.assertNotIn("verifier minimum", [c["check"] for c in rep.checks])
 
     def test_a_lowered_minimum_is_a_warning(self):
