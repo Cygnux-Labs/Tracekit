@@ -46,6 +46,10 @@ class _Unclosed(ParseError):
     cause = "quote"   # a ' " or $' the line doesn't close
 
 
+class _Spent(ParseError):
+    cause = "budget"   # the decision's work budget (MAX_WORK) is spent: what is left isn't read
+
+
 class _Expansion(str):
     """A parameter expansion or command substitution as written, which bash may expand to nothing; `empty`: what it
     expands to when its variable is empty or unset (a default's word: ${X:-w} is w, with w's own expansions empty),
@@ -993,7 +997,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     if ctx["aliases"] != (aliases or {}):
         again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"])
     elif ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
-        again = analyse(command, persistent_target, readings, work, downloads=True, aliases=aliases)
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads=True, aliases=aliases)
     if again is not None:
         again[5]["more"] |= ctx["more"]   # (what this reading read decided how the line is read again)
         return again
@@ -1221,7 +1225,9 @@ def hidden_commands(cmds, refs):
     git's) and a word holding a substitution (which it read), and each assignment's value; each also from after each
     of its first four `=` that ends a name or option (`--eval=…`, `exec=…`, `ProxyCommand=…`), without a leading `!`
     or `|` (vim's -c '!…', LESSOPEN's '|…'); the engine reads each also without its first word (gdb's 'shell …',
-    expect's 'spawn …', osascript's 'do shell script …').
+    expect's 'spawn …', osascript's 'do shell script …'). A text with no letter but in the escapes of a blank a
+    database statement reads as one (`\\n`, `\\t`, `\\r`) names no program a rule names, unless a `$'…'` spells one
+    (`$'\\162\\155'` is rm), so it isn't read (`x '1 2'`, `psql -c "\\n \\n"`).
     lean: a command in one word with no blank (`man -P reboot`) isn't read; read it if one turns up"""
     words = []
     for c in cmds:
@@ -1240,10 +1246,12 @@ def hidden_commands(cmds, refs):
             texts.append(w[at:])
         for t in texts:
             out.append(t.lstrip(" \t\n!|"))
-    return [t for t in dict.fromkeys(out) if _BLANK.search(t.strip())]
+    return [t for t in dict.fromkeys(out) if _BLANK.search(t.strip()) and (
+        _LETTER.search(_ESCAPED_BLANK.sub(" ", t)) or "$'" in t)]
 
 
 _BLANK = re.compile(r"[ \t\n]")
+_LETTER, _ESCAPED_BLANK = re.compile(r"[^\W\d_]"), re.compile(r"\\[ntr]")
 # the `=` of a name or option before a value, from the word's start or the last such `=` (`--a=exec=cmd`): four
 _NAMED = re.compile(r"[^\s=]*=")
 # programs whose words the parser reads as code itself (emit): their arguments are read exactly
@@ -1263,22 +1271,22 @@ def _searches(argv):
 
 
 def charge(work, n):
-    """Spend `n` of a parse's budget (analyse's `work`), which the engine's reading of the parse shares: ParseError past
-    MAX_WORK."""
+    """Spend `n` of a parse's budget (analyse's `work`), which everything else its decision reads shares (the engine's
+    reading of it, its other readings, the arguments it reads as commands): _Spent past MAX_WORK."""
     work[0] += n
     if work[0] > MAX_WORK:
-        raise ParseError("too much nested shell text")
+        raise _Spent("the decision's work budget is spent")
 
 
 def _learned(ctx):
     """What else the parse found: the files redirections read; the assignments that stand alone, (name, the word as
     written), which set a variable of the shell (not of a command's environment); the variables an expansion read
     without a value the line gives it ("*": an indirect ${!x}, which may be any); whether a command may have set any
-    variable (or exported one: set, read, declare …), and the names an export of literal names exported; the parse's
-    work budget, which the engine's reading of it spends on (charge); whether a second reading (`readings`) read
-    anything the line as written doesn't (more: without it, analyse(readings=False) is the same parse)."""
+    variable (or exported one: set, read, declare …), and the names an export of literal names exported; whether a
+    second reading (`readings`) read anything the line as written doesn't (more: without it,
+    analyse(readings=False) is the same parse)."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
-            "any_set": ctx["any_set"], "exports": ctx["exports"], "work": ctx["work"], "more": ctx["more"]}
+            "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"]}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -1299,7 +1307,7 @@ def analyse_argv(argv, readings=True, work=None, downloads=False):
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
     _made_text(ctx)
     if ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
-        again = analyse_argv(argv, readings, work, downloads=True)
+        again = analyse_argv(argv, readings, ctx["work"], downloads=True)
         again[5]["more"] |= ctx["more"]
         return again
     return (ctx["cmds"], [x for x in lines + ctx["lines"] if x], ctx["refs"], ctx["written"],
@@ -2086,7 +2094,8 @@ _PIP = re.compile(r"pip[0-9.]*")
 
 
 class _Parser:
-    def __init__(self, src, ctx, via):
+    def __init__(self, src, ctx, via, cost=None):
+        """`cost`: what reading `src` spends of the budget (charge), its length unless given."""
         self.s, self.i, self.ctx, self.via, self.heredocs, self.out, self.progs = src, 0, ctx, via, [], [], []
         self.cwd_changed = False
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
@@ -2112,7 +2121,7 @@ class _Parser:
         # eval "$(cat)"`, `{ …; } < f`); `piped`: simple's command is a later pipeline stage
         self.inherit, self.piped = bool(via), False
         self.line = (0, -1, False)   # line_substitutes': the last line it searched (start, end) and what it found
-        self.charge(len(src))
+        self.charge(len(src) if cost is None else cost)
 
     def charge(self, n):
         charge(self.ctx["work"], n)
@@ -2460,11 +2469,12 @@ class _Parser:
         if self.peek() not in ("{", "("):
             raise ParseError("a function body that isn't a { } or ( ) group is not supported")
         start = self.i
-        # a parser of its own, whose commands, lines and state go nowhere: the body only runs where it is called
+        # a parser of its own, whose commands, lines and state go nowhere: the body only runs where it is called. It
+        # spends the line's budget, its text charged once below
         dry = _Parser(self.s, {**self.ctx, "cmds": [], "lines": [], "refs": [], "written": [], "kept": [],
                                "kept_batches": [], "always_cut": [], "cut": [], "steps": [], "nested": set(),
                                "redefined": set(self.ctx["redefined"]), "functions": dict(self.ctx["functions"]),
-                               "uncalled": {}, "calling": [], "work": [0]}, self.via)
+                               "uncalled": {}, "calling": []}, self.via, cost=0)
         dry.i, dry.known = start, {}
         while True:
             dry.pipeline()
@@ -4322,6 +4332,9 @@ class _Parser:
             return "$"
         self.ctx["exp"] += 1
         if self.at("$(("):
+            # its text is read again for the names it reads and sets (arith_sets): each costs what a command does, so
+            # a line of thousands spends the budget as its time does
+            self.charge(COMMAND_COST)
             depth, j = 0, self.i + 1
             while j < len(s):
                 depth += {"(": 1, ")": -1}.get(s[j], 0)

@@ -3854,6 +3854,19 @@ class DecideTime(unittest.TestCase):
                     if isinstance(line, str) or len(line[1]["urls"]) > engine.MAX_URLS:   # held, not read as harmless
                         self.assertNotIn(verdict, ("allow", "flag"))
 
+    def test_arguments_read_as_commands_share_the_call_s_budget(self):
+        """Each argument read as a command (shell.hidden_commands) was decided on a budget of its own: 6,500 quoted
+        arguments with a blank (57 KB) took 0.75 s, against 25 ms on main. They share the call's budget, each costing a
+        decision (engine.DECISION_COST), and the call is held when it is spent, never allowed."""
+        line = "x " + " ".join(f"'a {i}'" for i in range(6500))
+        for backend in BACKENDS:
+            for _, took, _, verdict in self.decide([line], backend):
+                with self.subTest(backend=backend):
+                    self.assertLess(took, 1.0 * SLOWER)
+                    self.assertEqual(verdict, "ask")
+        d = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide("Bash", {"command": line})
+        self.assertEqual((d["rule_ids"], d.get("unread")), (["TK-SHELL-PARSE"], "budget"))
+
     def test_many_known_variables_before_many_loops_is_bounded(self):
         """Each loop's start asked, per known variable, whether the rest of the line may set it again
         (a search of the text each): 2,000 variables before 2,000 loops took over a minute at 64 KiB, and functions
@@ -4577,7 +4590,7 @@ class HarmlessStops(unittest.TestCase):
                 self.assertEqual(e.decide("Bash", {"command": cmd})["verdict"], "ask")   # the cause is words only
         self.assertNotIn("unread", e.decide("Bash", {"command": "ls"}))
         for cause in ("name", "pattern", "input", "foreign", "syntax", "function", "download", "quote", "readings",
-                      "assigns", "split"):
+                      "assigns", "split", "budget"):
             entry = pc.ENGINE_REASONS["TK-SHELL-PARSE"]["causes"][cause]
             self.assertLessEqual(len(entry["remedy"]), pc.MAX_REMEDY, cause)
 

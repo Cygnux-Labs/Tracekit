@@ -49,6 +49,9 @@ _SECOND = re.compile(r"[$`*?[]")
 _TAGGED = {"tracekit": 16}
 REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one decision share; a match that runs out
                             # of it denies, marked nondeterministic
+# what deciding an argument as a command (shell.hidden_commands) spends of its call's work budget beyond its parse: a
+# decision's pass of every deny rule takes about as long as parsing 128 characters of commands does (~110 us)
+DECISION_COST = 128
 
 
 def _backend(name):
@@ -203,7 +206,7 @@ class Engine:
             self._names[tool_re, name] = got
         return got
 
-    def decide(self, tool, args, cls=None, untrusted=None, _hidden=0):
+    def decide(self, tool, args, cls=None, untrusted=None, _hidden=0, _budget=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
         (`oversize`: the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the class the
         policy maps the tool to. `untrusted(subject, field)`: the hits of the subject's values that only
@@ -212,7 +215,10 @@ class Engine:
         on its own. A shell call's argument that the parser reads as a command a deny rule matches (a command a tool
         runs from its arguments: `hyperfine 'cmd'`, `ssh -o ProxyCommand=cmd`, `make --eval='x: ; cmd'`, outside
         their data words: shell.hidden_commands) holds the call with that rule's id; `_hidden`: how deep in such
-        arguments this call is (two levels are read), where a text the parser can't read is no command."""
+        arguments this call is (two levels are read), where a text the parser can't read is no command. A decision
+        has one budget (`_budget`: its work and its deadline), which everything it reads shares: its parse, its other
+        readings, what it reads of a line the parser can't read (_plain) and each argument it reads as a command
+        (DECISION_COST each). Once it is spent nothing more is read, and the call is held (TK-SHELL-PARSE, budget)."""
         args = args if isinstance(args, dict) else {"value": args}
         cls = cls or self.tool_class(tool)
         fields = classes.extract(cls, tool, args)
@@ -224,7 +230,8 @@ class Engine:
         if cls == "a2a" and fields.get("unreadable"):
             hits["deny"].append("TK-A2A-NAME")   # a name with spellings its rules can't see (classes.a2a_fields)
         parsed, oversize, on_parse_error = ([], [], [], [], []), [], self.policy.get("on_parse_error", "ask")
-        cause, work = None, [0]   # the decision's work budget: its parse and the engine's reading of it (shell.charge)
+        cause = None
+        work, deadline = _budget or ([0], [REGEX_TIMEOUT_S])   # (shell.charge; _backend)
         if cls == "http" and isinstance(args.get("urls"), list) and len(args["urls"]) > MAX_URLS:
             hits["deny"].append("TK-OVERSIZE")
             oversize.append(f"the urls list (more than {MAX_URLS})")
@@ -234,7 +241,7 @@ class Engine:
                 hits["deny"].append("TK-OVERSIZE")
                 oversize.append("the shell command")
             else:
-                parsed, unread = self._parse(args, command, work=work, fallback=not _hidden)
+                parsed, unread = self._parse(args, command, work, fallback=not _hidden)
                 if _hidden and unread:   # (the parser can't read it as a command)
                     return {"verdict": "allow", "rule_ids": [], "policy_hash": self.policy_hash, "engine": self.engine,
                             "unparsed": True}
@@ -250,7 +257,7 @@ class Engine:
                     cause = unread or _unread_cause(held)
         # the fallback's 1 s covers its regex matches alone (_backend): reading the call (the parse, the subjects) isn't
         # charged to it, and is bounded by the input size limits, as on RE2
-        nondeterministic, deadline = False, [REGEX_TIMEOUT_S]
+        nondeterministic = False
         name, memo = _text(tool), {}
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class, each with
@@ -280,7 +287,7 @@ class Engine:
                 return None
             if key not in memo:
                 try:
-                    subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds)
+                    subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work)
                 except shell.ParseError as e:   # the reading spent the decision's budget: held, as an unread line is
                     subjects, spent[:] = [], [e.cause]
                 memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
@@ -318,36 +325,41 @@ class Engine:
         # whether $D is empty, so by default a person answers it. A line with no $, backquote or pattern character has
         # no second reading (_SECOND): it reads the same without them, so each of its denies is as written; nor has a
         # line whose second readings read nothing more (shell's `more`: read as written it is the same parse, its
-        # rules read the same subjects), while reading it again can't spend the budget (it would spend at most as
-        # much as the decision has)
+        # rules read the same subjects). A reading the budget cut short moves none
         written = [x for x in self._of[cls, "deny"] if x[1]["id"] in hits["deny"]] if hits["deny"] else []
-        same = len(parsed) > 5 and not parsed[5]["more"] and 2 * work[0] <= shell.MAX_WORK
+        same = len(parsed) > 5 and not parsed[5]["more"]
         if cls == "shell" and on_parse_error == "ask" and written and not nondeterministic and not _hidden and not same \
                 and (not isinstance(command, str) or _SECOND.search(command)):
-            parsed, memo = self._parse(args, command, readings=False, work=work)[0], {}
+            parsed, memo = self._parse(args, command, work, readings=False)[0], {}
             for entry in written:
                 try:
-                    if hit(entry, parsed, memo, []) is None:
+                    if hit(entry, parsed, memo, []) is None and work[0] <= shell.MAX_WORK:
                         hits["deny"].remove(entry[1]["id"])
                         hits["ask"].append(entry[1]["id"])
                 except TimeoutError:   # it stays a deny
                     nondeterministic = True
                     break
         # (only where nothing else holds the call: a held line's arguments add no stop, and an unread one's refs are
-        # its raw text)
+        # its raw text). Each is decided on this decision's budget; one that runs out of time denies, as a match here
+        # would
         if cls == "shell" and _hidden < 2 and not nondeterministic and not hits["deny"] and not hits["ask"] \
-                and not spent:
+                and work[0] <= shell.MAX_WORK:
             for text in shell.hidden_commands(parsed[0], parsed[2]):
                 for t in (text, *text.split(None, 1)[1:]):   # without its first word where that can't be read
-                    inner = self.decide(tool, {"command": t}, "shell", untrusted, _hidden + 1)
-                    for rid in inner["rule_ids"]:
+                    work[0] += DECISION_COST
+                    inner = {} if work[0] > shell.MAX_WORK else self.decide(
+                        tool, {"command": t}, "shell", untrusted, _hidden + 1, (work, deadline))
+                    nondeterministic |= bool(inner.get("nondeterministic"))
+                    for rid in inner.get("rule_ids", ()):
                         if rid in self._deny_ids and rid not in hits["deny"] and rid not in hits["ask"]:
-                            hits["ask"].append(rid)
+                            hits["deny" if nondeterministic else "ask"].append(rid)
                     if not inner.get("unparsed"):
                         break
-        if spent and "TK-SHELL-PARSE" not in hits[on_parse_error]:
+                if nondeterministic or work[0] > shell.MAX_WORK:
+                    break
+        if (spent or work[0] > shell.MAX_WORK) and "TK-SHELL-PARSE" not in hits[on_parse_error]:
             hits[on_parse_error].append("TK-SHELL-PARSE")
-            cause = cause or spent[0]
+            cause = cause or "budget"
         verdict = next((sec for sec in SECTIONS if hits[sec]), "allow")
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
                "policy_hash": self.policy_hash, "engine": self.engine}
@@ -359,25 +371,24 @@ class Engine:
             out["unread"] = cause
         return out
 
-    def _parse(self, args, command, readings=True, work=None, fallback=True):
+    def _parse(self, args, command, work, readings=True, fallback=True):
         """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
         ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse); `work`:
-        the decision's budget (shell.charge): a parse that spent it isn't parsed again up to where it stopped
-        (_plain's head), which would spend as much. `fallback`: False leaves _plain() out (None in its place), for a
-        caller that only asks whether the command reads."""
+        the decision's budget (shell.charge), which _plain() spends too. `fallback`: False leaves _plain() out (None
+        in its place), for a caller that only asks whether the command reads."""
         target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
             if self._persistent_targets else None
+        start = work[0]
         try:
             return _shell(args, target, readings, work), None
         except shell.ParseError as e:
             if not fallback:
                 return None, e.cause
-            at = getattr(e, "at", 0) if work is None or work[0] <= shell.MAX_WORK else 0
-            return (_plain(command, at, readings, target, getattr(e, "cmds", ())) if isinstance(command, str) else
-                    _plain(canonical(command), 0, readings, target)), e.cause
+            return (_plain(command, work, work[0] - start, getattr(e, "at", 0), readings, target, getattr(e, "cmds", ()))
+                    if isinstance(command, str) else _plain(canonical(command), work, 0, 0, readings, target)), e.cause
 
     @staticmethod
-    def _subjects(cls, field, args, fields, parsed, split=False, finds=None):
+    def _subjects(cls, field, args, fields, parsed, split=False, finds=None, work=None):
         """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
         each line the parser normalised, a shell `code` those without the text a command only writes into a file
@@ -387,7 +398,8 @@ class Engine:
         acts on rather than what it carries (Engine._targets); shell `effects` the files it writes or deletes
         (_effects); sql `code` is one subject per dialect reading. With
         `split`, a list value is one subject per element (nested lists flattened). `finds`: decide's matcher of a
-        regex the call gives (_finds)."""
+        regex the call gives (_finds); `work`: the decision's budget, which reading Tracekit's paths spends
+        (shell.charge)."""
         if cls == "http" and field is not None and isinstance(args.get("urls"), list):   # a call on several URLs
             urls = canonical(args["urls"])
             if len(args["urls"]) > MAX_URLS or len(_text(urls).encode()) > MAX_SUBJECT:   # unread (decide's TK-OVERSIZE)
@@ -402,7 +414,7 @@ class Engine:
         if cls == "shell" and field == "effects":
             return _effects(parsed)
         if cls == "shell" and field == "tracekit":
-            return _tracekit(parsed, finds)
+            return _tracekit(parsed, finds, [0] if work is None else work)
         if cls == "shell" and field == "package_index":
             return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
@@ -412,11 +424,13 @@ class Engine:
         if cls == "shell" and field == "code":
             return _code(parsed)
         if cls == "shell" and field in (None, "argv"):
-            # and each again with its words' own spaces as WORD_SPACE, and with each word that is only a variable the
-            # line gives no value there (shell's unresolved: not a loop's, nor one it knows) as UNKNOWN_WORD
+            # and each again with its words' own spaces as WORD_SPACE where a word before its last has one (the last
+            # word's move no word after it: sqlite3's SQL is searched once), and with each word that is only a variable
+            # the line gives no value there (shell's unresolved: not a loop's, nor one it knows) as UNKNOWN_WORD
             unknown = (parsed[5] if len(parsed) > 5 else {}).get("unresolved", ())
             return list(dict.fromkeys([" ".join(c["argv"]) for c in parsed[0]] + [
-                " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0] if " " in "".join(c["argv"])] + [
+                " ".join(w.replace(" ", WORD_SPACE) for w in c["argv"]) for c in parsed[0]
+                if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
                          for w in c["argv"]) for c in parsed[0] if unknown and "$" in "".join(c["argv"])]))
         if cls == "shell" and field == "line":
@@ -542,29 +556,36 @@ def _shell(args, persistent_target=None, readings=True, work=None):
 _PIECE = re.compile(r"""(?:(?<![^ \t\n;&|(])(?<!\\.)#[^\n]*|[^;&|\n'"\\]|\\.?|'[^']*(?:'|\Z)|"(?:[^"\\]|\\.?)*(?:"|\Z))+""", re.S)
 
 
-def _plain(raw, at=0, readings=True, persistent_target=None, cmds=()):
+def _plain(raw, work, spent, at=0, readings=True, persistent_target=None, cmds=()):
     """What a command the parser can't read is decided on: its text as its target and code; the commands it read
     before it stopped (`cmds`: a substitution bash runs inside quotes, `let 'x[$(cmd)]'`); the line before the word
     it stopped in (`at`: where), parsed; and each piece of the rest (_PIECE), from the one it stopped in, split on
     blanks as a command (shell.analyse_argv), so a rule that reads plain words still holds what it held (`sudo id
-    {1..3..1}`). A part that can't be read so is left out; the parts share one parse budget (shell.MAX_WORK).
+    {1..3..1}`). A part that can't be read so is left out. Each spends the decision's budget (`work`), which the parse
+    that stopped spent `spent` of: the head, which costs about as much again, is read only when the budget has that
+    left, else left out with its pieces (its commands are `cmds`), and once the budget is spent nothing more is read.
     `persistent_target`: as for shell.analyse, so text echoed into ~/.bashrc stays code in the head too."""
-    out, start, work = (list(cmds), [], [raw], [], [raw]), 0, [0]
+    out, start = (list(cmds), [], [raw], [], [raw]), 0
     head = raw[:max(0, *(raw.rfind(c, 0, at) for c in " \t\n"))]
     found = []
     if head.strip():
-        try:
-            found.append(shell.analyse(head, persistent_target, readings, work))
-            last = ([m.span() for m in _PIECE.finditer(head)] or [(0, 0)])[-1]
-            start = last[0] if last[1] == len(head) else last[1] + 1   # after a separator that ends the head
-        except shell.ParseError:
-            pass
+        last = ([m.span() for m in _PIECE.finditer(head)] or [(0, 0)])[-1]
+        after = last[0] if last[1] == len(head) else last[1] + 1   # after a separator that ends the head
+        if work[0] + spent > shell.MAX_WORK:
+            start = after
+        else:
+            try:
+                found.append(shell.analyse(head, persistent_target, readings, work))
+                start = after
+            except shell.ParseError:
+                pass
     for piece in (m.group() for m in _PIECE.finditer(raw, start)):
+        if work[0] > shell.MAX_WORK:   # spent: the rest isn't read (32,000 pieces took 0.6 s)
+            break
         try:
             found.append(shell.analyse_argv(piece.split(), readings, work) if piece.split() else ())
         except shell.ParseError:
-            if work[0] > shell.MAX_WORK:   # the rest would fail as fast, one by one: 32,000 pieces took 0.6 s
-                break
+            pass
     for reading in found:
         for into, more in zip(out, reading):
             into += more
@@ -1384,7 +1405,7 @@ _OPTION = re.compile(r"-[^/=]*")   # an option, not a path or an assignment (_tr
 _PYTHON_EXE = re.compile(r"(?:pyw?|pypy|pythonw?)[0-9.]*t?")
 
 
-def _tracekit(parsed, finds):
+def _tracekit(parsed, finds, work):
     """What a shell call does to Tracekit itself (TK-D007), each as a tagged subject. ACT: what a command acts on or
     runs, its words joined (but data words), its stdin, the files redirections write, _effects' files, the other words
     that name something (assignments, heredoc programs). READ, DEEP and LIST: one subject per word a command that only
@@ -1396,7 +1417,8 @@ def _tracekit(parsed, finds):
     its commands (DEEP where every command only reads or lists, else ACT), a relative word also as read from each
     folder a cd on the line enters (_bases), and a kill of what finds the signer as acting on it (_kills_signer).
     SIGNER_MODULE: an ACT text whose code reaches more of Tracekit's signer than it may read (_runs_signer), or its
-    data or lifecycle through the SDK (_reaches_sdk). Each also normalised and casefolded as a path is (_path_forms)."""
+    data or lifecycle through the SDK (_reaches_sdk). Each also normalised and casefolded as a path is (_path_forms).
+    `work`: the decision's budget, which this reading spends (shell.charge)."""
     commands, refs, written = parsed[0], parsed[2], set(parsed[3])
     learned = parsed[5] if len(parsed) > 5 else None
     kinds = [_reading(c["argv"]) for c in commands]
@@ -1405,7 +1427,6 @@ def _tracekit(parsed, finds):
     for c in commands:
         if c["argv"][0] not in _FILTERS:
             feeding[c["pipeline"]] = max(feeding.get(c["pipeline"], -1), c.get("stage", 0))
-    work = learned["work"] if learned else [0]
     # what a line sets that moves its paths: HOME (~ and a bare cd), CDPATH (a relative cd), a link (ln -s) to a folder
     homes = [r.partition("=")[2] for r in refs if r.startswith("HOME=")]
     bases = _bases(commands, work, [p for r in refs if r.startswith("CDPATH=") for p in r[7:].split(":") if p])
