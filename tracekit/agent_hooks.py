@@ -676,12 +676,17 @@ def _blocked_agy_args(name, args):
 
 def _sets_state(text):
     """The word of typed text that sets or replays state of the running shell (SHELL_STATE), read as the policy's
-    shell parser reads the line, else None; text it can't read goes to the signer, which holds it."""
-    from .policy2 import shell
+    shell parser reads the line, else None. Text the parser can't read (it holds a state variable set to text it
+    can't name, a nameref to one, `hash -p`) is read as the engine reads such a line, each piece's words as written,
+    with an assignment as its first word; text with none goes to the signer, which holds it."""
+    from .policy2 import engine, shell
     try:
         cmds, *_, learned = shell.analyse(text)
-    except (shell.ParseError, RecursionError):
+    except RecursionError:
         return None
+    except shell.ParseError:
+        words = [w for p in engine._PIECE.finditer(text) if (w := p.group().split())]
+        cmds, learned = [{"argv": w} for w in words], {"assigned": [(w[0], w[0]) for w in words], "functions": []}
     for a in (c["argv"] for c in cmds):
         if a[0] in SHELL_STATE or a[0] == "set" and any(w.startswith(("-", "+")) for w in a[1:]) or \
                 a[0] == "alias" and any(re.match(r"[^=]+=", w) for w in a[1:]) or a[0] == "history" and any(
