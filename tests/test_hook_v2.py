@@ -752,7 +752,7 @@ class HookV2(unittest.TestCase):
         proc = self.hook("PreToolUse", tool_name="Edit", tool_input=edit, tool_use_id="t1", wait=False)
         line = proc.stderr.readline()
         self.assertIn("(TK-CONSTRAINT): a person approves it", line)
-        self.assertIn("Why: the person's request in this run said not to modify billing.py; ask the person", line)
+        self.assertIn("Why: the person's request in this run said not to modify \"billing.py\"; ask the person", line)
         self.assertEqual(line.count("TK-CONSTRAINT"), 1, line)
         Client().approval_decide({"approval_id": line.split()[4], "decision": "reject"})
         err = proc.stderr.read()
@@ -760,7 +760,7 @@ class HookV2(unittest.TestCase):
         proc.stdout.close()
         proc.stderr.close()
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("said not to modify billing.py", err)
+        self.assertIn("said not to modify \"billing.py\"", err)
         other = dict(edit, file_path=os.path.join(self.dir, "pager.py"))
         self.assertEqual(self.hook("PreToolUse", tool_name="Edit", tool_input=other, tool_use_id="t2"), (0, ""))
 
@@ -784,7 +784,7 @@ class HookV2(unittest.TestCase):
             self.assertEqual(self.hook("UserPromptSubmit", prompt=prompt), (0, ""))
         first = self.run_handle()
         first.call("close_run", reason="idle")   # as the signer's idle close
-        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t1"))
+        self.assertIn("said not to modify \"billing.py\"", self.held_edit("billing.py", "t1"))
         self.assertNotEqual(self.run_handle().run_id, first.run_id)
         for run in (first, self.run_handle()):
             self.assertEqual([e["data"]["kind"] for e in run.call("read")["events"] if e["type"] == "constraint.added"],
@@ -806,7 +806,7 @@ class HookV2(unittest.TestCase):
         self.assertNotEqual(self.run_handle().run_id, old)
         self.assertEqual([e["type"] for e in self.events()],
                          ["run.registered", "constraint.added", "policy.decision", "tool.result"])
-        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t3"))
+        self.assertIn("said not to modify \"billing.py\"", self.held_edit("billing.py", "t3"))
         autospawn.down()
         store = FileStorage(os.path.join(service.dev_data_dir(), "store"))
         self.addCleanup(store.close)
@@ -829,13 +829,13 @@ class HookV2(unittest.TestCase):
         self.assertFalse(os.path.exists(claude_code._state("s1", "t1")))
         line = self.held_edit("billing.py", "t2")
         self.assertIn("(TK-CONSTRAINT): a person approves it", line)
-        self.assertIn("Why: the person's request in this run said not to modify billing.py", line)
+        self.assertIn("Why: the person's request in this run said not to modify \"billing.py\"", line)
 
     def test_a_prompt_too_large_to_record_still_adds_its_constraints(self):
         code, err = self.hook("UserPromptSubmit", prompt="Don't touch billing.py. " + "x" * (1 << 20))
         self.assertIn("over the signer's limit", err)   # an error the harness shows (exit 1 as `tracekit init` wires it)
         self.assertEqual([e["type"] for e in self.events()], ["run.registered", "constraint.added"])
-        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t1"))
+        self.assertIn("said not to modify \"billing.py\"", self.held_edit("billing.py", "t1"))
 
     def test_a_constraint_past_the_signers_cap_is_told_to_the_person_and_every_write_is_held(self):
         prompt = "Don't touch " + " or ".join(f"f{i}.py" for i in range(service.MAX_CONSTRAINTS)) + " or billing.py."

@@ -887,8 +887,9 @@ def breaks(kind, f, is_object):
 def held(kind, name):
     """What the agent is told when a live constraint holds its call (`name`: from breaks(), out of its own
     arguments; for "many", the most files of one call the signer checks; for "full", the most file constraints a run
-    takes). only_change's file is any the agent wrote, so it is quoted: no line of its starts a line of the reason."""
-    return {"keep_away": f"the person's request in this run said not to modify {name}",
+    takes). A file or directory name is quoted, so no line of its starts a line of the reason: only_change's is any the
+    agent wrote, keep_away's the object constraint_add took, which the agent's own identity may add."""
+    return {"keep_away": f"the person's request in this run said not to modify {quoted(name, 512)}",
             "only_change": f"the person's request in this run said to change only certain files, and "
                            f"{quoted(name, 512)} is not one of them",
             "read_only": "the person's request in this run said to make no changes (read-only)",
