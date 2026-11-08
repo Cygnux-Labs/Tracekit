@@ -1704,7 +1704,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                         if agent == "claude" and not why else {})))
     if not harnesses:
         print(f"note: harness binding is off, so any process of {target_user} can start runs or write into "
-              "the agent's runs. To bind runs to the agent's CLI, run init again with --harness [NAME=]PATH.")
+              "the agent's runs. To bind runs to the agent's CLI on Linux, run init again with --harness [NAME=]PATH.")
     if failed:
         raise ServiceError("; ".join(failed))
     return sock, settings
