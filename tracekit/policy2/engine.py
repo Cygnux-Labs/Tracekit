@@ -1723,15 +1723,17 @@ def _strings(value):
 
 def _prepare(subjects, tag=0):
     """(the subjects as text, up to the first longer than MAX_SUBJECT, past `tag` bytes a field's own tag adds
-    (_TAGGED); their lower-case forms; those joined by a newline; whether one was longer). A rule matches the subjects
-    before a long one and, matching none, takes TK-OVERSIZE, as one that walked them in order would."""
+    (_TAGGED); their casefolded forms, which the prefilters read (RE2 matching in any case folds a long s to s and the
+    Kelvin sign to k, as casefold() does and lower() doesn't); those joined by a newline; whether one was longer). A
+    rule matches the subjects before a long one and, matching none, takes TK-OVERSIZE, as one that walked them in
+    order would."""
     texts = []
     for s in subjects:
         b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
         if len(b) > MAX_SUBJECT + tag:
             break
         texts.append(s if b is s else b.decode("utf-8"))
-    lows = [t.lower() for t in texts]
+    lows = [t.casefold() for t in texts]
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
 
 

@@ -233,7 +233,7 @@ def requirements(pattern):
         for alt in alts:   # the group read as this alternative, in its place
             exact, found = _found(items[:k] + list(alt) + items[k + 1:])
             sets = [tuple(sorted(s)) for s in ([exact] if exact is not None else found) if min(map(len, s)) >= 2]
-            if not sets:
+            if not sets or not all(t.isascii() for one in sets for t in one):   # (a subject is read casefolded)
                 return None
             out.append(tuple(sets))
         return tuple(out)
