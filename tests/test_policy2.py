@@ -1510,7 +1510,7 @@ class Shell(unittest.TestCase):
             self.assertEqual(any(c["opaque"] for c in shell.parse(cmd) if c["argv"] == argv), held, cmd)
         for cmd in ('alpha "a${IFS}b"', "IFS=,; alpha a${IFS}b", "read IFS; alpha a${IFS}b"):
             self.assertNotIn(["alpha", "a", "b"], argvs(cmd), cmd)
-        for cmd in ("IFS=,; alpha a${IFS}b", "read IFS; alpha a${IFS}b"):   # (round 9: held, as IFS may be any)
+        for cmd in ("IFS=,; alpha a${IFS}b", "read IFS; alpha a${IFS}b"):   # (held, as IFS may be any)
             self.assertTrue(any(c["opaque"] for c in shell.parse(cmd) if c["argv"][0] == "alpha"), cmd)
         for pack, backend in itertools.product(("dev.yaml", "server.yaml"), BACKENDS):
             e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
@@ -2048,7 +2048,7 @@ class TimedAndBraced(unittest.TestCase):
                                  (pack, backend, cmd))
 
     def test_an_alternate_or_replacement_word_is_a_possible_value(self):
-        """sec07 round 7: ${X:+w} and ${X+w} are w when X is set, and ${X/p/w} (//, /#, /%) is w when p matches all of
+        """${X:+w} and ${X+w} are w when X is set, and ${X/p/w} (//, /#, /%) is w when p matches all of
         X, but both were read only as written and as nothing: `tracekit ${HOME:+approve} ID` was allowed and
         `git push ${HOME:+--force} origin main` only flagged. A default's or alternate's word is read on a special
         parameter, an array element or an indirect name too (${@:-w}, ${X[0]:+w}, ${!X:+w}), and with its own
@@ -2092,7 +2092,7 @@ class TimedAndBraced(unittest.TestCase):
                     self.assertEqual((d["verdict"] in ("ask", "deny"), rule in d["rule_ids"]), (True, True), d)
 
     def test_a_word_is_read_as_each_way_its_expansions_combine(self):
-        """sec07 round 8: every expansion of a word took its word at once, or none did, so a word whose expansions
+        """Every expansion of a word took its word at once, or none did, so a word whose expansions
         take different values was never read: `tracekit ${HOME:+approve}${TK_NOPE:+d} ID` runs approve when HOME is
         set and TK_NOPE isn't, and was allowed. Each expansion has its own values (empty or unset, its value as
         written, a default's, alternate's or replacement's word, that word read so too) and a word is read as each way
@@ -2114,7 +2114,7 @@ class TimedAndBraced(unittest.TestCase):
                              ("cat $XDG_DATA_HOME$B/tracekit/key", "TK-D007")])
 
     def test_an_expansion_word_reads_its_quotes_and_the_literals_the_line_gives(self):
-        """sec07 round 8: an expansion's word kept $'…' and $"…" as written (`${HOME:+$'approve'}` was read as
+        """An expansion's word kept $'…' and $"…" as written (`${HOME:+$'approve'}` was read as
         `$approve`), and a variable in it as unknown even where the line gave it a literal (`A=approve;
         ${HOME:+"$A"}`) or a loop its words. They read as they do in a word of the line."""
         self.assertIn(["cmd", "approve"], argvs("cmd ${X:+$'approve'}"))
@@ -2129,7 +2129,7 @@ class TimedAndBraced(unittest.TestCase):
                              ("for a in list approve; do tracekit ${HOME:+$a} apr-1; done", "TK-D012")])
 
     def test_a_colonless_default_of_a_set_but_empty_variable_is_empty(self):
-        """sec07 round 8: ${E-d} and ${E=d} are empty when E is set but empty (only ${E:-d} is d then), and were read
+        """${E-d} and ${E=d} are empty when E is set but empty (only ${E:-d} is d then), and were read
         only as written and as d: `E=; tracekit approve${E-d} ID` runs approve."""
         self.assertIn(["cmd", "approve"], argvs("cmd approve${E-d}"))
         self.assertIn(["cmd", "approve"], argvs("cmd approve${E=d}"))
@@ -2137,7 +2137,7 @@ class TimedAndBraced(unittest.TestCase):
                              ("tracekit reject${E=x} apr-1", "TK-D012")])
 
     def test_a_reserved_word_where_no_command_starts_is_also_a_program(self):
-        """sec07 round 8's oracle (seed 8): bash reads a reserved word only first, so after an assignment or a word
+        """Bash reads a reserved word only first, so after an assignment or a word
         that expands to nothing it is a program's name (`x= for`, `${X::0} then` run for and then), and the parser
         read none: it is read as that program too, and still as the keyword (`x= if sudo id` stays denied); GNU's
         getopt_long takes a unique prefix of a long option, so `nice --a 3 id` runs id."""
@@ -2147,7 +2147,7 @@ class TimedAndBraced(unittest.TestCase):
         self.assertTrue({("if",), ("sudo", "id")} <= set(map(tuple, argvs("x= if sudo id"))))
         self.assertIn(["id"], argvs("nice --a 3 id"))
         self.assertIn(["id"], argvs("env --u X id"))
-        # round 9's oracle (seed 8): after a redirection too; there `function` runs a program of that name, and was read
+        # after a redirection too; there `function` runs a program of that name, and was read
         # as a definition (`>/dev/null function f{ }` ran nothing the parser saw): held
         self.assertIn(["for"], argvs(">/dev/null for"))
         self.assertTrue({("if",), ("sudo", "id")} <= set(map(tuple, argvs(">/dev/null if sudo id; then :; fi"))))
@@ -2159,7 +2159,7 @@ class TimedAndBraced(unittest.TestCase):
             self.assertIn(want, argvs(line), line)
 
     def test_a_paren_does_not_close_a_brace_in_a_substitution_pattern(self):
-        """sec07 round 8: a substitution's pattern ended at the first / one depth count put outside nested
+        """A substitution's pattern ended at the first / one depth count put outside nested
         expansions, and a ) counted against a ${, so `${HOME/${TK_N2/)/}$HOME/approve}` was split inside the nested
         one. The pattern now ends where the parser's own reading of the nested expansions does."""
         self.assertIn(["cmd", "w"], argvs("cmd ${X/${Y/)/}$Z/w}"))
@@ -2169,7 +2169,7 @@ class TimedAndBraced(unittest.TestCase):
                              ("tracekit ${HOME/$(echo ')')/approve} apr-1", "TK-D012")])
 
     def test_past_the_reading_cap_a_word_is_unread(self):
-        """sec07 round 8: a word's readings are capped (shell.MAX_READINGS): past it the word is unread, held
+        """A word's readings are capped (shell.MAX_READINGS): past it the word is unread, held
         (TK-SHELL-PARSE, cause `readings`) and, as TK-D012's action, denied. A long chain of ${Xi:+i} is unread at
         once, not read 2^n ways; an expansion written alike takes one value throughout, so `$A` 64 times is read; past
         the cap, values the line doesn't give ($X, $(cmd)) are read all as written and all empty together, as before,
@@ -2196,7 +2196,7 @@ class TimedAndBraced(unittest.TestCase):
                              ("tracekit " + chain(n + 1) + " apr-1", "TK-SHELL-PARSE")])
 
     def test_past_the_cap_a_command_is_unread_never_read_fewer_ways(self):
-        """sec07 round 9: past the cap, a command's mixed readings collapsed to its unknown values all as written or
+        """Past the cap, a command's mixed readings collapsed to its unknown values all as written or
         all empty, so `cat $XDG_DATA_HOME$B/tracekit/key` beside a word of four alternates was never read with only $B
         empty, and was allowed. Past the cap a word or command is unread (held, `readings`); the cap is 256, so a
         docker or rsync line of seven defaults is still read, and not held."""
@@ -2224,7 +2224,7 @@ class TimedAndBraced(unittest.TestCase):
                 self.assertNotIn("TK-SHELL-PARSE", e.decide("Bash", {"command": line})["rule_ids"])
 
     def test_an_expansion_that_sets_or_names_variables_leaves_the_rest_of_the_line_unread(self):
-        """sec07 round 9 held a command whose ${F=w} it named F again in, but round 10's review force-pushed with only
+        """A command was held whose ${F=w} it named F again in, but a review force-pushed with only
         TK-F004 through every other spelling: `${!G=}` of G=F, `${F=}` read back through `${!G-f}` or a nameref, a
         name list (`${!forc@}` is force after `${force=}`), an arithmetic assignment in an offset (`${PWD:0:$((F=1,
         0))}`). Each copy of an expansion took one value although the assignment between them changed it. Now an
@@ -2268,12 +2268,12 @@ class TimedAndBraced(unittest.TestCase):
                 self.assertFalse(any(c["opaque"] for c in shell.parse(line)), line)
 
     def test_an_unquoted_expansion_is_split_as_bash_splits_it(self):
-        """sec07 round 10's review: a blank in what an unquoted expansion may expand to (a default's word, a literal
+        """review: a blank in what an unquoted expansion may expand to (a default's word, a literal
         the line gives) was kept in one word, never split as bash splits it, so GNU env took `=${X:- }tracekit` or
         `A=$X` (X=' tracekit') for one assignment, and `env =${X:- }tracekit approve ID` was allowed: bash runs
         tracekit. Each such value is now read split as bash splits it at IFS's default (`FLAGS="-x -q"; pytest $FLAGS`
         runs pytest -x -q), and so is a literal with a blank the line gives a variable where it doesn't know it holds
-        it (after `&&`, in a loop's body, after `read`: the oracle's `for i in 1;do X=' rm';env =$X;done` ran rm), which
+        it (after `&&`, in a loop's body, after `read`: the bash comparison's `for i in 1;do X=' rm';env =$X;done` ran rm), which
         was read as written only. Where the line gives IFS a value, one that may hold a character of it or a blank, and a
         literal with one given only after its use (a loop may run that first), hold the command (cause `split`); a
         quoted expansion, or an assignment's word (bash never splits it), is read as before."""
@@ -2312,7 +2312,7 @@ class TimedAndBraced(unittest.TestCase):
                 self.assertFalse(any(c["opaque"] for c in shell.parse(line)), line)
 
     def test_an_unquoted_ifs_the_parser_can_not_split_at_is_held(self):
-        """sec07 round 9's oracle (seed 8): after a command that may set any variable (`let`, `read x`) an unquoted
+        """After a command that may set any variable (`let`, `read x`) an unquoted
         ${IFS} was read as one unknown value, never split, though IFS is still bash's default there: `let;env
         =${IFS}GIT` runs GIT. An unquoted IFS expansion the parser can't split at (IFS may have changed, or a form
         other than $IFS or ${IFS}: ${IFS:0:1} is a space) holds its command; a known default one is still split, and
@@ -2328,14 +2328,14 @@ class TimedAndBraced(unittest.TestCase):
         self.assertEqual(e.decide("Bash", {"command": "rm -rf /; let; echo a${IFS:0:1}b"})["verdict"], "deny")
 
     def test_echo_keeps_a_backslash_and_digit_other_than_zero(self):
-        """sec07 round 9's oracle (seed 8): echo -e (and sh's echo, printf's %b) reads an octal escape only as \\0 and
+        """Echo -e (and sh's echo, printf's %b) reads an octal escape only as \\0 and
         up to three digits; \\1 to \\7 stay as written, but the parser read `\\6` as the byte 6, so a script so
         written and sourced (`echo -e 'x\\6d' >> f; . f`) ran a program it never saw (`rx6d`)."""
         self.assertIn(["rx6d"], argvs("echo -n '\\x23;r'>f;echo -e 'x\\6d'>>f;. f"))
         self.assertEqual(shell._echo_e("a\\6b\\0101\\x41"), ("a\\6bAA", False))
 
     def test_a_name_runs_on_past_a_backslash_newline(self):
-        """sec07 round 10's oracle (seed 9): bash deletes a backslash-newline before it reads a word, so `$X\\⏎d` is
+        """Bash deletes a backslash-newline before it reads a word, so `$X\\⏎d` is
         $Xd, but the parser read $X then d: `X=/;$X\\⏎d id` was read as running /d, and bash ran id."""
         for line in ("X=/;$X\\\nd id", "X=/;$X\\\n\\\nd id"):
             with self.subTest(line=line):
@@ -2344,7 +2344,7 @@ class TimedAndBraced(unittest.TestCase):
         self.assertEqual(argvs('echo "$X\\\nd" $1\\\n2')[0], ["echo", "$Xd", "$12"])   # ($1 is one digit)
 
     def test_a_wrapper_option_its_table_does_not_know_is_read_both_ways(self):
-        """sec07 round 9: strace's long options that take a value were missing from WRAPPERS, so `strace --user bob
+        """Strace's long options that take a value were missing from WRAPPERS, so `strace --user bob
         tracekit approve ID` was read as running bob, and allowed. An option a wrapper's table doesn't name (or a
         prefix of one that isn't exact: strace's --summary is a flag) is read both ways, as a flag and as taking the
         next word; strace's value options are named too."""
@@ -2366,7 +2366,7 @@ class TimedAndBraced(unittest.TestCase):
         self.held_or_denied([("strace --user bob tracekit approve apr-1", "TK-D012"),
                              ("strace --env X=1 git push --force origin main", "TK-D003"),
                              ("sudo --new-option v rm -rf /", "TK-D004")])
-        # round 10's review: npx's --no may take a value (`npx --no true tracekit …` was read as running true only)
+        # npx's --no may take a value (`npx --no true tracekit …` was read as running true only)
         self.assertIn(["tracekit", "approve", "apr-1"], argvs("npx --no true tracekit approve apr-1"))
         self.held_or_denied([("npx --no true tracekit approve apr-1", "TK-D012")])
         for line in ("strace -x " * 30 + "ls", "xargs " + "-x a " * 6000 + "ls"):   # read, or held past the budget
@@ -2513,7 +2513,7 @@ class TimedAndBraced(unittest.TestCase):
 
 
 class Round11(unittest.TestCase):
-    """sec07 round 11's review: values the parser dropped, code git and python run, and words with a space."""
+    """review: values the parser dropped, code git and python run, and words with a space."""
 
     def held_or_denied(self, cases):
         TimedAndBraced.held_or_denied(self, cases)
@@ -2568,7 +2568,7 @@ class Round11(unittest.TestCase):
                              ("cd /tmp && export x=--force; git push $x origin main", "TK-D003")])
 
     def test_a_value_with_a_blank_an_expansion_joins_is_read_split(self):
-        """The oracle, with round 11's generator: a value with a blank that an expansion joins, an assignment's or a
+        """The bash comparison, with its generator: a value with a blank that an expansion joins, an assignment's or a
         loop word's (`X=" tracekit"$Y`), left the variable unknown, so `env =$X approve ID` ran tracekit unread. Each
         reading of it with a blank is now a value the variable may hold, read split as bash splits it. A lone $ is
         text, not an expansion, so `X="$ tracekit"` is a literal (it left X unknown too), and a loop's literal words
@@ -2653,7 +2653,7 @@ class Round11(unittest.TestCase):
 
 
 class Round12(unittest.TestCase):
-    """sec07 round 12: TK-D007's field in any case, and a loop word a known variable's literal makes."""
+    """TK-D007's field in any case, and a loop word a known variable's literal makes."""
 
     def held_or_denied(self, cases):
         TimedAndBraced.held_or_denied(self, cases)
@@ -2692,7 +2692,7 @@ class Round12(unittest.TestCase):
 
 
 class Round13(unittest.TestCase):
-    """sec07 round 13: commands read before the parser stops, a command in an argument, git's aliases and forcing
+    """Commands read before the parser stops, a command in an argument, git's aliases and forcing
     configs, other homes and ways to empty one, an interpreter call's every literal, and a download piped into any
     program that may run it."""
 
@@ -2819,13 +2819,13 @@ class Round13(unittest.TestCase):
                       "node -e 'require(\"child_process\").execSync(\"npm test\", {stdio: \"inherit\"})'"])
 
     def test_env_with_an_assignment_that_may_split_into_a_command(self):
-        """The bash oracle (seed 9): `X=${X::0}" tracekit"; env =$X` splits into `env = tracekit`, which runs tracekit;
+        """The bash comparison: `X=${X::0}" tracekit"; env =$X` splits into `env = tracekit`, which runs tracekit;
         env with assignments alone was read as running nothing, and `env =$X 1` as running 1. One whose assignment
         holds a variable the line gave a value with an operator (which the parser reads as written or empty) is held."""
         self.held_or_denied([('X=${X::0}" tracekit approve 1"${X};env =$X', "TK-SHELL-PARSE"),
                              ('X=${X::0}" tracekit"${X};env =$X 1', "TK-SHELL-PARSE"),
                              ("X=${Y/*/ tracekit}; env A=$X approve 1", "TK-SHELL-PARSE"),
-                             ('X=" tracekit";env =${X#}e approve 1', "TK-SHELL-PARSE"),   # (seed 8)
+                             ('X=" tracekit";env =${X#}e approve 1', "TK-SHELL-PARSE"),
                              ("env A=${HOME%/} ls", "TK-SHELL-PARSE")])
         self.allowed(["env A=1 B=2", "env FOO=/tmp ls", "env -u X ls", "S=/tmp/s; env HOME=$S/home ls",
                       "env FOO=$HOME ls", "H=$(mktemp -d); env HOME=$H ls"])
@@ -2843,8 +2843,8 @@ class Round13(unittest.TestCase):
 
 
 class Round14(unittest.TestCase):
-    """sec07 round 14: an interpreter's string escapes, a heredoc given through a stream path, code in other options, a
-    config the line writes then runs, git's ext:: URLs, typed keys, and deletes that skip rm; and round 13's
+    """An interpreter's string escapes, a heredoc given through a stream path, code in other options, a
+    config the line writes then runs, git's ext:: URLs, typed keys, and deletes that skip rm; and the
     regressions (a budget plain substitutions spent, a forcing config read again and again)."""
 
     def verdicts(self, cases):
@@ -3024,7 +3024,7 @@ class Round14(unittest.TestCase):
 
 
 class Round15(unittest.TestCase):
-    """sec07 round 15: a copy or link of Tracekit's entry point run under another name, a function variable as a
+    """A copy or link of Tracekit's entry point run under another name, a function variable as a
     command's word, a ref force-updated through GitHub's API, and the lines a harness split, as one call each."""
 
     def verdicts(self, cases):
@@ -3215,7 +3215,7 @@ class ReadAsBash(unittest.TestCase):
 
     def test_heredoc_into_shell(self):
         self.check(["sh<<EOF\n'$(alpha)'\nEOF", "sh <<EOF\n\\$(alpha)\nEOF"])
-        self.check(["bash <<EOF\necho \\\"$HOME\\\"\nEOF"])   # round 3: HOME isn't a literal the line gives
+        self.check(["bash <<EOF\necho \\\"$HOME\\\"\nEOF"])   # HOME isn't a literal the line gives
 
     def test_heredoc_delimiter(self):
         self.check(["<<${X##*}EOF\n$(alpha)\nEOF", "sh<<${X##*}EOF\nalpha\nEOF"])
@@ -3280,12 +3280,12 @@ class ReadAsBash(unittest.TestCase):
                    "sh -c \"echo a${IFS}b\""])
 
     def test_an_assignment_after_time(self):
-        """An assignment after the time keyword is one (the sec07 fuzz grammar's seeds 8 to 11): it times the command
+        """An assignment after the time keyword is one (the this change fuzz grammar's seeds 8 to 11): it times the command
         or the assignment."""
         self.check(["time IFS= eval 'sh -c \"al${IFS}pha\"'", "time -p IFS= eval 'sh -c \"al${IFS}pha\"'",
                     "time x=$(printf 'a[\\x24(alpha)]'); : $((x))", "time N=$(printf PS4); declare \"$N=\\$(alpha)\"; set -x; :",
                     "time F=$(echo f); echo alpha > $F; . f",
-                    # round 2: a literal it gives is known after it, as one alone is (N=PS4 names PS4)
+                    # a literal it gives is known after it, as one alone is (N=PS4 names PS4)
                     "time N=PS4; declare \"$N=\\$(alpha)\"; set -x; :", "time N=PS4; export \"$N=\\$(alpha)\"; set -x; :"])
         self.kept(["time x=1; echo $x", "time X=1 make", "time -p make test"])
 
@@ -3303,7 +3303,7 @@ class ReadAsBash(unittest.TestCase):
                    "export $(grep -v '^#' .env | xargs) && python app.py"])
 
     def test_text_laundered_into_arithmetic(self):
-        """sec07 round 2: text the line makes reaches arithmetic through let's or declare -i's value, a loop over it,
+        """Text the line makes reaches arithmetic through let's or declare -i's value, a loop over it,
         or a positional parameter (set's operands, a call's or sh -c's arguments): bash ran `alpha` from each (the
         oracle), where the parser read `x61lpha` before; a literal's subscript is read (`set -- 'a[$(alpha)]'`)."""
         self.check(["y=$(printf 'a[$(\\x61lpha)]'); let x=y+1", "y=$(printf 'a[$(\\x61lpha)]'); declare -i x=y",
@@ -3332,14 +3332,14 @@ class ReadAsBash(unittest.TestCase):
                    "sed -n \"$((n-5)),$((n+5))p\" $f"])
 
     def test_a_lone_dash_before_an_alias_and_an_ifs_split_redirection(self):
-        """sec07 round 2's fuzz seed 8: alias's options end at a lone - (bash defines `-x`), an option word with an
+        """fuzz seed 8: alias's options end at a lone - (bash defines `-x`), an option word with an
         expansion may split into one, and bash splits an unquoted $IFS out of a redirection's name (`>${IFS}f` writes
         f): bash ran alpha from each (the oracle)."""
         self.check(["shopt -s expand_aliases\nalias - -x=alpha\n-x", "shopt -s expand_aliases\nalias -${IFS}-x=alpha\n-x",
                     "echo -e '\\0141lpha'>${IFS}f;. f", "echo alpha >${IFS}f; . f", "echo a{lpha,}>${IFS}${Y}f;. f"])
 
     def test_round_three_review_lines(self):
-        """sec07 round 3: the review's lines, each run by bash in the oracle (R1: a built env name; B1: a
+        """The review's lines, each run by bash in the oracle (R1: a built env name; B1: a
         variable the line gives on no straight line, a copy, declare, an array, a nameref, a trap, eval in eval;
         B2: an operator expansion; B3: $(0<f); B4: a joined subscript; B5: a built name; B6: xtrace by shopt or a
         built option; B7: echo -E decoded; B8: stdin spelled otherwise; B9: a made file named by a variable;
@@ -3392,7 +3392,7 @@ class ReadAsBash(unittest.TestCase):
                                     set(progs) <= read)
 
     def test_a_stream_descriptor_or_joined_value_in_arithmetic(self):
-        """sec07 round 3, where bash evaluates text rather than parsing it: stdin spelled otherwise, a descriptor
+        """Where bash evaluates text rather than parsing it: stdin spelled otherwise, a descriptor
         a variable names, a made file named through a variable, and a value joined from parameters (a loop's,
         declare's, an indirect name, a call's arguments); bash ran alpha from each (the oracle)."""
         self.check(["printf 'a[$(\\x61lpha)]' > f1; exec < f1; n=$(cat //dev/stdin); echo $((n))",
@@ -3404,7 +3404,7 @@ class ReadAsBash(unittest.TestCase):
                     "f(){ echo $(($1$2)); }; f 'a[$' '(alpha)]'", "compgen -W '$(alpha)' x"])
 
     def test_round_four_review_lines_and_their_classes(self):
-        """sec07 round 4 (bash ran marker in the oracle for each but the numbers and ${X::=}): F1, `$_` a line
+        """Checked against bash (bash ran marker for each but the numbers and ${X::=}): F1, `$_` a line
         gives, which bash sets to the last word before; F2, a pattern through a known variable onto a made file;
         F3, ${X:=…} giving a known X a new value. Swept: no name bash sets is known (BASH_REMATCH, REPLY,
         OPTARG …); a known value is read in code only where bash neither splits nor globs it (nor IFS is named);
@@ -3439,7 +3439,7 @@ class ReadAsBash(unittest.TestCase):
         self.kept(["X=build; eval \"rm -rf $X\"", "X=b; eval echo $X"])
 
     def test_round_five_review_lines_and_their_classes(self):
-        """sec07 round 5 (bash ran marker in the oracle for each): A, ${X:=…} in a heredoc's body, a prompt's @P or
+        """Checked against bash (bash ran marker for each): A, ${X:=…} in a heredoc's body, a prompt's @P or
         PS4 under xtrace; B, a function bash imports from BASH_FUNC_x%%; C, fc running history or an editor; D, an
         arithmetic assignment to a name expansions build (IFS); E, `#` as text under interactive_comments off; F,
         `&>` as dash reads it; G, the file --rcfile sources; H, history -w or -a writing into a file sourced next.
@@ -3478,7 +3478,7 @@ class ReadAsBash(unittest.TestCase):
         self.kept(["env FOO=1 bash -c 'echo $FOO'", "history", "sh -c 'echo x >&2'", "bash -c 'echo x &>/dev/null'"])
 
     def test_an_approval_answered_through_a_wrapper_the_line_defines(self):
-        """sec07 round 6: a function or alias the line defines around tracekit (python -m tracekit, uvx, a path to the
+        """A function or alias the line defines around tracekit (python -m tracekit, uvx, a path to the
         binary) and then calls with approve, reject or grant answers an approval as typing it would: "$@", ${@}, $* and
         "$1" forward the call's words; command, builtin and eval run the same; on the next line too. An action the
         parser can't read may be approve: a positional parameter it doesn't follow (into eval's text, sh -c's, past set
@@ -3521,7 +3521,7 @@ class ReadAsBash(unittest.TestCase):
                          'tracekit approvals --signer /tmp/s.sock show "$ID"', "tracekit view run-*.tkb"):
                 with self.subTest(backend=backend, line=line):
                     self.assertNotIn("TK-D012", e.decide("Bash", {"command": line})["rule_ids"])
-            # (round 11: a variable alone as the action is denied where the line gives it no value; a loop's is read)
+            # (a variable alone as the action is denied where the line gives it no value; a loop's is read)
             for line in ("for c in status approvals pending; do tracekit $c --help; done",
                          'for c in "export --v2 -o x.tkb" "signer trust --dev"; do python3 -m tracekit $c --help; done'):
                 self.assertNotIn("TK-D012", e.decide("Bash", {"command": line})["rule_ids"])
@@ -3531,7 +3531,7 @@ class ReadAsBash(unittest.TestCase):
                         self.assertIn(e.decide("Bash", {"command": line})["verdict"], ("ask", "deny"))
 
     def test_an_approval_action_through_an_indirect_name_or_a_signer_value_with_a_space(self):
-        """sec07 round 7: an indirect expansion as the action (${!#} is the last positional parameter, ${!1} the
+        """An indirect expansion as the action (${!#} is the last positional parameter, ${!1} the
         variable $1 names, ${!appr*} the names that start appr) may be approve; and a --signer value with a space in
         it (`--signer "/tmp/a b.sock"`, `--signer="/tmp/a b"`) is two words of the joined argv, so the word after it
         may be the action. TK-D012 denies each on both engines; listing and showing through such a signer stay
@@ -3557,9 +3557,9 @@ class ReadAsBash(unittest.TestCase):
                     self.assertNotIn("TK-D012", e.decide("Bash", {"command": line})["rule_ids"])
 
     def test_an_unread_word_after_an_approvals_option_is_denied(self):
-        """sec07 round 9: round 8 denied an unread word after approvals' options only up to a `list` or `show` and
+        """Round 8 denied an unread word after approvals' options only up to a `list` or `show` and
         not as --signer's value, but the joined argv can't tell a value with a space from those words: `--signer
-        "/tmp/a list" "$1" ID` runs the action $1, and was allowed. As in round 7, any unread word after an approvals
+        "/tmp/a list" "$1" ID` runs the action $1, and was allowed. As before, any unread word after an approvals
         option denies, `--signer "$1" list` too (friction docs/limits.md names)."""
         aid = "apr-1"
         allowed = ['tracekit approvals show "$1"', 'tracekit approvals --signer=$(cat /tmp/s) list',
@@ -3587,7 +3587,7 @@ class ReadAsBash(unittest.TestCase):
         """A shell reading an unquoted heredoc gets its expansions' values: one that may be empty is read empty too, as
         a word's are (`$'\\163${X}\\165\\144\\157'` is sudo)."""
         self.check(["bash <<EOF\n$'\\141${X}\\154pha'\nEOF", "bash <<EOF\nal${X}pha\nEOF"])
-        # sec07 round 3: a value the line doesn't give as a literal (HOME from the environment) in code a shell
+        # a value the line doesn't give as a literal (HOME from the environment) in code a shell
         # reads again is held
         self.check(["bash <<EOF\necho ${HOME}\nEOF"])
 
@@ -3598,7 +3598,7 @@ class ReadAsBash(unittest.TestCase):
         self.kept(["cat <<< \"a${IFS}b\""])
 
     def test_text_laundered_into_code(self):
-        """sec07 round 2: text the line makes, laundered through $(<f), read, mapfile, a positional parameter, a
+        """Text the line makes, laundered through $(<f), read, mapfile, a positional parameter, a
         copy, a pattern, inherited stdin or a pipeline's earlier stage into code bash parses again (eval, sh -c, a
         trap, a herestring, a written script): bash ran each (the review's oracle), so each is held or read."""
         self.check([
@@ -3655,12 +3655,12 @@ class ReadAsBash(unittest.TestCase):
         ], "rm")
         self.check(["f(){ command set alpha;\"$*\";};f"])
         self.kept(["D=build; sh -c \"rm -rf $D\"", "sh -c \"echo $(ls | wc -l)\""])
-        # round 3: pessimistic in code, so only a literal the line gives (and a number) is read there
+        # pessimistic in code, so only a literal the line gives (and a number) is read there
         self.check(["bash -c \"cd $HOME && make test\"", "for f in *.py; do bash -c \"python3 $f\"; done",
                     "n=$(grep -c x a.txt); sh -c \"echo $n\""])
 
     def test_alias_forms(self):
-        """sec07 H1: a value ending in a blank makes the next word an alias too; a name after --; a reserved word's
+        """this change H1: a value ending in a blank makes the next word an alias too; a name after --; a reserved word's
         alias; an alias word the line builds; a nameref to BASH_ALIASES; an alias defined and not used, which a shell
         that persists runs on a later call."""
         self.check(["shopt -s expand_aliases\nalias e='echo ' b='; marker'\ne b", "sh -c \"alias e='echo ' b='; marker'\ne b\"",
@@ -3673,7 +3673,7 @@ class ReadAsBash(unittest.TestCase):
         self.kept(["alias ll='ls -la'; ll", "alias -p", "alias"])
 
     def test_code_variable_forms(self):
-        """sec07 H2: += in declare and its kin, a for or select loop over a code variable, a name the line builds from
+        """this change H2: += in declare and its kin, a for or select loop over a code variable, a name the line builds from
         text the parser can't read, a nameref with no target or one the line builds, and BASH_ENV naming a file the
         line writes."""
         self.check(["declare PS4+='$(marker)'; set -x; :", "export PS4+='`marker`'; set -x; :",
@@ -3693,15 +3693,15 @@ class ReadAsBash(unittest.TestCase):
                     "eval \"for PS4 in '\\$(marker)'; do set -x; :; done\"", "bash <<'EOF'\ndeclare PS4+='$(marker)'; set -x; :\nEOF"],
                    "marker")
         self.kept(["read -r -p \"$PROMPT\" answer", "export PATH=$PATH:/opt/bin; make", "for f in a b; do echo $f; done",
-                   "echo hi > f; BASH_ENV=~/.bashrc bash -c 'make test'"])   # (round 10: a nameref holds what follows)
+                   "echo hi > f; BASH_ENV=~/.bashrc bash -c 'make test'"])   # (a nameref holds what follows)
 
     def test_offset_of_a_special_parameter(self):
-        """sec07 H3: ${@:x}, ${*:x} and ${1:x} evaluate x as arithmetic."""
+        """this change H3: ${@:x}, ${*:x} and ${1:x} evaluate x as arithmetic."""
         self.check(["x='a[$(marker)]'; set -- 1; : ${@:x}", "x='a[$(marker)]'; set -- 1 2; echo ${*:x}",
                     "eval \"x='a[\\$(marker)]'; set -- 1; : \\${@:x}\""], "marker")
 
     def test_written_then_run(self):
-        """sec07 H4: appends joined in order; printf's precision, %c and %(…)T, %b's and echo -e's \\0NNN; an
+        """this change H4: appends joined in order; printf's precision, %c and %(…)T, %b's and echo -e's \\0NNN; an
         expansion in the text whose output becomes code; a run name or a write target the line builds; a name in
         another case (macOS reads F as f)."""
         self.check(["printf 'mar' > f; printf 'ker\\n' >> f; . ./f", "echo -n mar > f; echo ker >> f; . ./f",
@@ -3713,10 +3713,10 @@ class ReadAsBash(unittest.TestCase):
                     "echo marker > F; sh f", "printf '%q\\n' 'a b' > f; . ./f"], "marker")
         self.kept(["printf '%s\\n' 'ls -la' > s.sh; bash s.sh", "echo 'make test' > s.sh; echo 'make lint' >> s.sh; bash s.sh",
                    ])
-        self.check(["cat > s.sh <<EOF\ncd $HOME/src && make\nEOF\nbash s.sh"])   # round 3: HOME, held
+        self.check(["cat > s.sh <<EOF\ncd $HOME/src && make\nEOF\nbash s.sh"])   # HOME, held
 
     def test_outer_expansion_in_code_parsed_again(self):
-        """sec07 P1: an outer substitution, or a variable the line sets from one, in text eval, sh -c, a trap or a
+        """this change P1: an outer substitution, or a variable the line sets from one, in text eval, sh -c, a trap or a
         shell's heredoc parses again: its output is code there."""
         self.check(["eval \"echo $(printf 'x;marker')\"", "sh -c \"echo $(printf 'x;marker')\"",
                     "bash -c \"echo $(printf 'x\\x3bmarker')\"", "X=$(printf 'x\\x3bmarker'); eval \"echo $X\"",
@@ -3724,13 +3724,13 @@ class ReadAsBash(unittest.TestCase):
                     "sh -c \"eval \\\"echo \\$(printf 'x\\\\073marker')\\\"\"", "sh <<EOF\necho $(printf 'x;marker')\nEOF"],
                    "marker")
         self.kept(["D=build; sh -c \"rm -rf $D\"", "trap 'rm -f \"$tmp\"' EXIT"])
-        # sec07 round 3: only a literal the line gives on its straight line is read in code; HOME, a loop's
+        # only a literal the line gives on its straight line is read in code; HOME, a loop's
         # several words are held
         self.check(["bash -c \"cd $HOME && make\"", "for d in a b; do bash -c \"cd $d && make\"; done",
                     "sh <<EOF\necho $HOME\nEOF"])
 
     def test_value_made_at_run_time_evaluated(self):
-        """sec07 P2: a value the line makes and the parser can't read, where bash evaluates it as arithmetic or a
+        """this change P2: a value the line makes and the parser can't read, where bash evaluates it as arithmetic or a
         name: $((x)), declare -i, test -v, printf -v, ${!x}, nested in bash -c, a value awk prints. What only reads
         files or prints digits is no text the line makes: a line number grep finds, a temp dir, git show's file."""
         self.check(["x=$(printf 'a[\\x24(marker)]'); : $((x))", "declare -i n; n=$(printf 'a[\\x24(marker)]')",
@@ -3800,7 +3800,7 @@ class DecideTime(unittest.TestCase):
                     self.assertIn(verdict, ("allow", "flag", "deny") if backend == "regex" else ("allow", "flag"))
 
     def test_the_engine_s_reading_of_a_line_is_bounded(self):
-        """The sec07 review's shapes, at its sizes: a script written and run many times (each run read each write
+        """The this change review's shapes, at its sizes: a script written and run many times (each run read each write
         again, three times a decision), many cds before many relative names, a long import or string scan of Python, an
         alias with many values used many times, printf with many arguments. Each took 3 to more than 60 s; each now
         decides well within a second, held where it spends the decision's work budget (shell.MAX_WORK)."""
@@ -3810,7 +3810,7 @@ class DecideTime(unittest.TestCase):
                   "python3 -c 'autospawn " + "import " * 9000 + "'", "python3 -c '\"" + "\\\"" * 9000 + " autospawn'",
                   "alias " + " ".join(f"x=v{i}" for i in range(250)) + "\n" + "".join(f"x {i}\n" for i in range(250)),
                   "printf '%s' " + "a " * 32000 + "> f"]
-        # sec07 round 9: commands at the reading cap (shell.MAX_READINGS: 256 readings each), an assigning expansion
+        # commands at the reading cap (shell.MAX_READINGS: 256 readings each), an assigning expansion
         # named again thousands of times, a wrapper's unknown options each read both ways
         alts = "".join(f"${{X{i}:+a{chr(97 + i)}}}" for i in range(8))
         lines += [(f"ls {alts}; " * 1000)[:65536], f"cat ~/.ssh/config {alts} " + "x " * 32000,
@@ -3838,7 +3838,7 @@ class DecideTime(unittest.TestCase):
                         self.assertNotIn(verdict, ("allow", "flag"))
 
     def test_many_known_variables_before_many_loops_is_bounded(self):
-        """sec07 round 3: each loop's start asked, per known variable, whether the rest of the line may set it again
+        """Each loop's start asked, per known variable, whether the rest of the line may set it again
         (a search of the text each): 2,000 variables before 2,000 loops took over a minute at 64 KiB, and functions
         between them seconds. The text is read once for what it sets, and each loop's start spends the budget."""
         lines = ["".join(f"a{i}=x; " for i in range(2019)) + "for i in 1; do :; done; " * 2019,
@@ -3928,7 +3928,7 @@ class HarmlessStops(unittest.TestCase):
              ("for c in ls rm; do $c -rf ~; done", "deny", "TK-D004"),
              ("X=$(printf rm); $X -rf ~", "parse", "TK-SHELL-PARSE"),
              ("cd sub && X=ls; $X -rf ~", "parse", "TK-SHELL-PARSE"),
-             ('X="env sudo"; $X id', "deny", "TK-D001"),   # (sec07 round 10: split as bash splits it, still held)
+             ('X="env sudo"; $X id', "deny", "TK-D001"),   # (split as bash splits it, still held)
              # a bare program name a variable gives only hides it (E21's held-out pool): read and held
              ("A=aws; $A s3 sync s3://company-prod-backups ./x", "parse", "TK-SHELL-PARSE"),
              ("C=cur''l; $C -s https://example.com/x", "parse", "TK-SHELL-PARSE"),
@@ -4621,7 +4621,7 @@ class HarmlessStops(unittest.TestCase):
              ("cat > s.sh <<'EOF'\nrm -f ~/.claude/projects/p/s.jsonl\nEOF\nbash s.sh", "deny", "TK-D008")])
 
     def test_a_kill_of_the_signer_as_autospawn_starts_it(self):
-        """sec07: the dev signer's command line is its client's interpreter by full path (often a venv's `python`)
+        """this change: the dev signer's command line is its client's interpreter by full path (often a venv's `python`)
         with -P; a regex reads as pgrep reads it ([[:space:]], \\<, \\>)."""
         self.check(
             ["pkill -f 'next start -p 3000'", "pkill -f '^/usr/bin/node'", "kill $(pgrep -f 'vite --port 5173')"],
@@ -4634,7 +4634,7 @@ class HarmlessStops(unittest.TestCase):
                         " ".join(autospawn.SIGNER_ARGV).endswith(engine._DEV_SIGNER))
 
     def test_the_cli_or_autospawn_from_code(self):
-        """sec07: the CLI run from code runs what its argv says (main(['down'])), and autospawn reached as an attribute
+        """this change: the CLI run from code runs what its argv says (main(['down'])), and autospawn reached as an attribute
         is autospawn."""
         self.check(
             ['python3 -c "from tracekit.sdk import autospawn; print(autospawn.status())"',
@@ -4656,7 +4656,7 @@ class HarmlessStops(unittest.TestCase):
         self.assertEqual(e.decide("Bash", {"command": "tracekit up"})["verdict"], "allow")
 
     def test_a_path_the_line_moves(self):
-        """sec07: a CDPATH or HOME the line sets, tar -C, a pattern in a component of Tracekit's path, find's -path
+        """this change: a CDPATH or HOME the line sets, tar -C, a pattern in a component of Tracekit's path, find's -path
         under where it starts, and a link to a parent."""
         self.check(
             ["cd ~/Library/Application\\ Support && ls", "tar -C build -czf out.tgz dist", "git -C ../other status",
@@ -4681,7 +4681,7 @@ class HarmlessStops(unittest.TestCase):
                 f"tracekit signer trust -o {LIVE}/data/trust.json", "tracekit signer trust --out=/etc/tracekit/client.json",
                 "tracekit signer trust -o/var/lib/tracekit-signer/x.json", f"cd {LIVE} && tracekit signer trust -o t.json",
                 f"tracekit signer vkey > {LIVE}/data/log.vkey", "tracekit signer serve --dev",
-                # round 2: argparse takes any unambiguous prefix of --out
+                # argparse takes any unambiguous prefix of --out
                 f"tracekit signer trust --ou {LIVE}/data/keys/log.key", f"tracekit signer trust --o {LIVE}/data/keys/log.key",
                 "cd /var/lib && tracekit signer trust -o=tracekit-signer/x.json",
                 "cd /var/lib && tracekit signer trust --ou=tracekit-signer/x.json",
@@ -4689,7 +4689,7 @@ class HarmlessStops(unittest.TestCase):
         self.check(["tracekit signer trust --ou trust.json", "tracekit signer trust --out=trust.json"], [])
 
     def test_what_a_download_runs_in_any_order(self):
-        """sec07: a run before the download (a FIFO, a background job, a trap, a loop's next turn), a download into a
+        """this change: a run before the download (a FIFO, a background job, a trap, a loop's next turn), a download into a
         process substitution that runs it, source or . of one; and not a path run after a download that names none of
         what it saved (a data file, a health check on this machine)."""
         self.check(

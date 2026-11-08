@@ -164,9 +164,10 @@ def run(record=False):
     for e in (Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], x) for x in ("re2", "regex")):
         out["latency"][f"dev/{e.engine.split('@')[0]}"] = latency(e, calls)
     old = None if record or not os.path.exists(RESULTS) else json.load(open(RESULTS, encoding="utf-8")).get("gates")
-    # strict/re2 got more headroom (7.1): it measured 6.42 and 6.75 in two runs, so 5% over one run would flake.
-    # dev/regex too, for the same reason (7.63): it measured 7.1, 7.27, 7.16 and 7.23, 5% over the highest. The recorded max_p99_ref of strict and dev (re2 and regex) is the p99_ref measured on 2026-11-08 plus 5%: that
-    # round's security reading of shell lines added the cost on purpose. Default's is still the first run's.
+    # The recorded max_p99_ref of strict and dev (re2 and regex) was re-baselined on 2026-11-08: that day's security
+    # reading of shell lines added the cost on purpose. Each cap is 5% over the highest p99_ref measured across its
+    # runs: strict/re2 7.1 (runs 6.42 and 6.75), dev/regex 7.63 (runs 7.1 to 7.27); the others 5% over one run.
+    # Default's is still the first run's.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
