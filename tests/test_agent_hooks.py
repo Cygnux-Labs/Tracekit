@@ -897,6 +897,38 @@ class DevinTools(unittest.TestCase):
         p["tool_input"] = {"shell_id": "main", "input": "y\r\n"}
         self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
 
+    def test_typed_text_bash_would_expand_from_its_history_is_denied(self):
+        # the re-review of #673: interactive bash expands history in a typed line before it runs it: after an allowed
+        # ": git push --force origin main" line, "!-1" or "!:1*" ran the push, and "!#:1-5" ran it from its own line;
+        # a ^ starting a line is a quick substitution of the last one
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process"}
+        for text in (": git push --force origin main; !#:1-5\n", "!-1\n", "!:1*\n", "!!\n", "echo !$\n", "echo !",
+                     "^main^main --force\n", "ls\n  ^a^b\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIn("which interactive bash expands from its history",
+                              agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        # a ! bash leaves as it is (before a blank, a line end, = or (), or a ^ inside a line
+        for text in ("[ ! -f x ] && echo ok\n", "y\n", "echo hi!\n", "[ a != b ]\n", "ls !(*.py)\n", "echo a^b\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+
+    def test_an_exec_command_with_a_control_character_is_denied(self):
+        # the re-review of #673: exec reads \r as a line end, should Devin type its command into a terminal, but DEL,
+        # ^U and ^C in it went through; a tab and a line end stay (a heredoc or a multi-line command needs them)
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "exec"}
+        for cmd in ("gitx\x7f push --force origin main", "echo hi \x15git push --force origin main",
+                    "\x03git push --force origin main", "\x1b[A", "echo hi\x9bgit push --force origin main"):
+            with self.subTest(cmd=cmd):
+                p["tool_input"] = {"command": cmd}
+                self.assertIn("Devin's exec sends a control character", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        for cmd in ("ls -la", "cd src && ls\nprintf 'a b\\n' > out.txt", "python3 - <<'EOF'\nprint(1)\nEOF",
+                    "cat > Makefile <<'EOF'\nall:\n\tmake -C src\nEOF", "ls\r", "git commit -m 'fix!'", "wait $!"):
+            with self.subTest(cmd=cmd):
+                p["tool_input"] = {"command": cmd}
+                self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+
     def test_patch_paths_are_every_file_the_patch_names(self):
         patch = PATCH.format("src/app.py") + "\n*** Begin Patch\n*** Delete File: .devin/hooks.v1.json\n*** End Patch"
         tool, args = agent_hooks.tool("devin", "apply_patch", {"patch": patch, "file_path": "decoy", "paths": ["decoy"]})

@@ -170,10 +170,14 @@ DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
                     "webfetch": "url under one key spelled url",
                     "write_to_process": "text under its one argument besides shell_id",
                     "exec": "command under a key spelled command (case ignored)"}
-# a C0 control or DEL in text typed into a live terminal: its line editor acts on one (DEL and ^H erase, ^U discards the
-# line, ^C drops it, tab completes, ESC starts a key sequence: an arrow recalls history), so the line that runs isn't
-# the text; \n ends a line, and so does \r, which tool() reads as \n
-TYPED_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
+# what Tracekit can't read as it runs in text typed into a live terminal (write_to_process), and in an exec command,
+# should Devin type one: a control character, which the line editor acts on (DEL and ^H erase, ^U discards the line,
+# ^C drops it, tab completes, ESC starts a key sequence: an arrow recalls history; C1 too), and in typed text interactive
+# bash's history expansion: a ! before anything but a blank, a line end, = or ( (bash leaves those), and a ^ starting a
+# line (quick substitution). \n ends a line, and so does \r, which tool() reads as \n. exec keeps a tab (a heredoc's)
+# lean: exec's ! isn't denied (git commit -m 'fix!', wait $!): an exec Devin types into bash may expand one
+TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t\n=(])|^[ \t]*\^", re.M),
+         "exec": re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")}
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -701,11 +705,16 @@ def _blocked(harness, p, raw=""):
                     + (" Send it as {\"command\": \"...\"}." if name == "exec" else " Devin doesn't document them: "
                        "please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so Tracekit "
                        "can read them."))
-        typed = TYPED_CONTROL.search(v) if name == "write_to_process" else None
+        typed = TYPED[name].search(v) if name in TYPED else None
+        if typed and typed.group().strip(" \t") in ("!", "^"):
+            return (f"Blocked by Tracekit: Devin's write_to_process types {typed.group().strip()!r}, which interactive "
+                    "bash expands from its history (a ! before a word, a ^ starting a line), so Tracekit can't read "
+                    "the line that runs; type the command itself.")
         if typed:
-            return (f"Blocked by Tracekit: Devin's write_to_process types a control character ({typed.group()!r}) "
-                    "into a live terminal, whose line editor acts on it (erasing, discarding or completing text), so "
-                    "Tracekit can't read the line that runs; type plain text, each line ending in \\n.")
+            return (f"Blocked by Tracekit: Devin's {name} {'types' if name == 'write_to_process' else 'sends'} a "
+                    f"control character ({typed.group()!r}), which a terminal's line editor acts on (erasing, "
+                    "discarding or completing text), so Tracekit can't read the line that runs; send plain text, each "
+                    "line ending in \\n.")
     return _blocked_tool(harness, name, raw)
 
 
