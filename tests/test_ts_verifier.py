@@ -1461,12 +1461,14 @@ if test_why_signed_replay is not None:
             self.assertEqual(json.loads(p.stdout), [c["want"] for c in cases])
 
         def test_the_verifier_is_the_package_version(self):
-            """VERSION is what it compares a bundle's verifier_min_version with: the package's own release."""
+            """VERSION is the package's own release; READS, what it compares a bundle's verifier_min_version with, is
+            the reference's: the newest VERSIONS row, or the release when later."""
             with open(os.path.join(TS, "package.json")) as f:
                 pkg = json.load(f)["version"]
             with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
                 src = f.read()
             self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
+            self.assertIn(f'export const READS = "{v2.READS}";', src)
 
         def test_the_schema_copy_is_the_schema(self):
             """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""

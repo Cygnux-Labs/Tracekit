@@ -31,8 +31,11 @@ import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
 export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
-/** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
+/** This verifier's release (the package's). */
 export const VERSION = "1.5.3";
+/** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
+ * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
+export const READS = "1.6.0";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -286,7 +289,7 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
     const need = manifest.verifier_min_version;
     if (!(typeof need === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(need)))
       throw new Unusable("verifier_min_version is not a version number");
-    if (newer(need, VERSION)) {
+    if (newer(need, READS)) {
       rep.integrity = `UNVERIFIABLE (needs tracekit >= ${need})`;
       rep.check("bundle readable", false, rep.integrity, upgrade(need, names));
       return { report: rep, code: EXIT_BAD };
@@ -1092,7 +1095,7 @@ export async function checkExt(rep: Report, events: J[], full: J, floats: Floats
       if (!carry.has(n)) carry.set(n, []);
       carry.get(n)!.push(e);
     }
-  const later = typeof full === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(full) && newer(full, VERSION)
+  const later = typeof full === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(full) && newer(full, READS)
     ? `; tracekit >= ${full} checks it` : "";
   let shown = 0, more = 0;
   const done = new Set<ExtCheck>();

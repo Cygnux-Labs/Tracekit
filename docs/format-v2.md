@@ -323,8 +323,9 @@ domain tag `"t"`:
 JCS({alg, kid, log_id, seq, prev_hash, tenant, run_id, run_seq, run_prev_hash, hash, "t": "tracekit.record.v2"})
 ```
 
-Each signature purpose has its own tag, so a signature made for one purpose never verifies as another. Only `record`
-is used today; the others are reserved:
+Each signature purpose has its own tag, so a signature made for one purpose never verifies as another. `record`,
+`cert` and `retire` (a record key's certificate and its revocation), `pcm`, `pcm-grant` and `intent-grant` are used
+today; `checkpoint`, `approval` and `export` are reserved:
 
 ```text
 {"t":"tracekit.record.v2"}
@@ -578,7 +579,7 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
-| 1.6.0 | — | — | — | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
+| 1.6.0 | — | — | `ext` `self_approved`: `true` (an `intent.grant` the run's own user issued: a self-approval, which makes the assurance `dev`) | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 

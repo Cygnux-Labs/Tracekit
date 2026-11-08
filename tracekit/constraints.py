@@ -70,6 +70,7 @@ from .findings import WRITE_TOOLS
 from .policy2.classes import PATH_KEYS, SHELL_KEYS
 from .policy2.engine import _shell as _parse
 from .policy2.shell import ParseError
+from .signer.rpc_schema import quoted
 
 OBJECT_KINDS = ("keep_away", "only_change")
 MAX_TEXT = 1 << 16   # lean: characters of one text the grammar reads; past it, cut
@@ -886,10 +887,10 @@ def breaks(kind, f, is_object):
 def held(kind, name):
     """What the agent is told when a live constraint holds its call (`name`: from breaks(), out of its own
     arguments; for "many", the most files of one call the signer checks; for "full", the most file constraints a run
-    takes)."""
+    takes). only_change's file is any the agent wrote, so it is quoted: no line of its starts a line of the reason."""
     return {"keep_away": f"the person's request in this run said not to modify {name}",
-            "only_change": f"the person's request in this run said to change only certain files, and {name} is not "
-                           "one of them",
+            "only_change": f"the person's request in this run said to change only certain files, and "
+                           f"{quoted(name, 512)} is not one of them",
             "read_only": "the person's request in this run said to make no changes (read-only)",
             "no_push": "the person's request in this run said not to push",
             "no_network": "the person's request in this run said not to use the network",

@@ -440,8 +440,9 @@ as it needs nothing the schema lacks:
 - **1.6** speaks signer protocol 22. A 1.6 signer serves clients and gateways from protocol 15 up (1.2 to 1.5
   included), but a 1.6 client or gateway refuses a 1.5 signer: upgrade the signer first, then Box and the agents'
   Tracekit. A bundle whose records use 1.6's additions (a Tracekit Box run's `box` label, intent grants) verifies with
-  a 1.4 or 1.5 verifier, which reports them `not interpreted`. A same-user dev signer from 1.5 is replaced by the first
-  1.6 client that finds it. The store's schema is unchanged.
+  a 1.4 or 1.5 verifier, which reports them `not interpreted`; one with a grant the run's own user issued needs a 1.6
+  verifier. A same-user dev signer from 1.5 is replaced by the first 1.6 client that finds it. The store's schema is
+  unchanged.
 
 Helm (`tracekit-central`): migrate each replica's schema before upgrading the release with `signer.content.retain`
 set. Compose: the stack's init script runs only on an empty database, so on an existing stack run

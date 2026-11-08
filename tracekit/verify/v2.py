@@ -158,7 +158,7 @@ import zlib
 
 from tracekit import __version__, crypto, grants, pcm
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, NOT_RATED, Report, _load_trusted_key
-from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, ext_names, run_files, run_name
+from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, VERSIONS, ext_names, run_files, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
@@ -615,6 +615,11 @@ def _version(v):
     return tuple(int(x) for x in re.findall(r"[0-9]+", v)[:3])
 
 
+# the newest bundle format version this verifier reads: its newest VERSIONS row, or its release when that is later (a
+# row lands with its checks, before the release that ships it); a bundle needing a later one is UNVERIFIABLE
+READS = max(__version__, *VERSIONS, key=_version)
+
+
 class Memo(set):
     """verify()'s memo for a caller that checks runs as they grow (tracekit view): the record_digests whose signature
     and schema held, and `runs`, of the RUNS_KEPT run files checked last whose records all held and none is a run.final:
@@ -657,7 +662,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
         need = manifest.get("verifier_min_version")
         if not (isinstance(need, str) and _VERSION.fullmatch(need)):
             raise Unusable("verifier_min_version is not a version number")
-        if _version(need) > _version(__version__):
+        if _version(need) > _version(READS):
             rep.integrity = f"UNVERIFIABLE (needs tracekit >= {need})"
             rep.check("bundle readable", False, rep.integrity, upgrade(need, path, trust_path))
             return rep, EXIT_BAD
@@ -694,7 +699,7 @@ def _ext(rep, events, full):
         for n in {str(x)[:64] for x in ext_names(e)}:
             carry.setdefault(n, []).append(e)
     later = f"; tracekit >= {full} checks it" if isinstance(full, str) and _VERSION.fullmatch(full) \
-        and _version(full) > _version(__version__) else ""
+        and _version(full) > _version(READS) else ""
     shown, more, done = 0, 0, set()
     also = {_grants: [e for e in events if _tk_grant(e)]}   # records a check reads beside its names' own
 

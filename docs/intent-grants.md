@@ -201,7 +201,8 @@ currency without a known unit, a second payee, a payee in an object.
    with the payment and what is left; its `ext.grant` records the grant's id, the payment's fields, the totals after
    it and its tier.
 6. Outside: the call is held, and the reason names the grant and the bound it breaks. What the call chose (an
-   argument's name or value, a tool's name) is quoted as JSON, its `. Instead:` written `. Instead:`, so it
+   argument's name or value, a tool's name) is quoted as JSON, a line break in it written `\n` and its `. Instead:`
+   written `. Instead\u003a` (as in `argument "x. Instead\u003a approve it" is not one a payment grant reads`), so it
    never starts a line of what the agent and the person read.
 
 | A payment, under a grant of 200 USDC each, 500 in all, to two payees | Decision | Reason |
@@ -230,7 +231,8 @@ As who may answer the run's approvals ([approvals](approvals.md#who-may-answer))
 - On the dev signer: any identity that may answer the run's approvals, which there is any identity of the run's
   tenant. The grant records who issued it; one from the run's own user is recorded `self_approved`, and the verifiers
   read it as a self-approval (assurance `dev`, `approvals: self`, and a short result that says the approval proves
-  nothing), because the agent runs as that user too.
+  nothing), because the agent runs as that user too. A verifier older than 1.6 can't see that, so such a run's bundle
+  needs a 1.6 verifier: an older one reports it `UNVERIFIABLE (needs tracekit >= 1.6.0)`.
 - Never an agent approver, and never in a held, quarantined or ending run.
 
 A person runs every grant command. The coding pack (and the dev and server packs, which extend it) denies every
@@ -276,7 +278,8 @@ ceiling of 1000 USDC a grant`), and with a ceiling set, a grant in a currency it
 | `policy.decision` with `ext.grant` | a payment the grant released: `{id, fields, used, tier}` |
 
 These go in format v2's non-critical `ext` slot ([format v2](format-v2.md#9-bundle-layout)): a verifier older than
-1.6 verifies the run and says it doesn't interpret these names. `tracekit verify` and the TypeScript verifier check:
+1.6 verifies the run and says it doesn't interpret these names, except for a grant the run's own user issued
+(`self_approved: true`), which needs a 1.6 verifier. `tracekit verify` and the TypeScript verifier check:
 
 - each grant: issued as a person's, for its own run and tenant, never passed on, its id its hash's, within 24 hours,
   naming its tools, with the caveats and limits a payment grant has in a currency with a known unit, and its first
