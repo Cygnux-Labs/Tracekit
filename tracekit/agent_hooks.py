@@ -168,8 +168,11 @@ DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
                                     "path under a key ending in path, paths or file (case and _ ignored)"),
                     "apply_patch": "file header (*** Add, Update or Delete File:, or a diff's ---, +++ or diff --git)",
                     "webfetch": "url under one key spelled url",
-                    "write_to_process": "text under its one argument besides shell_id (no name sent twice, case "
-                                        "ignored)"}
+                    "write_to_process": "text under its one argument besides shell_id"}
+# a C0 control or DEL in text typed into a live terminal: its line editor acts on one (DEL and ^H erase, ^U discards the
+# line, ^C drops it, tab completes, ESC starts a key sequence: an arrow recalls history), so the line that runs isn't
+# the text; \n ends a line, and so does \r, which tool() reads as \n
+TYPED_CONTROL = re.compile(r"[\x00-\x09\x0b-\x1f\x7f]")
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -238,10 +241,9 @@ def tool(harness, name, ti):
         elif harness == "devin" and name == "write_to_process":   # input typed into a running exec shell: the text
             # of its one argument besides shell_id, whatever its name; any other shape is denied in _blocked
             text = [ti[k] for k in ti if k.casefold() != "shell_id"]
-            one = len(text) == 1 and len({k.casefold() for k in ti}) == len(ti)
-            ti["command"] = text[0] if one and isinstance(text[0], str) else None
+            ti["command"] = text[0].replace("\r", "\n") if len(text) == 1 and isinstance(text[0], str) else None
         elif harness == "devin" and name == "exec":   # its command under any spelling Devin's decoder may read (_blocked
-            # denies a call that spells it more than one way)
+            # denies a call that sends a name twice)
             keys = [k for k in ti if k.casefold() == "command"]
             if len(keys) == 1:
                 ti["command"] = ti[keys[0]]
@@ -656,6 +658,22 @@ def _blocked_agy_args(name, args):
     return None
 
 
+def _repeated(args):
+    """The first argument name in `args` (a tool's input read with _Pairs, or a JSON string of one) that an earlier one
+    has, ignoring case (as str.casefold folds it: K and ſ too), else None."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args, object_pairs_hook=_Pairs)
+        except ValueError:
+            return None
+    seen = set()
+    for k, _ in args if isinstance(args, _Pairs) else ():
+        if k.casefold() in seen:
+            return k
+        seen.add(k.casefold())
+    return None
+
+
 def _blocked(harness, p, raw=""):
     """The reason a pre-tool call is denied in the hook itself, before it is mapped, else None. raw: the payload as
     received."""
@@ -664,11 +682,12 @@ def _blocked(harness, p, raw=""):
         call = dict(call) if isinstance(call, _Pairs) else {}
         return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
     name = _named(harness, str(p.get("tool_name") or ""))
-    spelt = [k for k in _input(p.get("tool_input")) if k.casefold() == "command"] if harness == "devin" else []
-    if name == "exec" and len(spelt) > 1:
-        return (f"Blocked by Tracekit: Devin's exec call sends its command under more than one name "
-                f"({', '.join(map(repr, spelt))[:200]}). Devin may read any one of them, so Tracekit can't be sure it "
-                "decides the command that runs; send it once, as `command`.")
+    twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
+        raw.strip() else None
+    if twice is not None:
+        return (f"Blocked by Tracekit: Devin's {name[:64]} call sends an argument more than once (case ignored): "
+                f"{twice[:64]!r}. json.loads keeps its last value and Devin's decoder may keep another, so Tracekit "
+                "can't be sure it decides the arguments the tool runs with; send each argument once.")
     if harness == "devin" and name in DEVIN_DECIDED_ON:   # Devin documents none of these tools' arguments: one sent
         # under a name Tracekit doesn't read would leave the call decided on nothing
         ti = tool(harness, name, p.get("tool_input"))[1]
@@ -680,6 +699,11 @@ def _blocked(harness, p, raw=""):
                     f"decides it on, so it can't decide this call (its arguments: {sent}). Devin doesn't document "
                     "them: please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so "
                     "Tracekit can read them.")
+        typed = TYPED_CONTROL.search(v) if name == "write_to_process" else None
+        if typed:
+            return (f"Blocked by Tracekit: Devin's write_to_process types a control character ({typed.group()!r}) "
+                    "into a live terminal, whose line editor acts on it (erasing, discarding or completing text), so "
+                    "Tracekit can't read the line that runs; type plain text, each line ending in \\n.")
     return _blocked_tool(harness, name, raw)
 
 

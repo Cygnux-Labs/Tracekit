@@ -820,7 +820,7 @@ class DevinTools(unittest.TestCase):
                    {"Command": "git push --force origin main", "command": "echo hi"}):
             p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "EXEC", "tool_input": ti}
             with self.subTest(ti=ti):
-                self.assertIn("Blocked by Tracekit: Devin's exec call sends its command under more than one name",
+                self.assertIn("Blocked by Tracekit: Devin's exec call sends an argument more than once (case ignored)",
                               agent_hooks._blocked("devin", p, json.dumps(p)) or "")
         # a read in another case with no path is denied in the hook, as `read` is
         p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "READ", "tool_input": {"target": "/w/.env"}}
@@ -842,14 +842,48 @@ class DevinTools(unittest.TestCase):
         p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process",
              "tool_input": {"shell_id": "main", "input": "ls\n"}}
         self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
-        # an argument it doesn't know, a name sent twice (case ignored), or no text: denied in the hook
-        for ti in ({"a": "echo '", "input": "rm -rf ~ #'"}, {"shell_id": "main", "input": "ls", "Input": "rm -rf ~"},
-                   {"shell_id": "main", "SHELL_ID": "x", "input": "ls"}, {"shell_id": "main"},
-                   {"shell_id": "main", "input": ["rm -rf ~"]}):
+        # an argument it doesn't know, or no text: denied in the hook (a name sent twice too: the next test)
+        for ti in ({"a": "echo '", "input": "rm -rf ~ #'"}, {"shell_id": "main"}, {"shell_id": "main", "input": ["rm -rf ~"]}):
             with self.subTest(ti=ti):
                 p["tool_input"] = ti
                 self.assertIn("Devin's write_to_process call names no text", agent_hooks._blocked("devin", p, json.dumps(p))
                               or "")
+
+    def test_an_argument_sent_twice_is_denied_whatever_its_case_or_value(self):
+        # the review of #673: json.loads keeps a repeated name's last value, and a Go-style decoder may keep another, so
+        # {"command": "git push --force origin main", "command": null} ran undecided
+        for name, ti in (("exec", '{"command": "git push --force origin main", "command": null}'),
+                         ("exec", '{"command": "git push --force origin main", "command": "echo hi"}'),
+                         ("EXEC", '{"command": "echo hi", "Command": "git push --force origin main"}'),
+                         ("write_to_process", '{"shell_id": "main", "input": "ls", "Input": "rm -rf ~"}'),
+                         ("write_to_process", '{"shell_id": "main", "\u017fhell_id": "x", "input": "ls\\n"}'),
+                         ("read", '{"file_path": "/w/a", "file_path": "/w/b"}')):
+            for sent in (ti, json.dumps(ti)):   # an object, or one sent as a JSON string
+                raw = '{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "%s", "tool_input": %s}' % (
+                    name, sent)
+                with self.subTest(raw=raw):
+                    self.assertIn("call sends an argument more than once (case ignored)",
+                                  agent_hooks._blocked("devin", json.loads(raw), raw) or "")
+        raw = '{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "exec", "tool_input": {"command": "ls"}}'
+        self.assertIsNone(agent_hooks._blocked("devin", json.loads(raw), raw))
+
+    def test_typed_text_with_a_control_character_is_denied(self):
+        # the review of #673: write_to_process types into a live terminal, whose line editor acts on control
+        # characters, so the line that runs isn't the text decided: DEL erased a character, ^U discarded the line
+        # before it, ^C dropped what came before; tab completes and ESC starts a key sequence (an arrow recalls history)
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process"}
+        for text in ("gitx\x7f push --force origin main\n", "\x03git push --force origin main\n",
+                     "echo hi \x15git push --force origin main\n", "git st\t\n", "\x1b[A\n", "ls\x00\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIn("types a control character", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        # \r ends a line, as the terminal reads it, so each line is decided
+        tool, args = agent_hooks.tool("devin", "write_to_process",
+                                      {"shell_id": "main", "input": "echo hi\rgit push --force origin main\r"})
+        self.assertEqual(args["command"], "echo hi\ngit push --force origin main\n")
+        self.assertNotEqual(load_policy(DEFAULT_POLICY).decide(tool, args)["verdict"], "allow")
+        p["tool_input"] = {"shell_id": "main", "input": "y\r\n"}
+        self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
 
     def test_patch_paths_are_every_file_the_patch_names(self):
         patch = PATCH.format("src/app.py") + "\n*** Begin Patch\n*** Delete File: .devin/hooks.v1.json\n*** End Patch"
