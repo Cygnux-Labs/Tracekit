@@ -249,8 +249,10 @@ def held_calls(rows, since):
             if v["type"] == "approval" and v.get("approval") in ("approve", "reject") and v.get("approval_id") in owners:
                 held = owners[v["approval_id"]]
                 answered[held] = min(answered.get(held, r["ts"]), r["ts"])
+        # the rules that held it, as report._placed places them: not one of another section (a flag) that also matched
         out += [{"id": r.get("tool_use_id"), "t": r["ts"], "run": r.get("session_id"), "sub": bool(r.get("agent_id")),
-                 "agent": r.get("agent"), "tool": r.get("tool_name"), "rules": r["v2"].get("rules") or [],
+                 "agent": r.get("agent"), "tool": r.get("tool_name"),
+                 "rules": [x for x in r["v2"].get("rules") or [] if (r["v2"].get("secs") or {}).get(x["id"], "ask") == "ask"],
                  "answered": answered.get(r["v2"]["run_seq"])}
                 for r in recs if r["event"] == "PreToolUse" and r["v2"].get("decision") == "ask"
                 and r["v2"]["run_seq"] not in folds and (r.get("ts") or 0) >= since]
@@ -633,7 +635,8 @@ def holds_tip(holds, calls, signed):
                {"text": (f"{top} held {rules[top]} of them" + (f": {words[top]['remedy']}" if words[top].get("remedy")
                                                                else f" ({words[top].get('reason') or 'its rule'}).")
                          + " See each one waiting, with the commands that answer it:") if top else
-                "See the calls waiting, with the commands that answer them:", "copy": "tracekit approvals list"})
+                "See the calls waiting, with the commands that answer them:", "copy": "tracekit approvals list"}
+               if open_ else None)
     return tip
 
 

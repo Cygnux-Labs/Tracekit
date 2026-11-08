@@ -176,7 +176,8 @@ def satisfies(args, c):
 
 
 def sign(key, vkey, purpose, body):
-    """`body` signed for `purpose` ("pcm" or "pcm-grant") by the log key `key`, whose pinned vkey is `vkey`."""
+    """`body` signed for `purpose` ("pcm", "pcm-grant", or "intent-grant": tracekit.grants') by the log key `key`, whose
+    pinned vkey is `vkey`."""
     # lean: the log key signs PCM too, so a PCM signing bug means rotating it; pin a dedicated PCM key in trust.json
     # before PCM leaves experimental
     name, kid, _, _ = checkpoint.parse_vkey(vkey)
@@ -208,6 +209,14 @@ def check_sig(obj, purpose, trust):
     return None if ok else "bad signature"
 
 
+def check_grant_sig(g, trust):
+    """check_sig of grant `g` as a PCM grant, an intent grant (tracekit.grants, signed for its own purpose) named so."""
+    e = check_sig(g, "pcm-grant", trust)
+    return e if not e or check_sig(g, "intent-grant", trust) else (
+        "an intent grant: its limits, tools, run and revocation are in its run's records, which a receiver can't "
+        "check, so it is no authority in a PCM message")
+
+
 def verify_grants(msg, doc, trust):
     """The grant chain of a message whose envelope and signature passed, against its intent's schema document."""
     grants, args, out = msg.get("grants", []), msg["intent"]["args"], []
@@ -219,7 +228,7 @@ def verify_grants(msg, doc, trust):
         at = f"grant {i}"
         if g["sig"]["key"] != msg["sig"]["key"]:   # another pinned log's grant holds nothing here
             out.append(f"{at}: signed by {g['sig']['key']}, not the log that signed the message ({msg['sig']['key']})")
-        elif e := check_sig(g, "pcm-grant", trust):
+        elif e := check_grant_sig(g, trust):
             out.append(f"{at}: {e}")
         if g["intent"] != msg["intent"]["type"]:
             out.append(f"{at}: for {g['intent']}, not this intent")

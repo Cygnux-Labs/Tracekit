@@ -226,7 +226,7 @@ class Case(unittest.TestCase):
         versions = [VERIFIER_MIN_VERSION, *VERSIONS]
         for have, want in ((version, (0, "VERIFIED")), (versions[versions.index(version) - 1],
                                                        (2, f"UNVERIFIABLE (needs tracekit >= {version})"))):
-            with mock.patch.object(v2, "__version__", have):
+            with mock.patch.object(v2, "READS", have):
                 rep, code = self.verify(out)
             self.assertEqual((code, rep.integrity), want, rep.checks)
 
@@ -1062,7 +1062,7 @@ class TestRunParts(Case):
         self.assertEqual([c for c in rep.checks if c["check"] != "run parts"], self.verify(whole)[0].checks)
         self.assertIn({"check": "run parts", "status": "pass", "problems": [],
                        "detail": f"1 run(s) in {len(parts)} parts, each part continuing the one before it"}, rep.checks)
-        with mock.patch.object(v2, "__version__", "1.3.0"):   # a verifier before parts: says it can't, never FAILED
+        with mock.patch.object(v2, "READS", "1.3.0"):   # a verifier before parts: says it can't, never FAILED
             rep, code = self.verify(out)
         self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
         self.assertEqual(needs([], ["run parts"]), ("1.4.0", "1.4.0"))
@@ -1500,6 +1500,8 @@ ENTRIES = {
     "review.cites": [registered(), registered("run-f", analyzes="run-a"), ("review", {
         "reviewer": "tracekit-analyze/1.4.0", "verdict": {"kind": "coverage", "rule": "TK-X200", "severity": "info",
                                                           "checks": {}}, "cites": []}, "run-f")],
+    # a grant the run's own user issued: a self-approval, which a verifier before 1.6.0 can't see (assurance dev)
+    "ext.self_approved=True": [registered(), ("ext", {"name": "intent.grant", "self_approved": True}, "run-a")],
 }
 
 
@@ -1512,6 +1514,34 @@ class TestVersionTable(Case):
                 with self.subTest(name):
                     self.assertIn(name, ENTRIES, "add records that use it to ENTRIES")
                     self.assert_gated(version, *ENTRIES[name])
+
+    def test_a_self_issued_grant_needs_1_6(self):
+        """Pre-1.6 review of #674: a grant the run's own user issued makes the assurance dev in a 1.6 verifier; an older
+        one can't see it, so it says it can't verify the bundle rather than claim more. A person's grant needs only
+        the slot."""
+        self.assert_gated("1.6.0", *ENTRIES["ext.self_approved=True"])
+        self.assertEqual(needs([{"type": "ext", "data": {"name": "intent.grant", "self_approved": False}}]),
+                         ("1.4.0", "1.6.0"))
+
+    def test_a_lowered_minimum_is_a_warning(self):
+        """#674 re-review: the manifest is never signed. A signed finding's citations need 1.4.0 (a 1.3 verifier under
+        a manifest edited down to 1.3.0 checks neither them nor their author); a 1.6 verifier recomputes what the
+        records need and warns when the manifest asks for less. An honest bundle gets no such line."""
+        log = self.log("cites")
+        log.epoch(KEY1)
+        for type_, data, run in ENTRIES["review.cites"]:
+            log.add(type_, data, run)
+        for run in ("run-a", "run-f"):
+            log.final(run)
+        out, low = os.path.join(self.d, "cites.tkb"), os.path.join(self.d, "cites-low.tkb")
+        export(log.store, "acme", "run-a", log.note(), out, with_runs=["run-f"])
+        rewrite_bundle(out, low, lambda files, manifest: manifest.update(verifier_min_version="1.3.0"))
+        for path, want in ((out, []), (low, [("warn", "the records need tracekit >= 1.4.0, the manifest asks for "
+                                                       "1.3.0: a verifier older than 1.4.0 may have read this bundle and "
+                                                       "claimed more than its records show")])):
+            rep, code = self.verify(path)
+            self.assertEqual(code, 0, rep.checks)
+            self.assertEqual([(c["status"], c["detail"]) for c in rep.checks if c["check"] == "verifier minimum"], want)
 
     def test_shipped_rows_are_frozen(self):
         # a row is frozen once its version's first release candidate ships: later additions go in a new row, so a
@@ -1557,7 +1587,7 @@ class TestExt(Case):
 
     def test_an_older_verifier_is_unverifiable_and_told_how_to_verify(self):
         out = ext_bundle(self.log(), os.path.join(self.d, "ext.tkb"))
-        with mock.patch.object(v2, "__version__", "1.3.0"):
+        with mock.patch.object(v2, "READS", "1.3.0"):
             rep, code = self.verify(out)
         self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
         self.assertEqual(rep.checks, [{"check": "bundle readable", "status": "fail", "detail": rep.integrity, "problems": [
@@ -1596,6 +1626,26 @@ class TestExt(Case):
                 "an ext record dropped": (lambda rs: rs.pop(2), "run chain")}.items():
             with self.subTest(name):
                 self.assert_fails(self.mutate(out, edit), check)
+
+    @unverified_bundles   # a record with no type, on purpose
+    def test_a_record_with_no_type_fails_as_before(self):
+        """#674 re-review: recomputing what the records need (`verifier minimum`) reads only the records it can, so a
+        tampered record with no `type` fails its own checks, never `bundle structure` with a KeyError."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.add("tool.call", {"tool_use_id": "t1", "name": "Bash", "input": {}}, ext={})
+        log.final()
+        out = os.path.join(self.d, "typed.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        bad = self.mutate(out, edit_run=lambda rs: rs[1]["event"].pop("type"))
+        rep, code = self.verify(bad)
+        with mock.patch.object(v2, "_minimum", lambda *_: None):   # the verifier before the recompute (123b09fbaa)
+            before, was = self.verify(bad)
+        self.assertEqual((code, rep.integrity, rep.checks), (was, before.integrity, before.checks))
+        self.assertEqual((code, rep.integrity), (1, "FAILED"))
+        self.assertIn("signatures", rep.failures)
+        self.assertNotIn("KeyError", json.dumps(rep.checks))
 
     @unverified_bundles   # each is schema-invalid on purpose
     def test_ext_names_are_schema_checked(self):

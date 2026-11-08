@@ -1294,9 +1294,10 @@ def _learned(ctx):
     without a value the line gives it ("*": an indirect ${!x}, which may be any); whether a command may have set any
     variable (or exported one: set, read, declare …), and the names an export of literal names exported; whether a
     second reading (`readings`) read anything the line as written doesn't (more: without it,
-    analyse(readings=False) is the same parse)."""
+    analyse(readings=False) is the same parse); the names of the functions it defines."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
-            "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"]}
+            "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
+            "functions": list(ctx["functions"])}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
