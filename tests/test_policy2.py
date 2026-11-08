@@ -775,8 +775,9 @@ class Speed(unittest.TestCase):
                     d = e.decide(tool, args)
                     out.append((d["verdict"], d["rule_ids"], d.get("nondeterministic")))
                     if e.engine.startswith("regex"):
-                        # reading the statement as a command, capped by the decision's budget: ≤80 ms here, ~10x on Windows
-                        self.assertLess(time.perf_counter() - start, 0.4 * SLOWER * machine_scale(), d)
+                        # the statement read as a command, capped by the decision's budget: ≤80 ms on a laptop; a macOS
+                        # runner took ~15x that while machine_scale read 1.6
+                        self.assertLess(time.perf_counter() - start, 1.0 * SLOWER * machine_scale(), d)
                 self.assertIsNone(out[-1][2], out)
                 self.assertEqual(len(set(map(repr, out))), 1, out)
 
@@ -790,8 +791,9 @@ class Speed(unittest.TestCase):
         d = e.decide("Bash", {"command": 'sqlite3 app.db "SELECT\n' + cols + '\nFROM t;"'})
         took = time.perf_counter() - start
         self.assertEqual((d["verdict"], d.get("nondeterministic")), ("allow", None), d)
-        # reading the SELECT as a command, capped by the decision's budget: ~70 ms on a laptop, ~10x on Windows runners
-        self.assertLess(took, 0.35 * SLOWER * machine_scale())
+        # the SELECT read as a command, capped by the decision's budget: ~70 ms on a laptop; a macOS runner took ~15x the
+        # laptop's time on such a statement while machine_scale read 1.6
+        self.assertLess(took, 1.0 * SLOWER * machine_scale())
 
     def test_a_rule_searches_only_a_subject_that_holds_the_strings_of_one_of_its_alternatives(self):
         """TK-A039's prefilter is its clients' names, so that SELECT was searched in full for a DROP, TRUNCATE or
