@@ -130,11 +130,14 @@ From code, the signer's calls are `grant_issue`, `grant_list` and `grant_revoke`
 
 ## The grant
 
-A grant is a [PCM grant](pcm.md#grants) in PCM's own format: signed by the signer's log key, issued by a person for
-one run (`issuer.run`) to the run's agent (`subject`), for an intent, within caveats, until `expires_at`. It can't be
-passed on (`delegable: false`), so it reaches nothing past its run. A grant made in Tracekit can ride in a PCM message
-as it is. The signer writes it into the run in an `intent.grant` record, with the tools it covers, its limits, its
-totals so far and the note:
+A grant has a [PCM grant](pcm.md#grants)'s format: signed by the signer's log key, issued by a person for one run
+(`issuer.run`) to the run's agent (`subject`), for an intent, within caveats, until `expires_at`. It can't be passed on
+(`delegable: false`). It is no PCM grant: its limits, the tools it covers, its run and its revocation are only in its
+run's records, which a PCM receiver doesn't have, so the signer signs it under a tag of its own
+(`tracekit.intent-grant.v2`, [format v2](format-v2.md#4-records-and-the-signature-message)). A message that carries one is refused
+(`an intent grant: ... it is no authority in a PCM message`), and so is `pcm_delegate` with one as its parent. The
+signer writes it into the run in an `intent.grant` record, with the tools it covers, its limits, its totals so far and
+the note:
 
 ```json
 {"name": "intent.grant", "id": "g-2f9deebdfc669a5b",
@@ -197,7 +200,9 @@ currency without a known unit, a second payee, a payee in an object.
 5. Within the grant: the call runs. The decision is `flag`, its rule ids those that held the call and `TK-GRANT`,
    with the payment and what is left; its `ext.grant` records the grant's id, the payment's fields, the totals after
    it and its tier.
-6. Outside: the call is held, and the reason names the grant and the bound it breaks.
+6. Outside: the call is held, and the reason names the grant and the bound it breaks. What the call chose (an
+   argument's name or value, a tool's name) is quoted as JSON, its `. Instead:` written `. Instead:`, so it
+   never starts a line of what the agent and the person read.
 
 | A payment, under a grant of 200 USDC each, 500 in all, to two payees | Decision | Reason |
 |---|---|---|
@@ -209,7 +214,7 @@ currency without a known unit, a second payee, a payee in an object.
 | amount `"120"` | held | `grant g-…: amount "120" is not a whole number of the currency's smallest unit …, so a person decides` |
 | `amount_cents` 19999999 (199,999.99 USDC) | held | `grant g-…: amount 199999.99 USDC is over 200 USDC each` |
 | with an `invoice_id` | held | `grant g-…: argument "invoice_id" is not one a payment grant reads, so a person decides` |
-| through another tool | held | `grant g-… covers mcp__payments__send_money, not mcp__payments__pay_invoice` |
+| through another tool | held | `grant g-… covers "mcp__payments__send_money", not "mcp__payments__pay_invoice"` |
 | after `tracekit grant revoke` | held | `grant g-… was revoked` |
 | past `--for` | held | `grant g-… expired at …` |
 
@@ -223,8 +228,9 @@ As who may answer the run's approvals ([approvals](approvals.md#who-may-answer))
 - With signer.yaml's `approvals`: an approver of the run's tenant, never the run's own user or principal (unless
   `approvals: {self_approval: allow}`). The grant names the person `approvals.persons` maps them to.
 - On the dev signer: any identity that may answer the run's approvals, which there is any identity of the run's
-  tenant. The grant records who issued it; one from the run's own user is recorded `self_approved`, and the verifier
-  says so, because the agent runs as that user too.
+  tenant. The grant records who issued it; one from the run's own user is recorded `self_approved`, and the verifiers
+  read it as a self-approval (assurance `dev`, `approvals: self`, and a short result that says the approval proves
+  nothing), because the agent runs as that user too.
 - Never an agent approver, and never in a held, quarantined or ending run.
 
 A person runs every grant command. The coding pack (and the dev and server packs, which extend it) denies every

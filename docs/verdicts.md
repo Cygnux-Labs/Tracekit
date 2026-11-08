@@ -186,7 +186,7 @@ The first word is the level; the rest lists what it rests on.
 
 | Level | When |
 |---|---|
-| `dev` | no pinned witness cosigned the checkpoint and no pinned anchor verified, **or** the bundle holds a self-approval |
+| `dev` | no pinned witness cosigned the checkpoint and no pinned anchor verified, **or** the bundle holds a self-approval (an answer, or an [intent grant](intent-grants.md#who-may-issue-a-grant), from the run's own user) |
 | `local` | only `operator`-class witnesses or anchors vouch for the checkpoint |
 | `witnessed` | at least `max(1, witnesses_required)` independent (non-`operator`) cosignatures or anchors |
 

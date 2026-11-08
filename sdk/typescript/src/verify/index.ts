@@ -530,7 +530,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   rep.integrity = !open.length ? "VERIFIED" : only ? `VERIFIED TO HEAD ${str(get(open[0].at(-1).event, "run_seq"))} (open)`
     : `VERIFIED (${open.length} run(s) open)`;
   const events = every.map((r) => r.event), typed = (t: string) => events.filter((e) => get(e, "type") === t);
-  const selfApproved = typed("approval").some((e) => get(at(e, "data"), "self_approved") === true);
+  // a grant the run's own user issued (intent.grant) approves the calls it releases: a self-approval too
+  const selfApproved = [...typed("approval"), ...typed("ext").filter((e) => get(at(e, "data"), "name") === "intent.grant")]
+    .some((e) => get(at(e, "data"), "self_approved") === true);
   const gaps = (k: string) => typed("capture.gap").filter((e) => get(at(e, "data"), "kind") === k)
     .map((e) => `seq ${e.seq}: ${cut(str(get(e.data, "reason")), 200)}`);
   const against = gaps("executed_against_policy");

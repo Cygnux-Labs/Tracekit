@@ -335,10 +335,13 @@ is used today; the others are reserved:
 {"t":"tracekit.export.v2"}
 {"t":"pcm.message.v0"}
 {"t":"pcm.grant.v0"}
+{"t":"tracekit.intent-grant.v2"}
 ```
 
 `pcm` and `pcm-grant` are PCM 0.1 (proof-carrying messages) messages and grants, experimental, signed by the log key.
 Their tags are PCM's own, not `tracekit.*`, because PCM is an open protocol that other implementations sign too.
+`intent-grant` is an [intent grant](intent-grants.md#the-grant): PCM's grant format, signed by the log key under its
+own tag, so it never passes as a PCM grant.
 
 Worked example: the first record of `tests/vectors/sig_v2.jsonl` (`record-signer-epoch`) has the signature message
 

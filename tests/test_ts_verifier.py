@@ -952,6 +952,62 @@ class Agreement(SignerBundles):
         _, rep = self.agree(bundle, trust)   # the same lines in both
         self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])
 
+    def test_a_self_issued_grant_is_a_self_approval_in_both(self):
+        """Pre-1.6 review 2: on a witnessed log, a run whose own user approved its held call and one whose own user
+        issued the grant that released it read the same in both verifiers: dev, `approvals: self`, check for check."""
+        me, usdc, witness = CallerIdentity("uid", "990101", True), 10 ** 6, Witness()
+        d = os.path.join(self.d, f"selfgrant-{uuid.uuid4().hex}")
+        s = svc.SignerService(os.path.join(d, "data"), witnesses=[witness], grace_s=0, fsck_every_s=0,
+                              policy=Engine({"tools": {"send_money": "app"}, "ask": [
+                                  {"id": "PAY", "tool": "send_money", "pattern": "^", "approval": {"grant": "payment.send"}}]}))
+        self.addCleanup(s.close)
+        pay = {"amount": 120 * usdc, "currency": "USDC", "to": "0x" + "a1" * 20}
+
+        def call(method, **req):
+            return s.call(me, method, {"request_id": uuid.uuid4().hex, **req})
+
+        def run():
+            r = call("register_run", agent={"name": "payer"})
+            return {"run_id": r["run_id"], "run_token": r["run_token"]}
+
+        def decide(h, i):
+            return call("decide", **h, stream="s", client_seq=i, tool_call_id=f"t{i}", tool="send_money",
+                        args_source="parsed", args=pay)
+        approved, granted = run(), run()
+        decide(approved, 0)
+        call("approval_decide", approval_id=call("approval_request", **approved, tool_call_id="t0")["approval_id"],
+             decision="approve")
+        self.assertTrue(call("grant_issue", run_id=granted["run_id"], intent="payment.send", tools=["send_money"],
+                             caveats=[{"field": "currency", "op": "==", "value": "USDC"},
+                                      {"field": "payee", "op": "==", "value": pay["to"]}],
+                             limits=[{"op": "sum", "field": "amount", "max": 1000 * usdc}],
+                             expires_at=svc._iso(time.time() + 3600))["self_approved"])
+        self.assertEqual([decide(granted, i)["decision"] for i in range(3)], ["allow"] * 3)
+        for h in (approved, granted):
+            call("close_run", **h)
+        s.sweep(time.monotonic() + 1)
+        deadline = time.monotonic() + 20
+        while True:
+            s.checkpoint()
+            size, note = s.log.storage.checkpoint_latest()
+            if size == s.log.storage.tree.size and signed_by(note.split("\n\n", 1)[1], witness.vkey):
+                break
+            self.assertLess(time.monotonic(), deadline, "no cosigned checkpoint")
+            time.sleep(0.1)
+        trust = os.path.join(d, "trust.json")
+        with open(trust, "w") as f:
+            json.dump({"logs": [s.vkey], "witnesses": [{"vkey": witness.vkey, "class": "customer"}],
+                       "witnesses_required": 1, "algs": ["ed25519"]}, f)
+        reads = []
+        for name, h in (("approved", approved), ("granted", granted)):
+            bundle = os.path.join(d, f"{name}.tkb")
+            export(s.log.storage, "default", h["run_id"], note, bundle)
+            code, rep = self.agree(bundle, trust)
+            self.assertEqual(code, 0, rep.checks)
+            parts = rep.assurance.split("; ")
+            reads.append((parts[0], "approvals: self" in parts, "cosigned ed25519 by" in rep.assurance))
+        self.assertEqual(reads, [("dev", True, True)] * 2)
+
     def test_both_verifiers_re_check_intent_grants_alike(self):
         """Intent grants (docs/intent-grants.md): a person's grant, the two payments it released, one it held and its
         revocation read the same in both; so does each record a faulty signer could write, problem for problem: a

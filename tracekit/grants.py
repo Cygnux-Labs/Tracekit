@@ -1,7 +1,8 @@
 """Intent grants (docs/intent-grants.md): a person approves a kind of costly call once, within limits, for one run.
 
-A grant is a PCM grant (tracekit.pcm) of an intent's schema document, in PCM's format as it is. The signer's
-`intent.grant` record carries it with its limits (totals over every call that uses it) and the person's own words. The
+A grant has a PCM grant's format (tracekit.pcm), of an intent's schema document, signed for its own purpose
+(`intent-grant`), so it never passes as a PCM grant: its limits (totals over every call that uses it) are only in the
+signer's `intent.grant` record, which carries it with them and the person's own words. The
 signer reads each held call of an opted-in rule into the intent's fields, and releases it when the fields pass every
 caveat and the totals stay within every limit; anything it can't read stays held. The signer, the CLI and the Python
 verifier share this module. Payments (`payment.send`) are the one intent so far."""
@@ -12,6 +13,7 @@ import re
 from tracekit import pcm
 from tracekit.format.canon import MAX_SAFE_INT, event_hash
 from tracekit.policy2.classes import PAYEE_KEYS
+from tracekit.signer.rpc_schema import INSTEAD
 
 MAX_S = 86400   # a grant's longest life, as PCM's (SPEC 7.4)
 # each currency's unit: the digits of its smallest unit after the decimal point (ISO 4217's exponent for money, 6 for
@@ -43,6 +45,13 @@ def ref(intent):
 def grant_id(grant):
     """A grant's short id, `g-` and the first 16 hex digits of its hash: what people type and reasons name."""
     return "g-" + event_hash(grant)[len("sha256:"):][:16]
+
+
+def _quoted(v, n=64):
+    """Text the call chose (an argument's name or value, its tool's name) as a reason quotes it: JSON (ASCII, so no
+    line break) cut to `n` characters, its ". Instead:" escaped, so it never starts or moves the Instead line a client
+    splits the reason at (INSTEAD)."""
+    return json.dumps(v)[:n].replace(INSTEAD.rstrip(), INSTEAD.rstrip()[:-1] + "\\u003a")
 
 
 def parse_amount(text):
@@ -110,11 +119,11 @@ def read(intent, args):
         return None, "no amount in the call" if not keys else "the call has both amount and amount_cents"
     amount = args[keys[0]]
     if type(amount) is not int or not 0 < amount <= MAX_SAFE_INT:
-        return None, (f"amount {json.dumps(amount)[:32]} is not a whole number of the currency's smallest unit "
+        return None, (f"amount {_quoted(amount, 32)} is not a whole number of the currency's smallest unit "
                       "(cents, or a token's base unit)")
     cur = args.get("currency")
     if not isinstance(cur, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{2,9}", cur):
-        return None, "no currency in the call" if cur is None else f"currency {json.dumps(cur)[:32]} is not a code"
+        return None, "no currency in the call" if cur is None else f"currency {_quoted(cur, 32)} is not a code"
     cur, d = cur.upper(), DECIMALS.get(cur.upper())
     if d is None:
         return None, f"currency {cur} has no unit tracekit knows ({', '.join(sorted(DECIMALS))})"
@@ -134,10 +143,10 @@ def read(intent, args):
         return None, f"the call names {len(names)} payees ({', '.join(sorted(payees))})"
     who = names.pop()
     if not re.fullmatch(_PAYEE, who):
-        return None, f"payee {json.dumps(who)[:64]} has characters a grant doesn't compare"
+        return None, f"payee {_quoted(who)} has characters a grant doesn't compare"
     other = sorted(set(args) - {keys[0], "currency", *payees} - EXTRA)
     if other:
-        return None, f"argument {json.dumps(other[0])[:64]} is not one a payment grant reads"
+        return None, f"argument {_quoted(other[0])} is not one a payment grant reads"
     bad = sorted(k for k in set(args) & EXTRA if not isinstance(args[k], str))
     if bad:
         return None, f"argument {bad[0]} is not a plain string"
@@ -299,7 +308,8 @@ def decide(grants, intent, tool, args, now):
     mine = [(gid, e) for gid, e in ours if tool in e["tools"]]
     if ours and not mine:
         gid, e = ours[0]
-        return None, None, None, f"grant {gid} covers {', '.join(e['tools'])}, not {tool}"
+        return None, None, None, f"grant {gid} covers {', '.join(_quoted(t, 258) for t in e['tools'])}, not " \
+                                 f"{_quoted(tool, 258)}"
     fields, unread = read(intent, args)
     if fields is None:
         return None, None, None, f"grant {mine[0][0]}: {unread}, so a person decides" if mine else unread
