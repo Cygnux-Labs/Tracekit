@@ -776,7 +776,7 @@ class Speed(unittest.TestCase):
                     out.append((d["verdict"], d["rule_ids"], d.get("nondeterministic")))
                     if e.engine.startswith("regex"):
                         # reading the statement as a command, capped by the decision's budget: ≤80 ms here, ~10x on Windows
-                        self.assertLess(time.perf_counter() - start, 2.0 * SLOWER, d)
+                        self.assertLess(time.perf_counter() - start, 0.4 * SLOWER * machine_scale(), d)
                 self.assertIsNone(out[-1][2], out)
                 self.assertEqual(len(set(map(repr, out))), 1, out)
 
@@ -791,7 +791,7 @@ class Speed(unittest.TestCase):
         took = time.perf_counter() - start
         self.assertEqual((d["verdict"], d.get("nondeterministic")), ("allow", None), d)
         # reading the SELECT as a command, capped by the decision's budget: ~70 ms on a laptop, ~10x on Windows runners
-        self.assertLess(took, 2.0 * SLOWER)
+        self.assertLess(took, 0.35 * SLOWER * machine_scale())
 
     def test_a_rule_searches_only_a_subject_that_holds_the_strings_of_one_of_its_alternatives(self):
         """TK-A039's prefilter is its clients' names, so that SELECT was searched in full for a DROP, TRUNCATE or
@@ -3881,8 +3881,8 @@ class DecideTime(unittest.TestCase):
         for backend in BACKENDS:
             for line, took, _, verdict in self.decide(lines, backend):
                 with self.subTest(backend=backend, line=str(line)[:40]):
-                    # the pipeline spends the whole work budget (shell.MAX_WORK): ~0.26 s on a laptop, ~1.1 s on CI's py3.9
-                    self.assertLess(took, 2.0 * SLOWER)
+                    # the pipeline spends the whole work budget (shell.MAX_WORK): ~0.26 s on a laptop, ~10x on Windows
+                    self.assertLess(took, 1.25 * SLOWER * machine_scale())
                     if isinstance(line, str) or len(line[1]["urls"]) > engine.MAX_URLS:   # held, not read as harmless
                         self.assertNotIn(verdict, ("allow", "flag"))
 
