@@ -794,13 +794,15 @@ class Speed(unittest.TestCase):
     def test_a_rule_searches_only_a_subject_that_holds_the_strings_of_one_of_its_alternatives(self):
         """TK-A039's prefilter is its clients' names, so that SELECT was searched in full for a DROP, TRUNCATE or
         DELETE it doesn't hold: 120 ms of the fallback engine's 1 s, on CI over the test's bound. Each alternative's
-        strings (compile.requirements) leave it unsearched; a statement that holds one is searched and held."""
+        strings (compile.requirements) leave it unsearched (one of engine.REQUIREMENTS_FROM characters or more); a
+        statement that holds one is searched and held."""
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
         a039, searched, match = next(x[3] for x in e.rules if x[1]["id"] == "TK-A039"), [], e._match
         e._match = lambda rx, s, full, deadline: searched.append(rx) or match(rx, s, full, deadline)
-        e.decide("Bash", {"command": 'sqlite3 app.db "SELECT c0,\n  c1 FROM t;"'})
+        select = "SELECT " + ",\n  ".join(f"c{i}" for i in range(engine.REQUIREMENTS_FROM // 4)) + " FROM t;"
+        e.decide("Bash", {"command": f'sqlite3 app.db "{select}"'})
         self.assertNotIn(a039, searched)
-        d = e.decide("Bash", {"command": 'sqlite3 app.db "SELECT c0 FROM t; DROP TABLE t;"'})
+        d = e.decide("Bash", {"command": f'sqlite3 app.db "{select} DROP TABLE t;"'})
         self.assertIn(a039, searched)
         self.assertIn("TK-A039", d["rule_ids"])
 

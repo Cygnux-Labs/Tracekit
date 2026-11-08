@@ -52,6 +52,9 @@ REGEX_TIMEOUT_S = 1.0      # fallback engine only: the time all matches of one d
 # what deciding an argument as a command (shell.hidden_commands) spends of its call's work budget beyond its parse: a
 # decision's pass of every deny rule takes about as long as parsing 128 characters of commands does (~110 us)
 DECISION_COST = 128
+# the subject length from which a rule's alternatives' strings (compile.requirements) are checked before it is searched:
+# a shorter subject's search costs no more than the check (E21's calls decided 2-4% slower at p99 with every one checked)
+REQUIREMENTS_FROM = 1024
 
 
 def _backend(name):
@@ -93,11 +96,11 @@ class Engine:
         self.engine, self._compile, self._match = _backend(backend)
         compile_ = self._compile
         # each rule's prefilters (compile.literals), of its pattern and of its tool pattern: a subject or a tool name
-        # holding none of its strings is not searched, nor a subject that holds a string of each set of none of the
-        # pattern's alternatives (compile.requirements). An a2a rule matches in any case, as every prefilter does: the
-        # names it reads are lower-cased (classes.a2a_fields); so does a rule on the `tracekit` field, whose subjects are
-        # also casefolded as a path is (_tracekit): the agent's file system may ignore case where the pattern names a
-        # folder in mixed case
+        # holding none of its strings is not searched, nor a long subject that holds a string of each set of none of
+        # the pattern's alternatives (compile.requirements). An a2a rule matches in any case, as every prefilter does:
+        # the names it reads are lower-cased (classes.a2a_fields); so does a rule on the `tracekit` field, whose
+        # subjects are also casefolded as a path is (_tracekit): the agent's file system may ignore case where the
+        # pattern names a folder in mixed case
         def rx(r, key):
             return compile_(r[key], r.get("class") == "a2a" or r.get("field") == "tracekit")
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
@@ -298,7 +301,8 @@ class Engine:
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
                     if (lits is None or len(texts) == 1 or any(map(low.__contains__, lits))) and (
-                            req is None or any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and \
+                            req is None or len(low) < REQUIREMENTS_FROM or
+                            any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and \
                             self._match(pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),

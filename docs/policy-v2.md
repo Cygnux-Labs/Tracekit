@@ -612,12 +612,12 @@ two engines can decide differently; install `google-re2` on the signer.
 Each rule gets a prefilter when it is loaded: strings of two or more characters, one of which every match contains, in
 lower case (`[Mm][Ee][Tt][Aa]` gives `meta`; `policy2/compile.py` `literals`), and for a pattern whose top level is a
 group of alternatives, each alternative's sets of such strings (`requirements`: `TK-A039`'s `sqlite3` branch needs
-`sqlite3` and one of `drop`, `delete` or `truncate`). A subject that holds none of the strings, or not one of each set of
-any alternative, is not searched, and the rules that read the same subject share one copy of it in a decision. The
-prefilter never changes a decision (tests check it on every subject the E17 corpus forms and on random patterns); it
-only skips searches that can't match. A rule without one is searched on every call its class and tool reach, and
-`tracekit policy lint` warns
-about it unless a string of one character or none matches it (`^`, `.`, `&\s*$` need no prefilter). Every shipped
+`sqlite3` and one of `drop`, `delete` or `truncate`). A subject that holds none of the strings, or (one of 1 KiB or
+more) not one of each set of any alternative, is not searched, and the rules that read the same subject share one copy
+of it in a decision. The prefilter never changes a decision (tests check it on every subject the E17 corpus forms and on
+random patterns); it only skips searches that can't match. A rule without one is searched on every call its class and
+tool reach, and `tracekit policy lint` warns about it unless a string of one character or none matches it (`^`, `.`,
+`&\s*$` need no prefilter). Every shipped
 pattern searches 64 KiB of text built to make it back off or rescan within 150 ms on the fallback engine (`TK-A040`
 within 0.25 s), about 20 ms on an M-series Mac (`tests/test_policy2.py`; among the texts, what each of its
 alternatives, nested ones too, starts with, over and over from the first character and again after the rule's literal
