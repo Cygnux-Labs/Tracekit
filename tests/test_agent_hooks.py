@@ -101,7 +101,8 @@ class Harnesses(DaemonCase):
                          ("apply_patch", {"patch": "*** Update File:  \n"}),
                          ("webfetch", {"urls": ["https://x.example/a"]}),
                          # the second review: a URL under another spelling may be the one Devin reads, and v1 reads url
-                         ("webfetch", {"URL": "http://169.254.169.254/latest", "url": "https://example.com"})):
+                         # (beside a lower-case url too: an argument sent twice, DevinTools)
+                         ("webfetch", {"URL": "http://169.254.169.254/latest"})):
             with self.subTest(tool=name, ti=ti):
                 code, out, err = self.hook("devin", {**base, "tool_name": name, "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))
