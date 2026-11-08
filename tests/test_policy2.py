@@ -1302,6 +1302,23 @@ class Shell(unittest.TestCase):
                         tracemalloc.stop()
                     self.assertLess(peak, 32 << 20)     # ~4 MB
 
+    def test_a_process_call_s_arguments_are_read_a_run_at_a_time(self):
+        """A process call's arguments were read one character at a time (each asked whether a literal starts there)
+        and each plain literal decoded by ast.literal_eval, so 64 KiB of `subprocess.run([` took 7 to 10 times main's
+        time to decide (0.7-0.8 s on CI). A run of characters no literal starts at is now read in one step, and a
+        literal with no backslash or carriage return is its own text."""
+        pol = pc.build(os.path.join(PACKS, "server.yaml"))[0]
+        for unit in ("subprocess.run([", 'subprocess.run(["a",'):
+            cmd = "python3 -c '" + unit * ((MAX_SUBJECT - 14) // len(unit)) + "]'"
+            with self.subTest(unit=unit), mock.patch.object(shell, "_literal_start", wraps=shell._literal_start) as at, \
+                    mock.patch.object(shell.ast, "literal_eval", wraps=shell.ast.literal_eval) as decoded:
+                d = Engine(pol, "regex").decide("Bash", {"command": cmd})
+                self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SHELL-PARSE"]))
+                self.assertLess(at.call_count, len(cmd))   # was 2.5 times its length and more
+                self.assertEqual(decoded.call_count, 0)
+        self.assertEqual(shell._py_value("", '"', "a\\x41"), "aA")   # an escape is still decoded
+        self.assertEqual(shell._py_value("", '"""', "a\r\nb"), "a\nb")   # and so is a newline Python rewrites
+
     def test_a_bracket_in_a_list_string_does_not_truncate_the_argv(self):
         """Finding the list end with `code.find("]")` stopped at a `]` inside a quoted string, dropping the rest of
         the argv: a subprocess.run whose shell string held a recursive delete then `#]` fell from deny (TK-D004) to
@@ -3766,12 +3783,12 @@ class DecideTime(unittest.TestCase):
             box = []
             tool, args = ("Bash", {"command": line}) if isinstance(line, str) else line
             t = threading.Thread(target=lambda: box.append(e.decide(tool, args)))
-            n, t0 = 0, time.monotonic()
+            n, t0 = 0, time.perf_counter()   # (Windows' monotonic clock ticks every ~16 ms: a fast decision took 0)
             t.start()
             while sys.argv[2] == "beside" and t.is_alive():
                 n += 1
             t.join()
-            took = time.monotonic() - t0
+            took = time.perf_counter() - t0
             out.append([took, n / took / alone, box[0]["verdict"]])
         print(json.dumps(out))
     """
@@ -3800,7 +3817,7 @@ class DecideTime(unittest.TestCase):
                     self.assertIn(verdict, ("allow", "flag", "deny") if backend == "regex" else ("allow", "flag"))
 
     def test_the_engine_s_reading_of_a_line_is_bounded(self):
-        """The this change review's shapes, at its sizes: a script written and run many times (each run read each write
+        """The review's shapes, at its sizes: a script written and run many times (each run read each write
         again, three times a decision), many cds before many relative names, a long import or string scan of Python, an
         alias with many values used many times, printf with many arguments. Each took 3 to more than 60 s; each now
         decides well within a second, held where it spends the decision's work budget (shell.MAX_WORK)."""

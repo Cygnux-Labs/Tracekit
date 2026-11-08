@@ -593,6 +593,8 @@ def _c_unescape(kind, body):
 
 def _py_value(prefix, quote, body):
     """A Python literal's text as Python makes it (bytes read as Latin-1), else `body` as written."""
+    if "\\" not in body and "\r" not in body:   # no escape and no newline Python rewrites: the text is the body
+        return body
     try:
         v = ast.literal_eval(prefix + quote + body + quote)
     except (SyntaxError, ValueError, MemoryError, RecursionError):
@@ -665,11 +667,27 @@ def _literal_start(kind, code, i, k):
         code[i] in "rRbBuUfF" and kind == "python" or code[i] == "q" and kind == "perl")
 
 
+# a run of characters at which no literal starts, and no quote or backslash, which _arg_text and _literals take in one
+# step: a prefix letter after a word character is inside a name (_literal_start; `\w` is isalnum() or `_`), and one
+# not before a quote (after at most one more: _OPEN) starts none
+_NO_LITERAL = {"python": re.compile(r"""(?:[^'"`\\rRbBuUfF]|(?<=\w)[rRbBuUfF]|[rRbBuUfF](?![rRbBuUfF]*['"`]))+"""),
+               "perl": re.compile(r"""(?:[^'"`\\q]|(?<=\w)q)+""")}
+_NO_LITERAL_OTHER = re.compile(r"""[^'"`\\]+""")
+_NESTING = re.compile(r"[()\[\]{}]")
+# a run of characters _skip_value passes over: no quote, closing bracket or comma, nor a stop (each is among `)];` and
+# newline)
+_VALUE_RUN = re.compile(r"""[^'"`)\]},;\n]+""")
+
+
 def _skip_value(kind, code, k, stops, charge):
     """Where the argument at `k` ends: the next `,` or stop character outside brackets and string literals (a quote that
     doesn't close on its line skips the line, so the scan stays linear)."""
     depth = 0
     while k < len(code):
+        if m := _VALUE_RUN.match(code, k):
+            depth += sum(map(m.group().count, "([{"))
+            k = m.end()
+            continue
         ch = code[k]
         if ch in "'\"`":
             lit = _string_at(kind, code, k, charge)
@@ -714,6 +732,7 @@ def _arg_text(kind, code, k, end, charge):
     text itself, and a home folder's reader (_HOME_EXPR) its path. False for text no expression makes, a quote or a
     backslash outside a literal (a call's name found inside a string: `"… call again (…\\'s"`)."""
     pieces, run, depth, fmt, saw, i = [], [], 0, None, False, k
+    plain = _NO_LITERAL.get(kind, _NO_LITERAL_OTHER)
 
     def operand(trailing):   # the text between literals: a joiner, a format, a method, or a value made at run time
         nonlocal fmt, saw
@@ -745,6 +764,12 @@ def _arg_text(kind, code, k, end, charge):
             continue
         if c in "'\"`\\":
             return False
+        if i > k and (m := plain.match(code, i, end)):
+            for b in _NESTING.findall(m.group()):
+                depth = depth + 1 if b in "([{" else depth - (depth > 0)
+            run.append(m.group())
+            i = m.end()
+            continue
         depth += c in "([{"
         depth -= depth > 0 and c in ")]}"
         run.append(c)
@@ -813,13 +838,13 @@ def _call_args(kind, code, i, paren, charge):
 
 def _literals(kind, code, charge):
     """The text of each string literal in `code`, in order (_string_at's pieces as shell text)."""
-    k = 0
+    k, plain = 0, _NO_LITERAL.get(kind, _NO_LITERAL_OTHER)
     while k < len(code):
         if _literal_start(kind, code, k, 0) and (lit := _string_at(kind, code, k, charge)) is not None:
             yield _text_of(lit[0])
             k = lit[1]
         else:
-            k += 1
+            k = m.end() if (m := plain.match(code, k)) else k + 1
 
 
 _STR = re.compile(r"""(['"])((?:\\.|(?!\1)[^\\\n])*)\1""")
