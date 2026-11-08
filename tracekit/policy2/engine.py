@@ -1437,8 +1437,9 @@ def _tracekit(parsed, finds, work):
              and any(re.fullmatch(r"-\w*s\w*|--symbolic", a) for a in c["argv"][1:])}
 
     def at(names):   # each name, as read from the folders the line enters, through HOME, a link or a pattern it may be
-        out = list(names)
-        for n in dict.fromkeys(names) if bases or homes or links or any(map(shell._GLOB.search, names)) else ():
+        out, joined = list(names), "".join(names)   # (a pattern holds a *, ? or [)
+        for n in dict.fromkeys(names) if bases or homes or links or ("*" in joined or "?" in joined or "[" in joined) and \
+                any(map(shell._GLOB.search, names)) else ():
             if not n or "://" in n:
                 continue
             more = [posixpath.normpath(posixpath.join(b, n)) for b in bases if n[0] not in "/~$-"]
