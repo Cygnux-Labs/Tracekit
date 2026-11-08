@@ -134,11 +134,13 @@ def ext_names(event):
 
 def _entries(event, added):
     """The entries of a VERSIONS row that `event` uses: `type`, `type.field`, `type.field=value` and `ext name <name>`
-    (EXT_NAME: an ext name, never an entry of the `ext` record type, such as `ext.self_approved=True`)."""
+    (EXT_NAME: an ext name, never an entry of the `ext` record type, such as `ext.self_approved=True`). A value matches
+    by type too (1 is no True), as the TypeScript verifier's copy compares."""
     typ, data = event["type"], event["data"]
     return ([typ] if typ in added["types"] else []) \
         + [f"{typ}.{f}" for f in added["fields"].get(typ, ()) if f in data] \
-        + [f"{typ}.{f}={data[f]}" for f, vs in added["values"].get(typ, {}).items() if f in data and data[f] in vs] \
+        + [f"{typ}.{f}={data[f]}" for f, vs in added["values"].get(typ, {}).items()
+           if f in data and any(type(v) is type(data[f]) and v == data[f] for v in vs)] \
         + [EXT_NAME + n for n in ext_names(event) if n in added.get("ext", ())]
 
 

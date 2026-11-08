@@ -591,7 +591,11 @@ lists the commands that verify the bundle (§11 step 2). The open definitions ar
 for `review.cites`: a 1.3 verifier given a signed finding under a manifest edited down to 1.3.0 passes its record's
 schema and checks neither its citations nor its author, and prints no `Findings:` line. What it prints stays true, the
 records being signed and included as any; the findings are left out, unchecked, so verify a bundle with signed
-findings with 1.4.0 or later.
+findings with 1.4.0 or later. The same holds for 1.6.0's `ext` `self_approved: true`, which an older verifier reads as
+an ext record it doesn't interpret, so it doesn't lower the assurance to `dev` either. Since the manifest is never
+signed, a 1.6 verifier recomputes what the records and layout need (`needs`, as export does) and, when the manifest
+asks for less, warns `verifier minimum`, naming the records that need more (`raised_by`): an older verifier given that
+bundle may have claimed more than its records show.
 
 **Criticality.** From 1.4.0, an addition an older verifier can leave unread goes in the non-critical slot rather than
 a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:

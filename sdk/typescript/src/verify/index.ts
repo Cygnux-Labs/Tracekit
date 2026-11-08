@@ -27,6 +27,7 @@ import {
 import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
 import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
+import VERSIONS_JSON from "./versions.json" with { type: "json" };
 
 export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
@@ -674,8 +675,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   rep.anchored = [...cosigs].sort((a, b) => a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)
     .map(([k, ts]) => `${k.split("+")[0]} (${witnesses.get(k)}) at ${fmt(ts)}`);
   rep.firsts = new Set(firsts.map((e) => at(e, "seq")));
-  await checkExt(rep, [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
-    .values()], get(manifest, "verifier_version"), floats);
+  const all = [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event])).values()];
+  await checkExt(rep, all, get(manifest, "verifier_version"), floats);
+  checkMinimum(rep, all, [...files.keys()], str(get(manifest, "verifier_min_version")));
 }
 
 /**
@@ -1082,6 +1084,58 @@ const RUN_PROBLEMS = 20;
 /** The ext names an event carries: its `ext` field's keys, and an `ext` record's name. */
 const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {}),
   ...get(e, "type") === "ext" ? [at(at(e, "data"), "name")] : []];
+
+// what records need of a verifier, as tracekit/bundle_v2.py's needs and raised_by read its VERSIONS (versions.json is a
+// copy, which tests/test_ts_verifier.py holds to it): the version that added the ext slot, and how an ext name is marked
+type Row = { types: string[]; fields: Record<string, string[]>; values: Record<string, Record<string, J[]>>;
+  ext?: string[]; layout?: string[] };
+const ROWS = VERSIONS_JSON as Record<string, Row>, EXT_SLOT = "1.4.0", EXT_NAME = "ext name ";
+const usesSlot = (e: J) => Object.hasOwn(e, "ext") || get(e, "type") === "ext";
+
+/** The entries of `row` that `e` uses: `type`, `type.field`, `type.field=value` (by type too) and EXT_NAME + name. */
+function entries(e: J, row: Row): string[] {
+  const typ = str(get(e, "type")), data = isObj(get(e, "data")) ? e.data : {};
+  return [...row.types.includes(typ) ? [typ] : [],
+    ...(row.fields[typ] ?? []).filter((f) => Object.hasOwn(data, f)).map((f) => `${typ}.${f}`),
+    ...Object.entries(row.values[typ] ?? {}).filter(([f, vs]) => Object.hasOwn(data, f) && vs.some((v) => v === data[f]))
+      .map(([f]) => `${typ}.${f}=${str(data[f])}`),
+    ...extNames(e).filter((n) => (row.ext ?? []).includes(n as string)).map((n) => EXT_NAME + str(n))];
+}
+
+/** The verifier_min_version records `events` in `layout` need: the newest row whose entries other than ext names they
+ * use, EXT_SLOT at least when one uses the slot. */
+function needs(events: J[], layout: string[]): string {
+  const order = ["1.0.0", ...Object.keys(ROWS)];
+  let need = "1.0.0";
+  for (const [version, row] of Object.entries(ROWS))
+    if (layout.some((x) => (row.layout ?? []).includes(x))
+      || events.some((e) => entries(e, row).some((x) => !x.startsWith(EXT_NAME)))) need = version;
+  return events.some(usesSlot) && order.indexOf(need) < order.indexOf(EXT_SLOT) ? EXT_SLOT : need;
+}
+
+/** What makes `events` in `layout` need `version`, with the seqs of the records (the first five). */
+function raisedBy(events: J[], version: string, layout: string[]): string[] {
+  const seqs = new Map<string, J[]>();
+  for (const e of events)
+    for (const x of [...entries(e, ROWS[version] ?? { types: [], fields: {}, values: {} }).filter((x) => !x.startsWith(EXT_NAME)),
+      ...version === EXT_SLOT && usesSlot(e) ? ["ext"] : []]) {
+      if (!seqs.has(x)) seqs.set(x, []);
+      seqs.get(x)!.push(get(e, "seq"));
+    }
+  return [...[...seqs].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([x, s]) => `${x}: seq ${s.slice(0, 5).map(str)
+    .join(", ")}` + (s.length > 5 ? ` and ${s.length - 5} more` : "")),
+  ...layout.filter((x) => (ROWS[version]?.layout ?? []).includes(x))];
+}
+
+/** `verifier minimum`, a warning only when the manifest's verifier_min_version (`said`) is below what the records and
+ * the layout of `names` need: the manifest is never signed, and edited down it lets an older verifier claim more. */
+function checkMinimum(rep: Report, events: J[], names: string[], said: string) {
+  const layout = names.some((n) => PART.test(n)) ? ["run parts"] : [], need = needs(events, layout);
+  if (need !== "1.0.0" && newer(need, said))   // a row raised it (0.x bundles need the base)
+    rep.check("verifier minimum", false, `the records need tracekit >= ${need}, the manifest asks for ${said}: a verifier `
+      + `older than ${need} may have read this bundle and claimed more than its records show`,
+    raisedBy(events, need, layout).slice(0, 20), true);
+}
 
 /**
  * A line per ext name the records carry: its EXT_CHECKS check, or a `not interpreted` warning. The records were checked

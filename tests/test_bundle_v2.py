@@ -1523,6 +1523,26 @@ class TestVersionTable(Case):
         self.assertEqual(needs([{"type": "ext", "data": {"name": "intent.grant", "self_approved": False}}]),
                          ("1.4.0", "1.6.0"))
 
+    def test_a_lowered_minimum_is_a_warning(self):
+        """#674 re-review: the manifest is never signed. A signed finding's citations need 1.4.0 (a 1.3 verifier under
+        a manifest edited down to 1.3.0 checks neither them nor their author); a 1.6 verifier recomputes what the
+        records need and warns when the manifest asks for less. An honest bundle gets no such line."""
+        log = self.log("cites")
+        log.epoch(KEY1)
+        for type_, data, run in ENTRIES["review.cites"]:
+            log.add(type_, data, run)
+        for run in ("run-a", "run-f"):
+            log.final(run)
+        out, low = os.path.join(self.d, "cites.tkb"), os.path.join(self.d, "cites-low.tkb")
+        export(log.store, "acme", "run-a", log.note(), out, with_runs=["run-f"])
+        rewrite_bundle(out, low, lambda files, manifest: manifest.update(verifier_min_version="1.3.0"))
+        for path, want in ((out, []), (low, [("warn", "the records need tracekit >= 1.4.0, the manifest asks for "
+                                                       "1.3.0: a verifier older than 1.4.0 may have read this bundle and "
+                                                       "claimed more than its records show")])):
+            rep, code = self.verify(path)
+            self.assertEqual(code, 0, rep.checks)
+            self.assertEqual([(c["status"], c["detail"]) for c in rep.checks if c["check"] == "verifier minimum"], want)
+
     def test_shipped_rows_are_frozen(self):
         # a row is frozen once its version's first release candidate ships: later additions go in a new row, so a
         # verifier of that version never meets a field its own version claims to know

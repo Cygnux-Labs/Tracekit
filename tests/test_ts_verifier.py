@@ -26,7 +26,7 @@ sys.path.insert(0, TESTS)
 from factories import box_runset_bundle, damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
 from tracekit import cli, crypto, gateway, grants  # noqa: E402
 from tracekit.bundle import Report  # noqa: E402
-from tracekit.bundle_v2 import export  # noqa: E402
+from tracekit.bundle_v2 import VERSIONS, export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
 from tracekit.format.canon import event_hash  # noqa: E402
@@ -1006,7 +1006,16 @@ class Agreement(SignerBundles):
             self.assertEqual(code, 0, rep.checks)
             parts = rep.assurance.split("; ")
             reads.append((parts[0], "approvals: self" in parts, "cosigned ed25519 by" in rep.assurance))
+            self.assertNotIn("verifier minimum", [c["check"] for c in rep.checks])
         self.assertEqual(reads, [("dev", True, True)] * 2)
+        # #674 re-review: its manifest edited down to 1.4.0, which a 1.5 verifier reads as witnessed: both warn alike
+        low = os.path.join(d, "granted-low.tkb")
+        rewrite_bundle(bundle, low, lambda files, manifest: manifest.update(verifier_min_version="1.4.0"))
+        code, rep = self.agree(low, trust)
+        self.assertEqual(code, 0, rep.checks)
+        [line] = [c for c in rep.checks if c["check"] == "verifier minimum"]
+        self.assertEqual(line["status"], "warn")
+        self.assertEqual([c for c in ts_verify(low, trust)["checks"] if c["check"] == "verifier minimum"], [line])
 
     def test_both_verifiers_re_check_intent_grants_alike(self):
         """Intent grants (docs/intent-grants.md): a person's grant, the two payments it released, one it held and its
@@ -1475,6 +1484,11 @@ if test_why_signed_replay is not None:
             with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
                     open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
                 self.assertEqual(json.loads(a.read()), json.loads(b.read()))
+
+        def test_the_versions_copy_is_the_table(self):
+            """And of bundle_v2.VERSIONS, from which both verifiers recompute what records need (`verifier minimum`)."""
+            with open(os.path.join(TS, "src", "verify", "versions.json"), "rb") as f:
+                self.assertEqual(json.loads(f.read()), VERSIONS)
 
 
 import test_reviews  # noqa: E402

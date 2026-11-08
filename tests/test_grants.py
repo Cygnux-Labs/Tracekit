@@ -408,6 +408,26 @@ class TestDevSigner(Case):
         self.assertEqual(said.getvalue().splitlines()[1:3], [
             "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).",
             "But a held call was approved by the agent's own user, so that approval proves nothing."])
+        self.assertNotIn("verifier minimum", [c["check"] for c in rep.checks])
+
+    def test_a_lowered_minimum_is_a_warning(self):
+        """#674 re-review: the manifest is never signed, so its verifier_min_version edited down from 1.6.0 lets a 1.5
+        verifier read a self-issued grant's bundle as witnessed. A 1.6 verifier recomputes what the records need and
+        warns, in the short result too."""
+        self.grant(who=A)
+        out = self.bundle()[0]
+        low = os.path.join(self.dir, "low.tkb")
+        rewrite_bundle(out, low, lambda files, manifest: manifest.update(verifier_min_version="1.4.0"))
+        rep, code = self.verify(low)
+        self.assertEqual(code, 0, rep.checks)
+        line = next((c for c in rep.checks if c["check"] == "verifier minimum"), None)
+        seq = next(e["seq"] for e in self.records() if e["type"] == "ext")
+        self.assertEqual(line and (line["status"], line["detail"], line["problems"]), (
+            "warn", "the records need tracekit >= 1.6.0, the manifest asks for 1.4.0: a verifier older than 1.6.0 may "
+                    "have read this bundle and claimed more than its records show", [f"ext.self_approved=True: seq {seq}"]))
+        said = io.StringIO()
+        summary(rep, code, rep.integrity, rep.assurance, said)
+        self.assertIn("verifier minimum", said.getvalue())
 
 
 class TestPcm(Case):

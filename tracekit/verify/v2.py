@@ -158,7 +158,8 @@ import zlib
 
 from tracekit import __version__, crypto, grants, pcm
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, NOT_RATED, Report, _load_trusted_key
-from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, VERSIONS, ext_names, run_files, run_name
+from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, VERIFIER_MIN_VERSION, VERSIONS, ext_names, needs, raised_by, \
+    run_files, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
@@ -1161,8 +1162,22 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                     f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
                     for k, ts in sorted(cosigs, key=lambda c: c[1])]
     rep.firsts = {rs[0]["event"]["seq"] for rs in runs.values()}
-    _ext(rep, list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values()),
-         manifest.get("verifier_version"))
+    events = list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values())
+    _ext(rep, events, manifest.get("verifier_version"))
+    _minimum(rep, events, files, manifest["verifier_min_version"])
+
+
+def _minimum(rep, events, files, said):
+    """`verifier minimum`, a warning only when the manifest's verifier_min_version (`said`) is below what the records
+    and layout need (bundle_v2.needs, as export computes it). The manifest is never signed: edited down, it lets an
+    older verifier read records it can't interpret and claim more than they show (a self-issued grant's dev assurance,
+    a signed finding's citations)."""
+    layout = ["run parts"] if any(PART.fullmatch(n) for n in files) else []
+    need = needs(events, layout)[0]
+    if need != VERIFIER_MIN_VERSION and _version(need) > _version(said):   # a row raised it (0.x bundles: the base)
+        rep.check("verifier minimum", False, f"the records need tracekit >= {need}, the manifest asks for {said}: a "
+                  f"verifier older than {need} may have read this bundle and claimed more than its records show",
+                  raised_by(events, need, layout)[:20], warn=True)
 
 
 def _approvals(rep, runs, policies):

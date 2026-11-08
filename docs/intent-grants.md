@@ -232,7 +232,9 @@ As who may answer the run's approvals ([approvals](approvals.md#who-may-answer))
   tenant. The grant records who issued it; one from the run's own user is recorded `self_approved`, and the verifiers
   read it as a self-approval (assurance `dev`, `approvals: self`, and a short result that says the approval proves
   nothing), because the agent runs as that user too. A verifier older than 1.6 can't see that, so such a run's bundle
-  needs a 1.6 verifier: an older one reports it `UNVERIFIABLE (needs tracekit >= 1.6.0)`.
+  needs a 1.6 verifier: an older one reports it `UNVERIFIABLE (needs tracekit >= 1.6.0)`, as long as the bundle's
+  manifest wasn't edited. The manifest isn't signed; edited down, it lets an older verifier read the bundle as
+  witnessed, and a 1.6 verifier, which recomputes what the records need, warns `verifier minimum`.
 - Never an agent approver, and never in a held, quarantined or ending run.
 
 A person runs every grant command. The coding pack (and the dev and server packs, which extend it) denies every
