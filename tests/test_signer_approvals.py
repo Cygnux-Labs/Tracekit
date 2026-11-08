@@ -434,6 +434,24 @@ class TestRealSigner(unittest.TestCase):
         self.assertEqual([e["data"]["tool_use_id"] for e in self.events() if e["type"] == "capture.gap"
                           and e["data"]["kind"] == "executed_against_policy"], ["tc-1"])
 
+    def test_a_call_that_ran_before_its_approval_cannot_consume_it(self):
+        """tc-1 asked and ran anyway (its result written), then a person approved it: its own consume was taken, and
+        every view read the call as approved, then run. It is refused, as a retry's consume of it is (_reusable), and
+        the approval stays unused."""
+        aid = self.pending()
+        first = self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-1"]["decision_id"]
+        self.s.complete({"request_id": "c1", **self.run, "stream": "s", "client_seq": 1, "tool_call_id": "tc-1",
+                         "decision_id": first, "args_digest": event_hash({"tool": "pay", "args": PAY}), "status": "ok"})
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        for kw in ({}, {"approval_id_hint": aid}):
+            with self.subTest(**kw):
+                out = self.consume(**kw)
+                self.assertEqual((out["ok"], out["rule_ids"], out["reason"]), (
+                    False, ["TK-APPROVAL-UNBOUND"], f"approval {aid} was used up: the call it was asked for ran anyway"))
+        self.assertEqual(self.s.approval_get({"approval_id": aid})["state"], "approved")
+        types = [e["type"] for e in self.events()]
+        self.assertEqual((types.count("approval.consumed"), types.count("approval.refused")), (0, 2))
+
     def test_the_retry_that_lost_the_race_for_an_approval_is_told_so(self):
         """Two retries of one approved call: the one whose consume came second read "approval_id not bound to this
         call", as if it had named another call's approval. It says the approval was used by another attempt."""

@@ -56,8 +56,21 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                                   "plainly."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
+                           "readings": {"reason": "a command's expansions combine in more ways than the policy reads",
+                                        "remedy": "Write the word plainly, or give its variables their values earlier on "
+                                                  "the line."},
+                           "assigns": {"reason": "an expansion or arithmetic on the line sets a variable, or a nameref or "
+                                                 "${!X@} names one, so the policy can't follow its value",
+                                       "remedy": "Give the variable its value with a plain assignment (`F=value;`) before "
+                                                 "the commands that use it."},
+                           "split": {"reason": "an unquoted expansion may split its word where the policy can't follow (at "
+                                               "an IFS the line sets, or a blank given later in a loop)",
+                                     "remedy": "Quote the expansion (\"$X\"), or write the words plainly."},
                            "quote": {"reason": "a quote on the line is never closed",
                                      "remedy": "Close the quote."},
+                           "body": {"reason": "it updates a git ref through GitHub's API with a body the policy can't "
+                                              "read (a file, input or variable), which may force it",
+                                    "remedy": "Give the update's fields on the line (-f sha=…), without force."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
                                       "remedy": "Split it into plain commands; pipes, &&, if, for, case and functions "
                                                 "are read."}}},
