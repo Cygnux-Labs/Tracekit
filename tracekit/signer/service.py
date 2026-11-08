@@ -478,6 +478,71 @@ def _stricter(a, b):
     return d
 
 
+def evaluate(policy, tool, args, hint=None, untrusted=None):
+    """Engine `policy`'s reading of a call as the signer decides it (tracekit audit replays it): (policy decision,
+    hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells one it does
+    (Engine.listed) is also decided as that one; the stricter decision stands, with both readings' rule ids. A class
+    hint that disagrees with the policy's class gets the stricter of the two decisions; detection sees
+    the rules of both, so a mismatch can't hide a step. A tool the policy maps whose own reading is at least as
+    strict as the hint's (an MCP adapter's generic `mcp` against the deployment's `sql`) is no disagreement worth a
+    gap. An error of the engine itself on these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`:
+    its type), logged with its traceback, never an exception that drops the connection and lets the call run
+    unrecorded; a RecursionError is the request's nesting, which call() refuses."""
+    try:
+        d, cls = policy.decide(tool, args, untrusted=untrusted), policy.tool_class(tool)
+        # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
+        # one when two listed names share it
+        for listed in policy.listed(tool):
+            d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
+        mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
+        if tool.startswith("mcp__") and "__" in tool[5:]:
+            # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
+            # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
+            # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
+            server, _, name = tool[5:].partition("__")
+            mcps = [f"mcp:{server}/{name}"]
+        elif tool.startswith("mcp__"):
+            # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
+            # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
+            # tool, as before it was named an MCP one (the server packs hold it)
+            # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
+            rest = tool[5:]
+            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
+            d = _stricter(d, policy.decide(tool, args, "unknown", untrusted))
+        elif tool == "PowerShell":
+            # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
+            # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
+            # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
+            b = policy.decide("Bash", args, untrusted=untrusted)
+            if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in policy.rules):
+                d = _stricter(d, b)
+        for mcp in mcps:
+            if mcp != tool:
+                d = _stricter(d, policy.decide(mcp, args, untrusted=untrusted))
+            # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
+            # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
+            # be dodged by naming the call an MCP one
+            bare, of = mcp.split("/", 1)[1], policy.tool_class(mcp)
+            for name in [bare] + policy.listed(bare):
+                d = _stricter(d, policy.decide(
+                    name, args, None if policy.tool_class(name) != "unknown" else of, untrusted))
+        if hint is None or hint == cls:
+            return d, False, d["rule_ids"]
+        h = policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
+        strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
+        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
+    except RecursionError:
+        raise
+    except Exception as e:
+        # the type and frames only: an exception message can carry argument text, which the signer otherwise
+        # keeps committed or encrypted; %r keeps an agent-supplied tool name on one log line
+        logging.getLogger(__name__).error("tracekit policy: the engine failed (%s) on a %r call\n%s", type(e).__name__,
+                                          tool[:256], "".join(traceback.format_tb(e.__traceback__)))
+        d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": policy.policy_hash,
+             "engine": policy.engine, "error": type(e).__name__}
+        return d, False, d["rule_ids"]
+
+
 def _iso(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -1974,67 +2039,7 @@ class SignerService:
         return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
     def _evaluate(self, tool, args, hint, untrusted=None):
-        """(policy decision, hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells
-        one it does (Engine.listed) is also decided as that one; the stricter decision stands, with both readings' rule
-        ids. A class hint that disagrees with the policy's class gets the stricter of the two decisions; detection sees
-        the rules of both, so a mismatch can't hide a step. A tool the policy maps whose own reading is at least as
-        strict as the hint's (an MCP adapter's generic `mcp` against the deployment's `sql`) is no disagreement worth a
-        gap. An error of the engine itself on these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`:
-        its type), logged with its traceback, never an exception that drops the connection and lets the call run
-        unrecorded; a RecursionError is the request's nesting, which call() refuses."""
-        try:
-            d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
-            # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
-            # one when two listed names share it
-            for listed in self.policy.listed(tool):
-                d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
-            mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
-            if tool.startswith("mcp__") and "__" in tool[5:]:
-                # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
-                # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
-                # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
-                server, _, name = tool[5:].partition("__")
-                mcps = [f"mcp:{server}/{name}"]
-            elif tool.startswith("mcp__"):
-                # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
-                # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
-                # tool, as before it was named an MCP one (the server packs hold it)
-                # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
-                rest = tool[5:]
-                mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
-                d = _stricter(d, self.policy.decide(tool, args, "unknown", untrusted))
-            elif tool == "PowerShell":
-                # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
-                # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
-                # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
-                b = self.policy.decide("Bash", args, untrusted=untrusted)
-                if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in self.policy.rules):
-                    d = _stricter(d, b)
-            for mcp in mcps:
-                if mcp != tool:
-                    d = _stricter(d, self.policy.decide(mcp, args, untrusted=untrusted))
-                # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
-                # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
-                # be dodged by naming the call an MCP one
-                bare, of = mcp.split("/", 1)[1], self.policy.tool_class(mcp)
-                for name in [bare] + self.policy.listed(bare):
-                    d = _stricter(d, self.policy.decide(
-                        name, args, None if self.policy.tool_class(name) != "unknown" else of, untrusted))
-            if hint is None or hint == cls:
-                return d, False, d["rule_ids"]
-            h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-            strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
-            return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
-        except RecursionError:
-            raise
-        except Exception as e:
-            # the type and frames only: an exception message can carry argument text, which the signer otherwise
-            # keeps committed or encrypted; %r keeps an agent-supplied tool name on one log line
-            logging.getLogger(__name__).error("tracekit policy: the engine failed (%s) on a %r call\n%s", type(e).__name__,
-                                              tool[:256], "".join(traceback.format_tb(e.__traceback__)))
-            d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": self.policy.policy_hash,
-                 "engine": self.policy.engine, "error": type(e).__name__}
-            return d, False, d["rule_ids"]
+        return evaluate(self.policy, tool, args, hint, untrusted)
 
     def _reasons(self, ids, unread=None):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after

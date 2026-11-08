@@ -467,6 +467,25 @@ class HookRecords(Base):
                                             "tool_name": "write_to_process", "tool_input": {"shell_id": "main", "input": cp}})
         self.assertEqual((q["tool_name"], q["later"]), ("Bash", True))
 
+    def test_kilos_background_process_gets_no_receipt(self):
+        """The 1.6.0 review: Kilo's background_process, decided as Bash, starts a command and returns, so the post hook
+        hashed the weights file before the command wrote it. Devin may name its tool in another case."""
+        from tracekit import agent_hooks
+        from tracekit.integrations import harness_hooks
+        agent = mock.patch.object(claude_code, "AGENT", claude_code.AGENT)   # harness_hooks.run sets it
+        agent.start()
+        self.addCleanup(agent.stop)
+        safetensors(self.path("model.safetensors"), {"a": b"\x01"})
+        p = {"session_id": "s-kilo", "tool_use_id": "t1", "tool_name": "background_process", "cwd": self.d,
+             "tool_input": {"command": "cp new.pt model.safetensors"}}
+        for event, more in (("tool.execute.before", {}), ("tool.execute.after", {"tool_response": {"output": ""}})):
+            self.assertEqual(harness_hooks.run("kilo", json.dumps(dict(p, hook_event_name=event, **more)),
+                                               io.StringIO(), io.StringIO()), 0, event)
+        self.assertEqual([r["refused"] for r in self.complete("t1")["result"]["model_receipts"]], [LATER])
+        q = agent_hooks.normalise("devin", {"hook_event_name": "PostToolUse", "session_id": "s-devin",
+                                            "tool_name": "Write_To_Process", "tool_input": {"input": "x"}})
+        self.assertEqual((q["tool_name"], q["later"]), ("Bash", True))
+
     def test_a_call_that_failed_gets_no_receipts(self):
         """Review of 6b0a568e: a failed, interrupted or is_error call got receipts too."""
         safetensors(self.path("model.safetensors"), {"a": b"\x01"})

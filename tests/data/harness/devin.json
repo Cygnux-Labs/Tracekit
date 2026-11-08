@@ -12,7 +12,7 @@
   {"name": "write_to_process: the text typed into a shell is its command",
    "payload": {"hook_event_name": "PreToolUse", "session_id": "dv-1", "prompt_id": "p-1", "tool_name": "write_to_process", "tool_input": {"shell_id": "main", "input": "y\n"}},
    "decision": "allow",
-   "request": {"tool": "Bash", "tool_call_id": null, "args": {"shell_id": "main", "input": "y\n", "command": "main\ny\n"}},
+   "request": {"tool": "Bash", "tool_call_id": null, "args": {"shell_id": "main", "input": "y\n", "command": "y\n"}},
    "exit": 0, "stdout": ""},
   {"name": "read",
    "payload": {"hook_event_name": "PreToolUse", "session_id": "dv-1", "prompt_id": "p-1", "tool_name": "read", "tool_input": {"file_path": "/w/src/app.py"}},
