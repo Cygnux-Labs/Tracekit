@@ -137,6 +137,13 @@ class _Mcp1Session:
         self.calls += 1
         return CallToolResult(content=[TextContent(type="text", text="done")], is_error=False)
 
+    async def get_prompt(self, name, arguments=None):
+        from mcp.types import GetPromptResult, PromptMessage, TextContent
+        self.calls += 1
+        if name == "boom":
+            raise MCPError(-32603, "boom")
+        return GetPromptResult(messages=[PromptMessage(role="user", content=TextContent(type="text", text="hi"))])
+
 
 class _StubSession(_Mcp1Session):
     server_info = type("Info", (), {"name": "stub"})()
@@ -145,15 +152,16 @@ class _StubSession(_Mcp1Session):
 class _Signer:
     """A signer that fails the way it is told: `decide` and `complete` raise `errors[method]` when set."""
 
-    def __init__(self, **errors):
-        self.errors, self.tools = errors, []
+    def __init__(self, decision="allow", **errors):
+        self.decision, self.errors, self.tools, self.completed = decision, errors, [], []
 
     def __getattr__(self, method):
         def call(req):
             self.tools += [req["tool"]] if method == "decide" else []
+            self.completed += [req] if method == "complete" else []
             if method in self.errors:
                 raise self.errors[method]
-            return {"decide": {"decision": "allow", "decision_id": "dec-1", "rule_ids": []},
+            return {"decide": {"decision": self.decision, "decision_id": "dec-1", "rule_ids": ["r1"]},
                     "approval_consume": {"ok": True, "rule_ids": []}}.get(method, {"run_seq": 0})
         return call
 
@@ -219,3 +227,31 @@ class SignerFailures(unittest.TestCase):
             asyncio.run(TracekitSession(_Mcp1Session(), signer, self.RUN).call_tool("x", {}))
         self.assertEqual(signer.tools, ["mcp:git_hub/x", "mcp:unknown/x"])
         self.assertIn("server=", str(cm.warning))
+
+    def test_get_prompt_is_decided_and_completed_as_a_prompt_call(self):
+        session, signer = _StubSession(), _Signer()
+        out = asyncio.run(TracekitSession(session, signer, self.RUN).get_prompt("triage", {"issue": "1"}))
+        self.assertEqual((out.messages[0].content.text, session.calls, signer.tools),
+                         ("hi", 1, ["mcp:stub/prompt:triage"]))
+        self.assertEqual([r["status"] for r in signer.completed], ["ok"])
+
+        session = _StubSession()
+        with self.assertRaises(RuntimeError) as cm:
+            asyncio.run(TracekitSession(session, _Signer(decision="deny"), self.RUN).get_prompt("triage", {}))
+        self.assertIn("Tool call blocked by policy: ", str(cm.exception))
+        self.assertEqual(session.calls, 0)
+
+        signer = _Signer()
+        with self.assertRaises(MCPError):
+            asyncio.run(TracekitSession(_StubSession(), signer, self.RUN).get_prompt("boom", {}))
+        self.assertEqual([(r["status"], r["error"]) for r in signer.completed], [("error", "MCPError: boom")])
+
+        from tracekit import autowire
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        with mock.patch("mcp.ClientSession", _StubSession), \
+                mock.patch.object(_StubSession, "call_tool", _StubSession.call_tool), \
+                mock.patch.object(_StubSession, "get_prompt", _StubSession.get_prompt):
+            autowire._mcp(run)
+            out = asyncio.run(_StubSession().get_prompt("triage", {"issue": "1"}))
+        self.assertEqual((out.messages[0].content.text, signer.tools), ("hi", ["mcp:stub/prompt:triage"]))

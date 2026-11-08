@@ -442,6 +442,7 @@ class Paths(unittest.TestCase):
             self.ran.append(path)
             return "README.md"
         self.addCleanup(setattr, ClientSession, "call_tool", ClientSession.call_tool)
+        self.addCleanup(setattr, ClientSession, "get_prompt", ClientSession.get_prompt)
         self.addCleanup(setattr, ClientSession, "initialize", ClientSession.initialize)
 
         async def main(r):
@@ -450,7 +451,9 @@ class Paths(unittest.TestCase):
                     a = Agent(client=Scripted(model(("m-1", "list_files", {"path": "src"}))), tools=[files],
                               middleware=[Tracekit(r)])
                     return (await a.run("list them")).text
-        with mock.patch("tracekit.integrations.mcp.TracekitSession") as gate:
+        with mock.patch.object(ClientSession, "call_tool", ClientSession.call_tool), \
+                mock.patch.object(ClientSession, "get_prompt", ClientSession.get_prompt), \
+                mock.patch("tracekit.integrations.mcp.TracekitSession") as gate:
             autowire._mcp(mock.Mock())   # what instrument() wires: every ClientSession decides its calls
             for r, runs in ((run(), True), (run("deny", ["D1"]), False)):
                 self.ran.clear()
