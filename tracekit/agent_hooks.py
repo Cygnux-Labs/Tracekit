@@ -138,8 +138,8 @@ CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit",
 CRUSH_PATH_TOOLS = ("lsp_rename", "ls", "grep", "glob")   # they read `path`, the directory they search, not `file_path`
 # Devin's tools (docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks): its payload and event names are Claude Code's.
 # lean: only exec's input (command, shell_id) is documented; read, write and edit are decided on every path under a
-# key that may name one, apply_patch on every file a patch or diff header names, write_to_process on all its text,
-# until a recorded session names their fields
+# key that may name one, apply_patch on every file a patch or diff header names, write_to_process on its one argument
+# besides shell_id (the text it writes), until a recorded session names their fields
 DEVIN_TOOLS = {"exec": "Bash", "write_to_process": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
                "apply_patch": "Edit", "grep": "Grep", "glob": "Glob", "webfetch": "WebFetch"}
 DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
@@ -167,7 +167,9 @@ def _diff_names(name):
 DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
                                     "path under a key ending in path, paths or file (case and _ ignored)"),
                     "apply_patch": "file header (*** Add, Update or Delete File:, or a diff's ---, +++ or diff --git)",
-                    "webfetch": "url under one key spelled url"}
+                    "webfetch": "url under one key spelled url",
+                    "write_to_process": "text under its one argument besides shell_id (no name sent twice, case "
+                                        "ignored)"}
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -233,8 +235,11 @@ def tool(harness, name, ti):
             files = list(dict.fromkeys(f for k in (*PATH_KEYS, "paths", *ti)
                                        if DEVIN_PATH_KEY.search(k.casefold().replace("_", ""))
                                        for f in _strings(ti.get(k)) if f))
-        elif harness == "devin" and name == "write_to_process":   # input typed into a running exec shell
-            ti["command"] = "\n".join(_strings(ti))
+        elif harness == "devin" and name == "write_to_process":   # input typed into a running exec shell: the text
+            # of its one argument besides shell_id, whatever its name; any other shape is denied in _blocked
+            text = [ti[k] for k in ti if k.casefold() != "shell_id"]
+            one = len(text) == 1 and len({k.casefold() for k in ti}) == len(ti)
+            ti["command"] = text[0] if one and isinstance(text[0], str) else None
         elif harness == "devin" and name == "exec":   # its command under any spelling Devin's decoder may read (_blocked
             # denies a call that spells it more than one way)
             keys = [k for k in ti if k.casefold() == "command"]
@@ -667,7 +672,7 @@ def _blocked(harness, p, raw=""):
     if harness == "devin" and name in DEVIN_DECIDED_ON:   # Devin documents none of these tools' arguments: one sent
         # under a name Tracekit doesn't read would leave the call decided on nothing
         ti = tool(harness, name, p.get("tool_input"))[1]
-        v = ti.get("url" if name == "webfetch" else "file_path")
+        v = ti.get({"webfetch": "url", "write_to_process": "command"}.get(name, "file_path"))
         # a url under another spelling (URL) may be the one Devin's decoder reads, and v1 decides `url` alone
         if not (isinstance(v, str) and v) or name == "webfetch" and [k for k in ti if k.casefold() == "url"] != ["url"]:
             sent = ", ".join(map(str, _input(p.get("tool_input"))))[:200] or "none"

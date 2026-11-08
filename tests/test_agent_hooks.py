@@ -832,6 +832,25 @@ class DevinTools(unittest.TestCase):
         self.assertIn("rm -rf ~", args["command"])
         self.assertNotEqual(load_policy(DEFAULT_POLICY).decide(tool, args)["verdict"], "allow")
 
+    def test_typed_input_is_decided_on_the_one_argument_it_writes(self):
+        # the 1.6.0 review: write_to_process was decided on all its strings joined, so a quote opened in another
+        # argument hid the text it writes ({"a": "echo '", "input": "rm -rf ~ #'"} was decided as echo). Devin
+        # documents none of its fields: it is decided on its one argument besides shell_id, under any name
+        tool, args = agent_hooks.tool("devin", "write_to_process", {"Shell_ID": "main", "text": "rm -rf ~\n"})
+        self.assertEqual((tool, args["command"]), ("Bash", "rm -rf ~\n"))
+        self.assertNotEqual(load_policy(DEFAULT_POLICY).decide(tool, args)["verdict"], "allow")
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process",
+             "tool_input": {"shell_id": "main", "input": "ls\n"}}
+        self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+        # an argument it doesn't know, a name sent twice (case ignored), or no text: denied in the hook
+        for ti in ({"a": "echo '", "input": "rm -rf ~ #'"}, {"shell_id": "main", "input": "ls", "Input": "rm -rf ~"},
+                   {"shell_id": "main", "SHELL_ID": "x", "input": "ls"}, {"shell_id": "main"},
+                   {"shell_id": "main", "input": ["rm -rf ~"]}):
+            with self.subTest(ti=ti):
+                p["tool_input"] = ti
+                self.assertIn("Devin's write_to_process call names no text", agent_hooks._blocked("devin", p, json.dumps(p))
+                              or "")
+
     def test_patch_paths_are_every_file_the_patch_names(self):
         patch = PATCH.format("src/app.py") + "\n*** Begin Patch\n*** Delete File: .devin/hooks.v1.json\n*** End Patch"
         tool, args = agent_hooks.tool("devin", "apply_patch", {"patch": patch, "file_path": "decoy", "paths": ["decoy"]})
