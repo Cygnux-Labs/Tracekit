@@ -545,7 +545,8 @@ class Agreement(SignerBundles):
     def agree(self, bundle, trust):
         rep, code = v2.verify(bundle, trust)
         ts = ts_verify(bundle, trust)
-        self.assertEqual((ts["exit_code"], ts["integrity"], ts["assurance"]), (code, rep.integrity, rep.assurance))
+        self.assertEqual((ts["exit_code"], ts["integrity"], ts["assurance"]),   # --json: a failed bundle isn't rated
+                         (code, rep.integrity, v2.NOT_RATED if code == v2.EXIT_FAIL else rep.assurance))
         self.assertEqual([(c["check"], c["status"]) for c in ts["checks"]], [(c["check"], c["status"]) for c in rep.checks])
         return code, rep
 

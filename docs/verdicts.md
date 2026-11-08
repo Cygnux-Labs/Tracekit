@@ -69,7 +69,8 @@ Findings: 2 finding(s) (1 high, 1 medium) and 1 coverage review(s); 3 independen
 Each line is `PASS`, `WARN` or `FAIL`. A `FAIL` line says what failed: a line that counts problems reads `n problem(s)
 in ...` (for example `[FAIL] signatures — 1 problem(s) in 336 record(s)`), and the indented lines under it name each
 one, records by their log `seq`. A failed bundle's printed line is `Assurance: not rated (the bundle failed
-verification).`: a level rates only evidence that verified (`--json` keeps the level the checkpoint has). `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
+verification).`: a level rates only evidence that verified, so `--json` gives the same text as its `"assurance"` (a v1
+bundle's `--json` keeps its level). `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
 "integrity", "assurance", "notes"}`, with `"findings"` when there is a Findings line. The algorithm behind each line is in [format v2](format-v2.md#11-verification-algorithm);
 this page says what each one means, and what it does not. The v1 report is described in [signing](signing.md).
 
@@ -78,7 +79,7 @@ this page says what each one means, and what it does not. The v1 report is descr
 | Code | When |
 |---|---|
 | 0 | no line failed |
-| 1 | at least one line failed: `Integrity: FAILED` |
+| 1 | at least one line failed: `Integrity: FAILED` (a v1 bundle's reads `Integrity: VERIFICATION FAILED`) |
 | 2 | the trust config or the bundle could not be used at all (`UNVERIFIABLE (the trust file can't be used)`, `UNUSABLE BUNDLE`, `UNVERIFIABLE`), or the flags were wrong |
 | 3 | `--strict` and no line failed but at least one is a warning |
 

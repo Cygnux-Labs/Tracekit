@@ -1521,6 +1521,22 @@ class InitV2(unittest.TestCase):
         with open(settings) as f:
             self.assertEqual(json.load(f), {})
 
+    def test_uninstall_of_another_agent_names_the_files_it_leaves(self):
+        """QA of 1.6.0: `uninstall --agent gemini` (or codex, cursor, ...) left the settings file holding `{}` and a
+        .bak copy holding the old hook commands, and what it said it kept named neither."""
+        for agent, path in (("gemini", (".gemini", "settings.json")), ("cursor", (".cursor", "hooks.json"))):
+            with self.subTest(agent):
+                self.assertEqual(self.init("--dev", "--v2", "--agent", agent)[0], 0)
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(cli.main(["uninstall", "--agent", agent]), 0)
+                settings = os.path.join(self.home, *path)
+                [bak] = glob.glob(settings + ".bak-*")
+                lines = out.getvalue().splitlines()
+                self.assertIn(f"  {settings}  (empty now that Tracekit's entries are out)", lines)
+                self.assertIn(f"  {bak}  (a copy Tracekit made before changing {path[-1]})", lines)
+                if os.name != "nt":
+                    self.assertLessEqual({settings, bak}, set(shlex.split(lines[-2])[2:]), lines[-2])
+
     def test_uninstall_never_names_system_modes_signer_home(self):
         """Review of #628: what uninstall keeps named the client config's signer_home in any mode, so on a v1 system
         mode host it printed `rm -rf … /var/lib/tracekit`, the system signer's ledger and keys. As uninstall() stops
