@@ -129,7 +129,7 @@ What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos
 - **harness binding**, only with `--harness [NAME=]PATH` (optional, repeatable; the binary must be root-owned): the
   signer accepts a run from AGENT's uid only from below that program's process tree, attested by
   `tracekit-harness-helper`, a root service that holds only `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH`. Without
-  `--harness` there is no binding and no helper. Init and doctor say nothing about it (v2 init doesn't look for the
+  `--harness` there is no binding and no helper. Init says so and doctor doesn't (v2 init doesn't look for the
   agent's CLI on `PATH`), and any process of AGENT's user can start a run;
 - the **transcript tailer** (with `--agent claude`, the default, even with `--no-hooks`): the `tracekit-tailer` user
   reads AGENT's Claude Code transcripts (the session's and its subagents') through an ACL and reports them to the
