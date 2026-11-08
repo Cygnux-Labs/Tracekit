@@ -799,6 +799,33 @@ class DevinTools(unittest.TestCase):
         _, args = agent_hooks.tool("devin", "apply_patch", {"patch": '+++ "b/caf\\303\\251 x.py"\n@@\n+x\n'})
         self.assertIn("café x.py", args["paths"])
 
+    def test_exec_is_decided_on_its_command_under_any_spelling(self):
+        # the 1.6.0 review: exec was decided on `command` alone, so {"Command": ...} ran undecided (Devin's decoder may
+        # match a key ignoring case), beside a lower-case decoy it was decided on the decoy, and EXEC passed as an
+        # unknown tool
+        from tracekit import policy
+        v1, v2 = policy.load(policy.DEFAULT_POLICY)[0], load_policy()
+        engines = {"v1": lambda c: policy.evaluate(v1, *c, "/w")["decision"], "v2": lambda c: v2.decide(*c)["verdict"]}
+        for name, ti in (("exec", {"Command": "git push --force origin main", "shell_id": "main"}),
+                         ("EXEC", {"command": "git push --force origin main"}), ("Exec", {"COMMAND": "sudo -i"})):
+            tool, args = agent_hooks.tool("devin", name, ti)
+            self.assertEqual(tool, "Bash")
+            for engine, decide in engines.items():
+                with self.subTest(name=name, ti=ti, engine=engine):
+                    self.assertNotEqual(decide((tool, args)), "allow")
+            p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": name, "tool_input": ti}
+            self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+        # two spellings: whichever one Devin reads, the other isn't decided, so the call is denied in the hook
+        for ti in ({"command": "echo hi", "Command": "git push --force origin main"},
+                   {"Command": "git push --force origin main", "command": "echo hi"}):
+            p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "EXEC", "tool_input": ti}
+            with self.subTest(ti=ti):
+                self.assertIn("Blocked by Tracekit: Devin's exec call sends its command under more than one name",
+                              agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        # a read in another case with no path is denied in the hook, as `read` is
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "READ", "tool_input": {"target": "/w/.env"}}
+        self.assertIn("Devin's read call names no", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+
     def test_typed_input_is_decided_as_a_shell_command(self):
         tool, args = agent_hooks.tool("devin", "write_to_process", {"shell_id": "main", "input": "rm -rf ~\n"})
         self.assertEqual(tool, "Bash")
@@ -1793,6 +1820,20 @@ class DemoPerAgent(unittest.TestCase):
                              agent in demo.NO_SESSION_EVENTS)
             self.assertEqual(f"gap is expected: {agent} sends no session end" in out.getvalue(),
                              agent in demo.NO_SESSION_EVENTS)
+
+    def test_it_points_to_a_separate_signer_where_init_and_doctor_do(self):
+        """The 1.6.0 review: the demo suggested v1 system mode (`init --user`), which macOS refuses without
+        --experimental-macos; init --dev and doctor give the dev-mode line."""
+        import contextlib
+        import io
+        from tracekit import demo, install as inst
+        patch_env(self)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(demo.install, "init_dev", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            demo.main(agent="goose")
+        self.assertIn(inst.DEV_MODE_LINE, out.getvalue())
+        self.assertNotIn("--user", out.getvalue())
 
     def test_the_expected_gap_note_claims_no_verification_that_failed(self):
         import contextlib

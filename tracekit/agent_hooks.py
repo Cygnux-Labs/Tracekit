@@ -109,10 +109,10 @@ GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", 
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
 # harness tools mapped to Bash whose effect comes after their post-tool hook: input typed into another running session
 # (Codex's write_stdin, agy's manage_task send_input, Devin's write_to_process) or a command left running (Qwen Code's
-# monitor); normalise marks their payload `later`, and the hook takes no receipt of what they write
-# (tracekit.model_receipt)
+# monitor, Kilo's background_process); normalise marks their payload `later`, and the hook takes no receipt of what
+# they write (tracekit.model_receipt)
 LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task"),
-                   ("devin", "write_to_process")))
+                   ("devin", "write_to_process"), ("kilo", "background_process")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
@@ -188,6 +188,12 @@ PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_T
 JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
 
 
+def _named(harness, name):
+    """A harness's name for a tool as Tracekit reads it: Devin may match a tool's name ignoring case, as it may an
+    argument's (DEVIN_PATH_KEY), so a name that is one of its tools in another case is read as that tool."""
+    return name.casefold() if harness == "devin" and name.casefold() in DEVIN_TOOLS else name
+
+
 def _input(v):
     if isinstance(v, str):
         try:
@@ -213,7 +219,7 @@ def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
     if harness in ("droid", "devin"):
-        files = None
+        name, files = _named(harness, name), None
         if name == ("ApplyPatch" if harness == "droid" else "apply_patch"):   # every file a patch header names,
             text = "\n".join(_strings(ti))   # whichever argument holds it
             files = [f.strip() for f in PATCH_FILE.findall(text)]
@@ -229,6 +235,11 @@ def tool(harness, name, ti):
                                        for f in _strings(ti.get(k)) if f))
         elif harness == "devin" and name == "write_to_process":   # input typed into a running exec shell
             ti["command"] = "\n".join(_strings(ti))
+        elif harness == "devin" and name == "exec":   # its command under any spelling Devin's decoder may read (_blocked
+            # denies a call that spells it more than one way)
+            keys = [k for k in ti if k.casefold() == "command"]
+            if len(keys) == 1:
+                ti["command"] = ti[keys[0]]
         if files is not None:
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
@@ -409,7 +420,8 @@ def normalise(harness, p):
         out["hook_event_name"] = m[ev]
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
-            out["tool_use_id"], out["later"] = p.get("tool_use_id"), (harness, p.get("tool_name")) in LATER
+            out["tool_use_id"] = p.get("tool_use_id")
+            out["later"] = (harness, _named(harness, str(p.get("tool_name")))) in LATER
             if harness in ("droid", "devin"):   # their documented payloads carry no call id
                 out["tool_use_id"] = out["session_id"] and _paired_ids(
                     harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
@@ -476,7 +488,7 @@ def normalise(harness, p):
         if ev in ("tool.execute.before", "tool.execute.after"):
             out["hook_event_name"] = "PreToolUse" if ev == "tool.execute.before" else "PostToolUse"
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
-            out["tool_use_id"] = p.get("tool_use_id")
+            out["tool_use_id"], out["later"] = p.get("tool_use_id"), (harness, str(p.get("tool_name"))) in LATER
             if ev == "tool.execute.after":
                 out["tool_response"] = p.get("tool_response")
             return out
@@ -646,7 +658,12 @@ def _blocked(harness, p, raw=""):
         call = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("toolCall") if raw.strip() else None
         call = dict(call) if isinstance(call, _Pairs) else {}
         return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
-    name = str(p.get("tool_name") or "")
+    name = _named(harness, str(p.get("tool_name") or ""))
+    spelt = [k for k in _input(p.get("tool_input")) if k.casefold() == "command"] if harness == "devin" else []
+    if name == "exec" and len(spelt) > 1:
+        return (f"Blocked by Tracekit: Devin's exec call sends its command under more than one name "
+                f"({', '.join(map(repr, spelt))[:200]}). Devin may read any one of them, so Tracekit can't be sure it "
+                "decides the command that runs; send it once, as `command`.")
     if harness == "devin" and name in DEVIN_DECIDED_ON:   # Devin documents none of these tools' arguments: one sent
         # under a name Tracekit doesn't read would leave the call decided on nothing
         ti = tool(harness, name, p.get("tool_input"))[1]
