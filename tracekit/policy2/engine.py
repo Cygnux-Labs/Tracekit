@@ -13,7 +13,7 @@ import time
 import unicodedata
 
 from . import classes, shell
-from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, translate
+from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
@@ -93,14 +93,15 @@ class Engine:
         self.engine, self._compile, self._match = _backend(backend)
         compile_ = self._compile
         # each rule's prefilters (compile.literals), of its pattern and of its tool pattern: a subject or a tool name
-        # holding none of its strings is not searched. An a2a rule matches in any case, as every prefilter does: the
+        # holding none of its strings is not searched, nor a subject that holds a string of each set of none of the
+        # pattern's alternatives (compile.requirements). An a2a rule matches in any case, as every prefilter does: the
         # names it reads are lower-cased (classes.a2a_fields); so does a rule on the `tracekit` field, whose subjects are
         # also casefolded as a path is (_tracekit): the agent's file system may ignore case where the pattern names a
         # folder in mixed case
         def rx(r, key):
             return compile_(r[key], r.get("class") == "a2a" or r.get("field") == "tracekit")
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
-                       rx(r, "unless") if "unless" in r else None, literals(r["pattern"]),
+                       rx(r, "unless") if "unless" in r else None, literals(r["pattern"]), requirements(r["pattern"]),
                        literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
@@ -282,7 +283,7 @@ class Engine:
         def hit(entry, parsed, memo, oversize):
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
             over MAX_SUBJECT), else None; TimeoutError past the deadline."""
-            sec, rule, tool_re, pat, unless, lits, tool_lits, key = entry
+            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
             if key not in memo:
@@ -296,8 +297,9 @@ class Engine:
                 for subject, low in zip(texts, lows):
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
-                    if (lits is None or len(texts) == 1 or any(map(low.__contains__, lits))) and self._match(
-                            pat, subject, False, deadline) and not (
+                    if (lits is None or len(texts) == 1 or any(map(low.__contains__, lits))) and (
+                            req is None or any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and \
+                            self._match(pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
                                                                                      fields)):
@@ -310,7 +312,7 @@ class Engine:
         for entry in self._of[cls, "deny"] if _hidden else self._of[cls]:   # (an argument's command: its denies)
             # a rule with no tool pattern whose subjects, read already, are none or hold none of its strings (and none
             # is over MAX_SUBJECT) gives nothing: hit() would match nothing
-            if entry[2] is None and (m := memo.get(entry[7])) and not m[3] and (
+            if entry[2] is None and (m := memo.get(entry[8])) and not m[3] and (
                     not m[0] or entry[5] is not None and not any(map(m[2].__contains__, entry[5]))):
                 continue
             try:
@@ -527,7 +529,8 @@ def _path_forms(targets):
     """Targets, each also as plainly written (/etc/./x, /etc//x and /etc/y/../x name /etc/x) and casefolded."""
     have = set(targets)
     targets = targets + [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
-                                     for t in targets if _DOTTED_WORD.search(t)) if n not in have]
+                                     for t in targets if ("." in t or "//" in t) and _DOTTED_WORD.search(t))
+                         if n not in have]
     have = set(targets)
     return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
 

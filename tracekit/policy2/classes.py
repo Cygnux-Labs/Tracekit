@@ -203,6 +203,7 @@ SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False),
                 "mssql": (False, False, True, False, True, False, False)}
 _DOLLAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 _MYSQL_RUN = re.compile(r"/\*M?!\d*")
+_SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b]+")   # characters no dialect starts a comment, literal or quote with
 
 
 def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space):
@@ -254,6 +255,9 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
                 return None
             out.append("''")
             i = end + len(tag)
+        elif m := _SQL_TEXT.match(stmt, i):   # a run of text, read in one step
+            out.append(m.group())
+            i = m.end()
         else:
             out.append(" " if c == "\x0b" else c)
             i += 1

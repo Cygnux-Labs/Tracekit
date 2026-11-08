@@ -32,6 +32,7 @@ import collections
 import itertools
 import json
 import math
+import operator
 import posixpath
 import re
 import shlex
@@ -451,6 +452,15 @@ _ESAC = re.compile(r"esac(?=[\s;&|)]|$)")
 # "$@" and its kin: a function's arguments, each a word (_Parser.call); $* and "$*" too
 _ALL_ARGUMENTS = ('"$@"', '"${@}"', "$@", "${@}", "$*", "${*}", '"$*"', '"${*}"')
 _PLAIN = re.compile(r"""[^ \t\n;&|()<>\\'"$`]+""")   # characters _Parser.word() reads as themselves
+# a word of them, or of a backslash and the character it escapes, with no pattern or brace character (nor a `#` first,
+# which starts a comment), then a blank and the first character of another (_Parser.simple's run of arguments)
+_RUN_WORD = re.compile(r"((?:[^ \t\n;&|()<>\\'\"$`{*?\[#]|\\[^\n$`])(?:[^ \t\n;&|()<>\\'\"$`{*?\[]|\\[^\n$`])*)[ \t]+"
+                       r"(?=[^ \t\n;&|()<>\\'\"$`{*?\[#]|\\[^\n$`])")
+_ESCAPE, _ESCAPED = re.compile(r"\\(.)"), operator.itemgetter(1)   # (a backslash pair, and the character it escapes)
+_BLANKS = re.compile(r"[ \t]+")
+# what _Parser.dquote() reads as itself in double quotes and in a heredoc's body: a character, or a backslash before one
+# it doesn't escape
+_DQ_TEXT = {'"': re.compile(r'(?:[^"\\$`]|\\[^"\\$`\n])+'), None: re.compile(r"(?:[^\\$`]|\\[^\\$`\n])+")}
 # the operators bash reads across a deleted backslash-newline
 _JOINED = {"&&", "||", ";;", ";&", ";;&", "|&", "<<", "<<-", "<<<", ">>", "<&", ">&", "<>", ">|", "&>", "&>>", "((",
            "<(", ">("}
@@ -2355,7 +2365,7 @@ class _Parser:
         s = self.s
         while self.i < len(s):
             if s[self.i] in " \t":
-                self.i += 1
+                self.i = _BLANKS.match(s, self.i).end()   # a run of them, in one step
             elif s.startswith("\\\n", self.i):
                 j = self.i
                 while s.startswith("\\\n", j):
@@ -2603,6 +2613,33 @@ class _Parser:
             if not c or c in "\n;|)" or (c == "&" and not self.at("&>")):
                 break
             consumed = True
+            if words and not loop_header and timed < len(words) and (m := _RUN_WORD.match(self.s, self.i)):
+                # a run of arguments with no quote, expansion, pattern or brace, each followed by a blank and another
+                # word (which this loop reads as any): each is its text, as word() and the rest of this loop read it,
+                # read in one step
+                escaped = set()
+                while m:
+                    raw = m.group(1)
+                    text = _ESCAPE.sub(_ESCAPED, raw) if "\\" in raw else raw
+                    if raw != text:
+                        escaped.add(text)
+                    self.out.append(text)
+                    words.append(text)
+                    raws.append(raw)
+                    idx.append(len(self.out) - 1)
+                    spans.append((len(self.out) - 1, m.start(1), m.end(1)))
+                    cuts.append((text,) * 6)
+                    reads.append((text,))
+                    parts.append(([text], {}))
+                    end = m.end()
+                    m = _RUN_WORD.match(self.s, end)
+                n = len(words) - len(globs)
+                for column, value in ((globs, False), (names, False), (vanish, False), (patterns, False),
+                                      (splits, False), (slots, None), (alones, False), (fulls, True), (givens, False)):
+                    column += [value] * n
+                self.ctx["decoded"].update(_lower_name(t.rsplit("/", 1)[-1] or t) for t in escaped)
+                self.i, reserved = end, False
+                continue
             if not words and not loop_header and reserved and (m := _FUNCTION.match(self.s, self.i)):
                 self.define(m.group(1) or m.group(2), m.end())
                 continue
@@ -2901,11 +2938,11 @@ class _Parser:
         # readings above: each way those words combine, the others as written and as when theirs are empty; past
         # MAX_READINGS ways (a word's, or these words' together) the command is unread, held
         grown, joint, combos = [i for i, (r, c, w, sp) in enumerate(zip(reads, cuts, words, splits))
-                                if r and (sp or not set(r) <= {w, *c})], {}, []
+                                if r and (sp or r != (w,) and not set(r) <= {w, *c})], {}, []
         for i in grown:   # an expansion written alike in two words takes one value in both (`cp "$f" "$f.bak"`)
             for p, values in parts[i][1].items():
                 joint.setdefault(p, values)
-        unread |= None in reads or (each := _assignments(joint)) is None
+        unread |= None in reads or (each := _assignments(joint) if joint else [{}]) is None   # (no expansion: one way)
         # a plain ${F=w} here (dollar) changes what F expands to after it: copies of one expansion that reads F, or a
         # variable named indirectly, take different values on either side of it, which one value per text (ways) can't
         # read (`--${F-f}${F=}${F-f}orce` is --force), so this command and the rest of the line are unread
@@ -4291,6 +4328,9 @@ class _Parser:
                 buf.append(self.dollar(True))
             elif c == "`":
                 buf.append(self.backtick())
+            elif term != "}" and (m := _DQ_TEXT[term].match(s, self.i)):   # a run of text, read in one step
+                buf.append(m.group())
+                self.i = m.end()
             else:
                 buf.append(_Quoted(c) if quoted else c)
                 self.i += 1

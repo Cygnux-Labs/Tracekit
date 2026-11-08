@@ -216,9 +216,40 @@ def literals(pattern):
     return tuple(sorted(s for s in req if not any(t != s and t in s for t in req)))
 
 
+def requirements(pattern):
+    """A finer prefilter of a checked pattern whose top level holds a group of alternatives (`^(psql…|sqlite3…)`): per
+    alternative, each set of lower-case strings of two or more characters one of which every match through it holds
+    (literals() keeps one set of a sequence, and the union of the alternatives'), so a subject that holds a string of
+    each set of no alternative can't match; None for another pattern, or when an alternative has no such set."""
+    items = list(_sre_p.parse(pattern))
+    for k, (op, av) in enumerate(items):
+        if op == _sre_c.SUBPATTERN and len(av[-1]) == 1 and av[-1][0][0] == _sre_c.BRANCH:
+            alts = av[-1][0][1][1]
+        elif op == _sre_c.BRANCH:
+            alts = av[1]
+        else:
+            continue
+        out = []
+        for alt in alts:   # the group read as this alternative, in its place
+            exact, found = _found(items[:k] + list(alt) + items[k + 1:])
+            sets = [tuple(sorted(s)) for s in ([exact] if exact is not None else found) if min(map(len, s)) >= 2]
+            if not sets:
+                return None
+            out.append(tuple(sets))
+        return tuple(out)
+    return None
+
+
 def _seq(items):
     """(exact, required) of a sequence: every string it can match when that set is small (else None), and a set one of
     which every match contains (None: no such set)."""
+    exact, found = _found(items)
+    return (exact, None) if exact is not None else (None, max(found, key=lambda s: (min(map(len, s)), -len(s))))
+
+
+def _found(items):
+    """(exact, found) of a sequence: every string it can match when that set is small (else None), and else the sets
+    one string of each of which every match contains."""
     run, found, exact = {""}, [], True
     for op, av in items:
         ex, req = _node(op, av)
@@ -232,9 +263,9 @@ def _seq(items):
         if req is not None:
             found.append(req)
     if exact:
-        return frozenset(run), None
+        return frozenset(run), []
     found.append(run)
-    return None, max(found, key=lambda s: (min(map(len, s)), -len(s)))
+    return None, found
 
 
 def _node(op, av):
