@@ -195,6 +195,25 @@ class CodingAgentHooks(unittest.TestCase):
                    if r["id"] == "D-HOOKS-TIMEOUT")
         self.assertEqual(got["detail"], "PreToolUse timeout 600 s; " + run.format(540, "s", 480, "s"))
 
+    def test_a_settings_file_that_isnt_an_object_is_fixed_before_init(self):
+        """The 1.6.0 review: for a settings.json that isn't a JSON object, doctor's fix was init alone, which refuses
+        such a file and leaves it as it is."""
+        claude = os.path.join(self.d, "settings.json")
+        with open(claude, "w") as f:
+            f.write("[1, 2]")
+        got = next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=claude)
+                   if r["id"] == "D-HOOKS-PRESENT")
+        self.assertEqual((got["status"], got["fix"]), ("warn", f"make {claude} a JSON object (move it aside, or fix "
+                                                               "it), then tracekit init --dev --v2"))
+        # the review of #673: one doctor can't read (its mode) was told to become a JSON object too
+        with open(claude, "w") as f:
+            f.write("{}")
+        with mock.patch.object(doctor, "_json", side_effect=PermissionError(13, "Permission denied")):
+            got = next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=claude)
+                       if r["id"] == "D-HOOKS-PRESENT")
+        self.assertEqual((got["detail"], got["fix"]), (f"{claude}: [Errno 13] Permission denied", f"make {claude} "
+                                                       "readable (move it aside, or fix it), then tracekit init --dev --v2"))
+
     def test_only_v2_tracekit_commands_are_checked_even_in_a_shared_group(self):
         from tracekit import agent_hooks
         for harness in ("codex", "cursor", "gemini", "goose", "qwen"):

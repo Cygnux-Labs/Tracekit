@@ -8,6 +8,7 @@ anything is submitted. --file writes a field report to send as a pull request in
 from __future__ import annotations
 
 import argparse
+import os
 import platform
 import re
 import sys
@@ -94,16 +95,23 @@ def report_file():
         "", f"{KEYS[-1]}:", ""])
 
 
-def false_alarm(x, why=None):
+def false_alarm(x, why=None, kept=None):
     """(title, fields) of approval `x` (approval_get's) as a false alarm: its rule ids (a rule that isn't Tracekit's
-    own as "custom rule", as --share counts it), tool name (_tool's), policy hash and verdict, and the person's one line
-    `why`. Never the call's arguments: nothing else of `x` is read."""
-    from .report import _shared, tracekit_rules
-    ours = tracekit_rules()
-    rules = list(dict.fromkeys(_shared(r, ours) for r in x["rule_ids"]))
-    lines = [f"rules: {', '.join(rules)}", f"tool: {_tool(x['tool'])}", f"policy: {x['policy_hash']}",
-             "verdict: ask (held for a person)", *([f"why: {' '.join(why.split())}"] if why and why.strip() else [])]
-    return f"False alarm: {', '.join(rules)}", {"notes": "\n".join(lines)}
+    own as "custom rule", as --share counts it), those that held it apart from those that only also matched (flags),
+    as report._placed places them in its policy (a shipped pack's, or one the signer kept in directory `kept`), its tool
+    name (_tool's), policy hash and verdict, and the person's one line `why`. Never the call's arguments: nothing else
+    of `x` is read."""
+    from . import view
+    from .report import _placed, _shared, tracekit_rules
+    ours, held, also = tracekit_rules(), [], []
+    d = {"tool": x["tool"], "rule_ids": x["rule_ids"], "policy_hash": x["policy_hash"], "decision": "ask"}
+    for rule, why_held in _placed(view.Translator(view.policy_reasons(kept=kept)), d):
+        (also if why_held is False else held).append(_shared(rule["id"], ours))
+    held, also = list(dict.fromkeys(held)), list(dict.fromkeys(also))
+    lines = [f"rules: {', '.join(held)}" + (f" (also matched, not why: {', '.join(also)})" if also else ""),
+             f"tool: {_tool(x['tool'])}", f"policy: {x['policy_hash']}", "verdict: ask (held for a person)",
+             *([f"why: {' '.join(why.split())}"] if why and why.strip() else [])]
+    return f"False alarm: {', '.join(held)}", {"notes": "\n".join(lines)}
 
 
 def main(argv=None):
@@ -136,13 +144,20 @@ def main(argv=None):
               "fork of Cygnux-Labs/Tracekit and open a pull request; commit with `git commit -s`")
         return 0
     if a.harmless:
+        from .report import _running
+        from .sdk import autospawn
         from .sdk.client import Client, Incompatible, SignerUnavailable
         from .signer.rpc_schema import RPCError
         c = Client(a.signer)
+        dev = not c.signer   # the dev signer: the one that runs, never one started for a printout
+        kept = os.path.join(autospawn.data_dir(), "policies") if dev else None   # the policies it kept
         try:
-            title, fields = false_alarm(c.approval_get({"approval_id": a.harmless}), a.why)
-        except (SignerUnavailable, Incompatible) as e:
-            print(f"signer unavailable: {e}", file=sys.stderr)
+            c = _running() if dev else c
+            title, fields = false_alarm(c.approval_get({"approval_id": a.harmless}), a.why, kept)
+        except (OSError, SignerUnavailable, Incompatible) as e:
+            print(f"tracekit feedback: no signer is running, so {a.harmless[:64]} can't be read; run it again while "
+                  "the signer that held the call runs, or name that signer with --signer"
+                  if dev and not isinstance(e, Incompatible) else f"signer unavailable: {e}", file=sys.stderr)
             return 2
         except RPCError as e:
             print(f"tracekit feedback: {e}", file=sys.stderr)

@@ -965,9 +965,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             hooks = _hooks(settings)
         except FileNotFoundError:   # no settings file, so no hooks in it
             hooks = {ev: [] for ev in install.TOOL_EVENTS}
-        except (OSError, ValueError, AttributeError, TypeError) as e:   # the agent's own file: any shape
-            hooks = None
-            add("D-HOOKS-PRESENT", False, f"{settings}: {e}", hook_fix, bad=sev)
+        except (OSError, ValueError, AttributeError, TypeError) as e:   # the agent's own file: any shape or mode,
+            hooks = None   # which init leaves as it is
+            add("D-HOOKS-PRESENT", False, f"{settings}: {e}", f"make {settings} "
+                f"{'readable' if isinstance(e, OSError) else 'a JSON object'} (move it aside, or fix it), then {hook_fix}",
+                bad=sev)
         if hooks is not None and plugin:   # init's hooks too would decide every call twice
             both = any(hooks.values())
             add("D-HOOKS-PRESENT", not both, f"{from_plugin}, and init's v2 hooks in {settings}: every call is decided "

@@ -241,8 +241,7 @@ def main(real=False, keep=False, agent="claude", detail=False):
     os.environ["TRACEKIT_CLIENT_HOME"] = env["TRACEKIT_CLIENT_HOME"]
     try:
         say(f"setup: dev signer + git witness in {d}")
-        print("  dev mode: the signer runs as your own user, so this demo shows integrity checks,")
-        print("  not isolation. Use `sudo /usr/bin/python3 -m tracekit init --user <agent-user>` for a separate-user signer.")
+        print("  this demo shows integrity checks, not isolation.", install.DEV_MODE_LINE)
         install.init_dev(home, [], checkpoint_every=5)
         proj = _project(d)
         say("agent run (" + ("REAL: claude -p" if real else f"SCRIPTED {agent} agent: fixed {agent} hook payloads, not a model") + ")")

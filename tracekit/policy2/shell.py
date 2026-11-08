@@ -394,9 +394,9 @@ def _learned(ctx):
     """What else the parse found: the files redirections read; the assignments that stand alone, (name, the word as
     written), which set a variable of the shell (not of a command's environment); the variables an expansion read
     without a value the line gives it ("*": an indirect ${!x}, which may be any); whether a command may have set any
-    variable (or exported one: set, read, declare …)."""
+    variable (or exported one: set, read, declare …); the names of the functions it defines."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
-            "any_set": ctx["any_set"]}
+            "any_set": ctx["any_set"], "functions": list(ctx["functions"])}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
