@@ -83,13 +83,14 @@ def go_args(args):
 # The CLI hands a bundle whose manifest names another format to v1, and
 # refuses --trust for it without JSON. The repository's test_golden.py deliberately
 # invokes v2.verify() directly for the negative and multipart corpus. Invoke
-# the same reference entrypoint, in a separate process, for all v2 cases.
+# the same reference entrypoint, in a separate process, for all v2 cases, with
+# the assurance as the CLI's --json gives it: a failed bundle (exit 1) isn't rated.
 PYTHON_V2 = """import json
 import sys
 from tracekit.verify import v2
 report, code = v2.verify(sys.argv[1], sys.argv[2])
 print(json.dumps({"exit_code": code, "integrity": report.integrity,
-                  "assurance": report.assurance,
+                  "assurance": v2.NOT_RATED if code == v2.EXIT_FAIL else report.assurance,
                   "checks": [{"check": c["check"], "status": c["status"]}
                              for c in getattr(report, "checks", [])]}))
 sys.exit(code)

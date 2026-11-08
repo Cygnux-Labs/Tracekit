@@ -82,7 +82,8 @@ it the CLI says so (exit 2).
 The text report prints a line per check that warns or fails, under the reference verifier's name for it (a failure's
 line gives its reason), then the `Integrity:` and `Assurance:` lines, as the reference CLI does; a reason no check
 names, such as an unsupported feature, is printed on its own line. A failed bundle's printed assurance reads
-`not rated`.
+`not rated`, and so does a failed v2 bundle's `assurance` in `-json`; a failed v1 bundle's `-json` keeps its level,
+as the reference CLI's `--json` does.
 
 Signed capture gaps, tampering, binding mismatches and policy violations are exposed as structured warning checks and as `[WARN]` lines in text output. They describe the recorded run while the integrity verdict describes whether its evidence is intact.
 
@@ -138,5 +139,5 @@ PYTHONPATH=$PWD python -m pytest -q tests/test_go_verifier.py
 
 It compares the verdict only. On a few mutations both fail, but Go stops sooner, at `bundle structure` (a run file
 without its final newline, a run file under a name that isn't a run's, an integer written as a float), where Python
-names the checks it fails later (`manifest`, `run chain`, `run parts`, `signatures`, ...); and the JSON assurance of a
-failed bundle can differ. Both CLIs print a failed bundle's assurance as `not rated`.
+names the checks it fails later (`manifest`, `run chain`, `run parts`, `signatures`, ...). Both CLIs give a failed v2
+bundle's assurance as `not rated`.

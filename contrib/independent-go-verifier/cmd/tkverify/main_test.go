@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"io"
 	"os"
@@ -112,6 +113,22 @@ func TestUnreadableTrustFile(t *testing.T) {
 	code, out := runCLI(t, "-bundle", bundle, "-trust", filepath.Join(dir, "missing.json"))
 	if code != 2 || !strings.HasSuffix(out, "\nIntegrity: "+verifier.TrustUnusable+".\nAssurance: none.\n") {
 		t.Fatalf("exit %d:\n%s", code, out)
+	}
+}
+
+// A v2 bundle that failed is not rated in -json either, as the reference CLI's --json gives it: a level rates only
+// evidence that verified (release QA of 1.6.0).
+func TestFailedV2BundleIsNotRatedInJSON(t *testing.T) {
+	dir := filepath.Join("..", "..", "..", "..", "tests", "golden", "negative")
+	bundle, trust := filepath.Join(dir, "record-edited.tkb"), filepath.Join(dir, "trust.json")
+	if _, err := os.Stat(bundle); os.IsNotExist(err) {
+		t.Skip("upstream golden corpus unavailable")
+	}
+	code, out := runCLI(t, "-bundle", bundle, "-trust", trust, "-json")
+	var r report
+	if err := json.Unmarshal([]byte(out), &r); err != nil || code != 1 || r.ExitCode != 1 ||
+		r.Assurance != "not rated (the bundle failed verification)" {
+		t.Fatalf("exit %d, %v:\n%s", code, err, out)
 	}
 }
 
