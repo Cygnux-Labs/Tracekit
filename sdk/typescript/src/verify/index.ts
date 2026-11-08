@@ -1128,8 +1128,11 @@ function raisedBy(events: J[], version: string, layout: string[]): string[] {
 }
 
 /** `verifier minimum`, a warning only when the manifest's verifier_min_version (`said`) is below what the records and
- * the layout of `names` need: the manifest is never signed, and edited down it lets an older verifier claim more. */
-function checkMinimum(rep: Report, events: J[], names: string[], said: string) {
+ * the layout of `names` need: the manifest is never signed, and edited down it lets an older verifier claim more. A
+ * record it can't read (no type, data or seq: other checks fail it) needs nothing. */
+function checkMinimum(rep: Report, all: J[], names: string[], said: string) {
+  const events = all.filter((e) => isObj(e) && typeof e.type === "string" && Object.hasOwn(e, "seq") && isObj(e.data)
+    && (e.type !== "ext" || Object.hasOwn(e.data, "name")));
   const layout = names.some((n) => PART.test(n)) ? ["run parts"] : [], need = needs(events, layout);
   if (need !== "1.0.0" && newer(need, said))   // a row raised it (0.x bundles need the base)
     rep.check("verifier minimum", false, `the records need tracekit >= ${need}, the manifest asks for ${said}: a verifier `

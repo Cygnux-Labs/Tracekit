@@ -1171,7 +1171,9 @@ def _minimum(rep, events, files, said):
     """`verifier minimum`, a warning only when the manifest's verifier_min_version (`said`) is below what the records
     and layout need (bundle_v2.needs, as export computes it). The manifest is never signed: edited down, it lets an
     older verifier read records it can't interpret and claim more than they show (a self-issued grant's dev assurance,
-    a signed finding's citations)."""
+    a signed finding's citations). A record it can't read (no type, data or seq: other checks fail it) needs nothing."""
+    events = [e for e in events if isinstance(e, dict) and isinstance(e.get("type"), str) and "seq" in e
+              and isinstance(e.get("data"), dict) and (e["type"] != "ext" or "name" in e["data"])]
     layout = ["run parts"] if any(PART.fullmatch(n) for n in files) else []
     need = needs(events, layout)[0]
     if need != VERIFIER_MIN_VERSION and _version(need) > _version(said):   # a row raised it (0.x bundles: the base)

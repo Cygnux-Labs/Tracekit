@@ -1627,6 +1627,26 @@ class TestExt(Case):
             with self.subTest(name):
                 self.assert_fails(self.mutate(out, edit), check)
 
+    @unverified_bundles   # a record with no type, on purpose
+    def test_a_record_with_no_type_fails_as_before(self):
+        """#674 re-review: recomputing what the records need (`verifier minimum`) reads only the records it can, so a
+        tampered record with no `type` fails its own checks, never `bundle structure` with a KeyError."""
+        log = self.log()
+        log.epoch(KEY1)
+        log.register()
+        log.add("tool.call", {"tool_use_id": "t1", "name": "Bash", "input": {}}, ext={})
+        log.final()
+        out = os.path.join(self.d, "typed.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        bad = self.mutate(out, edit_run=lambda rs: rs[1]["event"].pop("type"))
+        rep, code = self.verify(bad)
+        with mock.patch.object(v2, "_minimum", lambda *_: None):   # the verifier before the recompute (123b09fbaa)
+            before, was = self.verify(bad)
+        self.assertEqual((code, rep.integrity, rep.checks), (was, before.integrity, before.checks))
+        self.assertEqual((code, rep.integrity), (1, "FAILED"))
+        self.assertIn("signatures", rep.failures)
+        self.assertNotIn("KeyError", json.dumps(rep.checks))
+
     @unverified_bundles   # each is schema-invalid on purpose
     def test_ext_names_are_schema_checked(self):
         for name, field, record in (("upper case", {"Acme": 1}, ("acme", {})), ("too long", {"a" * 65: 1}, ("a", {})),

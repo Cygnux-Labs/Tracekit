@@ -1469,26 +1469,31 @@ if test_why_signed_replay is not None:
                                text=True, check=True)
             self.assertEqual(json.loads(p.stdout), [c["want"] for c in cases])
 
-        def test_the_verifier_is_the_package_version(self):
-            """VERSION is the package's own release; READS, what it compares a bundle's verifier_min_version with, is
-            the reference's: the newest VERSIONS row, or the release when later."""
-            with open(os.path.join(TS, "package.json")) as f:
-                pkg = json.load(f)["version"]
-            with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
-                src = f.read()
-            self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
-            self.assertIn(f'export const READS = "{v2.READS}";', src)
 
-        def test_the_schema_copy_is_the_schema(self):
-            """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
-            with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
-                    open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
-                self.assertEqual(json.loads(a.read()), json.loads(b.read()))
+class Copies(unittest.TestCase):
+    """What the TypeScript verifier copies from the reference, read as files: no node and no build, so they run in every
+    job, pytest's or `python3 tests/test_ts_verifier.py`'s."""
 
-        def test_the_versions_copy_is_the_table(self):
-            """And of bundle_v2.VERSIONS, from which both verifiers recompute what records need (`verifier minimum`)."""
-            with open(os.path.join(TS, "src", "verify", "versions.json"), "rb") as f:
-                self.assertEqual(json.loads(f.read()), VERSIONS)
+    def test_the_verifier_is_the_package_version(self):
+        """VERSION is the package's own release; READS, what it compares a bundle's verifier_min_version with, is the
+        reference's: the newest VERSIONS row, or the release when later."""
+        with open(os.path.join(TS, "package.json")) as f:
+            pkg = json.load(f)["version"]
+        with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
+            src = f.read()
+        self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
+        self.assertIn(f'export const READS = "{v2.READS}";', src)
+
+    def test_the_schema_copy_is_the_schema(self):
+        """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
+        with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
+                open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
+            self.assertEqual(json.loads(a.read()), json.loads(b.read()))
+
+    def test_the_versions_copy_is_the_table(self):
+        """And of bundle_v2.VERSIONS, from which both verifiers recompute what records need (`verifier minimum`)."""
+        with open(os.path.join(TS, "src", "verify", "versions.json"), "rb") as f:
+            self.assertEqual(json.loads(f.read()), VERSIONS)
 
 
 import test_reviews  # noqa: E402
