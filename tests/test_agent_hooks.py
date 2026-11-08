@@ -827,6 +827,17 @@ class DevinTools(unittest.TestCase):
         p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "READ", "tool_input": {"target": "/w/.env"}}
         self.assertIn("Devin's read call names no", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
 
+    def test_an_exec_with_no_command_to_read_is_denied_and_a_cr_ends_a_line(self):
+        # the review of #673: an exec whose input isn't the documented object (a plain string) was decided on nothing
+        # and ran; and \r in its command may end a line if Devin types it into a terminal, so each part is decided
+        for ti in ("git push --force origin main", {}, {"command": None}, {"cmd": "git push --force origin main"}):
+            p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "exec", "tool_input": ti}
+            with self.subTest(ti=ti):
+                self.assertIn("Devin's exec call names no command", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        tool, args = agent_hooks.tool("devin", "exec", {"command": "echo hi\rgit push --force origin main"})
+        self.assertEqual(args["command"], "echo hi\ngit push --force origin main")
+        self.assertNotEqual(load_policy(DEFAULT_POLICY).decide(tool, args)["verdict"], "allow")
+
     def test_typed_input_is_decided_as_a_shell_command(self):
         tool, args = agent_hooks.tool("devin", "write_to_process", {"shell_id": "main", "input": "rm -rf ~\n"})
         self.assertEqual(tool, "Bash")

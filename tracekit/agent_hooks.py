@@ -168,7 +168,8 @@ DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
                                     "path under a key ending in path, paths or file (case and _ ignored)"),
                     "apply_patch": "file header (*** Add, Update or Delete File:, or a diff's ---, +++ or diff --git)",
                     "webfetch": "url under one key spelled url",
-                    "write_to_process": "text under its one argument besides shell_id"}
+                    "write_to_process": "text under its one argument besides shell_id",
+                    "exec": "command under a key spelled command (case ignored)"}
 # a C0 control or DEL in text typed into a live terminal: its line editor acts on one (DEL and ^H erase, ^U discards the
 # line, ^C drops it, tab completes, ESC starts a key sequence: an arrow recalls history), so the line that runs isn't
 # the text; \n ends a line, and so does \r, which tool() reads as \n
@@ -243,10 +244,10 @@ def tool(harness, name, ti):
             text = [ti[k] for k in ti if k.casefold() != "shell_id"]
             ti["command"] = text[0].replace("\r", "\n") if len(text) == 1 and isinstance(text[0], str) else None
         elif harness == "devin" and name == "exec":   # its command under any spelling Devin's decoder may read (_blocked
-            # denies a call that sends a name twice)
+            # denies a call that sends a name twice); \r ends a line, should Devin type it into a terminal
             keys = [k for k in ti if k.casefold() == "command"]
             if len(keys) == 1:
-                ti["command"] = ti[keys[0]]
+                ti["command"] = ti[keys[0]].replace("\r", "\n") if isinstance(ti[keys[0]], str) else ti[keys[0]]
         if files is not None:
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
@@ -691,14 +692,15 @@ def _blocked(harness, p, raw=""):
     if harness == "devin" and name in DEVIN_DECIDED_ON:   # Devin documents none of these tools' arguments: one sent
         # under a name Tracekit doesn't read would leave the call decided on nothing
         ti = tool(harness, name, p.get("tool_input"))[1]
-        v = ti.get({"webfetch": "url", "write_to_process": "command"}.get(name, "file_path"))
+        v = ti.get({"webfetch": "url", "write_to_process": "command", "exec": "command"}.get(name, "file_path"))
         # a url under another spelling (URL) may be the one Devin's decoder reads, and v1 decides `url` alone
         if not (isinstance(v, str) and v) or name == "webfetch" and [k for k in ti if k.casefold() == "url"] != ["url"]:
             sent = ", ".join(map(str, _input(p.get("tool_input"))))[:200] or "none"
             return (f"Blocked by Tracekit: Devin's {name} call names no {DEVIN_DECIDED_ON[name]}, which Tracekit "
-                    f"decides it on, so it can't decide this call (its arguments: {sent}). Devin doesn't document "
-                    "them: please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so "
-                    "Tracekit can read them.")
+                    f"decides it on, so it can't decide this call (its arguments: {sent})."
+                    + (" Send it as {\"command\": \"...\"}." if name == "exec" else " Devin doesn't document them: "
+                       "please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so Tracekit "
+                       "can read them."))
         typed = TYPED_CONTROL.search(v) if name == "write_to_process" else None
         if typed:
             return (f"Blocked by Tracekit: Devin's write_to_process types a control character ({typed.group()!r}) "
