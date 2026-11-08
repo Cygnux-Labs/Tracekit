@@ -182,11 +182,13 @@ TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t
 # runs, which the policy, deciding one call at a time, can't see: history replay (fc; history -s, -r or -n), an alias
 # defined, a key binding, a trap, a loaded builtin, the exec builtin (it can make the shell read commands from a file, or
 # replace it), a shell option (set -o, +H …; shopt), a hashed path, a sourced file, a function, and the variables bash
-# runs at each prompt (PROMPT_COMMAND, PS0 to PS4), finds commands by (PATH, BASH_ENV), or the loader loads code by
+# runs at each prompt (PROMPT_COMMAND, PS0 to PS4), finds commands by (PATH, BASH_ENV, BASH_CMDS: hash's table), or
+# expands aliases from (BASH_ALIASES), or the loader loads code by, and a nameref (declare, typeset or local -n), which
+# sets a variable under another name
 # lean: exec isn't read so (a script there sources a venv or defines a function), though Devin may run it in that shell
 SHELL_STATE = {"fc", "bind", "trap", "enable", "exec", "shopt", "hash", "source", "."}
-STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV|LD_PRELOAD|LD_LIBRARY_PATH|LD_AUDIT|DYLD_\w+)"
-                        r"(?:$|[\[=+])")
+STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV|BASH_CMDS|BASH_ALIASES|LD_PRELOAD|LD_LIBRARY_PATH|"
+                        r"LD_AUDIT|DYLD_\w+)(?:$|[\[=+])")
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -683,7 +685,8 @@ def _sets_state(text):
     for a in (c["argv"] for c in cmds):
         if a[0] in SHELL_STATE or a[0] == "set" and any(w.startswith(("-", "+")) for w in a[1:]) or \
                 a[0] == "alias" and any(re.match(r"[^=]+=", w) for w in a[1:]) or a[0] == "history" and any(
-                re.fullmatch(r"-[a-z]*[nrs][a-z]*", w) for w in a[1:]):
+                re.fullmatch(r"-[a-z]*[nrs][a-z]*", w) for w in a[1:]) or a[0] in ("declare", "typeset", "local") and \
+                any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", w) for w in a[1:]):
             return a[0]
         hit = next((w for w in a[1:] if STATE_VARS.match(w)), None)
         if hit and (a[0] in shell._SETS_ANY or shell._sets_with_v(a)):   # export, declare, read, printf -v …

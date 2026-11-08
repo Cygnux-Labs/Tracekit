@@ -930,7 +930,11 @@ class DevinTools(unittest.TestCase):
                      # a loader variable makes every later program load code
                      "exec 0</w/notes.txt\n", "exec </w/notes.txt\n", "LD_PRELOAD=/tmp/x.so\n",
                      "export DYLD_INSERT_LIBRARIES=x\n", "export LD_LIBRARY_PATH=/tmp\n", "LD_AUDIT=/tmp/a.so\n",
-                     "set +H\n"):
+                     "set +H\n",
+                     # alias and hash in their array forms, and a nameref, which sets a variable under another name
+                     f"BASH_ALIASES[ll]='{push}'\n", "BASH_CMDS[ls]=/tmp/x\n", "BASH_ALIASES+=([ll]=x)\n",
+                     "export BASH_CMDS[ls]=/tmp/x\n", f"declare -n p=PROMPT_COMMAND; p='{push}'\n",
+                     "local -n p=PS1\n", "typeset -rn p=PATH\n"):
             with self.subTest(text=text):
                 p["tool_input"] = {"shell_id": "main", "input": text}
                 self.assertIn("sets or replays state of the running shell", agent_hooks._blocked("devin", p, json.dumps(p))
@@ -940,7 +944,7 @@ class DevinTools(unittest.TestCase):
                      "[ a != b ]\n", "wait $!\n", "[[ ! -f x ]] && echo ok\n", "echo hi!\n", "python3 -c 'print(1)'\n",
                      "cd src\nls\n", "export FOO=bar\n", "echo\u00a0hi\n",
                      # set that changes no option (psql), and alias that defines none (a Python REPL)
-                     "set search_path to public;\n", "alias = 3\n", "alias\n"):
+                     "set search_path to public;\n", "alias = 3\n", "alias\n", "declare -f\n", "declare x=1\n"):
             with self.subTest(text=text):
                 p["tool_input"] = {"shell_id": "main", "input": text}
                 self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
