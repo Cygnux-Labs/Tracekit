@@ -3743,6 +3743,10 @@ class SignerService:
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":
                 why = "TK-APPROVAL-" + a["state"].upper(), f"not approved (state={a['state']})"
+            elif {a["decision_id"], call and call.get("decision_id")} & {r[0] for r in run["results"].get(tcid, ())}:
+                # the call it was asked for, or this one, has a result already: it ran before anyone approved it, so
+                # the approval can't stand for it now (_reusable refuses a retry the same)
+                why = "TK-APPROVAL-UNBOUND", f"approval {aid} was used up: the call it was asked for ran anyway"
             elif a["expires_at"] <= _iso(time.time()) or a.get("consume_by", "~") <= _iso(time.time()):
                 why = "TK-APPROVAL-EXPIRED", "the approval expired"
             elif a.get("not_before", "") > _iso(time.time()):
