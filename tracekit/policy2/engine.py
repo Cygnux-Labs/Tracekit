@@ -57,6 +57,11 @@ DECISION_COST = 128
 REQUIREMENTS_FROM = 1024
 
 
+# the characters RE2's case-insensitive match folds to an ASCII letter, as macOS's file system does, each as that
+# letter: a long s (U+017F) and the Kelvin sign (U+212A); the fallback engine's ASCII mode folds neither
+_ASCII_FOLDS = str.maketrans("ſK", "sk")
+
+
 def _backend(name):
     """Return (engine id, compile(pattern, anycase=False), match(compiled, text, full, deadline)); only the fallback
     uses the deadline: [seconds left] of the 1 s (REGEX_TIMEOUT_S) its regex matches of one decision (or bounds check)
@@ -81,7 +86,14 @@ def _backend(name):
             raise TimeoutError("the fallback's 1 s for this decision is spent")
         start = time.perf_counter()
         try:
-            return (c.fullmatch if full else c.search)(s, timeout=deadline[0])
+            found = (c.fullmatch if full else c.search)(s, timeout=deadline[0])
+            # a pattern matched in any case also as RE2 folds the text, which ASCII mode doesn't (_ASCII_FOLDS)
+            if found is None and c.flags & regex.IGNORECASE and ("ſ" in s or "K" in s):
+                left = deadline[0] - (time.perf_counter() - start)
+                if left <= 0:
+                    raise TimeoutError("the fallback's 1 s for this decision is spent")
+                found = (c.fullmatch if full else c.search)(s.translate(_ASCII_FOLDS), timeout=left)
+            return found
         finally:
             deadline[0] -= time.perf_counter() - start
     return (f"regex@{regex.__version__}", lambda p, anycase=False: regex.compile(

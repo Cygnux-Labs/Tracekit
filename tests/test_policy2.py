@@ -808,18 +808,19 @@ class Speed(unittest.TestCase):
         self.assertIn(a039, searched)
         self.assertIn("TK-A039", d["rule_ids"])
 
-    def test_the_prefilter_reads_a_subject_as_re2_folds_it_for_a_rule_matched_in_any_case(self):
-        """TK-D007 matches in any case, and RE2 folds a long s (U+017F) to s: a read of `~/.tracekit-ſigner/…` past
-        engine.REQUIREMENTS_FROM characters was skipped by the prefilter, whose lower() keeps ſ, and allowed (the
-        review of dde52089). casefold() folds it as RE2 does. The fallback engine matches ASCII alone in any case, so
-        there only the path with a plain s is held."""
+    def test_a_rule_matched_in_any_case_reads_a_long_s_or_kelvin_sign_as_re2_does_on_both_engines(self):
+        """TK-D007 matches in any case, and RE2 folds a long s (U+017F) to s and the Kelvin sign (U+212A) to k, as
+        macOS's file system does: a read of `~/.tracekit-ſigner/…` past engine.REQUIREMENTS_FROM characters was
+        skipped by the prefilter, whose lower() keeps ſ, and allowed (the review of dde52089); the fallback engine,
+        matching ASCII alone, allowed one of any length whose casefolded form is the installed package's (ﬆ is st)."""
         pad, st = "a" * 1000, "\N{LATIN SMALL LIGATURE ST}"
         for backend in BACKENDS:
             e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], backend)
-            for s in ("s", "\N{LATIN SMALL LETTER LONG S}")[:1 + (backend == "re2")]:
-                for path in (f"/Users/u/.tracekit-{s}igner/di{st}-packages/tracekit/{pad}",
-                             f"/home/u/.local/{s}hare/tracekit/di{st}-packages/tracekit/{pad}"):
-                    with self.subTest(backend=backend, path=path[:40]):
+            for s, k in (("s", "k"), ("\N{LATIN SMALL LETTER LONG S}", "k"), ("s", "\N{KELVIN SIGN}")):
+                for path in (f"/Users/u/.trace{k}it-{s}igner/di{st}-packages/trace{k}it/{pad}",
+                             f"/home/u/.local/{s}hare/trace{k}it/di{st}-packages/tracekit/{pad}",
+                             f"/Users/u/.trace{k}it-{s}igner/di{st}-packages/tracekit"):
+                    with self.subTest(backend=backend, path=ascii(path[:40])):
                         self.assertIn("TK-D007", e.decide("Bash", {"command": f"cat {path}"})["rule_ids"])
 
     def search(self, rx, s, budget):
