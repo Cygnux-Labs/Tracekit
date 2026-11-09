@@ -257,7 +257,7 @@ class SignedRuntime(unittest.TestCase):
             self.approved(run)
             run.decide("c1", "Bash", self.ASK, attempt=1)
             run.complete("c1", attempt=1)
-        self.assertEqual(self.ran_anyway("ran-attempt1", attempt1), (["ask", "ask"], [("ask", "ok")]))
+        self.assertEqual(self.ran_anyway("ran-attempt1", attempt1), (["ask", "ask"], [("ask", "ok"), ("ask", "ok")]))
 
     def test_a_deny_under_an_approved_id_stays_blocked_when_the_approval_is_used(self):
         """A consume names a call id and attempt, not a decision: the id's latest decision before it, a deny, was folded
@@ -346,7 +346,7 @@ class SignedRuntime(unittest.TestCase):
             "decisions": {"ask": 4}, "retries": 1,
             "calls": [["ask", "APPROVED · RETRY RAN"], ["ask", "APPROVED · RAN"], ["ask", "NOT ANSWERED"], ["ask", "NOT ANSWERED"]],
             "perm": [["ask", "NOT ANSWERED"], ["ask", "NOT ANSWERED"], ["ask", "APPROVED · RETRY RAN"]],
-            "ran": ["ask"], "why": [("ask", None), ("ask", None)]})
+            "ran": ["ask"], "why": [("ask", "approve"), ("ask", None), ("ask", None)]})
 
     def test_an_allowed_call_under_an_approved_id_leaves_a_later_hold_its_own(self):
         """An allowed call under c1, then a hold under c1: the hold hid under c1's approval, unused, as its retry."""
@@ -372,7 +372,32 @@ class SignedRuntime(unittest.TestCase):
             "decisions": {"ask": 4}, "retries": 2,
             "calls": [["ask", "APPROVED · RAN"], ["ask", "REJECTED"], ["ask", "APPROVED · RAN"], ["ask", "TO ANSWER"]],
             "perm": [["ask", "TO ANSWER"], ["ask", "APPROVED · RAN"], ["ask", "REJECTED"], ["ask", "APPROVED · RAN"]],
-            "ran": ["ask", "ask"], "why": []})   # the why log keys a call by its id: attempt 3, still waiting, is not shown yet
+            "ran": ["ask", "ask"],   # attempt 3, still waiting, is not shown in the why log yet
+            "why": [("ask", "approve"), ("ask", "reject"), ("ask", "approve")]})
+
+    def test_a_call_that_ran_at_two_attempts_is_two_actions_in_the_why_log_and_the_review(self):
+        """Attempts of one id collapsed into the last: the why log showed one action, and the review one "approved · ran"."""
+        needs_node(self)
+        run = self.client.run("two-attempts-ran")
+        self.approved(run)
+        self.approved(run, attempt=1)
+        seen = self.seen(run)
+        self.assertEqual((seen["why"], seen["ran"]), ([("ask", "approve"), ("ask", "approve")], ["ask", "ask"]))
+        recs = self.records()[run.run_id]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual(dict(rv["permissions"]), {"approved · ran": 2})
+
+    def test_an_attempt_that_ran_and_failed_stays_while_the_next_waits(self):
+        """Attempt 0 ran and failed, attempt 1 is held in an open run: the why log had no action at all."""
+        run = self.client.run("ran-then-waits")
+        run.decide("c1", "Bash", {"command": "ls"}, attempt=0)
+        run.complete("c1", "error", attempt=0)
+        run.decide("c1", "Bash", self.ASK, attempt=1)
+        run.call("approval_request", tool_call_id="c1", attempt=1)
+        why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+        self.assertEqual([(a["policy"]["decision"], a["status"]) for a in why.of_type("action")], [("allow", "error")])
+        rv = view.review(self.records()[run.run_id], mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual(dict(rv["permissions"]), {"not answered yet": 1})
 
     def test_a_hold_nobody_has_answered_is_refused_only_once_its_run_is_final(self):
         """While the run waited for a person, its hold came back blocked: WHY alerted HIGH "Bash was held for approval
