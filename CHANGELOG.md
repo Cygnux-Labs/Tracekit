@@ -5,15 +5,15 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 ## 1.6.0 (2026-11-09) — intent grants for payments, a policy that reads what a command really does, a plain verify result that says ANCHORED or NOT ANCHORED, Devin and Kilo Code
 
 A feature release. A person can approve a held payment once and let more payments like it run within limits they set
-(intent grants, experimental), and `tracekit verify` re-checks each payment a grant released. `tracekit verify` prints
-a short, plain result and says whether an independent witness anchored the log. Anchoring by default is built in, but
-the public witness isn't deployed yet, so nothing is anchored by default in this release. The coding pack reads what a
+(intent grants, experimental), and `tracekit verify` re-checks each payment a grant released. `tracekit verify` prints a
+short, plain result and says whether an independent witness anchored the log. Anchoring by default is built in, but the
+public witness isn't deployed yet, so nothing is anchored by default in this release. The coding pack reads what a
 command does before it stops it, and now holds reading Kubernetes and Vault secrets, deleting CI pipelines, resetting a
 database and writing or publishing model weights. `tracekit demo --server` runs a scripted agent through hard cases
 under the server pack. Devin gets hooks, Kilo Code gets Tracekit's OpenCode plugin, the coding-agent hooks record
 receipts of the model weights a call writes, and the viewer and `tracekit tips` show what each step costs. Format v2
-gains four non-critical ext names, and the signer protocol goes from 20 to 22, so upgrade the signer first: a 1.6
-client or hook refuses a 1.5 signer.
+gains four ext names (a bundle with a grant the run's own user issued needs a 1.6 verifier), and the signer protocol
+goes from 20 to 22, so upgrade the signer first: a 1.6 client or hook refuses a 1.5 signer.
 
 
 ### Added
@@ -47,8 +47,8 @@ client or hook refuses a 1.5 signer.
   or sets state a later line runs (an alias, a function, a trap, a prompt command, `source`, `PATH` or a loader
   variable); an `exec` with nothing readable to decide is denied (#673).
 - **Kilo Code** (#551, by @khushi-git-7): `--agent kilo` installs Tracekit's OpenCode plugin where Kilo loads it. Kilo's
-  own tools that run a command or touch a file are mapped, and `notebook_execute` is blocked. Run with the Kilo CLI
-  7.8.18 on Linux, not yet in its VS Code extension.
+  own tools that run a command or touch a file are mapped (the limits page lists the two that aren't), and
+  `notebook_execute` is blocked. Run with the Kilo CLI 7.8.18 on Linux, not yet in its VS Code extension.
 - **Model receipts** (experimental, #570): when a call writes a `.safetensors`, `.gguf`, `.pt`, `.pth` or `.ckpt` file,
   the coding-agent hooks record its sha256 and size (and each tensor's for `.safetensors`) in the call's result.
   `tracekit verify-model OLD NEW --bundle B --run R --trust T` checks a file against that receipt and names the tensors
@@ -99,7 +99,7 @@ client or hook refuses a 1.5 signer.
   `-16`); server-comms `2026.10-server-comms-10` (from `-9`) changes only to let `TK-M001` and `TK-M002` take a
   payment grant. The other packs' files are unchanged, but dev and server extend coding (server also server-cloud and
   server-comms) and strict extends server, so they get these changes. E17: 833 of 833 harmful calls stopped, 1 false
-  alarm in 887. E21: the server pack stops or holds 254 of 420 held-out calls (250 in 1.5.3), strict 285 (278).
+  alarm in 887. E21: the server pack stops or holds 255 of 420 held-out calls (252 in 1.5.3), strict 285 (284).
 - **The coding pack reads more of what a shell command does before it decides, and holds what it can't read**
   (#664). The shell reader follows more of bash: parameter expansions read in every way they can combine (with a cap;
   past it the line is held), arrays, values a line gives a variable, wrappers and runners, commands inside arguments
@@ -112,10 +112,10 @@ client or hook refuses a 1.5 signer.
   reference time.
 - The signer refuses to use an approval for a call that already ran (`TK-APPROVAL-UNBOUND`, #664).
 - **Signer protocol 22** (from 20; a signer still serves clients from 15, but a 1.6 client refuses a 1.5 signer): 21
-  adds Box's channel, and 22 adds `grant_issue`, `grant_list` and `grant_revoke`. **Format v2 1.6.0** adds only
-  non-critical ext names: `box`, and `intent.grant`, `intent.revoked` and `grant` for intent grants. A verifier older
-  than 1.6.0 verifies such a bundle with a `not interpreted` warning and claims nothing for the boxed agent or a
-  grant's payments.
+  adds Box's channel, and 22 adds `grant_issue`, `grant_list` and `grant_revoke`. **Format v2 1.6.0** adds ext
+  names: `box`, and `intent.grant`, `intent.revoked` and `grant` for intent grants. A verifier older than 1.6.0
+  verifies such a bundle with a `not interpreted` warning and claims nothing for the boxed agent or a grant's
+  payments; a bundle with a grant the run's own user issued needs 1.6.0, and an older verifier reports it UNVERIFIABLE.
 - **`tracekit verify`, `last` and `demo` print a short, plain result** (#600): VERIFIED with the tool calls and signed
   records counted, whether it is proof against the agent, the warnings by name, signed gaps apart from policy
   mismatches, and a failure as TAMPERED at event N. `--detail` prints the full report as before; `--json` and the exit
@@ -131,7 +131,7 @@ client or hook refuses a 1.5 signer.
   runs, kills and key reads; a variable the line sets to a plain path is read as that program; a shell function the
   line defines and calls is read where it is called (on a line that may download it is held, as before);
   `TK-SHELL-PARSE` says why it couldn't read the line, and an unclosed quote has its own reason (#628). `audit`,
-  `report` and the viewer label it "a shell command Tracekit can't read, so a person decides" (#654).
+  `report` and the viewer label it "a shell command Tracekit can't read" (#654).
 - **A stopped call says why, what to do and where to look** (#596): one message for every harness (HELD, BLOCKED or
   NOT APPROVED, then Why, Instead, the commands to approve or refuse a hold, and what the agent should do).
   `approvals show` adds the reason, the time left and `tracekit view --approval ID`; `approvals list` puts waiting
@@ -142,7 +142,7 @@ client or hook refuses a 1.5 signer.
   Claude Code's settings, a v1 signer that doesn't answer reads `not running (only v1 hooks use it)` (#654).
 - `tracekit pending`, `approve` and `reject` reach the v2 signer when no v1 signer is set up, where they said `signer
   unavailable`: `tracekit approve ID` is `tracekit approvals approve ID`, and `reject` likewise (#628, #654). An
-  unknown command prints one line, with the closest command when one is near (`no command "tipz". Did you mean
+  unknown command prints a short message, with the closest command when one is near (`no command "tipz". Did you mean
   "tips"?`), instead of every command (#654).
 - **First-day fixes** (#628), from a new user's walkthrough in a clean container: `doctor` reports what a dev setup
   doesn't need (a witness, Claude Code's hooks where there is no Claude Code) as `info`, and a healthy dev run ends with
@@ -164,8 +164,8 @@ client or hook refuses a 1.5 signer.
   tool in the Claude Agent SDK hooks; on a pull request the GitHub Action reads trust, key and witness files from the
   base commit and refuses ones the pull request adds; a consumed `pcm.grant` approval mints one root grant; Linux
   system mode's egress firewall refuses the agent's DNS before it lets loopback through.
-- The verifiers agree where they differed (#617): a `key.retire` is checked under its own retirement, `"v": 2.0` is not
-  a v2 record, TypeScript fails a certified key no pinned issuer signed (it said UNVERIFIABLE), and Go verifies ext
+- Cases where the verifiers differed now agree (#617): a `key.retire` is checked under its own retirement, `"v": 2.0` is
+  not a v2 record, TypeScript fails a certified key no pinned issuer signed (it said UNVERIFIABLE), and Go verifies ext
   records, an open-only run-set, a signer run and empty pin lists. No bundle the signer writes changes.
 - A pinned witness's cosignature that doesn't match reads as the log changed after the witness saw it or a damaged
   cosignature, and a wrong-length one as malformed, in Python and TypeScript alike (#625).
