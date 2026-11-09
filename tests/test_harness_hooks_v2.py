@@ -23,6 +23,7 @@ import adapter_contract as ac
 from tracekit import __version__, agent_hooks, cli, client, doctor, install, parsers
 from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
+from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService, load_policy
@@ -122,6 +123,92 @@ class Mapping(HarnessCase):
 
     def test_goose(self):
         self.check("goose")
+
+    def test_copilot_denies_mcp_call_when_any_split_is_denied(self):
+        policy = Engine({
+            "tools": {"mcp:*/*": "mcp", "mcp__*": "mcp"},
+            "deny": [{
+                "id": "COPILOT-SPLIT-DENY",
+                "class": "mcp",
+                "tool": r"^mcp(:tracekit-delta/read-file|__tracekit-delta__read-file)$",
+                "pattern": "^",
+            }],
+        })
+        arguments = {"marker": "TRACEKIT_MCP_HYPHEN"}
+        assert policy.decide("mcp:tracekit/delta-read-file", arguments)["verdict"] == "allow"
+        assert policy.decide("mcp:tracekit-delta/read-file", arguments)["verdict"] == "deny"
+        assert policy.decide("mcp:tracekit-delta-read/file", arguments)["verdict"] == "allow"
+        decisions = self.set_signer_policy(policy)
+        payload = {
+            "sessionId": "copilot-mcp-splits",
+            "toolCallId": "call_mcp_splits",
+            "toolName": "tracekit-delta-read-file",
+            "toolArgs": arguments,
+        }
+
+        code, _, error = self.hook("copilot", payload, "preToolUse")
+
+        assert code == 2, error
+        assert "COPILOT-SPLIT-DENY" in error
+        assert any(decision["verdict"] == "deny" for decision in decisions)
+        assert all(request["args"] == arguments for request in self.sent)
+
+    def test_copilot_holds_sanitized_dotted_mcp_tool(self):
+        policy = load_policy()
+        arguments = {"name": "example-secret"}
+        assert "TK-A037" in policy.decide("mcp:tracekit-space/get-secret", arguments)["rule_ids"]
+        decisions = self.set_signer_policy(policy)
+        os.environ[claude_code.WAIT_ENV] = "0"
+        payload = {
+            "sessionId": "copilot-mcp-dotted",
+            "toolCallId": "call_mcp_dotted",
+            # Copilot sanitizes server `tracekit space` and tool `get.secret` before the hook sees them.
+            "toolName": "tracekit-space-get-secret",
+            "toolArgs": arguments,
+        }
+
+        code, _, error = self.hook("copilot", payload, "preToolUse")
+
+        assert code == 2, error
+        assert any(decision["verdict"] == "ask" and "TK-A037" in decision["rule_ids"]
+                   for decision in decisions)
+
+    def test_copilot_denies_mcp_names_at_or_above_64_characters(self):
+        prefix = "notes-"
+        payload = {
+            "sessionId": "copilot-mcp-length",
+            "toolCallId": "call_mcp_length_63",
+            "toolName": prefix + "a" * (63 - len(prefix)),
+            "toolArgs": {},
+        }
+        assert self.hook("copilot", payload, "preToolUse")[0] == 0
+        assert self.sent
+
+        for length in (64, 65):
+            with self.subTest(length=length):
+                self.sent.clear()
+                payload = {**payload, "toolCallId": f"call_mcp_length_{length}",
+                           "toolName": prefix + "a" * (length - len(prefix))}
+
+                code, _, error = self.hook("copilot", payload, "preToolUse")
+
+                assert code == 2, error
+                assert "shorten" in error.lower()
+                assert "server" in error.lower()
+                assert "config" in error.lower()
+                assert self.sent == []
+
+    def set_signer_policy(self, policy):
+        decisions = []
+
+        def decide(tool, arguments):
+            decision = policy.decide(tool, arguments)
+            decisions.append(decision)
+            verdict = "allow" if decision["verdict"] == "flag" else decision["verdict"]
+            return verdict, decision["rule_ids"]
+
+        self.signer.rule = decide
+        return decisions
 
     def test_goose_execute_javascript_is_denied_before_the_signer(self):
         # goose's Code Mode runs shell calls through dispatch_tool with no PreToolUse hook, so the hook denies
