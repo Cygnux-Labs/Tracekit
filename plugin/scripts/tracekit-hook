@@ -74,9 +74,22 @@ case $(uname -s 2>/dev/null) in
   *) data="${XDG_DATA_HOME:-$HOME/.local/share}/tracekit" ;;
 esac
 if [ -n "${TRACEKIT_PYTHON:-}${TRACEKIT_SIGNER:-}" ] || [ -d "$data" ]; then
+  # Claude Code installs a marketplace plugin at <plugins root>/cache/<marketplace>/<plugin>/<version> and names it
+  # <plugin>@<marketplace>. Elsewhere (a --plugin-dir or local marketplace loads in place, a claude.ai-synced one) its
+  # key isn't known, so the message only says `/plugin` rather than name a plugin that isn't installed.
+  off="turn the plugin off in /plugin"
+  root=${CLAUDE_PLUGIN_ROOT%/}
+  root=${root%/*}
+  plugin=${root##*/}
+  root=${root%/*}
+  marketplace=${root##*/}
+  root=${root%/*}
+  case "$root" in
+    */cache) [ -n "$plugin" ] && [ -n "$marketplace" ] &&
+      off="turn the plugin off: /plugin disable $plugin@$marketplace" ;;
+  esac
   finish 3 "no Python here (TRACEKIT_PYTHON, python3, python) has the tracekit package, though Tracekit is set up" \
-    "Ask the person to install it (pip install tracekit-ai==1.5.3), set TRACEKIT_PYTHON to the Python that has it, or turn the plugin off: \
-/plugin disable tracekit@tracekit"
+    "Ask the person to install it (pip install tracekit-ai==1.5.3), set TRACEKIT_PYTHON to the Python that has it, or $off"
 fi
 echo "tracekit plugin: the tracekit package is not installed for python3, so this $EV event was NOT recorded. Ask the person to set it up: \
 pip install tracekit-ai==1.5.3 && tracekit init --dev --v2 --no-hooks" >&2
