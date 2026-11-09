@@ -1,5 +1,5 @@
 """MCP client (python `mcp` package): every `call_tool` and `get_prompt` on a ClientSession is decided by the signer
-before it is sent to the server and recorded after.
+before it is sent to the server and recorded after, and `read_resource` records what it returns as an observed input.
 
     from tracekit.integrations.mcp import TracekitSession
     run = signer.register_run({"request_id": "r1", "agent": {"name": "my-agent"}})
@@ -13,8 +13,9 @@ the refusal as its text (`get_prompt` raises `RuntimeError`), and the run goes o
 up to `approval_wait_s` for a person to decide in the signer; with `approval_wait_s=0` the call is refused instead.
 Every call that is not denied is sent only after the signer's `approval_consume` agrees, with the arguments it returns
 for an approval with a T2 executor. A result with `isError: true` completes as an error; an exception from the session
-propagates unchanged and completes as an error. Only `call_tool` and `get_prompt` calls made through the wrapped session
-are seen.
+propagates unchanged and completes as an error. `read_resource` records the result with `observe` (`source`
+`mcp:<server>/resource`, `trust` `untrusted`); if the signer cannot record it, a warning is issued and the result is
+returned unchanged. Only `call_tool`, `get_prompt` and `read_resource` calls made through the wrapped session are seen.
 """
 import re
 import uuid
@@ -48,13 +49,28 @@ class TracekitSession(HeldCalls):
     async def get_prompt(self, name, arguments=None, *a, **kw):
         return await self._call("get_prompt", "prompt:", name, arguments, *a, **kw)
 
-    async def _call(self, method, prefix, name, arguments, *a, **kw):
+    async def read_resource(self, uri, *a, **kw):
+        """Read a resource and record its result as an untrusted observed input; a failure to record warns and leaves
+        the result as it was."""
+        result = await self._session.read_resource(uri, *a, **kw)
+        server = self._server_name()
+        try:
+            await self._rpc("observe", source=f"mcp:{server}/resource", trust="untrusted",
+                            value=result.model_dump(mode="json", by_alias=True, exclude_none=True))
+        except Exception as e:
+            warnings.warn(f"tracekit: resource {uri} of mcp:{server} not recorded: {e}", stacklevel=2)
+        return result
+
+    def _server_name(self):
         server = self._server or getattr(getattr(self._session, "server_info", None), "name", None)
         if not server:
             warnings.warn("MCP: the session doesn't name its server, so its calls are recorded as mcp:unknown/<tool>: "
                           "pass TracekitSession(..., server=<name>), or call tracekit.instrument() before the "
                           "session's initialize() (mcp 1.x)", stacklevel=3)
-        tool = f"mcp:{_UNSAFE.sub('_', server or '') or 'unknown'}/{prefix}{name}"
+        return _UNSAFE.sub("_", server or "") or "unknown"
+
+    async def _call(self, method, prefix, name, arguments, *a, **kw):
+        tool = f"mcp:{self._server_name()}/{prefix}{name}"
         args, call_id = arguments or {}, uuid.uuid4().hex
         why, d, args = await self._gate(call_id, tool, args)
         if why is not None:

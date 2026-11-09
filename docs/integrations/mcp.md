@@ -38,6 +38,7 @@ Every other attribute is the wrapped session's. Only calls made through the wrap
 | before the call is sent | `decide` | a fresh `tool_call_id`, the tool as `mcp:<server>/<tool>` (`mcp:<server>/prompt:<name>` for `get_prompt`), `tool_class_hint: mcp`, the arguments as given (`parsed`) |
 | right before it is sent | `approval_consume` | the same call and arguments, and the approval id when the call waited for one |
 | after the server answers | `complete` | `status` `ok`, or `error` for a result with `isError: true`; a `sha256:` commitment to the result (not the result), or the exception type and message |
+| after `read_resource` answers | `observe` | `source` `mcp:<server>/resource`, `trust: untrusted` and the result as `value` (recorded as its commitment and indexed for provenance; a failure to record warns and returns the result unchanged) |
 
 `<server>` is the name in the server's initialize result, with every character outside `A-Za-z0-9_.-` replaced by `_`
 (`unknown` when the server gave none). The policy's `tools` map should map `mcp:*/*` to the `mcp` class (the coding

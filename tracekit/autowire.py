@@ -248,10 +248,12 @@ def _claude_agent_sdk(run):
 
 
 class _Unpatched:
-    """A ClientSession as TracekitSession sees it: its call_tool and get_prompt are the ones instrument() replaced."""
+    """A ClientSession as TracekitSession sees it: its call_tool, get_prompt and read_resource are the ones
+    instrument() replaced."""
 
-    def __init__(self, session, call_tool, get_prompt=None):
-        self._session, self._call_tool, self._get_prompt = session, call_tool, get_prompt
+    def __init__(self, session, call_tool, get_prompt=None, read_resource=None):
+        self._session, self._call_tool, self._get_prompt, self._read_resource = (
+            session, call_tool, get_prompt, read_resource)
 
     def __getattr__(self, name):
         return getattr(self._session, name)
@@ -262,19 +264,23 @@ class _Unpatched:
     def get_prompt(self, *a, **kw):
         return self._get_prompt(self._session, *a, **kw)
 
+    def read_resource(self, *a, **kw):
+        return self._read_resource(self._session, *a, **kw)
+
 
 def _mcp(run):
     from mcp import ClientSession
 
     from .integrations.mcp import TracekitSession
-    call_tool, get_prompt = ClientSession.call_tool, getattr(ClientSession, "get_prompt", None)
+    call_tool = ClientSession.call_tool
+    get_prompt, read_resource = getattr(ClientSession, "get_prompt", None), getattr(ClientSession, "read_resource", None)
     gates, stream, servers = weakref.WeakKeyDictionary(), {}, weakref.WeakKeyDictionary()
 
     def gate(session):
         if session not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
             # the gate holds its session weakly: a strong one would keep every session (the dict's key) alive
-            g = gates[session] = TracekitSession(_Unpatched(weakref.proxy(session), call_tool, get_prompt),
-                                                 run.client, run.registered, server=servers.get(session))
+            unpatched = _Unpatched(weakref.proxy(session), call_tool, get_prompt, read_resource)
+            g = gates[session] = TracekitSession(unpatched, run.client, run.registered, server=servers.get(session))
             g.stream, g._seq, g._lock = stream.setdefault("s", (g.stream, g._seq, g._lock))
         return gates[session]
 
@@ -289,6 +295,8 @@ def _mcp(run):
     ClientSession.call_tool = wrap("call_tool", call_tool)
     if get_prompt is not None:
         ClientSession.get_prompt = wrap("get_prompt", get_prompt)
+    if read_resource is not None:
+        ClientSession.read_resource = wrap("read_resource", read_resource)
     if hasattr(ClientSession, "server_info"):
         return
     initialize = ClientSession.initialize   # mcp 1.x: only initialize()'s result names the server
