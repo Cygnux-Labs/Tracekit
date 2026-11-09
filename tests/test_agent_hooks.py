@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -22,6 +24,86 @@ from tracekit.signer.service import DEFAULT_POLICY, load_policy  # noqa: E402
 from factories import DaemonCase, ledger_records, patch_env  # noqa: E402
 
 PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: {}\n@@\n-A=1\n+A=2\n*** End Patch"
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "tool_args", "expected_name"),
+    [
+        pytest.param(
+            "view",
+            {"path": "/tmp/tracekit-copilot-capture/note.txt"},
+            "Read",
+            id="view",
+        ),
+        pytest.param(
+            "glob",
+            {"pattern": "*.txt", "paths": "."},
+            "Glob",
+            id="glob",
+        ),
+        pytest.param(
+            "rg",
+            {"pattern": "TRACEKIT_SEARCH_TARGET", "paths": "sample.txt", "output_mode": "content", "-n": True},
+            "Grep",
+            id="rg-file",
+        ),
+        pytest.param(
+            "rg",
+            {
+                "pattern": "TRACEKIT_SEARCH_TARGET",
+                "paths": ["."],
+                "glob": "sample.txt",
+                "output_mode": "content",
+                "-n": True,
+            },
+            "Grep",
+            id="rg-directory",
+        ),
+        pytest.param(
+            "web_fetch",
+            {"url": "https://example.com/", "max_length": 5000, "raw": False},
+            "WebFetch",
+            id="web-fetch",
+        ),
+        pytest.param(
+            "web_search",
+            {"query": "Find the official GitHub Copilot CLI documentation on GitHub's official documentation site."},
+            "WebSearch",
+            id="web-search",
+        ),
+        pytest.param(
+            "task",
+            {
+                "description": "Count sample lines",
+                "prompt": (
+                    "Read only /tmp/tracekit-copilot-tools-probe-mmiircun/task/sample.txt "
+                    "and report its number of lines. Restrict all work to this file; "
+                    "do the work yourself and do not modify anything."
+                ),
+                "agent_type": "explore",
+                "name": "line-counter",
+                "mode": "sync",
+            },
+            "Task",
+            id="task",
+        ),
+    ],
+)
+def test_copilot_normalises_remaining_tools(tool_name, tool_args, expected_name):
+    payload = {
+        "sessionId": "copilot-mapping-1",
+        "cwd": "/tmp/tracekit-copilot-capture",
+        "hook_event_name": "preToolUse",
+        "toolCallId": "call_mapping_1",
+        "toolName": tool_name,
+        "toolArgs": tool_args,
+    }
+
+    normalised = agent_hooks.normalise("copilot", payload)
+
+    assert normalised["tool_name"] == expected_name
+    assert normalised["tool_input"] == tool_args
+    assert normalised["tool_use_id"] == payload["toolCallId"]
 
 
 class Harnesses(DaemonCase):
@@ -35,6 +117,146 @@ class Harnesses(DaemonCase):
 
     def events(self, run):
         return [r["event"] for r in ledger_records(self.home) if r["event"]["run_id"] == run]
+
+    def test_copilot_preserves_tool_call_id_in_call_and_result(self):
+        from tracekit.core import content_ref
+
+        session_id = "copilot-id-1"
+        expected_tool_call_id = "call_test_1"
+        pre_payload = {
+            "sessionId": session_id,
+            "timestamp": 1794113356122,
+            "cwd": self.d,
+            "toolCallId": expected_tool_call_id,
+            "toolName": "bash",
+            "toolArgs": {
+                "command": "printf 'TRACEKIT_ID_CAPTURE_OK\\n'",
+                "description": "Print the trace capture marker",
+            },
+        }
+
+        post_payload = {
+            **pre_payload,
+            "timestamp": 1794113357796,
+            "toolResult": {
+                "resultType": "success",
+                "textResultForLlm": "TRACEKIT_ID_CAPTURE_OK\n<shellId: 0 completed with exit code 0>",
+            },
+        }
+
+        pre_exit_code, _, pre_error = self.hook("copilot", pre_payload, "preToolUse")
+        assert pre_exit_code == 0, pre_error
+        post_exit_code, _, post_error = self.hook("copilot", post_payload, "postToolUse")
+        assert post_exit_code == 0, post_error
+
+        expected_output = content_ref(post_payload["toolResult"]["textResultForLlm"])
+
+        events = self.events(session_id)
+
+        calls = [event["data"] for event in events if event["type"] == "tool.call"]
+        results = [event["data"] for event in events if event["type"] == "tool.result"]
+
+        assert len(calls) == 1
+        assert len(results) == 1
+
+        call = calls[0]
+        result = results[0]
+
+        assert call["name"] == "Bash"
+        assert call["tool_use_id"] == expected_tool_call_id
+        assert call["input"]["command"]["value"] == pre_payload["toolArgs"]["command"]
+
+        assert result["tool_use_id"] == expected_tool_call_id
+        assert result["ok"] is True
+        assert result["output"] == expected_output
+
+    def test_copilot_blocks_payload_without_tool_call_id(self):
+        session_id = "copilot-id-1"
+        pre_payload = {
+            "sessionId": session_id,
+            "timestamp": 1794113356122,
+            "cwd": self.d,
+            "toolName": "bash",
+            "toolArgs": {
+                "command": "printf 'TRACEKIT_ID_CAPTURE_OK\\n'",
+                "description": "Print the trace capture marker",
+            },
+        }
+
+        pre_exit_code, _, pre_error = self.hook("copilot", pre_payload, "preToolUse")
+
+        assert pre_exit_code == 2
+        assert "toolCallId" in pre_error
+        assert "1.0.107" in pre_error
+
+        events = self.events(session_id)
+        calls = [event["data"] for event in events if event["type"] == "tool.call"]
+        assert calls == []
+
+    def test_copilot_maps_patch_string_to_all_edited_paths(self):
+        from tracekit.core import content_ref
+
+        session_id = "copilot-patch-1"
+        expected_tool_call_id = "custom_call_patch_1"
+
+        pre_payload = {
+            "sessionId": session_id,
+            "timestamp": 1794113356122,
+            "cwd": self.d,
+            "toolCallId": expected_tool_call_id,
+            "toolName": "apply_patch",
+            "toolArgs": PATCH.format("src/app.py"),
+        }
+
+        pre_exit_code, _, pre_error = self.hook("copilot", pre_payload, "preToolUse")
+        assert pre_exit_code == 0, pre_error
+
+        events = self.events(session_id)
+
+        calls = [event["data"] for event in events if event["type"] == "tool.call"]
+        assert len(calls) == 1
+
+        call = calls[0]
+        assert call["name"] == "Edit"
+        assert call["tool_use_id"] == expected_tool_call_id
+
+        expected_paths = ["notes.txt", "src/app.py"]
+        assert call["input"]["paths"] == content_ref(expected_paths)
+
+    def test_copilot_normalises_mcp_tool_name(self):
+        from tracekit.core import content_ref
+
+        session_id = "copilot-mcp-1"
+        expected_tool_call_id = "call_mcp_1"
+
+        pre_payload = {
+            "sessionId": session_id,
+            "cwd": self.d,
+            "toolCallId": expected_tool_call_id,
+            "toolName": "github-mcp-server-get_file_contents",
+            "toolArgs": {
+                "owner": "Cygnux-Labs",
+                "repo": "Tracekit",
+                "path": "LICENSE",
+                "ref": "refs/heads/main",
+            },
+        }
+
+        pre_exit_code, _, pre_error = self.hook("copilot", pre_payload, "preToolUse")
+        assert pre_exit_code == 0, pre_error
+
+        events = self.events(session_id)
+        calls = [event["data"] for event in events if event["type"] == "tool.call"]
+        assert len(calls) == 1
+
+        call = calls[0]
+
+        assert call["name"] == "mcp__github-mcp-server__get_file_contents"
+        assert call["tool_use_id"] == expected_tool_call_id
+        assert call["input"]["owner"]["value"] == "Cygnux-Labs"
+        assert call["input"]["repo"]["value"] == "Tracekit"
+        assert call["input"]["path"]["value"] == "LICENSE"
+        assert call["input"]["ref"] == content_ref("refs/heads/main")
 
     def test_droid_pairs_calls_records_prompts_and_blocks_denied_calls(self):
         base = {"session_id": "dr-1", "cwd": self.d}

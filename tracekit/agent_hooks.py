@@ -78,11 +78,22 @@ from .policy2.classes import PATH_KEYS, first
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
-               "devin": "devin"}
+               "devin": "devin", "copilot": "copilot"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
+
+COPILOT_TOOLS = {
+    "apply_patch": "Edit",
+    "bash": "Bash",
+    "view": "Read",
+    "glob": "Glob",
+    "rg": "Grep",
+    "web_fetch": "WebFetch",
+    "web_search": "WebSearch",
+    "task": "Task",
+}
 GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_files": "Read", "write_file": "Write", "replace": "Edit",
                 "glob": "Glob", "search_file_content": "Grep", "grep_search": "Grep", "list_directory": "LS",
                 "web_fetch": "WebFetch", "google_web_search": "WebSearch", "save_memory": "Memory"}
@@ -349,6 +360,20 @@ def tool(harness, name, ti):
             if "path" in ti:
                 ti["file_path"] = ti["path"]
         return CRUSH_TOOLS.get(name, name), ti
+    if harness == "copilot":
+        if name == "apply_patch":
+            patch = ti.get("value")
+            if not isinstance(patch, str):
+                raise ValueError("Copilot apply_patch requires a patch string")
+            files = [f.strip() for f in PATCH_FILE.findall(patch)]
+
+            if not files or any(not path for path in files):
+                raise ValueError("Copilot apply_patch contains no file paths")
+
+            ti["file_path"] = files[0]
+            ti["paths"] = files
+
+        return COPILOT_TOOLS.get(name, name), ti
     return name, ti
 
 
@@ -515,6 +540,24 @@ def normalise(harness, p):
         if ev == "PostToolUse" and p.get("error"):
             out.update(hook_event_name="PostToolUseFailure", error=p["error"])
         return out
+
+    if harness == "copilot":
+        if ev not in ("preToolUse", "postToolUse"):
+            return None
+        
+        tool_call_id = p.get("toolCallId")
+        if not isinstance(tool_call_id, str) or not tool_call_id.strip():
+            raise ValueError("Copilot CLI 1.0.107 or later is required; toolCallId must be a non-empty string")
+        
+        out["session_id"] = p.get("sessionId")
+        out["hook_event_name"] = {"preToolUse": "PreToolUse", "postToolUse": "PostToolUse"}[ev]
+        out["tool_name"], out["tool_input"] = tool(harness, p.get("toolName") or "?", p.get("toolArgs"))
+        out["tool_use_id"] = tool_call_id
+
+        if ev == "postToolUse":
+            out["tool_response"] = p["toolResult"]["textResultForLlm"]
+        return out
+    
     raise ValueError(f"unknown harness {harness!r}")
 
 
