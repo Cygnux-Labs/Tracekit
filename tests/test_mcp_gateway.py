@@ -25,7 +25,6 @@ try:
     from mcp import Client, types as mcp_types
     from mcp.client.streamable_http import streamable_http_client
     from mcp.server.lowlevel import Server as LowServer
-    from mcp.server.lowlevel.helper_types import ReadResourceContents
     from mcp.server.mcpserver import MCPServer
 
     from tracekit import mcp_gateway
@@ -391,6 +390,21 @@ class McpGateway(unittest.TestCase):
                       "give the upstream larger pages or fix its cursor",
                       messages(e.exception))
         self.assertNotIn("note://res-p1", self.srv.mcp["resources"])
+
+    def test_upstream_error_on_page2_forgets_page1_resources(self):
+        """An upstream that raises on its second page returns an error and remembers nothing."""
+        async def on_list_resources(ctx, params):
+            cursor = params.cursor if params else None
+            if cursor is None:
+                return mcp_types.ListResourcesResult(
+                    resources=[mcp_types.Resource(uri="note://r1", name="r1",
+                                                  mimeType="text/plain")],
+                    next_cursor="2")
+            raise RuntimeError("upstream failed on page 2")
+        self._swap_upstream(LowServer("bad", on_list_resources=on_list_resources))
+        with self.assertRaises(Exception):
+            self.agent(lambda c: c.list_resources())
+        self.assertNotIn("note://r1", self.srv.mcp["resources"])
 
 
 class RegistryListing(unittest.TestCase):
