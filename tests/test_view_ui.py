@@ -2925,19 +2925,6 @@ class ApproveThenRetry(unittest.TestCase):
                                       ("policy.decision", {"decision": "deny"}), ("tool.result", "d7")),
                          ([[2, "ask", 6], [7, "deny", 8]], [("ask", "ok"), ("deny", "ok")]))
 
-    def test_a_deny_that_ran_stays_in_the_why_log_when_a_later_ask_folds_into_the_approved_call(self):
-        """The deny's signed result names it; the ask under the same id and attempt after it, whose approval was used,
-        folds into the held call. The why log kept only the approved call."""
-        needs_node(self)
-        asked = {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}
-        self.assertEqual(self.results("deny-ran-then-fold", ("policy.decision", {"decision": "ask"}),
-                                      ("approval.request", asked),
-                                      ("approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve"}),
-                                      ("policy.decision", {"decision": "deny"}), ("tool.result", "d5"),
-                                      ("policy.decision", {"decision": "ask"}),
-                                      ("approval.consumed", {"approval_id": "X"}), ("tool.result", "d7")),
-                         ([[2, "ask", 9], [5, "deny", 6]], [("deny", "ok"), ("ask", "ok")]))
-
     def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
         """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an
         APPROVED blocked call; an approval that expired unused read "expired before anyone answered"."""

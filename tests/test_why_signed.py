@@ -19,6 +19,7 @@ from test_view_ui import needs_node
 from tracekit import demo_why, view
 from tracekit.demo_server import Witness, _serve, export_final, tamper
 from tracekit.deploy import files
+from tracekit.format.canon import event_hash as canon_hash
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer.service import DEFAULT_POLICY, SignerService, load_policy, reveal
 from tracekit.verify import v2
@@ -398,6 +399,25 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual([(a["policy"]["decision"], a["status"]) for a in why.of_type("action")], [("allow", "error")])
         rv = view.review(self.records()[run.run_id], mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
         self.assertEqual(dict(rv["permissions"]), {"not answered yet": 1})
+
+    def test_a_deny_that_ran_is_kept_when_a_later_hold_under_its_id_folds_into_an_approved_call(self):
+        """The signed result of the deny names it, and the later ask under the same id and attempt folded into the
+        approved call: the why log kept only the approved call. (The result names the deny and its arguments: by default
+        the SDK completes the last allow or ask, which would use the approval up.)"""
+        needs_node(self)
+        run = self.client.run("deny-ran-then-fold")
+        run.decide("c1", "Bash", self.ASK)
+        aid = run.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        deny = run.decide("c1", "Bash", self.DENY)
+        run.complete("c1", decision_id=deny["decision_id"], args_digest=canon_hash({"tool": "Bash", "args": self.DENY}))
+        run.decide("c1", "Bash", self.ASK)
+        self.assertTrue(run.approval_consume("c1", "Bash", self.ASK, approval_id_hint=aid)["ok"])
+        run.complete("c1")
+        self.assertEqual(self.seen(run), {
+            "decisions": {"ask": 1, "deny": 1}, "retries": 1, "calls": [["ask", "APPROVED · RAN"], ["deny", "BLOCKED"]],
+            "perm": [["deny", "BLOCKED"], ["ask", "APPROVED · RAN"]], "ran": ["ask", "deny"],
+            "why": [("deny", None), ("ask", "approve")]})
 
     def test_a_hold_nobody_has_answered_is_refused_only_once_its_run_is_final(self):
         """While the run waited for a person, its hold came back blocked: WHY alerted HIGH "Bash was held for approval
