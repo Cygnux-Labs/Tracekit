@@ -33,7 +33,7 @@ export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** This verifier's release (the package's). */
-export const VERSION = "1.5.3";
+export const VERSION = "1.6.0";
 /** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
  * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
 export const READS = "1.6.0";

@@ -105,7 +105,7 @@ accepts a v2 bundle only when verification with that trust config succeeds. For 
 `witness`; the action checks the v1 `trust root` result.
 
 ```yaml
-- uses: Cygnux-Labs/Tracekit@v1.5.3   # a release tag or its commit SHA, not main
+- uses: Cygnux-Labs/Tracekit@v1.6.0   # a release tag or its commit SHA, not main
   with:
     bundle: run.tkb
     trust: .tracekit/trust.json
