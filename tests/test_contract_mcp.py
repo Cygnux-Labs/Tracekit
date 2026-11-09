@@ -319,15 +319,30 @@ class ListsAreObserved(unittest.TestCase):
         self.assertEqual(observed[1]["value"], resources.model_dump(mode="json", by_alias=True, exclude_none=True))
         self.assertEqual(observed[2]["value"]["prompts"][0]["description"], "sort issues")
 
-    def test_a_failed_observe_warns_and_returns_the_list(self):
-        from mcp.types import PaginatedRequestParams
-
+    def test_an_unrecorded_list_is_withheld_when_the_run_fails_closed(self):
+        """The default fail mode is closed, and a signer refusal is withheld even when the run fails open."""
+        from tracekit.sdk.client import SignerUnavailable
         from tracekit.signer.rpc_schema import RPCError
-        session, signer = _ListingSession(), _Signer(observe=RPCError("unavailable", "down"))
+        session = _ListingSession()
+        with self.assertRaises(SignerUnavailable):
+            asyncio.run(TracekitSession(session, _Signer(observe=SignerUnavailable("down")), self.RUN).list_tools())
+        self.assertEqual(session.results[0].tools[0].name, "echo")   # fetched from the server, not returned
+        with self.assertRaises(RPCError):
+            asyncio.run(TracekitSession(_ListingSession(), _Signer(observe=RPCError("unavailable", "down")),
+                                        {**self.RUN, "fail_modes": {"mcp": "open"}}).list_prompts())
+
+    def test_an_unrecorded_list_is_returned_when_the_run_fails_open(self):
+        from tracekit.sdk.client import SignerUnavailable
+        session = _ListingSession()
         with self.assertWarns(UserWarning) as cm:
-            out = asyncio.run(TracekitSession(session, signer, self.RUN).list_tools())
+            out = asyncio.run(TracekitSession(session, _Signer(observe=SignerUnavailable("down")),
+                                              {**self.RUN, "fail_modes": {"mcp": "open"}}).list_resources())
         self.assertIs(out, session.results[0])
+        self.assertEqual(out.resources[0].uri, "mem://page-1")
         self.assertIn("not recorded", str(cm.warning))
+
+    def test_a_list_the_session_fails_to_return_is_not_observed(self):
+        from mcp.types import PaginatedRequestParams
         signer = _Signer()
         with self.assertRaises(MCPError):
             asyncio.run(TracekitSession(_ListingSession(), signer, self.RUN).list_tools(

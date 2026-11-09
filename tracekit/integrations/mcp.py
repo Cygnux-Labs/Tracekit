@@ -14,8 +14,9 @@ up to `approval_wait_s` for a person to decide in the signer; with `approval_wai
 Every call that is not denied is sent only after the signer's `approval_consume` agrees, with the arguments it returns
 for an approval with a T2 executor. A result with `isError: true` completes as an error; an exception from the session
 propagates unchanged and completes as an error. `list_tools`, `list_resources` and `list_prompts` are recorded as
-untrusted observed input (`mcp:<server>/tools`, `/resources`, `/prompts`) and returned unchanged; a failure to record
-warns. Only those calls made through the wrapped session are seen.
+untrusted observed input (`mcp:<server>/tools`, `/resources`, `/prompts`) and returned once recorded. A list the
+signer cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a
+refusal is withheld either way. Only those calls made through the wrapped session are seen.
 """
 import re
 import uuid
@@ -25,7 +26,7 @@ from mcp.types import CallToolResult, TextContent
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations.held import HeldCalls
-from tracekit.sdk.client import result_field
+from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 
 BLOCKED = "Tool call blocked by policy: "
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -67,8 +68,8 @@ class TracekitSession(HeldCalls):
         return raw, _UNSAFE.sub("_", raw or "") or "unknown"
 
     async def _list(self, kind, *a, **kw):
-        """The page `list_<kind>` returned, recorded as untrusted input the model reads. A signer that can't record it
-        warns: the caller still gets the page."""
+        """The page `list_<kind>` returned, once recorded as untrusted input the model reads. An unreachable signer
+        returns it only when the run fails open for this class; a refusal is withheld either way."""
         out = await getattr(self._session, "list_" + kind)(*a, **kw)
         raw, server = self._server_name()
         if not raw:
@@ -76,7 +77,9 @@ class TracekitSession(HeldCalls):
         try:
             await self._rpc("observe", source=f"mcp:{server}/{kind}", trust="untrusted",
                             value=out.model_dump(mode="json", by_alias=True, exclude_none=True))
-        except Exception as e:
+        except SignerUnavailable as e:   # unreachable: the run's fail mode for this class, as _gate
+            if not fail_open(self.fail_modes, self.CLASS):
+                raise
             warnings.warn(f"tracekit: MCP {kind} list not recorded: {e}", stacklevel=2)
         return out
 
