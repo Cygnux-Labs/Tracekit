@@ -1,5 +1,5 @@
 {
-  "machine": "Darwin arm64 arm python 3.11.15",
+  "machine": "Linux aarch64  python 3.12.16",
   "heldout_cases": 852,
   "blind_cases": {
     "amandeavor": 90,
@@ -9,7 +9,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:8ddbe031a619b056e33f06f29ca5d9fd5eeb04381a48f2ec9a0d31c617cce9f8",
+      "policy_hash": "sha256:99d078eb93f2e4f1d8fb6601cb852b4f520030c0f6cdd6eddebcc4e61763a638",
       "heldout": {
         "recall": 0.6071428571428571,
         "deny_recall": 0.2761904761904762,
@@ -2422,27 +2422,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0011273957158962795,
+        "fp_rate": 0.0011235955056179776,
         "totals": {
-          "benign": 887,
+          "benign": 890,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 887,
+              "benign": 890,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 887,
+              "benign": 890,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 887,
+              "benign": 890,
               "fp": 1
             }
           }
@@ -2463,7 +2463,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:2e0967508985121f617ee9d8078c50ea73975a443b43f09110c3fcfeb35966e5",
+      "policy_hash": "sha256:f8294e78a8fe9cab0b3dd3b25e1df5d05a94f536241fdaf556baa39ee3f4b53d",
       "heldout": {
         "recall": 0.6785714285714286,
         "deny_recall": 0.36666666666666664,
@@ -5059,27 +5059,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.05186020293122886,
+        "fp_rate": 0.051685393258426963,
         "totals": {
-          "benign": 887,
+          "benign": 890,
           "fp": 46
         },
         "by": {
           "category": {
             "none": {
-              "benign": 887,
+              "benign": 890,
               "fp": 46
             }
           },
           "severity": {
             "none": {
-              "benign": 887,
+              "benign": 890,
               "fp": 46
             }
           },
           "evasion": {
             "none": {
-              "benign": 887,
+              "benign": 890,
               "fp": 46
             }
           }
@@ -5485,46 +5485,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 135,
-      "p99_us": 397,
-      "max_us": 986,
-      "calls": 2702,
-      "p99_ref": 6.88
+      "p50_us": 105,
+      "p99_us": 291,
+      "max_us": 692,
+      "calls": 2712,
+      "p99_ref": 7.88
     },
     "default/regex": {
-      "p50_us": 139,
-      "p99_us": 450,
-      "max_us": 1276,
-      "calls": 2702,
-      "p99_ref": 8.29
+      "p50_us": 112,
+      "p99_us": 350,
+      "max_us": 921,
+      "calls": 2712,
+      "p99_ref": 9.3
     },
     "strict/re2": {
-      "p50_us": 137,
-      "p99_us": 354,
-      "max_us": 919,
-      "calls": 2702,
-      "p99_ref": 6.5
+      "p50_us": 107,
+      "p99_us": 272,
+      "max_us": 653,
+      "calls": 2712,
+      "p99_ref": 7.23
     },
     "strict/regex": {
-      "p50_us": 140,
-      "p99_us": 432,
-      "max_us": 1306,
-      "calls": 2702,
-      "p99_ref": 7.87
+      "p50_us": 119,
+      "p99_us": 346,
+      "max_us": 970,
+      "calls": 2712,
+      "p99_ref": 8.66
     },
     "dev/re2": {
-      "p50_us": 125,
-      "p99_us": 367,
-      "max_us": 868,
-      "calls": 2702,
-      "p99_ref": 6.66
+      "p50_us": 103,
+      "p99_us": 298,
+      "max_us": 651,
+      "calls": 2712,
+      "p99_ref": 7.37
     },
     "dev/regex": {
-      "p50_us": 127,
-      "p99_us": 393,
-      "max_us": 1106,
-      "calls": 2702,
-      "p99_ref": 7.23
+      "p50_us": 102,
+      "p99_us": 309,
+      "max_us": 767,
+      "calls": 2712,
+      "p99_ref": 8.19
     }
   },
   "engine_mismatches": [],
@@ -5563,7 +5563,7 @@
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 13.68% over the 5% target",
     "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.19% over the 5% target"
+    "strict e17 false positives 5.17% over the 5% target"
   ],
   "failed": [],
   "ok": true
