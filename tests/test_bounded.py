@@ -246,7 +246,8 @@ class EveryStructuralMutation(unittest.TestCase):
         with open(path, "wb") as f:
             f.write(zipped(entries, self.entries))
         rep, code = v2.verify(path, self.TRUST)   # raising fails the test
-        self.made.append((path, verdict(code, rep.integrity, rep.assurance, rep.checks)))
+        rated = v2.NOT_RATED if code == v2.EXIT_FAIL else rep.assurance   # as --json gives it
+        self.made.append((path, verdict(code, rep.integrity, rated, rep.checks)))
         return code, rep.integrity
 
     def assert_none(self, wrong):

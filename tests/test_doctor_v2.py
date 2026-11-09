@@ -658,11 +658,21 @@ class AntigravityHooks(unittest.TestCase):
 class DevFresh(unittest.TestCase):
     def test_a_dev_signer_that_never_started_gets_dev_advice(self):
         """On a fresh home doctor said "run doctor as root" for the missing keys and "add a witness in signer.yaml" at
-        assurance "local", none of which fits a dev signer: it has no keys until `tracekit up` and takes no witnesses."""
+        assurance "local", none of which fits a dev signer: it has no keys until `tracekit up` and takes no witnesses.
+        QA of 1.6.0: its keys check warned `cannot inspect …/keys: No such file or directory` while the checks beside
+        it said what they check was not made yet."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev")}
-        self.assertEqual(got["D-KEYS-MODE"]["fix"], "start the dev signer: tracekit up")
+        self.assertEqual({k: got["D-KEYS-MODE"][k] for k in ("status", "detail", "fix")},
+                         {"status": "info", "fix": "", "detail": f"{os.path.join(d, 'keys')}: not made yet, checked "
+                          "after the dev signer's first start (an agent's first call, or tracekit up)"})
+        os.mkdir(os.path.join(d, "store"))   # it ran, and its keys are gone since: a fault, not "not made yet"
+        keys = next(r for r in doctor.v2_checks({"data_dir": d}, "dev") if r["id"] == "D-KEYS-MODE")
+        self.assertEqual({k: keys[k] for k in ("status", "fix")},
+                         {"status": "warn", "fix": "start the dev signer: tracekit up"})
+        # the reason is the OS's own words (Windows: "The system cannot find the path specified")
+        self.assertTrue(keys["detail"].startswith(f"cannot inspect {os.path.join(d, 'keys')}: "), keys["detail"])
         self.assertIn("assurance stays dev", got["D-WITNESS-CONFIGURED"]["detail"])
         self.assertIn("the dev signer uses the public witness, which isn't deployed yet: nothing to do until a release "
                       "names it; to anchor now", got["D-WITNESS-CONFIGURED"]["fix"])

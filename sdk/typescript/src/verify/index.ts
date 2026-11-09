@@ -1728,9 +1728,11 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
  * the text around them, as the report prints bundle-derived strings. */
 export const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "");
 
-/** The Assurance line as the reports print it: an assurance level rates only evidence that verified. */
+/** A failed bundle's assurance: a level rates only evidence that verified. */
+export const NOT_RATED = "not rated (the bundle failed verification)";
+/** The Assurance line as the reports print it. */
 export const assuranceLine = (rep: Report) =>
-  `Assurance: ${rep.integrity === "FAILED" ? "not rated (the bundle failed verification)" : clean(rep.assurance)}.`;
+  `Assurance: ${rep.integrity === "FAILED" ? NOT_RATED : clean(rep.assurance)}.`;
 
 /** The report as text, as the reference CLI prints it; `clean` drops characters from bundle-derived strings. */
 export function formatReport(rep: Report): string {
