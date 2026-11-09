@@ -561,8 +561,8 @@ class TestVerifyV2(Case):
             self.assertEqual((ts["exit_code"], ts["integrity"], ts["checks"]), (code, rep.integrity, rep.checks))
 
     def test_a_failed_line_says_what_failed_and_a_failed_bundle_is_not_rated(self):
-        """The failed line's headline counts its problems, never repeating the pass text; a failed bundle's printed
-        Assurance line is not rated (--json keeps the level the checkpoint has)."""
+        """The failed line's headline counts its problems, never repeating the pass text; a failed bundle's
+        Assurance line is not rated. QA of 1.6.0: --json still gave the level the checkpoint has."""
         _, out = self.honest()
         edited = self.mutate(out, lambda rs: rs[2]["event"]["data"].update(name="Write"))
         code, stdout, _ = self.cli(edited, "--trust", self.trust, "--detail")
@@ -571,8 +571,9 @@ class TestVerifyV2(Case):
         self.assertNotIn("keys valid at their position", stdout)
         self.assertTrue(stdout.endswith("\nIntegrity: FAILED.\nAssurance: not rated (the bundle failed verification).\n"),
                         stdout)
-        self.assertTrue(json.loads(self.cli(edited, "--trust", self.trust, "--json")[1])["assurance"].startswith(
-            "witnessed;"))
+        got = json.loads(self.cli(edited, "--trust", self.trust, "--json")[1])
+        self.assertEqual((got["exit_code"], got["integrity"], got["assurance"]),
+                         (1, "FAILED", "not rated (the bundle failed verification)"))
 
     def test_e1_mutations_fail(self):
         log, out = self.honest()

@@ -1938,7 +1938,9 @@ def status():
                              "content_capture": pol.get("content_capture", "hashed"), "reasoning_capture": pol.get("reasoning_capture", False)}
         except Exception as e:
             out["policy"] = {"error": str(e)}
-    out["hooks"] = _installed_hooks()
+    from .doctor import _dev_harnesses   # the other coding agents' v2 hooks, as doctor finds them
+    out["hooks"] = _installed_hooks() + [{"settings": p, "agent": h, "versions": ["v2"]}
+                                         for h, p in sorted(_dev_harnesses().items())]
     out["capture_sources"] = ["hook"] + (["proxy"] if cfg.get("proxy") else []) + \
         (["transcript"] if (out["policy"] or {}).get("reasoning_capture") else [])
     if cfg.get("proxy_url"):

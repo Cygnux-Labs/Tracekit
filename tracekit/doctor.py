@@ -848,9 +848,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-KEYS-MODE", False, f"{len(names)} keys in {keys}; modes not checked", acl, bad=WARN)
     except OSError as e:
         names = None
-        fresh = not prod and e.errno == errno.ENOENT   # a dev signer that never started has no keys yet
-        add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}",
-            "start the dev signer: tracekit up" if fresh else ROOT_DOCTOR, bad=WARN)
+        missing = not prod and e.errno == errno.ENOENT   # a dev signer makes its keys as it starts
+        fresh = missing and first   # one that never started: nothing to check yet, not a fault
+        add("D-KEYS-MODE", False, f"{keys}: not made yet, {later}" if fresh else f"cannot inspect {keys}: {e.strerror}",
+            "" if fresh else "start the dev signer: tracekit up" if missing else ROOT_DOCTOR,
+            bad=INFO if fresh else WARN)
 
     try:
         content = service.content_config(cfg.get("content"))   # as the signer validates it

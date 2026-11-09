@@ -916,8 +916,8 @@ def _run(a):
         print("v2 system mode removed" + (f"; kept {' and user '.join(kept)} (--purge deletes them)" if kept else ""))
         return 0
     if a.cmd == "uninstall" and a.agent != "claude":
-        agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # it says what it removed
-        for line in [] if a.project else _kept():
+        path = agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # says what it removed
+        for line in [] if a.project else _kept(path):
             print(line)
         return 0
     if a.cmd == "uninstall":
@@ -1028,7 +1028,8 @@ def _run(a):
             rep, code = mod.verify(a.bundle, a.trust, a.v1_ledger, a.v1_key, a.monitor_report, a.revocations)
             if code == 0 and a.strict and rep.warnings:
                 code = 3
-            integrity, assurance = rep.integrity, rep.assurance
+            # a level rates only evidence that verified, as the Assurance line says
+            integrity, assurance = rep.integrity, mod.NOT_RATED if code == mod.EXIT_FAIL else rep.assurance
         else:
             from .verify import v1 as mod
             if v2_flags:
@@ -1100,9 +1101,31 @@ def _run(a):
     return 2
 
 
-def _kept():
+def _left(config):
+    """What uninstalling a coding agent's hooks leaves beside its hook config `config`: the copies Tracekit made of a
+    file there before changing it (files.backup's name.bak-<time>-<random>), and each such file now empty."""
+    d = os.path.dirname(config)
+    try:
+        baks = sorted(n for n in os.listdir(d) if re.search(r"\.bak-\d{8}-\d{6}-[0-9a-f]{8}$", n))
+    except OSError:
+        return []
+    empty = []
+    for p in dict.fromkeys(os.path.join(d, n.rsplit(".bak-", 1)[0]) for n in baks):
+        try:
+            with open(p, encoding="utf-8") as f:
+                text = f.read().strip()
+            if not text or json.loads(text) in ({}, {"version": 1}):   # Cursor's hooks.json keeps its version
+                empty.append((p, "empty now that Tracekit's entries are out"))
+        except (OSError, ValueError):   # gone, or not empty JSON
+            pass
+    return empty + [(os.path.join(d, n), f"a copy Tracekit made before changing {n.rsplit('.bak-', 1)[0]}")
+                    for n in baks]
+
+
+def _kept(agent_config=None):
     """What `tracekit uninstall` leaves in place (the dev signer's keys and signed runs, the client config, the dev
-    signer's runtime dir, a v1 dev signer's home), each that exists, and the commands that delete them and Tracekit."""
+    signer's runtime dir, a v1 dev signer's home, and what is _left of `agent_config`, a coding agent's hook config),
+    each that exists, and the commands that delete them and Tracekit."""
     from . import client
     from .sdk import autospawn
     try:
@@ -1117,7 +1140,7 @@ def _kept():
              # as uninstall() stops it: a dev home only, never system mode's signer home (/var/lib/tracekit)
              (cfg.get("signer_home") if cfg.get("mode") == "dev" else None, "the v1 dev signer's home"),
              *[(d, "the dev signer's runtime dir") for d in mine]]
-    where = [(d, what) for d, what in where if d and os.path.isdir(d)]
+    where = [(d, what) for d, what in where if d and os.path.isdir(d)] + (_left(agent_config) if agent_config else [])
     note = [f"{unread}, so this lists only your own files"] if unread else []
     if not where:
         return note
@@ -1150,7 +1173,8 @@ def _status_lines(st, v2, plugin=None, chosen=False):
              else f"signer      {name}: {v2.get('error') or 'running'}"]
     if v2.get("data_dir"):
         lines.append(f"data        {v2['data_dir']} (its keys and signed runs)")
-    found = [f"hooks       {' and '.join(h['versions'])} hooks in {h['settings']} ({len(h['events'])} events)"
+    found = [f"hooks       v2 hooks for {h['agent']} in {h['settings']}" if "agent" in h else
+             f"hooks       {' and '.join(h['versions'])} hooks in {h['settings']} ({len(h['events'])} events)"
              for h in st["hooks"] if h.get("versions")]
     lines += [f"hooks       {h['settings']} isn't a settings file Tracekit can read, so its hooks are unknown"
               for h in st["hooks"] if "error" in h]

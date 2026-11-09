@@ -133,13 +133,19 @@ TOOLS = {f.__name__: f for f in (lookup_order, issue_refund, send_email, export_
 
 # --------------------------------------------------------------------------- program
 
-def program(rt: Runtime, docs: Dict[str, Any] = DOCS) -> Dict[str, Any]:
+def program(rt: Runtime, docs: Dict[str, Any] = DOCS, asked: bool = False) -> Dict[str, Any]:
+    """asked: a model call asks for the order lookup, as the signer expects: it reads a call no model of the run asked
+    for as a fabricated decide (reconcile). That call is recorded, not decided: its scripted answer takes no seed, so
+    the later calls' seeds stay as they are."""
     researcher = rt.agent("researcher", role="gathers facts")
     planner = rt.agent("planner", parent="researcher", role="decides steps")
     executor = rt.agent("executor", parent="planner", role="runs tools")
 
     docs = [researcher.observe(text, source=src, trust=trust) for src, (trust, text) in docs.items()]
-    order = researcher.act("lookup_order", {"order_id": 1042})
+    call = {"tool": "lookup_order", "args": {"order_id": 1042}}
+    lookup = researcher.record_decision([rt.task_ref], {"calls": [call]}, model="mock", purpose="lookup") if asked \
+        else None
+    order = researcher.act(call["tool"], call["args"], decision=lookup)
     summary = researcher.decide([rt.task_ref, *docs, order], model="mock", purpose="summarize")
     researcher.send("planner", summary)
 
@@ -160,7 +166,8 @@ SYSTEM = System(program=program, models={"mock": mock_llm}, tools=TOOLS, task=TA
 # `tracekit demo --why`: the same desk on the signer. The ticket came in through the desk's own inbox (trusted), and
 # the task names the customer, so the signer knows their address came from the app, not from untrusted content.
 SIGNED_DOCS = {**DOCS, "inbox:ticket-881": ("trusted", DOCS["inbox:ticket-881"][1])}
-SIGNED_SYSTEM = System(program=functools.partial(program, docs=SIGNED_DOCS), models={"mock": mock_llm}, tools=TOOLS,
+SIGNED_SYSTEM = System(program=functools.partial(program, docs=SIGNED_DOCS, asked=True), models={"mock": mock_llm},
+                       tools=TOOLS,
                        task="Ticket #881 from c.rao@example.com: order 1042 arrived damaged. Investigate and resolve "
                             "per policy.", name="tracekit.why.demo:SIGNED_SYSTEM",
                        sensitive_tools=("issue_refund", "send_email", "export_customers"))
