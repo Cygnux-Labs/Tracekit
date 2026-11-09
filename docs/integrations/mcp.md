@@ -39,6 +39,8 @@ Every other attribute is the wrapped session's. Only calls made through the wrap
 | right before it is sent | `approval_consume` | the same call and arguments, and the approval id when the call waited for one |
 | after the server answers | `complete` | `status` `ok`, or `error` for a result with `isError: true`; a `sha256:` commitment to the result (not the result), or the exception type and message |
 
+`list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`observe`, source `mcp:<server>/tools`, `/resources` or `/prompts`): the model reads the descriptions the server wrote, and the page the caller asked for is what is recorded.
+
 `<server>` is the name in the server's initialize result, with every character outside `A-Za-z0-9_.-` replaced by `_`
 (`unknown` when the server gave none). The policy's `tools` map should map `mcp:*/*` to the `mcp` class (the coding
 pack does), so rules can match the `server`, `tool` and `args` fields. A class hint that disagrees with the policy is

@@ -153,10 +153,11 @@ class _Signer:
     """A signer that fails the way it is told: `decide` and `complete` raise `errors[method]` when set."""
 
     def __init__(self, decision="allow", **errors):
-        self.decision, self.errors, self.tools, self.completed = decision, errors, [], []
+        self.decision, self.errors, self.tools, self.completed, self.requests = decision, errors, [], [], []
 
     def __getattr__(self, method):
         def call(req):
+            self.requests.append((method, req))
             self.tools += [req["tool"]] if method == "decide" else []
             self.completed += [req] if method == "complete" else []
             if method in self.errors:
@@ -255,3 +256,105 @@ class SignerFailures(unittest.TestCase):
             autowire._mcp(run)
             out = asyncio.run(_StubSession().get_prompt("triage", {"issue": "1"}))
         self.assertEqual((out.messages[0].content.text, signer.tools), ("hi", ["mcp:stub/prompt:triage"]))
+
+
+class _ListingSession(_StubSession):
+    """List methods return one page, the one `params.cursor` names (the first when the caller asks for none)."""
+
+    def __init__(self):
+        super().__init__()
+        self.cursors, self.results = [], []
+
+    def _page(self, kw):
+        cursor = getattr(kw.get("params"), "cursor", None)
+        self.cursors.append(cursor)
+        self.calls += 1
+        return cursor
+
+    async def list_tools(self, *a, **kw):
+        from mcp.types import ListToolsResult, Tool
+        if self._page(kw) == "boom":
+            raise MCPError(-32603, "boom")
+        out = ListToolsResult(tools=[Tool(name="echo", description="do this", inputSchema={"type": "object"})])
+        self.results.append(out)
+        return out
+
+    async def list_resources(self, *a, **kw):
+        from mcp.types import ListResourcesResult, Resource
+        cursor = self._page(kw) or "page-1"
+        out = ListResourcesResult(resources=[Resource(name="box", uri=f"mem://{cursor}", description="inbox")])
+        self.results.append(out)
+        return out
+
+    async def list_prompts(self, *a, **kw):
+        from mcp.types import ListPromptsResult, Prompt
+        self._page(kw)
+        out = ListPromptsResult(prompts=[Prompt(name="triage", description="sort issues")])
+        self.results.append(out)
+        return out
+
+
+@unittest.skipUnless(HAVE_MCP, "mcp not installed")
+class ListsAreObserved(unittest.TestCase):
+    RUN = SignerFailures.RUN
+
+    def test_each_list_is_one_untrusted_observe_of_the_page_asked_for(self):
+        from mcp.types import PaginatedRequestParams
+        session, signer = _ListingSession(), _Signer()
+        gate = TracekitSession(session, signer, self.RUN, server="git hub")
+        tools = asyncio.run(gate.list_tools())
+        resources = asyncio.run(gate.list_resources(params=PaginatedRequestParams(cursor="page-2")))
+        prompts = asyncio.run(gate.list_prompts())
+        self.assertIs(tools, session.results[0])
+        self.assertIs(resources, session.results[1])
+        self.assertIs(prompts, session.results[2])
+        self.assertEqual(session.cursors, [None, "page-2", None])
+        observed = [r for m, r in signer.requests if m == "observe"]
+        self.assertEqual([(r["source"], r["trust"]) for r in observed],
+                         [("mcp:git_hub/tools", "untrusted"), ("mcp:git_hub/resources", "untrusted"),
+                          ("mcp:git_hub/prompts", "untrusted")])
+        self.assertEqual([r["client_seq"] for r in observed], [0, 1, 2])
+        self.assertEqual(observed[0]["value"], tools.model_dump(mode="json", by_alias=True, exclude_none=True))
+        self.assertEqual(observed[1]["value"]["resources"][0]["uri"], "mem://page-2")
+        self.assertEqual(observed[1]["value"], resources.model_dump(mode="json", by_alias=True, exclude_none=True))
+        self.assertEqual(observed[2]["value"]["prompts"][0]["description"], "sort issues")
+
+    def test_a_failed_observe_warns_and_returns_the_list(self):
+        from mcp.types import PaginatedRequestParams
+
+        from tracekit.signer.rpc_schema import RPCError
+        session, signer = _ListingSession(), _Signer(observe=RPCError("unavailable", "down"))
+        with self.assertWarns(UserWarning) as cm:
+            out = asyncio.run(TracekitSession(session, signer, self.RUN).list_tools())
+        self.assertIs(out, session.results[0])
+        self.assertIn("not recorded", str(cm.warning))
+        signer = _Signer()
+        with self.assertRaises(MCPError):
+            asyncio.run(TracekitSession(_ListingSession(), signer, self.RUN).list_tools(
+                params=PaginatedRequestParams(cursor="boom")))
+        self.assertEqual(signer.requests, [])
+
+    def test_an_unnamed_session_records_unknown_and_warns(self):
+        session, signer = _ListingSession(), _Signer()
+        session.server_info = None
+        with self.assertWarns(UserWarning) as cm:
+            asyncio.run(TracekitSession(session, signer, self.RUN).list_resources())
+        self.assertEqual(signer.requests[0][1]["source"], "mcp:unknown/resources")
+        self.assertIn("server=", str(cm.warning))
+
+    def test_instrument_observes_a_sessions_lists(self):
+        from tracekit import autowire
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        with mock.patch("mcp.ClientSession", _ListingSession), \
+                mock.patch.object(_ListingSession, "call_tool", _ListingSession.call_tool), \
+                mock.patch.object(_ListingSession, "get_prompt", _ListingSession.get_prompt), \
+                mock.patch.object(_ListingSession, "list_tools", _ListingSession.list_tools), \
+                mock.patch.object(_ListingSession, "list_resources", _ListingSession.list_resources), \
+                mock.patch.object(_ListingSession, "list_prompts", _ListingSession.list_prompts):
+            autowire._mcp(run)
+            out = asyncio.run(_ListingSession().list_resources(params=None))
+        self.assertEqual(out.resources[0].uri, "mem://page-1")
+        [req] = [r for m, r in signer.requests if m == "observe"]
+        self.assertEqual((req["source"], req["trust"]), ("mcp:stub/resources", "untrusted"))
+        self.assertEqual(req["value"]["resources"][0]["description"], "inbox")
