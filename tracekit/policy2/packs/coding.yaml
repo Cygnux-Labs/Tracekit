@@ -807,8 +807,9 @@ ask:
   - id: TK-A014
     # TK-A003's twin for Claude Code's auto mode: a Bash, PowerShell or Monitor call's allowed_domains opens those hosts
     # to that one command inside the sandbox. Matched as canonical JSON: any list with an entry (or a value that isn't
-    # a list); an empty list opens nothing and isn't held. WebSearch's allowed_domains only narrows its results
-    tool: Bash|PowerShell|Monitor
+    # a list); an empty list opens nothing and isn't held. WebSearch's allowed_domains only narrows its results. `bash`
+    # too: the server parts map that name (Anthropic's bash tool) to the shell class as Bash
+    tool: '[Bb]ash|PowerShell|Monitor'
     field: allowed_domains
     pattern: '^(\[[^\]]|[^\[])'
     reason: opening network hosts beyond Claude Code's sandbox for one command
@@ -978,7 +979,7 @@ flag:
     pattern: '&\s*$|&\s*;'
     label: background_spawn
   - id: TK-F008
-    tool: Bash
+    tool: '[Bb]ash'   # bash too, as TK-A014
     field: run_in_background
     pattern: '^[Tt][Rr][Uu][Ee]$'
     label: background_spawn

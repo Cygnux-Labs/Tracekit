@@ -30,6 +30,9 @@ tools:
   SendMessage: harness       # Claude Code: a message to a teammate or a running subagent
   SubagentHandback: harness  # Claude Code: a subagent's report to the agent that started it
   TodoWrite: harness         # Claude Code's todo list, and the other harnesses' (above)
+  ToolSearch: harness        # Claude Code: loads tools' schemas by name or by a search (`select:Read,Edit`)
+  Skill: harness             # Claude Code: loads a skill's instructions by its name
+  SlashCommand: harness      # Claude Code: expands a slash command's prompt (`/review`)
 
 deny:
   - id: TK-DEMO-DENY
@@ -64,7 +67,7 @@ ask:
     # TK-A002's ask. A push of named branches other than main and master stays flagged (TK-F004). Any other command is
     # its argv: publishing a package (npm, pnpm, yarn or bun publish, yarn's `npm publish`, uv, poetry or cargo
     # publish, gem push, twine upload, also as any runner's `-m twine`), pushing an image or a chart (docker or podman
-    # push and image push, helm push) or deploying (terraform or tofu apply, pulumi up, helm install or upgrade,
+    # push and image push, helm push) or deploying (terraform, tofu or terragrunt apply, pulumi up, helm install or upgrade,
     # kubectl apply or delete), each after up to eight options with a value or not; a gh or hub api call naming
     # main's or master's ref (git/refs/heads/main, ref=refs/heads/main), merging branches (repos/<o>/<r>/merges) or
     # putting or deleting a file (engine._gh_api's `PUSH:contents`), read percent-decoded as GitHub reads its path;
@@ -75,25 +78,33 @@ ask:
     # main's ref, a merge into any branch and a GraphQL mutation on any ref are held as one on main would be (the
     # method, the base and the ref id aren't read: reading /merges with base=main in either order took the fallback
     # engine seconds on 64 KiB); add a verb here when one is in use
-    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\brepos/[^/ ]+/[^/ ]+/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRef|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/)?(?:main|master)(?: |$)|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))'
+    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^terragrunt(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:run-all |stack run |run (?:-[^ ]+ )*)?apply(?:-all)?(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\brepos/[^/ ]+/[^/ ]+/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRef|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/)?(?:main|master)(?: |$)|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))'
+    # a kubectl dry run (--dry-run, =client or =server) changes nothing; kubectl takes the last --dry-run, so one
+    # whose last --dry-run is =none or =false is held (read as the last such token, so the fallback reads it once)
+    unless: '^kubectl[\w\W]* --dry-run(?:=(?:client|server))?(?: (?:[^ \-][^ ]*|\-(?:[^ \-][^ ]*|\-(?:[^ d][^ ]*|d(?:[^ r][^ ]*|r(?:[^ y][^ ]*|y(?:[^ \-][^ ]*|\-(?:[^ r][^ ]*|r(?:[^ u][^ ]*|u(?:[^ n][^ ]*)?)?)?)?)?)?)?)?))*$'
     reason: a push to the default branch or of tags, or a publish or deploy
     remedy: Have a person approve the held call, or push a named feature branch and leave the merge or release to a person.
     rationale: These reach a shared branch, a registry or a running system, where others build, install or deploy from them; a person confirms each one.
   - id: TK-A062
     class: unknown
-    # every tool but Claude Code's PowerShell, which stays unmapped on purpose: the signer also reads its command as a
-    # shell line, and holds it only where a deny or ask rule matches it as bash reads it (signer/service.py)
-    tool: '(?:[^P][\w\W]*|P(?:[^o][\w\W]*|o(?:[^w][\w\W]*|w(?:[^e][\w\W]*|e(?:[^r][\w\W]*|r(?:[^S][\w\W]*|S(?:[^h][\w\W]*|h(?:[^e][\w\W]*|e(?:[^l][\w\W]*|l(?:[^l][\w\W]*|l[\w\W]+)?)?)?)?)?)?)?)?)?)?'
-    # a tool no pack maps (unknown_tools flags it) given a command line or a SQL statement to run: the whole call, an
-    # argument named command, cmd, commands or sql (at any depth), or a query or statement whose text starts, after
-    # up to eight blanks and MySQL's /*!NNNNN, with a SQL verb and names a table, database, user or other object of one, or ends a
-    # statement (`;`), or is a CTE (WITH name AS ( ). What the tool runs it on, and how, is its own, so no rule reads
-    # its effect; the server pack holds every unmapped tool, the laptop these. Data, a search query and ToolSearch's
-    # `select:` stay flagged. JSON escapes a tab or newline in the text as \t or \n.
-    # lean: an English query that starts with one of these verbs and names one of those words (`select a hotel from
-    # the list`) is held too, and a statement that starts otherwise (CALL, a comment) isn't; read the text with the
-    # SQL reading (classes.sql_code) if either happens
-    pattern: '"(?:command|cmd|commands|sql)":|"(?:query|statement)":"(?:\s|\\[tnr]|/\*!?[0-9]*){0,8}(?:(?:[Ss][Ee][Ll][Ee][Cc][Tt]|[Ii][Nn][Ss][Ee][Rr][Tt]|[Uu][Pp][Dd][Aa][Tt][Ee]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Dd][Rr][Oo][Pp]|[Cc][Rr][Ee][Aa][Tt][Ee]|[Aa][Ll][Tt][Ee][Rr]|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]|[Gg][Rr][Aa][Nn][Tt]|[Rr][Ee][Vv][Oo][Kk][Ee]|[Cc][Oo][Pp][Yy]|[Ee][Xx][Ee][Cc](?:[Uu][Tt][Ee])?)\b(?:[^"\\]|\\.)*?(?:;|(?:\\[tnr]|\b)(?:[Ff][Rr][Oo][Mm]|[Ii][Nn][Tt][Oo]|[Ss][Ee][Tt]|[Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Vv][Aa][Ll][Uu][Ee][Ss]|[Ww][Hh][Ee][Rr][Ee]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Pp][Rr][Ii][Vv][Ii][Ll][Ee][Gg][Ee][Ss])\b)|[Ww][Ii][Tt][Hh](?:\s|\\[tnr])(?:[^"\\]|\\.)*?(?:\s|\\[tnr])[Aa][Ss](?:\s|\\[tnr])*\()'
+    # every tool but two kinds: Claude Code's PowerShell (in any case), unmapped on purpose (the signer also reads its
+    # command as a shell line, and holds it only where a deny or ask rule matches it as bash reads it:
+    # signer/service.py), and an MCP tool (mcp__…, mcp:…), which the MCP rules read (TK-S010, TK-S012, TK-A041)
+    tool: '(?:[^Ppm][\w\W]*|[Pp](?:[^Oo][\w\W]*|[Oo](?:[^Ww][\w\W]*|[Ww](?:[^Ee][\w\W]*|[Ee](?:[^Rr][\w\W]*|[Rr](?:[^Ss][\w\W]*|[Ss](?:[^Hh][\w\W]*|[Hh](?:[^Ee][\w\W]*|[Ee](?:[^Ll][\w\W]*|[Ll](?:[^Ll][\w\W]*|[Ll](?:[\w\W]+))?)?)?)?)?)?)?)?)?|m(?:[^c][\w\W]*|c(?:[^p][\w\W]*|p(?:[^_\:][\w\W]*|_(?:[^_][\w\W]*)?)?)?)?)?'
+    # a tool no pack maps (unknown_tools flags it) given a command line or a SQL statement to run, anywhere in the
+    # call: an argument TK-S010 reads (command, commands, cmd, cmds, script, shell_command, in any case) that is a list
+    # or two words or more (a one-word `command`, as the text editor's `view` or a skill's name, is no command line;
+    # a first word of up to 256 characters, after up to 32 blanks and before up to 32);
+    # or a sql, query or statement argument (in any case; a string, or a list's first) holding, at its start or after
+    # a `;`, past up to 32 blanks, short comments and MySQL's /*!NNNNNN, a write or DDL statement (INSERT, REPLACE or MERGE
+    # INTO; UPDATE x SET; DELETE FROM; DROP a table, database, user or other object; TRUNCATE x), a CTE (WITH x AS (),
+    # or a terminated SELECT, CREATE, ALTER, GRANT, REVOKE, COPY, EXEC or CALL (`;` after it: `create table of
+    # contents` is a search). What the tool runs it on, and how, is its own, so no rule reads its effect; the server
+    # pack holds every unmapped tool, the laptop these. JSON escapes a tab or newline in the text as \t or \n.
+    # lean: a search in English shaped like one of these (`delete from my list`, `truncate text`) is held too, and a
+    # statement under another argument name (input, text, q) or behind a leading `(`, EXPLAIN or DO is flagged, not
+    # held; read the text with the SQL reading (classes.sql_code) if either happens
+    pattern: '"(?:[Cc][Oo][Mm][Mm][Aa][Nn][Dd][Ss]|[Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Cc][Mm][Dd][Ss]|[Cc][Mm][Dd]|[Ss][Cc][Rr][Ii][Pp][Tt]|[Ss][Hh][Ee][Ll][Ll]_[Cc][Oo][Mm][Mm][Aa][Nn][Dd])":(?:\[|"(?:\s|\\[tnr]){0,32}(?:[^\s"\\]|\\[^tnr]){1,256}(?:\s|\\[tnr]){1,32}(?:[^\s"\\]|\\[^tnr]))|"(?:[Ss][Qq][Ll]|[Qq][Uu][Ee][Rr][Yy]|[Ss][Tt][Aa][Tt][Ee][Mm][Ee][Nn][Tt])":\[?"(?:(?:[^"\\]|\\.)*;)?(?:\s|\\[tnr]|/\*![0-9]{0,6}|\*/|/\*[^*"]{0,30}\*/|--[^"\\]{0,30}\\n){0,32}(?:(?:[Ii][Nn][Ss][Ee][Rr][Tt]|[Rr][Ee][Pp][Ll][Aa][Cc][Ee]|[Mm][Ee][Rr][Gg][Ee])(?:\s|\\[tnr]|/\*![0-9]{0,6}|\*/|/\*[^*"]{0,30}\*/|--[^"\\]{0,30}\\n){1,16}[Ii][Nn][Tt][Oo]\b|[Uu][Pp][Dd][Aa][Tt][Ee](?:\s|\\[tnr]|/\*![0-9]{0,6}|\*/|/\*[^*"]{0,30}\*/|--[^"\\]{0,30}\\n){1,16}(?:[A-Za-z0-9_.$\x60]|\\")+(?:\s|\\[tnr]|/\*![0-9]{0,6}|\*/|/\*[^*"]{0,30}\*/|--[^"\\]{0,30}\\n){1,16}[Ss][Ee][Tt]\b|[Dd][Ee][Ll][Ee][Tt][Ee](?:\s|\\[tnr]|/\*![0-9]{0,6}|\*/|/\*[^*"]{0,30}\*/|--[^"\\]{0,30}\\n){1,16}[Ff][Rr][Oo][Mm]\b|[Dd][Rr][Oo][Pp](?:\s|\\[tnr]|/\*![0-9]{0,6}|\*/|/\*[^*"]{0,30}\*/|--[^"\\]{0,30}\\n){1,16}(?:[Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Oo][Ww][Nn][Ee][Dd]|[Ff][Uu][Nn][Cc][Tt][Ii][Oo][Nn]|[Pp][Rr][Oo][Cc][Ee][Dd][Uu][Rr][Ee]|[Tt][Rr][Ii][Gg][Gg][Ee][Rr]|[Ss][Ee][Qq][Uu][Ee][Nn][Cc][Ee]|[Tt][Yy][Pp][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn]|[Mm][Aa][Tt][Ee][Rr][Ii][Aa][Ll][Ii][Zz][Ee][Dd]|[Tt][Aa][Bb][Ll][Ee][Ss][Pp][Aa][Cc][Ee]|[Pp][Oo][Ll][Ii][Cc][Yy]|[Ii][Ff])\b|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee](?:\s|\\[tnr]|/\*![0-9]{0,6}|\*/|/\*[^*"]{0,30}\*/|--[^"\\]{0,30}\\n){1,16}(?:[Tt][Aa][Bb][Ll][Ee](?:\s|\\[tnr]|/\*![0-9]{0,6}|\*/|/\*[^*"]{0,30}\*/|--[^"\\]{0,30}\\n){1,16})?(?:[A-Za-z0-9_.$\x60]|\\")+|(?:[Ss][Ee][Ll][Ee][Cc][Tt]|[Cc][Rr][Ee][Aa][Tt][Ee]|[Aa][Ll][Tt][Ee][Rr]|[Gg][Rr][Aa][Nn][Tt]|[Rr][Ee][Vv][Oo][Kk][Ee]|[Cc][Oo][Pp][Yy]|[Ee][Xx][Ee][Cc][Uu][Tt][Ee]|[Ee][Xx][Ee][Cc]|[Cc][Aa][Ll][Ll])\b(?:[^"\\]|\\.)*?;|[Ww][Ii][Tt][Hh](?:\s|\\[tnr])(?:[^"\\;]|\\.)*?(?:\s|\\[tnr])[Aa][Ss](?:\s|\\[tnr])*\()'
     reason: an unmapped tool given a command or a SQL statement to run
     remedy: Have a person approve the held call, or map the tool in a policy of your own (`tools:`), to `shell` or `sql` so the rules read what it runs, or to `app` if it runs nothing.
     rationale: Tracekit can't read what an unmapped tool does with a command or a query, and the server pack holds every unmapped tool; a person confirms these.

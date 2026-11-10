@@ -4388,31 +4388,125 @@ class GuardrailsAndPushes(unittest.TestCase):
 
     def test_an_unmapped_tool_given_a_command_or_sql_is_held(self):
         """The server pack holds every tool it doesn't map; the laptop default flags one, as a laptop runs tools no
-        list names (an SDK app's own tools among them). One given a command line or a SQL statement to run is a call
-        whose effect no rule reads, so it waits for a person here too (TK-A062); one given data, a search query or
-        ToolSearch's `select:` stays flagged. Every attack the server pack stopped only as an unmapped tool's call ran
-        on the laptop: 53 of E21's held-out and blind calls."""
-        for tool in ("warehouse_query", "ops_exec", "cluster", "ToolSearch"):
+        list names (an SDK app's own tools among them). One given a command line (in an argument TK-S010 reads, in any
+        case: a list, or two words or more) or a SQL statement (a write or a DDL statement, or a terminated one, at the
+        text's start or after a `;`, in a sql, query or statement argument in any case) is a call whose effect no rule
+        reads, so it waits for a person here too (TK-A062). Every attack the server pack stopped only as an unmapped
+        tool's call ran on the laptop: 53 of E21's held-out and blind calls. Review of #605: the argument names in
+        another case, `script` and `shell_command`, `TRUNCATE users`, a statement after a `;` and nine blanks before
+        one were only flagged."""
+        for tool in ("warehouse_query", "ops_exec", "cluster"):
             self.assertEqual(self.engines[0].tool_class(tool), "unknown")   # no pack maps these
         self.verdicts([
             ("warehouse_query", {"query": "DROP TABLE orders;"}),
-            ("warehouse_query", {"query": "select * from customers"}),
+            ("warehouse_query", {"query": "SELECT email FROM customers;"}),
             ("warehouse_query", {"query": " /*!50000 DROP */ TABLE t;"}),
             ("warehouse_query", {"query": "UPDATE\taccounts\tSET balance = 0"}),
             ("warehouse_query", {"query": "WITH t AS (DELETE FROM users RETURNING *) SELECT 1"}),
             ("warehouse_query", {"statement": "delete from audit_log"}),
-            ("warehouse_query", {"sql": "anything at all"}),
+            ("warehouse_query", {"sql": "DROP TABLE users"}),
+            ("warehouse_query", {"SQL": "DROP TABLE users"}),
+            ("warehouse_query", {"query": "TRUNCATE users"}),
+            ("warehouse_query", {"query": "; DROP TABLE users"}),
+            ("warehouse_query", {"query": "BEGIN; DROP TABLE users; COMMIT"}),
+            ("warehouse_query", {"query": "         DROP TABLE users"}),
+            ("warehouse_query", {"query": ["DROP TABLE users"]}),
             ("ops_exec", {"command": "get pods -A"}),
+            ("ops_exec", {"Command": "rm -rf ~"}),
+            ("ops_exec", {"script": "rm -rf ~"}),
+            ("ops_exec", {"shell_command": "rm -rf ~"}),
             ("ops_exec", {"cmd": ["rm", "-rf", "build"]}),
             ("cluster", {"options": {"commands": ["scale deploy api --replicas=0"]}})], "ask", "TK-A062")
         self.verdicts([
             ("warehouse_query", {"query": "delete my account"}),
             ("warehouse_query", {"query": "refund policy for orders"}),
             ("warehouse_query", {"statement": "bank statement for March"}),
-            ("ToolSearch", {"query": "select:Read,Edit,Grep", "max_results": 3}),
+            ("warehouse_query", {"query": "select the best hotel from the list"}),
+            ("warehouse_query", {"query": "drop shipping ideas from home"}),
+            ("warehouse_query", {"query": "update from openai on new models"}),
+            ("warehouse_query", {"query": "create table of contents in word"}),
+            ("warehouse_query", {"query": "SELECT 1"}),
             ("cluster", {"note": "a \"command\": key named in a string"}),
-            # Claude Code's PowerShell, unmapped on purpose: the signer reads it as bash too (SignerPolicy's tests)
-            ("PowerShell", {"command": "Get-ChildItem -Recurse"})], "flag", "TK-UNKNOWN-TOOL")
+            ("Shell", {"command": "ls"}),
+            # Claude Code's PowerShell, unmapped on purpose in any case: the signer reads it as bash too
+            ("PowerShell", {"command": "Get-ChildItem -Recurse"}),
+            ("powershell", {"command": "Get-ChildItem -Recurse"})], "flag", "TK-UNKNOWN-TOOL")
+
+    def test_a_harness_or_mcp_tool_is_not_read_as_an_unmapped_one(self):
+        """Review of #605, through the signer's own reading (evaluate): TK-A062 held Claude Code's ToolSearch, Skill
+        and SlashCommand, Anthropic's text-editor and memory tools (a `command` of `view` or `create`), a Gemini CLI or
+        Crush MCP tool (`mcp__<server>_<tool>`, also read as an unmapped tool) given a search or a SELECT, and lower-case
+        powershell. A harness tool is class harness; an MCP name is the MCP rules' (TK-S010, TK-A041); a one-word
+        command is no command line."""
+        e = self.engines[0]
+        for tool in ("ToolSearch", "Skill", "SlashCommand"):
+            self.assertEqual(e.tool_class(tool), "harness")
+        for tool, args in (
+                ("mcp__postgres_query", {"sql": "SELECT 1"}),
+                ("mcp__github_search_code", {"query": "delete from users repo:acme/api"}),
+                ("str_replace_based_edit_tool", {"command": "view", "path": "/repo/a.py"}),
+                ("str_replace_based_edit_tool", {"command": "create", "path": "/repo/a.py", "file_text": "x = 1"}),
+                ("str_replace_based_edit_tool", {"command": "str_replace", "path": "/repo/a.py", "old_str": "a",
+                                                 "new_str": "b"}),
+                ("str_replace_editor", {"command": "view", "path": "/repo/a.py"}),
+                ("memory", {"command": "view", "path": "/memories"}),
+                ("memory", {"command": "create", "path": "/memories/notes.md", "file_text": "select from views"}),
+                ("SlashCommand", {"command": "/review"}),
+                ("Skill", {"command": "pdf"}),
+                ("ToolSearch", {"query": "select:WebFetch,View", "max_results": 3}),
+                ("ToolSearch", {"query": "delete file from repo", "max_results": 3}),
+                ("powershell", {"command": "Get-ChildItem"})):
+            for eng in self.engines:
+                with self.subTest(engine=eng.engine, tool=tool, args=args):
+                    d = svc.evaluate(eng, tool, args)[0]
+                    self.assertIn(d["verdict"], ("allow", "flag"), d)
+                    self.assertNotIn("TK-A062", d["rule_ids"], d)
+        # an MCP tool given a command or a drop is still held, by the MCP rules
+        for tool, args, rule in (("mcp__desktop-commander_execute_command", {"command": "rm -rf ~"}, "TK-S010"),
+                                 ("mcp__postgres_query", {"sql": "DROP TABLE users"}, "TK-A041")):
+            d = svc.evaluate(e, tool, args)[0]
+            self.assertIn(d["verdict"], ("ask", "deny"), d)
+            self.assertIn(rule, d["rule_ids"], d)
+
+    def test_bash_reads_as_bash_for_the_claude_code_rules(self):
+        """Review of #605: the server parts map Anthropic's `bash` tool to the shell class, where TK-A014 (a command's
+        allowed_domains) and TK-F008 (run_in_background) named only `Bash`: a call renamed `bash` dropped them."""
+        cases = [json.loads(line) for line in open(os.path.join(os.path.dirname(__file__), "data", "policy", "deny",
+                                                                  "shell.jsonl")) if "allowed_domains" in line]
+        self.assertGreaterEqual(len(cases), 2)
+        for pack in ("dev.yaml", "server.yaml", "coding.yaml"):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            for c in cases:
+                with self.subTest(pack=pack, args=c["args"]):
+                    want, got = e.decide("Bash", c["args"]), e.decide("bash", c["args"])
+                    self.assertIn("TK-A014", want["rule_ids"])
+                    self.assertEqual((got["verdict"], "TK-A014" in got["rule_ids"]), (want["verdict"], True), got)
+            self.assertIn("TK-F008", e.decide("bash", {"command": "sleep 60", "run_in_background": True})["rule_ids"])
+
+    def test_cloud_deletes_with_options_and_dry_runs(self):
+        """Review of #605: aws reads its options anywhere, so one between the service and the operation (`aws rds
+        --region x delete-db-cluster`) let TK-C010 miss the delete on every pack; terragrunt applies as terraform does
+        (TK-A056); a kubectl dry run (--dry-run, =client or =server, last one wins) changes nothing, so it isn't held."""
+        for pack in ("dev.yaml", "server.yaml", "strict.yaml"):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            for c in ("aws rds --region us-east-1 delete-db-cluster --db-cluster-identifier prod",
+                      "aws rds --profile prod delete-db-cluster --db-cluster-identifier prod",
+                      "aws ec2 --region us-west-2 terminate-instances --instance-ids i-1",
+                      "aws --region us-east-1 rds --output json delete-db-instance --db-instance-identifier prod"):
+                with self.subTest(pack=pack, command=c):
+                    self.assertIn("TK-C010", e.decide("Bash", {"command": c})["rule_ids"])
+            for c in ("aws ec2 describe-instances --query delete-me", "aws rds --region us-east-1 describe-db-clusters"):
+                with self.subTest(pack=pack, command=c):
+                    self.assertNotIn("TK-C010", e.decide("Bash", {"command": c})["rule_ids"])
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "terragrunt apply", "terragrunt apply -auto-approve", "terragrunt run-all apply",
+            "kubectl delete deployment api -n production --dry-run=client --dry-run=none",
+            "kubectl apply -f deploy.yaml --dry-run=server --dry-run=none")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "kubectl delete deployment api -n production --dry-run=server",
+            "kubectl delete deployment api -n production --dry-run=client", "kubectl delete ns production --dry-run",
+            "kubectl apply -f deploy.yaml --dry-run=client")], "flag")
+        self.verdicts([("Bash", {"command": "terragrunt plan"})], "allow")
 
     def test_more_ways_to_push_to_main_and_to_publish(self):
         """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a
