@@ -2925,6 +2925,76 @@ class ApproveThenRetry(unittest.TestCase):
                                       ("policy.decision", {"decision": "deny"}), ("tool.result", "d7")),
                          ([[2, "ask", 6], [7, "deny", 8]], [("ask", "ok"), ("deny", "ok")]))
 
+    def test_an_approval_expiry_is_filed_with_the_held_call_not_a_later_decision_under_its_id(self):
+        """When an approved call did not run and the agent subsequently issued a different decision
+        under the same tool_use_id (e.g. deny or flag), the approval's expiry on run close must
+        attach to the held call, leaving the held call EXPIRED and the later call intact (BLOCKED
+        or RAN · FLAGGED)."""
+        needs_node(self)
+        top = {"run": "exp-after-deny", "tool_call_id": "c1", "attempt": 0, "tenant": "t", "log_id": "L"}
+        recs = [
+            v2rec(1, "run.registered", {"agent": {"name": "a"}}, **top),
+            v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                         "decision_id": "d2", "rule_ids": ["TK-D001"], "policy_hash": "p"}, **top),
+            v2rec(3, "approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, **top),
+            v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve", "approver": "u1"}, **top),
+            v2rec(5, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "deny",
+                                         "decision_id": "d5", "rule_ids": ["TK-D001"], "policy_hash": "p"}, **top),
+            v2rec(6, "approval.expired", {"approval_id": "X"}, **top),
+            v2rec(7, "run.final", {"head_run_seq": 7}, **top),
+        ]
+        tr, rows = view.Translator(), []
+        for r in recs:
+            rows += [{**x, "ts": r["event"]["run_seq"], "session_id": "exp-after-deny", "tk_seq": r["event"]["run_seq"]} for x in tr.feed(r)]
+        out = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                  "heldCall", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun",
+                                  "callState", "ingest", "permOf"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agentOf = r => ({{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }});
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows)};
+            foldsOf(ALL, FOLDS);
+            for (const r of ALL) {{ sessionOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify({{
+                calls: S.actList.map(a => [a.v2.decision, callState(a)[1]]),
+                perm: permOf(ALL).map(r => [r.rec.v2.decision, r.out[1]]),
+            }}));"""))
+        self.assertEqual(out["calls"], [["ask", "EXPIRED"], ["deny", "BLOCKED"]])
+        self.assertEqual(out["perm"], [["deny", "BLOCKED"], ["ask", "EXPIRED"]])
+
+        recs_flag = [
+            v2rec(1, "run.registered", {"agent": {"name": "a"}}, **top),
+            v2rec(2, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "ask",
+                                         "decision_id": "d2", "rule_ids": ["TK-D001"], "policy_hash": "p"}, **top),
+            v2rec(3, "approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}, **top),
+            v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve", "approver": "u1"}, **top),
+            v2rec(5, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": "flag",
+                                         "decision_id": "d5", "rule_ids": ["TK-D001"], "policy_hash": "p"}, **top),
+            v2rec(6, "tool.result", {"tool_use_id": "c1", "decision_id": "d5", "ok": True, "output": {"size": 1}}, **top),
+            v2rec(7, "approval.expired", {"approval_id": "X"}, **top),
+            v2rec(8, "run.final", {"head_run_seq": 8}, **top),
+        ]
+        rows_flag = []
+        for r in recs_flag:
+            rows_flag += [{**x, "ts": r["event"]["run_seq"], "session_id": "exp-after-flag", "tk_seq": r["event"]["run_seq"]} for x in tr.feed(r)]
+        out_flag = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                       "heldCall", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun",
+                                       "callState", "ingest", "permOf"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agentOf = r => ({{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }});
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows_flag)};
+            foldsOf(ALL, FOLDS);
+            for (const r of ALL) {{ sessionOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify({{
+                calls: S.actList.map(a => [a.v2.decision, callState(a)[1]]),
+                perm: permOf(ALL).map(r => [r.rec.v2.decision, r.out[1]]),
+            }}));"""))
+        self.assertEqual(out_flag["calls"], [["ask", "EXPIRED"], ["flag", "⚑ OK"]])
+        self.assertEqual(out_flag["perm"], [["flag", "RAN · FLAGGED"], ["ask", "EXPIRED"]])
+
     def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
         """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an
         APPROVED blocked call; an approval that expired unused read "expired before anyone answered"."""
