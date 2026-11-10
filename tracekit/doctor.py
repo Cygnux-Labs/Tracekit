@@ -41,8 +41,8 @@ NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", 
 MAX_SKEW_S = 300
 # system mode's init from a root-owned clone of the release, as the plugin and CI run it: it works on every Python,
 # whether or not /opt/tracekit exists or can be trusted (docs/deploy.md also gives the routes through /opt's venv).
-# The Python is doctor's own when only root can change it (init refuses any other), and not /opt's venv, which init
-# can't run from on 3.9 or 3.10; else the system one
+# The Python is doctor's own when only root can change it (init refuses any other) and it isn't /opt's venv; else the
+# system one
 _PY = sys.executable if sys.executable and not sys.executable.startswith(install.OPT + os.sep) \
     and trusted_file(sys.executable) is None else "/usr/bin/python3"
 REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
