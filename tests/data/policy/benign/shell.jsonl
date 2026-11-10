@@ -269,3 +269,6 @@
 {"tool": "Bash", "args": {"command": "huggingface-cli download acme/model"}, "expect": "allow", "note": "download model weights from Hugging Face Hub"}
 {"tool": "Bash", "args": {"command": "head -c 100 model.safetensors"}, "expect": "allow", "note": "read header of model weights file"}
 {"tool": "Bash", "args": {"command": "git commit -m 'update model.safetensors weights'"}, "expect": "allow", "note": "commit message naming weights file"}
+{"tool": "Bash", "args": {"command": "env | grep PATH"}, "expect": "allow", "note": "environment read locally"}
+{"tool": "Bash", "args": {"command": "env | sort > env.txt"}, "expect": "allow", "note": "environment written locally"}
+{"tool": "Bash", "args": {"command": "printenv HOME | tee home.txt"}, "expect": "allow", "note": "one variable written locally"}
