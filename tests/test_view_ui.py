@@ -2923,7 +2923,7 @@ class ApproveThenRetry(unittest.TestCase):
                                       ("approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve"}),
                                       ("approval.consumed", {"approval_id": "X"}), ("tool.result", "d2"),
                                       ("policy.decision", {"decision": "deny"}), ("tool.result", "d7")),
-                         ([[2, "ask", 6], [7, "deny", 8]], [("deny", "ok")]))
+                         ([[2, "ask", 6], [7, "deny", 8]], [("ask", "ok"), ("deny", "ok")]))
 
     def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
         """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an
