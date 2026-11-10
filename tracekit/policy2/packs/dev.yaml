@@ -5,7 +5,8 @@
 # also match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
 #
 # Three things differ from the server pack. Its shadow detection isn't here. A tool no pack maps is flagged, not
-# held: a laptop runs tools and MCP servers no list names. And a coding agent's messages to its own agents are class
+# held: a laptop runs tools and MCP servers no list names; one given a command line or a SQL statement to run is held
+# (TK-A062). And a coding agent's messages to its own agents are class
 # `harness`: Claude Code's Agent and Task prompts, SendMessage, a subagent's SubagentHandback report and its
 # TodoWrite list, and what the hooks map onto those names (Task: Qwen Code's agent, Cursor's Task, OpenCode's and
 # Kilo Code's task, Antigravity CLI's invoke_subagent; TodoWrite: Qwen Code's todo_write, OpenCode's todowrite). Every
@@ -78,6 +79,21 @@ ask:
     reason: a push to the default branch or of tags, or a publish or deploy
     remedy: Have a person approve the held call, or push a named feature branch and leave the merge or release to a person.
     rationale: These reach a shared branch, a registry or a running system, where others build, install or deploy from them; a person confirms each one.
+  - id: TK-A062
+    class: unknown
+    # a tool no pack maps (unknown_tools flags it) given a command line or a SQL statement to run: the whole call, an
+    # argument named command, cmd, commands or sql (at any depth), or a query or statement whose text starts, after
+    # blanks and MySQL's /*!NNNNN, with a SQL verb and names a table, database, user or other object of one, or ends a
+    # statement (`;`), or is a CTE (WITH name AS ( ). What the tool runs it on, and how, is its own, so no rule reads
+    # its effect; the server pack holds every unmapped tool, the laptop these. Data, a search query and ToolSearch's
+    # `select:` stay flagged. JSON escapes a tab or newline in the text as \t or \n.
+    # lean: an English query that starts with one of these verbs and names one of those words (`select a hotel from
+    # the list`) is held too, and a statement that starts otherwise (CALL, a comment) isn't; read the text with the
+    # SQL reading (classes.sql_code) if either happens
+    pattern: '"(?:command|cmd|commands|sql)":|"(?:query|statement)":"(?:\s|\\[tnr]|/\*!?[0-9]*)*(?:(?:[Ss][Ee][Ll][Ee][Cc][Tt]|[Ii][Nn][Ss][Ee][Rr][Tt]|[Uu][Pp][Dd][Aa][Tt][Ee]|[Dd][Ee][Ll][Ee][Tt][Ee]|[Dd][Rr][Oo][Pp]|[Cc][Rr][Ee][Aa][Tt][Ee]|[Aa][Ll][Tt][Ee][Rr]|[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]|[Gg][Rr][Aa][Nn][Tt]|[Rr][Ee][Vv][Oo][Kk][Ee]|[Cc][Oo][Pp][Yy]|[Ee][Xx][Ee][Cc](?:[Uu][Tt][Ee])?)\b(?:[^"\\]|\\.)*?(?:;|(?:\\[tnr]|\b)(?:[Ff][Rr][Oo][Mm]|[Ii][Nn][Tt][Oo]|[Ss][Ee][Tt]|[Tt][Aa][Bb][Ll][Ee]|[Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]|[Ss][Cc][Hh][Ee][Mm][Aa]|[Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ii][Nn][Dd][Ee][Xx]|[Vv][Ii][Ee][Ww]|[Vv][Aa][Ll][Uu][Ee][Ss]|[Ww][Hh][Ee][Rr][Ee]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Pp][Rr][Ii][Vv][Ii][Ll][Ee][Gg][Ee][Ss])\b)|[Ww][Ii][Tt][Hh](?:\s|\\[tnr])(?:[^"\\]|\\.)*?(?:\s|\\[tnr])[Aa][Ss](?:\s|\\[tnr])*\()'
+    reason: an unmapped tool given a command or a SQL statement to run
+    remedy: Have a person approve the held call, or map the tool in a policy of your own (`tools:`), to `shell` or `sql` so the rules read what it runs, or to `app` if it runs nothing.
+    rationale: Tracekit can't read what an unmapped tool does with a command or a query, and the server pack holds every unmapped tool; a person confirms these.
   - id: TK-F019
     class: harness
     tool: 'Agent|Task'

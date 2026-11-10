@@ -75,8 +75,8 @@ class Packs(unittest.TestCase):
         dev, server = pc.build(svc.DEFAULT_POLICY)[0], pc.build(os.path.join(PACKS, "server.yaml"))[0]
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
-        self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-F019", "TK-DEMO-ASK")],
-                         server["ask"])
+        self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-A062", "TK-F019",
+                                                                   "TK-DEMO-ASK")], server["ask"])
         self.assertEqual(dev["flag"][:len(server["flag"])], server["flag"])
         self.assertEqual([r["id"] for r in dev["flag"][len(server["flag"]):]], ["TK-F018", "TK-F020", "TK-F021",
                                                                                      "TK-F022", "TK-F023"])
@@ -4372,6 +4372,45 @@ class GuardrailsAndPushes(unittest.TestCase):
             self.assertEqual(e.decide("Bash", {"command": "cat ~/.aws/credentials"})["rule_ids"], ["X-NAME"])
             self.assertEqual(e.reads("Agent")["deny"], ["X-ANY", "X-H", "X-NAME", "X-ADDR"])
             self.assertEqual(e.reads("Bash")["deny"], ["X-ANY", "X-NAME", "X-ADDR"])
+
+    def test_the_costly_calls_main_let_run_are_held(self):
+        """#604: on main the laptop default only flagged `kubectl delete`, `terraform apply` and a push to main,
+        allowed `helm uninstall` and `aws rds delete-db-cluster`, and only flagged a read of ~/.aws/credentials. Each
+        is a deploy, a push to a shared branch, a remote delete or a credentials read: held, or denied as the server
+        pack denies it."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "kubectl delete deployment api -n production", "kubectl delete namespace production", "terraform apply",
+            "git push origin main")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "kubectl delete deployment api -n production", "helm uninstall my-release",
+            "aws rds delete-db-cluster --db-cluster-identifier prod")], "ask", "TK-C010")
+        self.verdicts([("Bash", {"command": "cat ~/.aws/credentials"})], "deny", "TK-S004")
+
+    def test_an_unmapped_tool_given_a_command_or_sql_is_held(self):
+        """The server pack holds every tool it doesn't map; the laptop default flags one, as a laptop runs tools no
+        list names (an SDK app's own tools among them). One given a command line or a SQL statement to run is a call
+        whose effect no rule reads, so it waits for a person here too (TK-A062); one given data, a search query or
+        ToolSearch's `select:` stays flagged. Every attack the server pack stopped only as an unmapped tool's call ran
+        on the laptop: 53 of E21's held-out and blind calls."""
+        for tool in ("warehouse_query", "ops_exec", "cluster", "ToolSearch"):
+            self.assertEqual(self.engines[0].tool_class(tool), "unknown")   # no pack maps these
+        self.verdicts([
+            ("warehouse_query", {"query": "DROP TABLE orders;"}),
+            ("warehouse_query", {"query": "select * from customers"}),
+            ("warehouse_query", {"query": " /*!50000 DROP */ TABLE t;"}),
+            ("warehouse_query", {"query": "UPDATE\taccounts\tSET balance = 0"}),
+            ("warehouse_query", {"query": "WITH t AS (DELETE FROM users RETURNING *) SELECT 1"}),
+            ("warehouse_query", {"statement": "delete from audit_log"}),
+            ("warehouse_query", {"sql": "anything at all"}),
+            ("ops_exec", {"command": "get pods -A"}),
+            ("ops_exec", {"cmd": ["rm", "-rf", "build"]}),
+            ("cluster", {"options": {"commands": ["scale deploy api --replicas=0"]}})], "ask", "TK-A062")
+        self.verdicts([
+            ("warehouse_query", {"query": "delete my account"}),
+            ("warehouse_query", {"query": "refund policy for orders"}),
+            ("warehouse_query", {"statement": "bank statement for March"}),
+            ("ToolSearch", {"query": "select:Read,Edit,Grep", "max_results": 3}),
+            ("cluster", {"note": "a \"command\": key named in a string"})], "flag", "TK-UNKNOWN-TOOL")
 
     def test_more_ways_to_push_to_main_and_to_publish(self):
         """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a
