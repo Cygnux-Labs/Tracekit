@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:c2e5ee4d4567c4a3e6d9a1666793ad5fadbf8c31699c6e6ecd0fcd13375ed1d3",
+  "policy_hash": "sha256:a5449704081f4ed4244750785ebf132b0b45d3a5ebe333717adda339bad8b1f1",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -54,15 +54,15 @@
       "fp": 0
     },
     "secrets": {
-      "deny": 38,
-      "caught": 38,
+      "deny": 45,
+      "caught": 45,
       "benign": 0,
       "fp": 0
     },
     "shell": {
       "deny": 346,
       "caught": 346,
-      "benign": 271,
+      "benign": 274,
       "fp": 0
     },
     "sql": {
@@ -511,6 +511,13 @@
     "deny/secrets:36": "deny TK-S002 TK-S003",
     "deny/secrets:37": "deny TK-S002 TK-F002 TK-F012",
     "deny/secrets:38": "deny TK-S002",
+    "deny/secrets:39": "deny TK-D006 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:40": "deny TK-D006 TK-F001 TK-F013",
+    "deny/secrets:41": "deny TK-D006 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:42": "deny TK-D006 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:43": "deny TK-D011 TK-S004 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:44": "deny TK-D006 TK-F001 TK-F012 TK-F013",
+    "deny/secrets:45": "deny TK-D006 TK-F013",
     "deny/shell:1": "deny TK-S006",
     "deny/shell:2": "deny TK-S006",
     "deny/shell:3": "deny TK-S006",
@@ -1691,6 +1698,9 @@
     "benign/shell:269": "allow",
     "benign/shell:270": "allow",
     "benign/shell:271": "allow",
+    "benign/shell:272": "allow",
+    "benign/shell:273": "allow",
+    "benign/shell:274": "allow",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -1816,6 +1826,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0011273957158962795,
+  "benign_fp_rate": 0.0011235955056179776,
   "ok": true
 }
