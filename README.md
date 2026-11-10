@@ -8,7 +8,7 @@
 agents on real systems and prove what they did.**
 
 <a href="https://pypi.org/project/tracekit-ai/"><img src="https://img.shields.io/pypi/v/tracekit-ai?style=flat-square&color=F3B23B&labelColor=1C1A1C" alt="PyPI"></a>
-<a href="#add-it-in-three-lines"><img src="https://img.shields.io/badge/works_with-34_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 34 agents and frameworks"></a>
+<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-34_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 34 agents and frameworks"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=CI&labelColor=1C1A1C" alt="CI"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-F3B23B?style=flat-square&labelColor=1C1A1C" alt="MIT licence"></a>
 
@@ -25,7 +25,7 @@ agents on real systems and prove what they did.**
 
 Open source (MIT) · runs on your machines · nothing leaves them unless you send it
 
-**[See what your agent did](#see-what-your-coding-agent-did-last-week) · [Try the demo](#try-it-in-5-seconds) · [Who it's for](#who-its-for) · [Add it](#add-it-in-three-lines) · [How it works](#how-it-works) · [Proof](#proof-misses-included) · [Pilot](#pilot-it-with-us) · [For AI agents](#if-youre-an-ai-agent-reading-this) · [Docs](#docs)**
+**[See what your agent did](#see-what-your-coding-agent-did-last-week) · [Try the demo](#try-it-in-5-seconds) · [Who it's for](#who-its-for) · [Add it](#add-it-to-your-agent) · [How it works](#how-it-works) · [Proof](#proof-misses-included) · [Pilot](#pilot-it-with-us) · [For AI agents](#if-youre-an-ai-agent-reading-this) · [Docs](#docs)**
 
 </div>
 
@@ -116,7 +116,7 @@ Tracekit is one product, but people come to it with different problems. Find you
 | If you are… | You're probably thinking… | What Tracekit gives you | Start here |
 |---|---|---|---|
 | **A developer using coding agents** (Claude Code, Codex, Cursor, Gemini CLI) | *"I let it run on autopilot. What did it actually touch? Did it ever try `rm -rf` or a force-push?"* | A record of every command and edit, with the dangerous ones blocked or held for you to approve | [`tracekit audit`](#see-what-your-coding-agent-did-last-week) · [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) |
-| **An engineer shipping an agent to production** (support, ops, data, finance) | *"It works in the demo. I can't let it near real databases, email or payments until something stops the bad calls."* | Policy packs for shell, files, SQL, HTTP, cloud CLIs, email, payments and MCP, plus human approval bound to exact arguments | [Add it in three lines](#add-it-in-three-lines) |
+| **An engineer shipping an agent to production** (support, ops, data, finance) | *"It works in the demo. I can't let it near real databases, email or payments until something stops the bad calls."* | Policy packs for shell, files, SQL, HTTP, cloud CLIs, email, payments and MCP, plus human approval bound to exact arguments | [Add it to your agent](#add-it-to-your-agent) |
 | **A startup selling agents to enterprises** | *"Every security review asks: how do we know what your agent did in our environment? Screenshots of our dashboard don't cut it."* | A verifiable file per run you can hand your customer. They check it themselves, without trusting you | [Pilot it with us](#pilot-it-with-us) |
 | **A platform or security team** approving agent rollouts | *"Teams want agents everywhere. I need one control point, separation of duties, and evidence I'd defend in an incident review."* | A central signer the agents can't reach, callers identified by mTLS, OIDC or Kubernetes service account, one policy for every framework, signed incidents and quarantine | [Deployment](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) · [threat model](https://github.com/Cygnux-Labs/Tracekit/wiki/Threat-Model-Server) |
 | **An auditor, GRC lead, insurer or lawyer** | *"I'm asked to sign off on AI. I need records I can check myself, not a vendor's word."* | Offline verification in a browser page that sends nothing, and mappings to the EU AI Act, ISO/IEC 42001, NIST AI RMF and OWASP | [Tracekit for auditors](https://github.com/Cygnux-Labs/Tracekit/wiki/For-Auditors) · [compliance](https://github.com/Cygnux-Labs/Tracekit/wiki/Compliance) |
@@ -125,28 +125,26 @@ Tracekit is one product, but people come to it with different problems. Find you
 **The short version:** if your agent only reads, or runs in a throwaway sandbox, a tracer is enough. Once it acts on
 real systems, and someone outside your team has to trust the record, you want Tracekit.
 
-## Add it in three lines
+## Add it to your agent
+
+Three lines:
 
 ```sh
 pip install tracekit-ai
 ```
 
 ```python
-import tracekit; tracekit.instrument()   # first line of your agent, then run it as usual
+import tracekit; tracekit.instrument()     # the first line of your agent; then run it as usual
 ```
 
 ```sh
-tracekit last    # VERIFIED: N tool calls in M signed records, none changed ...
+tracekit last                               # VERIFIED: N tool calls in M signed records, none changed ...
 ```
 
-`instrument()` starts a dev signer (or reuses the running one), finds the frameworks you use, then gates and records
-every tool and model call. `tracekit view --dev` opens the [viewer](https://github.com/Cygnux-Labs/Tracekit/wiki/Viewer): every run, every blocked and held call, approvals
-and replay. On a clean machine the LangGraph example (a mock model, no API key) installs, runs and verifies in 27
-seconds: [`examples/v2/clean-machine.sh langchain`](https://github.com/Cygnux-Labs/Tracekit/blob/main/examples/v2/clean-machine.sh).
-
-**Coding agents:** `tracekit init --dev --v2` wires Claude Code's hooks. Add `--agent` with `codex`, `cursor`,
-`gemini`, `opencode`, `kilo`, `goose`, `qwen`, `droid`, `antigravity`, `crush` or `devin` for the others.
-**TypeScript:** `npm install @cygnuxlabs/tracekit` ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)).
+`tracekit.instrument()` starts a dev signer (or reuses the running one) and gates and records every tool and model call
+of the frameworks it finds. `tracekit last` exports your latest run, verifies it and says where it is.
+`tracekit view --dev` shows every run. On a clean machine the LangGraph example (a mock model, no API key) installed,
+ran and verified in 27 seconds: [`examples/v2/clean-machine.sh langchain`](https://github.com/Cygnux-Labs/Tracekit/blob/main/examples/v2/clean-machine.sh).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/works-with-dark.png">
@@ -154,56 +152,76 @@ seconds: [`examples/v2/clean-machine.sh langchain`](https://github.com/Cygnux-La
   <img alt="Works with Claude Code, Codex CLI, Cursor and Gemini CLI; the Python and TypeScript SDKs; the OpenAI Agents SDK, Claude Agent SDK, LangChain, LangGraph, MCP, CrewAI, Browser Use, Pydantic AI, the Vercel AI SDK and OpenTelemetry" src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/works-with-light.png" width="100%">
 </picture>
 
-**All 34 integrations.** **Stable:** Claude Code, OpenAI Agents SDK, LangChain / LangGraph, Claude Agent SDK, MCP.
-
-**Experimental:** [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen
-Code, Factory Droid, Antigravity CLI, Crush and Devin; frameworks [CrewAI](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-CrewAI),
-[Browser Use](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Browser-Use), [Pydantic AI](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Pydantic-AI),
-[Google ADK](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Google-ADK), [Haystack](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Haystack),
-[LlamaIndex](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-LlamaIndex),
-[Microsoft Agent Framework](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Microsoft-Agent-Framework),
-[Strands Agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Strands), [Hermes Agent](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Hermes) and the
-[Vercel AI SDK](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Vercel-AI); sandboxes and gateways
-[NVIDIA OpenShell](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-OpenShell), [E2B](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-E2B),
-[microsandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-microsandbox), [agentgateway](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-agentgateway),
-[Wassette](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Wassette), [LiteLLM's MCP gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-LiteLLM) and
-[Docker's MCP Gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Docker-MCP-Gateway); and the
-[TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md).
-
-Setup guides: [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) ·
-[OpenAI Agents SDK](https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-OpenAI-Agents) ·
-[Claude Agent SDK](https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-Claude-Agent-SDK) ·
-[LangChain / LangGraph](https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-LangChain) ·
-[MCP](https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-MCP) ·
-[OpenTelemetry](https://github.com/Cygnux-Labs/Tracekit/wiki/OpenTelemetry) ·
-[any other agent](https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-Custom) ·
-[full list](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations)
-
-Sandboxes: Tracekit holds Claude Code's unsandboxed retries and Gemini CLI's sandbox expansions for a person, decides
-each request that sandbox-runtime's proxy or NVIDIA OpenShell lets out, and signs each decision agentsh logs, in a run
-of its own. Guides: [Claude Code](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Claude-Code-Sandbox) ·
-[Codex](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Codex-Sandbox) · [Gemini CLI](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Gemini-Sandbox) ·
-[sandbox-runtime](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Sandbox-Runtime) · [agentsh](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-agentsh) ·
-[agent-sandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Agent-Sandbox).
+<sub>Stable: Claude Code, the OpenAI Agents SDK, LangChain / LangGraph, the Claude Agent SDK and MCP. Experimental: Codex
+CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin, CrewAI, Browser Use, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent
+Framework, Strands Agents, Hermes Agent, the Vercel AI SDK, NVIDIA OpenShell, E2B, microsandbox, agentgateway, Wassette, LiteLLM's MCP
+gateway, Docker's MCP Gateway and the TypeScript SDK.
+In NVIDIA OpenShell sandboxes, Tracekit decides and signs each HTTP request OpenShell lets out, and signs OpenShell's
+own blocks, process events and policy changes into the same run. Setup:
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents">coding agents</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-OpenAI-Agents">OpenAI Agents SDK</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-Claude-Agent-SDK">Claude Agent SDK</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-LangChain">LangChain / LangGraph</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-MCP">MCP</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Wassette">Wassette</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-CrewAI">CrewAI</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Browser-Use">Browser Use</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Pydantic-AI">Pydantic AI</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Google-ADK">Google ADK</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Haystack">Haystack</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-LlamaIndex">LlamaIndex</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Microsoft-Agent-Framework">Microsoft Agent Framework</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Strands">Strands Agents</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Hermes">Hermes Agent</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-OpenShell">NVIDIA OpenShell</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-LiteLLM">LiteLLM</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md">TypeScript</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Vercel-AI">Vercel AI SDK</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-agentgateway">agentgateway</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-microsandbox">microsandbox</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-E2B">E2B</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Docker-MCP-Gateway">Docker MCP Gateway</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/OpenTelemetry">OpenTelemetry</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstarts-Custom">any other agent</a></sub>
 
 <details>
-<summary><strong>More ways in</strong>: requirements, the why demo, the sample bundles</summary>
+<summary><strong>Other ways in</strong>: coding agents, without uv, the why demo, the sample bundles, TypeScript</summary>
 
 <br>
 
-Python 3.9 to 3.13; the framework integrations need 3.10 or newer. TypeScript needs Node 18 or newer, and
-`npx @cygnuxlabs/tracekit up` starts a dev signer without Python on Apple Silicon Macs, Linux and Windows. `--why`
-(experimental) shows a held email whose cause is found by replay and cited by its signed record. From a checkout, the
-shipped sample bundles check with the verifier alone (`pip install --no-deps tracekit-ai` is enough), and
-`python examples/v2/langchain/agent.py --scripted` runs a LangGraph agent with a mock model:
+Coding agents: `tracekit init --dev --v2` wires Claude Code's hooks to a dev signer; add `--agent codex`, `cursor`,
+`gemini`, `opencode`, `kilo`, `goose`, `qwen`, `droid`, `antigravity`, `crush` or `devin` for the others (experimental). With Claude Code's sandbox on, Tracekit holds each unsandboxed
+retry for a person
+([Claude Code's sandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Claude-Code-Sandbox));
+with Codex's, see what Tracekit sees and the settings to use
+([Codex's sandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Codex-Sandbox));
+with Gemini CLI's tool sandbox, Tracekit holds each sandbox expansion for a person
+([Gemini CLI's sandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Gemini-Sandbox)).
+Running sandbox-runtime's proxy on its own, Tracekit decides each request it forwards (experimental,
+[sandbox-runtime](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Sandbox-Runtime)).
+Sandboxed with agentsh? `tracekit follow` signs each decision agentsh logs, as it writes it (experimental,
+[agentsh](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-agentsh)).
+Without uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why`
+(experimental) shows a held
+email whose cause is found by replay and cited by its signed record:
 
 ```sh
 tracekit demo --server                # exit 0
 tracekit demo --why                   # exit 0
 tracekit init --dev --v2
+```
+
+From a checkout, the shipped sample bundles (v1) check with the verifier alone (`pip install --no-deps tracekit-ai` is
+enough), and `python examples/v2/langchain/agent.py --scripted` runs a LangGraph agent with a mock model:
+
+```sh
 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub            # exit 0
 tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub   # exit 1
 ```
+
+TypeScript needs Node 18 or newer: `npm install @cygnuxlabs/tracekit`, and `npx @cygnuxlabs/tracekit up` starts a dev
+signer without Python on Apple Silicon Macs, Linux and Windows ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)). Python 3.9 to
+3.13; the framework integrations need 3.10 or newer.
 
 </details>
 
