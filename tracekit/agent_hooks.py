@@ -56,10 +56,13 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             (its payload is Claude Code's shape); a read, write, edit, apply_patch or webfetch with nothing to decide
             it on, or a url spelled other than `url`, is denied in the hook; init turns off its reading of Claude
             Code's hooks, which would decide each call a second time
-    Copilot bash, apply_patch, view, glob, rg, web_fetch, task, web_search, <server>-<tool>
-            -> Bash, Edit (every file the patch adds, updates, deletes or moves to), Read, Glob, Grep, WebFetch, Task,
-            mcp:github-mcp-server/web_search, mcp__<server>-<tool> (Copilot CLI 1.0.107's names; an earlier release
-            sends no toolCallId, and its calls are blocked). The preToolUse payload doesn't say which tools are MCP
+    Copilot bash, powershell, write_bash, write_powershell, apply_patch, create, edit, str_replace_editor, view, glob,
+            grep, rg, web_fetch, task, write_agent, web_search, <server>-<tool>
+            -> Bash, PowerShell, Bash and PowerShell (command = the typed input), Edit (every file the patch adds,
+            updates, deletes or moves to), Write, Edit, Read, Write or Edit (by its command), Read, Glob, Grep, Grep,
+            WebFetch, Task, Task, mcp:github-mcp-server/web_search, mcp__<server>-<tool> (Copilot CLI 1.0.107's names;
+            an earlier release sends no toolCallId, and its calls are blocked; each file tool decided on the `path`
+            or `paths` it reads). The preToolUse payload doesn't say which tools are MCP
             ones, and joins a server's name and its tool's with a `-` either may hold: any other name with a `-` is
             decided as an MCP tool under every split and as an unknown tool, and the strictest decision stands. Every
             custom MCP tool captured on 1.0.107 arrived as <server>-<tool> (server tracekit-alpha's probe_note as
@@ -96,18 +99,23 @@ V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
 
-# Copilot CLI 1.0.107's own tools, as its preToolUse payloads name them. web_search is a tool of its built-in MCP server
-# (its preMcpToolCall payload: serverName github-mcp-server), sent under its bare name
+# Copilot CLI 1.0.107's own tools. bash, apply_patch, view, glob, rg, web_fetch, task and web_search are as its
+# preToolUse payloads name them (the tools it gives a GPT model); the others, which it gives other models, and every
+# tool's arguments are as its bundle parses them (cli-main.js: view {path}, create {path, file_text}, edit and
+# str_replace {path, old_str, new_str}, glob and grep {pattern, paths: a string or a list}, write_bash and
+# write_powershell {shellId, input}). web_search is a tool of its built-in MCP server (its preMcpToolCall payload:
+# serverName github-mcp-server), sent under its bare name; write_agent messages a sub-agent, as task starts one
 COPILOT_TOOLS = {
-    "apply_patch": "Edit",
-    "bash": "Bash",
-    "view": "Read",
-    "glob": "Glob",
-    "rg": "Grep",
+    "bash": "Bash", "write_bash": "Bash", "powershell": "PowerShell", "write_powershell": "PowerShell",
+    "apply_patch": "Edit", "edit": "Edit", "str_replace": "Edit", "create": "Write", "view": "Read",
+    "glob": "Glob", "grep": "Grep", "rg": "Grep",
     "web_fetch": "WebFetch",
     "web_search": "mcp:github-mcp-server/web_search",
-    "task": "Task",
+    "task": "Task", "write_agent": "Task",
 }
+COPILOT_EDITOR = {"view": "view", "create": "create"}   # str_replace_editor's commands; any other edits the file
+COPILOT_PATH_TOOLS = ("view", "create", "edit", "str_replace")   # they read `path`
+COPILOT_SEARCH_TOOLS = ("glob", "grep", "rg")   # they read `paths`
 COPILOT_EVENTS = {"preToolUse": 600, "postToolUse": 30, "postToolUseFailure": 30}   # each with its hook's timeout, s
 COPILOT_NAME_MAX = 64   # Copilot cuts a longer MCP tool name to this many characters
 GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_files": "Read", "write_file": "Write", "replace": "Edit",
@@ -411,17 +419,26 @@ def tool(harness, name, ti):
                 ti["file_path"] = ti["path"]
         return CRUSH_TOOLS.get(name, name), ti
     if harness == "copilot":
-        if name == "apply_patch":
-            patch = ti.get("value")
-            if not isinstance(patch, str):
-                raise ValueError("Copilot apply_patch requires a patch string")
-            files = [f.strip() for f in PATCH_FILE.findall(patch)]
-
-            if not files or any(not path for path in files):
-                raise ValueError("Copilot apply_patch contains no file paths")
-
-            ti["file_path"] = files[0]
-            ti["paths"] = files
+        if name == "str_replace_editor":   # one tool for viewing, creating and editing: decided as the one it does
+            name = COPILOT_EDITOR.get(ti.get("command"), "edit")
+        if name == "apply_patch":   # the patch is the arguments, or their `input` or `patch`
+            files = [f.strip() for f in PATCH_FILE.findall("\n".join(_strings(ti)))]
+            if not files or not all(files):
+                raise ValueError("Copilot's apply_patch names no file")
+            ti["file_path"], ti["paths"] = files[0], files
+        elif name in COPILOT_PATH_TOOLS or name in COPILOT_SEARCH_TOOLS:
+            # the path the tool itself reads decides, never a decoy `file_path` beside it; a search's `paths` is one
+            # path or a list
+            own = ti.get("path") if name in COPILOT_PATH_TOOLS else ti.get("paths")
+            own = [x for x in (own if isinstance(own, list) else [own]) if isinstance(x, str)]
+            for k in PATH_KEYS:
+                ti.pop(k, None)
+            if name in COPILOT_SEARCH_TOOLS:
+                ti["paths"] = own
+            if own:
+                ti["file_path"] = own[0]
+        elif name in ("write_bash", "write_powershell"):   # input typed into a running command, as Codex's write_stdin
+            ti["command"] = ti.get("input")
         if name in COPILOT_TOOLS:
             return COPILOT_TOOLS[name], ti
         # the payload doesn't say which tools are MCP ones: Copilot names them <server>-<tool>, so any other name with
@@ -605,13 +622,17 @@ def normalise(harness, p):
         if not isinstance(tool_call_id, str) or not tool_call_id.strip():
             raise ValueError("Copilot CLI 1.0.107 or later is required; toolCallId must be a non-empty string")
 
+        name = p.get("toolName")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Copilot's toolName must be a non-empty string")
         out["session_id"] = p.get("sessionId")
         out["hook_event_name"] = ev[0].upper() + ev[1:]
-        out["tool_name"], out["tool_input"] = tool(harness, p.get("toolName") or "?", p.get("toolArgs"))
+        out["tool_name"], out["tool_input"] = tool(harness, name, p.get("toolArgs"))
         out["tool_use_id"] = tool_call_id
 
         if ev == "postToolUse":
-            out["tool_response"] = p["toolResult"]["textResultForLlm"]
+            result = p.get("toolResult")
+            out["tool_response"] = result.get("textResultForLlm") if isinstance(result, dict) else result
         elif ev == "postToolUseFailure":
             out["error"] = p.get("error")
         return out
@@ -948,8 +969,11 @@ def config_path(harness, project=None, home=None):
                      os.path.join(os.environ["APPDATA"], "devin", "config.json")
                      if os.name == "nt" and not home and os.environ.get("APPDATA") else
                      os.path.join(base, ".config", "devin", "config.json"),
-            # Copilot CLI runs every hooks file in a repository's .github/hooks and in ~/.copilot/hooks: Tracekit's own
-            "copilot": os.path.join(base, ".github" if project else ".copilot", "hooks", "tracekit.json")}[harness]
+            # Copilot CLI runs every hooks file in a repository's .github/hooks and in its home's hooks/ ($COPILOT_HOME,
+            # else ~/.copilot): Tracekit's own file
+            "copilot": os.path.join(base, ".github", "hooks", "tracekit.json") if project else
+                       os.path.join((None if home else os.environ.get("COPILOT_HOME")) or
+                                    os.path.join(base, ".copilot"), "hooks", "tracekit.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -1193,10 +1217,11 @@ def _read(path):
 
 def _command(harness, ev, v2, python):
     """The command of Tracekit's hook for `ev` (python: see install._hook_command). The v2 hook names its event, so it
-    can block a pre-tool payload it cannot read; agy's payload names none, so its v1 hook does too."""
+    can block a pre-tool payload it cannot read; agy's and Copilot's payloads name none, so their v1 hooks do too
+    (without it a v1 hook reads no event from the payload, and lets the call run undecided)."""
     from .install import _hook_command
     c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
-                      (harness, ev) if v2 or harness == "antigravity" else (harness,), python, ev in PRE,
+                      (harness, ev) if v2 or harness in ("antigravity", "copilot") else (harness,), python, ev in PRE,
                       harness == "antigravity")
     # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
     # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
@@ -1350,7 +1375,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         return _install_goose(path, uninstall, v2, python)
     if harness == "crush":
         return _install_crush(path, uninstall, v2, python)
-    if harness == "droid" and uninstall and not os.path.exists(path):
+    if harness in ("droid", "copilot") and uninstall and not os.path.exists(path):   # nothing to remove: no file made
         return path
     if harness == "droid" and not uninstall and not os.path.exists(path):
         legacy = os.path.join(os.path.dirname(path), "hooks", "hooks.json")
@@ -1434,7 +1459,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         except SettingsError as e:   # Tracekit's hooks still go: what is left can't be told from a person's
             kept = f"{settings} can't be read ({e.__cause__})"
     changed = _backup_changed(path, txt, s)
-    if uninstall and harness == "droid" and (not s or kept is False):
+    if uninstall and (harness == "droid" and (not s or kept is False)
+                      or harness == "copilot" and set(s) <= {"version"}):   # Tracekit's own file, left with no hooks
         os.unlink(path)
     elif changed:
         _atomic_write_json(path, s)
@@ -1444,6 +1470,11 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         except SettingsError:   # a config.toml init can't have written to
             pass
     _said(path, removed, uninstall, v2)
+    if harness == "copilot" and project and changed and not uninstall:   # said when the file is written
+        print(f"{path} names this machine's Python, and .github/ is usually committed: on another machine, or in "
+              "Copilot's cloud agent, the hook can't start, so Copilot denies every call there. Keep the file out of "
+              "the commit (add .github/hooks/tracekit.json to .git/info/exclude), or install the hooks for your user "
+              "instead (the same command without --project)")
     if kept:
         print(f"{path} kept: {kept}. Droid runs the hooks in it, and those in {settings} only once it is gone: move "
               f"any you want into {settings}, then delete it")
