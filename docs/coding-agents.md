@@ -224,11 +224,10 @@ the command that opens the call in the viewer, `tracekit view --approval apr-…
 expired ones only with `--all`.
 
 In Claude Code, paste the `! …` line into the same session: `!` runs it as you, the session's user, not as the agent.
-In another harness, or from another terminal, run the same command without the `!` (a shell reads a leading `!` as
-"not", and an approval that worked would report failure). With a named signer (system mode, a remote one) the line
-has no `!`: the session's user is the agent's, whom the signer refuses as an approver, so the approver runs it from
-their own account. Then tell the agent to make the same call again, unchanged: the signer lets that call run under
-your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
+
+In Gemini CLI, paste the `!command` line into the same session, with no space after `!`: Gemini runs it directly as you, the session's user, not as the agent. Alternatively, press `!` to enter shell mode and enter the command without the prefix.
+
+In another harness, or from another terminal, run the same command without the `!` (a shell reads a leading `!` as "not", and an approval that worked would report failure). With a named signer (system mode, a remote one) the line has no `!`: the session's user is the agent's, whom the signer refuses as an approver, so the approver runs it from their own account. Then tell the agent to make the same call again, unchanged: the signer lets that call run under your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
 The same call a third time, or one with other arguments, is held again, with a new approval. A call you rejected is
 held again if the agent tries it again, and the block says so first among its reasons (`Why: a person rejected this
 exact call (apr-…, by uid:501); ask them before trying again; …`), so the agent asks you. In Claude Code a Bash
