@@ -44,5 +44,5 @@ class Readme(unittest.TestCase):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
             paths = re.findall(r"https://(?:github\.com/Cygnux-Labs/Tracekit/(?:blob|tree)/main|"
                                r"raw\.githubusercontent\.com/Cygnux-Labs/Tracekit/main)/([^)#\s\"]+)", f.read())
-        self.assertIn("docs/demo/cover-up.gif", paths)
+        self.assertIn("docs/demo/cover-up.mp4", paths)
         self.assertEqual([p for p in paths if not os.path.exists(os.path.join(ROOT, p))], [])
