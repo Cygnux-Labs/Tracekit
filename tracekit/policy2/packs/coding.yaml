@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.10-v2-77'
+version: '2026.10-v2-78'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -123,9 +123,10 @@ deny:
     field: line
     # .env in any case (macOS and Windows ignore it); a read of it piped into an upload or a new gist, sent as a
     # network command's file or body (`$(cat .env)` too), or a gist of it; the whole environment (env, printenv or
-    # export -p with flags but no command) piped into an upload in the same pipeline, or `$(env)` in a network
-    # command's arguments
-    pattern: '(^|[\s;&|(])([^\s|;&(){}`]{0,256}/)?(env|printenv|export\s+-p)(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?\s*(\|[^\n;&]*)?\|\s*(command\s+|[^\s|;&(){}`]{0,256}/)?(curl|wget|nc|ncat|netcat|socat|gh\s+gist\s+(create|new))\b|\b(curl|wget|https?|nc|ncat|scp|rsync)\s[^\n;&|]*\$\(\s*([^\s|;&(){}`]{0,256}/)?(env|printenv|export\s+-p)\s*\)|\b(cat|base64|xxd|gzip)\s[^|\n]*?\.[Ee][Nn][Vv]\b[^\n]*\|\s*(curl|wget|nc|ncat|gh\s+gist\s+(create|new))\b|\b(curl|wget|https?|nc|ncat|scp|rsync)(\s[^\n]*)?(@\S*\.[Ee][Nn][Vv]\b|--data[-a-z]*[ =]@?\S*\.[Ee][Nn][Vv]\b|--upload-file\s+\S*\.[Ee][Nn][Vv]\b|--(post|body)-file[ =]\S*\.[Ee][Nn][Vv]\b|\s\S*\.[Ee][Nn][Vv]\s+\S+:|<\s*\S*\.[Ee][Nn][Vv]\b|\$\((cat\s|base64\s|<)[^)\n]*?\.[Ee][Nn][Vv]\b)|\bgh\s+gist\s+(create|new)\b[^\n]*?\s\S*\.[Ee][Nn][Vv]\b'
+    # export -p where a command starts, or after a wrapper such as command, nohup or timeout, with flags but no
+    # command) piped into an upload in the same pipeline, alone or through up to two stages that pass its text on (an
+    # encoder, a compressor, a filter; not `wc`), or `$(env)` in a network command's arguments
+    pattern: '(^|[;&|(])\s*((command|nohup|time|nice|timeout|sudo|doas|setsid|stdbuf|exec|builtin|busybox)(\s+(-[^\s;&|]*|[0-9][^\s;&|]*))?(\s+(-[^\s;&|]*|[0-9][^\s;&|]*))?\s+)?([^\s|;&(){}`]{0,256}/)?(env|printenv|export\s+-p)(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?(\s+((-u|-C|--unset|--chdir)\s+[^\s;&|]+|[-0-9][^\s;|]*))?\s*(\|\s*([^\s|;&(){}`]{0,256}/)?(base64|gzip|bzip2|xz|zstd|xxd|od|openssl|cat|tee|sort|uniq|grep|egrep|head|tail|sed|awk|tr|cut)\b[^\n;&|]*)?(\|\s*([^\s|;&(){}`]{0,256}/)?(base64|gzip|bzip2|xz|zstd|xxd|od|openssl|cat|tee|sort|uniq|grep|egrep|head|tail|sed|awk|tr|cut)\b[^\n;&|]*)?\|\s*(command\s+|[^\s|;&(){}`]{0,256}/)?(curl|wget|nc|ncat|netcat|socat|gh\s+gist\s+(create|new))\b|\b(curl|wget|https?|nc|ncat|scp|rsync)\s[^\n;&|]*\$\(\s*([^\s|;&(){}`]{0,256}/)?(env|printenv|export\s+-p)\s*\)|\b(cat|base64|xxd|gzip)\s[^|\n]*?\.[Ee][Nn][Vv]\b[^\n]*\|\s*(curl|wget|nc|ncat|gh\s+gist\s+(create|new))\b|\b(curl|wget|https?|nc|ncat|scp|rsync)(\s[^\n]*)?(@\S*\.[Ee][Nn][Vv]\b|--data[-a-z]*[ =]@?\S*\.[Ee][Nn][Vv]\b|--upload-file\s+\S*\.[Ee][Nn][Vv]\b|--(post|body)-file[ =]\S*\.[Ee][Nn][Vv]\b|\s\S*\.[Ee][Nn][Vv]\s+\S+:|<\s*\S*\.[Ee][Nn][Vv]\b|\$\((cat\s|base64\s|<)[^)\n]*?\.[Ee][Nn][Vv]\b)|\bgh\s+gist\s+(create|new)\b[^\n]*?\s\S*\.[Ee][Nn][Vv]\b'
     reason: uploading a secrets file or the environment
     remedy: Send only the values the request needs, never the .env file; a person shares secrets through the deployment's secret store.
     rationale: Sending .env off the machine is exfiltration.
