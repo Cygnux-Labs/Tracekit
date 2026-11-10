@@ -10,6 +10,7 @@ import os
 import shutil
 import tempfile
 import threading
+import types
 import unittest
 from unittest import mock
 
@@ -248,6 +249,15 @@ class SignedRuntime(unittest.TestCase):
             run.call("approval_request", tool_call_id="c1")
             run.complete("c1")
         self.assertEqual(self.ran_anyway("ran-unanswered", unanswered), (["ask"], [("ask", "ok")]))
+
+    def test_the_review_says_a_hold_nobody_answered_ran_anyway(self):
+        """As the signer signs it: the result names the hold's decision, and the review counts that call as run."""
+        run = self.client.run("ran-review")
+        run.decide("c1", "Bash", self.ASK)
+        run.call("approval_request", tool_call_id="c1")
+        run.complete("c1")
+        rv = view.review(self.records()[run.run_id], types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual(dict(rv["holds"]), {"not answered · ran anyway": 1})
 
     def test_an_attempt_1_hold_that_ran_anyway_is_filed_as_it_ran(self):
         """As a hold nobody answered: attempt 1's, after attempt 0's approved call ran, read blocked."""
