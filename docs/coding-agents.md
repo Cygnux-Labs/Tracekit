@@ -14,6 +14,7 @@ tracekit init --dev --v2 --agent goose      # ~/.agents/plugins/tracekit/hooks/h
 tracekit init --dev --v2 --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
 tracekit init --dev --v2 --agent crush      # $CRUSH_GLOBAL_CONFIG, else $XDG_CONFIG_HOME (or ~/.config)/crush: crush.json; --project: ./crush.json
 tracekit init --dev --v2 --agent devin      # ~/.config/devin/config.json (Windows %APPDATA%\devin\config.json); --project: .devin/hooks.v1.json
+tracekit init --dev --v2 --agent copilot    # ~/.copilot/hooks/tracekit.json; --project: .github/hooks/tracekit.json (Copilot CLI 1.0.107 or later)
 # --project writes the project-level file instead; tracekit uninstall --agent X removes Tracekit's hooks and keeps your other settings
 sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent codex   # system mode: the signer as its own user
 ```
@@ -28,7 +29,7 @@ edit or turn off) is for Claude Code only, and init refuses it with these agents
 `--v2` and write the same files:
 
 ```bash
-tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, copilot
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
@@ -125,6 +126,19 @@ hook blocks every one, since the payload has no `tool_use_id`. So `init --agent 
 Devin then reads none of Claude Code's hooks, rules, skills, commands or MCP servers. Uninstall leaves the setting and
 says where to set it back to `true`. Desktop runs no hooks in Restricted Mode. Tested through Devin's documented
 payloads and Tracekit's installer; not tested in a live Devin session.
+
+GitHub Copilot CLI ([hooks](https://docs.github.com/en/copilot/reference/hooks-configuration)) needs **1.0.107 or
+later**: from that release its `preToolUse`, `postToolUse` and `postToolUseFailure` payloads carry a `toolCallId`, and
+Tracekit blocks a call whose payload has none rather than pair it by guesswork. `init` writes its own hooks file,
+`~/.copilot/hooks/tracekit.json` (`--project`: `.github/hooks/tracekit.json`), with a 600 s `timeout` on `preToolUse`
+(Copilot's own is 30 s, too short for a person to approve). Copilot denies a call when its hook exits with anything but
+0, which Tracekit's does at exit 2, and shows the reason from the hook's JSON (`permissionDecision: deny`). `bash`,
+`apply_patch`, `view`, `glob`, `rg`, `web_fetch` and `task` are decided as `Bash`, `Edit` (every file the patch names),
+`Read`, `Glob`, `Grep`, `WebFetch` and `Task`, and `web_search` as `mcp:github-mcp-server/web_search`, the built-in MCP
+server's tool it is. The payload doesn't say which other tools are MCP ones: Copilot names them `<server>-<tool>`, so a
+name with a `-` is decided as an MCP tool under every split, and the strictest decision stands; a name of 64 characters
+or more, where Copilot cuts names, is denied ([limits](limits.md#policy)). No prompts, session events or
+model text are recorded. Tested in live Copilot CLI 1.0.107 sessions on Linux.
 
 | | Codex CLI | Cursor | Gemini CLI | OpenCode | goose | Qwen Code | Factory Droid | Devin |
 |---|---|---|---|---|---|---|---|---|
@@ -261,6 +275,7 @@ so why none waits by default:
 | goose | nothing (stdout and stderr are read on exit) | to the model |
 | Factory Droid | not documented | to Droid (the model) |
 | Devin | not documented | not documented |
+| Copilot CLI | not documented | "Denied by preToolUse hook:" and the reason, to you and the model |
 | Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |
 
 ### When Tracekit stops a call
