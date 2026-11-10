@@ -76,12 +76,27 @@ class TestOpenRun(DevSigner):
                           "r.decide('c1', 'Bash', {'command': 'ls'}); print(r.run_id, flush=True); os._exit(0)")
         run_id = p.stdout.split()[0]
         self.assertIn("tracekit last --open verifies it as it stands", self.sh("-m", "tracekit", "last", code=1).stderr)
+        self.assertIn("it finishes when the agent's process exits", self.sh("-m", "tracekit", "last", code=1).stderr)
         out = self.sh("-m", "tracekit", "last", "--open").stdout
         self.assertIn(f"run {run_id} (open-one)\nVERIFIED SO FAR: ", out)
         self.assertIn("the run has not ended, so more may follow.\nNOT PROOF AGAINST THE AGENT: ", out)
         out = self.sh("-m", "tracekit", "last", "--open", "--detail").stdout
         self.assertIn("\nIntegrity: VERIFIED TO HEAD", out)
         self.assertIn("(open).\nAssurance: dev", out)
+
+    def test_last_open_explains_coding_agent_session(self):
+        self.sh("-c", "import os; from tracekit.sdk.client import Client; r = Client().run('claude-code'); "
+                          "r.decide('c1', 'Bash', {'command': 'ls'}); print(r.run_id, flush=True); os._exit(0)")
+        self.assertIn("it finishes when the session ends (`/exit` in Claude Code)",
+                      self.sh("-m", "tracekit", "last", code=1).stderr)
+
+    def test_last_open_explains_other_coding_agent_session(self):
+        self.sh("-c", "import os; from tracekit.sdk.client import Client; r = Client().run('codex'); "
+                      "r.decide('c1', 'Bash', {'command': 'ls'}); print(r.run_id, flush=True); os._exit(0)")
+        stderr = self.sh("-m", "tracekit", "last", code=1).stderr
+        codex_line = next(line for line in stderr.splitlines() if "(codex)" in line)
+        self.assertIn("it finishes when the session ends", codex_line)
+        self.assertNotIn("`/exit` in Claude Code", codex_line)
 
 
 class TestThreeSteps(DevSigner):
