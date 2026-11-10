@@ -470,6 +470,10 @@ class Background(Base):
             with self.subTest(cmd):
                 self.assertFalse(findings_box._detaches(cmd))
 
+    def test_a_line_nested_too_deep_to_read_is_unreadable_not_a_crash(self):
+        # the 1.6.0 review: the parser's RecursionError on deep nesting reached analyze --v2
+        self.assertTrue(findings_box._detaches("f() { " * 2000))
+
     def test_a_dev_server_left_running_as_bash_reads_the_command(self):   # the final check, end to end
         for cmd, found in (("cat > notes.txt <<EOF\nstarting the dev server\nEOF\ntmux new -d -s dev 'npm run dev'", 0),
                            ("cat > start.sh <<'EOF'\nnpm run dev\nEOF\nchmod +x start.sh\nbash -c './start.sh &'", 0),

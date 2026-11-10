@@ -256,7 +256,7 @@ class WeeklyReport(unittest.TestCase):
         self.assertIn(f"{mark}-rule.acme-prod-db.internal", {g["rule"] for g in rep["rules"]})
         page = weekly.share(rep)
         self.assertEqual(page.splitlines(), [
-            f"Tracekit {__version__} field report (tracekit report --share): 0 hours",   # a minute
+            f"Tracekit {__version__} field report (tracekit report --share): 1 minute",
             "Integrity: the store verified, 5 of 5 runs verify",
             "Runs that verify, by agent: claude-code 2, codex 1, cursor 1, other 1",
             "Tool calls: 13   allow 3, flag 3, ask 5, deny 2",
@@ -279,7 +279,8 @@ class WeeklyReport(unittest.TestCase):
                 mock.patch.object(view, "dev_content_source", wraps=view.dev_content_source) as content, \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):   # the dev signer's store
             code = cli.main(["report", "--share", "--since",
-                             datetime.datetime.fromtimestamp(self.cut, datetime.timezone.utc).isoformat()])
+                             datetime.datetime.fromtimestamp(self.cut, datetime.timezone.utc).isoformat(), "--until",
+                             datetime.datetime.fromtimestamp(self.cut + 60, datetime.timezone.utc).isoformat()])
         self.assertEqual((code, out.getvalue()), (0, page + "\n"))
         content.assert_not_called()
         self.assertIn(f"tracekit report: {weekly.SHARE_NOTE}\n", err.getvalue())
@@ -844,8 +845,13 @@ class When(unittest.TestCase):
             self.assertIn("--since must be before --until", err.getvalue())
 
     def test_a_window_under_a_day_is_in_hours(self):
-        self.assertEqual([weekly._days(s) for s in (1800, 3600, 86400, 7 * 86400)],
-                         ["0.5 hours", "1 hour", "1 day", "7 days"])
+        self.assertEqual([weekly._days(s) for s in (3600, 5400, 86400, 7 * 86400)],
+                         ["1 hour", "1.5 hours", "1 day", "7 days"])
+
+    def test_a_window_under_an_hour_is_in_minutes_never_0_hours(self):
+        """The 1.6.0 review: a window under about 3 minutes printed "0 hours"."""
+        self.assertEqual([weekly._days(s) for s in (45, 60, 170, 1800)],
+                         ["45 seconds", "1 minute", "2.8 minutes", "30 minutes"])
 
     def test_a_decision_with_no_rule_is_not_called_a_custom_rule(self):
         """1.5.3 review: --share counted a deny or flag with no rule id as "custom rule", a policy of the user's own."""

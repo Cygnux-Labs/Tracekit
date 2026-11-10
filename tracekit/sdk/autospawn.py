@@ -27,7 +27,6 @@ import subprocess
 import sys
 import threading
 import time
-import warnings
 
 from tracekit import __version__
 from tracekit.client import SYSTEM_CONFIG
@@ -277,8 +276,8 @@ def _ensure(d, wait, timeout):
             if not _starts_ours(d):
                 raise Incompatible(f"{e}. `{sys.executable} -m tracekit` runs an older Tracekit than this process "
                                    "imports: install this version") from None
-            warnings.warn(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout, d, show_log=False)}) to "
-                          f"start this one's ({__version__})", stacklevel=3)
+            print(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout, d, show_log=False)}) "
+                  f"to start this one's ({__version__})", file=sys.stderr)
             conn = None
         if conn:
             return conn

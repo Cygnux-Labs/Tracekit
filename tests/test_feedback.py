@@ -6,6 +6,7 @@ import contextlib
 import io
 import os
 import re
+import shutil
 import tempfile
 import unittest
 import urllib.parse
@@ -36,7 +37,8 @@ RULE = _one(tracekit_rules() | APPROVAL_RULES | {"custom rule", "no rule"})
 OUTCOMES = {*view.OUTCOMES.values(), *view.ANSWERS.values(), view.OPEN, "not answered"}
 # the lines tracekit report --share and tracekit audit --share print (report.share, audit.share)
 SHARE = [re.compile(x) for x in (
-    r"Tracekit [\w.+-]+ field report \(tracekit (?:report|audit) --share\): (?:[\d.]+ (?:day|hour)s?|every transcript)",
+    r"Tracekit [\w.+-]+ field report \(tracekit (?:report|audit) --share\): "
+    r"(?:[\d.]+ (?:day|hour|minute|second)s?|every transcript)",
     rf"a replay against today's policy, not a signed record: {N} Claude Code sessions?",
     r"Integrity: the store \w+, \d+ of \d+ runs verify",
     rf"Runs that verify, by agent: (?:{_counts(AGENTS | {'other'})}|none)",
@@ -149,6 +151,36 @@ class TestHarmless(unittest.TestCase):
         self.assertEqual((title, list(fields)), ("False alarm: TK-A001", ["notes"]))
         self.assertEqual([line.split(":")[0] for line in fields["notes"].splitlines()],
                          ["rules", "tool", "policy", "verdict"])
+
+    def test_a_rule_that_only_also_matched_is_not_named_as_one_that_held(self):
+        """The 1.6.0 review: the title named a flag rule that also matched as a rule that held the call (the report
+        places each rule by its policy section, report._placed)."""
+        from tracekit.signer.service import load_policy
+        eng = load_policy()
+        ask, flag = [next(r["id"] for sec, r, *_ in eng.rules if sec == want) for want in ("ask", "flag")]
+        title, fields = feedback.false_alarm({"rule_ids": [flag, ask], "tool": "Bash", "policy_hash": eng.policy_hash})
+        self.assertEqual(title, f"False alarm: {ask}")
+        self.assertEqual(fields["notes"].splitlines()[0], f"rules: {ask} (also matched, not why: {flag})")
+
+    def test_with_no_signer_running_it_starts_none_and_says_so(self):
+        """The 1.6.0 review: with no signer running, --harmless started a dev signer (its keys and store) for a
+        printout, then said unknown_approval."""
+        from tracekit.sdk import autospawn
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        run = os.path.join(d, "run")
+        os.mkdir(run, 0o700)
+        self.addCleanup(autospawn.down, d=run, show_log=False)   # one the old code started
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d,
+                                          "TRACEKIT_RUNTIME_DIR": run}), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            os.environ.pop("TRACEKIT_SIGNER", None)
+            code = cli.main(["feedback", "--harmless", "apr-0123"])
+            data = autospawn.data_dir()
+        self.assertEqual(code, 2)
+        self.assertIn("no signer is running", err.getvalue())
+        self.assertFalse(os.path.exists(data), os.listdir(d))
 
 
 class TestFeedback(unittest.TestCase):

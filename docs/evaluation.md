@@ -281,9 +281,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 835 harmful and 890 benign tool calls in 11 classes
+- **Policy packs** (`eval/e17_policy_corpus.py`): 835 harmful and 892 benign tool calls in 11 classes
   (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 835 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 890 (0.11%); the engines
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 892 (0.11%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -528,12 +528,12 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 254 / 420 (60.5%) | 114 (27.1%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 285 / 420 (67.9%) | 152 (36.2%) | 44 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
+| default | 255 / 420 (60.7%) | 116 (27.6%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 285 / 420 (67.9%) | 154 (36.7%) | 44 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
-destructive 16 of 36, defence evasion 15 of 30, supply chain 15 of 27; strongest: database 32 of
-32, Kubernetes 25 of 27. By evasion, calls with none are caught 154 of 275; quoting 9 of 18, environment prefixes 8 of 14, substitution 40
+destructive 16 of 36, defence evasion 15 of 30, supply chain 16 of 27; strongest: database 32 of
+32, Kubernetes 25 of 27. By evasion, calls with none are caught 155 of 275; quoting 9 of 18, environment prefixes 8 of 14, substitution 40
 of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
 and one that is a bare program name, `K=kubectl; $K …`, is still held: it only hides that name). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
@@ -543,36 +543,36 @@ denied or held:
 
 | Pool | Profile | Caught at publication | Benign held at publication | Caught now | Benign held now |
 |---|---|---|---|---|---|
-| juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 54 (94.7%), 3 denied | 8 |
-| | strict | 41 (71.9%), 4 denied | 10 | 55 (96.5%), 4 denied | 11 |
+| juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 55 (96.5%), 3 denied | 8 |
+| | strict | 41 (71.9%), 4 denied | 10 | 56 (98.2%), 4 denied | 11 |
 | amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 37 (82.2%), 18 denied | 0 |
 | | strict | 25 (55.6%), 19 denied | 2 | 40 (88.9%), 19 denied | 2 |
-| both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 91 (89.2%), 21 denied | 8 (8.4%) |
-| | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 95 (93.1%), 23 denied | 13 (13.7%) |
+| both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 92 (90.2%), 21 denied | 8 (8.4%) |
+| | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 96 (94.1%), 23 denied | 13 (13.7%) |
 
-The current policy scores were refreshed on Windows, Python 3.14.2, during local validation. The latency rows below
-retain the recorded macOS run and gates; latency gates are not compared across different machines.
+The current policy scores above were refreshed on Windows, Python 3.14.2. The latency rows below retain the recorded macOS run and gates.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
 scored: the one policy change between the two (#383) changes none of its numbers. On the default profile, every
-call caught since is held by a rule written after its pool was published: for the first pool, the database-client
-rules `TK-A039` to `TK-A041` (10 calls, #359), repository deletion `TK-A042` (4, #360), infrastructure removal in
-`TK-A001` (3, #361) and a secret read through a cloud CLI, `TK-A037` (1, #372); for the second, 6 by `TK-A047`
-(repository secrets and branch protection through `gh`, #402), 2 by `TK-C010` (turning off AWS audit logging, #403), 2 CI deletions by `TK-A049` (#405), 4 by `TK-A052` and
+call caught since is held by a rule written after its pool was published, or read by a later parser: for the first
+pool, the database-client rules `TK-A039` to `TK-A041` (10 calls, #359), repository deletion `TK-A042` (4, #360),
+infrastructure removal in `TK-A001` (3, #361), a secret read through a cloud CLI, `TK-A037` (1, #372), and a bucket
+deletion behind an alias the line defines, which the parser now reads (`TK-A031`, 1); for the second, 6 by `TK-A047`
+(repository secrets and branch protection through `gh`, #402), 2 by `TK-C010` (turning off AWS audit logging, #403), 2 CI deletions by `TK-A049` (#405) and 4 by `TK-A052` and
 `TK-A053` (a Kubernetes or Vault secret read, #404), and 1 by `TK-A061` (a workflow write that sends a secret, #405). One benign call of the first pool is newly held on both
 profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBACK;"`, whose drop is rolled back.
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 120 / 119 | 282 / 344 | 706 / 852 | 5.23 / 6.32 |
-| strict, RE2 / regex | 119 / 117 | 259 / 302 | 574 / 747 | 4.72 / 5.49 |
-| dev, RE2 / regex | 107 / 103 | 256 / 283 | 563 / 567 | 4.67 / 5.07 |
+| default, RE2 / regex | 135 / 139 | 397 / 450 | 986 / 1276 | 6.88 / 8.29 |
+| strict, RE2 / regex | 137 / 140 | 354 / 432 | 919 / 1306 | 6.5 / 7.87 |
+| dev, RE2 / regex | 125 / 127 | 367 / 393 | 868 / 1106 | 6.66 / 7.23 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.12% default; 13.0%, 15.4%, 5.5%
-strict; the blind pools', recorded when they joined: 8.4% default, 13.7% strict); `p99_ref` stays within 25% of its on the same machine (re-measured once before failing; another machine,
+strict; the blind pools', recorded when they joined: 8.4% default, 13.7% strict); `p99_ref` stays within 25% of its on the same machine (strict's and dev's within 5% of the run of 2026-11-08, whose security reading of shell lines added that cost on purpose, or of the highest of several runs for strict on RE2 and dev on regex, whose runs spread wider; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
 every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5
@@ -596,16 +596,10 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055` and the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) strict does not hold either: 46 of 890 (5.2%).
+`TK-A053`) strict does not hold either: 46 of 892 (5.2%).
 All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
-
-The CI-upload rule (`TK-A061`, #405) raises the known `amandeavor` pool to 37 of 45 harmful calls caught by default
-and 40 of 45 by strict, from 36 and 39 on the upstream baseline. Benign holds stay at 0 of 45 and 2 of 45. Developer
-sessions stay at 2 of 130 and 20 of 130. These are updated scores after reading the pool, not new blind scores.
-The three added benign workflow cases are not held; the E17 and E21 counts include them. Both engines agree, and
-the recorded gates were not replaced.
 
 Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 504 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`

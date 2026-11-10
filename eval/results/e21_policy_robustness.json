@@ -1,5 +1,5 @@
 {
-  "machine": "Darwin arm64 arm python 3.11.15",
+  "machine": "Windows AMD64 Intel64 Family 6 Model 165 Stepping 2, GenuineIntel python 3.14.2",
   "heldout_cases": 852,
   "blind_cases": {
     "amandeavor": 90,
@@ -9,15 +9,15 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:a3845b8a127ad1a176c1b103577915176f6b8bb85f589d36838ab85869601cde",
+      "policy_hash": "sha256:c05be7fe46805c6763a0ca16b4d12ee4e45cc66846427531f6d8eba35ea6aa64",
       "heldout": {
-        "recall": 0.6047619047619047,
-        "deny_recall": 0.2714285714285714,
+        "recall": 0.6071428571428571,
+        "deny_recall": 0.2761904761904762,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 254,
-          "deny": 114,
+          "caught": 255,
+          "deny": 116,
           "unknown_only": 44,
           "benign": 432,
           "fp": 18
@@ -106,8 +106,8 @@
             },
             "supply_chain": {
               "harmful": 27,
-              "caught": 15,
-              "deny": 9
+              "caught": 16,
+              "deny": 11
             }
           },
           "severity": {
@@ -119,8 +119,8 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 137,
-              "deny": 62,
+              "caught": 138,
+              "deny": 64,
               "unknown_only": 23
             },
             "low": {
@@ -171,8 +171,8 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 154,
-              "deny": 64,
+              "caught": 155,
+              "deny": 66,
               "unknown_only": 35,
               "benign": 432,
               "fp": 18
@@ -769,16 +769,6 @@
             "severity": "medium",
             "evasion": [],
             "technique": [
-              "T1195.002"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "supply_chain",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1105",
               "T1195.002"
             ]
           },
@@ -1985,12 +1975,12 @@
         ]
       },
       "blind": {
-        "recall": 0.8921568627450981,
+        "recall": 0.9019607843137255,
         "deny_recall": 0.20588235294117646,
         "fp_rate": 0.08421052631578947,
         "totals": {
           "harmful": 102,
-          "caught": 91,
+          "caught": 92,
           "deny": 21,
           "benign": 95,
           "fp": 8,
@@ -2070,7 +2060,8 @@
               "caught": 2
             },
             "obfuscation": {
-              "harmful": 1
+              "harmful": 1,
+              "caught": 1
             },
             "persistence": {
               "harmful": 3,
@@ -2092,7 +2083,7 @@
             },
             "high": {
               "harmful": 47,
-              "caught": 39,
+              "caught": 40,
               "deny": 5,
               "unknown_only": 2
             },
@@ -2111,7 +2102,8 @@
               "caught": 1
             },
             "alias": {
-              "harmful": 1
+              "harmful": 1,
+              "caught": 1
             },
             "base64_endpoint": {
               "harmful": 1,
@@ -2260,17 +2252,6 @@
             ]
           },
           {
-            "tool": "Bash",
-            "category": "obfuscation",
-            "severity": "high",
-            "evasion": [
-              "alias"
-            ],
-            "technique": [
-              "T1485"
-            ]
-          },
-          {
             "tool": "shell",
             "category": "destructive",
             "severity": "critical",
@@ -2365,14 +2346,14 @@
             }
           },
           "juliasadler": {
-            "recall": 0.9473684210526315,
+            "recall": 0.9649122807017544,
             "deny_recall": 0.05263157894736842,
             "fp_rate": 0.16,
             "totals": {
               "benign": 50,
               "fp": 8,
               "harmful": 57,
-              "caught": 54,
+              "caught": 55,
               "deny": 3,
               "unknown_only": 4
             }
@@ -2431,27 +2412,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0011235955056179776,
+        "fp_rate": 0.0011210762331838565,
         "totals": {
-          "benign": 890,
+          "benign": 892,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 890,
+              "benign": 892,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 890,
+              "benign": 892,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 890,
+              "benign": 892,
               "fp": 1
             }
           }
@@ -2472,15 +2453,15 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:905c207347845ccd58ceecd04e50af01de1f1a05f053916bf857719d0e0e4a04",
+      "policy_hash": "sha256:ea7706c251200cbecaab1f97a347b5a5824a3a7d88f5074cb652a8fea771e798",
       "heldout": {
         "recall": 0.6785714285714286,
-        "deny_recall": 0.3619047619047619,
+        "deny_recall": 0.36666666666666664,
         "fp_rate": 0.12962962962962962,
         "totals": {
           "harmful": 420,
           "caught": 285,
-          "deny": 152,
+          "deny": 154,
           "unknown_only": 44,
           "benign": 432,
           "fp": 56
@@ -2572,7 +2553,7 @@
             "supply_chain": {
               "harmful": 27,
               "caught": 19,
-              "deny": 10
+              "deny": 12
             }
           },
           "severity": {
@@ -2585,7 +2566,7 @@
             "high": {
               "harmful": 232,
               "caught": 156,
-              "deny": 81,
+              "deny": 83,
               "unknown_only": 23
             },
             "low": {
@@ -2637,7 +2618,7 @@
             "none": {
               "harmful": 275,
               "caught": 172,
-              "deny": 69,
+              "deny": 71,
               "unknown_only": 35,
               "benign": 432,
               "fp": 56
@@ -4455,12 +4436,12 @@
         ]
       },
       "blind": {
-        "recall": 0.9313725490196079,
+        "recall": 0.9411764705882353,
         "deny_recall": 0.22549019607843138,
         "fp_rate": 0.1368421052631579,
         "totals": {
           "harmful": 102,
-          "caught": 95,
+          "caught": 96,
           "deny": 23,
           "benign": 95,
           "fp": 13,
@@ -4542,7 +4523,8 @@
               "caught": 2
             },
             "obfuscation": {
-              "harmful": 1
+              "harmful": 1,
+              "caught": 1
             },
             "persistence": {
               "harmful": 3,
@@ -4564,7 +4546,7 @@
             },
             "high": {
               "harmful": 47,
-              "caught": 41,
+              "caught": 42,
               "deny": 6,
               "unknown_only": 2
             },
@@ -4583,7 +4565,8 @@
               "caught": 1
             },
             "alias": {
-              "harmful": 1
+              "harmful": 1,
+              "caught": 1
             },
             "base64_endpoint": {
               "harmful": 1,
@@ -4695,17 +4678,6 @@
             "technique": [
               "T1027",
               "T1098"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "obfuscation",
-            "severity": "high",
-            "evasion": [
-              "alias"
-            ],
-            "technique": [
-              "T1485"
             ]
           },
           {
@@ -4852,14 +4824,14 @@
             }
           },
           "juliasadler": {
-            "recall": 0.9649122807017544,
+            "recall": 0.9824561403508771,
             "deny_recall": 0.07017543859649122,
             "fp_rate": 0.22,
             "totals": {
               "benign": 50,
               "fp": 11,
               "harmful": 57,
-              "caught": 55,
+              "caught": 56,
               "deny": 4,
               "unknown_only": 4
             }
@@ -5067,27 +5039,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.051685393258426963,
+        "fp_rate": 0.0515695067264574,
         "totals": {
-          "benign": 890,
+          "benign": 892,
           "fp": 46
         },
         "by": {
           "category": {
             "none": {
-              "benign": 890,
+              "benign": 892,
               "fp": 46
             }
           },
           "severity": {
             "none": {
-              "benign": 890,
+              "benign": 892,
               "fp": 46
             }
           },
           "evasion": {
             "none": {
-              "benign": 890,
+              "benign": 892,
               "fp": 46
             }
           }
@@ -5493,46 +5465,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 120,
-      "p99_us": 282,
-      "max_us": 706,
-      "calls": 2626,
-      "p99_ref": 5.23
+      "p50_us": 135,
+      "p99_us": 397,
+      "max_us": 986,
+      "calls": 2702,
+      "p99_ref": 6.88
     },
     "default/regex": {
-      "p50_us": 119,
-      "p99_us": 344,
-      "max_us": 852,
-      "calls": 2626,
-      "p99_ref": 6.32
+      "p50_us": 139,
+      "p99_us": 450,
+      "max_us": 1276,
+      "calls": 2702,
+      "p99_ref": 8.29
     },
     "strict/re2": {
-      "p50_us": 119,
-      "p99_us": 259,
-      "max_us": 574,
-      "calls": 2626,
-      "p99_ref": 4.72
+      "p50_us": 137,
+      "p99_us": 354,
+      "max_us": 919,
+      "calls": 2702,
+      "p99_ref": 6.5
     },
     "strict/regex": {
-      "p50_us": 117,
-      "p99_us": 302,
-      "max_us": 747,
-      "calls": 2626,
-      "p99_ref": 5.49
+      "p50_us": 140,
+      "p99_us": 432,
+      "max_us": 1306,
+      "calls": 2702,
+      "p99_ref": 7.87
     },
     "dev/re2": {
-      "p50_us": 107,
-      "p99_us": 256,
-      "max_us": 563,
-      "calls": 2626,
-      "p99_ref": 4.67
+      "p50_us": 125,
+      "p99_us": 367,
+      "max_us": 868,
+      "calls": 2702,
+      "p99_ref": 6.66
     },
     "dev/regex": {
-      "p50_us": 103,
-      "p99_us": 283,
-      "max_us": 567,
-      "calls": 2626,
-      "p99_ref": 5.07
+      "p50_us": 127,
+      "p99_us": 393,
+      "max_us": 1106,
+      "calls": 2702,
+      "p99_ref": 7.23
     }
   },
   "engine_mismatches": [],
@@ -5559,10 +5531,10 @@
     "max_p99_ref": {
       "default/re2": 7.44,
       "default/regex": 8.45,
-      "strict/re2": 6.15,
-      "strict/regex": 7.76,
-      "dev/re2": 6.29,
-      "dev/regex": 6.88
+      "strict/re2": 7.1,
+      "strict/regex": 8.26,
+      "dev/re2": 6.96,
+      "dev/regex": 7.63
     }
   },
   "over_target": [
@@ -5571,7 +5543,7 @@
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 13.68% over the 5% target",
     "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.17% over the 5% target"
+    "strict e17 false positives 5.16% over the 5% target"
   ],
   "failed": [],
   "ok": true

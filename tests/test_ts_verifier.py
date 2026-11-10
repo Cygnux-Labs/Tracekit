@@ -26,7 +26,7 @@ sys.path.insert(0, TESTS)
 from factories import box_runset_bundle, damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
 from tracekit import cli, crypto, gateway, grants  # noqa: E402
 from tracekit.bundle import Report  # noqa: E402
-from tracekit.bundle_v2 import export  # noqa: E402
+from tracekit.bundle_v2 import VERSIONS, export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
 from tracekit.format.canon import event_hash  # noqa: E402
@@ -545,7 +545,8 @@ class Agreement(SignerBundles):
     def agree(self, bundle, trust):
         rep, code = v2.verify(bundle, trust)
         ts = ts_verify(bundle, trust)
-        self.assertEqual((ts["exit_code"], ts["integrity"], ts["assurance"]), (code, rep.integrity, rep.assurance))
+        self.assertEqual((ts["exit_code"], ts["integrity"], ts["assurance"]),   # --json: a failed bundle isn't rated
+                         (code, rep.integrity, v2.NOT_RATED if code == v2.EXIT_FAIL else rep.assurance))
         self.assertEqual([(c["check"], c["status"]) for c in ts["checks"]], [(c["check"], c["status"]) for c in rep.checks])
         return code, rep
 
@@ -951,6 +952,71 @@ class Agreement(SignerBundles):
         bundle, _, trust = box_runset_bundle(os.path.join(self.d, f"runset-{uuid.uuid4().hex}"))
         _, rep = self.agree(bundle, trust)   # the same lines in both
         self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])
+
+    def test_a_self_issued_grant_is_a_self_approval_in_both(self):
+        """Pre-1.6 review 2: on a witnessed log, a run whose own user approved its held call and one whose own user
+        issued the grant that released it read the same in both verifiers: dev, `approvals: self`, check for check."""
+        me, usdc, witness = CallerIdentity("uid", "990101", True), 10 ** 6, Witness()
+        d = os.path.join(self.d, f"selfgrant-{uuid.uuid4().hex}")
+        s = svc.SignerService(os.path.join(d, "data"), witnesses=[witness], grace_s=0, fsck_every_s=0,
+                              policy=Engine({"tools": {"send_money": "app"}, "ask": [
+                                  {"id": "PAY", "tool": "send_money", "pattern": "^", "approval": {"grant": "payment.send"}}]}))
+        self.addCleanup(s.close)
+        pay = {"amount": 120 * usdc, "currency": "USDC", "to": "0x" + "a1" * 20}
+
+        def call(method, **req):
+            return s.call(me, method, {"request_id": uuid.uuid4().hex, **req})
+
+        def run():
+            r = call("register_run", agent={"name": "payer"})
+            return {"run_id": r["run_id"], "run_token": r["run_token"]}
+
+        def decide(h, i):
+            return call("decide", **h, stream="s", client_seq=i, tool_call_id=f"t{i}", tool="send_money",
+                        args_source="parsed", args=pay)
+        approved, granted = run(), run()
+        decide(approved, 0)
+        call("approval_decide", approval_id=call("approval_request", **approved, tool_call_id="t0")["approval_id"],
+             decision="approve")
+        self.assertTrue(call("grant_issue", run_id=granted["run_id"], intent="payment.send", tools=["send_money"],
+                             caveats=[{"field": "currency", "op": "==", "value": "USDC"},
+                                      {"field": "payee", "op": "==", "value": pay["to"]}],
+                             limits=[{"op": "sum", "field": "amount", "max": 1000 * usdc}],
+                             expires_at=svc._iso(time.time() + 3600))["self_approved"])
+        self.assertEqual([decide(granted, i)["decision"] for i in range(3)], ["allow"] * 3)
+        for h in (approved, granted):
+            call("close_run", **h)
+        s.sweep(time.monotonic() + 1)
+        deadline = time.monotonic() + 20
+        while True:
+            s.checkpoint()
+            size, note = s.log.storage.checkpoint_latest()
+            if size == s.log.storage.tree.size and signed_by(note.split("\n\n", 1)[1], witness.vkey):
+                break
+            self.assertLess(time.monotonic(), deadline, "no cosigned checkpoint")
+            time.sleep(0.1)
+        trust = os.path.join(d, "trust.json")
+        with open(trust, "w") as f:
+            json.dump({"logs": [s.vkey], "witnesses": [{"vkey": witness.vkey, "class": "customer"}],
+                       "witnesses_required": 1, "algs": ["ed25519"]}, f)
+        reads = []
+        for name, h in (("approved", approved), ("granted", granted)):
+            bundle = os.path.join(d, f"{name}.tkb")
+            export(s.log.storage, "default", h["run_id"], note, bundle)
+            code, rep = self.agree(bundle, trust)
+            self.assertEqual(code, 0, rep.checks)
+            parts = rep.assurance.split("; ")
+            reads.append((parts[0], "approvals: self" in parts, "cosigned ed25519 by" in rep.assurance))
+            self.assertNotIn("verifier minimum", [c["check"] for c in rep.checks])
+        self.assertEqual(reads, [("dev", True, True)] * 2)
+        # #674 re-review: its manifest edited down to 1.4.0, which a 1.5 verifier reads as witnessed: both warn alike
+        low = os.path.join(d, "granted-low.tkb")
+        rewrite_bundle(bundle, low, lambda files, manifest: manifest.update(verifier_min_version="1.4.0"))
+        code, rep = self.agree(low, trust)
+        self.assertEqual(code, 0, rep.checks)
+        [line] = [c for c in rep.checks if c["check"] == "verifier minimum"]
+        self.assertEqual(line["status"], "warn")
+        self.assertEqual([c for c in ts_verify(low, trust)["checks"] if c["check"] == "verifier minimum"], [line])
 
     def test_both_verifiers_re_check_intent_grants_alike(self):
         """Intent grants (docs/intent-grants.md): a person's grant, the two payments it released, one it held and its
@@ -1404,19 +1470,31 @@ if test_why_signed_replay is not None:
                                text=True, check=True)
             self.assertEqual(json.loads(p.stdout), [c["want"] for c in cases])
 
-        def test_the_verifier_is_the_package_version(self):
-            """VERSION is what it compares a bundle's verifier_min_version with: the package's own release."""
-            with open(os.path.join(TS, "package.json")) as f:
-                pkg = json.load(f)["version"]
-            with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
-                src = f.read()
-            self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
 
-        def test_the_schema_copy_is_the_schema(self):
-            """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
-            with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
-                    open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
-                self.assertEqual(json.loads(a.read()), json.loads(b.read()))
+class Copies(unittest.TestCase):
+    """What the TypeScript verifier copies from the reference, read as files: no node and no build, so they run in every
+    job, pytest's or `python3 tests/test_ts_verifier.py`'s."""
+
+    def test_the_verifier_is_the_package_version(self):
+        """VERSION is the package's own release; READS, what it compares a bundle's verifier_min_version with, is the
+        reference's: the newest VERSIONS row, or the release when later."""
+        with open(os.path.join(TS, "package.json")) as f:
+            pkg = json.load(f)["version"]
+        with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
+            src = f.read()
+        self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
+        self.assertIn(f'export const READS = "{v2.READS}";', src)
+
+    def test_the_schema_copy_is_the_schema(self):
+        """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
+        with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
+                open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
+            self.assertEqual(json.loads(a.read()), json.loads(b.read()))
+
+    def test_the_versions_copy_is_the_table(self):
+        """And of bundle_v2.VERSIONS, from which both verifiers recompute what records need (`verifier minimum`)."""
+        with open(os.path.join(TS, "src", "verify", "versions.json"), "rb") as f:
+            self.assertEqual(json.loads(f.read()), VERSIONS)
 
 
 import test_reviews  # noqa: E402

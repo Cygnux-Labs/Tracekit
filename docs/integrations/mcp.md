@@ -3,10 +3,10 @@
 > **Stable:** tested with [`tests/adapter_contract.py`](../../tests/adapter_contract.py) against the pinned library on every push to main
 > and every pull request ([what's stable](../support.md)).
 
-`tracekit.integrations.mcp.TracekitSession` gates the tool calls an agent makes through an MCP `ClientSession` (the
-Python `mcp` package). Before each `call_tool` it asks the Tracekit signer for a policy decision; after the server
-answers it records the outcome. It works with any object that implements the signer RPC
-(`tracekit.signer.rpc_schema.SignerAPI`), including `tracekit.testing.FakeSigner`.
+`tracekit.integrations.mcp.TracekitSession` gates the tool calls and prompt fetches an agent makes through an MCP
+`ClientSession` (the Python `mcp` package). Before each `call_tool` or `get_prompt` it asks the Tracekit signer for a
+policy decision; after the server answers it records the outcome. It works with any object that implements the signer
+RPC (`tracekit.signer.rpc_schema.SignerAPI`), including `tracekit.testing.FakeSigner`.
 
 ## Install
 
@@ -35,7 +35,7 @@ Every other attribute is the wrapped session's. Only calls made through the wrap
 
 | When | RPC | Sent |
 |---|---|---|
-| before the call is sent | `decide` | a fresh `tool_call_id`, the tool as `mcp:<server>/<tool>`, `tool_class_hint: mcp`, the arguments as given (`parsed`) |
+| before the call is sent | `decide` | a fresh `tool_call_id`, the tool as `mcp:<server>/<tool>` (`mcp:<server>/prompt:<name>` for `get_prompt`), `tool_class_hint: mcp`, the arguments as given (`parsed`) |
 | right before it is sent | `approval_consume` | the same call and arguments, and the approval id when the call waited for one |
 | after the server answers | `complete` | `status` `ok`, or `error` for a result with `isError: true`; a `sha256:` commitment to the result (not the result), or the exception type and message |
 
@@ -48,7 +48,7 @@ recorded as a `capture.gap` and the stricter decision applies.
 
 - **allow**: the call is sent to the server.
 - **deny**: the call is not sent. `call_tool` returns a `CallToolResult` with `isError: true` and the text
-  `Tool call blocked by policy: <rule ids>`, and the run goes on.
+  `Tool call blocked by policy: <rule ids>`, and the run goes on; `get_prompt` raises `RuntimeError` with that text.
 - **ask**: the adapter opens an approval in the signer and holds the call while it waits, up to `approval_wait_s`
   seconds (default 300), for a person to decide (CLI, web). Approved, the call is sent; rejected, expired or still
   undecided at the deadline, it is refused as for a deny, and an undecided approval is withdrawn

@@ -86,14 +86,17 @@ def _whatwg_host(url):
     return scheme, (host[:host.find("]") + 1] if host.startswith("[") and "]" in host else host.split(":")[0])
 
 
+_HEX, _OCTAL, _DECIMAL = re.compile(r"0[xX][0-9A-Fa-f]*"), re.compile(r"0[0-7]+"), re.compile(r"[0-9]+")
+
+
 def _number(part):
     """An IPv4 part in decimal, 0x hex or 0 octal, None for a name, -1 for a malformed number (08) or a decimal of more
     than 10 digits (over 2**32, and past Python's 4,300 digits int() refuses)."""
-    if re.fullmatch(r"0[xX][0-9A-Fa-f]*", part):
+    if _HEX.fullmatch(part):
         return int(part[2:] or "0", 16)
-    if re.fullmatch(r"0[0-7]+", part):
+    if _OCTAL.fullmatch(part):
         return int(part, 8)
-    if re.fullmatch(r"[0-9]+", part):
+    if _DECIMAL.fullmatch(part):
         return -1 if len(part) > 1 and part[0] == "0" or len(part) > 10 else int(part)
     return None
 
@@ -204,6 +207,7 @@ SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False),
                 "mssql": (False, False, True, False, True, False, False)}
 _DOLLAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 _MYSQL_RUN = re.compile(r"/\*M?!\d*")
+_SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b]+")   # characters no dialect starts a comment, literal or quote with
 
 
 def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space):
@@ -255,6 +259,9 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
                 return None
             out.append("''")
             i = end + len(tag)
+        elif m := _SQL_TEXT.match(stmt, i):   # a run of text, read in one step
+            out.append(m.group())
+            i = m.end()
         else:
             out.append(" " if c == "\x0b" else c)
             i += 1

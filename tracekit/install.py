@@ -1702,6 +1702,9 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                             **({} if hooks else {"no_hooks": True})},   # doctor: the choice it is
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
+    if not harnesses:
+        print(f"note: harness binding is off, so any process of {target_user} can start runs or write into "
+              "the agent's runs. To bind runs to the agent's CLI on Linux, run init again with --harness [NAME=]PATH.")
     if failed:
         raise ServiceError("; ".join(failed))
     return sock, settings
@@ -1935,7 +1938,9 @@ def status():
                              "content_capture": pol.get("content_capture", "hashed"), "reasoning_capture": pol.get("reasoning_capture", False)}
         except Exception as e:
             out["policy"] = {"error": str(e)}
-    out["hooks"] = _installed_hooks()
+    from .doctor import _dev_harnesses   # the other coding agents' v2 hooks, as doctor finds them
+    out["hooks"] = _installed_hooks() + [{"settings": p, "agent": h, "versions": ["v2"]}
+                                         for h, p in sorted(_dev_harnesses().items())]
     out["capture_sources"] = ["hook"] + (["proxy"] if cfg.get("proxy") else []) + \
         (["transcript"] if (out["policy"] or {}).get("reasoning_capture") else [])
     if cfg.get("proxy_url"):
