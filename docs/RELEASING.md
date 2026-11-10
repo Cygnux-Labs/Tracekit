@@ -31,8 +31,9 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    `sdk/typescript/package-lock.json`. The version bump can't lock signer packages that aren't published yet, and once
    they are, `npm ci` (the `release-dry-run` job, `scripts/release/build.py`) fails until the lockfile names them. In
    the same PR add the tag to `RELEASED` in `tests/test_released_verifiers.py`, so CI runs this release's verifier on
-   every later signer's bundles. If the release added a row to `VERSIONS` in `tracekit/bundle_v2.py`, freeze it there
-   too: add the row's hash at the tag to `test_shipped_rows_are_frozen` in `tests/test_bundle_v2.py`.
+   every later signer's bundles. If the release added a row to `VERSIONS` in `tracekit/bundle_v2.py`, freeze it in the
+   same PR: add the sha256 of `canonical(VERSIONS["<version>"])` (`tracekit.format.canon`), computed from the tagged
+   code, to `shipped` in `test_shipped_rows_are_frozen` (`tests/test_bundle_v2.py`).
 6. Once the `pypi` job has published, an owner of the `Cygnux-Labs` GitHub organisation publishes the MCP gateway's
    entry in the MCP Registry from the tagged checkout. The registry proves the `io.github.Cygnux-Labs` namespace
    through a GitHub login, and `mcp-publisher login github` (device flow) can't see the org's Owner role: create a
