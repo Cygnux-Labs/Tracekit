@@ -40,6 +40,8 @@ Every other attribute is the wrapped session's. Only calls made through the wrap
 | after the server answers | `complete` | `status` `ok`, or `error` for a result with `isError: true`; a `sha256:` commitment to the result (not the result), or the exception type and message |
 | after `read_resource` answers | `observe` | `source` `mcp:<server>/resource`, `trust: untrusted` and the result as `value` (recorded as its commitment and indexed for provenance; a failure to record warns and returns the result unchanged) |
 
+`list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`observe`, source `mcp:<server>/tools`, `/resources` or `/prompts`): the model reads the descriptions the server wrote, and the page the caller asked for is what is recorded. A page the signer cannot record is withheld, unless the run fails open for `mcp`, when an unreachable signer returns it with a warning; a refusal is withheld either way.
+
 `<server>` is the name in the server's initialize result, with every character outside `A-Za-z0-9_.-` replaced by `_`
 (`unknown` when the server gave none). The policy's `tools` map should map `mcp:*/*` to the `mcp` class (the coding
 pack does), so rules can match the `server`, `tool` and `args` fields. A class hint that disagrees with the policy is

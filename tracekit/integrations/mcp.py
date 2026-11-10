@@ -15,7 +15,10 @@ Every call that is not denied is sent only after the signer's `approval_consume`
 for an approval with a T2 executor. A result with `isError: true` completes as an error; an exception from the session
 propagates unchanged and completes as an error. `read_resource` records the result with `observe` (`source`
 `mcp:<server>/resource`, `trust` `untrusted`); if the signer cannot record it, a warning is issued and the result is
-returned unchanged. Only `call_tool`, `get_prompt` and `read_resource` calls made through the wrapped session are seen.
+returned unchanged. `list_tools`, `list_resources` and `list_prompts` are recorded as
+untrusted observed input (`mcp:<server>/tools`, `/resources`, `/prompts`) and returned once recorded. A list the
+signer cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a
+refusal is withheld either way. Only those calls made through the wrapped session are seen.
 """
 import re
 import uuid
@@ -25,10 +28,13 @@ from mcp.types import CallToolResult, TextContent
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations.held import HeldCalls
-from tracekit.sdk.client import result_field
+from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 
 BLOCKED = "Tool call blocked by policy: "
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
+_UNNAMED = ("MCP: the session doesn't name its server, so its calls are recorded as mcp:unknown/<tool>: "
+            "pass TracekitSession(..., server=<name>), or call tracekit.instrument() before the "
+            "session's initialize() (mcp 1.x)")
 
 
 class TracekitSession(HeldCalls):
@@ -53,7 +59,9 @@ class TracekitSession(HeldCalls):
         """Read a resource and record its result as an untrusted observed input; a failure to record warns and leaves
         the result as it was."""
         result = await self._session.read_resource(uri, *a, **kw)
-        server = self._server_name()
+        raw, server = self._server_name()
+        if not raw:
+            warnings.warn(_UNNAMED, stacklevel=3)
         try:
             await self._rpc("observe", source=f"mcp:{server}/resource", trust="untrusted",
                             value=result.model_dump(mode="json", by_alias=True, exclude_none=True))
@@ -61,16 +69,41 @@ class TracekitSession(HeldCalls):
             warnings.warn(f"tracekit: resource {uri} of mcp:{server} not recorded: {e}", stacklevel=2)
         return result
 
+    async def list_tools(self, *a, **kw):
+        return await self._list("tools", *a, **kw)
+
+    async def list_resources(self, *a, **kw):
+        return await self._list("resources", *a, **kw)
+
+    async def list_prompts(self, *a, **kw):
+        return await self._list("prompts", *a, **kw)
+
     def _server_name(self):
-        server = self._server or getattr(getattr(self._session, "server_info", None), "name", None)
-        if not server:
-            warnings.warn("MCP: the session doesn't name its server, so its calls are recorded as mcp:unknown/<tool>: "
-                          "pass TracekitSession(..., server=<name>), or call tracekit.instrument() before the "
-                          "session's initialize() (mcp 1.x)", stacklevel=3)
-        return _UNSAFE.sub("_", server or "") or "unknown"
+        """(the name the session gave, or None; the `mcp:<name>` component, `unknown` when it gave none)."""
+        raw = self._server or getattr(getattr(self._session, "server_info", None), "name", None)
+        return raw, _UNSAFE.sub("_", raw or "") or "unknown"
+
+    async def _list(self, kind, *a, **kw):
+        """The page `list_<kind>` returned, once recorded as untrusted input the model reads. An unreachable signer
+        returns it only when the run fails open for this class; a refusal is withheld either way."""
+        out = await getattr(self._session, "list_" + kind)(*a, **kw)
+        raw, server = self._server_name()
+        if not raw:
+            warnings.warn(_UNNAMED, stacklevel=4)   # list_* -> _list -> warn: the caller's line, as _call's warning
+        try:
+            await self._rpc("observe", source=f"mcp:{server}/{kind}", trust="untrusted",
+                            value=out.model_dump(mode="json", by_alias=True, exclude_none=True))
+        except SignerUnavailable as e:   # unreachable: the run's fail mode for this class, as _gate
+            if not fail_open(self.fail_modes, self.CLASS):
+                raise
+            warnings.warn(f"tracekit: MCP {kind} list not recorded: {e}", stacklevel=2)
+        return out
 
     async def _call(self, method, prefix, name, arguments, *a, **kw):
-        tool = f"mcp:{self._server_name()}/{prefix}{name}"
+        raw, server = self._server_name()
+        if not raw:
+            warnings.warn(_UNNAMED, stacklevel=3)
+        tool = f"mcp:{server}/{prefix}{name}"
         args, call_id = arguments or {}, uuid.uuid4().hex
         why, d, args = await self._gate(call_id, tool, args)
         if why is not None:

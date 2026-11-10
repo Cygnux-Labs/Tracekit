@@ -12,7 +12,8 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
   `handle_tool_errors`, and through `.with_fallbacks()`;
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
   (tracekit_hooks);
-* MCP client: every ClientSession.call_tool goes through TracekitSession;
+* MCP client: every ClientSession.call_tool goes through TracekitSession, and its read_resource, list_tools,
+  list_resources and list_prompts are recorded as untrusted input;
 * Browser Use: the actions of every Tools built from now on (an Agent builds one) are gated (trace_tools);
 * CrewAI: global tool hooks decide every tool call and block by return value (tracekit.integrations.crewai);
 * Pydantic AI: every Agent built from now on gets the Tracekit capability (tracekit.integrations.pydantic_ai), unless
@@ -248,39 +249,34 @@ def _claude_agent_sdk(run):
 
 
 class _Unpatched:
-    """A ClientSession as TracekitSession sees it: its call_tool, get_prompt and read_resource are the ones
-    instrument() replaced."""
+    """A ClientSession as TracekitSession sees it: the methods instrument() replaced are the originals."""
 
-    def __init__(self, session, call_tool, get_prompt=None, read_resource=None):
-        self._session, self._call_tool, self._get_prompt, self._read_resource = (
-            session, call_tool, get_prompt, read_resource)
+    def __init__(self, session, methods):
+        self._session, self._methods = session, methods
 
     def __getattr__(self, name):
+        orig = self._methods.get(name)
+        if orig is not None:   # the session's own method, not the one instrument() put on the class
+            return lambda *a, **kw: orig(self._session, *a, **kw)
         return getattr(self._session, name)
-
-    def call_tool(self, *a, **kw):
-        return self._call_tool(self._session, *a, **kw)
-
-    def get_prompt(self, *a, **kw):
-        return self._get_prompt(self._session, *a, **kw)
-
-    def read_resource(self, *a, **kw):
-        return self._read_resource(self._session, *a, **kw)
 
 
 def _mcp(run):
     from mcp import ClientSession
 
     from .integrations.mcp import TracekitSession
-    call_tool = ClientSession.call_tool
-    get_prompt, read_resource = getattr(ClientSession, "get_prompt", None), getattr(ClientSession, "read_resource", None)
+    methods = {}
+    for name in ("call_tool", "get_prompt", "read_resource", "list_tools", "list_resources", "list_prompts"):
+        orig = getattr(ClientSession, name, None)
+        if orig is not None:   # get_prompt is absent on mcp 1.x
+            methods[name] = orig
     gates, stream, servers = weakref.WeakKeyDictionary(), {}, weakref.WeakKeyDictionary()
 
     def gate(session):
         if session not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
             # the gate holds its session weakly: a strong one would keep every session (the dict's key) alive
-            unpatched = _Unpatched(weakref.proxy(session), call_tool, get_prompt, read_resource)
-            g = gates[session] = TracekitSession(unpatched, run.client, run.registered, server=servers.get(session))
+            g = gates[session] = TracekitSession(_Unpatched(weakref.proxy(session), methods),
+                                                 run.client, run.registered, server=servers.get(session))
             g.stream, g._seq, g._lock = stream.setdefault("s", (g.stream, g._seq, g._lock))
         return gates[session]
 
@@ -292,11 +288,8 @@ def _mcp(run):
             return await getattr(gate(self), method)(*a, **kw)
         return gated
 
-    ClientSession.call_tool = wrap("call_tool", call_tool)
-    if get_prompt is not None:
-        ClientSession.get_prompt = wrap("get_prompt", get_prompt)
-    if read_resource is not None:
-        ClientSession.read_resource = wrap("read_resource", read_resource)
+    for name, orig in methods.items():
+        setattr(ClientSession, name, wrap(name, orig))
     if hasattr(ClientSession, "server_info"):
         return
     initialize = ClientSession.initialize   # mcp 1.x: only initialize()'s result names the server
