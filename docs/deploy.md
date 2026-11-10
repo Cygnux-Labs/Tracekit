@@ -156,13 +156,16 @@ dependencies); on the clone route, delete the clone.
 Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops anything you added by hand, such as
 `witnesses:` or `content:` (without `content:`, new runs keep no content), and doesn't say so. To upgrade:
 
-1. Stop the signer: `sudo systemctl stop tracekit-signer`. Until init starts it again, AGENT's tool calls are blocked.
+1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
+   `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.
    Init restarts the harness helper and the egress observer itself, so they run the new version.
 2. Keep a copy of the config: `sudo cp /etc/tracekit/signer.yaml /root/signer.yaml.bak`.
 3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
-   the new release's tag into a new directory.
-4. Add your lines back to `/etc/tracekit/signer.yaml`, then `sudo systemctl restart tracekit-signer`. A run that
-   starts before this keeps no content.
+   the new release's tag into a new directory. On macOS, init bootstraps the signer and, with `--harness`, the helper
+   again; no separate launchd command is needed here.
+4. Add your lines back to `/etc/tracekit/signer.yaml`, then restart the signer: on Linux,
+   `sudo systemctl restart tracekit-signer`; on macOS, `sudo launchctl kickstart -k system/dev.tracekit.signer`. A run
+   that starts before this keeps no content.
 
 Export and the trust config read the signer's data dir, which only root and the signer's user can open. So AGENT
 can't export its own runs; only root can. Export as root, and name AGENT's tenant: init puts AGENT's runs in a tenant
