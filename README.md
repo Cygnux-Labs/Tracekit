@@ -16,16 +16,16 @@ agents on real systems and prove what they did.**
 
 <table>
 <tr>
-<td align="center" width="25%"><h3>840 of 840</h3>harmful calls stopped<br><sub><a href="#proof-misses-included">11 classes</a>, 1 false alarm in 890 (E17)</sub></td>
-<td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof-misses-included">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof-misses-included">a merge gate</a> on every PR (E8)</sub></td>
-<td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof-misses-included">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
+<td align="center" width="25%"><h3>840 of 840</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 890 (E17)</sub></td>
+<td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
+<td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
+<td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 </tr>
 </table>
 
 Open source (MIT) · runs on your machines · nothing leaves them unless you send it
 
-**[See what your agent did](#see-what-your-coding-agent-did-last-week) · [Try the demo](#try-it-in-5-seconds) · [Who it's for](#who-its-for) · [Add it](#add-it-to-your-agent) · [How it works](#how-it-works) · [What it proves](#what-it-proves) · [Proof](#proof-misses-included) · [Pilot](#pilot-it-with-us) · [For AI agents](#if-youre-an-ai-agent-reading-this) · [Docs](#docs)**
+**[See what your agent did](#see-what-your-coding-agent-did-last-week) · [Try the demo](#try-it-in-5-seconds) · [Who it's for](#who-its-for) · [Add it](#add-it-to-your-agent) · [How it works](#how-it-works) · [What it proves](#what-it-proves) · [Proof](#proof) · [Pilot](#pilot-it-with-us) · [For AI agents](#if-youre-an-ai-agent-reading-this) · [Docs](#docs)**
 
 </div>
 
@@ -324,7 +324,7 @@ What each deployment guarantees, from dev mode to a signer the agent can't reach
 about it: [limits](https://github.com/Cygnux-Labs/Tracekit/wiki/Limits). How it maps to the EU AI Act,
 ISO/IEC 42001, the NIST AI RMF and OWASP: [compliance](https://github.com/Cygnux-Labs/Tracekit/wiki/Compliance).
 
-## Proof, misses included
+## Proof
 
 Our own experiments: small, synthetic and written by us. Nothing rounded up, and the misses stay in.
 
