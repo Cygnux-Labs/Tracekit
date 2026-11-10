@@ -268,7 +268,7 @@ at the signer):
 | Where the signer runs | Good for | Who could still rewrite the log |
 |---|---|---|
 | Your laptop, as you (dev mode) | Trying it, seeing what your agent does | The agent itself, if it tried. Dev runs say so: `isolation: same-user` |
-| Your laptop, as a separate OS user (Linux; macOS experimental) | Coding agents you want held to account | Root and the signer's user |
+| Your laptop, as a separate OS user (Linux; macOS experimental) | Coding agents you want held to account; `--managed` puts Claude Code's hooks where the agent can't remove them | Root and the signer's user |
 | Container or Kubernetes sidecar | Agents in production | The signer's uid and the node admin |
 | Docker Compose stack | A team's shared setup on one host | The Docker host's admins |
 | Central signer over HTTPS | Many teams, one control point | The signer host's admins, which a witness makes visible |
@@ -358,7 +358,7 @@ first two rows measure.
 | Feature | What it does |
 |---|---|
 | **Record** | Every tool call, decision and result in one signed hash chain per run. A lost event becomes a signed gap, never silence |
-| **[Decide](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy)** | Allow, deny or hold each call before it runs, with packs for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP. The shell reader follows pipes, loops, variables and `bash -c`, and holds a command it can't read |
+| **[Decide](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy)** | Allow, deny or hold each call before it runs, with packs for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP. The shell reader follows pipes, loops, variables and `bash -c`, and holds a command it can't read. The strict pack also holds installs, pushes, network commands and environment changes, and denies what it can't read |
 | **[Approve](https://github.com/Cygnux-Labs/Tracekit/wiki/Approvals)** | A held call runs only after a yes, bound to its exact arguments and used once. Edited arguments, a replayed snapshot or another run's approval are refused, in the signer's tests and the adapter contract |
 | **[Verify](https://github.com/Cygnux-Labs/Tracekit/wiki/Verdicts)** | `tracekit verify` checks a run offline against keys you pinned; the browser verifier does the same and sends nothing |
 | **[Viewer](https://github.com/Cygnux-Labs/Tracekit/wiki/Viewer)** | `tracekit view`: every run verified, blocked and held calls, approvals, gaps, replay and a run review |
@@ -368,19 +368,26 @@ first two rows measure.
 | Feature | What it does |
 |---|---|
 | **Witness and monitor** | Independent [cosigners](https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses) and a [watcher](https://github.com/Cygnux-Labs/Tracekit/wiki/Monitor) that catch a rewritten or forked log |
-| **Cross-check** | Compares the calls the model asked for (via an [LLM gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/LLM-Gateway) or the transcript) with the calls the agent reported |
-| **Contain** | Signed [incidents](https://github.com/Cygnux-Labs/Tracekit/wiki/Incidents) that hold or quarantine a run; tools that run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/wiki/Executor), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/MCP-Gateway)); an [egress observer](https://github.com/Cygnux-Labs/Tracekit/wiki/Egress); [Tetragon](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Tetragon) and [Falco](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Falco) kernel-event import: 8 of 8 containment and 10 of 10 detection checks (E17) |
-| **[`tracekit why`](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why)** | Finds which input caused an action by replaying the run without it |
+| **Cross-check** | Compares the calls the model asked for (via an [LLM gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/LLM-Gateway) or the transcript) with the calls the agent reported, and through the gateway each tool result the model is sent with the signed one ([verified tool results](https://github.com/Cygnux-Labs/Tracekit/wiki/LLM-Gateway#verified-tool-results)) |
+| **Contain** | Detection rules over sequences of calls and limits, and signed [incidents](https://github.com/Cygnux-Labs/Tracekit/wiki/Incidents) that hold or quarantine a run; tools that run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/wiki/Executor), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/MCP-Gateway)); an [egress observer](https://github.com/Cygnux-Labs/Tracekit/wiki/Egress); [Tetragon](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Tetragon) and [Falco](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Falco) kernel-event import: 8 of 8 containment and 10 of 10 detection checks (E17) |
+| **[`tracekit why`](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why)** | Where each argument came from, signed, and which input caused an action, found by replaying the run without it. Replay reads the opt-in [content vault](https://github.com/Cygnux-Labs/Tracekit/wiki/Privacy#the-content-vault), where the signer keeps redacted content encrypted; each read is signed, and erasure deletes the run's key |
 | **[`tracekit analyze --v2`](https://github.com/Cygnux-Labs/Tracekit/wiki/Findings#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)** | Flags edits nobody asked for, broken "don't touch X" instructions, data sent out or files deleted without telling you, and says how much of a run's reasoning could be read ([which agents' is readable](https://github.com/Cygnux-Labs/Tracekit/wiki/Reasoning)). [Live constraints](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy#live-constraints) hold the call that would break a "don't touch X" for approval |
 | **More approvers** | Approve from a web page with passkeys, from Slack, or by a reviewer agent within bounds: 7 of 7 abuse cases against agent approvers caught (E18) |
 | **Proof-carrying messages** | An agent's request to another agent carries its proof: a typed intent, claims backed by the sender's signed log, and the person's grant with its limits. The receiver checks it offline before it acts ([PCM 0.1](https://github.com/Cygnux-Labs/Tracekit/wiki/Proof-Carrying-Messages)) |
 | **Intent grants** | Approve a payment once with bounds: who may be paid, the most per payment, the total, until when. The signer releases each payment inside them and holds the rest; `tracekit verify` re-checks every release ([intent grants](https://github.com/Cygnux-Labs/Tracekit/wiki/Intent-Grants)) |
 | **[`tracekit graph`](https://github.com/Cygnux-Labs/Tracekit/wiki/Graph) and [Event Horizon](https://github.com/Cygnux-Labs/Tracekit/wiki/Horizon)** | One graph of what agents did across verified runs (which runs changed a file, who approved a call, which hosts a run reached), and a map in the viewer of where your agents went |
+| **[Tracekit Box](https://github.com/Cygnux-Labs/Tracekit-box)** | Runs each agent job in a Firecracker micro-VM with no network card. Network, secrets, model calls, commands and code changes go through doors on the host that a Tracekit signer decides, and each job is one `.tkb`. Verify prints a `boxed agent` line, and `tracekit analyze --v2` flags what crossed a door that the agent's own account doesn't explain (TK-X212) |
+| **[Tips](https://github.com/Cygnux-Labs/Tracekit/wiki/Viewer#tracekit-tips) and cost** | `tracekit tips` and the viewer's TIPS page show what your coding agent's work cost and how to cut it: context growth, prompt-cache rebuilds after long waits and holds nobody answered, each with its evidence, the saving in dollars and time, and the fix. `tracekit cost` breaks spend down by run or model |
+| **[Oversight report](https://github.com/Cygnux-Labs/Tracekit/wiki/Viewer#weekly-report)** | `tracekit report`: a week of a signer's store on one page, with holds a day, a person's approvals and rejections, the time to answer, and approvals answered in under 2 seconds |
+| **[A2A gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/A2A)** | Stands in front of A2A agents: the signer decides each message before it is relayed, bound to the sender, the receiver's Agent Card and the params, and a held one waits for a person |
+| **[Model receipts](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents#weights-files-a-call-wrote)** | When a call writes a model file (`.safetensors`, `.gguf`, `.pt`, `.pth`, `.ckpt`), its hash and size go into the call's record, and `tracekit verify-model` names the tensors that changed |
 
 ## Commands
 
 ```sh
 tracekit audit --since 7d                   # what your coding agent did, and what Tracekit would have stopped
+tracekit tips                               # what your coding agent's work cost, and how to cut it
+tracekit report                             # a week of holds, approvals and answer times on one page
 tracekit demo --server                      # allow, deny, hold, then a tampered copy fails verification
 tracekit init --dev --v2                    # wire Claude Code's hooks; --agent for the other coding agents
 tracekit up                                 # start the dev signer, or find the running one
