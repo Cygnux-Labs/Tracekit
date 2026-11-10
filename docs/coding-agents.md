@@ -129,15 +129,25 @@ payloads and Tracekit's installer; not tested in a live Devin session.
 GitHub Copilot CLI ([hooks](https://docs.github.com/en/copilot/reference/hooks-configuration)) needs **1.0.107 or
 later**: from that release its `preToolUse`, `postToolUse` and `postToolUseFailure` payloads carry a `toolCallId`, and
 Tracekit blocks a call whose payload has none rather than pair it by guesswork. `init` writes its own hooks file,
-`~/.copilot/hooks/tracekit.json` (`--project`: `.github/hooks/tracekit.json`), with a 600 s `timeout` on `preToolUse`
-(Copilot's own is 30 s, too short for a person to approve). Copilot denies a call when its hook exits with anything but
-0, which Tracekit's does at exit 2, and shows the reason from the hook's JSON (`permissionDecision: deny`). `bash`,
-`apply_patch`, `view`, `glob`, `rg`, `web_fetch` and `task` are decided as `Bash`, `Edit` (every file the patch names),
-`Read`, `Glob`, `Grep`, `WebFetch` and `Task`, and `web_search` as `mcp:github-mcp-server/web_search`, the built-in MCP
-server's tool it is. The payload doesn't say which other tools are MCP ones: Copilot names them `<server>-<tool>`, so a
-name with a `-` is decided as an MCP tool under every split, and the strictest decision stands; a name of 64 characters
-or more, where Copilot cuts names, is denied ([limits](limits.md#policy)). No prompts, session events or
-model text are recorded. Tested in live Copilot CLI 1.0.107 sessions on Linux.
+`~/.copilot/hooks/tracekit.json` (`$COPILOT_HOME/hooks/tracekit.json` when that is set; `--project`:
+`.github/hooks/tracekit.json`), with a 600 s `timeout` on `preToolUse`: Copilot's own is 30 s, too short for a person
+to approve, and a hook that times out lets the call run, so Tracekit's answers within 540 s. Copilot's payload names
+no event, so the hook's command does, for the v1 hook too. Copilot denies a call when its hook exits with anything but
+0, which Tracekit's does at exit 2, and shows the reason from the hook's JSON (`permissionDecision: deny`). `--project`
+writes this machine's Python path into `.github/`, which is usually committed: init says how to keep the file out of
+the commit. `bash`, `apply_patch`, `view`, `glob`, `rg`, `web_fetch` and `task` are decided as `Bash`, `Edit` (every
+file the patch names), `Read`, `Glob`, `Grep`, `WebFetch` and `Task`, and `web_search` as
+`mcp:github-mcp-server/web_search`, the built-in MCP server's tool it is; `create`, `edit`, `str_replace_editor`,
+`grep`, `powershell`, `write_bash`, `write_powershell` and `write_agent`, the tools Copilot gives other models, as
+`Write`, `Edit`, `Read`, `Write` or `Edit`, `Grep`, `PowerShell`, `Bash` and `PowerShell` (`command` = the typed
+input) and `Task`. Each file tool is decided on the `path` or `paths` it reads, never on another argument beside it.
+The payload doesn't say which other tools are MCP ones: Copilot names them `<server>-<tool>`, so a name with a `-` is
+decided as an MCP tool under every split, and the strictest decision stands; a name of 64 characters or more, where
+Copilot cuts names, is denied ([limits](limits.md#policy)). No prompts, session events or model text are recorded.
+Copilot also runs the hooks in a repository's `.claude/settings*.json`, so a project-level Tracekit Claude Code hook
+decides each Copilot call as well ([limits](limits.md#custody-12)). Tested in live Copilot CLI 1.0.107 sessions on Linux
+with the model the test plan offered (Copilot's automatic choice, a GPT model): the tools Copilot gives other models
+are mapped from its bundle, not from captured payloads.
 
 | | Codex CLI | Cursor | Gemini CLI | OpenCode | goose | Qwen Code | Factory Droid | Devin |
 |---|---|---|---|---|---|---|---|---|

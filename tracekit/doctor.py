@@ -341,7 +341,7 @@ def _dev_signer():
 # the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path); `~`
 # is USERPROFILE on Windows
 USER_ENV = ("USERPROFILE" if os.name == "nt" else "HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME",
-            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG")
+            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "COPILOT_HOME")
 
 
 def _user_hook_files():
@@ -642,7 +642,7 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             f"each {harness} hook command in {path} names its event", fix, bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
         # a timeout the hook doesn't set: agy's and Crush's own default is 30 s
-        default = 30 if harness in ("antigravity", "crush") else 60
+        default = 30 if harness in ("antigravity", "crush", "copilot") else 60
         pre = [h.get("timeout", default * scale) for h in pre]
         pre = [t if type(t) in (int, float) and 0 <= t < float("inf") else 0 for t in pre]
         if pre:

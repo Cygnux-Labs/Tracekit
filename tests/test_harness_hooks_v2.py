@@ -796,7 +796,7 @@ class Installer(unittest.TestCase):
                                  "set it to true there for Devin to read Claude Code's hooks, rules, skills, commands "
                                  "and MCP servers again\n")
                     self.assertEqual(out, want)
-                    if harness == "droid":
+                    if harness in ("droid", "copilot"):   # left with no hooks, their own file goes
                         self.assertFalse(os.path.exists(path))
                         continue
                     with open(path) as f:
