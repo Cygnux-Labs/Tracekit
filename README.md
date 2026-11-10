@@ -1,8 +1,8 @@
 <div align="center">
 
-<a href="https://github.com/Cygnux-Labs/Tracekit"><img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/banner.png" alt="Tracekit: the flight recorder for AI agents" width="840"></a>
+<a href="https://github.com/Cygnux-Labs/Tracekit"><img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/banner.png" alt="Tracekit: the tamper-evident flight recorder for AI agents" width="840"></a>
 
-# The flight recorder for AI agents
+# The tamper-evident flight recorder for AI agents
 
 **Stop risky tool calls before they run. Record every action in a log no one can quietly change, not even the agent.
 Hand anyone one file that proves what happened.**
