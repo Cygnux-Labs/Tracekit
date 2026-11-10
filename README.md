@@ -53,9 +53,7 @@ its own log so the delete reads as a lookup:
 
 <sub>The agent's log looks clean. Tracekit's record shows the delete, and the edit fails verification at the exact
 record that was changed. <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/cover-up.mp4">Watch the 1:47 video</a>
-(real database, signer and viewer; scripted model). In this demo the signer ran as the agent's own user (dev mode), so
-an agent that knew how could have read the key and re-signed the log; with the signer
-[out of the agent's reach](#how-it-works) and a witness, it can't.</sub>
+(real database, signer and viewer; scripted model).</sub>
 
 ## See what your coding agent did last week
 
