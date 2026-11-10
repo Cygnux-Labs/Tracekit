@@ -25,7 +25,7 @@ agents on real systems and prove what they did.**
 
 Open source (MIT) · runs on your machines · nothing leaves them unless you send it
 
-**[See what your agent did](#see-what-your-coding-agent-did-last-week) · [Try the demo](#try-it-in-5-seconds) · [Who it's for](#who-its-for) · [Add it](#add-it-to-your-agent) · [How it works](#how-it-works) · [Proof](#proof-misses-included) · [Pilot](#pilot-it-with-us) · [For AI agents](#if-youre-an-ai-agent-reading-this) · [Docs](#docs)**
+**[See what your agent did](#see-what-your-coding-agent-did-last-week) · [Try the demo](#try-it-in-5-seconds) · [Who it's for](#who-its-for) · [Add it](#add-it-to-your-agent) · [How it works](#how-it-works) · [What it proves](#what-it-proves) · [Proof](#proof-misses-included) · [Pilot](#pilot-it-with-us) · [For AI agents](#if-youre-an-ai-agent-reading-this) · [Docs](#docs)**
 
 </div>
 
@@ -293,6 +293,37 @@ holds no verification code. Old files keep verifying: formats only grow, and an 
 Your tracer is the dashboard. Tracekit is the black box.
 [Full comparison, and when Tracekit is the wrong choice](https://github.com/Cygnux-Labs/Tracekit/blob/main/COMPARISONS.md).
 
+## What it proves
+
+Three guarantees. They're related, but one doesn't give you the others, and each needs something different.
+
+| Guarantee | What you get | What it needs |
+|---|---|---|
+| **Evidence integrity** | A record that was edited, deleted, swapped or inserted fails verification at that record | Only the signed log. Cutting off the end of the log, or re-signing it with a stolen key, takes a witness to catch |
+| **Execution control** | Each call is checked before it runs. A denied call is blocked; a held call runs only after a yes, with exactly the arguments that were approved | The call goes through Tracekit: an SDK, a hook or a gateway. Code that skips it isn't stopped |
+| **Independent assurance** | An operator who rewrites or forks its own log is caught | A witness the operator doesn't control, and a monitor. Both are experimental, and no public witness is running yet |
+
+### Limits
+
+- **Dev mode protects nothing against an agent that runs as you.** Dev runs say `isolation: same-user`
+  ([FAQ](https://github.com/Cygnux-Labs/Tracekit/wiki/FAQ#what-does-same-user-dev-mode-protect)).
+- **A verified run proves the record is intact**: not intent, not that a reported tool result is true, and not that
+  every action was captured ([FAQ](https://github.com/Cygnux-Labs/Tracekit/wiki/FAQ#what-cant-tracekit-prove)).
+  `tracekit analyze --v2` compares what was asked, what the model said and what ran, but what the model said is its
+  own account, and findings are an opinion beside the integrity, never part of it
+  ([findings](https://github.com/Cygnux-Labs/Tracekit/wiki/Findings#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)).
+- **Actions outside the capture path leave no record**, such as a subprocess a hook never sees and no kernel sensor
+  import covers, or code that skips the adapter ([adapters](https://github.com/Cygnux-Labs/Tracekit/wiki/Adapters)).
+- **Policy rules match text and tool names.** A determined agent can reword a command; the protection is the signer's
+  isolation ([policy reference](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy#packs-shipped)).
+- **Commitments hide content, not timing, sizes or counts**
+  ([privacy](https://github.com/Cygnux-Labs/Tracekit/wiki/Privacy#what-hashes-and-metadata-still-leak)).
+
+What each deployment guarantees, from dev mode to a signer the agent can't reach:
+[guarantees](https://github.com/Cygnux-Labs/Tracekit/wiki/Guarantees). Every limit, with what to do
+about it: [limits](https://github.com/Cygnux-Labs/Tracekit/wiki/Limits). How it maps to the EU AI Act,
+ISO/IEC 42001, the NIST AI RMF and OWASP: [compliance](https://github.com/Cygnux-Labs/Tracekit/wiki/Compliance).
+
 ## Proof, misses included
 
 Our own experiments: small, synthetic and written by us. Nothing rounded up, and the misses stay in.
@@ -320,23 +351,6 @@ first two rows measure.
 [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md) ·
 [paper](https://arxiv.org/abs/2609.35659).
 
-### What a verified run does *not* prove
-
-- **Dev mode protects nothing against an agent that runs as you.** Move the signer to another user or host for that
-  ([FAQ](https://github.com/Cygnux-Labs/Tracekit/wiki/FAQ#what-does-same-user-dev-mode-protect)).
-- **Verified means the record is intact**, not that the agent's intent was good or that a tool's reported result is
-  true ([FAQ](https://github.com/Cygnux-Labs/Tracekit/wiki/FAQ#what-cant-tracekit-prove)). `tracekit analyze --v2`
-  [findings](https://github.com/Cygnux-Labs/Tracekit/wiki/Findings#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2) are an opinion beside the
-  record, never part of it.
-- **Actions that skip the [capture path](https://github.com/Cygnux-Labs/Tracekit/wiki/Concepts-Capture-and-Completeness) leave no record**, such as a subprocess a hook never sees, or code that
-  bypasses the adapter.
-- **Commitments hide content, not timing, sizes or counts**
-  ([privacy](https://github.com/Cygnux-Labs/Tracekit/wiki/Privacy#what-hashes-and-metadata-still-leak)).
-- **Witnesses are experimental, and no public witness runs yet.**
-
-Every limit, and what to do about it: [limits](https://github.com/Cygnux-Labs/Tracekit/wiki/Limits) ·
-[guarantees by deployment](https://github.com/Cygnux-Labs/Tracekit/wiki/Guarantees).
-
 ## Features
 
 **Stable core**, hardened first:
@@ -357,7 +371,7 @@ Every limit, and what to do about it: [limits](https://github.com/Cygnux-Labs/Tr
 | **Cross-check** | Compares the calls the model asked for (via an [LLM gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/LLM-Gateway) or the transcript) with the calls the agent reported |
 | **Contain** | Signed [incidents](https://github.com/Cygnux-Labs/Tracekit/wiki/Incidents) that hold or quarantine a run; tools that run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/wiki/Executor), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/wiki/MCP-Gateway)); an [egress observer](https://github.com/Cygnux-Labs/Tracekit/wiki/Egress); [Tetragon](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Tetragon) and [Falco](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Falco) kernel-event import: 8 of 8 containment and 10 of 10 detection checks (E17) |
 | **[`tracekit why`](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why)** | Finds which input caused an action by replaying the run without it |
-| **[`tracekit analyze --v2`](https://github.com/Cygnux-Labs/Tracekit/wiki/Findings#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)** | Flags edits nobody asked for, broken "don't touch X" instructions, data sent out or files deleted without telling you |
+| **[`tracekit analyze --v2`](https://github.com/Cygnux-Labs/Tracekit/wiki/Findings#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)** | Flags edits nobody asked for, broken "don't touch X" instructions, data sent out or files deleted without telling you, and says how much of a run's reasoning could be read ([which agents' is readable](https://github.com/Cygnux-Labs/Tracekit/wiki/Reasoning)). [Live constraints](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy#live-constraints) hold the call that would break a "don't touch X" for approval |
 | **More approvers** | Approve from a web page with passkeys, from Slack, or by a reviewer agent within bounds: 7 of 7 abuse cases against agent approvers caught (E18) |
 | **Proof-carrying messages** | An agent's request to another agent carries its proof: a typed intent, claims backed by the sender's signed log, and the person's grant with its limits. The receiver checks it offline before it acts ([PCM 0.1](https://github.com/Cygnux-Labs/Tracekit/wiki/Proof-Carrying-Messages)) |
 | **Intent grants** | Approve a payment once with bounds: who may be paid, the most per payment, the total, until when. The signer releases each payment inside them and holds the rest; `tracekit verify` re-checks every release ([intent grants](https://github.com/Cygnux-Labs/Tracekit/wiki/Intent-Grants)) |
@@ -422,10 +436,10 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 
 | I want to | Start here |
 |---|---|
-| Wire up my agent | [Quickstart](https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstart) · [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) · [TypeScript](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md) |
-| See it run | [Recorded demos](https://github.com/Cygnux-Labs/Tracekit/wiki/Demos) · [viewer tour](https://github.com/Cygnux-Labs/Tracekit/wiki/Viewer#tour) |
+| Wire up my agent | [Quickstart](https://github.com/Cygnux-Labs/Tracekit/wiki/Quickstart) · [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) · [TypeScript](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md) · [all integrations](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations) |
+| See it run | [Recorded demos](https://github.com/Cygnux-Labs/Tracekit/wiki/Demos) · [viewer tour](https://github.com/Cygnux-Labs/Tracekit/wiki/Viewer#tour) · [walkthrough (recorded on 1.2.0)](https://github.com/Cygnux-Labs/Tracekit/wiki/Walkthrough) |
 | Write policy and approvals | [Policy](https://github.com/Cygnux-Labs/Tracekit/wiki/Policy) · [approvals](https://github.com/Cygnux-Labs/Tracekit/wiki/Approvals) · [webhooks](https://github.com/Cygnux-Labs/Tracekit/wiki/Webhooks) |
-| Put the signer out of reach | [Deployment](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) · [Compose](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Compose) · [Kubernetes](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Kubernetes) · [container](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Container) · [doctor](https://github.com/Cygnux-Labs/Tracekit/wiki/Doctor) |
+| Put the signer out of reach | [Deployment](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) · [Compose](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Compose) · [Kubernetes](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Kubernetes) · [container](https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy-Container) · [agent-sandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Agent-Sandbox) · [doctor](https://github.com/Cygnux-Labs/Tracekit/wiki/Doctor) |
 | Check a run someone gave me | [For auditors](https://github.com/Cygnux-Labs/Tracekit/wiki/For-Auditors) · [reading a verify report](https://github.com/Cygnux-Labs/Tracekit/wiki/Verdicts) · [auditor guide](https://github.com/Cygnux-Labs/Tracekit/wiki/Auditor-Guide) · [witnesses](https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses) · [monitor](https://github.com/Cygnux-Labs/Tracekit/wiki/Monitor) |
 | Ask why an action happened | [tracekit why](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why) · [its architecture](https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why-Architecture) |
 | Map it to regulation | [EU AI Act, ISO/IEC 42001, NIST AI RMF, OWASP](https://github.com/Cygnux-Labs/Tracekit/wiki/Compliance) |
