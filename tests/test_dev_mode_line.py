@@ -159,6 +159,24 @@ class DevModeLine(unittest.TestCase):
         self.assertEqual(hooks(None, None), ["hooks       none in Claude Code's settings: tracekit init --dev --v2 adds "
                                              "them"])
 
+    def test_status_names_another_coding_agents_hooks(self):
+        """QA of 1.6.0: after init --dev --v2 --agent gemini (or codex) status said `none in Claude Code's settings:
+        tracekit init --dev --v2 adds them`, advice that adds Claude Code's hooks, and --json said "hooks": []."""
+        for agent, path in (("codex", (".codex", "hooks.json")), ("gemini", (".gemini", "settings.json"))):
+            d = tempfile.mkdtemp()
+            self.addCleanup(shutil.rmtree, d, True)
+            settings = os.path.join(d, *path)
+            with self.subTest(agent), mock.patch.object(cli, "_signer_extra", return_value=True), \
+                    mock.patch("tracekit.client.system_config", return_value=None), \
+                    mock.patch("os.getcwd", return_value=d), \
+                    mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d, "XDG_DATA_HOME": d, "LOCALAPPDATA": d,
+                                                 "TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}):
+                self.assertEqual(run(["init", "--dev", "--v2", "--agent", agent, "--no-thinking-summaries"])[0], 0)
+                self.assertEqual([x for x in run(["status"])[1].splitlines() if x.startswith("hooks")],
+                                 [f"hooks       v2 hooks for {agent} in {settings}"])
+                self.assertEqual(json.loads(run(["status", "--json"])[1])["hooks"],
+                                 [{"settings": settings, "agent": agent, "versions": ["v2"]}])
+
     def test_status_says_it_for_a_dev_signer_and_not_for_a_system_one(self):
         self.assertEqual(self.status(True, None), LINE)
         self.assertIsNone(self.status(False, None))

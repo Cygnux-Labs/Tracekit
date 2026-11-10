@@ -219,6 +219,10 @@ class TestInstrument(unittest.TestCase):
             seen.append(gate)
         run = mock.Mock(registered={"run_id": "r", "run_token": "t"})
         with mock.patch.object(ClientSession, "call_tool", ClientSession.call_tool), \
+                mock.patch.object(ClientSession, "get_prompt", ClientSession.get_prompt), \
+                mock.patch.object(ClientSession, "list_tools", ClientSession.list_tools), \
+                mock.patch.object(ClientSession, "list_resources", ClientSession.list_resources), \
+                mock.patch.object(ClientSession, "list_prompts", ClientSession.list_prompts), \
                 mock.patch("tracekit.integrations.mcp.TracekitSession.call_tool", call_tool):
             autowire._mcp(run)
             a, b = object.__new__(ClientSession), object.__new__(ClientSession)
@@ -237,6 +241,10 @@ class TestInstrument(unittest.TestCase):
             pass
         run = mock.Mock(registered={"run_id": "r", "run_token": "t"})
         with mock.patch.object(ClientSession, "call_tool", ClientSession.call_tool), \
+                mock.patch.object(ClientSession, "get_prompt", ClientSession.get_prompt), \
+                mock.patch.object(ClientSession, "list_tools", ClientSession.list_tools), \
+                mock.patch.object(ClientSession, "list_resources", ClientSession.list_resources), \
+                mock.patch.object(ClientSession, "list_prompts", ClientSession.list_prompts), \
                 mock.patch("tracekit.integrations.mcp.TracekitSession.call_tool", call_tool):
             autowire._mcp(run)
             refs = []

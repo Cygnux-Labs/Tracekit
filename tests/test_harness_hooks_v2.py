@@ -208,13 +208,19 @@ class Mapping(HarnessCase):
         for name, ti in (("read", {"target": "/w/a.py"}), ("write", {"content": "x"}), ("edit", {"file_path": None}),
                          ("write", {"file_path": "", "content": "x"}), ("apply_patch", {"input": "no headers"}),
                          ("apply_patch", {"input": "*** Add File:  \n+x"}), ("webfetch", {"uri": "https://x.example"}),
-                         ("webfetch", {"url": "https://example.com", "Url": "http://169.254.169.254/latest"})):
+                         ("webfetch", {"Url": "http://169.254.169.254/latest"})):
             with self.subTest(tool=name, ti=ti):
                 code, out, err = self.hook("devin", {"session_id": "dv-9", "hook_event_name": "PreToolUse",
                                                      "tool_name": name, "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Devin's {name} call names no", err)
                 self.assertIn("issues/566", err)
+        # a url beside one in another case: an argument sent twice (the review of #673)
+        code, out, err = self.hook("devin", {"session_id": "dv-9", "hook_event_name": "PreToolUse", "tool_name": "webfetch",
+                                             "tool_input": {"url": "https://example.com",
+                                                            "Url": "http://169.254.169.254/latest"}})
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("Devin's webfetch call sends an argument more than once (case ignored)", err)
         self.assertEqual(self.sent, [])
 
     def test_crush_sub_agents_are_denied_before_the_signer(self):
@@ -607,7 +613,8 @@ class OnTheDevPolicy(HarnessCase):
             code, out, err = self.hook("devin", {"session_id": "dv-p", "hook_event_name": "PreToolUse", "tool_name": "write",
                                                  "tool_input": {decoy: f"/w/notes{i}.txt", real: "/w/.env", "content": "A=1"}})
             self.assertEqual((code, out), (2, ""), (real, decoy))
-            self.assertIn("TK-D005", err)
+            # one name in two cases is an argument sent twice, denied in the hook (the review of #673)
+            self.assertIn("TK-D005" if real.casefold() != decoy.casefold() else "more than once (case ignored)", err)
         # and a unified diff's files, beside a decoy patch header in another argument
         code, out, err = self.hook("devin", {"session_id": "dv-p", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
                                              "tool_input": {"patch": "--- a/config/.env\n+++ b/config/.env\n@@\n-A=1\n+A=2\n",

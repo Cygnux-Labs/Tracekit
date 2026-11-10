@@ -5,7 +5,9 @@
 
 Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-status`, `/tracekit-verify` and
 `/tracekit-pending`, and the `tracekit-holds` skill, which tells Claude what to do when Tracekit holds or blocks one of
-its calls: tell you, pass on the commands that answer it, and make the identical call again once you approve it.
+its calls: tell you, pass on the commands that answer it, and make the identical call again once you approve it. The
+`tracekit-setup` skill, a copy of the one in [tracekit-skills](https://github.com/Cygnux-Labs/tracekit-skills), has
+Claude set Tracekit up for you, asking before each step.
 
 ```text
 /plugin marketplace add Cygnux-Labs/Tracekit
@@ -15,7 +17,7 @@ its calls: tell you, pass on the commands that answer it, and make the identical
 The plugin only carries the hooks. The signer and the verifier are the `tracekit` Python package:
 
 ```bash
-pip install tracekit-ai==1.5.3
+pip install tracekit-ai==1.6.0
 tracekit init --dev --v2 --no-hooks   # same-user dev signer (starts on the first hook); hooks come from the plugin
 # or, for tamper resistance against the agent's own user (Linux):
 sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks

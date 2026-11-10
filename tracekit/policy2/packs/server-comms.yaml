@@ -1,7 +1,7 @@
 # Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
 # people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
 
-version: '2026.10-server-comms-9'
+version: '2026.10-server-comms-10'
 description: server-hosted agents, payments, email and chat
 unknown_tools: ask
 

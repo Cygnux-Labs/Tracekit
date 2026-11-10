@@ -41,8 +41,8 @@ NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", 
 MAX_SKEW_S = 300
 # system mode's init from a root-owned clone of the release, as the plugin and CI run it: it works on every Python,
 # whether or not /opt/tracekit exists or can be trusted (docs/deploy.md also gives the routes through /opt's venv).
-# The Python is doctor's own when only root can change it (init refuses any other), and not /opt's venv, which init
-# can't run from on 3.9 or 3.10; else the system one
+# The Python is doctor's own when only root can change it (init refuses any other) and it isn't /opt's venv; else the
+# system one
 _PY = sys.executable if sys.executable and not sys.executable.startswith(install.OPT + os.sep) \
     and trusted_file(sys.executable) is None else "/usr/bin/python3"
 REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), sudo "
@@ -848,9 +848,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-KEYS-MODE", False, f"{len(names)} keys in {keys}; modes not checked", acl, bad=WARN)
     except OSError as e:
         names = None
-        fresh = not prod and e.errno == errno.ENOENT   # a dev signer that never started has no keys yet
-        add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}",
-            "start the dev signer: tracekit up" if fresh else ROOT_DOCTOR, bad=WARN)
+        missing = not prod and e.errno == errno.ENOENT   # a dev signer makes its keys as it starts
+        fresh = missing and first   # one that never started: nothing to check yet, not a fault
+        add("D-KEYS-MODE", False, f"{keys}: not made yet, {later}" if fresh else f"cannot inspect {keys}: {e.strerror}",
+            "" if fresh else "start the dev signer: tracekit up" if missing else ROOT_DOCTOR,
+            bad=INFO if fresh else WARN)
 
     try:
         content = service.content_config(cfg.get("content"))   # as the signer validates it
@@ -965,9 +967,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             hooks = _hooks(settings)
         except FileNotFoundError:   # no settings file, so no hooks in it
             hooks = {ev: [] for ev in install.TOOL_EVENTS}
-        except (OSError, ValueError, AttributeError, TypeError) as e:   # the agent's own file: any shape
-            hooks = None
-            add("D-HOOKS-PRESENT", False, f"{settings}: {e}", hook_fix, bad=sev)
+        except (OSError, ValueError, AttributeError, TypeError) as e:   # the agent's own file: any shape or mode,
+            hooks = None   # which init leaves as it is
+            add("D-HOOKS-PRESENT", False, f"{settings}: {e}", f"make {settings} "
+                f"{'readable' if isinstance(e, OSError) else 'a JSON object'} (move it aside, or fix it), then {hook_fix}",
+                bad=sev)
         if hooks is not None and plugin:   # init's hooks too would decide every call twice
             both = any(hooks.values())
             add("D-HOOKS-PRESENT", not both, f"{from_plugin}, and init's v2 hooks in {settings}: every call is decided "

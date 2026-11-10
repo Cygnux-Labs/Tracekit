@@ -117,7 +117,7 @@ command-line verifiers ([reading a verify report](../verdicts.md#verify-in-your-
 
 ## Verifying in CI
 
-The repository's GitHub Action verifies a bundle in a workflow (`uses: Cygnux-Labs/Tracekit@v1.5.3`, a release tag or
+The repository's GitHub Action verifies a bundle in a workflow (`uses: Cygnux-Labs/Tracekit@v1.6.0`, a release tag or
 its commit SHA, not `main`, with `bundle:`, and `key:` or `witness:` for v1 or `trust:`, a pinned trust config, for v2);
 an unanchored bundle fails the step unless `require-anchor: "false"`
 ([verify in GitHub Actions](../verdicts.md#verify-in-github-actions)).

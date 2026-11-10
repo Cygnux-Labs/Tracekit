@@ -252,6 +252,29 @@ class CallOutcomes(unittest.TestCase):
         self.assertTrue(sensitive["file:" + again].endswith("under TK-A022 ask (SIGNED); alice approved it (SIGNED)"))
         self.assertEqual((files["file:" + flaky]["reported"], files["file:" + flaky]["asked"]), (1, 1))
 
+    def test_a_rejection_by_the_runs_own_identity_is_not_counted_self_approved(self):
+        """QA of 1.6.0: GRAPH_REPORT.md said `uid:501: 2 reject, no wait recorded, 2 self-approved`."""
+        records = [rec(0, "run.registered", {"agent": {"name": "a"}})]
+        for i, (tcid, decision) in enumerate((("t1", "reject"), ("t2", "reject"), ("t3", "approve"))):
+            seq, did, aid, rules = 1 + 3 * i, f"d{i}", f"apr-{i}", ["TK-A022"]
+            records += [rec(seq, "policy.decision", {"tool_use_id": tcid, "decision_id": did, "tool": "Write",
+                                                     "decision": "ask", "rule_ids": rules}),
+                        rec(seq + 1, "approval.request", {"approval_id": aid, "decision_id": did, "rule_ids": rules,
+                                                          "binding": {"tool_call_id": tcid, "tool": "Write"}}),
+                        rec(seq + 2, "approval", {"tool_use_id": tcid, "approval_id": aid, "decision": decision,
+                                                  "approver": "uid:501", "self_approved": True})]
+        g = Graph(None, "grade")
+        graph._add_run(g, records, True, {1: {"file_path": "/etc/sudoers"}})
+        doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
+               "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
+        sections = {s["id"]: s["items"] for s in graph.highlights(doc)["sections"]}
+        me = sections["approvals"][0]
+        self.assertEqual((me["text"], me["self_approved"]), ("uid:501: 1 approve, 2 reject, no wait recorded, "
+                                                             "1 self-approved (the approver is the run's own identity)",
+                                                             1))
+        [held] = sections["sensitive"]
+        self.assertTrue(held["text"].endswith("; uid:501 rejected it (SIGNED)"), held["text"])
+
 
 class QueryInput(unittest.TestCase):
     def test_rejects_a_non_tracekit_graph(self):

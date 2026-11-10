@@ -234,10 +234,10 @@ def _detaches(cmd):
     (policy2.shell: bash's quoting, heredocs, comments, `sh -c` strings, wrappers) reads it: a command it runs in the
     background (`&`, also after a block or an and-or list, in a subshell or an `sh -c` string), or one that detaches
     by itself (setsid, disown, coproc, systemd-run, at, batch, `tmux ... -d`, `screen -d...`); nohup alone runs in the
-    foreground. True when the parser can't read the line (coproc as bash's keyword among it)."""
+    foreground. True when the parser can't read the line (coproc as bash's keyword among it, or nesting too deep)."""
     try:
         cmds = shell.parse(cmd)
-    except shell.ParseError:
+    except (shell.ParseError, RecursionError):
         return True
     return any(c.get("background") or c["argv"][0] in DETACHERS or c["argv"][0] in ("tmux", "screen") and any(
         a[:1] == "-" and "d" in a for a in c["argv"][1:]) for c in cmds)
