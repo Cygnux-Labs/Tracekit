@@ -22,7 +22,7 @@ agents on real systems and prove what they did.**
 </table>
 
 Built like **Certificate Transparency**: signed records in an append-only log that independent witnesses cosign<br>
-**Open file format** · verifiers in **Python** and **TypeScript** · **MIT** · runs on your own machines
+**Open file format** · verifiers in **Python**, **TypeScript** and **Go** · **MIT** · runs on your own machines
 
 **[Try it](#try-it-in-5-seconds) · [Add it to your agent](#add-it-to-your-agent) · [What it proves](#what-it-proves) · [What's in it](#whats-in-it) · [Proof](#proof) · [How it works](#how-it-works) · [Pilot it](#pilot-it-with-us) · [Contribute](#contribute) · [Docs](#docs)**
 
