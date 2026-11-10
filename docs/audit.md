@@ -32,6 +32,12 @@ denied and held calls (--all for every call):
 
 - `ROOT` defaults to `$CLAUDE_CONFIG_DIR/projects` when `CLAUDE_CONFIG_DIR` is set (Claude Code keeps its config
   there then), else `~/.claude/projects`; a folder that doesn't exist is an error (exit 2).
+  For Codex, pass its sessions directory explicitly:
+
+  ```sh
+  tracekit audit ~/.codex/sessions --since 7d
+  ```
+
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -50,8 +56,12 @@ The report always begins with the disclaimer: "a replay against today's policy, 
 
 Every `.jsonl` file under ROOT, at any depth: each Claude Code session's transcript, and its subagents' files
 (`<session>/subagents/*.jsonl`, a workflow's agents' in `<session>/subagents/workflows/<workflow>/`), which count
-under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
-was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
+under that session. Codex stores one session per `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` file. The audit
+reader detects the format **per line**: Claude Code `assistant` entries contain `tool_use` blocks; Codex
+`response_item` entries contain a call in `payload` (`function_call` or `custom_tool_call`). Codex names are mapped
+with the live hook's own mapping, including `exec_command` as `Bash`, `apply_patch` as `Edit` and MCP tools.
+Calls with no Codex PreToolUse event (such as `write_stdin`) are not counted. A tool use whose id and content were
+read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
 
 It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.

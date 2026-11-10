@@ -20,6 +20,7 @@ from . import __version__
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
+from .integrations.harness_hooks import _codex_tool
 from .report import DECISIONS, _counts, _days, _wait, call_text, share_rules, when
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, evaluate, load_policy
 from .view import ENGINE_RULES
@@ -109,6 +110,7 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
     skipped_malformed = 0
     unreadable: list[dict] = []
     seen: set[bytes] = set()   # calls by id and content: a resumed or forked session's file repeats those it copied
+    codex_sessions: set[str] = set()
 
     for path, session in _iter_transcripts(root, unreadable):
         f, err = _safe_open(path)
@@ -120,14 +122,27 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                 if entry is None:
                     skipped_malformed += 1
                     continue
-                if entry.get("type") != "assistant":
+                kind = entry.get("type")
+                if kind not in ("assistant", "response_item"):
                     continue
                 at = _entry_time(entry)
                 if at is not None and at.timestamp() < since_ts:
                     continue
-                msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
-                content = msg.get("content")
-                blocks = content if isinstance(content, list) else []
+                if kind == "response_item":
+                    item = entry.get("payload")
+                    if not isinstance(item, dict):
+                        skipped_malformed += 1
+                        continue
+                    mapped = _codex_tool(item)
+                    if mapped is None:  # user text, tool output, write_stdin, or a call with no id/hook
+                        continue
+                    tool, args = mapped
+                    blocks = [{"type": "tool_use", "id": item["call_id"], "name": tool, "input": args}]
+                    codex_sessions.add(session)
+                else:
+                    msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+                    content = msg.get("content")
+                    blocks = content if isinstance(content, list) else []
                 for b in blocks:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
@@ -177,6 +192,7 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
         "policy_hash": engine.policy_hash,
         "since": since,
         "sessions": len({c["session"] for c in calls}),
+        "codex_sessions": len(codex_sessions),
         "counts": counts,
         "by_rule": by_rule,
         "reasons": {**{i: ENGINE_RULES[i] for i in by_rule if i in ENGINE_RULES},   # what each rule is, as the viewer says it
@@ -258,8 +274,9 @@ def share(report: dict) -> str:
     by_rule = collections.Counter((c["verdict"], rid, secs[rid] == c["verdict"] if rid in secs else None)
                                   for c in report["calls"] for rid in c["rule_ids"])
     window = _days(time.time() - when(report["since"])) if report["since"] else "every transcript"
+    kind = "coding-agent" if report.get("codex_sessions") else "Claude Code"
     lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
-             f"{report['disclaimer']}: {s:,} Claude Code session{'s' * (s != 1)}",
+             f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
              "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule),
              *share_rules(by_rule)]
@@ -268,8 +285,8 @@ def share(report: dict) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code) through the policy and count what it would have held or "
-                                 "denied. Read-only, local, and a replay against today's policy, not a signed record.")
+                                 "transcripts (Claude Code or Codex) through the policy and count what it would have "
+                                 "held or denied. Read-only, local; not a signed record.")
     ap.add_argument("root", nargs="?", default=default_root(), help="the transcripts' folder (default: "
                     "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)")
     ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
@@ -283,8 +300,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
     root = os.path.expanduser(a.root)
     if not os.path.isdir(root):
-        print(f"tracekit audit: no such folder: {root} (Claude Code keeps its transcripts in "
-              "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
+        print(f"tracekit audit: no such folder: {root} (Claude Code: $CLAUDE_CONFIG_DIR/projects or "
+              "~/.claude/projects; Codex: ~/.codex/sessions)", file=sys.stderr)
         return 2
     try:
         report = audit(root, a.policy, a.since, a.show)

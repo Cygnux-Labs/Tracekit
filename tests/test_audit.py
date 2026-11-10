@@ -12,6 +12,9 @@ from pathlib import Path
 from unittest import mock
 
 from tracekit import __version__, audit, cli
+from tracekit import agent_hooks
+from tracekit.integrations import harness_hooks
+from tracekit.signer.service import DEFAULT_POLICY, evaluate, load_policy
 
 
 def _call(tool, args, days_ago=0):
@@ -19,6 +22,13 @@ def _call(tool, args, days_ago=0):
     at = datetime.now(timezone.utc) - timedelta(days=days_ago)
     return {"type": "assistant", "timestamp": at.isoformat().replace("+00:00", "Z"),
             "message": {"content": [{"type": "tool_use", "name": tool, "input": args}]}}
+
+
+def _rollout(item, days_ago=0):
+    """Redacted envelope shape checked against a real local rollout (no session content copied)."""
+    at = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return {"timestamp": at.isoformat().replace("+00:00", "Z"), "ordinal": 0,
+            "type": "response_item", "payload": item, "metadata": {}}
 
 
 def _write_jsonl(path: Path, lines: list[dict | str]):
@@ -322,6 +332,80 @@ class TestAudit(unittest.TestCase):
         text = audit.format_report(audit.audit(str(self.root)), every=True)
         self.assertNotIn("\x1b", text)
         self.assertIn("\\u001b", text)
+
+    def test_codex_rollout_mapping_and_live_hook_policy_parity(self):
+        # A local rollout confirmed these envelope and JSON-string argument fields; values below are synthetic.
+        items = [
+            {"type": "function_call", "id": "item-1", "status": "completed", "namespace": "",
+             "name": "exec_command", "call_id": "cx-1",
+             "arguments": json.dumps({"cmd": "rm -rf /", "yield_time_ms": 10})},
+            {"type": "custom_tool_call", "name": "apply_patch", "call_id": "cx-2",
+             "input": "*** Begin Patch\n*** Add File: src/example.txt\n+hello\n*** End Patch"},
+            {"type": "function_call", "namespace": "mcp__filesystem", "name": "read_file", "call_id": "cx-3",
+             "arguments": json.dumps({"path": "src/example.txt"})},
+        ]
+        _write_jsonl(self.root / "2026" / "11" / "09" / "rollout-demo.jsonl", [
+            {"type": "session_meta", "timestamp": _rollout({})["timestamp"], "payload": {"id": "cx"}},
+            _rollout({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}),
+            *(_rollout(item) for item in items),
+            _rollout({"type": "function_call_output", "call_id": "cx-1", "output": "ok"}),
+        ])
+        report = audit.audit(str(self.root))
+        self.assertEqual((len(report["calls"]), report["sessions"], report["codex_sessions"]), (3, 1, 1))
+        self.assertEqual([c["tool"] for c in report["calls"]],
+                         ["Bash", "Edit", "mcp__filesystem__read_file"])
+        self.assertEqual(report["calls"][0]["verdict"], "deny")
+        engine = load_policy(DEFAULT_POLICY)
+        for item, rec in zip(items, report["calls"]):
+            self.assertEqual(harness_hooks._codex_tool(item),
+                             agent_hooks.tool("codex", *self._live_codex_hook_input(item)))
+            tool, args = harness_hooks._codex_tool(item)
+            self.assertEqual((rec["tool"], rec["verdict"], rec["rule_ids"]),
+                             (tool, evaluate(engine, tool, args)[0]["verdict"],
+                              evaluate(engine, tool, args)[0].get("rule_ids") or []))
+        self.assertIn("coding-agent session", audit.share(report))
+        self.assertNotIn("Claude Code session", audit.share(report))
+
+    @staticmethod
+    def _live_codex_hook_input(item):
+        # The hook input Codex sends; assert normalization agrees with the shared rollout mapper.
+        if item["name"] == "exec_command":
+            return "Bash", {"command": json.loads(item["arguments"])["cmd"]}
+        if item["name"] == "apply_patch":
+            return "apply_patch", {"command": item["input"]}
+        return "mcp__filesystem__read_file", json.loads(item["arguments"])
+
+    def test_codex_no_hook_duplicate_bad_lines_time_window_and_claude_compat(self):
+        new = {"type": "function_call", "name": "exec_command", "call_id": "cx-new",
+               "arguments": json.dumps({"cmd": "ls -la"})}
+        old = {"type": "function_call", "name": "exec_command", "call_id": "cx-old",
+               "arguments": json.dumps({"cmd": "echo old"})}
+        _write_jsonl(self.root / "rollout-demo.jsonl", [
+            _rollout(old, days_ago=30), _rollout(new), _rollout(new),
+            _rollout({"type": "function_call", "name": "write_stdin", "call_id": "cx-skip",
+                      "arguments": json.dumps({"chars": "anything"})}),
+            _rollout({"type": "function_call", "name": "exec_command",
+                      "arguments": json.dumps({"cmd": "ls"})}),
+            _rollout({"type": "function_call", "name": "exec_command", "call_id": "cx-invalid",
+                      "arguments": "not-json"}),
+            _rollout({"type": "message", "role": "assistant", "content": []}),
+            _rollout(None), "not json", _call("Bash", {"command": "pwd"}),
+        ])
+        report = audit.audit(str(self.root), since="7d")
+        self.assertEqual(report["skipped_malformed"], 2)
+        self.assertEqual((report["counts"]["allow"], len(report["calls"])), (2, 2))
+        self.assertEqual(report["sessions"], 1)
+        self.assertTrue(all(c["time"] for c in report["calls"]))
+        self.assertEqual(report["codex_sessions"], 1)
+
+    def test_codex_redaction_does_not_leak_key(self):
+        secret = "sk-ant-" + "a1B2c3D4e5F6g7H8i9J0" * 2
+        item = {"type": "function_call", "name": "exec_command", "call_id": "cx-secret",
+                "arguments": json.dumps({"cmd": "export ANTHROPIC_API_KEY=" + secret})}
+        _write_jsonl(self.root / "rollout-demo.jsonl", [_rollout(item)])
+        shown = audit.audit(str(self.root), show=True)["calls"]
+        self.assertEqual(len(shown), 1)
+        self.assertNotIn(secret, shown[0]["text"])
 
 
 if __name__ == "__main__":

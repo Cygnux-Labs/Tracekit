@@ -39,7 +39,7 @@ OUTCOMES = {*view.OUTCOMES.values(), *view.ANSWERS.values(), view.OPEN, "not ans
 SHARE = [re.compile(x) for x in (
     r"Tracekit [\w.+-]+ field report \(tracekit (?:report|audit) --share\): "
     r"(?:[\d.]+ (?:day|hour|minute|second)s?|every transcript)",
-    rf"a replay against today's policy, not a signed record: {N} Claude Code sessions?",
+    rf"a replay against today's policy, not a signed record: {N} (?:Claude Code|coding-agent) sessions?",
     r"Integrity: the store \w+, \d+ of \d+ runs verify",
     rf"Runs that verify, by agent: (?:{_counts(AGENTS | {'other'})}|none)",
     rf"Tool calls: {N}   {_counts(DECISIONS)}",
@@ -246,6 +246,8 @@ class TestFeedback(unittest.TestCase):
         is no count line; a FreeBSD release is an OS feedback._os gives."""
         ok = "\n".join(["# Tracekit field report", "", "OS: FreeBSD-14.0-RELEASE", "", "## Counts", "", "```text", WEEK])
         self.assertEqual(report_problems(ok + "\n```\n"), [])
+        replay = "a replay against today's policy, not a signed record: 1 coding-agent session"
+        self.assertEqual(report_problems(f"{ok}\n{replay}\n```\n"), [])
         for line in ("Runs that verify, by agent: acme payroll bot 1", "  acme-payroll-guard 1, 0, 0",
                      "Holds: 3   psql -h prod drop customers 1"):
             with self.subTest(line):
