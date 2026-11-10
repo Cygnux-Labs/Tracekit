@@ -15,7 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -780,44 +780,87 @@ class Page(unittest.TestCase):
         self.assertIn("not measured", out[1])
 
 
+def rollout(mid, source="cli", model="gpt-6-astra"):
+    """A rollout file's first lines: its session_meta (id `mid`, source `source`) and turn_context."""
+    return [{"timestamp": "2026-10-10T09:00:00.000Z", "ordinal": 0, "type": "session_meta",
+             "payload": {"session_id": "root-thread", "id": mid, "cwd": "/tmp", "originator": "codex-tui",
+                         "cli_version": "0.159.2", "source": source}},
+            {"timestamp": "2026-10-10T09:00:00.100Z", "ordinal": 1, "type": "turn_context",
+             "payload": {"model": model, "cwd": "/tmp"}}]
+
+
+def usage(i, cached, write=3_000, out=200):
+    """One token_usage_record a step: `cached` tokens read from cache, `write` written, nothing else on input —
+    input_tokens counts the cached and written ones too, as Codex's records do (100 in = 40 cached + 60 written)."""
+    at = datetime(2026, 10, 10, 9, 0, 10, tzinfo=timezone.utc) + timedelta(seconds=30 * i)
+    return {"timestamp": at.strftime("%Y-%m-%dT%H:%M:%SZ"), "type": "token_usage_record",
+            "payload": {"thread_id": "t1", "turn_id": f"turn{i}", "session_id": "root-thread",
+                        "response_id": f"resp_fix_{i:04d}",
+                        "usage": {"input_tokens": cached + write, "cached_input_tokens": cached,
+                                  "cache_write_input_tokens": write, "output_tokens": out,
+                                  "reasoning_output_tokens": 80, "total_tokens": cached + write + out}}}
+
+
 class Codex(unittest.TestCase):
-    """Codex CLI's session files (tests/fixtures/codex, a made-up rollout): the context tip works for a Codex-only
-    week; the cache tip can't, because a session record names no cache lifetime."""
-    ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "codex")
+    """Codex CLI's session files (made-up rollouts, built inline under YYYY/MM/DD as Codex writes them): the context
+    tip works for a Codex-only week; the cache tip can't, because a session record names no cache lifetime."""
+
+    def week(self, model="gpt-6-astra"):
+        d = tmp(self)
+        write_jsonl(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T09-00-10-9f0c9a11.jsonl"),
+                    rollout("9f0c9a11-0000-4000-8000-000000000001", model=model) +
+                    [usage(i, 60_000 + 3_000 * i) for i in range(300)])
+        return d
 
     def test_a_codex_only_week_reads_the_sessions_and_gets_the_context_tip(self):
-        body = tips.build([], codex=self.ROOT, now=NOW)
+        body = tips.build([], codex=self.week(), now=NOW)
         self.assertEqual(body["sources"]["codex"]["files"], 1)
         self.assertEqual((body["sources"]["codex"]["agents"], body["sources"]["codex"]["steps"]), (1, 300))
         t = body["tips"][0]
         self.assertTrue(t["ok"], t.get("why"))
         self.assertEqual(t["from"], "Codex's session files (read-only)")
         self.assertEqual(t["agent"], "session 9f0c9a11")
-        self.assertTrue(t["title"].startswith("Trim the history it sends at about 300k tokens"))
+        self.assertTrue(t["title"].startswith("Trim the history it sends at about 400k tokens"))
         self.assertIsNone(t["fix"]["copy"])   # /compact is a Claude Code command
-        self.assertGreater(t["saving"]["usd"], 0)
+        self.assertGreater(t["saving"]["usd"], 0)   # priced at gpt-6-astra's dollars, never guessed
         self.assertTrue(any("gpt-6-astra" in m for m in t["math"]))
-        self.assertIn("gpt-6-astra*", tips.PRICES["models"])   # priced, so dollars are shown, never guessed
+
+    def test_cached_and_written_tokens_are_not_counted_twice(self):
+        agents, _files, _bad = tips.read_codex_sessions(self.week(), 0)
+        s = next(iter(agents.values()))["steps"][1]   # 63_000 cached + 3_000 written, no input of its own
+        self.assertEqual((s["in"], s["cr"], s["w"]), (0, 63_000, 3_000))
 
     def test_the_cache_tip_is_left_off_for_codex_whose_records_name_no_cache_lifetime(self):
-        t = tips.build([], codex=self.ROOT, now=NOW)["tips"][1]
+        t = tips.build([], codex=self.week(), now=NOW)["tips"][1]
         self.assertFalse(t["ok"])
         self.assertIn("Codex's session files name no lifetime", t["why"])
 
-    def test_a_codex_model_with_no_price_shows_tokens_but_no_dollars(self):
-        d = tmp(self)
-        with open(os.path.join(d, "rollout-x.jsonl"), "w") as f:
-            f.write(json.dumps({"timestamp": "2026-10-10T09:00:00Z", "type": "turn_context",
-                                "payload": {"model": "gpt-made-up"}}) + "\n")
-            for i in range(60):
-                f.write(json.dumps({"timestamp": f"2026-10-10T09:{i // 60:02d}:{i % 60:02d}Z",
-                                    "type": "token_usage_record",
-                                    "payload": {"session_id": "s1", "response_id": f"r{i}", "usage": {
-                                        "input_tokens": 60_000 + 3_000 * i, "cached_input_tokens": 0,
-                                        "cache_write_input_tokens": 0, "output_tokens": 200}}}) + "\n")
-        agents, _files, _bad = tips.read_codex_sessions(d, 0)
-        self.assertEqual(next(iter(agents.values()))["steps"][0]["model"], "gpt-made-up")
-        self.assertIsNone(tips._RATES.rate("gpt-made-up"))
+    def test_a_subagents_file_stays_its_own_agent_and_a_bad_line_stops_nothing(self):
+        d = self.week()
+        write_jsonl(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T10-00-00-2222eeee.jsonl"),
+                    rollout("2222eeee-0000-4000-8000-000000000002", source="codex-subagent") +
+                    [{"timestamp": "2026-10-10T09:00:20Z", "type": "token_usage_record", "payload": "not an object"},
+                     {"timestamp": "2026-10-10T09:00:30Z", "type": "token_usage_record",
+                      "payload": {"response_id": "resp_ok_0", "usage": {"input_tokens": 4_300, "cached_input_tokens": 1_000,
+                                                                        "cache_write_input_tokens": 3_300,
+                                                                        "output_tokens": 50}}}])
+        with open(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T11-00-00-3333.jsonl"), "w") as f:
+            f.write("[" * 100_000 + "\n")   # a line nested past what json.loads takes
+        agents, files, bad = tips.read_codex_sessions(d, 0)
+        self.assertEqual(files, 3)
+        self.assertEqual(len(agents), 2)   # the root thread's id in the subagent's file merges nothing
+        kinds = {a["kind"] for a in agents.values()}
+        self.assertEqual(kinds, {"main", "subagent"})
+        sub = next(a for a in agents.values() if a["kind"] == "subagent")
+        self.assertEqual(len(sub["steps"]), 1)   # the record whose payload isn't an object stops nothing
+        self.assertEqual((sub["steps"][0]["in"], sub["steps"][0]["cr"], sub["steps"][0]["w"]), (0, 1_000, 3_300))
+
+    def test_a_codex_model_with_no_price_shows_the_tips_no_price_note(self):
+        body = tips.build([], codex=self.week(model="gpt-made-up"), now=NOW)
+        self.assertEqual(body["sources"]["codex"]["steps"], 300)   # the tokens are shown
+        t = body["tips"][0]
+        self.assertFalse(t["ok"])
+        self.assertIn("No price for gpt-made-up", t["why"])
 
 
 if __name__ == "__main__":

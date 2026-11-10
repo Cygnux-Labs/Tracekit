@@ -368,11 +368,13 @@ transcript message no other step matched (the gateway signs each exchange under 
 without tool calls has no tool_use id). The page's first line says how many signed steps that was, and the time span
 of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7
 days. Holds come only from signed records; a transcript adds how long each blocked the agent and
-whether it ran in a subagent. Codex CLI's session files (`~/.codex/sessions`) are read the same way, read-only, so a
-Codex-only week gets the context tip (its records carry each request's input, cached-input, cache-write and output
-tokens); the cache and holds tips cover no Codex agent: a session record names no cache lifetime (OpenAI's writes last
-30 minutes or 12 hours, and the record doesn't say which) and no tool calls, so both are left off with the reason,
-never guessed. Each card names every source it mixes, and the page's first line says what it read; the
+whether it ran in a subagent. Codex CLI's session files (`$CODEX_HOME/sessions`, else `~/.codex/sessions`) are read the
+same way, read-only, so a Codex-only week gets the context tip (its records carry each request's input, cached-input,
+cache-write and output tokens). The cache tip covers no Codex agent — a session record names no cache lifetime
+(OpenAI's writes last 30 minutes or 12 hours, and the record doesn't say which) — while the holds tip, which comes
+from signed records, covers Codex hook runs like any other; a session record's call ids are not read yet, so a
+transcript adds no hold detail for them. Both are left off with the reason, never guessed. Each card names every
+source it mixes, and the page's first line says what it read; the
 tips list sessions from every project under the transcripts folder. Dollars are Anthropic's and OpenAI's list prices, dated in
 `tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. The sessions of a model with
 no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most

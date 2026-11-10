@@ -1965,11 +1965,13 @@ def main(argv=None):
                     if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
-            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
+            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them;
+                # Codex's sessions too in dev mode, from $CODEX_HOME (else ~/.codex) plus sessions
                 from . import audit, tips
                 feed.tips = tips.Page(functools.partial(shown, feed),
                                       transcripts or (audit.default_root() if dev else None),
-                                      codex=os.path.join(os.path.expanduser("~"), ".codex", "sessions"))
+                                      codex=os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~"),
+                                                         "sessions") if dev else None)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -1988,10 +1990,11 @@ def main(argv=None):
              f"  reading the bundle {a.bundle}, verified, read-only" if a.bundle else
              f"  reading the ledger {feed.path}, read-only" if v1 else f"  reading why logs alone: {why.root}" if alone
              else f"  reading the store {feed.store}, read-only; {feed.note}"), flush=True)
-    if getattr(feed, "tips", None) and feed.tips.root:   # the folder it reads, only when there is one
-        print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
-              else "  tips: no Claude Code transcripts found", flush=True)
-        if os.path.isdir(feed.tips.codex):   # Codex CLI's sessions too, for the context tip
+    if getattr(feed, "tips", None):   # the folders each source reads, only when there is one
+        if feed.tips.root:
+            print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
+                  else "  tips: no Claude Code transcripts found", flush=True)
+        if feed.tips.codex and os.path.isdir(feed.tips.codex):   # Codex CLI's sessions too, for the context tip
             print(f"  tips · Codex CLI's sessions in {feed.tips.codex}, read-only", flush=True)
     if why and mirror:
         why.watch()
