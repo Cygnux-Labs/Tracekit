@@ -470,8 +470,8 @@ jobs:
                  and ([.tuned.controls.false_alarms[]] | add) == 0
                  and ([.tuned, .development, .development_v2, .held_out]
                       | map(.detection.F1[], .detection.F1o[]) | all(. == 1))' $R/e20_alignment.json
-          # E21: policy decisions stay fast on any runner (recorded on macOS: p99 112-183 us, max at most 433 us)
-          jq -e '[.latency[] | .p99_us <= 1000 and .max_us <= 10000] | all' $R/e21_policy_robustness.json
+          # E21: policy decisions stay fast relative to the runner (p99 within 12x its reference time; CI saw 7-10x)
+          jq -e '[.latency[] | .p99_ref <= 12 and .max_us <= 10000] | all' $R/e21_policy_robustness.json
           # nothing skipped that should have run (-s: with several files, -e alone checks only the last)
           jq -e -s 'map(.skipped == {}) | all' $R/e11_l1_tampering.json $R/e12_cross_tenant.json $R/e14_outage.json
           jq -e '.cases["E19.7 parity"].caught' $R/e19_egress.json

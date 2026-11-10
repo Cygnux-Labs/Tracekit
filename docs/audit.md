@@ -1,6 +1,6 @@
 # `tracekit audit`
 
-`tracekit audit` is a read-only command that replays the tool calls found in local coding-agent transcripts through the policy engine and reports what the current policy would have held or denied.
+`tracekit audit` is a read-only command that replays the tool calls found in local coding-agent transcripts through the policy engine and reports what the current policy would have held or denied. Each call is decided as the signer decides it: an MCP tool (`mcp__<server>__<tool>`) also as `mcp:<server>/<tool>` and under its bare name, and a PowerShell command also as a shell line.
 
 It does not start a signer, does not write anything, and does not make network calls. It is a replay against today's policy, not a signed record. Tracekit never recorded these calls, so nothing here is evidence.
 

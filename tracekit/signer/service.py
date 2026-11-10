@@ -478,6 +478,73 @@ def _stricter(a, b):
     return d
 
 
+def evaluate(policy, tool, args, hint=None, untrusted=None):
+    """Engine `policy`'s reading of a call as the signer decides it (tracekit audit replays it): (policy decision,
+    hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells one it does
+    (Engine.listed) is also decided as that one; the stricter decision stands, with both readings' rule ids. A class
+    hint that disagrees with the policy's class gets the stricter of the two decisions; detection sees
+    the rules of both, so a mismatch can't hide a step. A tool the policy maps whose own reading is at least as
+    strict as the hint's (an MCP adapter's generic `mcp` against the deployment's `sql`) is no disagreement worth a
+    gap. An error of the engine itself on these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`:
+    its type), logged with its traceback, never an exception that drops the connection and lets the call run
+    unrecorded; a RecursionError is the request's nesting, which call() refuses."""
+    try:
+        d, cls = policy.decide(tool, args, untrusted=untrusted), policy.tool_class(tool)
+        # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
+        # one when two listed names share it
+        for listed in policy.listed(tool):
+            d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
+        mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
+        if tool.startswith("mcp__") and "__" in tool[5:]:
+            # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
+            # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
+            # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
+            server, _, name = tool[5:].partition("__")
+            mcps = [f"mcp:{server}/{name}"]
+        elif tool.startswith("mcp__"):
+            # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
+            # ends the server's name, nor Copilot CLI's <server>-<tool> (mcp__<server>-<tool>) which `-`: each of the
+            # first eight of either is tried, and the call is also decided as an unknown tool, as before it was named
+            # an MCP one (the server packs hold it)
+            # lean: a server name of more than seven of its separator reaches the mcp: mappings under no split
+            rest = tool[5:]
+            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for sep in "_-"
+                    for i in [i for i, c in enumerate(rest) if c == sep][:8]]
+            d = _stricter(d, policy.decide(tool, args, "unknown", untrusted))
+        elif tool == "PowerShell":
+            # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
+            # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
+            # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
+            b = policy.decide("Bash", args, untrusted=untrusted)
+            if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in policy.rules):
+                d = _stricter(d, b)
+        for mcp in mcps:
+            if mcp != tool:
+                d = _stricter(d, policy.decide(mcp, args, untrusted=untrusted))
+            # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
+            # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
+            # be dodged by naming the call an MCP one
+            bare, of = mcp.split("/", 1)[1], policy.tool_class(mcp)
+            for name in [bare] + policy.listed(bare):
+                d = _stricter(d, policy.decide(
+                    name, args, None if policy.tool_class(name) != "unknown" else of, untrusted))
+        if hint is None or hint == cls:
+            return d, False, d["rule_ids"]
+        h = policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
+        strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
+        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
+    except RecursionError:
+        raise
+    except Exception as e:
+        # the type and frames only: an exception message can carry argument text, which the signer otherwise
+        # keeps committed or encrypted; %r keeps an agent-supplied tool name on one log line
+        logging.getLogger(__name__).error("tracekit policy: the engine failed (%s) on a %r call\n%s", type(e).__name__,
+                                          tool[:256], "".join(traceback.format_tb(e.__traceback__)))
+        d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": policy.policy_hash,
+             "engine": policy.engine, "error": type(e).__name__}
+        return d, False, d["rule_ids"]
+
+
 def _iso(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
@@ -1974,69 +2041,7 @@ class SignerService:
         return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
     def _evaluate(self, tool, args, hint, untrusted=None):
-        """(policy decision, hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells
-        one it does (Engine.listed) is also decided as that one; the stricter decision stands, with both readings' rule
-        ids. A class hint that disagrees with the policy's class gets the stricter of the two decisions; detection sees
-        the rules of both, so a mismatch can't hide a step. A tool the policy maps whose own reading is at least as
-        strict as the hint's (an MCP adapter's generic `mcp` against the deployment's `sql`) is no disagreement worth a
-        gap. An error of the engine itself on these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`:
-        its type), logged with its traceback, never an exception that drops the connection and lets the call run
-        unrecorded; a RecursionError is the request's nesting, which call() refuses."""
-        try:
-            d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
-            # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
-            # one when two listed names share it
-            for listed in self.policy.listed(tool):
-                d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
-            mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
-            if tool.startswith("mcp__") and "__" in tool[5:]:
-                # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
-                # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
-                # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
-                server, _, name = tool[5:].partition("__")
-                mcps = [f"mcp:{server}/{name}"]
-            elif tool.startswith("mcp__"):
-                # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
-                # ends the server's name, nor Copilot CLI's <server>-<tool> (mcp__<server>-<tool>) which `-`: each of
-                # the first eight of either is tried, and the call is also decided as an unknown tool, as before it was
-                # named an MCP one (the server packs hold it)
-                # lean: a server name of more than seven of its separator reaches the mcp: mappings under no split
-                rest = tool[5:]
-                mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for sep in "_-"
-                        for i in [i for i, c in enumerate(rest) if c == sep][:8]]
-                d = _stricter(d, self.policy.decide(tool, args, "unknown", untrusted))
-            elif tool == "PowerShell":
-                # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
-                # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
-                # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
-                b = self.policy.decide("Bash", args, untrusted=untrusted)
-                if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in self.policy.rules):
-                    d = _stricter(d, b)
-            for mcp in mcps:
-                if mcp != tool:
-                    d = _stricter(d, self.policy.decide(mcp, args, untrusted=untrusted))
-                # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
-                # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
-                # be dodged by naming the call an MCP one
-                bare, of = mcp.split("/", 1)[1], self.policy.tool_class(mcp)
-                for name in [bare] + self.policy.listed(bare):
-                    d = _stricter(d, self.policy.decide(
-                        name, args, None if self.policy.tool_class(name) != "unknown" else of, untrusted))
-            if hint is None or hint == cls:
-                return d, False, d["rule_ids"]
-            h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-            strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
-            return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
-        except RecursionError:
-            raise
-        except Exception as e:
-            # the type and frames only: an exception message can carry argument text, which the signer otherwise
-            # keeps committed or encrypted; %r keeps an agent-supplied tool name on one log line
-            logging.getLogger(__name__).error("tracekit policy: the engine failed (%s) on a %r call\n%s", type(e).__name__,
-                                              tool[:256], "".join(traceback.format_tb(e.__traceback__)))
-            d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": self.policy.policy_hash,
-                 "engine": self.policy.engine, "error": type(e).__name__}
-            return d, False, d["rule_ids"]
+        return evaluate(self.policy, tool, args, hint, untrusted)
 
     def _reasons(self, ids, unread=None):
         """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
@@ -2875,7 +2880,8 @@ class SignerService:
             held = f and verdict != "deny" and self._constrained(run, f)   # tighten only: never lowered
             if held:
                 verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"] * ("TK-CONSTRAINT" not in rule_ids)
-            granted, grant_why = self._grant_release(key, run, tool, holder[0], rule_ids, args, digest, gw) \
+            now = _iso(time.time())   # the instant a grant is checked at, which a release's record carries
+            granted, grant_why = self._grant_release(key, run, tool, holder[0], rule_ids, args, digest, gw, now) \
                 if verdict == "ask" else (None, None)
             if granted:
                 verdict, rule_ids = "flag", rule_ids + ["TK-GRANT"]
@@ -2897,7 +2903,8 @@ class SignerService:
             def record(did, verdict, rule_ids, again=False, ext=None):
                 """Write decision `did`, as the run's hold or quarantine leaves it, and make it the call's; `again`: the
                 call's second decision, written by the signer after the first fired a hold or quarantine; `ext`: the
-                record's ext field (`grant`: what an intent grant released)."""
+                record's ext field (`grant`: what an intent grant released, its ts the instant the grant was checked at,
+                which the verifiers compare its expiry with)."""
                 verdict, rule_ids, iid = self._contained(run, verdict, rule_ids)
                 commitment = self._commit(did, digest) if digest else None
                 d = dict(data, decision_id=did, nonce=secrets.token_hex(16), decision=verdict, rule_ids=rule_ids,
@@ -2914,7 +2921,7 @@ class SignerService:
                 tx.set(run["calls"], tcid, call)
                 tx.set(run["decisions"], did, call)
                 kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
-                          **top, **({"ext": ext} if ext else {}))
+                          **top, **({"ext": ext, "ts": now} if ext else {}))
                 seq = tx.emit(run, "policy.decision", d, **kw) if again else \
                     tx.event(run, req, "policy.decision", d, **kw)
                 written.append((seq, commitment))
@@ -3738,6 +3745,10 @@ class SignerService:
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":
                 why = "TK-APPROVAL-" + a["state"].upper(), f"not approved (state={a['state']})"
+            elif {a["decision_id"], call and call.get("decision_id")} & {r[0] for r in run["results"].get(tcid, ())}:
+                # the call it was asked for, or this one, has a result already: it ran before anyone approved it, so
+                # the approval can't stand for it now (_reusable refuses a retry the same)
+                why = "TK-APPROVAL-UNBOUND", f"approval {aid} was used up: the call it was asked for ran anyway"
             elif a["expires_at"] <= _iso(time.time()) or a.get("consume_by", "~") <= _iso(time.time()):
                 why = "TK-APPROVAL-EXPIRED", "the approval expired"
             elif a.get("not_before", "") > _iso(time.time()):
@@ -4354,7 +4365,7 @@ class SignerService:
         parent, caveats, now = req["parent"], req.get("caveats", []), _iso(time.time())
         # lean: this signer's own grants only, and no approval, as a child only narrows; accept other pinned signers'
         # and gate delegation with the a2a policy class when the A2A gateway enforces PCM
-        if e := pcm.check_sig(parent, "pcm-grant", {"logs": [self.vkey]}):
+        if e := pcm.check_grant_sig(parent, {"logs": [self.vkey]}):
             raise RPCError("invalid_request", f"parent: {e}")
         if parent["issuer"]["tenant"] != key[0]:
             raise RPCError("forbidden", f"the grant was issued in tenant {parent['issuer']['tenant']}, not {key[0]}")
@@ -4431,9 +4442,10 @@ class SignerService:
                    and a["expires_at"] > now and self._opens(a["commitment"], a["label"], digest)
                    for a in list(self.log.approvals.values()))
 
-    def _grant_release(self, key, run, tool, via, rule_ids, args, digest, gw):
+    def _grant_release(self, key, run, tool, via, rule_ids, args, digest, gw, now):
         """(on the writer) What run `key`'s intent grants make of call `tool` with `args`, which the policy held (`ask`)
-        by `rule_ids`: ({id, fields, used, tier}, what it released, in words) when a grant releases it; (None, exactly why
+        by `rule_ids`, at ISO time `now` (the release's record's ts, so the verifiers check its expiry at the same
+        instant): ({id, fields, used, tier}, what it released, in words) when a grant releases it; (None, exactly why
         not) when the rules opt into an intent the run has grants for and none has room or can read the call; (None,
         None) when no grant applies: the rules don't all opt into one intent, the run has no grants, it is held or
         quarantined, or a person already approved this very call (_approved_twin). `tier`: T2 when an executor or
@@ -4442,7 +4454,7 @@ class SignerService:
         if not intent or digest is None or not run.get("grants") or run.get("held") or run.get("quarantined") \
                 or self._approved_twin(key, tool, via, rule_ids, digest):
             return None, None
-        gid, fields, used, why = grantlib.decide(run["grants"], intent, tool, args, _iso(time.time()))
+        gid, fields, used, why = grantlib.decide(run["grants"], intent, tool, args, now)
         if gid is None:
             return None, why
         cur = fields["currency"]
@@ -4529,7 +4541,7 @@ class SignerService:
                                                   "on its own, and grant the calls after it with tracekit grant add")
             first = {"approval_id": aid, "tool_call_id": a["tool_call_id"], "fields": fields}
         self.quotas.take_event(identity)
-        grant = self._pcm_signed("pcm-grant", grant)
+        grant = self._pcm_signed("intent-grant", grant)   # never a PCM grant: no receiver can check its limits
         gid = grantlib.grant_id(grant)
         data = {"name": "intent.grant", "id": gid, "grant": grant, "tools": tools, "limits": req["limits"], "used": used,
                 "self_approved": same, **({"first": first} if first else {}),

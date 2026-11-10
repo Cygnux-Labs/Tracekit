@@ -168,7 +168,9 @@ class DevSigner(unittest.TestCase):
         self.assertEqual(p.wait(10), 0)
         self.assertEqual(Client().status()["rpc_version"], RPC_VERSION)
 
-    def test_an_older_signer_is_replaced_with_a_warning(self):
+    def test_an_older_signer_is_replaced_with_a_plain_notice(self):
+        """QA of 1.6.0: the notice was a Python warning, `.../sdk/client.py:456: UserWarning: tracekit: stopped the dev
+        signer ...` and the source line under it; it is one plain line."""
         os.makedirs(self.run_dir, 0o700)   # what an upgrade leaves running: hooks would otherwise all fail closed
         p = subprocess.Popen(FAKE_ARGV + ["--proto", f"{RPC_VERSION - 2}-{RPC_VERSION - 1}", "--version", "0.0.1"],
                              start_new_session=True, stderr=subprocess.DEVNULL)
@@ -176,8 +178,11 @@ class DevSigner(unittest.TestCase):
         while autospawn._pid(self.run_dir) is None:
             self.assertIsNone(p.poll())
             time.sleep(0.02)
-        with self.assertWarnsRegex(UserWarning, rf"older Tracekit \(pid {p.pid}\)"):
+        with contextlib.redirect_stderr(io.StringIO()) as err, warnings.catch_warnings():
+            warnings.simplefilter("error")
             self.assertEqual(Client().status()["rpc_version"], RPC_VERSION)
+        self.assertEqual(err.getvalue(), f"tracekit: stopped the dev signer from an older Tracekit (pid {p.pid}) to start "
+                                         f"this one's ({__version__})\n")
         self.assertEqual(p.wait(10), 0)
 
     def test_an_older_signer_is_kept_when_the_one_we_would_start_is_older_too(self):
