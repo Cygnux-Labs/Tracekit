@@ -185,6 +185,15 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
                         cmds.index(["systemctl", "restart", "tracekit-signer"]))
 
+    def test_init_restarts_a_running_helper_so_an_upgrade_runs_the_new_venv(self):
+        """#463: `enable --now` leaves a helper that is already running on the replaced venv's code; a stopped one
+        starts from its socket, so only a running one is restarted."""
+        with mock.patch.object(install, "resolve_harness", return_value={"name": "claude", "exe": "/usr/local/bin/claude"}):
+            self.init_v2(harnesses=["claude=/usr/local/bin/claude"])
+        cmds = [c.args[0] for c in self.run.call_args_list]
+        self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
+                        cmds.index(["systemctl", "try-restart", install.V2_HELPER + ".service"]))
+
     def init_v2(self, sudo_why=None, harnesses=()):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
         v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",

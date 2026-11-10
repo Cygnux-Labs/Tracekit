@@ -22,9 +22,8 @@ These hooks record to the v2 signer ([below](#on-the-v2-signer)), and a v2 hook 
 runs as root from a root-owned Python and puts no `tracekit` command on root's `PATH`. It writes these agents' hooks
 into the agent user's own config, which that user can edit: `--managed` (hooks in admin-managed settings the agent can't
 edit or turn off) is for Claude Code only, and init refuses it with these agents
-([limits](limits.md#dev-mode-vs-system-mode)). The system-mode line is for Python
-3.11 or later, after [laptop system mode](deploy.md#laptop-system-mode)'s install; that page also gives the commands for
-3.9 and 3.10. The v1 hooks, for the older laptop path (the `tracekitd` signer), are the same dev commands without
+([limits](limits.md#dev-mode-vs-system-mode)). The system-mode line runs after
+[laptop system mode](deploy.md#laptop-system-mode)'s install. The v1 hooks, for the older laptop path (the `tracekitd` signer), are the same dev commands without
 `--v2` and write the same files:
 
 ```bash
@@ -401,7 +400,7 @@ one, blocks that event when the hook can't run (a command init wrote before 1.3,
 `D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s the hook may take to answer (milliseconds for
 Gemini CLI and Qwen Code; a held call waits, up to about 480 s, only with `TRACEKIT_APPROVAL_WAIT` set). Re-run init for the active mode to repair the other coding agents' hooks
 (`tracekit init --dev --v2 --agent NAME` in dev, or `sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT
---agent NAME` in system mode; with Python 3.9 or 3.10, [laptop system mode](deploy.md#laptop-system-mode)'s command). `tracekit doctor` also checks Droid's and Antigravity CLI's hook presence and timeout, and warns when agy would
+--agent NAME` in system mode). `tracekit doctor` also checks Droid's and Antigravity CLI's hook presence and timeout, and warns when agy would
 load its hooks and run none (`D-AGY-HOOKS-RUN`, [below](#antigravity-cli)). OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
 
 For the other coding agents (Antigravity CLI too, not OpenCode, whose plugin doctor doesn't read), `D-HOOKS-EVENT` also warns when a call can run that no hook

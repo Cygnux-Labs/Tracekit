@@ -214,6 +214,8 @@ def _install_helper(name, signer, sig, sock, darwin):
         _write_root_file(os.path.join(SYSTEMD_DIR, name + suffix), text.encode())
     subprocess.run(["systemctl", "daemon-reload"], check=False)
     subprocess.run(["systemctl", "enable", "--now", name + ".socket"], check=False)
+    # a helper already running keeps the replaced venv's code until restarted; a stopped one starts from its socket
+    subprocess.run(["systemctl", "try-restart", name + ".service"], check=False)
 
 
 def launchd_plist(label, user, python, module, home, extra_args=()):
@@ -1319,7 +1321,10 @@ def _install_venv(requirement, extra=""):
             tmp = tempfile.mkdtemp()
             requirement = [os.path.join(tmp, "Tracekit")]
             shutil.copytree(ROOT, requirement[0], ignore=shutil.ignore_patterns(".git"))
-        subprocess.run([sys.executable, "-m", "venv", "--clear", "--prompt", "tracekit", new], check=True)
+        # the base interpreter: before Python 3.11 a venv built by a venv's python links to that python, which the
+        # swap below replaces (init run from /opt/tracekit/bin/python would leave OPT's python linking to itself)
+        subprocess.run([os.path.realpath(sys.executable), "-m", "venv", "--clear", "--prompt", "tracekit", new],
+                       check=True)
         name, eq, version = requirement[-1].partition("==")
         subprocess.run([new_python, "-m", "pip", "install", "--quiet", "--no-cache-dir", *requirement[:-1],
                         name + extra + eq + version], check=True)
