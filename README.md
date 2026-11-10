@@ -154,12 +154,7 @@ seconds: [`examples/v2/clean-machine.sh langchain`](https://github.com/Cygnux-La
   <img alt="Works with Claude Code, Codex CLI, Cursor and Gemini CLI; the Python and TypeScript SDKs; the OpenAI Agents SDK, Claude Agent SDK, LangChain, LangGraph, MCP, CrewAI, Browser Use, Pydantic AI, the Vercel AI SDK and OpenTelemetry" src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/works-with-light.png" width="100%">
 </picture>
 
-<details>
-<summary><strong>All 34 integrations</strong>, and which are stable</summary>
-
-<br>
-
-**Stable:** Claude Code, OpenAI Agents SDK, LangChain / LangGraph, Claude Agent SDK, MCP.
+**All 34 integrations.** **Stable:** Claude Code, OpenAI Agents SDK, LangChain / LangGraph, Claude Agent SDK, MCP.
 
 **Experimental:** [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Coding-Agents) Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen
 Code, Factory Droid, Antigravity CLI, Crush and Devin; frameworks [CrewAI](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-CrewAI),
@@ -190,8 +185,6 @@ of its own. Guides: [Claude Code](https://github.com/Cygnux-Labs/Tracekit/wiki/I
 [Codex](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Codex-Sandbox) · [Gemini CLI](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Gemini-Sandbox) ·
 [sandbox-runtime](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Sandbox-Runtime) · [agentsh](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-agentsh) ·
 [agent-sandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Agent-Sandbox).
-
-</details>
 
 <details>
 <summary><strong>More ways in</strong>: requirements, the why demo, the sample bundles</summary>
@@ -323,7 +316,7 @@ first two rows measure.
 Every limit, and what to do about it: [limits](https://github.com/Cygnux-Labs/Tracekit/wiki/Limits) ·
 [guarantees by deployment](https://github.com/Cygnux-Labs/Tracekit/wiki/Guarantees).
 
-## What's in the box
+## Features
 
 **Stable core**, hardened first:
 
@@ -335,10 +328,7 @@ Every limit, and what to do about it: [limits](https://github.com/Cygnux-Labs/Tr
 | **[Verify](https://github.com/Cygnux-Labs/Tracekit/wiki/Verdicts)** | `tracekit verify` checks a run offline against keys you pinned; the browser verifier does the same and sends nothing |
 | **[Viewer](https://github.com/Cygnux-Labs/Tracekit/wiki/Viewer)** | `tracekit view`: every run verified, blocked and held calls, approvals, gaps, replay and a run review |
 
-<details>
-<summary><strong>Experimental</strong>: works and is tested, may change between releases</summary>
-
-<br>
+**Experimental**: works and is tested, may change between releases ([what's stable](https://github.com/Cygnux-Labs/Tracekit/wiki/Support)):
 
 | Feature | What it does |
 |---|---|
@@ -351,10 +341,6 @@ Every limit, and what to do about it: [limits](https://github.com/Cygnux-Labs/Tr
 | **Proof-carrying messages** | An agent's request to another agent carries its proof: a typed intent, claims backed by the sender's signed log, and the person's grant with its limits. The receiver checks it offline before it acts ([PCM 0.1](https://github.com/Cygnux-Labs/Tracekit/wiki/Proof-Carrying-Messages)) |
 | **Intent grants** | Approve a payment once with bounds: who may be paid, the most per payment, the total, until when. The signer releases each payment inside them and holds the rest; `tracekit verify` re-checks every release ([intent grants](https://github.com/Cygnux-Labs/Tracekit/wiki/Intent-Grants)) |
 | **[`tracekit graph`](https://github.com/Cygnux-Labs/Tracekit/wiki/Graph) and [Event Horizon](https://github.com/Cygnux-Labs/Tracekit/wiki/Horizon)** | One graph of what agents did across verified runs (which runs changed a file, who approved a call, which hosts a run reached), and a map in the viewer of where your agents went |
-
-[What's stable](https://github.com/Cygnux-Labs/Tracekit/wiki/Support)
-
-</details>
 
 ## Commands
 
