@@ -252,7 +252,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up, and
 
 That last row is on purpose. **Policy rules are tripwires, not a wall.** They match text, and a determined agent can
 reword a command. What makes the record trustworthy is the signer's isolation and the witness, and those are what the
-first three rows measure. The test sets were written by us, and no one outside has reviewed the threat models yet.
+first three rows measure.
 [Every experiment](https://github.com/Cygnux-Labs/Tracekit/wiki/Evaluation) ·
 [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md) ·
 [paper](https://arxiv.org/abs/2609.35659).
