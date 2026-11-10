@@ -32,7 +32,7 @@ def covers(d):
 
 
 def claims():
-    e1, e9, e10 = res("e1_integrity"), res("e9_signer_perf"), res("e10_reconcile")
+    e1, e8, e9, e10 = res("e1_integrity"), res("e8_insider"), res("e9_signer_perf"), res("e10_reconcile")
     e17, e17d, e17c = res("e17_policy_corpus"), res("e17_detection"), res("e17_containment")
     e18, e20, e21, e21r, e22 = (res("e18_agent_approvers"), res("e20_alignment"), res("e21_policy_robustness"),
                                 res("e21_robustness"), res("e22_verifier_agreement"))
@@ -42,6 +42,7 @@ def claims():
     trials = {v["trials"] for v in m.values()}.pop()
     harm, caught, benign, fp = (sum(c[k] for c in e17["classes"].values()) for k in ("deny", "caught", "benign", "fp"))
     approvers = sum(c["caught"] for c in e18["cases"].values())
+    insider = [v["caught"] for k, v in e8.items() if k.startswith("E8.")]
     dflt, strict = e21["profiles"]["default"], e21["profiles"]["strict"]
     h, se17 = dflt["heldout"]["totals"], strict["e17"]["totals"]
     lat = e21["latency"]
@@ -60,15 +61,29 @@ def claims():
                 f"({pct(p['heldout']['fp_rate'], 1)}) | {s['fp']} / {s['benign']} ({pct(p['sessions']['fp_rate'], 1)}) |")
 
     readme = [
+        f"{caught} of {harm}</h3>harmful calls stopped",
+        f"{len(e17['classes'])} classes</a>, {fp} false alarm in {benign} (E17)",
+        f"{wit} of {len(m)}</h3>tamper attacks caught",
+        f"{len(m) * trials} trials</a>, with a witness (E1)",
+        f"{sum(insider)} of {len(insider)}</h3>insider attacks caught",
+        f"{e9['ack_on_write']['p99_ms']} ms at p99</a>, signer round trip (E9)",
+        f"**{sum(insider)} of {len(insider)} caught**, on every pull request",
         f"{trials} trials each",
         f"The log alone catches {alone} of {len(m)}. **With a witness, {wit} of {len(m)}.**",
         f"**{e10['seeded_flagged']} of {e10['seeded']} flagged**, {e10['false_positives']} false positives",
-        f"**{round(e9['ack_on_write']['p50_ms'], 2)} ms p50, {e9['ack_on_write']['p99_ms']} ms p99** per call",
+        f"**{round(e9['ack_on_write']['p50_ms'], 2)} ms p50, {e9['ack_on_write']['p99_ms']} ms p99** per call; "
+        f"{e9['throughput']['events_per_s']:,} events/s",
         f"(E17): {harm} harmful, {benign} benign calls",
         f"{caught} stopped, {fp} false alarm",
         f"(E21): {h['harmful']} harmful, {h['benign']} benign",
         f"({h['caught']} now, with rules added after reading the pool); {h['fp']} benign held",
         f"{approvers} of {len(e18['cases'])} abuse cases against agent approvers caught (E18)",
+        f"{sum(r['ok'] for r in e17c.values())} of {len(e17c)} containment and {sum(r['ok'] for r in e17d.values())} "
+        f"of {len(e17d)} detection checks (E17)",
+        f"(E22): {e22['bundles']} bundles, {e22['forgeries']} of them forged",
+        f"**All three agree on all {e22['agree']}**",
+        f"A {e22['large']['calls']:,}-call run verifies in the browser in "
+        f"{round(next(b['page_s'] for b in e22['large']['bundles'] if 'open' not in b['name']))} s",
     ]
     evaluation = [
         f"All {caught} harmful calls are denied or held; one benign call is held",

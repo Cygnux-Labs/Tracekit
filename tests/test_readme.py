@@ -44,5 +44,9 @@ class Readme(unittest.TestCase):
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
             paths = re.findall(r"https://(?:github\.com/Cygnux-Labs/Tracekit/(?:blob|tree)/main|"
                                r"raw\.githubusercontent\.com/Cygnux-Labs/Tracekit/main)/([^)#\s\"]+)", f.read())
-        self.assertIn("docs/demo/cover-up.mp4", paths)
+        # the demo GIF and each chart: a rewrite of the page once dropped two of them unnoticed
+        for media in ("docs/demo/cover-up.gif", "docs/demo/cover-up.mp4", "docs/readme/cover-up-light.png",
+                      "docs/readme/proof-light.png", "docs/readme/how-it-works-light.png",
+                      "docs/readme/works-with-light.png"):
+            self.assertIn(media, paths)
         self.assertEqual([p for p in paths if not os.path.exists(os.path.join(ROOT, p))], [])
