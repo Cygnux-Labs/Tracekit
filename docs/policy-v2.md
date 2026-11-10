@@ -626,8 +626,10 @@ lower case (`[Mm][Ee][Tt][Aa]` gives `meta`; `policy2/compile.py` `literals`), a
 group of alternatives, each alternative's sets of such strings (`requirements`: `TK-A039`'s `sqlite3` branch needs
 `sqlite3` and one of `drop`, `delete` or `truncate`). A subject that holds none of the strings, or (one of 1 KiB or
 more) not one of each set of any alternative, is not searched, and the rules that read the same subject share one copy
-of it in a decision. The prefilter never changes a decision (tests check it on every subject the E17 corpus forms and on
-random patterns); it only skips searches that can't match. A rule without one is searched on every call its class and
+of it in a decision. On RE2 every rule's strings are one RE2 Set, searched once a text, so a rule's prefilter is a
+lookup; the fallback engine scans for each string, and searches a pattern whose top level is an alternation one
+alternative at a time, each only where the text holds one of its own strings. The prefilter never changes a decision
+(tests check it on every subject the E17 corpus forms and on random patterns); it only skips searches that can't match. A rule without one is searched on every call its class and
 tool reach, and `tracekit policy lint` warns about it unless a string of one character or none matches it (`^`, `.`,
 `&\s*$` need no prefilter). Every shipped
 pattern searches 64 KiB of text built to make it back off or rescan within 150 ms on the fallback engine (`TK-A040`

@@ -4410,7 +4410,9 @@ class GuardrailsAndPushes(unittest.TestCase):
             ("warehouse_query", {"query": "refund policy for orders"}),
             ("warehouse_query", {"statement": "bank statement for March"}),
             ("ToolSearch", {"query": "select:Read,Edit,Grep", "max_results": 3}),
-            ("cluster", {"note": "a \"command\": key named in a string"})], "flag", "TK-UNKNOWN-TOOL")
+            ("cluster", {"note": "a \"command\": key named in a string"}),
+            # Claude Code's PowerShell, unmapped on purpose: the signer reads it as bash too (SignerPolicy's tests)
+            ("PowerShell", {"command": "Get-ChildItem -Recurse"})], "flag", "TK-UNKNOWN-TOOL")
 
     def test_more_ways_to_push_to_main_and_to_publish(self):
         """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a

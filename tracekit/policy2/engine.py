@@ -82,6 +82,7 @@ def _backend(name):
             return (f"re2@{version('google-re2')}", lambda p, anycase=False: re2.compile("(?i)" * anycase + p, opts),
                     lambda c, s, full, deadline: (c.fullmatch if full else c.search)(s))
     import regex
+    ignorecase = int(regex.IGNORECASE)
 
     def match(c, s, full, deadline):
         if deadline[0] <= 0:   # spent: a tiny match could finish inside any floor, so the outcome would vary by machine
@@ -89,8 +90,9 @@ def _backend(name):
         start = time.perf_counter()
         try:
             found = (c.fullmatch if full else c.search)(s, timeout=deadline[0])
-            # a pattern matched in any case also as RE2 folds the text, which ASCII mode doesn't (_ASCII_FOLDS)
-            if found is None and c.flags & regex.IGNORECASE and ("ſ" in s or "K" in s):
+            # a pattern matched in any case also as RE2 folds the text, which ASCII mode doesn't (_ASCII_FOLDS); its
+            # flag as an int, read last: `flags & regex.IGNORECASE` ran Python's enum code on every match
+            if found is None and ("ſ" in s or "K" in s) and c.flags & ignorecase:
                 left = deadline[0] - (time.perf_counter() - start)
                 if left <= 0:
                     raise TimeoutError("the fallback's 1 s for this decision is spent")
@@ -121,14 +123,36 @@ class Engine:
                        rx(r, "unless") if "unless" in r else None, lits := literals(r["pattern"]),
                        _finer(requirements(r["pattern"]), lits), literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
-        # on RE2, a pattern's prefilter of six or more strings is one search of their alternation for a subject longer
-        # than _set_from's length, compiled as the rule's pattern is (an a2a rule's in any case), so it finds one
-        # wherever a str scan would (_holds): {id(strings): (compiled, length)}
-        self._sets = {}
+        # on RE2, every rule's prefilter strings are one RE2 Set, which finds each string a text holds in one search
+        # (768 strings over 300 characters: 0.8 us; the dev pack's rules scanned 688 of them one at a time), so a
+        # rule's prefilter is a lookup of its strings' ids (holds() in decide). The Set also holds `^`, which matches
+        # every text: a match without it is one RE2 couldn't finish (its DFA out of memory, which the binding doesn't
+        # report), and that text is scanned. The fallback scans: {id(strings): frozenset of their ids}
+        self._set, self._ids = None, {}
         if self.engine.startswith("re2@"):
-            for _, r, _, _, _, lits, *_ in self.rules:
-                if lits and (at := _set_from(len(lits))) is not None:
-                    self._sets[id(lits)] = (compile_(_alternation(lits), r.get("class") == "a2a"), at)
+            import re2
+            index = {}
+            for *_, lits, _, _ in self.rules:
+                for x in lits or ():
+                    index.setdefault(x, len(index))
+            opts = re2.Options()
+            opts.log_errors, opts.max_mem = False, 64 << 20
+            self._set = re2.Set.SearchSet(opts)
+            for x in index:
+                self._set.Add(re2.escape(x))
+            self._every = self._set.Add("^")
+            self._set.Compile()
+            self._ids = {id(lits): frozenset(map(index.__getitem__, lits)) for *_, lits, _, _ in self.rules if lits}
+        # on the fallback, a pattern whose top level is an alternation of parts that each have a prefilter is searched a
+        # part at a time, each only where the subject holds one of its strings: the regex module can't skip ahead in an
+        # alternation as it can in one part (TK-S002 took 36 us over a curl line, its parts 9 and 2 us), and a search
+        # of a|b matches where one of a or b does: {id(compiled pattern): [(compiled part, its strings), ...]}
+        self._parts = {}
+        if not self.engine.startswith("re2@"):
+            for _, r, _, pat, *_ in self.rules:
+                parts = _alternatives(r["pattern"]) or ()
+                if parts and all(map(literals, parts)):
+                    self._parts[id(pat)] = [(rx({**r, "pattern": a}, "pattern"), literals(a)) for a in parts]
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._deny_ids = {r["id"] for sec, r, *_ in self.rules if sec == "deny"}
@@ -288,13 +312,23 @@ class Engine:
         low_name = name.lower()
         if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class (_reaches),
             # each with the subjects it reads, its memo key (rules on the same subjects read them once; a shell rule with
-            # no field reads argv), and its _sets entry
+            # no field reads argv), its prefilter strings' ids in the RE2 Set and its _parts
             self._of[cls] = [(*x, ("argv" if x[1].get("field") is None and cls == "shell" else x[1].get("field"),
-                                   "from" in x[1]), *self._sets.get(id(x[5]), (None, 0)))
+                                   "from" in x[1]), self._ids.get(id(x[5])), self._parts.get(id(x[3])))
                              for x in self.rules if _reaches(x[1], cls)]
             self._of[cls, "deny"] = [x for x in self._of[cls] if x[0] == "deny"]
 
         spent = []   # why the engine's reading of the parse stopped (its budget), if it did
+        in_set = {}   # (RE2) the ids of the prefilter strings each text holds: one Set search a text
+
+        def holds(lits, ids, text):
+            """Whether `text` holds one of a rule's prefilter strings `lits` (compile.literals; `ids`: theirs in the RE2
+            Set), so its pattern may match there: a lookup on RE2, a str scan for each on the fallback."""
+            if ids is None:
+                return any(map(text.__contains__, lits))
+            if (have := in_set.get(text)) is None:
+                have = in_set[text] = frozenset(self._set.Match(text))
+            return not have.isdisjoint(ids) if self._every in have else any(map(text.__contains__, lits))
 
         def finds(pattern, anycase, whole, texts):
             """Whether a regex the call gives (pgrep's, grep's) matches one of `texts`, on this engine's backend: linear
@@ -309,7 +343,7 @@ class Engine:
         def hit(entry, parsed, memo, oversize):
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
             over MAX_SUBJECT), else None; TimeoutError past the deadline."""
-            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, lits_rx, lits_at = entry
+            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, ids, parts = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
             if key not in memo:
@@ -319,15 +353,16 @@ class Engine:
                     subjects, spent[:] = [], [e.cause]
                 memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
-            if lits is None or _holds(lits, lits_rx, lits_at, joined, self._match, deadline):
+            if lits is None or holds(lits, ids, joined):
                 for subject, low in zip(texts, lows):
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
-                    if (lits is None or len(texts) == 1 or
-                            _holds(lits, lits_rx, lits_at, low, self._match, deadline)) and (
+                    if (lits is None or len(texts) == 1 or holds(lits, ids, low)) and (
                             req is None or len(low) < REQUIREMENTS_FROM or
-                            any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and \
-                            self._match(pat, subject, False, deadline) and not (
+                            any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and (
+                            self._match(pat, subject, False, deadline) if parts is None else any(
+                                self._match(rx, subject, False, deadline) for rx, strings in parts
+                                if any(map(low.__contains__, strings)))) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
                                                                                      fields)):
@@ -337,12 +372,18 @@ class Engine:
                 oversize.append(f"{rule['id']}'s subject ({field})")
                 return "TK-OVERSIZE"
             return None
-        for entry in self._of[cls, "deny"] if _hidden else self._of[cls]:   # (an argument's command: its denies)
+        # (an argument's command: its denies) less the rules whose tool pattern needs a string the tool's name lacks
+        # (_named would refuse the name without a search): kept per class and name
+        if (rules := self._of.get((cls, bool(_hidden), low_name))) is None:
+            rules = [x for x in (self._of[cls, "deny"] if _hidden else self._of[cls])
+                     if x[7] is None or any(map(low_name.__contains__, x[7]))]
+            if len(self._of) < 4096 and len(low_name) <= 256:
+                self._of[cls, bool(_hidden), low_name] = rules
+        for entry in rules:
             # a rule with no tool pattern whose subjects, read already, are none or hold none of its strings (and none
             # is over MAX_SUBJECT) gives nothing: hit() would match nothing
             if entry[2] is None and (m := memo.get(entry[8])) and not m[3] and (
-                    not m[0] or entry[5] is not None and not _holds(entry[5], entry[9], entry[10], m[2],
-                                                                    self._match, deadline)):
+                    not m[0] or entry[5] is not None and not holds(entry[5], entry[9], m[2])):
                 continue
             try:
                 if (found := hit(entry, parsed, memo, oversize)) is not None:
@@ -538,32 +579,33 @@ class Engine:
         return list(dict.fromkeys([canonical(call)] + paths + urls))
 
 
-def _set_from(n):
-    """The subject length past which one RE2 search of n strings' alternation is cheaper than a str scan for each, or
-    None when it never is (n < 6). Measured on an M-series Mac (#605): a scan costs about 20 ns plus 0.3 ns a
-    character, the search about 790 ns plus 1.56 ns a character (so 76 strings over 4 KiB: 100 us scanning, 8 us
-    searching), whatever n. The regex module's alternation is slower than the scans at every size (490 us for 76),
-    so the fallback engine always scans."""
-    return None if n < 6 else max(0, (790 - 20 * n) * 100 // (30 * n - 156))
-
-
-def _holds(lits, rx, at, text, match, deadline):
-    """Whether `text` holds one of a prefilter's strings (compile.literals), so the rule's pattern may match it: one
-    search of their alternation `rx` when the text is longer than `at`, else a str scan for each."""
-    if rx is None or len(text) <= at:
-        return any(map(text.__contains__, lits))
-    return match(rx, text, False, deadline) is not None
-
-
-def _alternation(strings):
-    """A pattern that matches any of `strings` (ASCII, compile.literals), each character not a letter or digit as \\xHH,
-    which both engines read as itself."""
-    return "|".join("".join(c if c.isalnum() else f"\\x{ord(c):02x}" for c in s) for s in strings)
+def _alternatives(pattern):
+    """A checked pattern's top-level alternatives (`a|b(c|d)` is `a` and `b(c|d)`), or None when it has one."""
+    parts, depth, cls, start, i = [], 0, None, 0, 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if cls is not None:
+            if c == "]" and i > cls:
+                cls = None
+        elif c == "[":
+            cls = i + 1 + (pattern[i + 1:i + 2] == "^")   # a ] right after [ or [^ is literal (compile.translate)
+            i = cls
+            continue
+        elif c in "()":
+            depth += 1 if c == "(" else -1
+        elif c == "|" and not depth:
+            parts.append(pattern[start:i])
+            start = i + 1
+        i += 1
+    return parts + [pattern[start:]] if parts else None
 
 
 def _finer(req, lits):
     """compile.requirements when it says more than compile.literals: None where each alternative needs a string of one
-    set and those sets together are the literals (`(?:ab|cd|ef)`), whose check, made first (_holds), already said it."""
+    set and those sets together are the literals (`(?:ab|cd|ef)`), whose check, made first, already said it."""
     if req is not None and all(len(alt) == 1 for alt in req) and {s for alt in req for s in alt[0]} == set(lits or ()):
         return None
     return req

@@ -594,12 +594,13 @@ class Prefilter(unittest.TestCase):
             with self.subTest(rule=rid, key=key):
                 self.assertEqual([s[:80] for s in subjects if rx.search(s) and not passes(lits, req, s.lower())], [])
 
-    def test_a_literal_set_says_maybe_wherever_a_scan_does(self):
-        """#605: on RE2 a prefilter of six or more strings is one search of their alternation for a long enough
-        subject (engine._holds). It must find one wherever a str scan of each does, or a subject the rule matches
-        would go unsearched: every shipped pack's prefilters, at any length (the set alone) and at the engine's own
-        length, on the corpus's subjects as given and lower-cased, and on random text in mixed case with non-ASCII
-        characters around and inside the strings."""
+    @unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
+    def test_the_re2_set_finds_a_prefilter_string_wherever_a_scan_does(self):
+        """#605: on RE2 every rule's prefilter strings are one RE2 Set, searched once a text (engine.decide's holds). It
+        must find each string wherever a str scan does, or a subject a rule matches would go unsearched: every shipped
+        pack's prefilters, on the corpus's subjects as given and lower-cased, and on random text in mixed case with
+        non-ASCII characters around and inside the strings. Its `^` matches every text, so a search RE2 couldn't
+        finish (the binding drops the error) is read as one, and the text is scanned."""
         subjects = set()
         real = engine._prepare
         with mock.patch.object(engine, "_prepare", side_effect=lambda s, *tag: subjects.update(s) or real(s, *tag)):
@@ -607,33 +608,38 @@ class Prefilter(unittest.TestCase):
             for tool, args in corpus_calls():
                 e.decide(tool, args)
         rnd = random.Random(605)
-        noise = ["é", "ß", "日本", " ", "Ω", "ü", " ", "-", "/", "x", "Q", "\n"]
+        noise = ["é", "ß", "日本", " ", "Ω", "ü", " ", "-", "/", "x", "Q", "\n"]
         for name in sorted(os.listdir(PACKS)):
-            for backend in BACKENDS:
-                e = Engine(pc.build(os.path.join(PACKS, name))[0], backend)
-                sets = {id(r[5]): r[5] for r in e.rules if r[5]}
-                deadline = time.monotonic() + 3600
-                self.assertEqual(bool(e._sets), backend == "re2" and any(len(s) >= 6 for s in sets.values()))
-                for strings in sets.values():
-                    rx, at = e._sets.get(id(strings), (None, 0))
-                    texts = list(subjects)[:400] + [t.lower() for t in list(subjects)[:400]]
-                    for _ in range(40):
-                        s = rnd.choice(strings)
-                        cut = rnd.randrange(len(s) + 1)
-                        mixed = "".join(c.upper() if rnd.random() < .5 else c for c in s)
-                        texts += ["".join(rnd.choice(noise) for _ in range(rnd.randint(0, 6))) + w +
-                                  "".join(rnd.choice(noise) for _ in range(rnd.randint(0, 6)))
-                                  for w in (s, mixed, s[:cut] + rnd.choice(noise) + s[cut:])]
-                    with self.subTest(pack=name, backend=backend, strings=strings[:3]):
-                        self.assertEqual([t[:60] for t in texts if any(map(t.__contains__, strings)) and not (
-                            engine._holds(strings, rx, 0, t, e._match, deadline) and
-                            engine._holds(strings, rx, at, t, e._match, deadline))], [])
+            e = Engine(pc.build(os.path.join(PACKS, name))[0], "re2")
+            sets = {id(r[5]): r[5] for r in e.rules if r[5]}
+            self.assertEqual(set(e._ids), set(sets))
+            texts = list(subjects)[:400] + [t.lower() for t in list(subjects)[:400]]
+            for strings in sets.values():
+                for _ in range(10):
+                    w = rnd.choice(strings)
+                    cut = rnd.randrange(len(w) + 1)
+                    mixed = "".join(c.upper() if rnd.random() < .5 else c for c in w)
+                    texts += ["".join(rnd.choice(noise) for _ in range(rnd.randint(0, 6))) + x +
+                              "".join(rnd.choice(noise) for _ in range(rnd.randint(0, 6)))
+                              for x in (w, mixed, w[:cut] + rnd.choice(noise) + w[cut:])]
+            for t in texts:
+                have = set(e._set.Match(t))
+                self.assertIn(e._every, have)
+                wrong = [s[:3] for k, s in sets.items() if bool(have & e._ids[k]) != any(map(t.__contains__, s))]
+                with self.subTest(pack=name, text=t[:60]):
+                    self.assertEqual(wrong, [])
+        # a Set search that didn't finish (no `^` among its matches) is not read as "none of the strings": it scans
+        e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], "re2")
+        want = e.decide("Bash", {"command": "cat ~/.aws/credentials"})
+        e._set = mock.Mock(Match=lambda text: [])
+        self.assertEqual(e.decide("Bash", {"command": "cat ~/.aws/credentials"})["rule_ids"], want["rule_ids"])
+        self.assertIn("TK-S004", want["rule_ids"])
 
     def test_a_long_prefilter_is_one_search_on_re2(self):
         """#605: a prefilter of 80 strings over a 4 KiB command none of them is in took 80 str scans of the command
         per rule, which made the laptop default's p99 19% slower than main's once the server rules (TK-C001's 76
-        strings) read every Bash call. On RE2 it is one search of their alternation; the fallback keeps the scans,
-        faster there than the regex module's alternation. Counted in scans, not time."""
+        strings) read every Bash call. On RE2 it is a lookup in one Set search of the text; the fallback keeps the
+        scans, faster there than the regex module's alternation. Counted in scans, not time."""
         words = ["".join(w) for w in itertools.product("bcdfg", "hjklm", "npqrs")][:80]
         pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "MANY", "class": "shell", "pattern": "(?:" + "|".join(words) + ")"}]}
         self.assertEqual(len(pc.literals(pol["flag"][0]["pattern"])), 80)
@@ -658,6 +664,35 @@ class Prefilter(unittest.TestCase):
             with self.subTest(backend=backend):
                 self.assertLessEqual(len(scans), 2 if backend == "re2" else 10 ** 6)
                 self.assertGreaterEqual(len(scans), 0 if backend == "re2" else 80)
+
+    def test_an_alternation_is_searched_a_part_at_a_time_on_the_fallback(self):
+        """#605: the regex module can't skip ahead in an alternation as it does in one of its parts, so on the
+        fallback a pattern whose top level is an alternation of parts that each have a prefilter is searched a part
+        at a time, each only where the subject holds one of its strings (TK-S002 took 36 us over a curl line on the
+        laptop default, which reads it on every call, its parts 9 and 2 us). A search of a|b matches where one of a
+        or b does, so no decision changes: every corpus call on the laptop default, split and whole."""
+        self.assertEqual(engine._alternatives(r"a|b(c|d)|[|]x|\|y"), ["a", "b(c|d)", "[|]x", r"\|y"])
+        self.assertEqual(engine._alternatives(r"[]|]|z"), ["[]|]", "z"])
+        self.assertIsNone(engine._alternatives("(a|b)x"))
+        pol = {"tools": {"Bash": "shell"}, "deny": [
+            {"id": "SECRET", "class": "shell", "pattern": r"\bAKIA[0-9A-Z]{16}|\b[a-z]+://[^ :@]*:[^ @]+@"}]}
+        for backend in BACKENDS:
+            e = Engine(pol, backend)
+            whole, searched, real = e.rules[0][3], [], e._match
+            e._match = lambda c, s, full, deadline: searched.append(c) or real(c, s, full, deadline)
+            self.assertEqual(e.decide("Bash", {"command": "curl -s https://u:pw@example.com/x"})["rule_ids"], ["SECRET"])
+            self.assertEqual(e.decide("Bash", {"command": "curl -s https://example.com/x"})["verdict"], "allow")
+            with self.subTest(backend=backend):
+                self.assertEqual(whole in searched, backend == "re2")
+                self.assertEqual(len(searched), 2)   # on the fallback, the URL part alone, once a call
+        dev = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+        split, unsplit = Engine(dev, "regex"), Engine(dev, "regex")
+        unsplit._parts = {}
+        self.assertGreater(len(split._parts), 20)
+        for tool, args in corpus_calls():
+            a, b = split.decide(tool, args), unsplit.decide(tool, args)
+            with self.subTest(tool=tool, args=str(args)[:80]):
+                self.assertEqual((a["verdict"], a["rule_ids"]), (b["verdict"], b["rule_ids"]))
 
     def test_lint_warns_of_a_rule_the_prefilter_cannot_skip(self):
         pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "N", "class": "shell", "pattern": r"[a-z]+@[0-9]+"},
