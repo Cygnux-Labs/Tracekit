@@ -19,11 +19,11 @@ hermes config set timeouts.tools.sequential_call 600
 hermes config set timeouts.tools.concurrent_batch 600
 ```
 
-The plugin depends on `tracekit-ai` 1.6.0 or later (1.4.2 added its hooks), which Hermes installs into its
-environment with your consent. With no signer
+The plugin depends on `tracekit-ai` 1.6.0 or later, for the current signer and policy (its hooks date from 1.4.2),
+which Hermes installs into its environment with your consent. With no signer
 configured, the first tool call starts Tracekit's same-user dev signer. To use another signer, set `TRACEKIT_SIGNER`
 in Hermes's environment (a Unix socket path, `tcp://127.0.0.1:PORT` with `TRACEKIT_SIGNER_TOKEN`, or an `https://` URL
-with `TRACEKIT_SIGNER_TOKEN_FILE`).
+with `TRACEKIT_SIGNER_TOKEN_FILE`), and upgrade that signer to 1.6 first: a 1.6 client refuses an older signer.
 
 Each Hermes session is one run, closed when Hermes exits; then `tracekit last` exports and verifies it.
 
