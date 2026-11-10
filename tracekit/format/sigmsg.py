@@ -5,7 +5,8 @@ from tracekit.format.canon import canonical
 
 __all__ = ["PURPOSES", "RECORD_FIELDS", "TAGS", "message", "sig_message_v1", "sig_message_v2"]
 
-PURPOSES = ("record", "checkpoint", "approval", "cert", "retire", "export", "pcm", "pcm-grant")
+# intent-grant: an intent grant (tracekit.grants), in PCM's grant format but no PCM grant: its limits live in its run
+PURPOSES = ("record", "checkpoint", "approval", "cert", "retire", "export", "pcm", "pcm-grant", "intent-grant")
 TAGS = {"pcm": "pcm.message.v0", "pcm-grant": "pcm.grant.v0"}   # PCM's own: an open protocol, not a tracekit format
 RECORD_FIELDS = ("alg", "kid", "log_id", "seq", "prev_hash", "tenant", "run_id", "run_seq", "run_prev_hash", "hash")
 

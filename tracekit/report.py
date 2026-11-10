@@ -427,8 +427,10 @@ def _oversight_lines(o):
 
 
 def _days(seconds):
-    """A window's length: in days, or in hours below a day."""
-    n, unit = (round(seconds / 86400, 1), "day") if seconds >= 86400 else (round(seconds / 3600, 1), "hour")
+    """A window's length: in days, in hours below a day, in minutes below an hour and in seconds below a minute."""
+    size, unit = next((s, u) for s, u in ((86400, "day"), (3600, "hour"), (60, "minute"), (1, "second"))
+                      if seconds >= s or u == "second")
+    n = round(seconds / size, 1)
     return f"{n:g} {unit}{'s' * (n != 1)}"
 
 

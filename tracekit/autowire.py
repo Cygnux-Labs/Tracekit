@@ -248,10 +248,10 @@ def _claude_agent_sdk(run):
 
 
 class _Unpatched:
-    """A ClientSession as TracekitSession sees it: its call_tool is the one instrument() replaced."""
+    """A ClientSession as TracekitSession sees it: its call_tool and get_prompt are the ones instrument() replaced."""
 
-    def __init__(self, session, call_tool):
-        self._session, self._call_tool = session, call_tool
+    def __init__(self, session, call_tool, get_prompt=None):
+        self._session, self._call_tool, self._get_prompt = session, call_tool, get_prompt
 
     def __getattr__(self, name):
         return getattr(self._session, name)
@@ -259,25 +259,36 @@ class _Unpatched:
     def call_tool(self, *a, **kw):
         return self._call_tool(self._session, *a, **kw)
 
+    def get_prompt(self, *a, **kw):
+        return self._get_prompt(self._session, *a, **kw)
+
 
 def _mcp(run):
     from mcp import ClientSession
 
     from .integrations.mcp import TracekitSession
-    call_tool = ClientSession.call_tool
+    call_tool, get_prompt = ClientSession.call_tool, getattr(ClientSession, "get_prompt", None)
     gates, stream, servers = weakref.WeakKeyDictionary(), {}, weakref.WeakKeyDictionary()
 
-    @functools.wraps(call_tool)
-    async def gated(self, *a, **kw):
-        if DECIDED_UPSTREAM.get():
-            return await call_tool(self, *a, **kw)
-        if self not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
+    def gate(session):
+        if session not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
             # the gate holds its session weakly: a strong one would keep every session (the dict's key) alive
-            g = gates[self] = TracekitSession(_Unpatched(weakref.proxy(self), call_tool), run.client, run.registered,
-                                              server=servers.get(self))
+            g = gates[session] = TracekitSession(_Unpatched(weakref.proxy(session), call_tool, get_prompt),
+                                                 run.client, run.registered, server=servers.get(session))
             g.stream, g._seq, g._lock = stream.setdefault("s", (g.stream, g._seq, g._lock))
-        return await gates[self].call_tool(*a, **kw)
-    ClientSession.call_tool = gated
+        return gates[session]
+
+    def wrap(method, orig):
+        @functools.wraps(orig)
+        async def gated(self, *a, **kw):
+            if DECIDED_UPSTREAM.get():
+                return await orig(self, *a, **kw)
+            return await getattr(gate(self), method)(*a, **kw)
+        return gated
+
+    ClientSession.call_tool = wrap("call_tool", call_tool)
+    if get_prompt is not None:
+        ClientSession.get_prompt = wrap("get_prompt", get_prompt)
     if hasattr(ClientSession, "server_info"):
         return
     initialize = ClientSession.initialize   # mcp 1.x: only initialize()'s result names the server

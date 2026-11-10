@@ -7,7 +7,7 @@ false alarm). Each one is a measurement from outside our machines.
 
 ## Run Tracekit for a week
 
-`--share` needs Tracekit 1.5.3 or later (`pip install -U tracekit-ai`).
+`--share` needs Tracekit 1.6.0 or later (`pip install -U tracekit-ai`).
 
 ```bash
 tracekit init --dev --v2               # Claude Code's hooks and the dev signer; --agent codex, cursor, ...: coding-agents.md
@@ -20,7 +20,7 @@ tracekit report --share --since 7d     # the week's counts, to post
 `tracekit report` does ([weekly report](viewer.md#weekly-report)) and prints its counts alone:
 
 ```text
-Tracekit 1.5.3 field report (tracekit report --share): 7 days
+Tracekit 1.6.0 field report (tracekit report --share): 7 days
 Integrity: the store verified, 31 of 31 runs verify
 Runs that verify, by agent: claude-code 27, codex 2, other 2
 Tool calls: 18,204   allow 15,733, flag 2,318, ask 61, deny 92

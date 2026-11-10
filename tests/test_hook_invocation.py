@@ -282,7 +282,7 @@ class PluginShim(unittest.TestCase):
             code, err = self.hook(event)
             self.assertEqual(code, 1, event)
             self.assertIn("NOT recorded", err.splitlines()[0])   # the line Claude Code shows
-            self.assertIn("Ask the person to set it up: pip install tracekit-ai==1.5.3 && tracekit init --dev --v2 --no-hooks", err)
+            self.assertIn("Ask the person to set it up: pip install tracekit-ai==1.6.0 && tracekit init --dev --v2 --no-hooks", err)
 
     def set_up_tracekit(self):
         """What `tracekit init --dev --v2` and the dev signer leave behind: the dev signer's data dir."""
@@ -295,11 +295,39 @@ class PluginShim(unittest.TestCase):
         code, err = self.hook("PreToolUse")
         self.assertEqual(code, 2)
         self.assertIn("call was blocked", err)
-        self.assertIn("/plugin disable tracekit@tracekit", err)
+        self.assertIn("turn the plugin off in /plugin", err)   # no CLAUDE_PLUGIN_ROOT: the key isn't known
         for event in ("UserPromptSubmit", "Stop", "SubagentStop", "SessionStart"):   # 2 would erase or loop these
             code, err = self.hook(event)
             self.assertEqual(code, 1, event)
             self.assertIn(f"this {event} event was NOT recorded", err.splitlines()[0])
+
+    def test_the_disable_command_names_the_marketplace_the_plugin_came_from(self):
+        """Claude Code installs a marketplace plugin at <plugins root>/cache/<marketplace>/<plugin>/<version>."""
+        self.set_up_tracekit()
+        for root, key in (("/home/u/.claude/plugins/cache/buildwithclaude/tracekit/1.5.3",
+                           "tracekit@buildwithclaude"),
+                          ("/home/u/.claude/plugins/cache/buildwithclaude/tracekit/1.5.3/",
+                           "tracekit@buildwithclaude"),
+                          ("/home/u/.claude/plugins/cache/tracekit/tracekit/1.5.3", "tracekit@tracekit"),
+                          ("/home/u/My Plugins/cache/buildwithclaude/tracekit/1.5.3", "tracekit@buildwithclaude")):
+            with self.subTest(root=root):
+                code, err = self.hook("PreToolUse", CLAUDE_PLUGIN_ROOT=root)
+                self.assertEqual(code, 2, err)
+                self.assertEqual(err.count("/plugin disable "), 1, err)
+                self.assertIn(f"/plugin disable {key}\n", err)
+                self.assertNotIn("turn the plugin off in /plugin", err)
+
+    def test_no_disable_command_when_the_plugins_key_is_not_known(self):
+        """No CLAUDE_PLUGIN_ROOT, a --plugin-dir or local-marketplace plugin (which loads in place), a claude.ai-synced
+        one, or a cache path with no version: none of them names a key here."""
+        self.set_up_tracekit()
+        for env in ({}, {"CLAUDE_PLUGIN_ROOT": "/home/u/.claude/plugins/marketplaces/tracekit/plugin"},
+                    {"CLAUDE_PLUGIN_ROOT": "/home/u/.claude/plugins/cache/buildwithclaude/tracekit"}):
+            with self.subTest(**env):
+                code, err = self.hook("PreToolUse", **env)
+                self.assertEqual(code, 2, err)
+                self.assertIn("turn the plugin off in /plugin", err)
+                self.assertNotIn("/plugin disable", err)
 
     def test_a_tracekit_python_that_is_gone_counts_as_set_up(self):
         self.assertEqual(self.hook(TRACEKIT_PYTHON=os.path.join(self.d, "gone", "python"))[0], 2)
@@ -327,7 +355,7 @@ class PluginShim(unittest.TestCase):
             self.assertEqual(code, want, (event, err))
             self.assertIn("tracekit 1.0.0", err.splitlines()[0])
             self.assertIn("is older than 1.2", err)
-            self.assertIn("Ask the person to run: pip install tracekit-ai==1.5.3 && tracekit init --dev --v2 --no-hooks", err)
+            self.assertIn("Ask the person to run: pip install tracekit-ai==1.6.0 && tracekit init --dev --v2 --no-hooks", err)
             self.assertNotIn("Traceback", err)
 
     def test_a_tracekit_whose_hook_does_not_import_blocks_tool_calls(self):

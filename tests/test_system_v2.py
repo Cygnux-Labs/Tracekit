@@ -157,6 +157,13 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertIn("each of agent's Claude Code sessions records a tailer_lost gap instead of its transcript",
                       out.getvalue())
 
+    def test_init_says_when_harness_binding_is_off(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.init_v2()
+        self.assertIn("harness binding is off", out.getvalue())
+        self.assertIn("--harness [NAME=]PATH", out.getvalue())
+
     def test_init_wires_signer_service_and_hook(self):
         self.init_v2()
 

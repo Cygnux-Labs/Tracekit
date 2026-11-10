@@ -104,9 +104,9 @@ To leave the system Python alone, run init from a root-owned clone of the releas
 runs the copy in the current directory, and init builds `/opt/tracekit` from it:
 
 ```bash
-# v1.5.3 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
-sudo git clone --depth 1 --branch v1.5.3 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.5.3
-cd /usr/local/src/tracekit-1.5.3
+# v1.6.0 is the latest release's tag. Debian, Ubuntu: sudo apt install git first
+sudo git clone --depth 1 --branch v1.6.0 https://github.com/Cygnux-Labs/Tracekit /usr/local/src/tracekit-1.6.0
+cd /usr/local/src/tracekit-1.6.0
 sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT --approver ADMIN \
     [--harness claude=/usr/local/bin/claude] [--policy /etc/tracekit/policy.yaml]
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
@@ -129,7 +129,7 @@ What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos
 - **harness binding**, only with `--harness [NAME=]PATH` (optional, repeatable; the binary must be root-owned): the
   signer accepts a run from AGENT's uid only from below that program's process tree, attested by
   `tracekit-harness-helper`, a root service that holds only `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH`. Without
-  `--harness` there is no binding and no helper. Init and doctor say nothing about it (v2 init doesn't look for the
+  `--harness` there is no binding and no helper. Init says so and doctor doesn't (v2 init doesn't look for the
   agent's CLI on `PATH`), and any process of AGENT's user can start a run;
 - the **transcript tailer** (with `--agent claude`, the default, even with `--no-hooks`): the `tracekit-tailer` user
   reads AGENT's Claude Code transcripts (the session's and its subagents') through an ACL and reports them to the
@@ -437,6 +437,12 @@ as it needs nothing the schema lacks:
   included), but a 1.5 client or gateway refuses a 1.4 signer: upgrade the signer first. Bundles are unchanged: a 1.4
   verifier reads them. A same-user dev signer from 1.4 is replaced by the first 1.5 client that finds it. The store's
   schema is unchanged.
+- **1.6** speaks signer protocol 22. A 1.6 signer serves clients and gateways from protocol 15 up (1.2 to 1.5
+  included), but a 1.6 client or gateway refuses a 1.5 signer: upgrade the signer first, then Box and the agents'
+  Tracekit. A bundle whose records use 1.6's additions (a Tracekit Box run's `box` label, intent grants) verifies with
+  a 1.4 or 1.5 verifier, which reports them `not interpreted`; one with a grant the run's own user issued needs a 1.6
+  verifier. A same-user dev signer from 1.5 is replaced by the first 1.6 client that finds it. The store's schema is
+  unchanged.
 
 Helm (`tracekit-central`): migrate each replica's schema before upgrading the release with `signer.content.retain`
 set. Compose: the stack's init script runs only on an empty database, so on an existing stack run

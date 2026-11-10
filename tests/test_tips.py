@@ -412,6 +412,23 @@ class Holds(unittest.TestCase):
         self.assertEqual(built["tips"][2]["where"], [{"where": "main session", "answered": 2, "open": 1,
                                                       "blocked_s": 0, "joined": 0}])
 
+    def test_a_rule_that_only_also_matched_is_not_named_as_one_that_held(self):
+        """The 1.6.0 review: a flag rule that also matched a held call was counted as a rule that held it, where the
+        report places each rule by its policy section (report._placed)."""
+        eng = svc.load_policy()
+        ask, flag = [next(r["id"] for sec, r, *_ in eng.rules if sec == want) for want in ("ask", "flag")]
+        tr = view.Translator(view.policy_reasons())
+        recs = (self.RECS[0], v2rec(2, "policy.decision", {"tool_use_id": "toolu_h1", "tool": "Bash", "decision": "ask",
+                                                           "rule_ids": [flag, ask], "policy_hash": eng.policy_hash}))
+        t = tips.build([x for r in recs for x in tr.feed(r)], None, NOW)["tips"][2]
+        self.assertEqual([r["id"] for r in t["rules"]], [ask])
+        self.assertTrue(t["fix"]["text"].startswith(f"{ask} held 1 of them"), t["fix"]["text"])
+
+    def test_when_every_hold_was_answered_it_points_to_no_waiting_call(self):
+        """The 1.6.0 review: with every hold answered, the tip still said to see the calls waiting."""
+        t = tips.build(rows(self.RECS[0], *self.RECS[2:]), None, NOW)["tips"][2]
+        self.assertEqual((t["title"], t["fix"]), ("Every held call was answered", None))
+
     def test_with_no_signed_records_or_no_holds_it_says_so(self):
         self.assertIn("No signed records", tips.build([], None, NOW)["tips"][2]["why"])
         t = tips.build(rows(self.RECS[0]), None, NOW)["tips"][2]

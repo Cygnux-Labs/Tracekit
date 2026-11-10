@@ -21,7 +21,7 @@ from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
 from .report import DECISIONS, _counts, _days, _wait, call_text, share_rules, when
-from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
+from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, evaluate, load_policy
 from .view import ENGINE_RULES
 
 
@@ -142,9 +142,10 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                         continue
                     if key:
                         seen.add(key)
-                    try:
-                        decision = engine.decide(tool, args)
-                    except Exception:   # the signer denies a call its engine fails on (signer.service._evaluate)
+                    try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its
+                        # bare name, PowerShell also as a shell line
+                        decision = evaluate(engine, tool, args)[0]
+                    except RecursionError:   # nesting the signer refuses (it denies an engine error itself)
                         decision = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"]}
                     verdict = decision.get("verdict", "allow")
                     counts[verdict] = counts.get(verdict, 0) + 1

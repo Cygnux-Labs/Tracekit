@@ -403,6 +403,8 @@ test("the page's words: the verdict, what to do next, and a meaning for every li
   assert.equal(tampered.detail, `${tampered.problems.length} problem(s) in 12 record(s)`);
   assert.ok(asText(bad.report, bad.code).endsWith("\nIntegrity: FAILED.\nAssurance: not rated (the bundle failed "
     + "verification).\n\nExit code 1.\n"));
+  // QA of 1.6.0: --json still gave the level the checkpoint has
+  assert.equal(asJson(bad.report, bad.code).assurance, "not rated (the bundle failed verification)");
   // a meaning for exactly the outcomes each line can have, each its own: rep.check(name, ok, detail, problems, warn)
   // passes when ok, else warns when warn, else fails; rep.unsupport(name) warns
   const can = {}, yes = (n) => n?.kind === ts.SyntaxKind.TrueKeyword;

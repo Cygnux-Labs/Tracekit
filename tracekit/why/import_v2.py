@@ -132,14 +132,16 @@ def held_calls(recs: List[Dict[str, Any]]):
     return folds, {aid: o[0][0] for aid, o in owners.items()}
 
 
-def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """tool_call_id -> {"decision", "result": records, "approval": {decision, approver, self_approved}}; an approval
+def _calls(recs: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """call (run_seq) -> {"decision", "result": records, "approval": {decision, approver, self_approved}}; an approval
     that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...). The agent's retry
     of a held call that consumed that call's approval (signer _reusable) has its approval and `retry_of`, the held call;
-    the held call, blocked at once, `ran_by`, the retry. A call is the id's latest decision, or the held call a decision
-    folds into (held_calls); an approval's records are the call's its request was for, and a result the call of the
-    decision it names (decision_id): one that is not the id's latest call is not in the log."""
-    calls: Dict[str, Dict[str, Any]] = {}
+    the held call, blocked at once, `ran_by`, the retry. A call is the latest decision of its id and attempt, unless
+    that one ran: it is then a call of its own, as is the held call a decision folds into (held_calls); an approval's
+    records are the call's its request was for, and a result the call of the decision
+    it names (decision_id): one that did not run and is not its id and attempt's latest call is not in the log."""
+    calls: Dict[int, Dict[str, Any]] = {}
+    cur: Dict[tuple, int] = {}   # (id, attempt) -> its latest call
     asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
     folds, owners = held_calls(recs)
     appr, used, decs, did = {}, set(), {}, {}   # call (run_seq) -> its approval; calls whose approval was used;
@@ -148,15 +150,19 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         aid, tid = d.get("approval_id"), _call_id(r)
         if t == "policy.decision":
             seq = did[d.get("decision_id")] = folds.get(e["run_seq"], e["run_seq"])
-            calls[tid] = {"decision": r, "seq": seq}   # a later attempt replaces an earlier one
-            decs.setdefault((tid, e.get("attempt")), []).append((seq, d["decision"]))
-        elif t == "tool.result" and tid in calls:
+            key = (tid, e.get("attempt"))
+            if key in cur and cur[key] != seq and "result" not in calls[cur[key]]:
+                del calls[cur[key]]   # a later decision replaces one that did not run
+            cur[key] = seq
+            calls[seq] = {"decision": r, "seq": seq}
+            decs.setdefault(key, []).append((seq, d["decision"]))
+        elif t == "tool.result" and (key := (tid, e.get("attempt"))) in cur:
             # the decision it completes, as the signer signed it (any open decision: a deny or a hold nobody answered
             # that ran anyway ran); without one, the latest under its id and attempt that could have run
             ran = did.get(d.get("decision_id")) if d.get("decision_id") else next(
                 (s for s, dec in reversed(decs.get((tid, e.get("attempt")), ())) if dec in ("allow", "flag") or s in used), None)
-            if ran == calls[tid]["seq"]:
-                calls[tid]["result"] = r
+            if ran in calls:
+                calls[ran]["result"] = r
         elif t == "approval" and aid in owners:
             appr[owners[aid]] = {k: d.get(k) for k in ("decision", "approver", "self_approved")}
         elif t == "approval.request":
@@ -165,9 +171,9 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             held, retry = asked.get(aid), e.get("tool_call_id")
             if retry == held:
                 used.add(owners[aid])
-            elif retry in calls and appr.get(owners[aid]):
-                used.add(calls[retry]["seq"])
-                appr[calls[retry]["seq"]] = {**appr[owners[aid]], "retry_of": held}
+            elif (retry, e.get("attempt")) in cur and appr.get(owners[aid]):
+                used.add(cur[retry, e.get("attempt")])
+                appr[cur[retry, e.get("attempt")]] = {**appr[owners[aid]], "retry_of": held}
                 appr[owners[aid]]["ran_by"] = retry
         elif t in ("approval.expired", "approval.abandoned", "approval.revoked") and aid in owners:
             if (appr.get(owners[aid]) or {}).get("decision") in (None, "approve"):
@@ -176,6 +182,11 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
         if c["seq"] in appr:
             c["approval"] = appr[c["seq"]]
     return calls
+
+
+def _at(calls: Dict[int, Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
+    """The call each of its decision and result records (run_seq) is."""
+    return {c[k]["event"]["run_seq"]: c for c in calls.values() for k in ("decision", "result") if k in c}
 
 
 def _policy(call: Dict[str, Any], reasons: Dict[str, Dict[str, Dict[str, str]]]) -> Dict[str, Any]:
@@ -264,7 +275,7 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
     w = _Writer(out_dir, first["run_id"], first["tenant"])
     agent = (first["data"].get("agent") or {}).get("name") if first["type"] == "run.registered" else None
     agent = agent or "main"
-    calls = _calls(recs)
+    at = _at(_calls(recs))
     exchanges: Dict[str, List[Dict[str, Any]]] = {}
     for r in recs:
         if r["event"]["type"] == "model.exchange":
@@ -300,7 +311,7 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
                         status="error" if any(x.get("error") for x in ex) else "ok", duration_ms=None,
                         context_mode="reconstructed")
             decision_of.update({u["id"]: ev["id"] for u in uses})
-        elif t in ("policy.decision", "tool.result") and (call := calls.get(d["tool_use_id"])) and \
+        elif t in ("policy.decision", "tool.result") and (call := at.get(e["run_seq"])) and \
                 (call.get("result") or call["decision"]) is r:   # at its result, or at its decision if it never ran
             dd, pol = call["decision"]["event"]["data"], _policy(call, reasons)
             ran = t == "tool.result"
@@ -371,7 +382,7 @@ def _same(t: Dict[str, Any], rec: Dict[str, Any]) -> Optional[str]:
 
 
 def _mismatch(ev: Dict[str, Any], t: Dict[str, Any], index: Dict[tuple, Dict[str, Any]],
-              calls: Dict[str, Dict[str, Any]], agent: Optional[str], results: set) -> Optional[str]:
+              at: Dict[int, Dict[str, Any]], agent: Optional[str], results: set) -> Optional[str]:
     """Why the record `t` cites does not back event `ev`, or None. `results`: (run, tool call) of every cited result."""
     rec = index.get((t["run_id"], t["run_seq"]))
     if rec is None:
@@ -394,7 +405,7 @@ def _mismatch(ev: Dict[str, Any], t: Dict[str, Any], index: Dict[tuple, Dict[str
         return f"the record's model is {d['model']!r}"
     if ev["type"] == "action":
         tcid = t.get("tool_call_id") or ""
-        call = calls.get(tcid)
+        call = at.get(t["run_seq"])
         if call is None or d.get("tool_use_id") != tcid:
             return f"the record is not about tool call {tcid}"
         if call["decision"]["event"]["data"]["tool"] != ev["tool"]:
@@ -424,7 +435,7 @@ def check(run: Run, records: Dict[str, List[Dict[str, Any]]]):
     each time); an event the runtime cites must cite; every decision, result, observed input and model call of a
     cited run must be cited, so a log that drops one is caught."""
     index = {(r["event"]["run_id"], r["event"]["run_seq"]): r for recs in records.values() for r in recs}
-    calls = {rid: _calls(recs) for rid, recs in records.items()}
+    at = {rid: _at(_calls(recs)) for rid, recs in records.items()}
     cited = sorted({ev["tracekit"]["run_id"] for ev in run.events if ev.get("tracekit")})
     has_task = any(_is_task(ev) for ev in run.events)
     task = [cite(r) for rid in cited for r in records.get(rid, []) if _task_rec(r)] if has_task else []
@@ -450,7 +461,7 @@ def check(run: Run, records: Dict[str, List[Dict[str, Any]]]):
             continue
         for c in [t] + ([t["decision"]] if isinstance(t.get("decision"), dict) else []):
             citers.setdefault((c.get("run_id"), c.get("run_seq")), []).append(i)
-        problem = _mismatch(ev, t, index, calls.get(t["run_id"], {}), _agent(records.get(t["run_id"], [])), results)
+        problem = _mismatch(ev, t, index, at.get(t["run_id"], {}), _agent(records.get(t["run_id"], [])), results)
         if problem:
             problems[i] = problem
     for (rid, seq), idx in citers.items():
@@ -483,7 +494,7 @@ def merge(run: Run, records: Dict[str, List[Dict[str, Any]]], out_dir: str,
     problems, alerts, task = check(run, records)
     w = _Writer(out_dir, run.run_id)
     index = {(r["event"]["run_id"], r["event"]["run_seq"]): r for recs in records.values() for r in recs}
-    calls = {rid: _calls(recs) for rid, recs in records.items()}
+    at = {rid: _at(_calls(recs)) for rid, recs in records.items()}
     event_of = {(ev["tracekit"]["run_id"], ev["tracekit"]["run_seq"]): ev["id"]
                 for ev in run.events if ev.get("tracekit")}
     cited = sorted({ev["tracekit"]["run_id"] for ev in run.events if ev.get("tracekit")})
@@ -498,7 +509,7 @@ def merge(run: Run, records: Dict[str, List[Dict[str, Any]]], out_dir: str,
             rec = index[(t["run_id"], t["run_seq"])]
             ev["tracekit"] = {**cite(rec), **{k: t[k] for k in ("tool_call_id", "error") if k in t}}
             if ev["type"] == "action":
-                call = calls[t["run_id"]][t["tool_call_id"]]
+                call = at[t["run_id"]][t["run_seq"]]
                 if rec["event"]["type"] == "tool.result":
                     ev["tracekit"]["decision"] = cite(call["decision"])
                 ev["policy"] = _policy(call, reasons)

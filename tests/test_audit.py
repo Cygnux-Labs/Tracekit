@@ -142,6 +142,15 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(report["by_rule"], {"TK-ENGINE-ERROR": 1})
         self.assertEqual(report["skipped_malformed"], 0)
 
+    def test_each_call_is_decided_as_the_signer_decides_it(self):
+        """The 1.6.0 review: audit decided a call on its name alone, so mcp__<server>__<tool> missed the rules on
+        mcp:<server>/<tool> and on the tool's bare name, and Claude Code's PowerShell tool missed the shell rules."""
+        _write_jsonl(self.root / "s.jsonl", [_call("mcp__acme__tracekit_demo_ask", {"x": 1}),
+                                             _call("PowerShell", {"command": "rm -rf /"})])
+        report = audit.audit(str(self.root))
+        self.assertEqual([c["verdict"] for c in report["calls"]], ["ask", "deny"])
+        self.assertEqual(report["counts"], {"deny": 1, "ask": 1, "flag": 0, "allow": 0})
+
     def test_a_line_nested_past_what_json_takes_is_malformed_and_the_rest_is_read(self):
         """Review of 1.5.3: its RecursionError made the whole file unreadable, its calls uncounted."""
         _write_jsonl(self.root / "s.jsonl", ["[" * 5000 + "]" * 5000, _call("Bash", {"command": "ls"})])

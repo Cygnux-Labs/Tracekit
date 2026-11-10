@@ -56,8 +56,23 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                                   "plainly."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
+                           "readings": {"reason": "a command's expansions combine in more ways than the policy reads",
+                                        "remedy": "Write the word plainly, or give its variables their values earlier on "
+                                                  "the line."},
+                           "assigns": {"reason": "an expansion or arithmetic on the line sets a variable, or a nameref or "
+                                                 "${!X@} names one, so the policy can't follow its value",
+                                       "remedy": "Give the variable its value with a plain assignment (`F=value;`) before "
+                                                 "the commands that use it."},
+                           "split": {"reason": "an unquoted expansion may split its word where the policy can't follow (at "
+                                               "an IFS the line sets, or a blank given later in a loop)",
+                                     "remedy": "Quote the expansion (\"$X\"), or write the words plainly."},
                            "quote": {"reason": "a quote on the line is never closed",
                                      "remedy": "Close the quote."},
+                           "body": {"reason": "it updates a git ref through GitHub's API with a body the policy can't "
+                                              "read (a file, input or variable), which may force it",
+                                    "remedy": "Give the update's fields on the line (-f sha=…), without force."},
+                           "budget": {"reason": "the line is too long or too complex for the policy to read all of it",
+                                      "remedy": "Split it into shorter calls, or write repeated commands as a loop."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
                                       "remedy": "Split it into plain commands; pipes, &&, if, for, case and functions "
                                                 "are read."}}},
@@ -201,9 +216,40 @@ def literals(pattern):
     return tuple(sorted(s for s in req if not any(t != s and t in s for t in req)))
 
 
+def requirements(pattern):
+    """A finer prefilter of a checked pattern whose top level holds a group of alternatives (`^(psql…|sqlite3…)`): per
+    alternative, each set of lower-case strings of two or more characters one of which every match through it holds
+    (literals() keeps one set of a sequence, and the union of the alternatives'), so a subject that holds a string of
+    each set of no alternative can't match; None for another pattern, or when an alternative has no such set."""
+    items = list(_sre_p.parse(pattern))
+    for k, (op, av) in enumerate(items):
+        if op == _sre_c.SUBPATTERN and len(av[-1]) == 1 and av[-1][0][0] == _sre_c.BRANCH:
+            alts = av[-1][0][1][1]
+        elif op == _sre_c.BRANCH:
+            alts = av[1]
+        else:
+            continue
+        out = []
+        for alt in alts:   # the group read as this alternative, in its place
+            exact, found = _found(items[:k] + list(alt) + items[k + 1:])
+            sets = [tuple(sorted(s)) for s in ([exact] if exact is not None else found) if min(map(len, s)) >= 2]
+            if not sets or not all(t.isascii() for one in sets for t in one):   # (a subject is read casefolded)
+                return None
+            out.append(tuple(sets))
+        return tuple(out)
+    return None
+
+
 def _seq(items):
     """(exact, required) of a sequence: every string it can match when that set is small (else None), and a set one of
     which every match contains (None: no such set)."""
+    exact, found = _found(items)
+    return (exact, None) if exact is not None else (None, max(found, key=lambda s: (min(map(len, s)), -len(s))))
+
+
+def _found(items):
+    """(exact, found) of a sequence: every string it can match when that set is small (else None), and else the sets
+    one string of each of which every match contains."""
     run, found, exact = {""}, [], True
     for op, av in items:
         ex, req = _node(op, av)
@@ -217,9 +263,9 @@ def _seq(items):
         if req is not None:
             found.append(req)
     if exact:
-        return frozenset(run), None
+        return frozenset(run), []
     found.append(run)
-    return None, max(found, key=lambda s: (min(map(len, s)), -len(s)))
+    return None, found
 
 
 def _node(op, av):

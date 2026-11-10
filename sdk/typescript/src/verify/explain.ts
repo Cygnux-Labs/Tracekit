@@ -3,7 +3,8 @@
  * mean, what to do next, a line per check on what it means (docs/verdicts.md, shortened), and a summary of the bundle's
  * runs. The report itself is the CLI's, unchanged: this module only reads it. No DOM, so Node tests it.
  */
-import { type Check, EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatReport, runFiles } from "./index.js";
+import { type Check, EXIT_FAIL, EXIT_OK, NOT_RATED, type Report, VERSION, clean, formatReport, runFiles }
+  from "./index.js";
 
 type J = any;
 export type Names = { bundle: string; trust: string | null };
@@ -18,8 +19,8 @@ const TRUST_FILE = "the sender's trust file: a small .json that names their sign
 
 /** The report as `tracekit verify --json` prints it (cli.ts prints this). */
 export const asJson = (rep: Report, code: number) => ({ exit_code: code, checks: rep.checks, failures: rep.failures,
-  warnings: rep.warnings, integrity: rep.integrity, assurance: rep.assurance, notes: rep.notes,
-  ...rep.findings ? { findings: rep.findings } : {} });
+  warnings: rep.warnings, integrity: rep.integrity, assurance: code === EXIT_FAIL ? NOT_RATED : rep.assurance,
+  notes: rep.notes, ...rep.findings ? { findings: rep.findings } : {} });
 
 /** The report as `tracekit verify` prints it, then its exit code. */
 export const asText = (rep: Report, code: number) => formatReport(rep) + `\nExit code ${code}`
@@ -249,6 +250,8 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
   "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
   "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "
     + "record." },
+  "verifier minimum": { warn: "The bundle's manifest, which isn't signed, asks for an older verifier than its records "
+    + "need: an older verifier may have claimed more than they show. This one read every record." },
   "gateway amendments": {
     pass: "Requests the LLM gateway changed so the provider shows its reasoning; each record commits to the request "
       + "as sent.",

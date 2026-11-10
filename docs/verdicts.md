@@ -69,7 +69,8 @@ Findings: 2 finding(s) (1 high, 1 medium) and 1 coverage review(s); 3 independen
 Each line is `PASS`, `WARN` or `FAIL`. A `FAIL` line says what failed: a line that counts problems reads `n problem(s)
 in ...` (for example `[FAIL] signatures — 1 problem(s) in 336 record(s)`), and the indented lines under it name each
 one, records by their log `seq`. A failed bundle's printed line is `Assurance: not rated (the bundle failed
-verification).`: a level rates only evidence that verified (`--json` keeps the level the checkpoint has). `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
+verification).`: a level rates only evidence that verified, so `--json` gives the same text as its `"assurance"` (a v1
+bundle's `--json` keeps its level). `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
 "integrity", "assurance", "notes"}`, with `"findings"` when there is a Findings line. The algorithm behind each line is in [format v2](format-v2.md#11-verification-algorithm);
 this page says what each one means, and what it does not. The v1 report is described in [signing](signing.md).
 
@@ -78,7 +79,7 @@ this page says what each one means, and what it does not. The v1 report is descr
 | Code | When |
 |---|---|
 | 0 | no line failed |
-| 1 | at least one line failed: `Integrity: FAILED` |
+| 1 | at least one line failed: `Integrity: FAILED` (a v1 bundle's reads `Integrity: VERIFICATION FAILED`) |
 | 2 | the trust config or the bundle could not be used at all (`UNVERIFIABLE (the trust file can't be used)`, `UNUSABLE BUNDLE`, `UNVERIFIABLE`), or the flags were wrong |
 | 3 | `--strict` and no line failed but at least one is a warning |
 
@@ -104,7 +105,7 @@ accepts a v2 bundle only when verification with that trust config succeeds. For 
 `witness`; the action checks the v1 `trust root` result.
 
 ```yaml
-- uses: Cygnux-Labs/Tracekit@v1.5.3   # a release tag or its commit SHA, not main
+- uses: Cygnux-Labs/Tracekit@v1.6.0   # a release tag or its commit SHA, not main
   with:
     bundle: run.tkb
     trust: .tracekit/trust.json
@@ -186,7 +187,7 @@ The first word is the level; the rest lists what it rests on.
 
 | Level | When |
 |---|---|
-| `dev` | no pinned witness cosigned the checkpoint and no pinned anchor verified, **or** the bundle holds a self-approval |
+| `dev` | no pinned witness cosigned the checkpoint and no pinned anchor verified, **or** the bundle holds a self-approval (an answer, or an [intent grant](intent-grants.md#who-may-issue-a-grant), from the run's own user) |
 | `local` | only `operator`-class witnesses or anchors vouch for the checkpoint |
 | `witnessed` | at least `max(1, witnesses_required)` independent (non-`operator`) cosignatures or anchors |
 
@@ -247,6 +248,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `openshell policy` | `ext.openshell.policy` is on anything but a signer-written `ext` record with OpenShell's name for the change and the observer: the signer never writes that. It passes otherwise: `OpenShell changed the sandbox policy or configuration n time(s) (approved: n, ...), as OpenShell reported it`, from the [OpenShell middleware's OCSF import](integrations/openshell.md#openshells-ocsf-events) | that OpenShell's report is true, or complete: it is what OpenShell said |
 | `intent grants` | fails when a released payment breaks its grant: outside its caveats or past a limit, after the grant was revoked or expired, of a tool the grant doesn't cover, an amount or totals that aren't whole numbers, totals that don't add up, or a tier that isn't its record's; when its grant isn't in the bundle earlier in its run, or is only in a grant record no signer writes; and when a decision flagged `TK-GRANT` names no grant. Warns when any other grant, revocation or release record isn't as the signer writes them (a grant that isn't a person's for its own run, with no release under it). It passes otherwise: `n grant(s) by alice` (and how many were self-approved, issued by the run's own user, which the agent can be), the revocations, and the payments released at T2 and at T1, each re-checked against its grant and its running totals ([intent grants](intent-grants.md)) | that a payment was right to make: it was within what the person granted |
 | `boxed agent` | `ext.box` is on anything but a `run.registered` under a uid's identity, or isn't a box label the signer writes ({id, image_digest, allow, engine `firecracker`, channel `agent`}): no claim is made, and the short result says `NOT SHOWN`. It passes otherwise, for the runs the bundle holds (not a run-set's records of other runs) of a [Tracekit Box](limits.md#tracekit-box-experimental) box and its agent's channel: `PROOF AGAINST THE BOXED AGENT (micro-VM): the signing key was outside its box for this run.`, then that an agent run's records are its own account and the box's doors (its connections and file writes) are the record of what it could do, to review what the box wrote before running it, and `anchored by <witness> at <time>` for each pinned cosignature. The short result prints these lines in place of the general claim, never `PROOF AGAINST THE AGENT` for a box's run | that the agent's records are true or complete, or anything about a process running as the Box daemon's or the signer's user on the host |
+| `verifier minimum` | the manifest's `verifier_min_version` is below what the records need (1.6 recomputes it, as export does): the manifest isn't signed, so it was edited down, and an older verifier given this bundle may have claimed more than its records show (a self-issued grant read as witnessed, signed findings unchecked). The problems name the records that need more | that this verifier's report is wrong: it read every record |
 | `not interpreted` | records carry an ext name (format 1.4's non-critical slot) this verifier doesn't check, one line per name for the first 20 (`n record(s) carry ext.<name>`), then one line for the rest (`n more ext name(s)`). They verified like every record (signature, chain, inclusion); what the name says is not checked. `tracekit >= x checks it` names a verifier that does (from the manifest, advisory) | that anything is wrong: a later Tracekit wrote something this verifier doesn't read |
 | `external decisions` | another policy system's imported decision (`policy.external`) disagreed with the signer's for the same call (or named another tool, or a call the signer never decided), recorded as `capture.gap{decision_mismatch}`; the line also counts imports by system and by verified signature | that either decision was wrong: the signer's decision is the one that applied |
 
