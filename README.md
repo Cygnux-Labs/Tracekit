@@ -40,10 +40,10 @@ Tracekit sits in the tool-call path, the way a flight recorder sits in a plane:
 |---|---|
 | **Stop** | Checks every tool call *before it runs*: allow, deny, or hold it for a person. An approval covers exactly the arguments that were approved, once. |
 | **Record** | Signs every call, decision and result into a hash chain held by a signer the agent can't reach. A lost event becomes a signed gap, never silence. |
-| **Prove** | Exports each run as one `.tkb` file. Anyone can verify it offline, even in a browser, and see `VERIFIED` or `FAILED at record 7`. |
+| **Prove** | Exports each run as one `.tkb` file. Anyone can verify it offline, even in a browser, and see `VERIFIED`, or `FAILED` with the record that was changed. |
 
 Here is one run, recorded both ways. A support ticket hides an instruction; the agent deletes 43 orders, then rewrites
-its own log so the delete reads as a lookup:
+its own log and Tracekit's record so the delete reads as a lookup:
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/cover-up-dark.png">
@@ -164,8 +164,8 @@ Setup guides: [coding agents](https://github.com/Cygnux-Labs/Tracekit/wiki/Codin
 [full list](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations)
 
 Sandboxes: Tracekit holds Claude Code's unsandboxed retries and Gemini CLI's sandbox expansions for a person, decides
-each request that sandbox-runtime's proxy or NVIDIA OpenShell lets out, and signs each decision agentsh logs into the
-same run.
+each request that sandbox-runtime's proxy or NVIDIA OpenShell lets out, and signs each decision agentsh logs, in a run
+of its own.
 
 </details>
 
@@ -250,7 +250,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up, and
 
 That last row is on purpose. **Policy rules are tripwires, not a wall.** They match text, and a determined agent can
 reword a command. What makes the record trustworthy is the signer's isolation and the witness, and those are what the
-first three rows measure.
+first two rows measure.
 [Every experiment](https://github.com/Cygnux-Labs/Tracekit/wiki/Evaluation) ·
 [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md) ·
 [paper](https://arxiv.org/abs/2609.35659).
@@ -310,7 +310,7 @@ tracekit doctor                             # check your setup
 Whoever checks a run needs nothing installed: the
 [browser verifier](https://github.com/Cygnux-Labs/Tracekit/wiki/Verdicts#verify-in-your-browser) takes the `.tkb`,
 sends nothing anywhere, and says VERIFIED, FAILED or UNVERIFIABLE. In CI:
-`uses: Cygnux-Labs/Tracekit@main` with `bundle:` and `trust:`.
+`uses: Cygnux-Labs/Tracekit@v1.6.0` with `bundle:` and `trust:`.
 `require-anchor` defaults to `true`, so an unanchored bundle fails the step; set `require-anchor: "false"` to only
 report it.
 
