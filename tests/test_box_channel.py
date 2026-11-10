@@ -416,7 +416,7 @@ class TestContractVersion(unittest.TestCase):
     test_only_for_a_box_run), and a version 20 signer refuses both, so the client gets no label."""
 
     def test_version_21_adds_optional_fields_and_one_method(self):
-        self.assertEqual(rpc_schema.RPC_VERSION, 21)
+        self.assertGreaterEqual(rpc_schema.RPC_VERSION, 21)   # 22 adds intent grants
         self.assertEqual(rpc_schema.RPC_MIN, 15)
         self.assertNotIn("box", REQUESTS["register_run"]["required"])
         self.assertEqual(rpc_schema.validate(REQUESTS["register_run"], {"request_id": "r", "agent": {"name": "a"}}), [])
@@ -503,7 +503,10 @@ class TestEndToEnd(unittest.TestCase):
             "PROOF AGAINST THE BOXED AGENT (micro-VM): the signing key was outside its box for this run.",
             "This run's records are the agent's own account of its calls; the box's doors (its connections and file "
             "writes) are the record of what it could do.",
-            "Before you run anything the box wrote, review it: code you run on this machine can reach the key."])
+            "Before you run anything the box wrote, review it: code you run on this machine can reach the key.",
+            "NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could "
+            "rewrite it unseen (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).",
+            f"Pinned log key SHA-256 fingerprint: {rep.log_fingerprint}."])
 
 
 class TestVerifier(unittest.TestCase):

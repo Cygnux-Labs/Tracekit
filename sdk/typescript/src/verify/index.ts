@@ -12,8 +12,10 @@
  * Monitor reports, revocations and the v1 format bridge are inputs of the reference's CLI that this one doesn't take.
  * A bundle that needs a newer verifier is UNVERIFIABLE, with the commands that verify it; one whose records carry ext
  * names this verifier doesn't interpret (format 1.4's non-critical slot) verifies, with a `not interpreted` warning
- * per name; it interprets `amended` (the fields an LLM gateway changed in a request to show reasoning) and
- * `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import).
+ * per name; it interprets `amended` (the fields an LLM gateway changed in a request to show reasoning),
+ * `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import), `box` (a
+ * Tracekit Box box's run label) and `intent.grant`, `intent.revoked` and `grant` (intent grants and the calls they
+ * released).
  * `verify(bundle, null)` (no trust config) checks what needs no pinned key and is never VERIFIED. web.ts is this
  * verifier as a browser page (verify.html).
  */
@@ -25,12 +27,16 @@ import {
 import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
 import { BadZipFile, MAX_ENTRY, Unusable, readZip } from "./zip.js";
+import VERSIONS_JSON from "./versions.json" with { type: "json" };
 
 export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
-/** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
-export const VERSION = "1.5.3";
+/** This verifier's release (the package's). */
+export const VERSION = "1.6.0";
+/** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
+ * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
+export const READS = "1.6.0";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -284,7 +290,7 @@ export async function verify(bundle: Uint8Array, trust: Uint8Array | null,
     const need = manifest.verifier_min_version;
     if (!(typeof need === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(need)))
       throw new Unusable("verifier_min_version is not a version number");
-    if (newer(need, VERSION)) {
+    if (newer(need, READS)) {
       rep.integrity = `UNVERIFIABLE (needs tracekit >= ${need})`;
       rep.check("bundle readable", false, rep.integrity, upgrade(need, names));
       return { report: rep, code: EXIT_BAD };
@@ -382,11 +388,11 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
 
   /** Signature, schema and log membership of one record under `keys`, the SPKIs valid at its position. */
   const checkRecord = async (r: J, keys: Uint8Array[], problems: string[]) => {
-    const err = await verifyRecord(r, keys, trust.algs);
+    const err = await verifyRecord(r, keys, trust.algs, floats);
     if (err) {
       const seq = err === "unknown kid" ? get(r.event, "seq") : null;   // a well-formed record by then
       const retired = [...timeline.values()].filter((k) => Number.isInteger(seq) && k.until !== null && k.until < seq);
-      if (retired.length && !await verifyRecord(r, retired.map((k) => k.spki), trust.algs))
+      if (retired.length && !await verifyRecord(r, retired.map((k) => k.spki), trust.algs, floats))
         problems.push(`seq ${seq}: signed by key ${cut(r.kid, 80)} after its key.retire`);
       else problems.push(`seq ${repr(get(get(r, "event", {}), "seq"))}: ${err}`);
       return;
@@ -415,18 +421,22 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
           keyProblems.push(`seq ${e.seq}: key ${cut(str(k.kid), 80)} has no certificate, and the trust config pins issuers`);
           continue;
         }
+        if (has(k, "cert") && !trust.issuers.length) {   // §11 step 5: no pinned issuer can have signed it
+          keyProblems.push(`seq ${e.seq}: key ${cut(str(k.kid), 80)}: certificate not signed by a pinned issuer`);
+          continue;
+        }
         // lean: a certified key is taken as declared and the bundle left UNVERIFIABLE; port docs/issuer.md's checks
         // (issuance log notes, validity, tenants, revocations) when certified record keys are in use
         if (has(k, "cert")) rep.unsupport("record-key certificates");
         declared.set(k.kid, { spki: der, from: e.seq, until: null });
       }
     }
-    await checkRecord(r, [...keysAt(e.seq), ...[...declared.values()].map((k) => k.spki)], keyProblems);
-    if (e.type === "key.retire") {
+    if (e.type === "key.retire") {   // first: a key.retire is a record too, valid only under a key valid at its seq
       const kid = at(at(e, "data"), "kid");
       if (!timeline.has(kid)) keyProblems.push(`seq ${e.seq}: retires an unknown key`);
       else timeline.get(kid)!.until = at(e.data, "last_seq");
     }
+    await checkRecord(r, [...keysAt(e.seq), ...[...declared.values()].map((k) => k.spki)], keyProblems);
     for (const [kid, k] of declared) timeline.set(kid, k);
   }
 
@@ -524,7 +534,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   rep.integrity = !open.length ? "VERIFIED" : only ? `VERIFIED TO HEAD ${str(get(open[0].at(-1).event, "run_seq"))} (open)`
     : `VERIFIED (${open.length} run(s) open)`;
   const events = every.map((r) => r.event), typed = (t: string) => events.filter((e) => get(e, "type") === t);
-  const selfApproved = typed("approval").some((e) => get(at(e, "data"), "self_approved") === true);
+  // a grant the run's own user issued (intent.grant) approves the calls it releases: a self-approval too
+  const selfApproved = [...typed("approval"), ...typed("ext").filter((e) => get(at(e, "data"), "name") === "intent.grant")]
+    .some((e) => get(at(e, "data"), "self_approved") === true);
   const gaps = (k: string) => typed("capture.gap").filter((e) => get(at(e, "data"), "kind") === k)
     .map((e) => `seq ${e.seq}: ${cut(str(get(e.data, "reason")), 200)}`);
   const against = gaps("executed_against_policy");
@@ -663,8 +675,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   rep.anchored = [...cosigs].sort((a, b) => a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0)
     .map(([k, ts]) => `${k.split("+")[0]} (${witnesses.get(k)}) at ${fmt(ts)}`);
   rep.firsts = new Set(firsts.map((e) => at(e, "seq")));
-  checkExt(rep,[...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event]))
-    .values()], get(manifest, "verifier_version"));
+  const all = [...new Map([...keyRecords, ...pointed, ...every].map((r) => [at(at(r, "event"), "seq"), r.event])).values()];
+  await checkExt(rep, all, get(manifest, "verifier_version"), floats);
+  checkMinimum(rep, all, [...files.keys()], str(get(manifest, "verifier_min_version")));
 }
 
 /**
@@ -764,12 +777,306 @@ function checkBox(rep: Report, events: J[]) {
   ...rep.anchored.map((a) => `anchored by ${a}`)]);
 }
 
+/** Whether the parser read `o[k]` as a number token with a fraction or exponent: Python's float, never an int. */
+const isFloat = (floats: Floats, o: J, k: string | number) => !!floats.get(o)?.has(k);
+const NO_FLOATS: Floats = new WeakMap();   // for values this verifier computed
+/** A number as Python prints it: a float-written whole number with `.0`. */
+// lean: integral floats below 1e16 only; Python's repr of others (1e+16, 1e-05) differs from JavaScript's
+const pyNum = (v: number, float: boolean) => float && Number.isInteger(v) && Math.abs(v) < 1e16 ? `${v}.0` : JSON.stringify(v);
+/** Python's json.dumps(v), as the reference's messages print values: ", " and ": " between items, and every character
+ * past ASCII escaped; `float`: v was written as a float. */
+function dumps(v: J, floats = NO_FLOATS, float = false): string {
+  if (Array.isArray(v)) return `[${v.map((x, i) => dumps(x, floats, isFloat(floats, v, i))).join(", ")}]`;
+  if (isObj(v)) return `{${Object.entries(v).map(([k, x]) => `${dumps(k)}: ${dumps(x, floats, isFloat(floats, v, k))}`)
+    .join(", ")}}`;
+  if (typeof v === "number") return pyNum(v, float);
+  return JSON.stringify(v).replace(/[\x7f-\uffff]/g, (c) => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+}
+/** Python's str(v), as an f-string prints a value: a list or an object with its items' repr (`['g-1', None]`). */
+function pyStr(v: J, floats = NO_FLOATS, float = false): string {
+  const item = (x: J, f: boolean) => typeof x === "string" ? quoted(x) : pyStr(x, floats, f);
+  return Array.isArray(v) ? `[${v.map((x, i) => item(x, isFloat(floats, v, i))).join(", ")}]`
+    : isObj(v) ? `{${Object.entries(v).map(([k, x]) => `${quoted(k)}: ${item(x, isFloat(floats, v, k))}`).join(", ")}}`
+      : typeof v === "number" ? pyNum(v, float) : str(v);
+}
+
+// intent grants (docs/intent-grants.md), as tracekit/grants.py and tracekit/pcm read them; payments are the one intent
+/** The minor units of each currency an amount is shown in (grants.DECIMALS). */
+const DECIMALS: Record<string, number> = { USD: 2, EUR: 2, GBP: 2, INR: 2, CAD: 2, AUD: 2, CHF: 2, SGD: 2, JPY: 0,
+  USDC: 6, USDT: 6 };
+/** payment.send's schema document (grants.PAYMENT): a grant's intent names its hash. */
+const PAYMENT = { pcm_schema: 0, name: "payment.send", grant: true, fields: {
+  amount: { type: "int", min: 1, max: Number.MAX_SAFE_INTEGER },
+  currency: { type: "id", pattern: "[A-Z][A-Z0-9]{2,9}" },
+  payee: { type: "id", pattern: "[A-Za-z0-9._:@/+=-]{1,128}" } } } as const;
+const FIELDS: Record<string, J> = PAYMENT.fields;
+const CAVEAT_OPS: Record<string, string[]> = { int: ["==", "<=", ">=", "<", ">"], id: ["==", "in"] };
+const GRANT_KEYS = ["name", "id", "grant", "tools", "limits", "used", "self_approved", "first", "description"];
+const MAX_TOOLS = 16;   // the tools one grant names (grants.MAX_TOOLS)
+const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/, NAME_RE = /^[a-z][a-z0-9_]{0,63}$/;
+// rpc_schema.TS, whose \d Python's re reads as any decimal digit
+const TS_RE = /^\p{Nd}{4}-\p{Nd}{2}-\p{Nd}{2}T\p{Nd}{2}:\p{Nd}{2}:\p{Nd}{2}\.\p{Nd}{6}Z$/u;
+/** Whether `o` is an object with every key of `need` and no key outside `need` and `may` (a closed JSON Schema). */
+const shaped = (o: J, need: string[], may: string[] = []) => isObj(o) && need.every((k) => Object.hasOwn(o, k))
+  && Object.keys(o).every((k) => need.includes(k) || may.includes(k));
+/** Whether `v` is a string of at most `n` characters, all of it matching `re`. */
+const short = (v: J, n: number, re?: RegExp) => typeof v === "string" && [...v].length <= n && (!re || re.test(v));
+const opt = (o: J, k: string, ok: (v: J) => boolean) => !Object.hasOwn(o, k) || ok(o[k]);
+/** A PCM grant as rpc_schema.PCM_GRANT has it. */
+const isPcmGrant = (g: J, floats: Floats) => shaped(g, ["pcm_grant", "ts", "issuer", "subject", "intent", "caveats",
+  "expires_at", "delegable", "parent", "sig"]) && g.pcm_grant === 0 && !isFloat(floats, g, "pcm_grant")
+  && short(g.ts, 27, TS_RE) && short(g.expires_at, 27, TS_RE)
+  && shaped(g.issuer, ["kind", "id", "run", "tenant"], ["person", "approval_id"])
+  && ["person", "agent"].includes(g.issuer.kind) && short(g.issuer.id, 256) && opt(g.issuer, "person", (v) => short(v, 256))
+  && short(g.issuer.run, 128, ID_RE) && short(g.issuer.tenant, 128, ID_RE)
+  && opt(g.issuer, "approval_id", (v) => short(v, 128, ID_RE)) && short(g.subject, 256, /^[a-z0-9_]+:[^\n]+$/)
+  && short(g.intent, 136, /^[a-z][a-z0-9_.-]{0,63}@sha256:[0-9a-f]{64}$/) && Array.isArray(g.caveats)
+  && g.caveats.length <= 16 && g.caveats.every((c: J) => shaped(c, ["field", "op", "value"]) && short(c.field, 64, NAME_RE)
+    && ["==", "<=", ">=", "<", ">", "in"].includes(c.op)) && typeof g.delegable === "boolean"
+  && (g.parent === null || short(g.parent, 71, /^sha256:[0-9a-f]{64}$/))
+  && shaped(g.sig, ["key", "sig"]) && short(g.sig.key, 300) && g.sig.key !== "" && short(g.sig.sig, 88);
+/** A grant's limits as rpc_schema._LIMITS has them. */
+const isLimits = (v: J, floats: Floats) => Array.isArray(v) && v.length >= 1 && v.length <= 4 && v.every((x) =>
+  shaped(x, ["op", "max"], ["field"]) && ["sum", "count"].includes(x.op) && opt(x, "field", (f) => short(f, 64, NAME_RE))
+  && Number.isSafeInteger(x.max) && !isFloat(floats, x, "max") && x.max >= 1);
+/** pcm._FITS: whether `v` is a valid value of field `f`; `float`: v was written as a float, which is no int. */
+// lean: the int and id rules, the types payment.send uses; port the rest with an intent whose fields use them
+const fits = (f: J, v: J, float: boolean) => f.type === "int" ? Number.isInteger(v) && !float && f.min <= v && v <= f.max
+  : typeof v === "string" && [...v].length <= 128 && new RegExp(`^(?:${f.pattern})$`).test(v);
+/** pcm.check_args of payment.send: what is wrong with call `fields`, an object. */
+function argErrors(fields: J, floats: Floats): string[] {
+  const out = Object.keys(fields).filter((k) => !Object.hasOwn(FIELDS, k)).map((k) => `args.${k}: not in the schema`);
+  for (const [k, f] of Object.entries(FIELDS)) {
+    if (!Object.hasOwn(fields, k)) out.push(`args.${k}: missing`);
+    else if (!fits(f, fields[k], isFloat(floats, fields, k)))
+      out.push(`args.${k}: ${dumps(fields[k], floats, isFloat(floats, fields, k)).slice(0, 64)} is not a valid ${f.type}`);
+  }
+  return out;
+}
+/** A grant's short id (grants.grant_id): `g-` and the first 16 hex digits of its hash. */
+const grantId = async (g: J) => "g-" + (await sha256hex(bytes(canonicalize(g)))).slice(0, 16);
+
+/** grants.number: minor units as the number a person reads (`200`, `0.5`); the minor units for an unknown currency. */
+function number(minor: J, cur: J): string {
+  const d = typeof cur === "string" && Object.hasOwn(DECIMALS, cur) ? DECIMALS[cur] : null;
+  if (d === null || !Number.isInteger(minor)) return dumps(minor).slice(0, 32);
+  const frac = minor % 10 ** d;
+  return `${(minor - frac) / 10 ** d}` + (frac ? "." + String(frac).padStart(d, "0").replace(/0+$/, "") : "");
+}
+/** grants.show: minor units as a person reads them (`200 USDC`), by name for an unknown currency. */
+const show = (minor: J, cur: J) => `${number(minor, cur)} `
+  + (typeof cur === "string" && Object.hasOwn(DECIMALS, cur) && Number.isInteger(minor) ? cur : `${str(cur)} (minor units)`);
+
+/** grants.problems for a payment grant, as a verifier asks (no ceiling), of caveats and limits already of their shape;
+ * `tools`: the record's, the tools whose calls the grant covers. */
+function grantProblems(caveats: J[], limits: J[], tools: J, expiresAt: string, now: string, floats: Floats): string[] {
+  const out: string[] = [], pinned = new Map<string, J>(), seen = new Set<string>();
+  for (const c of caveats) {   // pcm.check_caveats
+    const f = Object.hasOwn(FIELDS, c.field) ? FIELDS[c.field] : null, vals = c.op === "in" ? c.value : [c.value];
+    const said = `${c.field} ${c.op} ${dumps(c.value, floats, isFloat(floats, c, "value")).slice(0, 64)}`;
+    if (!f) out.push(`${said}: no field ${c.field} in payment.send`);
+    else if (!CAVEAT_OPS[f.type].includes(c.op)) out.push(`${said}: ${c.op} does not apply to a ${f.type} field`);
+    else if (!(Array.isArray(vals) && vals.length >= 1 && vals.length <= 64 && vals.every((x, i) => fits(f, x,
+      c.op === "in" ? isFloat(floats, vals, i) : isFloat(floats, c, "value"))) && new Set(vals).size === vals.length))
+      out.push(`${said}: not a valid ${f.type} value`);
+  }
+  if (!(Array.isArray(tools) && tools.length > 0 && tools.length <= MAX_TOOLS && new Set(tools).size === tools.length
+    && tools.every((t) => typeof t === "string" && t !== "" && [...t].length <= 256)))
+    out.push(`a grant names the tools whose calls it covers: 1 to ${MAX_TOOLS} distinct tool names`);
+  for (const c of caveats) if (c.op === "==" || c.op === "in") pinned.set(c.field, c);
+  const cur = pinned.get("currency");
+  if (cur?.op !== "==") out.push("a payment grant names its one currency (currency == USDC)");
+  else if (typeof cur.value === "string" && !Object.hasOwn(DECIMALS, cur.value))   // else check_caveats said it
+    out.push(`tracekit knows the units of ${Object.keys(DECIMALS).sort().join(", ")}; ${cur.value} isn't one of them`);
+  if (!pinned.has("payee")) out.push("a payment grant names its payees (payee in [...])");
+  for (const x of limits) {   // the rest of a limit's rule is its shape's (isLimits)
+    const k = JSON.stringify([x.op, x.field ?? null]);
+    const f = x.field ?? "amount";
+    if ((x.op === "sum") !== Object.hasOwn(x, "field") || !(Object.hasOwn(FIELDS, f) && FIELDS[f].type === "int"))
+      out.push(`limit ${dumps(x, floats).slice(0, 96)}: a limit is {op: sum, field, max} of a whole-number field (amount) `
+        + "or {op: count, max}, max a whole number above zero");
+    else if (seen.has(k)) out.push(`limit ${x.op} ${x.field ?? ""}: given twice`.replace(/  /g, " "));
+    seen.add(k);
+  }
+  if (!limits.some((x) => x.op === "sum" && x.field === "amount"))
+    out.push("a payment grant has a total (a sum limit of amount)");
+  const day = new Date(Date.parse(now.slice(0, 19) + "Z") + 86400_000).toISOString().slice(0, 19) + now.slice(19);
+  if (!(now < expiresAt && expiresAt <= day)) out.push(`expires_at ${expiresAt} is not in the next 24 h`);
+  return out;
+}
+
+/** grants._why: why `fields` break caveat `c`, in words. */
+function brokenBy(c: J, fields: J): string {
+  const v = get(fields, c.field), cur = get(fields, "currency");
+  if (c.field === "amount" && (c.op === "<=" || c.op === "<"))
+    return `amount ${show(v, cur)} is over ${show(c.value - Number(c.op === "<"), cur)} each`;
+  if (c.field === "amount" && (c.op === ">=" || c.op === ">"))
+    return `amount ${show(v, cur)} is under ${show(c.value + Number(c.op === ">"), cur)} each`;
+  const allowed: J[] = c.op === "in" ? c.value : [c.value];
+  return `${c.field} ${dumps(v).slice(0, 64)} is not ${allowed.length > 1 ? "one of " : ""}`
+    + allowed.slice(0, 8).map((x) => dumps(x).slice(0, 64)).join(", ")
+    + (allowed.length > 8 ? ` and ${allowed.length - 8} more` : "");
+}
+
+/**
+ * grants.check: [the totals after a call with `fields`, null] when grant `gid`'s entry `g` ({grant, limits, used,
+ * revoked}) releases it at `now`, else [null, why not]. Its caveats passed grantProblems and the fields argErrors, so
+ * each caveat compares values of one type (pcm.satisfies).
+ */
+function grantCheck(gid: string, g: J, fields: J, now: string): [J[] | null, string | null] {
+  if (g.revoked) return [null, `grant ${gid} was revoked`];
+  if (now >= g.grant.expires_at) return [null, `grant ${gid} expired at ${g.grant.expires_at}`];
+  for (const c of g.grant.caveats) {
+    const v = fields[c.field], w = c.value;
+    if (!(c.op === "in" ? w.includes(v) : c.op === "==" ? v === w : c.op === "<=" ? v <= w : c.op === "<" ? v < w
+      : c.op === ">=" ? v >= w : v > w)) return [null, `grant ${gid}: ${brokenBy(c, fields)}`];
+  }
+  const used = g.limits.map((x: J, i: number) => g.used[i] + (x.op === "sum" ? fields[x.field] : 1));
+  for (const [i, x] of g.limits.entries()) {
+    if (used[i] <= x.max) continue;
+    const before = g.used[i], cur = fields.currency;
+    return [null, `grant ${gid}: ` + (x.op === "count" ? `${str(before)} of ${x.max} payments made`
+      : `${number(before, cur)} of ${show(x.max, cur)} used; this call needs ${show(used[i] - before, cur)}`)];
+  }
+  return [used, null];
+}
+
+/**
+ * Why `e` is not an intent.grant record as the signer writes one (SignerService._grant_issue), or null: a PCM grant of
+ * payment.send (`payment`, its schema ref), issued by a person for this very run and tenant, never passed on, its id its
+ * hash's; caveats, tools and limits a grant may have, an expiry within 24 h of its issue; and its totals those of no
+ * call, or of the held call it was issued from (`first`), which must be within it.
+ */
+async function grantIssued(e: J, payment: string, floats: Floats): Promise<string | null> {
+  const d = get(e, "data");
+  if (get(e, "source") !== "signer" || !isObj(d) || !Object.keys(d).every((k) => GRANT_KEYS.includes(k))
+    || typeof get(d, "id") !== "string" || !Array.isArray(get(d, "used"))
+    || !d.used.every((u: J, i: number) => Number.isInteger(u) && !isFloat(floats, d.used, i)) || !isPcmGrant(get(d, "grant"), floats)
+    || !isLimits(get(d, "limits"), floats) || typeof get(d, "self_approved") !== "boolean")
+    return "an intent.grant record that is not as the signer writes one";
+  const g = d.grant;
+  if (g.intent !== payment) return `a grant of intent ${cut(g.intent, 80)}, which this verifier doesn't know`;
+  const id = await grantId(g);
+  if (d.id !== id) return `grant ${cut(d.id, 24)} is not its grant's id (${id})`;
+  if (g.issuer.kind !== "person" || g.issuer.run !== get(e, "run_id") || g.issuer.tenant !== get(e, "tenant")
+    || g.parent !== null || g.delegable !== false) return `grant ${id} is not a person's, for this run and tenant, kept to its run`;
+  const bad = grantProblems(g.caveats, d.limits, get(d, "tools"), g.expires_at, g.ts, floats);
+  if (bad.length) return `grant ${id}: ${cut(bad.join("; "), 300)}`;
+  let used: J[] | null = d.limits.map(() => 0);
+  const f = get(d, "first");
+  if (f !== null) {
+    const fields = isObj(f) ? get(f, "fields") : null;
+    if (!(isObj(fields) && !argErrors(fields, floats).length && typeof get(f, "approval_id") === "string"
+      && typeof get(f, "tool_call_id") === "string")) return `grant ${id}: its first use is not a held call's`;
+    const [after, why] = grantCheck(id, { grant: g, limits: d.limits, used, revoked: false }, fields, g.ts);
+    if (why) return `grant ${id} was issued from a held call outside it (${why})`;
+    used = after;
+  }
+  if (!same(d.used, used))
+    return `grant ${id} starts with totals ${dumps(d.used, floats).slice(0, 64)}, not ${dumps(used)}`;
+  if (Object.hasOwn(d, "description") && !short(d.description, 512))
+    return `grant ${id}: its description is not a string of at most 512 characters`;
+  return null;
+}
+
+/** Whether `e` is a decision whose rule ids name TK-GRANT: one a grant released, as its ext.grant must say. */
+const tkGrant = (e: J) => get(e, "type") === "policy.decision" && isObj(get(e, "data"))
+  && Array.isArray(get(e.data, "rule_ids")) && e.data.rule_ids.includes("TK-GRANT");
+
+/**
+ * intent.grant, intent.revoked and ext.grant (docs/intent-grants.md): the grants people issued for a run, their
+ * revocations, and the calls they released. Each grant is checked as grantIssued says; each released call against its
+ * grant, as the signer decided it: a policy.decision flagged with TK-GRANT, its grant recorded earlier in the same run
+ * and not revoked before it, decided before the grant expired, of a tool the grant covers, its fields those of the
+ * intent (whole numbers where they count) and within every caveat, its totals the previous call's plus its own, whole
+ * numbers within every limit, and its tier the record's (T2: an executor or gateway decided and ran the call; T1: the
+ * arguments the harness reported). A release that breaks its grant fails the line, and so does one whose grant the
+ * bundle doesn't hold earlier in its run, or holds only in a record a signer never writes, a decision flagged TK-GRANT
+ * without ext.grant, and a tier that isn't the record's: the records are the signer's own word that the call was within
+ * a person's grant. Any other record in a shape the signer never writes is a warning, as for every ext name. `events`
+ * also holds the decisions TK-GRANT names (checkExt); `floats`: the parser's, so a number written as a float is no whole
+ * number.
+ */
+export async function checkGrants(rep: Report, events: J[], floats: Floats) {
+  const payment = `payment.send@sha256:${await sha256hex(bytes(canonicalize(PAYMENT)))}`;
+  const live = new Map<string, J>(), invalid = new Set<string>(), bad: string[] = [], broken: string[] = [];
+  const issuers = new Set<string>();
+  const tiers: Record<string, number> = { T1: 0, T2: 0 };
+  let issued = 0, selfish = 0, revoked = 0;
+  const seq = (e: J) => Number.isInteger(get(e, "seq")) ? e.seq : -1;
+  for (const e of [...events].sort((a, b) => seq(a) - seq(b))) {
+    const where = `seq ${pyStr(get(e, "seq"), floats, isFloat(floats, e, "seq"))}`, d = get(e, "data");
+    const key = (id: string) => JSON.stringify([get(e, "tenant"), get(e, "run_id"), id]);   // a grant's id is a string
+    const name = get(e, "type") === "ext" && isObj(d) ? get(d, "name") : null;
+    if (name === "intent.grant") {
+      const why = await grantIssued(e, payment, floats);
+      if (why) {
+        bad.push(`${where}: ${why}`);
+        if (typeof get(d, "id") === "string") invalid.add(key(d.id));   // what it released is released under no valid grant
+        continue;
+      }
+      live.set(key(d.id), { grant: d.grant, tools: d.tools, limits: d.limits, used: d.used, revoked: false });
+      issued++;
+      selfish += Number(d.self_approved);
+      if (!d.self_approved) issuers.add(d.grant.issuer.person || d.grant.issuer.id);
+    } else if (name === "intent.revoked") {
+      const g = typeof get(d, "id") === "string" ? live.get(key(d.id)) : undefined;
+      if (get(e, "source") !== "signer" || !g || g.revoked) bad.push(`${where}: revokes no grant still live in its run`);
+      else {
+        g.revoked = true;
+        revoked++;
+      }
+    }
+    if (!(isObj(get(e, "ext")) && Object.hasOwn(e.ext, "grant"))) {
+      if (tkGrant(e))
+        broken.push(`${where}: a decision flagged TK-GRANT carries no ext.grant: it names no grant it was released under`);
+      continue;
+    }
+    const x = e.ext.grant, g = isObj(x) && typeof get(x, "id") === "string" ? live.get(key(x.id)) : undefined;
+    if (!(tkGrant(e) && get(d, "decision") === "flag" && shaped(x, ["id", "fields", "used", "tier"]))) {
+      bad.push(`${where}: ext.grant is not on a decision a grant released, as the signer writes it`);
+      continue;
+    }
+    const errs = !g ? [] : isObj(x.fields) ? argErrors(x.fields, floats) : ["not an object"];
+    if (!g && typeof x.id === "string" && invalid.has(key(x.id)))
+      broken.push(`${where}: released under grant ${cut(x.id, 24)}, whose record is not as the signer writes one`);
+    else if (!g) broken.push(`${where}: names grant ${cut(pyStr(x.id, floats, isFloat(floats, x, "id")), 24)}, which this `
+      + "bundle doesn't hold earlier in the run (export the whole run to check it)");
+    else if (errs.length) broken.push(`${where}: the fields it records are not a payment.send call's (${cut(errs[0], 120)})`);
+    else if (!g.tools.includes(get(d, "tool")))
+      broken.push(`${where}: released a call of ${dumps(get(d, "tool"), floats, isFloat(floats, d, "tool")).slice(0, 64)}, `
+        + `a tool grant ${x.id} doesn't cover`);
+    else {
+      const [used, why] = grantCheck(x.id, g, x.fields, get(e, "ts") || "");
+      if (why) broken.push(`${where}: released a call the grant holds (${why})`);
+      else if (!(Array.isArray(x.used) && x.used.every((u: J, i: number) => Number.isInteger(u) && !isFloat(floats, x.used, i))
+        && same(x.used, used)))
+        broken.push(`${where}: records totals ${dumps(x.used, floats).slice(0, 64)}, not ${dumps(used)}`);
+      else if (x.tier !== (get(e, "tier") === "T2" ? "T2" : "T1"))
+        broken.push(`${where}: says tier ${cut(pyStr(x.tier, floats, isFloat(floats, x, "tier")), 8)}, the record `
+          + (truthy(get(e, "tier")) ? pyStr(e.tier, floats, isFloat(floats, e, "tier")) : "T1"));
+      else {
+        g.used = used;
+        tiers[x.tier]++;
+      }
+    }
+  }
+  rep.check("intent grants", !bad.length && !broken.length, `${issued} grant(s)`
+    + (issuers.size ? ` by ${cut([...issuers].sort(byCodePoint).join(", "), 200)}` : "")
+    + (selfish ? ` (${selfish} self-approved: issued by the run's own user, which the agent can be)` : "")
+    + (revoked ? `, ${revoked} revoked` : "") + `; ${tiers.T1 + tiers.T2} call(s) released within them (${tiers.T2} at `
+    + `T2, decided and run by an executor or gateway; ${tiers.T1} at T1, on the arguments the harness reported), each `
+    + "re-checked against its grant and its running totals", [...broken, ...bad].slice(0, 20), !broken.length);
+}
+
+type ExtCheck = (rep: Report, events: J[], floats: Floats) => void | Promise<void>;
 /**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
- * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9).
+ * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9). Names that
+ * share a check are read together, once: a grant, its revocation and the calls it released.
  */
-const EXT_CHECKS = new Map<string, (rep: Report, events: J[]) => void>([["amended", checkAmended],
-  ["openshell.policy", checkOpenshellPolicy], ["box", checkBox]]);
+const EXT_CHECKS = new Map<string, ExtCheck>([["amended", checkAmended], ["openshell.policy", checkOpenshellPolicy],
+  ["box", checkBox], ["intent.grant", checkGrants], ["intent.revoked", checkGrants], ["grant", checkGrants]]);
 const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
 /** A run's problems past which its later records go unchecked: forged records cost a verifier little. */
 const RUN_PROBLEMS = 20;
@@ -778,24 +1085,89 @@ const RUN_PROBLEMS = 20;
 const extNames = (e: J): J[] => [...Object.keys(isObj(get(e, "ext")) ? e.ext : {}),
   ...get(e, "type") === "ext" ? [at(at(e, "data"), "name")] : []];
 
+// what records need of a verifier, as tracekit/bundle_v2.py's needs and raised_by read its VERSIONS (versions.json is a
+// copy, which tests/test_ts_verifier.py holds to it): the version that added the ext slot, and how an ext name is marked
+type Row = { types: string[]; fields: Record<string, string[]>; values: Record<string, Record<string, J[]>>;
+  ext?: string[]; layout?: string[] };
+const ROWS = VERSIONS_JSON as Record<string, Row>, EXT_SLOT = "1.4.0", EXT_NAME = "ext name ";
+const usesSlot = (e: J) => Object.hasOwn(e, "ext") || get(e, "type") === "ext";
+
+/** The entries of `row` that `e` uses: `type`, `type.field`, `type.field=value` (by type too) and EXT_NAME + name. */
+function entries(e: J, row: Row): string[] {
+  const typ = str(get(e, "type")), data = isObj(get(e, "data")) ? e.data : {};
+  return [...row.types.includes(typ) ? [typ] : [],
+    ...(row.fields[typ] ?? []).filter((f) => Object.hasOwn(data, f)).map((f) => `${typ}.${f}`),
+    ...Object.entries(row.values[typ] ?? {}).filter(([f, vs]) => Object.hasOwn(data, f) && vs.some((v) => v === data[f]))
+      .map(([f]) => `${typ}.${f}=${str(data[f])}`),
+    ...extNames(e).filter((n) => (row.ext ?? []).includes(n as string)).map((n) => EXT_NAME + str(n))];
+}
+
+/** The verifier_min_version records `events` in `layout` need: the newest row whose entries other than ext names they
+ * use, EXT_SLOT at least when one uses the slot. */
+function needs(events: J[], layout: string[]): string {
+  const order = ["1.0.0", ...Object.keys(ROWS)];
+  let need = "1.0.0";
+  for (const [version, row] of Object.entries(ROWS))
+    if (layout.some((x) => (row.layout ?? []).includes(x))
+      || events.some((e) => entries(e, row).some((x) => !x.startsWith(EXT_NAME)))) need = version;
+  return events.some(usesSlot) && order.indexOf(need) < order.indexOf(EXT_SLOT) ? EXT_SLOT : need;
+}
+
+/** What makes `events` in `layout` need `version`, with the seqs of the records (the first five). */
+function raisedBy(events: J[], version: string, layout: string[]): string[] {
+  const seqs = new Map<string, J[]>();
+  for (const e of events)
+    for (const x of [...entries(e, ROWS[version] ?? { types: [], fields: {}, values: {} }).filter((x) => !x.startsWith(EXT_NAME)),
+      ...version === EXT_SLOT && usesSlot(e) ? ["ext"] : []]) {
+      if (!seqs.has(x)) seqs.set(x, []);
+      seqs.get(x)!.push(get(e, "seq"));
+    }
+  return [...[...seqs].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([x, s]) => `${x}: seq ${s.slice(0, 5).map(str)
+    .join(", ")}` + (s.length > 5 ? ` and ${s.length - 5} more` : "")),
+  ...layout.filter((x) => (ROWS[version]?.layout ?? []).includes(x))];
+}
+
+/** `verifier minimum`, a warning only when the manifest's verifier_min_version (`said`) is below what the records and
+ * the layout of `names` need: the manifest is never signed, and edited down it lets an older verifier claim more. A
+ * record it can't read (no type, data or seq: other checks fail it) needs nothing. */
+function checkMinimum(rep: Report, all: J[], names: string[], said: string) {
+  const events = all.filter((e) => isObj(e) && typeof e.type === "string" && Object.hasOwn(e, "seq") && isObj(e.data)
+    && (e.type !== "ext" || Object.hasOwn(e.data, "name")));
+  const layout = names.some((n) => PART.test(n)) ? ["run parts"] : [], need = needs(events, layout);
+  if (need !== "1.0.0" && newer(need, said))   // a row raised it (0.x bundles need the base)
+    rep.check("verifier minimum", false, `the records need tracekit >= ${need}, the manifest asks for ${said}: a verifier `
+      + `older than ${need} may have read this bundle and claimed more than its records show`,
+    raisedBy(events, need, layout).slice(0, 20), true);
+}
+
 /**
  * A line per ext name the records carry: its EXT_CHECKS check, or a `not interpreted` warning. The records were checked
- * like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version.
+ * like every other (signature, chain, inclusion); `full`: the manifest's advisory verifier_version; `floats`: the
+ * parser's.
  */
-function checkExt(rep: Report, events: J[], full: J) {
+export async function checkExt(rep: Report, events: J[], full: J, floats: Floats) {
   const carry = new Map<string, J[]>();   // name -> the events carrying it
   for (const e of events)
     for (const n of new Set(extNames(e).map((x) => cut(str(x), 64)))) {
       if (!carry.has(n)) carry.set(n, []);
       carry.get(n)!.push(e);
     }
-  const later = typeof full === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(full) && newer(full, VERSION)
+  const later = typeof full === "string" && /^\d{1,9}(\.\d{1,9}){0,2}$/.test(full) && newer(full, READS)
     ? `; tracekit >= ${full} checks it` : "";
   let shown = 0, more = 0;
+  const done = new Set<ExtCheck>();
+  // records a check reads beside its names' own: the decisions TK-GRANT names, ext.grant or not
+  const also = new Map<ExtCheck, J[]>([[checkGrants, events.filter(tkGrant)]]);
+  const run = async (f: ExtCheck) => {   // once, over the records of every name it reads and what it reads beside them
+    done.add(f);
+    await f(rep, [...new Set([...[...carry].filter(([k]) => EXT_CHECKS.get(k) === f).flatMap(([, v]) => v),
+      ...also.get(f) ?? []])], floats);
+  };
   for (const [n, es] of [...carry].sort(byKey)) {
     const interpret = EXT_CHECKS.get(n);
-    if (interpret) interpret(rep, es);
-    else if (shown < MAX_UNREAD) {
+    if (interpret) {
+      if (!done.has(interpret)) await run(interpret);
+    } else if (shown < MAX_UNREAD) {
       shown++;
       rep.check("not interpreted", false, `${es.length} record(s) carry ext.${n}: their signatures, chain and `
         + `inclusion are checked above; what ext.${n} means is not checked${later}`, [], true);
@@ -804,6 +1176,8 @@ function checkExt(rep: Report, events: J[], full: J) {
   if (more)
     rep.check("not interpreted", false, `${more} more ext name(s), on records whose signatures, chain and inclusion `
       + `are checked above; what they mean is not checked${later}`, [], true);
+  for (const [f, extra] of also)   // a check whose names no record carries reads what it reads beside them
+    if (extra.length && !done.has(f)) await run(f);
 }
 
 /** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
@@ -1138,10 +1512,11 @@ function honoured(events: J[], pointers: Set<string>): string[] {
 }
 
 /** §4: null when `r` is a v2 record signed by one of `keys` (SPKI DER) with an allowed algorithm that is the key's own,
- * else why not. */
-export async function verifyRecord(r: J, keys: Uint8Array[], algs: string[]): Promise<string | null> {
+ * else why not. `floats`: where the parser read number tokens with a fraction or exponent (`v` is the integer 2). */
+export async function verifyRecord(r: J, keys: Uint8Array[], algs: string[], floats?: Floats): Promise<string | null> {
   if (!isObj(r) || Object.keys(r).length !== 6 || !["v", "event", "hash", "alg", "kid", "sig"].every((k) => Object.hasOwn(r, k))
-      || !same(r.v, 2) || !isObj(r.event) || !["hash", "alg", "kid", "sig"].every((k) => typeof r[k] === "string"))
+      || !same(r.v, 2) || floats?.get(r)?.has("v") || !isObj(r.event)
+      || !["hash", "alg", "kid", "sig"].every((k) => typeof r[k] === "string"))
     return "not a v2 record";
   let h: string;
   try {
@@ -1353,9 +1728,11 @@ async function assurance(origin: string, cosigs: [string, bigint][], witnesses: 
  * the text around them, as the report prints bundle-derived strings. */
 export const clean = (x: string) => x.replace(/[\x00-\x1f\x7f-\x9f\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, "");
 
-/** The Assurance line as the reports print it: an assurance level rates only evidence that verified. */
+/** A failed bundle's assurance: a level rates only evidence that verified. */
+export const NOT_RATED = "not rated (the bundle failed verification)";
+/** The Assurance line as the reports print it. */
 export const assuranceLine = (rep: Report) =>
-  `Assurance: ${rep.integrity === "FAILED" ? "not rated (the bundle failed verification)" : clean(rep.assurance)}.`;
+  `Assurance: ${rep.integrity === "FAILED" ? NOT_RATED : clean(rep.assurance)}.`;
 
 /** The report as text, as the reference CLI prints it; `clean` drops characters from bundle-derived strings. */
 export function formatReport(rep: Report): string {

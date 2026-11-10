@@ -153,24 +153,54 @@ def _failed(rep):
                  if c["status"] == "fail"), rep.integrity)
 
 
+def _placed(tr, d):
+    """(rule, why) of each rule decision `d` names, `why` as _tally's."""
+    secs = tr.reads(d).get("secs") or {}
+    return [(rule, secs[rule["id"]] == d["decision"] if rule["id"] in secs else True if rule["id"] == "no rule" else None)
+            for rule in tr.rules(d) or [{"id": "no rule", "reason": ""}]]
+
+
+def _hold_rules(tr, rules, records, waits, outcomes):
+    """Each hold (`outcomes`: its decision's run_seq -> what it came to, view.review's of `records`) into `rules` by
+    rule, as an "ask" row: how many it held, how many its first answer (`waits`, _tally's) approved, a person's or the
+    run's own user's (an agent's is neither), and how many of those never approved were rejected or expired. An
+    approval the signer let expire unused was still approved."""
+    first = {w["call"]: w for w in waits}
+    decided = {x["event"]["run_seq"]: x["event"]["data"] for x in records if x["event"]["type"] == "policy.decision"}
+    for seq, outcome in outcomes.items():
+        w = first.get(seq) or {}
+        for rule, why in _placed(tr, decided[seq]):
+            g = rules.setdefault(("ask", rule["id"], why), {
+                "decision": "ask", "rule": rule["id"], "why": why, "reason": rule["reason"], "count": 0,
+                "examples": [], "approved": 0, "rejected_or_expired": 0})
+            g["count"] += 1
+            g["approved"] += bool(w.get("approved")) and w["by"] != "agent"
+            g["rejected_or_expired"] += not w.get("approved") and outcome in ("rejected", "expired")
+
+
 def _tally(key, records, tr, rules, unread):
     """Run `key`'s verified `records` in the window into `rules` ((decision, rule id, why) -> its count and up to
     EXAMPLES decisions, for each rule that matched a denied or flagged call; `why`: True for a rule of the section of
     that decision, False for one of another section that also matched, None for one this report can't place: an
     engine check, which has no section, or any rule of a policy it can't read) and `unread` (the denies and flags
     decided under a policy it can't read). Returns the calls held for a person (decided ask: tool_use_id -> when, its
-    tool and its decision record) and, for each one answered, how long it waited for its first answer. What became of
-    each hold is view.review's."""
-    held, waits = {}, {}   # tool_use_id -> (when it was held, its tool, its record); tool_use_id -> its wait
+    tool and its decision record) and, for each hold answered (its decision's run_seq: `call`), how long it waited for
+    its first answer, an answer to the approval request made for that decision, as view.review files it. What became
+    of each hold is view.review's."""
+    from .why.import_v2 import _call_id, held_calls
+    folds, owners = held_calls(records)
+    # tool_use_id -> (when it was held, its tool, its record); a hold -> (when it was held, its tool); a hold -> its wait;
+    # tool_use_id, and (tool_use_id, attempt) -> its latest decision (a retry with its id: the held call's)
+    held, asked, waits, cur = {}, {}, {}, {}
     for x in records:
         e = x["event"]
         t, d = e["type"], e.get("data") or {}
+        if t == "policy.decision":
+            seq = cur[d.get("tool_use_id")] = cur[d.get("tool_use_id"), e.get("attempt")] = \
+                folds.get(e.get("run_seq"), e.get("run_seq"))
         if t == "policy.decision" and d.get("decision") in ("deny", "flag"):
-            secs = tr.reads(d).get("secs") or {}
             unread[d["decision"]] += d.get("policy_hash") not in tr.reasons
-            for rule in tr.rules(d) or [{"id": "no rule", "reason": ""}]:
-                why = (secs[rule["id"]] == d["decision"] if rule["id"] in secs else
-                       True if rule["id"] == "no rule" else None)
+            for rule, why in _placed(tr, d):
                 g = rules.setdefault((d["decision"], rule["id"], why), {
                     "decision": d["decision"], "rule": rule["id"], "why": why, "reason": rule["reason"], "count": 0,
                     "examples": []})
@@ -179,13 +209,17 @@ def _tally(key, records, tr, rules, unread):
                     g["examples"].append((key, x))
         elif t == "policy.decision" and d.get("decision") == "ask":
             held.setdefault(d.get("tool_use_id"), (ts_seconds(e["ts"]), d.get("tool"), x))
-        elif t == "approval" and d.get("decision") in ("approve", "reject") and d.get("tool_use_id") in held:
-            asked, tool, _ = held[d["tool_use_id"]]
-            took = ts_seconds(e["ts"]) - asked
-            waits.setdefault(d["tool_use_id"], {"seconds": round(took), "took": took, "tool": tool, "run_id": key[1],
-                                                "approved": d["decision"] == "approve",
-                                                "by": "agent" if d.get("approver_kind") == "agent" else
-                                                "self" if d.get("self_approved") else "person"})
+            asked.setdefault(seq, (ts_seconds(e["ts"]), d.get("tool")))
+        elif t == "approval" and d.get("decision") in ("approve", "reject"):
+            # the decision its request was for; with no request in the window, the latest under its call id and attempt
+            own = _call_id(x)
+            seq = owners.get(d.get("approval_id"), cur.get(own if e.get("attempt") is None else (own, e.get("attempt"))))
+            if seq in asked:
+                took = ts_seconds(e["ts"]) - asked[seq][0]
+                waits.setdefault(seq, {"call": seq, "seconds": round(took), "took": took, "tool": asked[seq][1],
+                                       "run_id": key[1], "approved": d["decision"] == "approve",
+                                       "by": "agent" if d.get("approver_kind") == "agent" else
+                                       "self" if d.get("self_approved") else "person"})
     return held, list(waits.values())
 
 
@@ -293,12 +327,14 @@ def build(cfg, since, until, tenant=None, log_vkey=None, content=None, say=None,
                     continue
                 mine = [x for x in records if since <= ts_seconds(x["event"]["ts"]) < until]
                 first_ts = min([first_ts or until] + [ts_seconds(x["event"]["ts"]) for x in mine[:1]])
-                rv = view.review(mine, rep, "verified")
+                outcomes = {}   # each hold's: what it came to
+                rv = view.review(mine, rep, "verified", outcomes)
                 row.update(verdict="verified", detail=rep.assurance.split(";")[0],
                            state=view.review(records, rep, "verified")["state"], calls=dict(rv["decisions"]),
                            gaps=sum(rv["gaps"].values()))
                 held, held_waits = _tally(key, mine, tr, rules, unread)
                 waits += held_waits
+                _hold_rules(tr, rules, mine, held_waits, outcomes)
                 for outcome, call in rv["hold_examples"].items():   # the first call of each outcome, of any run
                     if outcome not in hold_examples and call in held:
                         hold_examples[outcome] = key, held[call][2]
@@ -391,8 +427,10 @@ def _oversight_lines(o):
 
 
 def _days(seconds):
-    """A window's length: in days, or in hours below a day."""
-    n, unit = (round(seconds / 86400, 1), "day") if seconds >= 86400 else (round(seconds / 3600, 1), "hour")
+    """A window's length: in days, in hours below a day, in minutes below an hour and in seconds below a minute."""
+    size, unit = next((s, u) for s, u in ((86400, "day"), (3600, "hour"), (60, "minute"), (1, "second"))
+                      if seconds >= s or u == "second")
+    n = round(seconds / size, 1)
     return f"{n:g} {unit}{'s' * (n != 1)}"
 
 
@@ -493,6 +531,16 @@ APPROVAL_RULES = {f"TK-APPROVAL-{s}" for s in ("CONSUMED", "EXPIRED", "MISMATCH"
                                               "UNBOUND", "VETO")}
 
 
+# a dev signer's every approval is the run's own user's (self-approved), so the column names both
+HOLDS_BY_RULE = "Holds by rule: held, approved (by a person or the run's own user), rejected or expired:"
+
+
+def _shared(rid, ours):
+    """A rule id as --share prints it: Tracekit's own (`ours`, tracekit_rules), the signer's or "no rule" as it is,
+    any other as "custom rule"."""
+    return rid if rid in ours or rid in APPROVAL_RULES or rid == "no rule" else "custom rule"
+
+
 def share_rules(counts):
     """--share's rule lines (report's and audit's) of `counts`, {(decision, rule id, why): calls}, `why` as _tally's:
     the denies, then the holds and the flags, most first, the rules that only also matched after the others. A rule id
@@ -500,7 +548,7 @@ def share_rules(counts):
     counted as "custom rule", one count for all of them; "no rule" (a decision no rule named, _tally's) stays."""
     ours, shown = tracekit_rules(), collections.Counter()
     for (dec, rid, why), n in counts.items():
-        shown[dec, rid if rid in ours or rid in APPROVAL_RULES or rid == "no rule" else "custom rule", why] += n
+        shown[dec, _shared(rid, ours), why] += n
     tag = {True: "", False: " (also matched, not why)", None: " (not placed)"}
     return [f"  {dec} {rid} {n:,}{tag[why]}" for (dec, rid, why), n in
             sorted(shown.items(), key=lambda x: (-DECISIONS.index(x[0][0]), x[0][2] is False, -x[1], x[0][1]))]
@@ -530,8 +578,19 @@ def share(rep):
            f"Holds: {holds['total']:,}   {_counts(holds['outcomes'])}".rstrip() + (retries or ""),
            f"Gaps (signed records that something may be missing): {rep['gaps']['total']:,}"
            + (f"   {_counts(dict(gaps.most_common()))}" if gaps else ""),
-           "Denied and flagged calls, by rule (one call can match several rules):" + " none" * (not rep["rules"])]
-    out += share_rules({(g["decision"], g["rule"], g["why"]): g["count"] for g in rep["rules"]})
+           "Denied and flagged calls, by rule (one call can match several rules):"
+           + " none" * (not any(g["decision"] != "ask" for g in rep["rules"]))]
+    out += share_rules({(g["decision"], g["rule"], g["why"]): g["count"] for g in rep["rules"] if g["decision"] != "ask"})
+    # what people did with each rule's holds: one approved nearly every time is a false alarm; a rule that only also
+    # matched a held call is not counted
+    ours, held = tracekit_rules(), collections.defaultdict(collections.Counter)
+    for g in rep["rules"]:
+        if g["decision"] == "ask" and g["why"] is not False:
+            held[_shared(g["rule"], ours)].update(holds=g["count"], approved=g["approved"],
+                                                  rejected=g["rejected_or_expired"])
+    out += [HOLDS_BY_RULE + " none" * (not held),
+            *(f"  {rid} {c['holds']:,}, {c['approved']:,}, {c['rejected']:,}"
+              for rid, c in sorted(held.items(), key=lambda x: (-x[1]["holds"], x[0])))]
     return "\n".join(_escaped(line) for line in out)
 
 

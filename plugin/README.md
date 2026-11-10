@@ -15,7 +15,7 @@ its calls: tell you, pass on the commands that answer it, and make the identical
 The plugin only carries the hooks. The signer and the verifier are the `tracekit` Python package:
 
 ```bash
-pip install tracekit-ai==1.5.3
+pip install tracekit-ai==1.6.0
 tracekit init --dev --v2 --no-hooks   # same-user dev signer (starts on the first hook); hooks come from the plugin
 # or, for tamper resistance against the agent's own user (Linux):
 sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks
@@ -59,7 +59,9 @@ without the `!`), Claude's retry of the same call runs.
   `TRACEKIT_SIGNER` is set. Before that, every event shows a notice and runs, unrecorded.
 
 The hooks `tracekit init --dev --v2` writes treat events the same way, but run the interpreter init ran with
-(`python -I -m tracekit.integrations.claude_code <event>`) instead of searching for one.
+(`python -I -m tracekit.integrations.claude_code <event>`; from a source checkout or a `pip install --user`, `python -I
+-c` with a one-line import that puts that directory first on the path, then the directory and the event as quoted
+arguments, all in plain text) instead of searching for one.
 
 ## Upgrading from the v1 plugin
 

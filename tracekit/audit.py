@@ -10,6 +10,7 @@ import collections
 import hashlib
 import json
 import os
+import shutil
 import sys
 import time
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
 from .report import DECISIONS, _counts, _days, _wait, call_text, share_rules, when
-from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, load_policy
+from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, evaluate, load_policy
 from .view import ENGINE_RULES
 
 
@@ -141,9 +142,10 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                         continue
                     if key:
                         seen.add(key)
-                    try:
-                        decision = engine.decide(tool, args)
-                    except Exception:   # the signer denies a call its engine fails on (signer.service._evaluate)
+                    try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its
+                        # bare name, PowerShell also as a shell line
+                        decision = evaluate(engine, tool, args)[0]
+                    except RecursionError:   # nesting the signer refuses (it denies an engine error itself)
                         decision = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"]}
                     verdict = decision.get("verdict", "allow")
                     counts[verdict] = counts.get(verdict, 0) + 1
@@ -230,6 +232,19 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
             t = c["time"] or "unknown-time"
             extra = f"  text={c['text']!r}" if "text" in c else ""
             lines.append(f"  {c['session']}  {t}  {c['tool']}  {c['verdict']}  rules={','.join(c['rule_ids'])}{extra}")
+    # the same counts once more, last, for a newcomer: the rules that stopped a call (of the call's own decision's
+    # section, or an engine check, which has none; not a flag that also matched), most first
+    stopped = collections.Counter(r for c in report["calls"] if c["verdict"] in ("ask", "deny") for r in c["rule_ids"]
+                                  if report["sections"].get(r, c["verdict"]) == c["verdict"])
+    window = "week" if report["since"] == "7d" else _days(time.time() - when(report["since"])) if report["since"] \
+        else "transcripts"
+    lines += ["", f"your agent's {window}: {total:,} tool call{'s' * (total != 1)}; Tracekit would have held "
+              f"{n.get('ask', 0):,} and blocked {n.get('deny', 0):,}",
+              *(["  top: " + ", ".join(f"{r} {report['reasons'][r]} ({k})" if report["reasons"].get(r) else f"{r} ({k})"
+                                       for r, k in sorted(stopped.items(), key=lambda x: (-x[1], x[0]))[:3])]
+                if stopped else []),
+              "  to guard from now on: " + ("tracekit init --dev --v2" if shutil.which("tracekit") else
+                                            "pip install tracekit-ai, then tracekit init --dev --v2")]
     # a transcript the agent wrote can hold control characters: print them as text, as tracekit report does
     return "\n".join(_escaped(line) for line in lines) + "\n"
 

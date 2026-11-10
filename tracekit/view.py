@@ -37,9 +37,11 @@ bundle once it verifies (what `tracekit observe` runs), on this server, token an
 
     tracekit view [--dev | --config signer.yaml | --data-dir DIR | --ledger [HOME] | --bundle FILE] [--log-vkey VKEY]
                   [--host H] [--port N] [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR]
-                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID]
+                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL] [--approval ID] [--transcripts DIR]
 
-`--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held.
+`--approval ID` adds `#approval=ID` to the printed link: the page opens the call that approval held. The TIPS page
+(tracekit/tips.py) reads the store's rows and, with the dev store or `--transcripts DIR`, Claude Code's transcripts,
+read-only, for the token only.
 """
 import argparse
 import atexit
@@ -69,7 +71,7 @@ from http.client import HTTPException
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
-from . import findings_text, findings_v2, parsers
+from . import findings_text, findings_v2, grants, parsers
 from .bundle_v2 import bundle, export
 from .format import checkpoint
 from .format.records import RecordSigner
@@ -81,10 +83,10 @@ from .policy2.engine import Engine
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
-from .signer.service import data_dir_at, dev_data_dir, load_config, lookup, read_vkeys, reader
+from .signer.service import data_dir_at, dev_data_dir, dev_witnesses, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageChanged, StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
-from .verify import v2
+from .verify import anchoring, cosignature_failure, v2
 from .why.server import Store
 
 POLL_S = 1.0
@@ -104,8 +106,8 @@ BUNDLES_MAX = 64 << 20   # bytes of the runs not final the viewer keeps to check
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
 STREAMS, STREAMS_PER_IP = 256, 64   # a team may share one address
-DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer runs as the same user as the dev signer "
-            "and proves only that the records match that key")
+DEV_NOTE = ("each run is checked against the key this store names, so it shows the records weren't changed after "
+            "signing, not that the agent couldn't have signed them: in dev mode it runs as you, as the signer does")
 STORED_NOTE = ("trust pins the log vkey this store holds and proves only that the records match that key; pin the "
                "signer's with --log-vkey")
 OPERATOR_SIDE = "operator-side view — re-verify with the signed release for evidence"
@@ -292,7 +294,8 @@ class ApprovalDesk:
 
 
 ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PARSE": "SQL no dialect reads",
-                "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE": "a shell command that does not parse",
+                "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE":
+                    "a shell command Tracekit can't read",
                 "TK-ENGINE-ERROR": "the policy engine failed on these arguments, so the call was denied",
                 "TK-LIMIT-SUM": "a sum limit counts this call: send the amount as a non-negative integer in minor "
                                 "units, with its three-letter currency code",
@@ -367,7 +370,9 @@ def policy_reasons(paths=(), kept=None):
         if os.path.basename(p) == hashlib.sha256(data).hexdigest() + ".json":
             out.policies["sha256:" + os.path.basename(p)[:-5]] = json.loads(data)
     for h, pol in out.policies.items():
-        out[h] = {r["id"]: {"reason": r.get("reason") or r.get("label") or "", **{k: r[k] for k in ("remedy",) if k in r}}
+        # a rule with no reason gives its label as words: side_effect reads "side effect"
+        out[h] = {r["id"]: {"reason": r.get("reason") or (r.get("label") or "").replace("_", " "),
+                            **{k: r[k] for k in ("remedy",) if k in r}}
                   for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
     return out
 
@@ -403,6 +408,7 @@ class Translator(observe.Translator):
         self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
         # a findings run -> (the run its findings are about, its author: the identity the signer measured)
         self.analyzes = observe._Bounded(observe.MAX_RUNS_KEPT)
+        self.grants = observe._Bounded(observe.MAX_RUNS_KEPT)   # grant id -> its intent.grant record's data
 
     def _base(self, e, rec, event):   # tk_tier: T2 a gateway or executor wrote it for its client (said vs did)
         return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent"),
@@ -441,12 +447,28 @@ class Translator(observe.Translator):
         # under the agent's retry of that call, which used its approval (signer _reusable), names it as `held`
         info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": call or asked,
                 **({"held": asked} if t.startswith("approval") and call and asked and asked != call else {}),
+                # which call and approval a record is of: the page reads them as held_calls does
+                **({"attempt": e["attempt"]} if e.get("attempt") is not None else {}),
+                **({"approval_id": d["approval_id"]} if d.get("approval_id") else {}),
+                **({"decision_id": d["decision_id"]} if t == "tool.result" and d.get("decision_id") else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:
             x["v2"] = {**info, **x.get("v2", {})}
             if e["run_id"] == SIGNER_RUN[1]:
                 x.update(signer=True, agent="signer")
+        return out
+
+    def _released(self, x):
+        """What a grant released, for the decision's row: its id, its tier, the payment in words and what the grant has
+        left after it (when this reader saw the grant's record)."""
+        f, g = x.get("fields") if isinstance(x.get("fields"), dict) else {}, self.grants.get(x.get("id"))
+        out = {"id": x.get("id"), "tier": x.get("tier"),
+               "what": f"{grants.show(f.get('amount'), f.get('currency'))} to {f.get('payee')}"}
+        try:
+            out["left"] = grants.left({"grant": g["grant"], "limits": g["limits"], "used": x["used"]}) if g else None
+        except (KeyError, TypeError):
+            out["left"] = None
         return out
 
     def _v2(self, e, rec, t, d):
@@ -518,7 +540,9 @@ class Translator(observe.Translator):
                              "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
                      v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
                          "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"), **self.reads(d),
-                         **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d}})
+                         **{k: d[k] for k in ("provenance", "provenance_state", "nondeterministic", "reasons") if k in d},
+                         **({"grant": self._released(e["ext"]["grant"])} if isinstance(
+                             (e.get("ext") or {}).get("grant"), dict) else {})})
             return [r]
         aid = d.get("approval_id")
         tool, rule_ids, asked = self.requests.get(aid, ("", [], None))
@@ -542,7 +566,6 @@ class Translator(observe.Translator):
             return alert("med", f"APPROVAL REQUESTED · {tool}",
                          f"requested by {d.get('requester')} · rules "
                          + ", ".join(f"{x['id']} {x['reason']}".strip() for x in rules)
-                         + f" · expires {_hms(d.get('expires_at'))}"
                          + (" · signer executes (t2)" if d.get("executor") == "t2" else ""), "HOLD",
                          approval="requested", rules=rules, binding_digest=d.get("binding_digest"), approval_id=aid,
                          expires=d.get("expires_at"), **({"agents": {k: d["agent"].get(k) for k in ("eligible", "reason")}}
@@ -694,6 +717,26 @@ class Translator(observe.Translator):
         if t == "ext" and d.get("name") == "pcm.sent":   # a proof-carrying message the signer signed: a row, not an alert
             return note("PCM · MESSAGE SENT", f"to {d.get('to')} · message {d.get('id')} · intent {d.get('intent')}",
                         "STATE")
+        if t == "ext" and d.get("name") == "intent.grant" and isinstance(d.get("grant"), dict):
+            self.grants[d.get("id")] = d   # a person granted the run payments within limits (docs/intent-grants.md)
+            g = d["grant"]
+            who = "self-approved (the run's own user, which the agent can be)" if d.get("self_approved") else \
+                f"by {(g.get('issuer') or {}).get('person') or (g.get('issuer') or {}).get('id')}"
+            try:
+                bounds = grants.words(g, d["limits"], d.get("used"))
+            except (KeyError, TypeError, IndexError):   # a record the signer never writes: its id alone
+                bounds = "limits unreadable"
+            tools = ", ".join(map(str, d.get("tools") or [])) or "no tool"
+            bounds = f"through {tools} {bounds}"
+            issued = {"id": d.get("id"), "by": who, "words": bounds, "until": g.get("expires_at"),
+                      **({"description": d["description"]} if isinstance(d.get("description"), str) else {})}
+            return note(f"GRANT ISSUED · {d.get('id')}", f"{who} · payments {bounds} · until {g.get('expires_at')}"
+                        + (f" · {json.dumps(d['description'])}" if "description" in issued else ""), "STATE",
+                        grant_issued=issued)
+        if t == "ext" and d.get("name") == "intent.revoked":
+            return note(f"GRANT REVOKED · {d.get('id')}", f"by {d.get('by')}" + (f" · {json.dumps(d['reason'])}"
+                                                                                if d.get("reason") else "")
+                        + " · its calls are held again", "STATE", grant_revoked=d.get("id"))
         if t == "ext" and d.get("name") == "pcm.grant":
             return note("PCM · GRANT ISSUED", f"to {d.get('subject')} · intent {d.get('intent')}"
                         + (f" · approval {d['approval_id']}" if d.get("approval_id") else ""), "STATE")
@@ -783,21 +826,28 @@ def held_outcome(was, t, d):
     return "expired" if "TK-APPROVAL-EXPIRED" in ids else "rejected" if "TK-APPROVAL-REJECTED" in ids else OUTCOMES[t]
 
 
-def review(records, rep, verdict):
+def review(records, rep, verdict, outcomes=None):
     """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
     report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record. `permissions`: how many
     decisions that were not a plain allow came to each outcome (blocked, flagged, approved · ran, rejected, expired, not
     answered, not answered yet, ...); each one, who answered and when, is in the run's rows (/api/rows), which PERMISSIONS reads
     when the run's records have left the live view; `holds`: the same outcomes, of the calls held for a person (decided
-    ask) only, and `hold_examples` the first such call (its tool_use_id) of each. The agent's retry of a held call, which
+    ask) only, and `hold_examples` the first such call (its tool_use_id) of each; `outcomes`, a dict when given, gets
+    each such call's (its decision's run_seq -> outcome), which stays out of the counts. The agent's retry of a held call, which
     used that call's approval, is that call: its use is the held call's outcome, counted once (`retries` counts them). Counts keep each snapshot
     small whatever the run's size."""
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
-           "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
+           "anchoring": anchoring(rep), "label": OPERATOR_SIDE, "agent": None, "records": len(records),
+           "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
            "incidents": [], "constraints": [], "constraint_holds": 0, "retries": 0,
            "state": "open", "first": {}}
-    perms, calls, asked = {}, {}, set()   # tool_use_id -> its outcome; approval_id -> its tool_use_id; calls held
+    from .why.import_v2 import _call_id, held_calls
+    # a call is its decision's run_seq: perms -> its outcome, asked: those held; calls: approval_id -> its tool_use_id;
+    # cur: tool_use_id, and (tool_use_id, attempt) -> its latest call; ids: call -> its tool_use_id; folds and owners as
+    # held_calls has them
+    perms, calls, asked, cur, ids = {}, {}, set(), {}, {}
+    folds, owners = held_calls(records)
     for rec in records:
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
@@ -810,14 +860,20 @@ def review(records, rep, verdict):
                 out["analyzes"] = d["analyzes"]
             if d.get("parent_run"):   # the run that started this one: panel 1 shows it under its parent
                 out["parent"] = d["parent_run"]
+        elif t == "policy.decision" and e.get("run_seq") in folds:
+            out["retries"] += 1   # the held call's retry with its id (LangGraph): that call
+            cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = folds[e["run_seq"]]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
-            key = d.get("decision")
+            key, seq = d.get("decision"), e.get("run_seq")
+            cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = seq
+            ids[seq] = d.get("tool_use_id")
             if key != "allow":
-                perms[d.get("tool_use_id")] = {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
+                perms[seq] = "within a grant" if isinstance((e.get("ext") or {}).get("grant"), dict) \
+                    else {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
-                asked.add(d.get("tool_use_id"))
+                asked.add(seq)
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -853,24 +909,36 @@ def review(records, rep, verdict):
             out["state"] = "closing"
         if t == "approval.request":
             calls[d.get("approval_id")] = (d.get("binding") or {}).get("tool_call_id")
-        own = t.startswith("approval") and (d.get("tool_use_id") or e.get("tool_call_id"))
-        call = t.startswith("approval") and (calls.get(d.get("approval_id")) or own)
-        if own != call and own in perms and call in perms:   # the agent's retry of a held call, under its approval
-            del perms[own]   # (signer _reusable): one held call, whose outcome the retry's use is
-            asked.discard(own)
-            out["retries"] += 1
-        if call in perms and (t == "approval" or t in OUTCOMES):
-            perms[call] = held_outcome(perms[call], t, d)
+        if t.startswith("approval"):
+            # an approval's records are the call's its request was for; a use refused, the call's that tried it
+            own, refused = _call_id(rec), t in ("approval.refused", "approval.binding_mismatch")
+            # the call that tried it: the latest under its id and attempt (any attempt, for a record naming none)
+            mine = cur.get(own if e.get("attempt") is None else (own, e.get("attempt")))
+            held = owners.get(d.get("approval_id"))
+            if own and own != calls.get(d.get("approval_id"), own) and mine in perms and held in perms:
+                del perms[mine]   # the agent's retry of a held call under its approval (signer _reusable), with another
+                asked.discard(mine)   # id: one held call, whose outcome the retry's use is
+                out["retries"] += 1
+            if refused and held in perms:   # the call that tried it comes to it, unless it repeats the approval's state
+                now = held_outcome(perms[held], t, d)
+                if now != perms[held] and mine in asked:
+                    perms[mine] = now
+            else:
+                call = mine if refused or held is None else held
+                if call in asked and (t == "approval" or t in OUTCOMES):   # a held call's: a deny or flag has none
+                    perms[call] = held_outcome(perms[call], t, d)
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
     ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
     out["permissions"] = collections.Counter(ended.values())
-    out["holds"] = collections.Counter(o for c, o in ended.items() if c in asked)
+    held = {c: o for c, o in ended.items() if c in asked}
+    out["holds"] = collections.Counter(held.values())
     out["hold_examples"] = {}
-    for c, o in ended.items():
-        if c in asked:
-            out["hold_examples"].setdefault(o, c)
+    for c, o in held.items():
+        out["hold_examples"].setdefault(o, ids[c])
+    if outcomes is not None:
+        outcomes.update(held)
     return out
 
 
@@ -985,7 +1053,7 @@ class StoreFeed:
             self.threads.append(threading.Thread(target=self._mirrors, daemon=True))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
-        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), self.vkeys)
+        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), self.vkeys, cfg.get("witnesses") or ())
         self.threads.append(threading.Thread(target=self._watch, daemon=True))
         for t in self.threads:
             t.start()
@@ -1209,7 +1277,7 @@ class StoreFeed:
         e, hidden = {"run_id": run_id}, False
         if code:
             rv = {"verdict": "failed", "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
-                  "label": OPERATOR_SIDE, "agent": None}
+                  "anchoring": anchoring(rep) if cosignature_failure(rep) else None, "label": OPERATOR_SIDE, "agent": None}
             try:   # placed at its run's last record's time, as a run that verifies is; only the time is read
                 e["ts"] = collections.deque(reader.iter_run(tenant, run_id), 1)[0]["event"]["ts"]
             except (ValueError, KeyError, IndexError, TypeError, StorageCorrupt):
@@ -1471,6 +1539,12 @@ class StoreFeed:
                     * bool(again) + [self.stopped] * bool(self.stopped), None)
 
 
+def shown(feed):
+    """The rows the live view holds now (a run being checked again holds RETRACTED in its rows' place)."""
+    with feed.lock:
+        return [r for r in feed.records if r is not observe.RETRACTED]
+
+
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):
     """Import one verified v2 run as a why run under `why_dir` (why.import_v2, from the records only), replacing an
     earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs; with `records` None (the
@@ -1550,10 +1624,11 @@ def store_trust(cfg, log_vkey=None):
     return vkeys, note
 
 
-def write_trust(path, vkeys):
-    """A verify.v2 trust config at `path` that pins the log vkeys `vkeys` and no witness; returns `path`."""
+def write_trust(path, vkeys, witnesses=()):
+    """A verify.v2 trust config at `path` that pins log vkeys `vkeys` and witnesses; returns `path`."""
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"logs": vkeys, "witnesses": [], "algs": [RecordSigner.alg], "witnesses_required": 0}, f)
+        json.dump({"logs": vkeys, "witnesses": [{"vkey": w["vkey"], "class": w["class"]} for w in witnesses],
+                   "algs": [RecordSigner.alg], "witnesses_required": 0}, f)
     return path
 
 
@@ -1801,8 +1876,9 @@ def main(argv=None):
                    help="the v1 signer's ledger (tracekitd; HOME default: the client config's signer home)")
     g.add_argument("--bundle", help="a v1 .tkb bundle, verified first (refused when it fails)")
     ap.add_argument("--log-vkey", help="pin this log vkey (`tracekit signer vkey`) instead of the one the store names")
-    ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=7778)
+    ap.add_argument("--host", default="127.0.0.1", help="the address to serve on (default 127.0.0.1: this machine "
+                                                        "only; another one needs --tls-cert and --tls-key)")
+    ap.add_argument("--port", type=int, default=7778, help="the port to serve on (default 7778; 0: any free one)")
     ap.add_argument("--tls-cert", help="PEM certificate: serve HTTPS (required beyond loopback)")
     ap.add_argument("--tls-key", help="PEM private key of --tls-cert")
     ap.add_argument("--insecure-http", action="store_true", help="serve plain HTTP beyond loopback anyway")
@@ -1814,12 +1890,20 @@ def main(argv=None):
                     help="a bearer token /v1/ingest takes for why logs, and nothing else (repeatable; default: the "
                          "viewer's token)")
     ap.add_argument("--webhook", help="POST each new high why alert here as JSON (Slack-compatible)")
-    ap.add_argument("--approval", metavar="ID", help="print the link that opens the call approval ID held "
-                                                     "(`tracekit approvals show ID` names it)")
+    ap.add_argument("--approval", metavar="ID", help="start the viewer and print a link that opens the call approval "
+                                                     "ID held (`tracekit approvals show ID` names it)")
+    ap.add_argument("--transcripts", metavar="DIR", help="Claude Code transcripts the TIPS page reads, read-only "
+                                                         "(default with the dev store: $CLAUDE_CONFIG_DIR/projects or "
+                                                         "~/.claude/projects)")
     a = ap.parse_args(argv)
     if a.approval and not re.fullmatch(r"([a-z0-9-]+\.)?apr-[0-9a-f]{32}", a.approval):
         print(f"tracekit view: --approval takes an approval id (apr- and 32 hex digits), not {a.approval!r}",
               file=sys.stderr)
+        return 2
+    transcripts = a.transcripts and os.path.abspath(os.path.expanduser(a.transcripts))
+    if transcripts and not os.path.isdir(transcripts):
+        print(f"tracekit view: --transcripts {transcripts}: no such folder (Claude Code keeps its transcripts in "
+              "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
     from .cli import experimental
@@ -1850,7 +1934,8 @@ def main(argv=None):
             tls.load_cert_chain(a.tls_cert, a.tls_key)
         v1 = a.ledger is not None or a.bundle
         alone = a.why and not (v1 or a.dev or a.config or a.data_dir)   # why logs alone, as `tracekit why serve`
-        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir(create=False)}
+        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir} if a.data_dir else \
+            {"data_dir": (d := dev_data_dir(create=False)), "witnesses": dev_witnesses(d)}   # pinned as `last` pins them
         view = cfg.get("view") or {}
         login = view.get("oidc") and OidcLogin(view["oidc"], (cfg.get("http") or {}).get("oidc"))
         desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),
@@ -1880,6 +1965,10 @@ def main(argv=None):
                     if os.path.isdir(os.path.join(cfg["data_dir"], WHY_DIR)) else "--why"
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, dev_content_source() if dev else None,
                                                         dev_analysis() if dev else None, signer)
+            if feed:   # TIPS: the store's rows, and Claude Code's transcripts read as tracekit audit reads them
+                from . import audit, tips
+                feed.tips = tips.Page(functools.partial(shown, feed),
+                                      transcripts or (audit.default_root() if dev else None))
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -1889,16 +1978,21 @@ def main(argv=None):
         print(f"tracekit view: {e}", file=sys.stderr)
         return 1
     scheme = "https" if tls else "http"
-    print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
+    # a link a person can click: an any-address bind is reached on this machine at its loopback address
+    host = {"0.0.0.0": "127.0.0.1", "": "127.0.0.1", "::": "::1"}.get(a.host, a.host)
+    print(f"tracekit view on {scheme}://{f'[{host}]' if ':' in host else host}:{srv.server_address[1]}/"
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
-          + (f"#approval={a.approval}" if a.approval else "")
-          + (f"  ({len(runs.logs)} Postgres logs, read-only)" if runs else
-             f"  (bundle: {a.bundle}, verified, read-only)" if a.bundle else
-             f"  (ledger: {feed.path}, read-only)" if v1 else f"  (why logs alone: {why.root})" if alone else
-             f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
+          + (f"#approval={a.approval}" if a.approval else "") + "  (open it in a browser; Ctrl-C stops the viewer)\n"
+          + (f"  reading {len(runs.logs)} Postgres logs, read-only" if runs else
+             f"  reading the bundle {a.bundle}, verified, read-only" if a.bundle else
+             f"  reading the ledger {feed.path}, read-only" if v1 else f"  reading why logs alone: {why.root}" if alone
+             else f"  reading the store {feed.store}, read-only; {feed.note}"), flush=True)
+    if getattr(feed, "tips", None) and feed.tips.root:   # the folder it reads, only when there is one
+        print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
+              else "  tips: no Claude Code transcripts found", flush=True)
     if why and mirror:
         why.watch()
-        print("  graphs: each verified run, imported from the store (read-only) into a temp dir", flush=True)
+        print("  graphs: each verified run is drawn as a graph too, from a copy in a temp dir", flush=True)
     elif why:
         why.watch()
         print(f"  why logs: {why.root}; FIND THE CAUSE and RUN TEST "

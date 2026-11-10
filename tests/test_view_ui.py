@@ -22,6 +22,8 @@ from factories import wait_for  # noqa: E402
 from tracekit import cli, observe, view  # noqa: E402
 from tracekit.sdk.client import Client  # noqa: E402
 from tracekit.signer import service as svc  # noqa: E402
+from tracekit.why import import_v2  # noqa: E402
+from tracekit.why.core import load_run  # noqa: E402
 from test_view import page_js, v2rec  # noqa: E402
 
 PAGE = observe.read_text(observe.UI)
@@ -171,7 +173,7 @@ def text(html):
 
 class WhyThisDecision(unittest.TestCase):
     def detail(self, call):
-        return json.loads(page_js(["esc", "short", "cp", "shq", "word", "ANSWER", "lastAnswer", "ended", "callState", "whyDecision"], f"""
+        return json.loads(page_js(["esc", "short", "cp", "shq", "word", "ANSWER", "lastAnswer", "ended", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "callState", "whyDecision"], f"""
             const S = {{ sessions: new Map() }}, label = () => "coder·5e67", DESK = () => true;
             const a = {json.dumps(call)}; a.agent = {{ session: "r1" }}; a.approvals ??= []; a.flags ??= [];
             process.stdout.write(JSON.stringify(whyDecision(a)));"""))
@@ -244,7 +246,7 @@ class WhyThisDecision(unittest.TestCase):
 class SaidVsDid(unittest.TestCase):
     """Rule 2, words are not proof: what the model said of an outcome sat beside nothing; every "tests pass" was re-run
     by hand to check it."""
-    NAMES = ["esc", "ANSWER", "lastAnswer", "ended", "callState", "MARKS", "TEXT_RULES", "didFact", "reportsOn",
+    NAMES = ["esc", "ANSWER", "lastAnswer", "ended", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "callState", "MARKS", "TEXT_RULES", "didFact", "reportsOn",
              "saidMark"]
     RUN = """
         const S = { asked: new Map(), actList: [], reasoning: [], cited: new Map(), sessions: new Map([["r1", {}]]), tape: [] };
@@ -417,12 +419,12 @@ class WaitingForYou(unittest.TestCase):
 
     def test_a_new_hold_or_high_alert_toasts_as_text_and_the_snapshot_does_not(self):
         needs_node(self)
-        out = json.loads(page_js(["vis", "OPENHOLD", "toastOf"], f"""
+        out = json.loads(page_js(["vis", "OPENHOLD", "tuid", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "toastOf"], f"""
             const made = [], box = {{ children: [], prepend(t) {{ this.children.unshift(t); }} }};
             Object.defineProperty(box, "lastChild", {{ get() {{ return {{ remove: () => box.children.pop() }}; }} }});
             const document = {{ createElement: tag => {{ const e = {{ tag, kids: [], dataset: {{}}, append(...k) {{ this.kids.push(...k); }},
                                                                remove() {{}} }}; made.push(e); return e; }} }};
-            const $ = () => box, DESK = () => false, setTimeout = () => {{}};
+            const $ = () => box, DESK = () => false, setTimeout = () => {{}}, S = {{ actions: new Map() }};
             let toasting = false;
             toastOf({json.dumps(hold(1, "c1"))});   // the snapshot: no toast
             toasting = true;
@@ -700,6 +702,69 @@ class AlertGroups(unittest.TestCase):
 
 
 
+class FullPass(unittest.TestCase):
+    """What a pass of every page at desktop and phone width found that a user would see wrong."""
+
+    TAPE = ["esc", "KINDS", "EVWORD", "anyFilter", "kindChips", "reader", "tapeRow", "agentMatch", "rowMatch", "renderTape"]
+
+    def tape(self, kind=""):
+        """DESK's tape (its time, EVT and text cells) of two runs whose rows arrived run by run, and a signer row."""
+        return json.loads(page_js(self.TAPE, f"""
+            const el = {{}}, $ = id => el[id] ??= {{ textContent: "", innerHTML: "" }}, put = (id, h) => {{ $(id).innerHTML = h; }};
+            const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", signer = {{ name: "signer", id: "signer", type: "signer", signer: true }};
+            const a1 = {{ name: "a1", id: "a1", type: "main" }}, a2 = {{ name: "a2", id: "a2", type: "main" }};
+            let F = {{ agent: null, tool: null, file: null, flag: false, find: null, kind: {json.dumps(kind)} || null }}, selected = null;
+            let tapeKey = [], tapeMax = 600, tapeShown = 0, PAGE = "desk", V2 = true, WHY = null; const DROPPED = 0, MAXREC = 50000, TAPE_PAGE = 600;
+            const row = (ts, agent, ev, text) => ({{ ts, agent, ev, text, rec: {{ event: "tk_alert" }} }});
+            const S = {{ recs: [], effects: new Map(), tape: [row(10, a1, "SESS", "start"), row(30, a1, "STATE", "STATE WRITE"),
+                                                      row(20, a2, "SESS", "start"), row(40, a2, "FINDING", "FINDING TK-X208"),
+                                                      row(50, signer, "SIGNER", "CONTENT READ FOR TRACEKIT VIEW")] }};
+            S.tape.forEach((r, i) => r.i = i);
+            renderTape();
+            process.stdout.write(JSON.stringify([[...$("tape").innerHTML.matchAll(/<td class="c-time">(.*?)<\\/td>.*?<td class="c-ev [^"]*">(.*?)<\\/td>/g)].map(m => m[1] + " " + m[2]),
+                                                 $("tapesum").textContent, $("fchips").innerHTML.includes('data-kind="own"')]));"""))
+
+    def test_the_tape_is_newest_first_across_runs_without_the_signers_bookkeeping(self):
+        """DESK's tape said "newest first" but listed the rows of the run that arrived last first, and opened on the
+        viewer's own content reads; its event codes (SESS, STATE, SIGNER, FINDING) meant nothing to a newcomer."""
+        needs_node(self)
+        rows, summary, chip = self.tape()
+        self.assertEqual(rows, ["40 CHECK", "30 NOTE", "20 RUN", "10 RUN"])
+        self.assertEqual(summary, "4 events · newest first")
+        self.assertTrue(chip)
+        self.assertEqual(self.tape("own")[0], ["50 LOG"])   # a filter of their own
+
+    def test_an_alert_group_shows_its_newest_alerts_title(self):
+        """ALERTS titled a group by its key, its numbers made "n": "RUN tracekit/signer · Integrity VERIFIED TO HEAD n"."""
+        needs_node(self)
+        out = page_js(["esc", "srcOf", "SEV_RANK", "alertGroups", "renderAlerts"], """
+            const el = {}, $ = id => el[id] ??= { textContent: "" }, put = (id, h) => { el[id] = { ...$(id), innerHTML: h }; };
+            const PAGE = "desk", scope = null, OPENHOLD = "", whyAlerts = () => [], waiting = () => [], highCount = () => 0, agentMatch = () => true;
+            const fmtT = String, label = a => a.name, plural = (n, w) => `${n} ${w}s`, rec = { rec: { session_id: "signer", tk_seq: 1 } };
+            const S = { alerts: [12, 18].map((n, i) => ({ sev: "info", text: `RUN tracekit/signer · Integrity VERIFIED TO HEAD ${n} (open)`,
+              sub: "dev assurance", ref: rec, ts: i, key: `RUN tracekit/signer · Integrity VERIFIED TO HEAD n (open)`, i })) };
+            renderAlerts(); process.stdout.write(el.alerts.innerHTML);""")
+        self.assertIn("VERIFIED TO HEAD 18 (open)<span class=\"n\">× 2</span>", out)
+        self.assertNotIn("HEAD n", out.split('data-grp="')[1].split('"', 1)[1])   # the key stays the group's id only
+
+    def test_next_gap_with_none_says_so_beside_the_replay_buttons(self):
+        """NEXT GAP on a run with no gaps did nothing a user could see: it wrote in the command bar's placeholder."""
+        needs_node(self)
+        out = page_js(["JUMP", "jump"], """
+            const el = { pos: { textContent: "live" } }, $ = id => el[id];
+            let R = null, rpos = 0, rplay = false; const runRecs = () => [{ v2: { decision: "allow" } }], seekRun = () => { throw "moved"; };
+            jump("gap"); process.stdout.write(el.pos.textContent);""")
+        self.assertEqual(out, "live · no gap in this run")
+
+    def test_an_open_runs_length_runs_to_now(self):
+        """An open run whose last record was its hold read "0s" however long it had waited."""
+        needs_node(self)
+        out = json.loads(page_js(["fmtDur", "runLength"], """
+            const nowTs = () => Date.parse("2026-11-05T06:00:00Z") / 1000, run = state => ({ state, first_ts: "2026-11-05T05:00:00Z", last_ts: "2026-11-05T05:00:00Z" });
+            process.stdout.write(JSON.stringify([runLength(run("open")), runLength(run("final"))]));"""))
+        self.assertEqual(out, ["1.0h", "0s"])
+
+
 class Permissions(unittest.TestCase):
     def test_every_decision_but_a_plain_allow_with_its_outcome_and_who_answered(self):
         """The dev viewer has no approvals page and run reviews listed approvals for 17 of 250 runs with holds."""
@@ -713,7 +778,7 @@ class Permissions(unittest.TestCase):
                 hold(13, "c6"), answer(14, "c6", "requested", approval_id="apr-6"),
                 {**hold(15, "c7"), "v2": {"decision": "allow"}}, {**hold(16, "c8"), "analysis": True},
                 hold(17, "c9", run="r2"), {"event": "SessionEnd", "session_id": "r2", "tk_seq": 18}]
-        out = json.loads(page_js(["ANSWER", "permRows", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "permRows", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "permOf"], f"""
             const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
             const rows = r => r.map(x => [x.rec.tool_use_id, x.tabs.filter(Boolean).join(" "), x.out[1], x.ans?.v2.approver ?? null,
                                           x.req?.v2.approval_id ?? null]);
@@ -748,7 +813,7 @@ class Permissions(unittest.TestCase):
                                                       "rule_ids": ["TK-APPROVAL-REJECTED"]}, run=run))
             recs += [x for r in mine for x in tr.feed(r)]
             reviewed.append(dict(view.review(mine, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]))
-        out = json.loads(page_js(["ANSWER", "permRows", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "permRows", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "permOf"], f"""
             const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
             process.stdout.write(JSON.stringify(permRows().map(x => [x.rec.session_id, x.out[1]])));"""))
         self.assertEqual(reviewed, [{"rejected": 1}, {"revoked": 1}])
@@ -787,7 +852,7 @@ class Permissions(unittest.TestCase):
         the live view showed nothing, in its views or PERMISSIONS."""
         needs_node(self)
         rows = [{**hold(5, "c1"), "v2": {"decision": "deny", "rules": [{"id": "T-DENY", "reason": "rm"}]}}]
-        out = json.loads(page_js(["ANSWER", "loadRun", "permRows", "permOf"], f"""
+        out = json.loads(page_js(["ANSWER", "loadRun", "permRows", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "permOf"], f"""
             const LOADED = new Map(), RUNS = new Map([["r1", {{ verdict: "verified", records: 9, tenant: "default", permissions: {{ blocked: 1 }} }}],
                                                       ["r2", {{ verdict: "failed", records: 4 }}]]);
             const ALL = [], asked = [], seen = [], document = {{ URL: "http://127.0.0.1/" }};
@@ -814,7 +879,7 @@ class Permissions(unittest.TestCase):
         loaded = [{"session_id": "r1", "tk_seq": s, "event": "SESS"} for s in (1, 2, 3)]
         live = [{"session_id": "r1", "tk_seq": 2, "event": "SESS"}, {"session_id": "r1", "tk_seq": 4, "event": "HOLD"},
                 {"session_id": "r1", "analysis": True, "event": "tk_alert"}, {"session_id": "r2", "tk_seq": 9, "event": "SESS"}]
-        out = json.loads(page_js(["runRows", "rebuild", "accept"], f"""
+        out = json.loads(page_js(["runRows", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "rebuild", "accept"], f"""
             const LOADED = new Map([["r1", {json.dumps(loaded)}]]), ALL = {json.dumps(live)}, RUNS = new Map(), got = [], seen = [];
             let scope = "r1", R = null, rpos = 0, tapeShown = 0, V2 = true, DROPPED = 0, MAXREC = 50000;
             const S = {{ tape: [] }}, reset = () => {{ got.length = 0; }}, ingest = r => got.push(r.tk_seq ?? "a"), inScope = r => r.session_id === scope;
@@ -916,6 +981,9 @@ class Evidence(unittest.TestCase):
         self.assertEqual(re.findall(r'<div class="rec( ok)?" data-tkseq="(\d+)"', ok), [(" ok", "5"), (" ok", "6")])
         self.assertIn('<div class="stamp ok">VERIFIED</div>', ok)
         self.assertIn("THE VIEWER'S CHECK, OPERATOR-SIDE: tracekit view exported this run's bundle", ok)
+        # the verdict and its checks first: on a phone the chain (up to WALK_MAX rows) came first and buried them
+        self.assertLess(ok.index('<div class="stamp ok">'), ok.index('<ul class="checks">'))
+        self.assertLess(ok.index('<ul class="checks">'), ok.index("CHAIN · EACH SIGNED RECORD IN ORDER"))
         for text in ('<dl class="kv"><CMDS r1></dl>', "<REVIEW cmds=false>",
                      "Download the bundle and check it with tracekit verify from the signed release: that, not this "
                      "page, is the evidence.", "VERIFIER REPORT · AS THE VIEWER PRINTED IT"):
@@ -974,7 +1042,7 @@ class Waterfall(unittest.TestCase):
 
     def test_by_call_draws_a_row_per_call_and_by_agent_the_lanes(self):
         needs_node(self)
-        out = json.loads(page_js(["esc", "fmtDur", "tickStep", "tickText", "ANSWER", "lastAnswer", "ended", "callState",
+        out = json.loads(page_js(["esc", "fmtDur", "tickStep", "tickText", "ANSWER", "lastAnswer", "ended", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "callState",
                                   "WFMAX", "wfBars", "renderWaterfall"], CALLS_JS + """
             const V2 = true, R = null, fmtT = ts => "t" + ts, label = a => a.name, actMatch = a => !a.hide;
             const el = {}, $ = id => el[id] ??= { style: { setProperty() {} }, clientWidth: 900 }, put = (id, h) => { $(id).html = h; };
@@ -1169,7 +1237,7 @@ class GraphGrades(unittest.TestCase):
                               "first_ts": stamp(first), "last_ts": stamp(last), "attribution": "token"}, run=run)]:
                 rows.extend(tr.feed(rec))
         out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                  "ingest", "joinEgress"], f"""
+                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest", "joinEgress"], f"""
             let S; const V2 = true, STOPPED = "", pushTape = r => r, alert = () => {{}}; reset();
             {json.dumps(rows)}.forEach(ingest); joinEgress();
             process.stdout.write(JSON.stringify([...S.effects.values()].map(e => e.call)));"""))
@@ -1193,7 +1261,7 @@ class GraphGrades(unittest.TestCase):
     def test_an_egress_totals_tape_row_says_whether_it_matched_a_call(self):
         """Its Happened column read NOT JOINED YET for good: the run's analysis joins only a kernel sensor's effects."""
         needs_node(self)
-        out = json.loads(page_js(["esc", "reader", "tapeRow"], """
+        out = json.loads(page_js(["esc", "EVWORD", "reader", "tapeRow"], """
             const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", selected = null, V2 = true;
             const total = seq => ({ ts: 1, i: seq, agent: { name: "signer" }, ev: "EFFECT", text: "EFFECT · net api.example:443",
               rec: { session_id: "r1", v2: { run_seq: seq, effect: { kind: "net", target: "api.example:443", claim: null } } } });
@@ -1206,7 +1274,7 @@ class GraphGrades(unittest.TestCase):
     def test_graph_redraws_when_eviction_replaces_a_linked_egress_total(self):
         needs_node(self)
         out = json.loads(page_js(["reset", "sessionOf", "agentOf", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel",
-                                  "ingest", "accept", "rebuild", "runRows", "inScope", "joinEgress", "renderWhyView",
+                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "ingest", "accept", "rebuild", "runRows", "inScope", "joinEgress", "renderWhyView",
                                   "whyRef", "netEffects", "effectHow", "dict", "esc", "plural", "ANSWER", "DECIDED",
                                   "decided", "signedNode", "edgeGrade", "GRADE", "reach", "GTYPE", "GRAPH_MAX", "pct",
                                   "graphView"], """
@@ -1357,6 +1425,20 @@ class WhyCauses(unittest.TestCase):
         needs_node(self)
         self.assertEqual(self.body(WHY_RUN)[0], WHY_TEXT)
 
+    def test_blocked_calls_are_attempts_in_the_heading_and_copied_explanation(self):
+        needs_node(self)
+        for status, heading, verb in ((None, "RAN", "run"), ("ok", "RAN", "run"), ("error", "RAN", "run"),
+                                      ("blocked", "WAS BLOCKED FROM RUNNING", "try to run")):
+            with self.subTest(status=status):
+                run = {**WHY_RUN, "nodes": [{**n, "status": status} if n["id"] == "ev:call" else n
+                                           for n in WHY_RUN["nodes"]]}
+                text, page = self.body(run)
+                question = f"Why did executor {verb} send_email?"
+                self.assertEqual(text.splitlines()[0], question)
+                self.assertIn(f'<div class="sec">executor {heading}</div>', page)
+                copied = html.unescape(re.search(r'data-copy="([^"]*)"', page).group(1))
+                self.assertEqual(copied.splitlines()[0], question)
+
     def test_each_cause_links_its_node_and_record_and_has_its_ready_command(self):
         needs_node(self)
         page = self.body(WHY_RUN)[1]
@@ -1405,7 +1487,7 @@ class Horizon(unittest.TestCase):
             "bytes_out": 0, "bytes_in": 20, "connections": 0,
             "first_ts": "2026-10-10T17:00:01Z", "last_ts": "2026-10-10T17:00:02Z"}, run=run))]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map([["verified", {{ verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             process.stdout.write(JSON.stringify(hzData().ev.map(e => [e.run, e.at, e.act, e.gr])));"""))
@@ -1433,7 +1515,7 @@ class Horizon(unittest.TestCase):
                 {"id": "r2", "agent": "coder", "parent": "r1", "verdict": "pending"},
                 {"id": "r3", "agent": "researcher", "parent": "r1", "verdict": "verified"}]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1474,7 +1556,7 @@ class Horizon(unittest.TestCase):
     def hz_cap(self, recs):
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1495,7 +1577,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(1, "bad", 9999, ts_unread=True)] + [why_call(i, "w", 100 + 60 * i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzSecs"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData", "hzSecs"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1508,7 +1590,7 @@ class Horizon(unittest.TestCase):
         needs_node(self)
         recs = [why_call(i, "w", 100 + i) for i in range(1, 4)]
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "hzChain"], f"""
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData", "hzChain"], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map(), V2 = false, chainState = {{ ok: true, n: 0 }}, STOPPED = "";
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -1529,7 +1611,7 @@ class Horizon(unittest.TestCase):
                 hz_call(3, "WebFetch", {"url": "https://toString.example/"}, "constructor")]
         runs = [{"id": "r1", "agent": "__proto__", "verdict": "verified"}, {"id": "constructor", "agent": "constructor", "verdict": "verified"}]
         out = json.loads(page_js(["FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
+                                  "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData", "dict", "HZACT", "HZSYM", "HZWORST",
                                   "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW], f"""
             const ALL = {json.dumps(recs)}, RUNS = new Map({json.dumps(runs)}.map(r => [r.id, r])), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null, frames = 0, PAGE = "horizon";
@@ -1585,7 +1667,7 @@ class Horizon(unittest.TestCase):
             const texts = [], ctx = new Proxy({ fillText: (t, x, y) => texts.push([t, x, y]), measureText: t => ({ width: t.length * 6 }) },
                                               { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }) });
             const hud = { offsetLeft: 580, offsetTop: 16, offsetWidth: 202, offsetHeight: 190 }, PAGE = "horizon";
-            const cv = { clientWidth: 800, clientHeight: 600, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [hud] } };
+            const cv = { clientWidth: 800, clientHeight: 600, offsetLeft: 0, offsetTop: 0, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [hud] } };
             const $ = id => id === "hzcv" ? cv : null, window = {}, document = { createElement: () => ({ width: 0, height: 0, getContext: () => ctx }) };
             const css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
             const matchMedia = () => ({ matches: true }), requestAnimationFrame = () => {};
@@ -1713,12 +1795,16 @@ class Horizon(unittest.TestCase):
         self.assertEqual(out["squares"], len(out["numbers"]))
 
     def test_a_phone_shows_the_map_first_with_the_huds_readouts(self):
-        """At 390px the map started below the first screen and the HUD's readouts (egress, restricted, chain) were hidden."""
+        """At 390px the map started below the first screen and the HUD's readouts (egress, restricted, chain) were hidden;
+        then the readouts covered the map's upper half and its rings' names ran together: they go above the map."""
         css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
         self.assertFalse(".hzhud .hztel {\n        display: none" in css)
         phone = css[css.index("/* HORIZON: the map first"):]
         self.assertIn(".hzmain {\n        display: contents\n      }", phone)
-        self.assertIn(".hzstage {\n        order: -1;\n        height: 440px;", phone)
+        self.assertIn(".hzstage {\n        order: -1;\n        height: 560px;", phone)
+        self.assertIn(".hzhud {\n        position: static;", phone)
+        # the readouts' boxes are where the map's names keep off, measured from the canvas, which starts under them
+        self.assertIn("h.offsetLeft - cv.offsetLeft, h.offsetTop - cv.offsetTop", PAGE)
         # the zoom controls on a line of their own under ORBIT/TOP: beside them, at 390px they ran into the mission clock
         self.assertIn('data-hzv="top">TOP</button></span><br><span class="hzvt"><button type="button" data-hzz="in"', PAGE)
 
@@ -1760,7 +1846,7 @@ class HorizonZoom(unittest.TestCase):
     stage drawn only when something changed."""
 
     DATA = ["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder", "HZMAX",
-            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"]
+            "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData"]
     # HZ comes with HZMAX: its line ends in a comment, so page_js takes the next line, HZ's, with it
     DRAW = ["HZACT", "HZSYM", "HZWORST", "hzRgba", "hzShort", "hzDraw", "hzFrame", *HZ_DRAW, "hzZoom", "hzAim", "hzFlyTo",
             "hzFocus"]
@@ -1779,7 +1865,7 @@ class HorizonZoom(unittest.TestCase):
                                   { get: (o, k) => k in o ? o[k] : () => ({ addColorStop() {} }),
                                     set: (o, k, v) => { if (k === "filter" && /^blur/.test(v)) blurs++; o[k] = v; return true; } });
             const PAGE = "horizon", window = {}, document = { createElement: () => { made++; return { width: 0, height: 0, getContext: () => ctx }; } };
-            const cv = { clientWidth: 1200, clientHeight: 600, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [] } };
+            const cv = { clientWidth: 1200, clientHeight: 600, offsetLeft: 0, offsetTop: 0, width: 0, height: 0, getContext: () => ctx, parentNode: { querySelectorAll: () => [] } };
             const matchMedia = () => ({ matches: !motion }), requestAnimationFrame = f => rafs.push(f);
             let $ = id => id === "hzcv" ? cv : null, css = n => n === "--hz-gas" ? "#fff6e4 #ffbc64 #ee8028 #6e2408" : n === "--mono" ? "monospace" : "#3cc8f0";
             const performance = { now: () => 0 };
@@ -2260,7 +2346,7 @@ class InvisibleCharacters(unittest.TestCase):
         req = {"event": "tk_alert", "session_id": "r1", "tk_seq": 8, "ts": 1760000001,
                "v2": {"tool_use_id": "c1", "approval": "requested", "approval_id": "apr-1"}}
         out = json.loads(page_js(["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
-                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "permOf", "heldRows", "renderApprovalsPage"], f"""
+                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req])}, RUNS = new Map(), html = {{}}, el = {{}};
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
@@ -2619,7 +2705,7 @@ class PlainPages(unittest.TestCase):
         older = {**done, "session_id": "e1", "ts": 1759990000}   # read later: a fresh load
         approve = {**answer, "session_id": "e1", "ts": 1759990001, "v2": {"tool_use_id": "c1", "approval": "approve"}}
         out = json.loads(page_js(["esc", "j", "fmtT", "fmtD", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting",
-                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "permOf", "heldRows", "renderApprovalsPage"], f"""
+                                  "OPENHOLD", "waitingElsewhere", "waitingCount", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "permOf", "heldRows", "renderApprovalsPage"], f"""
             const ALL = {json.dumps([hold, req, done, answer, older, approve])}, RUNS = new Map(), html = {{}}, el = {{}}, TZ = "GMT+5:30";
             const $ = id => el[id] ??= {{}}, put = (id, h) => {{ html[id] = h; }}, DESK = () => null;
             let PAGE = "approvals", waitKey = [], waitList = [], heldKey = [], heldList = [];
@@ -2653,7 +2739,7 @@ class PlainPages(unittest.TestCase):
         purpose is the reader's word: another principal's reads that gave it folded under the newest reader's name.
         tracekit report's reads did not fold at all: one row per run per report."""
         needs_node(self)
-        out = json.loads(page_js(["esc", "KINDS", "anyFilter", "kindChips", "reader", "tapeRow", "renderTape"], """
+        out = json.loads(page_js(["esc", "KINDS", "EVWORD", "anyFilter", "kindChips", "reader", "tapeRow", "renderTape"], """
             const el = {}, $ = id => el[id] ??= { textContent: "", innerHTML: "" }, put = (id, h) => { $(id).innerHTML = h; };
             const label = a => a.name, fmtT = String, rel = s => s, srcOf = () => "SIGNED", rowMatch = () => true, signer = { name: "signer" };
             const read = (ts, run, n, who = "uid:501") => ({ ts, agent: signer, ev: "SIGNER", text: `CONTENT READ FOR TRACEKIT VIEW · ${who} read ${n} records of run ${run}`,
@@ -2692,13 +2778,14 @@ class PlainPages(unittest.TestCase):
 GRAPH_FNS = ["dict", "esc", "plural", "ANSWER", "DECIDED", "decided", "signedNode", "edgeGrade", "GRADE", "whyRef",
              "netEffects", "effectHow", "reach", "GTYPE", "GRAPH_MAX", "pct", "graphView"]
 APPROVALS_FNS = ["esc", "j", "fmtT", "shq", "word", "cp", "ANSWER", "FIELD", "subject", "waiting", "OPENHOLD", "waitingElsewhere",
-                 "waitingCount", "permOf", "heldRows", "renderApprovalsPage"]
+                 "waitingCount", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "permOf", "heldRows", "renderApprovalsPage"]
 
 
-def retried(run, final=True, retry=True):
+def retried(run, final=True, retry=True, again="c2"):
     """The page's records (view.Translator's) of a held call c1 a person approved: the hook blocked it at once and the
     agent's retry c2 ran under its approval (signer _reusable: its consume filed under c2); without `retry`, the
-    approval expired unused. An open run also holds c3, requested and not answered."""
+    approval expired unused. An open run also holds c3, requested and not answered. With again="c1" the retry has the
+    held call's own id, as LangGraph's does: its consume names no held call."""
     who = {"scheme": "uid", "subject": "501", "attested": True}
     ask = lambda seq, call: v2rec(seq, "policy.decision", {"tool_use_id": call, "tool": "Bash", "decision": "ask",  # noqa: E731
                                                            "rule_ids": ["TK-A032"]}, run=run)
@@ -2707,8 +2794,8 @@ def retried(run, final=True, retry=True):
                  run=run, tool_call_id="c1"),
            v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": f"apr-{run}", "decision": "approve",
                                  "approver_identity": who}, run=run)]
-    evs += [ask(5, "c2"), v2rec(6, "approval.consumed", {"approval_id": f"apr-{run}"}, run=run, tool_call_id="c2"),
-            v2rec(7, "tool.result", {"tool_use_id": "c2", "ok": True}, run=run, tool_call_id="c2")] if retry else \
+    evs += [ask(5, again), v2rec(6, "approval.consumed", {"approval_id": f"apr-{run}"}, run=run, tool_call_id=again),
+            v2rec(7, "tool.result", {"tool_use_id": again, "ok": True}, run=run, tool_call_id=again)] if retry else \
         [v2rec(5, "approval.expired", {"approval_id": f"apr-{run}"}, run=run)]
     evs += [v2rec(9, "run.final", {"head_run_seq": 9}, run=run)] if final else \
         [ask(10, "c3"), v2rec(11, "approval.request", {"approval_id": f"apr-{run}-3", "binding": {"tool_call_id": "c3"}},
@@ -2728,7 +2815,7 @@ class ApproveThenRetry(unittest.TestCase):
         needs_node(self)
         recs = retried("fin") + retried("open", final=False)
         out = json.loads(page_js(["tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended", "heldCall",
-                                  "callState", "ingest", "wfBars", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
+                                  "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "callState", "ingest", "wfBars", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
             const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
                         tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
             const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
@@ -2753,6 +2840,91 @@ class ApproveThenRetry(unittest.TestCase):
             ["fin", "c1", "all ask approved", "APPROVED · RETRY RAN", "uid:501 (attested)", "c2"]])
         self.assertIn("const held = S.actList.filter(heldCall).length", PAGE)   # DESK's HELD
 
+    def test_a_retry_with_the_held_calls_own_id_is_that_call_on_every_view(self):
+        """LangGraph's retry reuses the held call's id and its consume names no held call: the tape opened a second call
+        for it (NOT ANSWERED, and the approved one never ran), DESK counted 4 calls and 2 holds for 3 calls and 1,
+        PERMISSIONS listed the hold twice and HORIZON drew two moves. The signer's consume is what files the retry with the
+        held call: read as records arrive, the retry is a call of its own until its consume, then that call's row, every
+        record read once."""
+        needs_node(self)
+        recs = retried("lg", again="c1")
+        out = json.loads(page_js(["reset", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                  "heldCall", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "callState", "ingest", "accept", "rebuild", "runRows",
+                                  "inScope", "OPENHOLD", "plural", "runSentence", "permOf"], f"""
+            let S; reset();
+            const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => {{ S.tape.push(r); return r; }}, alert = () => {{}}, toastOf = () => {{}}, STOPPED = "";
+            const RUNS = new Map(), LOADED = new Map(), ALL = [];
+            let V2 = true, scope = null, R = null, DROPPED = 0, MAXREC = 50000, tapeShown = 0, toasting = true;
+            const seen = () => [S.actList.map(a => [a.pre.tk_seq, callState(a)[1]]), S.recs.length === ALL.length, S.tape.filter(t => !t.under).length];
+            const live = [];
+            for (const r of {json.dumps(recs)}) {{ accept(r); if (r.tk_seq === 5 || r.tk_seq === 6) live.push(seen()); }}
+            foldsOf(ALL, FOLDS); reset(); for (const r of ALL) ingest(r);   // read at once, as the page loads
+            process.stdout.write(JSON.stringify({{ live, load: seen(), under: S.actList[0].subs.map(s => s.text),
+              sentence: runSentence({{ verdict: "verified" }}), perm: permOf(ALL).map(r => [r.rec.tool_use_id, r.out[1]]) }}));"""))
+        # the retry (record 5) is its own row until the consume (6) files it with the held call (2)
+        self.assertEqual(out["live"], [[[[2, "APPROVED"], [5, "TO ANSWER"]], True, 3], [[[2, "APPROVED · RAN"]], True, 2]])
+        self.assertEqual(out["load"], [[[2, "APPROVED · RAN"]], True, 3])
+        self.assertIn("the agent sent this call again, with its id", out["under"])
+        self.assertEqual(out["sentence"], "Verified. 1 call: 1 ran, 0 blocked, 1 held (1 approved).")
+        self.assertEqual(out["perm"], [["c1", "APPROVED · RAN"]])
+        hz = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
+                                 "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData"], f"""
+            const ALL = {json.dumps(recs)}, RUNS = new Map([["lg", {{ id: "lg", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
+            let hzKey = [], hzD = null;
+            const D = hzData();
+            process.stdout.write(JSON.stringify([D.ev.map(e => [e.seq, e.act, e.hold]), D.calls]));"""))
+        self.assertEqual(hz, [[[2, "approved", True]], 1])
+
+    def results(self, name, *steps):
+        """Records of call c1 as the signer writes them (`steps`: (type, data); a decision's data merged into a deny-shaped
+        one, a result's the decision_id it names): (the page's calls as [seq, decision, its result's seq], the why log's
+        actions as (decision, status))."""
+        top = {"run": name, "tool_call_id": "c1", "attempt": 0, "tenant": "t", "log_id": "L"}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}, **top)]
+        for n, (typ, data) in enumerate(steps, 2):
+            recs.append(v2rec(n, typ, {"tool_use_id": "c1", "tool": "Bash", "rule_ids": ["TK-D001"], "policy_hash": "p",
+                                       "decision_id": f"d{n}", "args_commitment": "hmac-sha256:x", **data}
+                              if typ == "policy.decision" else {"tool_use_id": "c1", "ok": True, "decision_id": data,
+                                                                "output": {"hash": "sha256:o", "size": 1}}
+                              if typ == "tool.result" else data, **top))
+        recs.append(v2rec(len(recs) + 1, "run.final", {"head_run_seq": len(recs) + 1}, **top))
+        tr, rows = view.Translator(), []
+        for r in recs:
+            rows += [{**x, "ts": r["event"]["run_seq"], "session_id": name, "tk_seq": r["event"]["run_seq"]} for x in tr.feed(r)]
+        page = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                   "heldCall", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun",
+                                   "callState", "ingest"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agentOf = r => ({{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }});
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows)};
+            foldsOf(ALL, FOLDS);
+            for (const r of ALL) {{ sessionOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify(S.actList.map(a => [a.pre.tk_seq, a.v2.decision, a.post?.tk_seq ?? null])));"""))
+        why = load_run(import_v2.convert(recs, tempfile.mkdtemp(), {}))
+        return page, [(a["policy"]["decision"], a["status"]) for a in why.of_type("action")]
+
+    def test_a_deny_that_ran_anyway_is_filed_as_it_ran(self):
+        """The signer takes a result for any open decision, a deny's too (an agent that ran it anyway), and signs which
+        (decision_id). Filed by "the latest call that could have run, never a deny", a deny's result went nowhere and the
+        why log read a deny that ran blocked."""
+        needs_node(self)
+        self.assertEqual(self.results("deny-ran", ("policy.decision", {"decision": "deny"}), ("tool.result", "d2")),
+                         ([[2, "deny", 3]], [("deny", "ok")]))
+
+    def test_a_deny_that_ran_after_an_approved_call_is_filed_as_it_ran(self):
+        """As a deny that ran: one after an approved call that ran under the same id gave its result to that call."""
+        needs_node(self)
+        self.assertEqual(self.results("deny-ran-after", ("policy.decision", {"decision": "ask"}),
+                                      ("approval.request", {"approval_id": "X", "binding": {"tool": "Bash", "tool_call_id": "c1"}}),
+                                      ("approval", {"tool_use_id": "c1", "approval_id": "X", "decision": "approve"}),
+                                      ("approval.consumed", {"approval_id": "X"}), ("tool.result", "d2"),
+                                      ("policy.decision", {"decision": "deny"}), ("tool.result", "d7")),
+                         ([[2, "ask", 6], [7, "deny", 8]], [("ask", "ok"), ("deny", "ok")]))
+
     def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
         """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an
         APPROVED blocked call; an approval that expired unused read "expired before anyone answered"."""
@@ -2772,7 +2944,7 @@ class ApproveThenRetry(unittest.TestCase):
         """HORIZON drew the retry that ran as held (◯) and its HUD counted HOLDS by held marks, DESK's HELD by decisions."""
         needs_node(self)
         out = json.loads(page_js(["dict", "FIELD", "FILE_TOOLS", "subject", "rel", "category", "ANSWER", "lseq", "vis", "treeOrder",
-                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "hzData"], f"""
+                                  "HZMAX", "hzRad", "hzPath", "HZVERB", "HZNOUN", "hzCmd", "hzSh", "HZPRE", "HZNOP", "hzDataWords", "hzHost", "hzPlace", "hzRest", "HZBAND", "hzPack", "hzNest", "hzWhere", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid", "hzData"], f"""
             const ALL = {json.dumps(retried("fin"))}, RUNS = new Map([["fin", {{ id: "fin", verdict: "verified" }}]]), V2 = true, chainState = {{ ok: true }};
             let hzKey = [], hzD = null;
             const D = hzData();
@@ -2784,7 +2956,7 @@ class ApproveThenRetry(unittest.TestCase):
     def test_a_runs_held_count_is_its_reviews_held_calls(self):
         """RUNS, panel 1, the run header and the review's POLICY counted HELD by decisions: two for one held call."""
         needs_node(self)
-        out = page_js(["esc", "plural", "runHeld", "renderRuns"], """
+        out = page_js(["esc", "plural", "runHeld", "runLength", "renderRuns"], """
             const RUNS = new Map([["r1", { id: "r1", agent: "claude-code", first_ts: "2026-10-29T08:00:00Z", last_ts: "2026-10-29T08:01:00Z",
                                            state: "final", verdict: "verified", decisions: { ask: 2 }, holds: { "approved · ran": 1 } }]]);
             let PAGE = "desk", scope = null; const el = {}, $ = id => el[id] ??= {}, put = (id, h) => { el[id] = { innerHTML: h }; };
@@ -2812,7 +2984,7 @@ class ApproveThenRetry(unittest.TestCase):
         css = PAGE[PAGE.index("<style>"):PAGE.index("</style>")]
         self.assertRegex(css, r"\.v2 \.c-st \{\s*width: 156px")
         self.assertRegex(css, r"td\.c-st \{\s*white-space: normal")
-        self.assertIn('return ["s-ok", a.ranBy?.post ? "APPROVED · RETRY RAN"', PAGE)   # the label it is sized for
+        self.assertIn('return ["s-ok", a.ranBy ? "APPROVED · RETRY RAN"', PAGE)   # the label it is sized for
 
     def test_graph_shows_a_long_state_and_its_rule_whole(self):
         """The node read "APPROVED · RETRY RAN…": the state and the rule after it were cut."""
@@ -3061,7 +3233,7 @@ class FinalQA(unittest.TestCase):
 
     def test_a_runs_list_says_1_gap_and_1_call(self):
         needs_node(self)
-        out = page_js(["esc", "plural", "runHeld", "renderRuns"], """
+        out = page_js(["esc", "plural", "runHeld", "runLength", "renderRuns"], """
             const RUNS = new Map([["r1", { id: "r1", agent: "coder", first_ts: "2026-10-29T08:00:00Z", last_ts: "2026-10-29T08:01:00Z",
                                            state: "final", verdict: "verified", decisions: { allow: 1 }, gaps: { signer_unavailable: 1 } }]]);
             let PAGE = "desk", scope = null; const el = {}, $ = id => el[id] ??= {}, put = (id, h) => { el[id] = { innerHTML: h }; };
@@ -3116,6 +3288,20 @@ class RunChip(unittest.TestCase):
         self.assertEqual(out, ["Being checked again: the store's bytes changed after the viewer read them, so its last "
                                "verdict no longer stands.", "Pending: no checkpoint covers this run's last record yet."])
 
+    def test_a_run_its_witness_saw_another_version_of_says_so_in_the_reviews_own_words(self):
+        """The headline read "checkpoint — bad cosignature from pinned witness witness.…" under the ANCHORING line's
+        plain sentence; any other failure still reads its failing check."""
+        needs_node(self)
+        changed = ("the witness's (witness.example.org/w1) cosignature doesn't match this log: the log was changed after "
+                   "the witness saw it, or the cosignature is damaged")
+        out = json.loads(page_js(["failLines", "runSentence"], f"""
+            process.stdout.write(JSON.stringify([
+              runSentence({{ verdict: "failed", anchoring: {json.dumps("FAILED: " + changed + ".")},
+                             report: "[FAIL] checkpoint — bad cosignature from pinned witness.example.org/w1\\n" }}),
+              runSentence({{ verdict: "failed", anchoring: null, report: "[FAIL] inclusion — gone\\n" }})]));"""))
+        self.assertEqual(out, [f"Failed verification: {changed}. None of its records are shown.",
+                               "Failed verification: inclusion — gone. None of its records are shown."])
+
     def test_every_verified_indicator_reads_checks_stopped_while_the_viewer_checks_nothing(self):
         """The run chip said checks stopped, but the verdict chips (run header, RUNS, panel 1, a call's detail, the run
         review), EVIDENCE's stamp, HORIZON's HUD, ALL RUNS' count and the review's summary still read VERIFIED."""
@@ -3158,7 +3344,8 @@ class NothingLost(unittest.TestCase):
             "desk": ["desk", "calls", "desk"], "runs": ["runs", "calls", "desk"], "live": ["run", "calls", "desk"],
             "approvals": ["approvals", "calls", "desk"], "permissions": ["permissions", "calls", "permissions"],
             "horizon": ["horizon", "calls", "desk"], "map": ["horizon", "calls", "desk"],   # MAP: HORIZON's first name
-            "influence": ["influence", "calls", "influence"], "overview": ["run", "overview", "overview"],
+            "influence": ["influence", "calls", "influence"], "tips": ["tips", "calls", "desk"],
+            "overview": ["run", "overview", "overview"],
             "calls": ["run", "calls", "desk"], "waterfall": ["run", "waterfall", "desk"], "graph": ["run", "graph", "graph"],
             "why": ["run", "why", "why"], "agents": ["run", "agents", "agents"], "evidence": ["run", "evidence", "evidence"],
             "timeline": ["run", "calls", "timeline"]})   # the why log's TIMELINE: CALLS with its events
@@ -3206,7 +3393,7 @@ class NothingLost(unittest.TestCase):
         const el = {}, $ = id => el[id] ??= { hidden: false, textContent: "" };
         """ + "".join(f"function {f}() {{}}\n" for f in (
         "renderTop", "renderPages", "renderWaiting", "renderTicker", "renderNeeds", "renderRunHead", "renderRunsPage",
-        "renderApprovalsPage", "renderHorizon", "renderAgents", "renderTape", "renderAlerts", "renderMix", "renderLanes",
+        "renderApprovalsPage", "renderTipsPage", "renderHorizon", "renderAgents", "renderTape", "renderAlerts", "renderMix", "renderLanes",
         "renderWaterfall", "renderReason", "renderFiles", "renderWhyView", "renderNode", "renderWhyPanel", "renderDetail",
         "renderReview", "syncLink", "joinEgress")) + """
         const W = { runs: [{ run_id: "w1" }], calls: {}, alerts: [{ run_id: "w1", node: "ev:5" }] };
@@ -3233,7 +3420,7 @@ class NothingLost(unittest.TestCase):
               }
             }
             process.stdout.write(JSON.stringify(out));"""))
-        pages = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence"]
+        pages = ["desk", "runs", "live", "approvals", "permissions", "horizon", "influence", "tips"]
         views = {"overview": "overview", "calls": "desk", "waterfall": "desk", "graph": "graph", "why": "why",
                  "agents": "agents", "evidence": "evidence", "timeline": "timeline"}
 

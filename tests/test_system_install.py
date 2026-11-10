@@ -334,6 +334,55 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.assertNotEqual(seen["src"], install.ROOT)
         self.assertFalse(os.path.exists(seen["src"]))
 
+    def test_console_scripts_run_the_opt_interpreter_after_the_swap(self):
+        """#463: pip writes its scripts (and venv its activate) while the venv is at OPT.new; after the rename they must
+        name OPT's python and OPT, and the prompt reads tracekit."""
+        opt = self.opt()
+        venv = []
+
+        def run(cmd, **kw):
+            if "venv" in cmd:
+                venv.extend(cmd)
+                b = os.path.join(cmd[-1], "bin")
+                os.makedirs(b)
+                os.symlink(sys.executable, os.path.join(b, "python"))
+                for name, python in (("pip", "python3"), ("tracekit", "python")):
+                    with open(os.path.join(b, name), "w") as f:
+                        f.write(f"#!{b}/{python}\nimport sys\n")
+                with open(os.path.join(b, "activate"), "w") as f:
+                    f.write(f'VIRTUAL_ENV="{cmd[-1]}"\n')
+        with mock.patch.object(install, "OPT", opt), mock.patch.object(install.subprocess, "run", side_effect=run), \
+                mock.patch.object(install.os, "lchown"), \
+                mock.patch.object(install, "_opt_default_policy", return_value=POLICY):
+            install._install_venv(["tracekit-ai==0"])
+        b = os.path.join(opt, "bin")
+        for name, python in (("pip", "python3"), ("tracekit", "python")):
+            with open(os.path.join(b, name)) as f:
+                self.assertEqual(f.read(), f"#!{b}/{python}\nimport sys\n")
+        with open(os.path.join(b, "activate")) as f:
+            self.assertEqual(f.read(), f'VIRTUAL_ENV="{opt}"\n')
+        self.assertEqual(venv[venv.index("--prompt") + 1], "tracekit")
+        self.assertEqual(os.readlink(os.path.join(b, "python")), sys.executable)
+
+    def test_init_run_from_a_venv_builds_the_new_venv_from_the_base_python(self):
+        """#463: init run from a venv (/opt/tracekit/bin/python, a link) built the new venv from that link. Before
+        Python 3.11 the new venv's python then links to the old venv's, and after the swap to itself (ELOOP)."""
+        opt = self.opt()
+        link = os.path.join(os.path.dirname(opt), "python")
+        os.symlink(sys.executable, link)
+        venv = []
+
+        def run(cmd, **kw):
+            if "venv" in cmd:
+                venv.extend(cmd)
+                os.makedirs(os.path.join(cmd[-1], "bin"))
+        with mock.patch.object(install, "OPT", opt), mock.patch.object(install.sys, "executable", link), \
+                mock.patch.object(install.subprocess, "run", side_effect=run), \
+                mock.patch.object(install.os, "lchown"), \
+                mock.patch.object(install, "_opt_default_policy", return_value=POLICY):
+            install._install_venv(["tracekit-ai==0"])
+        self.assertEqual(venv[0], os.path.realpath(sys.executable))
+
     def test_hook_command_runs_the_opt_interpreter(self):
         self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.hook;", install._hook_command(python=install.OPT_PYTHON))
 

@@ -28,8 +28,11 @@ approved: apr-41231b925244ca5526a3fb5913812499, by you. It counts: the dev signe
 
 $ tracekit last
 run a7ca7a32c3bd18102ad42a735d85a682 (quickstart)
-Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2524cf9a0e001c45620723a9a4374abb); no witness cosignature; approvals: self; key retirements not proven complete.
+VERIFIED: 4 tool calls in 14 signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: a82527b19abf8d5df3ca6d8f5484d29bb451d0a86b8919838ed26cffe731a927.
 bundle: ~/demo/qs/a7ca7a32c3bd18102ad42a735d85a682.tkb
 check it again: tracekit verify ~/demo/qs/a7ca7a32c3bd18102ad42a735d85a682.tkb --trust ~/demo/qs/a7ca7a32c3bd18102ad42a735d85a682.trust.json
 next: tracekit view --dev   (every run, replayed and reviewed)

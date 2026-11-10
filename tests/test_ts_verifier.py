@@ -24,8 +24,9 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
 from factories import box_runset_bundle, damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
-from tracekit import cli, crypto, gateway  # noqa: E402
-from tracekit.bundle_v2 import export  # noqa: E402
+from tracekit import cli, crypto, gateway, grants  # noqa: E402
+from tracekit.bundle import Report  # noqa: E402
+from tracekit.bundle_v2 import VERSIONS, export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
 from tracekit.format.canon import event_hash  # noqa: E402
@@ -506,7 +507,16 @@ class SignerBundles(unittest.TestCase):
             "inclusion proof an object": (1, dict(edit=lambda f, m: forge_proof(f, m, {"AAAA": 1}))),
             "newer verifier_min_version": (2, dict(edit=manifest(lambda m: m.update(verifier_min_version="9.0")))),
             "older verifier_min_version": (0, dict(edit=manifest(lambda m: m.update(verifier_min_version="0.4")))),
+            "record twice": (1, dict(edit_run=lambda rs: rs.insert(2, rs[1]))),
         }.items()}
+
+        def leaf_twice(files, m):   # leaf 0 copied over the last: the copy's inclusion proof is for another index
+            s = json.loads(files["registry/run-set.json"])
+            s["leaves"] = [s["leaves"][0], *s["leaves"][:-1]]
+            files["registry/run-set.json"] = json.dumps(s).encode()
+            lines = files["registry/records.jsonl"].splitlines(keepends=True)
+            files["registry/records.jsonl"] = b"".join([lines[0], *lines[:-1]])
+        cases["run-set leaf duplicated"] = (self.mutate(src="run-set", edit=leaf_twice), witnessed, 1)
         for token in (b"0.0", b"0e0", b"false"):   # run-set bounds are integer tokens
             cases[f"run-set from {token}"] = (self.mutate(src="run-set", edit=lambda f, m: f.update({
                 "registry/run-set.json": f["registry/run-set.json"].replace(b'"from": 0,', b'"from": ' + token + b",")
@@ -535,7 +545,8 @@ class Agreement(SignerBundles):
     def agree(self, bundle, trust):
         rep, code = v2.verify(bundle, trust)
         ts = ts_verify(bundle, trust)
-        self.assertEqual((ts["exit_code"], ts["integrity"], ts["assurance"]), (code, rep.integrity, rep.assurance))
+        self.assertEqual((ts["exit_code"], ts["integrity"], ts["assurance"]),   # --json: a failed bundle isn't rated
+                         (code, rep.integrity, v2.NOT_RATED if code == v2.EXIT_FAIL else rep.assurance))
         self.assertEqual([(c["check"], c["status"]) for c in ts["checks"]], [(c["check"], c["status"]) for c in rep.checks])
         return code, rep
 
@@ -656,6 +667,29 @@ class Agreement(SignerBundles):
         code, rep = self.agree(bundle, trusts["two"])
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"))
         self.assertIn("2 pinned cosignature(s), 2 required", [c["detail"] for c in rep.checks])
+
+    def test_a_damaged_cosignature_reads_alike_in_both(self):
+        """A cosignature of the wrong length is malformed and one that fails to verify bad, with the same detail in
+        both verifiers: tracekit verify then says only what is known of each, never a rewrite alone."""
+        with open(self.trusts["witnessed"]) as f:
+            name = checkpoint.parse_vkey(json.load(f)["witnesses"][0]["vkey"])[0]
+        for said, change in (("malformed", lambda raw: raw[:4] + raw[12:]),   # no time: 64 bytes
+                             ("bad", lambda raw: raw[:-1] + bytes([raw[-1] ^ 1]))):   # a flipped bit
+
+            def damaged(files, m, change=change):
+                k = json.loads(files["proofs/records.json"])["checkpoint"]
+                lines = files[k].decode().split("\n")
+                i = next(i for i, ln in enumerate(lines) if ln.startswith(f"— {name} "))
+                dash, who, blob = lines[i].split(" ")
+                lines[i] = f"{dash} {who} {base64.b64encode(change(base64.b64decode(blob))).decode()}"
+                files[k] = "\n".join(lines).encode()
+            with self.subTest(said):
+                bundle, want = self.mutate(edit=damaged), [f"{said} cosignature from pinned witness {name}"]
+                code, rep = self.agree(bundle, self.trusts["witnessed"])
+                self.assertEqual(code, 1)
+                self.assertEqual([c["detail"] for c in rep.checks if c["check"] == "checkpoint"], want)
+                self.assertEqual([c["detail"] for c in ts_verify(bundle, self.trusts["witnessed"])["checks"]
+                                  if c["check"] == "checkpoint"], want)
 
     def test_a_witness_is_one_key_under_one_name_with_one_class_in_both(self):
         """Two keys pinned under one witness name, or one witness with two classes: both verifiers refuse the trust
@@ -919,6 +953,196 @@ class Agreement(SignerBundles):
         _, rep = self.agree(bundle, trust)   # the same lines in both
         self.assertNotIn("boxed agent", [c["check"] for c in rep.checks])
 
+    def test_a_self_issued_grant_is_a_self_approval_in_both(self):
+        """Pre-1.6 review 2: on a witnessed log, a run whose own user approved its held call and one whose own user
+        issued the grant that released it read the same in both verifiers: dev, `approvals: self`, check for check."""
+        me, usdc, witness = CallerIdentity("uid", "990101", True), 10 ** 6, Witness()
+        d = os.path.join(self.d, f"selfgrant-{uuid.uuid4().hex}")
+        s = svc.SignerService(os.path.join(d, "data"), witnesses=[witness], grace_s=0, fsck_every_s=0,
+                              policy=Engine({"tools": {"send_money": "app"}, "ask": [
+                                  {"id": "PAY", "tool": "send_money", "pattern": "^", "approval": {"grant": "payment.send"}}]}))
+        self.addCleanup(s.close)
+        pay = {"amount": 120 * usdc, "currency": "USDC", "to": "0x" + "a1" * 20}
+
+        def call(method, **req):
+            return s.call(me, method, {"request_id": uuid.uuid4().hex, **req})
+
+        def run():
+            r = call("register_run", agent={"name": "payer"})
+            return {"run_id": r["run_id"], "run_token": r["run_token"]}
+
+        def decide(h, i):
+            return call("decide", **h, stream="s", client_seq=i, tool_call_id=f"t{i}", tool="send_money",
+                        args_source="parsed", args=pay)
+        approved, granted = run(), run()
+        decide(approved, 0)
+        call("approval_decide", approval_id=call("approval_request", **approved, tool_call_id="t0")["approval_id"],
+             decision="approve")
+        self.assertTrue(call("grant_issue", run_id=granted["run_id"], intent="payment.send", tools=["send_money"],
+                             caveats=[{"field": "currency", "op": "==", "value": "USDC"},
+                                      {"field": "payee", "op": "==", "value": pay["to"]}],
+                             limits=[{"op": "sum", "field": "amount", "max": 1000 * usdc}],
+                             expires_at=svc._iso(time.time() + 3600))["self_approved"])
+        self.assertEqual([decide(granted, i)["decision"] for i in range(3)], ["allow"] * 3)
+        for h in (approved, granted):
+            call("close_run", **h)
+        s.sweep(time.monotonic() + 1)
+        deadline = time.monotonic() + 20
+        while True:
+            s.checkpoint()
+            size, note = s.log.storage.checkpoint_latest()
+            if size == s.log.storage.tree.size and signed_by(note.split("\n\n", 1)[1], witness.vkey):
+                break
+            self.assertLess(time.monotonic(), deadline, "no cosigned checkpoint")
+            time.sleep(0.1)
+        trust = os.path.join(d, "trust.json")
+        with open(trust, "w") as f:
+            json.dump({"logs": [s.vkey], "witnesses": [{"vkey": witness.vkey, "class": "customer"}],
+                       "witnesses_required": 1, "algs": ["ed25519"]}, f)
+        reads = []
+        for name, h in (("approved", approved), ("granted", granted)):
+            bundle = os.path.join(d, f"{name}.tkb")
+            export(s.log.storage, "default", h["run_id"], note, bundle)
+            code, rep = self.agree(bundle, trust)
+            self.assertEqual(code, 0, rep.checks)
+            parts = rep.assurance.split("; ")
+            reads.append((parts[0], "approvals: self" in parts, "cosigned ed25519 by" in rep.assurance))
+            self.assertNotIn("verifier minimum", [c["check"] for c in rep.checks])
+        self.assertEqual(reads, [("dev", True, True)] * 2)
+        # #674 re-review: its manifest edited down to 1.4.0, which a 1.5 verifier reads as witnessed: both warn alike
+        low = os.path.join(d, "granted-low.tkb")
+        rewrite_bundle(bundle, low, lambda files, manifest: manifest.update(verifier_min_version="1.4.0"))
+        code, rep = self.agree(low, trust)
+        self.assertEqual(code, 0, rep.checks)
+        [line] = [c for c in rep.checks if c["check"] == "verifier minimum"]
+        self.assertEqual(line["status"], "warn")
+        self.assertEqual([c for c in ts_verify(low, trust)["checks"] if c["check"] == "verifier minimum"], [line])
+
+    def test_both_verifiers_re_check_intent_grants_alike(self):
+        """Intent grants (docs/intent-grants.md): a person's grant, the two payments it released, one it held and its
+        revocation read the same in both; so does each record a faulty signer could write, problem for problem: a
+        release its grant doesn't allow fails, any other record the signer never writes warns."""
+        alice, payer, usdc = CallerIdentity("uid", "990001", True), CallerIdentity("uid", "990101", True), 10 ** 6
+        p1, p2, d = "0x" + "a1" * 20, "0x" + "b2" * 20, os.path.join(self.d, f"grants-{uuid.uuid4().hex}")
+        s = svc.SignerService(d, approvals={"approvers": ["uid:990001"], "persons": {"uid:990001": "alice"}},
+                              policy=Engine({"tools": {"send_money": "app"}, "ask": [
+                                  {"id": "PAY", "tool": "send_money", "pattern": "^", "approval": {"grant": "payment.send"}}]}))
+        self.addCleanup(s.close)
+        r = s.call(payer, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "payer"}})
+        gid = s.call(alice, "grant_issue", {
+            "request_id": uuid.uuid4().hex, "run_id": r["run_id"], "intent": "payment.send",
+            "caveats": [{"field": "currency", "op": "==", "value": "USDC"}, {"field": "payee", "op": "in", "value": [p1, p2]},
+                        {"field": "amount", "op": "<=", "value": 200 * usdc}],
+            "limits": [{"op": "sum", "field": "amount", "max": 500 * usdc}], "expires_at": svc._iso(time.time() + 3600),
+            "tools": ["send_money"]})["grant_id"]
+        for i, (amount, to) in enumerate(((120, p1), (80, p2), (400, p1))):   # the last is over 200 USDC each: held
+            s.call(payer, "decide", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"],
+                                     "stream": "s", "client_seq": i, "tool_call_id": f"t{i}", "tool": "send_money",
+                                     "args_source": "parsed", "args": {"amount": amount * usdc, "currency": "USDC", "to": to}})
+        s.call(alice, "grant_revoke", {"request_id": uuid.uuid4().hex, "grant_id": gid})
+        s.checkpoint()
+        bundle, trust = os.path.join(d, "grants.tkb"), os.path.join(d, "trust.json")
+        export(s.log.storage, "default", r["run_id"], s.log.storage.checkpoint_latest()[1], bundle)
+        with open(trust, "w") as f:
+            json.dump({"logs": [s.vkey], "algs": ["ed25519"]}, f)
+        _, rep = self.agree(bundle, trust)
+        [line] = [c for c in rep.checks if c["check"] == "intent grants"]
+        self.assertEqual((line["status"], line["detail"]), ("pass", "1 grant(s) by alice, 1 revoked; 2 call(s) released "
+                         "within them (0 at T2, decided and run by an executor or gateway; 2 at T1, on the arguments the "
+                         "harness reported), each re-checked against its grant and its running totals"))
+        self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "intent grants"], [line])
+
+        grant, release, again, revoke = [e["event"] for e in s.log.storage.iter_run("default", r["run_id"])
+                                         if e["event"]["type"] == "ext" or "ext" in e["event"]]
+
+        def edit(e, change, rehash=False):   # a copy of record `e` as a faulty signer would sign it
+            e = json.loads(json.dumps(e))
+            change(e)
+            if rehash:
+                e["data"]["id"] = grants.grant_id(e["data"]["grant"])
+            return e
+        def extra(n, amount, used):   # a release after `again` the signer would never sign: another call's record
+            return edit(again, lambda e: (e.update(seq=again["seq"] + n), e["ext"]["grant"].update(
+                fields=dict(e["ext"]["grant"]["fields"], amount=amount * usdc, payee=p1), used=[used * usdc])))
+        wide = edit(grant, lambda e: e["data"]["grant"].update(expires_at="2099-01-01T00:00:00.000000Z"), rehash=True)
+        loose = edit(grant, lambda e: e["data"]["grant"].update(
+            caveats=[c for c in e["data"]["grant"]["caveats"] if c["field"] != "payee"]), rehash=True)
+        bare = edit(release, lambda e: e.pop("ext"))   # a decision flagged TK-GRANT that names no grant
+
+        def under(g, **fields):   # the release under grant record `g`, with `fields`
+            return edit(release, lambda e: e["ext"]["grant"].update(
+                id=g["data"]["id"], fields=dict(e["ext"]["grant"]["fields"], **fields)))
+        cases = [("pass", [grant, release, again, revoke]),
+                 ("pass", [edit(grant, lambda e: e["data"].update(self_approved=True)), release]),
+                 ("fail", [release]), ("warn", [revoke]), ("fail", [dict(grant, seq=release["seq"] + 1), release]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(used=[1]))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(tier="T2"))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(
+                     fields=dict(e["ext"]["grant"]["fields"], amount=900 * usdc), used=[900 * usdc]))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"]["fields"].update(currency="usdc"))]),
+                 ("warn", [grant, edit(release, lambda e: e["data"].update(decision="allow"))]),
+                 ("fail", [edit(grant, lambda e: e["data"]["grant"].update(expires_at="2099-01-01T00:00:00.000000Z")),
+                           release]),
+                 ("warn", [edit(grant, lambda e: e["data"]["grant"].update(
+                     expires_at="2099-01-01T00:00:00.000000Z", caveats=[{"field": "payee", "op": "<=", "value": "\u00e9"},
+                                                                        {"field": "fee", "op": "==", "value": 1}]),
+                     rehash=True)]),
+                 ("warn", [edit(grant, lambda e: e["data"].update(limits=[
+                     {"op": "count", "max": 1}, {"op": "count", "max": 2}, {"op": "count", "field": "amount", "max": 3}]))]),
+                 ("warn", [edit(grant, lambda e: e["data"].update(used=[5]))]),
+                 ("warn", [edit(grant, lambda e: e["data"].update(first={"approval_id": "a", "tool_call_id": "t", "fields": {
+                     "amount": 600 * usdc, "currency": "USDC", "payee": p1}}))]),
+                 ("fail", [edit(grant, lambda e: e["data"].update(limits=[
+                     {"op": "sum", "field": "amount", "max": 100 * usdc}])), release]),
+                 ("fail", [edit(grant, lambda e: e["data"].update(limits=[
+                     {"op": "sum", "field": "amount", "max": 500 * usdc}, {"op": "count", "max": 1}], used=[0, 0])),
+                           edit(release, lambda e: e["ext"]["grant"].update(used=[120 * usdc, 1])), again]),
+                 ("warn", [edit(grant, lambda e: e.update(source="agent"))]),
+                 ("warn", [edit(grant, lambda e: e["data"].pop("id"))]),
+                 ("warn", [edit(grant, lambda e: e["data"].pop("used"))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(id=[gid, None]))]),
+                 ("warn", [grant, edit(revoke, lambda e: e["data"].update(id={"id": gid}))]),
+                 ("warn", [edit(grant, lambda e: e["data"].update(limits=[
+                     {"op": "sum", "field": "amount", "max": 500 * usdc}, {"op": "sum", "field": "payee", "max": 5}],
+                     used=[0, 0]))]),
+                 # whole numbers written as floats: Python's floats, never ints
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"]["fields"].update(amount=120.0 * usdc))]),
+                 ("fail", [grant, edit(release, lambda e: e["ext"]["grant"].update(used=[120.0 * usdc]))]),
+                 ("warn", [edit(grant, lambda e: e["data"]["grant"]["caveats"][2].update(value=200.0 * usdc), rehash=True)]),
+                 ("warn", [edit(grant, lambda e: e["data"].update(used=[0.0]))]),
+                 # tools, currencies, a release's shape, and a release past the total
+                 ("fail", [grant, edit(release, lambda e: e["data"].update(tool="wire_money"))]),
+                 ("warn", [edit(grant, lambda e: e["data"].pop("tools"))]),
+                 ("warn", [edit(grant, lambda e: e["data"]["grant"]["caveats"][0].update(value="XYZ"), rehash=True)]),
+                 ("warn", [edit(grant, lambda e: e["data"]["grant"]["caveats"][0].update(value=["USDC"]), rehash=True)]),
+                 ("warn", [grant, edit(release, lambda e: e["ext"]["grant"].pop("fields"))]),
+                 ("fail", [grant, release, again, extra(1, 200, 400), extra(2, 200, 600)]),
+                 # releases under a grant no valid record holds, and a release that names no grant
+                 ("fail", [wide, under(wide, payee="0x" + "c3" * 20)]), ("fail", [loose, under(loose)]),
+                 ("fail", [grant, bare]), ("fail", [bare])]
+        script = ('const { Report, checkExt, checkGrants, strictParse } = await import(%s);\n'
+                  'const out = [], floats = new WeakMap();\n'
+                  'for (const events of strictParse(await new Response(process.stdin).text(), floats)) {\n'
+                  '  const grants = new Report(), ext = new Report();\n  await checkGrants(grants, events, floats);\n'
+                  '  await checkExt(ext, events, null, floats);\n  out.push([grants.checks, ext.checks]);\n}\n'
+                  'console.log(JSON.stringify(out));\n') % json.dumps(
+                      "file://" + os.path.join(TS, "dist", "verify", "index.js").replace(os.sep, "/"))
+        p = subprocess.run(["node", "--input-type=module", "-e", script], input=json.dumps([es for _, es in cases]),
+                           capture_output=True, text=True, check=True)
+        out = json.loads(p.stdout)
+        self.assertEqual(len(out), len(cases))
+        for i, ((status, events), ts_checks) in enumerate(zip(cases, out)):
+            with self.subTest(case=i):
+                py, ext = Report(), Report()
+                v2._grants(py, json.loads(json.dumps(events)))
+                v2._ext(ext, json.loads(json.dumps(events)), None)   # the entry point, which hands _grants its records
+                self.assertEqual(ts_checks, [py.checks, ext.checks])
+                self.assertEqual(ext.checks, py.checks)   # a decision TK-GRANT names reaches it with no ext name too
+                self.assertEqual(py.failures, ["intent grants"] if status == "fail" else [])
+                self.assertEqual(py.checks[0]["status"], status, py.checks)
+        self.assertEqual(out[-1][1][0]["problems"], [f"seq {bare['seq']}: a decision flagged TK-GRANT carries no ext.grant: "
+                                                     "it names no grant it was released under"])
+
     def test_the_browser_page_reports_what_the_cli_does(self):
         """verify.html: its one script and its style allowed by hash, workers only from blob: URLs (its own script, which
         inherits the policy), nothing else, no network API in the script, and for each bundle the TypeScript CLI's
@@ -1150,6 +1374,27 @@ class Agreement(SignerBundles):
         code, rep = self.agree(bundle, os.path.join(golden, "trust.json"))
         self.assertEqual((code, rep.integrity), (0, "VERIFIED TO HEAD 3 (open)"))
 
+    def test_the_kit(self):
+        """The conformance kit (tests/kit): every case but the proposed rules', as the reference passes them."""
+        sys.path.insert(0, os.path.join(TESTS, "kit"))
+        import run_kit as kit
+        cases = kit.load()
+        reports = ts_verify_many([[os.path.join(TESTS, c[k]) for k in ("input", "trust")] for c in cases])
+        with open(os.path.join(TS, "package.json")) as f:
+            version = json.load(f)["version"].split("-")[0]
+        for c, out in zip(cases, reports):
+            with self.subTest(c["name"]):
+                ok, how = kit.score(c, {"exit": out["exit_code"], "verdict": kit.verdict(out["integrity"]),
+                                        "level": out["assurance"].split(";")[0].strip() if out["exit_code"] == 0 else None,
+                                        "failed": [x["check"] for x in out["checks"] if x["status"] == "fail"]}, version)
+                self.assertTrue(ok or c.get("proposed"), how)
+
+    def test_a_certified_key_no_pinned_issuer_signed_fails_keys_in_both(self):
+        """format-v2.md §11 step 5: no issuer is pinned, so none signed the certificate: FAILED, not UNVERIFIABLE."""
+        kit = os.path.join(TESTS, "kit", "vectors")
+        code, rep = self.agree(os.path.join(kit, "certified-key.tkb"), os.path.join(kit, "trust.json"))
+        self.assertEqual((code, rep.failures[0]), (1, "keys"))
+
     def test_unimplemented_checks_are_unverifiable(self):
         golden = os.path.join(TESTS, "golden", "v2")
         ts = ts_verify(os.path.join(golden, "closed.tkb"), os.path.join(golden, "trust-rekor.json"))
@@ -1225,19 +1470,31 @@ if test_why_signed_replay is not None:
                                text=True, check=True)
             self.assertEqual(json.loads(p.stdout), [c["want"] for c in cases])
 
-        def test_the_verifier_is_the_package_version(self):
-            """VERSION is what it compares a bundle's verifier_min_version with: the package's own release."""
-            with open(os.path.join(TS, "package.json")) as f:
-                pkg = json.load(f)["version"]
-            with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
-                src = f.read()
-            self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
 
-        def test_the_schema_copy_is_the_schema(self):
-            """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
-            with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
-                    open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
-                self.assertEqual(json.loads(a.read()), json.loads(b.read()))
+class Copies(unittest.TestCase):
+    """What the TypeScript verifier copies from the reference, read as files: no node and no build, so they run in every
+    job, pytest's or `python3 tests/test_ts_verifier.py`'s."""
+
+    def test_the_verifier_is_the_package_version(self):
+        """VERSION is the package's own release; READS, what it compares a bundle's verifier_min_version with, is the
+        reference's: the newest VERSIONS row, or the release when later."""
+        with open(os.path.join(TS, "package.json")) as f:
+            pkg = json.load(f)["version"]
+        with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
+            src = f.read()
+        self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
+        self.assertIn(f'export const READS = "{v2.READS}";', src)
+
+    def test_the_schema_copy_is_the_schema(self):
+        """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
+        with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
+                open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
+            self.assertEqual(json.loads(a.read()), json.loads(b.read()))
+
+    def test_the_versions_copy_is_the_table(self):
+        """And of bundle_v2.VERSIONS, from which both verifiers recompute what records need (`verifier minimum`)."""
+        with open(os.path.join(TS, "src", "verify", "versions.json"), "rb") as f:
+            self.assertEqual(json.loads(f.read()), VERSIONS)
 
 
 import test_reviews  # noqa: E402

@@ -170,13 +170,19 @@ class Mapping(HarnessCase):
         for name, ti in (("read", {"target": "/w/a.py"}), ("write", {"content": "x"}), ("edit", {"file_path": None}),
                          ("write", {"file_path": "", "content": "x"}), ("apply_patch", {"input": "no headers"}),
                          ("apply_patch", {"input": "*** Add File:  \n+x"}), ("webfetch", {"uri": "https://x.example"}),
-                         ("webfetch", {"url": "https://example.com", "Url": "http://169.254.169.254/latest"})):
+                         ("webfetch", {"Url": "http://169.254.169.254/latest"})):
             with self.subTest(tool=name, ti=ti):
                 code, out, err = self.hook("devin", {"session_id": "dv-9", "hook_event_name": "PreToolUse",
                                                      "tool_name": name, "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Devin's {name} call names no", err)
                 self.assertIn("issues/566", err)
+        # a url beside one in another case: an argument sent twice (the review of #673)
+        code, out, err = self.hook("devin", {"session_id": "dv-9", "hook_event_name": "PreToolUse", "tool_name": "webfetch",
+                                             "tool_input": {"url": "https://example.com",
+                                                            "Url": "http://169.254.169.254/latest"}})
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("Devin's webfetch call sends an argument more than once (case ignored)", err)
         self.assertEqual(self.sent, [])
 
     def test_crush_sub_agents_are_denied_before_the_signer(self):
@@ -189,7 +195,8 @@ class Mapping(HarnessCase):
                                                      "tool_input": {"prompt": "p", "url": "https://x.example"}})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Crush's {name}", err)
-                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+                self.assertLess(err.index('"permissions deny agent agentic_fetch" in crushrc'),
+                                err.index('"disabled_tools": ["agent", "agentic_fetch"]'))
                 self.assertEqual(self.sent, [])
 
     def test_crush_argument_names_crush_reads_otherwise_are_denied_before_the_signer(self):
@@ -513,7 +520,8 @@ class OnTheDevPolicy(HarnessCase):
             code, out, err = self.hook("devin", {"session_id": "dv-p", "hook_event_name": "PreToolUse", "tool_name": "write",
                                                  "tool_input": {decoy: f"/w/notes{i}.txt", real: "/w/.env", "content": "A=1"}})
             self.assertEqual((code, out), (2, ""), (real, decoy))
-            self.assertIn("TK-D005", err)
+            # one name in two cases is an argument sent twice, denied in the hook (the review of #673)
+            self.assertIn("TK-D005" if real.casefold() != decoy.casefold() else "more than once (case ignored)", err)
         # and a unified diff's files, beside a decoy patch header in another argument
         code, out, err = self.hook("devin", {"session_id": "dv-p", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
                                              "tool_input": {"patch": "--- a/config/.env\n+++ b/config/.env\n@@\n-A=1\n+A=2\n",
@@ -596,6 +604,11 @@ class OnTheDevPolicy(HarnessCase):
 
 class Installer(unittest.TestCase):
     def setUp(self):
+        home = ac.tmpdir(self)
+        env = mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                           "LOCALAPPDATA": os.path.join(home, "data")})   # init makes the dev log key
+        env.start()
+        self.addCleanup(env.stop)
         agent = mock.patch.object(claude_code, "AGENT", claude_code.AGENT)   # the in-process hooks below set it
         agent.start()
         self.addCleanup(agent.stop)
@@ -929,6 +942,11 @@ class CodexReasoningSummary(unittest.TestCase):
 
     def setUp(self):
         self.d = ac.tmpdir(self)
+        self.home = ac.tmpdir(self)
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": os.path.join(self.home, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.home, "data")})   # init makes the dev log key
+        env.start()
+        self.addCleanup(env.stop)
         self.hooks = os.path.join(self.d, ".codex", "hooks.json")
         self.toml = os.path.join(self.d, ".codex", "config.toml")
         os.makedirs(os.path.dirname(self.toml))
@@ -1009,6 +1027,28 @@ class CodexReasoningSummary(unittest.TestCase):
             self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project"]), 0)
         self.assertEqual(self.read(), agent_hooks.CODEX_LINE)
         self.assertIn("Codex reasoning summaries: on", out.getvalue())
+
+    @unittest.skipIf(os.name == "nt", "uses POSIX advisory locks")
+    def test_init_does_not_open_a_store_held_by_another_process(self):
+        from tracekit.sdk.autospawn import data_dir
+
+        store = os.path.join(data_dir(), "store")
+        os.makedirs(store, exist_ok=True)
+        lock_path = os.path.join(store, "lock")
+        ready_r, ready_w = os.pipe()
+        code = ("import fcntl, os, sys, time; f=open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+                "os.write(int(sys.argv[2]), b'x'); time.sleep(30)")
+        holder = subprocess.Popen([sys.executable, "-c", code, lock_path, str(ready_w)], pass_fds=(ready_w,))
+        os.close(ready_w)
+        try:
+            self.assertEqual(os.read(ready_r, 1), b"x")
+            with mock.patch("os.getcwd", return_value=self.d), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project",
+                                           "--no-thinking-summaries"]), 0)
+        finally:
+            os.close(ready_r)
+            holder.terminate()
+            holder.wait(timeout=10)
 
 
 class CodexHookTrust(unittest.TestCase):

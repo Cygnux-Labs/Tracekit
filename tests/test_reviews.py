@@ -296,7 +296,7 @@ class TestVerify(Signed):
         bundle, trust = self.export(run, self.findings(ANALYZER, run))
         with open(bundle, "rb") as f:
             self.assertEqual(json.loads(v2.read_zip(f)["manifest.json"])["verifier_min_version"], "1.4.0")
-        with mock.patch.object(v2, "__version__", "1.3.0"):
+        with mock.patch.object(v2, "READS", "1.3.0"):
             rep, code = v2.verify(bundle, trust)
         self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.4.0)"))
         self.assertEqual(reviews(rep), {})

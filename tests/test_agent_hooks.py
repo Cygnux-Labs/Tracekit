@@ -101,7 +101,8 @@ class Harnesses(DaemonCase):
                          ("apply_patch", {"patch": "*** Update File:  \n"}),
                          ("webfetch", {"urls": ["https://x.example/a"]}),
                          # the second review: a URL under another spelling may be the one Devin reads, and v1 reads url
-                         ("webfetch", {"URL": "http://169.254.169.254/latest", "url": "https://example.com"})):
+                         # (beside a lower-case url too: an argument sent twice, DevinTools)
+                         ("webfetch", {"URL": "http://169.254.169.254/latest"})):
             with self.subTest(tool=name, ti=ti):
                 code, out, err = self.hook("devin", {**base, "tool_name": name, "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))
@@ -445,7 +446,9 @@ class Harnesses(DaemonCase):
                                                      "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))   # Crush blocks on exit 2, with the reason on stderr
                 self.assertIn(f"Crush's {name} runs a sub-agent", err)
-                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+                # crushrc's line first, then the legacy crush.json form
+                self.assertLess(err.index('"permissions deny agent agentic_fetch" in crushrc'),
+                                err.index('"disabled_tools": ["agent", "agentic_fetch"]'))
 
     def test_crush_denies_argument_names_crush_reads_otherwise(self):
         # Crush decodes a built-in tool's input into a Go struct (encoding/json): a name matches its field ignoring case
@@ -797,11 +800,169 @@ class DevinTools(unittest.TestCase):
         _, args = agent_hooks.tool("devin", "apply_patch", {"patch": '+++ "b/caf\\303\\251 x.py"\n@@\n+x\n'})
         self.assertIn("café x.py", args["paths"])
 
+    def test_exec_is_decided_on_its_command_under_any_spelling(self):
+        # the 1.6.0 review: exec was decided on `command` alone, so {"Command": ...} ran undecided (Devin's decoder may
+        # match a key ignoring case), beside a lower-case decoy it was decided on the decoy, and EXEC passed as an
+        # unknown tool
+        from tracekit import policy
+        v1, v2 = policy.load(policy.DEFAULT_POLICY)[0], load_policy()
+        engines = {"v1": lambda c: policy.evaluate(v1, *c, "/w")["decision"], "v2": lambda c: v2.decide(*c)["verdict"]}
+        for name, ti in (("exec", {"Command": "git push --force origin main", "shell_id": "main"}),
+                         ("EXEC", {"command": "git push --force origin main"}), ("Exec", {"COMMAND": "sudo -i"})):
+            tool, args = agent_hooks.tool("devin", name, ti)
+            self.assertEqual(tool, "Bash")
+            for engine, decide in engines.items():
+                with self.subTest(name=name, ti=ti, engine=engine):
+                    self.assertNotEqual(decide((tool, args)), "allow")
+            p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": name, "tool_input": ti}
+            self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+        # two spellings: whichever one Devin reads, the other isn't decided, so the call is denied in the hook
+        for ti in ({"command": "echo hi", "Command": "git push --force origin main"},
+                   {"Command": "git push --force origin main", "command": "echo hi"}):
+            p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "EXEC", "tool_input": ti}
+            with self.subTest(ti=ti):
+                self.assertIn("Blocked by Tracekit: Devin's exec call sends an argument more than once (case ignored)",
+                              agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        # a read in another case with no path is denied in the hook, as `read` is
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "READ", "tool_input": {"target": "/w/.env"}}
+        self.assertIn("Devin's read call names no", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+
+    def test_an_exec_with_no_command_to_read_is_denied_and_a_cr_ends_a_line(self):
+        # the review of #673: an exec whose input isn't the documented object (a plain string) was decided on nothing
+        # and ran; and \r in its command may end a line if Devin types it into a terminal, so each part is decided
+        for ti in ("git push --force origin main", {}, {"command": None}, {"cmd": "git push --force origin main"}):
+            p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "exec", "tool_input": ti}
+            with self.subTest(ti=ti):
+                self.assertIn("Devin's exec call names no command", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        tool, args = agent_hooks.tool("devin", "exec", {"command": "echo hi\rgit push --force origin main"})
+        self.assertEqual(args["command"], "echo hi\ngit push --force origin main")
+        self.assertNotEqual(load_policy(DEFAULT_POLICY).decide(tool, args)["verdict"], "allow")
+
     def test_typed_input_is_decided_as_a_shell_command(self):
         tool, args = agent_hooks.tool("devin", "write_to_process", {"shell_id": "main", "input": "rm -rf ~\n"})
         self.assertEqual(tool, "Bash")
         self.assertIn("rm -rf ~", args["command"])
         self.assertNotEqual(load_policy(DEFAULT_POLICY).decide(tool, args)["verdict"], "allow")
+
+    def test_typed_input_is_decided_on_the_one_argument_it_writes(self):
+        # the 1.6.0 review: write_to_process was decided on all its strings joined, so a quote opened in another
+        # argument hid the text it writes ({"a": "echo '", "input": "rm -rf ~ #'"} was decided as echo). Devin
+        # documents none of its fields: it is decided on its one argument besides shell_id, under any name
+        tool, args = agent_hooks.tool("devin", "write_to_process", {"Shell_ID": "main", "text": "rm -rf ~\n"})
+        self.assertEqual((tool, args["command"]), ("Bash", "rm -rf ~\n"))
+        self.assertNotEqual(load_policy(DEFAULT_POLICY).decide(tool, args)["verdict"], "allow")
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process",
+             "tool_input": {"shell_id": "main", "input": "ls\n"}}
+        self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+        # an argument it doesn't know, or no text: denied in the hook (a name sent twice too: the next test)
+        for ti in ({"a": "echo '", "input": "rm -rf ~ #'"}, {"shell_id": "main"}, {"shell_id": "main", "input": ["rm -rf ~"]}):
+            with self.subTest(ti=ti):
+                p["tool_input"] = ti
+                self.assertIn("Devin's write_to_process call names no text", agent_hooks._blocked("devin", p, json.dumps(p))
+                              or "")
+
+    def test_an_argument_sent_twice_is_denied_whatever_its_case_or_value(self):
+        # the review of #673: json.loads keeps a repeated name's last value, and a Go-style decoder may keep another, so
+        # {"command": "git push --force origin main", "command": null} ran undecided
+        for name, ti in (("exec", '{"command": "git push --force origin main", "command": null}'),
+                         ("exec", '{"command": "git push --force origin main", "command": "echo hi"}'),
+                         ("EXEC", '{"command": "echo hi", "Command": "git push --force origin main"}'),
+                         ("write_to_process", '{"shell_id": "main", "input": "ls", "Input": "rm -rf ~"}'),
+                         ("write_to_process", '{"shell_id": "main", "\u017fhell_id": "x", "input": "ls\\n"}'),
+                         ("read", '{"file_path": "/w/a", "file_path": "/w/b"}')):
+            for sent in (ti, json.dumps(ti)):   # an object, or one sent as a JSON string
+                raw = '{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "%s", "tool_input": %s}' % (
+                    name, sent)
+                with self.subTest(raw=raw):
+                    self.assertIn("call sends an argument more than once (case ignored)",
+                                  agent_hooks._blocked("devin", json.loads(raw), raw) or "")
+        raw = '{"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "exec", "tool_input": {"command": "ls"}}'
+        self.assertIsNone(agent_hooks._blocked("devin", json.loads(raw), raw))
+
+    def test_typed_text_with_a_control_character_is_denied(self):
+        # the review of #673: write_to_process types into a live terminal, whose line editor acts on control
+        # characters, so the line that runs isn't the text decided: DEL erased a character, ^U discarded the line
+        # before it, ^C dropped what came before; tab completes and ESC starts a key sequence (an arrow recalls history)
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process"}
+        for text in ("gitx\x7f push --force origin main\n", "\x03git push --force origin main\n",
+                     "echo hi \x15git push --force origin main\n", "git st\t\n", "\x1b[A\n", "ls\x00\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIn("types a control character", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        # \r ends a line, as the terminal reads it, so each line is decided
+        tool, args = agent_hooks.tool("devin", "write_to_process",
+                                      {"shell_id": "main", "input": "echo hi\rgit push --force origin main\r"})
+        self.assertEqual(args["command"], "echo hi\ngit push --force origin main\n")
+        self.assertNotEqual(load_policy(DEFAULT_POLICY).decide(tool, args)["verdict"], "allow")
+        p["tool_input"] = {"shell_id": "main", "input": "y\r\n"}
+        self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+
+    def test_typed_text_bash_would_expand_from_its_history_is_denied(self):
+        # the re-review of #673: interactive bash expands history in a typed line before it runs it: after an allowed
+        # ": git push --force origin main" line, "!-1" or "!:1*" ran the push, and "!#:1-5" ran it from its own line;
+        # a ^ starting a line is a quick substitution of the last one
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process"}
+        for text in (": git push --force origin main; !#:1-5\n", "!-1\n", "!:1*\n", "!!\n", "echo !$\n", "echo !",
+                     "^main^main --force\n", "ls\n  ^a^b\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIn("which interactive bash expands from its history",
+                              agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        # a ! bash leaves as it is (before a blank, a line end, = or (), or a ^ inside a line
+        for text in ("[ ! -f x ] && echo ok\n", "y\n", "echo hi!\n", "[ a != b ]\n", "ls !(*.py)\n", "echo a^b\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+
+    def test_typed_text_that_sets_state_a_later_line_runs_is_denied(self):
+        # the re-review of #673: in the running shell write_to_process types into, a line can set state that changes
+        # what a later line runs, and the policy decides one call at a time: after ": git push --force origin main",
+        # "fc -s ': =' :" re-ran the push, as "history -s '…'" then "fc -s" did
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_to_process"}
+        push = "git push --force origin main"
+        for text in ("fc -s ': =' :\n", f"history -s '{push}'\n", "fc -s\n", f"alias gs='{push}'\n",
+                     f"alias gs='{push}'\ngs\n", f"PROMPT_COMMAND='{push}'\n", f"export PS1='$({push})'\n", "read PS1\n",
+                     f"deploy() {{ {push}; }}\n", f"function deploy {{ {push}; }}\n", f"trap '{push}' DEBUG\n",
+                     "bind -x '\"\\C-t\": true'\n", "enable -f ./x.so x\n", "set -o vi\n", "shopt -s expand_aliases\n",
+                     "source ./x.sh\n", ". ./x.sh\n", "export PATH=/tmp/x:$PATH\n", "hash -p /tmp/x/git git\n",
+                     f"builtin alias gs='{push}'\n", f"eval \"alias gs='{push}'\"\n",
+                     # the last re-review of #673: exec makes the shell read commands from a file (or replaces it), and
+                     # a loader variable makes every later program load code
+                     "exec 0</w/notes.txt\n", "exec </w/notes.txt\n", "LD_PRELOAD=/tmp/x.so\n",
+                     "export DYLD_INSERT_LIBRARIES=x\n", "export LD_LIBRARY_PATH=/tmp\n", "LD_AUDIT=/tmp/a.so\n",
+                     "set +H\n",
+                     # alias and hash in their array forms, and a nameref, which sets a variable under another name
+                     f"BASH_ALIASES[ll]='{push}'\n", "BASH_CMDS[ls]=/tmp/x\n", "BASH_ALIASES+=([ll]=x)\n",
+                     "export BASH_CMDS[ls]=/tmp/x\n", f"declare -n p=PROMPT_COMMAND; p='{push}'\n",
+                     "local -n p=PS1\n", "typeset -rn p=PATH\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIn("sets or replays state of the running shell", agent_hooks._blocked("devin", p, json.dumps(p))
+                              or "")
+        # the words as written elsewhere on a line, and ordinary typed lines
+        for text in ("y\n", "q", "ls -la\n", "git status\n", "echo alias trap fc PS1\n", "git commit -m 'trap'\n",
+                     "[ a != b ]\n", "wait $!\n", "[[ ! -f x ]] && echo ok\n", "echo hi!\n", "python3 -c 'print(1)'\n",
+                     "cd src\nls\n", "export FOO=bar\n", "echo\u00a0hi\n",
+                     # set that changes no option (psql), and alias that defines none (a Python REPL)
+                     "set search_path to public;\n", "alias = 3\n", "alias\n", "declare -f\n", "declare x=1\n"):
+            with self.subTest(text=text):
+                p["tool_input"] = {"shell_id": "main", "input": text}
+                self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
+
+    def test_an_exec_command_with_a_control_character_is_denied(self):
+        # the re-review of #673: exec reads \r as a line end, should Devin type its command into a terminal, but DEL,
+        # ^U and ^C in it went through; a tab and a line end stay (a heredoc or a multi-line command needs them)
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "exec"}
+        for cmd in ("gitx\x7f push --force origin main", "echo hi \x15git push --force origin main",
+                    "\x03git push --force origin main", "\x1b[A", "echo hi\x9bgit push --force origin main"):
+            with self.subTest(cmd=cmd):
+                p["tool_input"] = {"command": cmd}
+                self.assertIn("Devin's exec sends a control character", agent_hooks._blocked("devin", p, json.dumps(p)) or "")
+        for cmd in ("ls -la", "cd src && ls\nprintf 'a b\\n' > out.txt", "python3 - <<'EOF'\nprint(1)\nEOF",
+                    "cat > Makefile <<'EOF'\nall:\n\tmake -C src\nEOF", "ls\r", "git commit -m 'fix!'", "wait $!"):
+            with self.subTest(cmd=cmd):
+                p["tool_input"] = {"command": cmd}
+                self.assertIsNone(agent_hooks._blocked("devin", p, json.dumps(p)))
 
     def test_patch_paths_are_every_file_the_patch_names(self):
         patch = PATCH.format("src/app.py") + "\n*** Begin Patch\n*** Delete File: .devin/hooks.v1.json\n*** End Patch"
@@ -1792,6 +1953,20 @@ class DemoPerAgent(unittest.TestCase):
                              agent in demo.NO_SESSION_EVENTS)
             self.assertEqual(f"gap is expected: {agent} sends no session end" in out.getvalue(),
                              agent in demo.NO_SESSION_EVENTS)
+
+    def test_it_points_to_a_separate_signer_where_init_and_doctor_do(self):
+        """The 1.6.0 review: the demo suggested v1 system mode (`init --user`), which macOS refuses without
+        --experimental-macos; init --dev and doctor give the dev-mode line."""
+        import contextlib
+        import io
+        from tracekit import demo, install as inst
+        patch_env(self)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), mock.patch.object(demo.install, "init_dev", side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            demo.main(agent="goose")
+        self.assertIn(inst.DEV_MODE_LINE, out.getvalue())
+        self.assertNotIn("--user", out.getvalue())
 
     def test_the_expected_gap_note_claims_no_verification_that_failed(self):
         import contextlib

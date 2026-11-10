@@ -168,7 +168,9 @@ class DevSigner(unittest.TestCase):
         self.assertEqual(p.wait(10), 0)
         self.assertEqual(Client().status()["rpc_version"], RPC_VERSION)
 
-    def test_an_older_signer_is_replaced_with_a_warning(self):
+    def test_an_older_signer_is_replaced_with_a_plain_notice(self):
+        """QA of 1.6.0: the notice was a Python warning, `.../sdk/client.py:456: UserWarning: tracekit: stopped the dev
+        signer ...` and the source line under it; it is one plain line."""
         os.makedirs(self.run_dir, 0o700)   # what an upgrade leaves running: hooks would otherwise all fail closed
         p = subprocess.Popen(FAKE_ARGV + ["--proto", f"{RPC_VERSION - 2}-{RPC_VERSION - 1}", "--version", "0.0.1"],
                              start_new_session=True, stderr=subprocess.DEVNULL)
@@ -176,8 +178,11 @@ class DevSigner(unittest.TestCase):
         while autospawn._pid(self.run_dir) is None:
             self.assertIsNone(p.poll())
             time.sleep(0.02)
-        with self.assertWarnsRegex(UserWarning, rf"older Tracekit \(pid {p.pid}\)"):
+        with contextlib.redirect_stderr(io.StringIO()) as err, warnings.catch_warnings():
+            warnings.simplefilter("error")
             self.assertEqual(Client().status()["rpc_version"], RPC_VERSION)
+        self.assertEqual(err.getvalue(), f"tracekit: stopped the dev signer from an older Tracekit (pid {p.pid}) to start "
+                                         f"this one's ({__version__})\n")
         self.assertEqual(p.wait(10), 0)
 
     def test_an_older_signer_is_kept_when_the_one_we_would_start_is_older_too(self):
@@ -218,16 +223,16 @@ class DevSigner(unittest.TestCase):
 
     def test_cli_up_status_down(self):
         self.assertIn(f"dev signer {__version__} running", self.cli("up", "--wait"))
-        status = json.loads(self.cli("status"))
+        status = json.loads(self.cli("status", "--json"))
         self.assertIn("client_config", status)   # the v1 sections are still there
         self.assertTrue(status["signer_v2"]["running"])
         self.assertIn("dev signer stopped", self.cli("down"))
-        self.assertFalse(json.loads(self.cli("status"))["signer_v2"]["running"])
+        self.assertFalse(json.loads(self.cli("status", "--json"))["signer_v2"]["running"])
         self.assertIn("no dev signer running", self.cli("down"))
 
     def test_status_survives_an_unusable_runtime_dir(self):
         with mock.patch.object(autospawn, "runtime_dir", side_effect=PermissionError("read-only")):
-            status = json.loads(self.cli("status"))
+            status = json.loads(self.cli("status", "--json"))
         self.assertIn("client_config", status)
         self.assertFalse(status["signer_v2"]["running"])
 

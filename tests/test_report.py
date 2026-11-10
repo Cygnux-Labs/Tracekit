@@ -12,6 +12,7 @@ import shlex
 import socket
 import sys
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -198,10 +199,14 @@ class WeeklyReport(unittest.TestCase):
                           for o, c in (("approved · ran", 5), ("rejected", 6), ("expired", 7))})
         self.assertEqual([(g["decision"], g["rule"], g["why"], g["reason"], g["count"],
                            [x["call"] for x in g["examples"]]) for g in rep["rules"]],
-                         [("flag", "T-NET", True, "reaching the network", 2,
+                         [("ask", "T-PAY", True, "paying money", 3, []),   # its example is the Holds section's
+                          ("flag", "T-NET", True, "reaching the network", 2,
                            ["Bash curl -s https://example.com", f"Bash · {weekly.NO_ARGS}"]),
                           ("deny", "T-PATH", False, "a path", 1, []),   # a flag rule: not why rm was denied
                           ("deny", "T-RM", True, "deleting files", 1, ['rm {"path":"x"}'])])
+        # what people did with the rule's holds, from the signed approval records: the retry counted with its hold
+        self.assertEqual([(g["approved"], g["rejected_or_expired"]) for g in rep["rules"] if g["decision"] == "ask"],
+                         [(1, 2)])
         self.assertEqual(rep["gaps"]["by_kind"], {"tailer_lost": 1})
         page = weekly.text(rep)
         # a run id a person copies is a whole one: tracekit export --v2 --run takes no prefix
@@ -251,7 +256,7 @@ class WeeklyReport(unittest.TestCase):
         self.assertIn(f"{mark}-rule.acme-prod-db.internal", {g["rule"] for g in rep["rules"]})
         page = weekly.share(rep)
         self.assertEqual(page.splitlines(), [
-            f"Tracekit {__version__} field report (tracekit report --share): 0 hours",   # a minute
+            f"Tracekit {__version__} field report (tracekit report --share): 1 minute",
             "Integrity: the store verified, 5 of 5 runs verify",
             "Runs that verify, by agent: claude-code 2, codex 1, cursor 1, other 1",
             "Tool calls: 13   allow 3, flag 3, ask 5, deny 2",
@@ -261,7 +266,10 @@ class WeeklyReport(unittest.TestCase):
             "Gaps (signed records that something may be missing): 2   tailer_lost 2",
             "Denied and flagged calls, by rule (one call can match several rules):",
             # T-RM; T-PATH; T-NET 3 and the marker's rule 1: the test policy's ids are custom
-            "  deny custom rule 2", "  deny custom rule 2 (also matched, not why)", "  flag custom rule 4"])
+            "  deny custom rule 2", "  deny custom rule 2 (also matched, not why)", "  flag custom rule 4",
+            # what became of each hold of a rule: the rejected 2 and expired 1 against the approved 1 above
+            "Holds by rule: held, approved (by a person or the run's own user), rejected or expired:",
+            "  custom rule 4, 1, 3"])
         # a gap kind that isn't one this Tracekit names (another signer's, or any string) is counted as "other"
         odd = weekly.share(dict(rep, gaps={"total": 3, "by_kind": {"tailer_lost": 2, f"{mark}-kind": 1}}))
         self.assertIn("Gaps (signed records that something may be missing): 3   tailer_lost 2, other 1\n", odd)
@@ -271,7 +279,8 @@ class WeeklyReport(unittest.TestCase):
                 mock.patch.object(view, "dev_content_source", wraps=view.dev_content_source) as content, \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):   # the dev signer's store
             code = cli.main(["report", "--share", "--since",
-                             datetime.datetime.fromtimestamp(self.cut, datetime.timezone.utc).isoformat()])
+                             datetime.datetime.fromtimestamp(self.cut, datetime.timezone.utc).isoformat(), "--until",
+                             datetime.datetime.fromtimestamp(self.cut + 60, datetime.timezone.utc).isoformat()])
         self.assertEqual((code, out.getvalue()), (0, page + "\n"))
         content.assert_not_called()
         self.assertIn(f"tracekit report: {weekly.SHARE_NOTE}\n", err.getvalue())
@@ -294,7 +303,7 @@ class WeeklyReport(unittest.TestCase):
         cfg = {k: v for k, v in self.cfg.items() if k != "policy"}
         rules = lambda rep: {(g["decision"], g["rule"], g["reason"], g["why"]) for g in rep["rules"]}   # noqa: E731
         rep = self.build(cfg=cfg)
-        self.assertEqual(rules(rep), {("flag", "T-NET", "reaching the network", True),
+        self.assertEqual(rules(rep), {("flag", "T-NET", "reaching the network", True), ("ask", "T-PAY", "paying money", True),
                                       ("deny", "T-RM", "deleting files", True), ("deny", "T-PATH", "a path", False)})
         self.assertEqual(rep["notes"], [])
         kept = os.path.join(cfg["data_dir"], "policies")
@@ -305,7 +314,7 @@ class WeeklyReport(unittest.TestCase):
             f.write(pol.replace("deleting files", "tidying up"))
         rep = self.build(cfg=cfg)
         self.assertEqual(rules(rep), {("flag", "T-NET", "", None), ("deny", "T-RM", "", None),
-                                      ("deny", "T-PATH", "", None)})
+                                      ("deny", "T-PATH", "", None), ("ask", "T-PAY", "", None)})
         page = weekly.text(rep)
         self.assertIn("Denied calls (1), by rule (one call can match several rules):\n  not placed (engine checks, which "
                       "may be why, and rules of a policy this report can't read): T-PATH 1, T-RM 1\n", page)
@@ -641,20 +650,70 @@ class WeeklyReport(unittest.TestCase):
         self.assertFalse(os.path.exists(nope))
 
 
-def _hold_and_answer(tcid, held_at, answered_at, **answer):
-    """The records of one hold and its first answer, as the signer writes them."""
-    def rec(ts, type, **data):
-        return {"event": {"ts": ts, "type": type, "data": data}}
-    return [rec(held_at, "policy.decision", decision="ask", tool_use_id=tcid, tool="pay"),
-            rec(answered_at, "approval", tool_use_id=tcid, **answer)]
+def _hold_and_answer(tcid, held_at, answered_at, seq=0, **answer):
+    """The records of one hold (its decision at run_seq `seq`), its approval request (apr-`seq`) and its first answer,
+    as the signer writes them."""
+    def rec(ts, type, seq, **data):
+        return {"event": {"ts": ts, "type": type, "run_seq": seq, "data": data}}
+    return [rec(held_at, "policy.decision", seq, decision="ask", tool_use_id=tcid, tool="pay"),
+            rec(held_at, "approval.request", seq + 1, approval_id=f"apr-{seq}", binding={"tool_call_id": tcid}),
+            rec(answered_at, "approval", seq + 2, tool_use_id=tcid, approval_id=f"apr-{seq}", **answer)]
+
+
+def _expired(seq, aid, at="2026-11-05T11:00:00Z"):
+    """The signer's record that approval `aid` expired."""
+    return {"event": {"ts": at, "type": "approval.expired", "run_seq": seq, "data": {"approval_id": aid}}}
 
 
 class Oversight(unittest.TestCase):
     """Who answered each hold and how fast, from the records alone."""
 
+    def test_a_hold_approved_then_left_to_expire_counts_as_approved_and_review_stays_counts(self):
+        """The signer expires an approved approval no call used: that hold was approved, not rejected or expired.
+        Each hold's outcome comes to the report through the dict it passes; review's own answer, which the viewer
+        keeps in its rows, holds counts only."""
+        records = (_hold_and_answer("t0", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z", decision="approve",
+                                    approver="uid:1", self_approved=True)
+                   + _hold_and_answer("t1", "2026-11-05T10:00:00Z", "2026-11-05T10:00:04Z", 3, decision="reject",
+                                      approver="uid:1")
+                   + [_expired(6, "apr-0")])
+        outcomes = {}
+        rv = view.review(records, types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified", outcomes)
+        self.assertEqual(outcomes, {0: "expired", 3: "rejected"})   # each hold's decision
+        self.assertFalse([k for k, v in rv.items() if isinstance(v, dict) and set(v) & {0, 3, "t0", "t1"}])
+        self.assertEqual(self.hold_rules(records, outcomes), [("ask", 2, 1, 1)])
+
+    def hold_rules(self, records, outcomes):
+        """(decision, count, approved, rejected or expired) of each rule row of `records`' holds."""
+        tr, rules = view.Translator(view.policy_reasons()), {}
+        _, waits = weekly._tally(("default", "r"), records, tr, rules, collections.Counter())
+        weekly._hold_rules(tr, rules, records, waits, outcomes)
+        return [(g["decision"], g["count"], g["approved"], g["rejected_or_expired"]) for g in rules.values()]
+
+    def test_two_holds_of_one_call_id_are_two_in_the_rules_as_in_the_holds_line(self):
+        """A call answered and then held again under its id, with an approval of its own, is two holds: the rule rows
+        count each held decision, as review's holds line does, each with the answer to its own approval request. Both
+        read the first hold's answer: rejected then approved counted the approval nowhere, approved then expired
+        counted two approvals."""
+        first = lambda answer: _hold_and_answer("t0", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z",  # noqa: E731
+                                                decision=answer, approver="uid:1")
+        for name, records, holds in (
+                ("rejected, then approved", first("reject") + _hold_and_answer(
+                    "t0", "2026-11-05T10:01:00Z", "2026-11-05T10:01:05Z", 3, decision="approve", approver="uid:1"),
+                 {"rejected": 1, "approved": 1}),
+                ("approved, then expired", first("approve") + _hold_and_answer(
+                    "t0", "2026-11-05T10:01:00Z", None, 3)[:2] + [_expired(5, "apr-3")],
+                 {"approved": 1, "expired": 1})):
+            with self.subTest(name):
+                outcomes = {}
+                rv = view.review(records, types.SimpleNamespace(integrity="VERIFIED", assurance="dev"), "verified",
+                                 outcomes)
+                self.assertEqual(rv["holds"], holds)
+                self.assertEqual(self.hold_rules(records, outcomes), [("ask", 2, 1, 1)])
+
     def oversight(self, *answers):
         records = [r for i, (took, answer) in enumerate(answers) for r in _hold_and_answer(
-            f"t{i}", "2026-11-05T10:00:00Z", "2026-11-05T10:00:%06.3fZ" % took, **answer)]
+            f"t{i}", "2026-11-05T10:00:00Z", "2026-11-05T10:00:%06.3fZ" % took, 3 * i, **answer)]
         held, waits = weekly._tally(("default", "r"), records, None, {}, collections.Counter())
         self.assertEqual(len(held), len(answers))
         return weekly._oversight(collections.Counter({"approved": len(answers)}), waits, 3600)
@@ -684,7 +743,7 @@ class Oversight(unittest.TestCase):
     def test_a_hold_with_no_answer_is_unanswered(self):
         records = _hold_and_answer("a", "2026-11-05T10:00:00Z", "2026-11-05T10:00:03Z", decision="approve",
                                    approver="uid:1") + _hold_and_answer("b", "2026-11-05T10:00:00Z",
-                                                                         "2026-11-05T10:00:04Z", decision="timeout")
+                                                                         "2026-11-05T10:00:04Z", 3, decision="timeout")
         _, waits = weekly._tally(("default", "r"), records, None, {}, collections.Counter())
         o = weekly._oversight(collections.Counter({"approved": 1, "expired": 1}), waits, 100)
         self.assertEqual((o["approved"], o["unanswered"]), (1, 1))
@@ -713,7 +772,7 @@ class Rules(unittest.TestCase):
         weekly._tally(("default", "r1"), [rec], view.Translator(view.policy_reasons()), rules, unread)
         self.assertEqual({(g["rule"], g["why"], g["reason"]) for g in rules.values()},
                          {("TK-D002", True, "running a downloaded script"),
-                          ("TK-SHELL-PARSE", None, "a shell command that does not parse")})
+                          ("TK-SHELL-PARSE", None, "a shell command Tracekit can't read")})
         self.assertEqual(unread["deny"], 0)
 
     def test_share_prints_tracekit_rule_ids_and_counts_the_others_as_one(self):
@@ -786,8 +845,13 @@ class When(unittest.TestCase):
             self.assertIn("--since must be before --until", err.getvalue())
 
     def test_a_window_under_a_day_is_in_hours(self):
-        self.assertEqual([weekly._days(s) for s in (1800, 3600, 86400, 7 * 86400)],
-                         ["0.5 hours", "1 hour", "1 day", "7 days"])
+        self.assertEqual([weekly._days(s) for s in (3600, 5400, 86400, 7 * 86400)],
+                         ["1 hour", "1.5 hours", "1 day", "7 days"])
+
+    def test_a_window_under_an_hour_is_in_minutes_never_0_hours(self):
+        """The 1.6.0 review: a window under about 3 minutes printed "0 hours"."""
+        self.assertEqual([weekly._days(s) for s in (45, 60, 170, 1800)],
+                         ["45 seconds", "1 minute", "2.8 minutes", "30 minutes"])
 
     def test_a_decision_with_no_rule_is_not_called_a_custom_rule(self):
         """1.5.3 review: --share counted a deny or flag with no rule id as "custom rule", a policy of the user's own."""

@@ -25,7 +25,7 @@ RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rat
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
-                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME"}
+                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT"}
 # the reason and remedy the signer gives with an id the engine gives itself, as with a rule's own: fixed text, never
 # the call's
 ENGINE_REASONS = {"TK-A2A-NAME": {
@@ -56,6 +56,23 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                                                   "plainly."},
                            "foreign": {"reason": "a shell the policy doesn't read (fish, PowerShell …) runs text",
                                        "remedy": "Run the commands with bash or sh."},
+                           "readings": {"reason": "a command's expansions combine in more ways than the policy reads",
+                                        "remedy": "Write the word plainly, or give its variables their values earlier on "
+                                                  "the line."},
+                           "assigns": {"reason": "an expansion or arithmetic on the line sets a variable, or a nameref or "
+                                                 "${!X@} names one, so the policy can't follow its value",
+                                       "remedy": "Give the variable its value with a plain assignment (`F=value;`) before "
+                                                 "the commands that use it."},
+                           "split": {"reason": "an unquoted expansion may split its word where the policy can't follow (at "
+                                               "an IFS the line sets, or a blank given later in a loop)",
+                                     "remedy": "Quote the expansion (\"$X\"), or write the words plainly."},
+                           "quote": {"reason": "a quote on the line is never closed",
+                                     "remedy": "Close the quote."},
+                           "body": {"reason": "it updates a git ref through GitHub's API with a body the policy can't "
+                                              "read (a file, input or variable), which may force it",
+                                    "remedy": "Give the update's fields on the line (-f sha=…), without force."},
+                           "budget": {"reason": "the line is too long or too complex for the policy to read all of it",
+                                      "remedy": "Split it into shorter calls, or write repeated commands as a loop."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",
                                       "remedy": "Split it into plain commands; pipes, &&, if, for, case and functions "
                                                 "are read."}}},
@@ -64,8 +81,9 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
-# agent: a reviewer agent may answer calls within its bounds (_lint_agent)
-APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
+# agent: a reviewer agent may answer calls within its bounds (_lint_agent); grant: a person's intent grant of that intent
+# may release the rule's calls within its limits (docs/intent-grants.md; the intents are tracekit.grants.INTENTS)
+APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",), "grant": ("payment.send",)}
 SCOPES = ("run", "session", "owner", "principal")
 MAX_WINDOW = 86400   # seconds
 MAX_STEPS = 64       # an incident cites at most 64 records: one per step
@@ -198,9 +216,40 @@ def literals(pattern):
     return tuple(sorted(s for s in req if not any(t != s and t in s for t in req)))
 
 
+def requirements(pattern):
+    """A finer prefilter of a checked pattern whose top level holds a group of alternatives (`^(psql…|sqlite3…)`): per
+    alternative, each set of lower-case strings of two or more characters one of which every match through it holds
+    (literals() keeps one set of a sequence, and the union of the alternatives'), so a subject that holds a string of
+    each set of no alternative can't match; None for another pattern, or when an alternative has no such set."""
+    items = list(_sre_p.parse(pattern))
+    for k, (op, av) in enumerate(items):
+        if op == _sre_c.SUBPATTERN and len(av[-1]) == 1 and av[-1][0][0] == _sre_c.BRANCH:
+            alts = av[-1][0][1][1]
+        elif op == _sre_c.BRANCH:
+            alts = av[1]
+        else:
+            continue
+        out = []
+        for alt in alts:   # the group read as this alternative, in its place
+            exact, found = _found(items[:k] + list(alt) + items[k + 1:])
+            sets = [tuple(sorted(s)) for s in ([exact] if exact is not None else found) if min(map(len, s)) >= 2]
+            if not sets or not all(t.isascii() for one in sets for t in one):   # (a subject is read casefolded)
+                return None
+            out.append(tuple(sets))
+        return tuple(out)
+    return None
+
+
 def _seq(items):
     """(exact, required) of a sequence: every string it can match when that set is small (else None), and a set one of
     which every match contains (None: no such set)."""
+    exact, found = _found(items)
+    return (exact, None) if exact is not None else (None, max(found, key=lambda s: (min(map(len, s)), -len(s))))
+
+
+def _found(items):
+    """(exact, found) of a sequence: every string it can match when that set is small (else None), and else the sets
+    one string of each of which every match contains."""
     run, found, exact = {""}, [], True
     for op, av in items:
         ex, req = _node(op, av)
@@ -214,9 +263,9 @@ def _seq(items):
         if req is not None:
             found.append(req)
     if exact:
-        return frozenset(run), None
+        return frozenset(run), []
     found.append(run)
-    return None, max(found, key=lambda s: (min(map(len, s)), -len(s)))
+    return None, found
 
 
 def _node(op, av):
@@ -371,8 +420,11 @@ def _lint(pol, path):
             if "approval" in r and (sec != "ask" or not isinstance(r["approval"], dict) or not r["approval"]
                                     or any(v not in APPROVAL.get(k, ()) for k, v in r["approval"].items()
                                            if k != "agent")):
-                errors.append(f"{where}: approval must be {{executor?: t1|t2, passkey?: required, agent?}}, on an ask "
-                              "rule")
+                errors.append(f"{where}: approval must be {{executor?: t1|t2, passkey?: required, agent?, grant?: "
+                              "payment.send}, on an ask rule")
+            elif r.get("approval", {}).get("grant") and r["approval"].get("passkey") == "required":
+                errors.append(f"{where}: approval.grant on a passkey rule: each of its calls needs a person's passkey, "
+                              "so no grant releases them")
             elif "agent" in r.get("approval", {}):
                 errors += [f"{where}: approval.agent: {e}" for e in _lint_agent(r)]
             if r["id"] in ids:

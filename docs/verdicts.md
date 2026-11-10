@@ -8,13 +8,33 @@ record is proof against the agent. A dev signer's bundle:
 VERIFIED: 3 tool calls in 11 signed records, none changed, removed or added after signing.
 NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
 To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: <64 hex digits>.
 ```
 
 A signer the agent can't reach says `PROOF AGAINST THE AGENT: the signing key was out of the agent's reach
-(separate-user).`, then whether an independent witness cosigned the log too. It says so only when something outside the
-bundle vouches for the signing key: always for a v2 bundle (your trust file pins it), and for a v1 bundle only with
-`--key` or `--witness`. Without them a v1 bundle prints `NOT SHOWN: nothing outside the bundle vouches for the signing
-key. Pin it with --key, or use a witness.` With several runs, the weakest isolation counts.
+(separate-user).` It says so only when something outside the bundle vouches for the signing key: always for a v2 bundle
+(your trust file pins it), and for a v1 bundle only with `--key` or `--witness`. Without them a v1 bundle prints `NOT
+SHOWN: nothing outside the bundle vouches for the signing key. Pin it with --key, or use a witness.` With several runs,
+the weakest isolation counts.
+
+A v2 bundle then says whether it is anchored ([witnesses](witnesses.md)):
+
+- `ANCHORED: an independent witness (witness.example.org/w1) cosigned this log at size 42, so a later rewrite would
+  fail this check.`: a pinned witness or Rekor anchor the operator doesn't run cosigned the checkpoint, as many as the
+  trust file's `witnesses_required` (at least one).
+- `NOT ANCHORED: ...`: none did, or fewer than the trust file asks for (the line names who did and how many it asks
+  for). Whoever holds the log key could then rewrite the log and re-sign it, and the bundle would still verify. When
+  the line before already says the agent could reach the key (dev mode), it doesn't say so twice.
+- `FAILED: the witness's (witness.example.org/w1) cosignature doesn't match this log: the log was changed after the
+  witness saw it, or the cosignature is damaged.` (exit 1): the bundle carries a pinned witness's cosignature that
+  doesn't verify over its checkpoint. A rewritten log carrying the cosignature of the version the witness saw reads
+  so, and so does a cosignature damaged on the way (a flipped bit, an altered time): this check can't tell which, so
+  get the bundle again from its source and check that copy. One of the wrong length reads `FAILED: the witness's
+  (...) cosignature is malformed.`
+
+The last line is the SHA-256 of the log key that signed the checkpoint, the same fingerprint `tracekit init --dev --v2`
+and `tracekit up --wait` print, so you can check the trust file pins the key you expect.
 
 The counts are of what was signed: the tool calls the records name, in that many signed records. A verified bundle shows
 that what was signed is intact, not that every call was captured. `none changed, removed or added` is said only when no
@@ -49,7 +69,8 @@ Findings: 2 finding(s) (1 high, 1 medium) and 1 coverage review(s); 3 independen
 Each line is `PASS`, `WARN` or `FAIL`. A `FAIL` line says what failed: a line that counts problems reads `n problem(s)
 in ...` (for example `[FAIL] signatures — 1 problem(s) in 336 record(s)`), and the indented lines under it name each
 one, records by their log `seq`. A failed bundle's printed line is `Assurance: not rated (the bundle failed
-verification).`: a level rates only evidence that verified (`--json` keeps the level the checkpoint has). `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
+verification).`: a level rates only evidence that verified, so `--json` gives the same text as its `"assurance"` (a v1
+bundle's `--json` keeps its level). `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
 "integrity", "assurance", "notes"}`, with `"findings"` when there is a Findings line. The algorithm behind each line is in [format v2](format-v2.md#11-verification-algorithm);
 this page says what each one means, and what it does not. The v1 report is described in [signing](signing.md).
 
@@ -58,7 +79,7 @@ this page says what each one means, and what it does not. The v1 report is descr
 | Code | When |
 |---|---|
 | 0 | no line failed |
-| 1 | at least one line failed: `Integrity: FAILED` |
+| 1 | at least one line failed: `Integrity: FAILED` (a v1 bundle's reads `Integrity: VERIFICATION FAILED`) |
 | 2 | the trust config or the bundle could not be used at all (`UNVERIFIABLE (the trust file can't be used)`, `UNUSABLE BUNDLE`, `UNVERIFIABLE`), or the flags were wrong |
 | 3 | `--strict` and no line failed but at least one is a warning |
 
@@ -84,7 +105,7 @@ accepts a v2 bundle only when verification with that trust config succeeds. For 
 `witness`; the action checks the v1 `trust root` result.
 
 ```yaml
-- uses: Cygnux-Labs/Tracekit@v1.5.3   # a release tag or its commit SHA, not main
+- uses: Cygnux-Labs/Tracekit@v1.6.0   # a release tag or its commit SHA, not main
   with:
     bundle: run.tkb
     trust: .tracekit/trust.json
@@ -166,7 +187,7 @@ The first word is the level; the rest lists what it rests on.
 
 | Level | When |
 |---|---|
-| `dev` | no pinned witness cosigned the checkpoint and no pinned anchor verified, **or** the bundle holds a self-approval |
+| `dev` | no pinned witness cosigned the checkpoint and no pinned anchor verified, **or** the bundle holds a self-approval (an answer, or an [intent grant](intent-grants.md#who-may-issue-a-grant), from the run's own user) |
 | `local` | only `operator`-class witnesses or anchors vouch for the checkpoint |
 | `witnessed` | at least `max(1, witnesses_required)` independent (non-`operator`) cosignatures or anchors |
 
@@ -225,7 +246,9 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `tiers` (`decided and completed by different capture paths`) | a tool call's decision and result records name different `source` or `tier`, for example a call a gateway decided (T2) completed by the agent, which a current signer refuses; each such call is listed and counted at the weaker tier | which record is false, or that the call didn't run |
 | `gateway amendments` | `ext.amended` is on a record other than an LLM gateway's model request, or isn't a list of JSON pointers: the signer never writes that. It passes otherwise: `gateway amended n request(s) to show reasoning (/thinking/display: n)`, the requests the [gateway](gateway.md#readable-reasoning) sent with a field changed so the provider shows reasoning, each record committing to the request as sent | that the records are false: they verified like every other |
 | `openshell policy` | `ext.openshell.policy` is on anything but a signer-written `ext` record with OpenShell's name for the change and the observer: the signer never writes that. It passes otherwise: `OpenShell changed the sandbox policy or configuration n time(s) (approved: n, ...), as OpenShell reported it`, from the [OpenShell middleware's OCSF import](integrations/openshell.md#openshells-ocsf-events) | that OpenShell's report is true, or complete: it is what OpenShell said |
+| `intent grants` | fails when a released payment breaks its grant: outside its caveats or past a limit, after the grant was revoked or expired, of a tool the grant doesn't cover, an amount or totals that aren't whole numbers, totals that don't add up, or a tier that isn't its record's; when its grant isn't in the bundle earlier in its run, or is only in a grant record no signer writes; and when a decision flagged `TK-GRANT` names no grant. Warns when any other grant, revocation or release record isn't as the signer writes them (a grant that isn't a person's for its own run, with no release under it). It passes otherwise: `n grant(s) by alice` (and how many were self-approved, issued by the run's own user, which the agent can be), the revocations, and the payments released at T2 and at T1, each re-checked against its grant and its running totals ([intent grants](intent-grants.md)) | that a payment was right to make: it was within what the person granted |
 | `boxed agent` | `ext.box` is on anything but a `run.registered` under a uid's identity, or isn't a box label the signer writes ({id, image_digest, allow, engine `firecracker`, channel `agent`}): no claim is made, and the short result says `NOT SHOWN`. It passes otherwise, for the runs the bundle holds (not a run-set's records of other runs) of a [Tracekit Box](limits.md#tracekit-box-experimental) box and its agent's channel: `PROOF AGAINST THE BOXED AGENT (micro-VM): the signing key was outside its box for this run.`, then that an agent run's records are its own account and the box's doors (its connections and file writes) are the record of what it could do, to review what the box wrote before running it, and `anchored by <witness> at <time>` for each pinned cosignature. The short result prints these lines in place of the general claim, never `PROOF AGAINST THE AGENT` for a box's run | that the agent's records are true or complete, or anything about a process running as the Box daemon's or the signer's user on the host |
+| `verifier minimum` | the manifest's `verifier_min_version` is below what the records need (1.6 recomputes it, as export does): the manifest isn't signed, so it was edited down, and an older verifier given this bundle may have claimed more than its records show (a self-issued grant read as witnessed, signed findings unchecked). The problems name the records that need more | that this verifier's report is wrong: it read every record |
 | `not interpreted` | records carry an ext name (format 1.4's non-critical slot) this verifier doesn't check, one line per name for the first 20 (`n record(s) carry ext.<name>`), then one line for the rest (`n more ext name(s)`). They verified like every record (signature, chain, inclusion); what the name says is not checked. `tracekit >= x checks it` names a verifier that does (from the manifest, advisory) | that anything is wrong: a later Tracekit wrote something this verifier doesn't read |
 | `external decisions` | another policy system's imported decision (`policy.external`) disagreed with the signer's for the same call (or named another tool, or a call the signer never decided), recorded as `capture.gap{decision_mismatch}`; the line also counts imports by system and by verified signature | that either decision was wrong: the signer's decision is the one that applied |
 

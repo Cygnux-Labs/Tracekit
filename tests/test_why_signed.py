@@ -14,14 +14,17 @@ import unittest
 from unittest import mock
 
 from factories import rewrite_bundle, wait_for
-from tracekit import demo_why
+from test_view import page_js
+from test_view_ui import needs_node
+from tracekit import demo_why, view
 from tracekit.demo_server import Witness, _serve, export_final, tamper
 from tracekit.deploy import files
+from tracekit.format.canon import event_hash as canon_hash
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer.service import DEFAULT_POLICY, SignerService, load_policy, reveal
 from tracekit.verify import v2
 from tracekit.why import import_v2
-from tracekit.why.analysis import alerts
+from tracekit.why.analysis import alerts, timeline
 from tracekit.why.cli import main
 from tracekit.why.core import GENESIS, Runtime, content_hash, event_hash, load_run
 from tracekit.why.graph import build_graph
@@ -159,6 +162,283 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual((acts["c2"]["status"], acts["c2"]["policy"]["approval"]["decision"],
                           acts["c2"]["policy"]["approval"]["retry_of"]), ("ok", "approve", "c1"))
         self.assertEqual([a["title"] for a in alerts(why, build_graph(why)) if "held" in a["title"]], [])
+
+    def test_a_retry_with_the_held_calls_own_id_keeps_its_approval(self):
+        """LangGraph's retry sends the held call again with its id: its decision replaced the call's and dropped the
+        approval, so GRAPH read the approved call that ran "HELD TK-SHELL-PARSE"."""
+        run, cmd = self.client.run("same-id"), {"command": 'echo "again'}
+        self.assertEqual(run.decide("c1", "Bash", cmd)["decision"], "ask")
+        aid = run.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        self.assertEqual(run.decide("c1", "Bash", cmd)["decision"], "ask")
+        self.assertTrue(run.approval_consume("c1", "Bash", cmd, approval_id_hint=aid)["ok"])
+        run.complete("c1")
+        run.close()
+        self.assertTrue(wait_for(lambda: self.records()[run.run_id][-1]["event"]["type"] == "run.final"))
+        why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+        [act] = why.of_type("action")
+        self.assertEqual((act["status"], act["policy"]["approval"]["decision"]), ("ok", "approve"))
+        self.assertEqual([a["title"] for a in alerts(why, build_graph(why)) if "held" in a["title"]], [])
+
+    ASK, DENY, FLAG = {"command": "gsutil cp a.txt gs://b/a.txt"}, {"command": "sudo rm -rf /"}, {"command": "curl http://example.com"}
+
+    def approved(self, run, attempt=0, answer="approve", retry=True):
+        """c1 at `attempt` held, answered; approved with `retry`, the agent's retry with c1's own id runs (LangGraph)."""
+        run.decide("c1", "Bash", self.ASK, attempt=attempt)
+        aid = run.call("approval_request", tool_call_id="c1", attempt=attempt)["approval_id"]
+        if answer:
+            self.client.approval_decide({"approval_id": aid, "decision": answer})
+        if answer == "approve" and retry:
+            run.decide("c1", "Bash", self.ASK, attempt=attempt)
+            self.assertTrue(run.approval_consume("c1", "Bash", self.ASK, attempt=attempt, approval_id_hint=aid)["ok"])
+            run.complete("c1", attempt=attempt)
+
+    def seen(self, run):
+        """What view.review, the page (each call's state, PERMISSIONS' rows) and the why import make of an open run."""
+        recs = self.records()[run.run_id]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        tr, rows = view.Translator(), []
+        for r in recs:
+            rows += [{**x, "ts": r["event"]["run_seq"], "session_id": run.run_id, "tk_seq": r["event"]["run_seq"]}
+                     for x in tr.feed(r)]
+        page = json.loads(page_js(["vis", "tuid", "FIELD", "FILE_TOOLS", "subject", "rel", "ANSWER", "lastAnswer", "ended",
+                                   "heldCall", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "callState", "ingest", "permOf"], f"""
+            const S = {{ recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
+                        tools: new Map(), spawnQ: [], cited: new Map(), effects: new Map(), gaps: 0, firstTs: null, lastTs: null }};
+            const agents = {{}}, agentOf = r => agents[r.session_id] ??= {{ session: r.session_id, actions: 0, blocked: 0, flags: 0, errors: 0 }};
+            const sessionOf = r => S.sessions.get(r.session_id) ?? S.sessions.set(r.session_id, {{ prompts: [], end: null }}).get(r.session_id);
+            const pushTape = r => r, alert = () => {{}}, ALL = {json.dumps(rows)};
+            foldsOf(ALL, FOLDS);   // as the page loads them
+            for (const r of ALL) {{ sessionOf(r); ingest(r); }}
+            process.stdout.write(JSON.stringify([S.actList.map(a => [a.v2.decision, callState(a)[1]]),
+                                                 permOf(ALL).map(r => [r.rec.v2.decision, r.out[1]]),
+                                                 S.actList.filter(a => a.post).map(a => a.v2.decision)]));"""))
+        why = load_run(import_v2.convert(recs, tempfile.mkdtemp(dir=self.dir), {}))
+        return {"decisions": dict(rv["decisions"]), "retries": rv["retries"], "calls": page[0], "perm": page[1],
+                "ran": page[2], "why": [(a["policy"]["decision"], (a["policy"].get("approval") or {}).get("decision"))
+                                        for a in why.of_type("action")]}
+
+    def used_after(self, name, then):
+        """c1 held and approved, `then(run)` sends another decision under c1, then c1's approval is used with the approved
+        arguments (the signer finds it by call id and attempt) and the call completes: what each view makes of it."""
+        run = self.client.run(name)
+        run.decide("c1", "Bash", self.ASK)
+        aid = run.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        then(run)
+        self.assertTrue(run.approval_consume("c1", "Bash", self.ASK, attempt=0, approval_id_hint=aid)["ok"])
+        run.complete("c1", attempt=0)
+        return self.seen(run)
+
+    def ran_anyway(self, name, steps):
+        """A run's calls that ran though no approval let them: (the page's calls with their result, the why log's actions
+        as (decision, status))."""
+        run = self.client.run(name)
+        steps(run)
+        why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+        return self.seen(run)["ran"], [(a["policy"]["decision"], a["status"]) for a in why.of_type("action")]
+
+    def test_a_hold_nobody_answered_that_ran_anyway_is_filed_as_it_ran(self):
+        """The signer takes a result for any open decision and signs which (decision_id). Filed by "the latest call that
+        could have run", a hold nobody answered that ran anyway read blocked in the why log (a HIGH "not approved").
+        (A deny's result: tests/test_view_ui.py, the SDK sends none.)"""
+        needs_node(self)
+
+        def unanswered(run):
+            run.decide("c1", "Bash", self.ASK)
+            run.call("approval_request", tool_call_id="c1")
+            run.complete("c1")
+        self.assertEqual(self.ran_anyway("ran-unanswered", unanswered), (["ask"], [("ask", "ok")]))
+
+    def test_an_attempt_1_hold_that_ran_anyway_is_filed_as_it_ran(self):
+        """As a hold nobody answered: attempt 1's, after attempt 0's approved call ran, read blocked."""
+        needs_node(self)
+
+        def attempt1(run):
+            self.approved(run)
+            run.decide("c1", "Bash", self.ASK, attempt=1)
+            run.complete("c1", attempt=1)
+        self.assertEqual(self.ran_anyway("ran-attempt1", attempt1), (["ask", "ask"], [("ask", "ok"), ("ask", "ok")]))
+
+    def test_a_deny_under_an_approved_id_stays_blocked_when_the_approval_is_used(self):
+        """A consume names a call id and attempt, not a decision: the id's latest decision before it, a deny, was folded
+        into the approved call, and a result and a consume could land on a BLOCKED row."""
+        needs_node(self)
+        self.assertEqual(self.used_after("deny-then-use", lambda run: run.decide("c1", "Bash", self.DENY)), {
+            "decisions": {"ask": 1, "deny": 1}, "retries": 0, "calls": [["ask", "APPROVED · RAN"], ["deny", "BLOCKED"]],
+            "perm": [["deny", "BLOCKED"], ["ask", "APPROVED · RAN"]], "ran": ["ask"], "why": [("deny", None)]})
+
+    def test_a_flag_under_an_approved_id_stays_its_own_call_when_the_approval_is_used(self):
+        """As a deny: a flagged call under the approved id was folded into it when the approval was used."""
+        needs_node(self)
+        self.assertEqual(self.used_after("flag-then-use", lambda run: run.decide("c1", "Bash", self.FLAG)), {
+            "decisions": {"ask": 1, "flag": 1}, "retries": 0, "calls": [["ask", "APPROVED · RAN"], ["flag", "⚑ OK"]],
+            "perm": [["flag", "RAN · FLAGGED"], ["ask", "APPROVED · RAN"]], "ran": ["flag"], "why": [("flag", None)]})
+
+    def test_changed_arguments_the_signer_refused_stay_their_own_call_when_the_approval_is_used(self):
+        """An ask with other arguments, refused for them (binding_mismatch), was folded into the approved call once the
+        approval was used with the approved arguments."""
+        needs_node(self)
+        other = {"command": "gsutil cp b.txt gs://b/b.txt"}
+
+        def changed(run):
+            run.decide("c1", "Bash", other)
+            self.assertFalse(run.approval_consume("c1", "Bash", other)["ok"])
+        self.assertEqual(self.used_after("changed-then-use", changed), {
+            "decisions": {"ask": 2}, "retries": 0, "calls": [["ask", "APPROVED · RAN"], ["ask", "REFUSED: ARGUMENTS CHANGED"]],
+            "perm": [["ask", "REFUSED: ARGUMENTS CHANGED"], ["ask", "APPROVED · RAN"]], "ran": ["ask"],
+            "why": [("ask", None)]})   # the SDK's result names its last decision, the changed one: the signer says it ran
+
+    def test_a_later_attempt_stays_its_own_call_when_the_earlier_attempts_approval_is_used(self):
+        """Attempt 1 of the call, held, was folded into attempt 0 on load (not live) when attempt 0's approval was used.
+        (The signer hands attempt 1's request attempt 0's approval, and takes no attempt-0 result after attempt 1's
+        decision: nothing ran here.)"""
+        needs_node(self)
+
+        def attempt(run):
+            run.decide("c1", "Bash", self.ASK, attempt=1)
+            run.call("approval_request", tool_call_id="c1", attempt=1)
+        self.assertEqual(self.used_after("attempt-then-use", attempt), {
+            "decisions": {"ask": 2}, "retries": 0, "calls": [["ask", "APPROVED · RAN"], ["ask", "TO ANSWER"]],
+            "perm": [["ask", "TO ANSWER"], ["ask", "APPROVED · RAN"]], "ran": [], "why": []})
+
+    def test_a_deny_a_flag_or_changed_arguments_under_an_approved_calls_id_is_a_call_of_its_own(self):
+        """The same-id fold took any later decision under an id a person had approved, which the agent chooses: a deny
+        disappeared into the approved call (the review: 1 call, approved), a flagged call that ran read APPROVED · RAN,
+        its approval given to it in GRAPH, and a call with other arguments hid under the approved one."""
+        needs_node(self)
+        deny, flag, other = (self.client.run(n) for n in ("deny-under-approved", "flag-under-approved", "other-args"))
+        self.approved(deny, retry=False)
+        self.assertEqual(deny.decide("c1", "Bash", self.DENY)["decision"], "deny")
+        self.approved(flag, retry=False)
+        flag.decide("c1", "Bash", self.FLAG)   # the agent hears allow; the record says flag
+        flag.complete("c1")
+        self.approved(other, retry=False)
+        changed = {"command": "gsutil cp b.txt gs://b/b.txt"}
+        self.assertEqual(other.decide("c1", "Bash", changed)["decision"], "ask")
+        self.assertFalse(other.approval_consume("c1", "Bash", changed)["ok"])   # the signer: the arguments differ
+        self.assertEqual(self.seen(other), {"decisions": {"ask": 2}, "retries": 0,
+                                            "calls": [["ask", "APPROVED"], ["ask", "REFUSED: ARGUMENTS CHANGED"]],
+                                            "perm": [["ask", "REFUSED: ARGUMENTS CHANGED"], ["ask", "APPROVED"]], "ran": [], "why": []})
+        self.assertEqual(self.seen(deny), {"decisions": {"ask": 1, "deny": 1}, "retries": 0,
+                                           "calls": [["ask", "APPROVED"], ["deny", "BLOCKED"]],
+                                           "perm": [["deny", "BLOCKED"], ["ask", "APPROVED"]], "ran": [], "why": [("deny", None)]})
+        self.assertEqual(self.seen(flag), {"decisions": {"ask": 1, "flag": 1}, "retries": 0,
+                                           "calls": [["ask", "APPROVED"], ["flag", "⚑ OK"]],
+                                           "perm": [["flag", "RAN · FLAGGED"], ["ask", "APPROVED"]], "ran": ["flag"], "why": [("flag", None)]})
+
+    def test_only_the_signers_consume_files_a_decision_with_a_held_call(self):
+        """A fold guessed from the id the agent names: once a retry with another id had used c1's approval, c1 sent again
+        and unapproved hid under c1, and c2 sent again read approved in the why log."""
+        needs_node(self)
+        cmd, ran = {"command": 'echo "again'}, self.client.run("re-runs")
+        ran.decide("c1", "Bash", cmd)
+        aid = ran.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        ran.decide("c2", "Bash", cmd)
+        hint = ran.call("approval_request", tool_call_id="c2")["approval_id"]
+        self.assertTrue(ran.approval_consume("c2", "Bash", cmd, approval_id_hint=hint)["ok"])
+        ran.complete("c2")
+        ran.decide("c1", "Bash", cmd)   # each sent again, under its id, and never approved
+        ran.decide("c2", "Bash", cmd)
+        ran.close()
+        self.assertTrue(wait_for(lambda: self.records()[ran.run_id][-1]["event"]["type"] == "run.final"))
+        self.assertEqual(self.seen(ran), {
+            "decisions": {"ask": 4}, "retries": 1,
+            "calls": [["ask", "APPROVED · RETRY RAN"], ["ask", "APPROVED · RAN"], ["ask", "NOT ANSWERED"], ["ask", "NOT ANSWERED"]],
+            "perm": [["ask", "NOT ANSWERED"], ["ask", "NOT ANSWERED"], ["ask", "APPROVED · RETRY RAN"]],
+            "ran": ["ask"], "why": [("ask", "approve"), ("ask", None), ("ask", None)]})
+
+    def test_an_allowed_call_under_an_approved_id_leaves_a_later_hold_its_own(self):
+        """An allowed call under c1, then a hold under c1: the hold hid under c1's approval, unused, as its retry."""
+        needs_node(self)
+        later = self.client.run("allow-then-hold")
+        self.approved(later, retry=False)
+        self.assertEqual(later.decide("c1", "Bash", {"command": "ls"})["decision"], "allow")
+        self.assertEqual(later.decide("c1", "Bash", self.ASK)["decision"], "ask")
+        self.assertEqual(self.seen(later), {"decisions": {"ask": 2, "allow": 1}, "retries": 0,
+                                            "calls": [["ask", "APPROVED"], ["allow", "RUNNING"], ["ask", "TO ANSWER"]],
+                                            "perm": [["ask", "TO ANSWER"], ["ask", "APPROVED"]], "ran": [], "why": []})
+
+    def test_a_later_attempt_of_the_call_is_a_call_of_its_own(self):
+        """A call re-run with its id at a new attempt (rejected, approved and run, or still waiting) folded into the first
+        one, approved and run, as its retry."""
+        needs_node(self)
+        run = self.client.run("attempts")
+        self.approved(run)
+        self.approved(run, attempt=1, answer="reject")
+        self.approved(run, attempt=2)
+        self.approved(run, attempt=3, answer=None)
+        self.assertEqual(self.seen(run), {
+            "decisions": {"ask": 4}, "retries": 2,
+            "calls": [["ask", "APPROVED · RAN"], ["ask", "REJECTED"], ["ask", "APPROVED · RAN"], ["ask", "TO ANSWER"]],
+            "perm": [["ask", "TO ANSWER"], ["ask", "APPROVED · RAN"], ["ask", "REJECTED"], ["ask", "APPROVED · RAN"]],
+            "ran": ["ask", "ask"],   # attempt 3, still waiting, is not shown in the why log yet
+            "why": [("ask", "approve"), ("ask", "reject"), ("ask", "approve")]})
+
+    def test_a_call_that_ran_at_two_attempts_is_two_actions_in_the_why_log_and_the_review(self):
+        """Attempts of one id collapsed into the last: the why log showed one action, and the review one "approved · ran"."""
+        needs_node(self)
+        run = self.client.run("two-attempts-ran")
+        self.approved(run)
+        self.approved(run, attempt=1)
+        seen = self.seen(run)
+        self.assertEqual((seen["why"], seen["ran"]), ([("ask", "approve"), ("ask", "approve")], ["ask", "ask"]))
+        recs = self.records()[run.run_id]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual(dict(rv["permissions"]), {"approved · ran": 2})
+
+    def test_an_attempt_that_ran_and_failed_stays_while_the_next_waits(self):
+        """Attempt 0 ran and failed, attempt 1 is held in an open run: the why log had no action at all."""
+        run = self.client.run("ran-then-waits")
+        run.decide("c1", "Bash", {"command": "ls"}, attempt=0)
+        run.complete("c1", "error", attempt=0)
+        run.decide("c1", "Bash", self.ASK, attempt=1)
+        run.call("approval_request", tool_call_id="c1", attempt=1)
+        why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+        self.assertEqual([(a["policy"]["decision"], a["status"]) for a in why.of_type("action")], [("allow", "error")])
+        rv = view.review(self.records()[run.run_id], mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual(dict(rv["permissions"]), {"not answered yet": 1})
+
+    def test_a_deny_that_ran_is_kept_when_a_later_hold_under_its_id_folds_into_an_approved_call(self):
+        """The signed result of the deny names it, and the later ask under the same id and attempt folded into the
+        approved call: the why log kept only the approved call. (The result names the deny and its arguments: by default
+        the SDK completes the last allow or ask, which would use the approval up.)"""
+        needs_node(self)
+        run = self.client.run("deny-ran-then-fold")
+        run.decide("c1", "Bash", self.ASK)
+        aid = run.call("approval_request", tool_call_id="c1")["approval_id"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        deny = run.decide("c1", "Bash", self.DENY)
+        run.complete("c1", decision_id=deny["decision_id"], args_digest=canon_hash({"tool": "Bash", "args": self.DENY}))
+        run.decide("c1", "Bash", self.ASK)
+        self.assertTrue(run.approval_consume("c1", "Bash", self.ASK, approval_id_hint=aid)["ok"])
+        run.complete("c1")
+        self.assertEqual(self.seen(run), {
+            "decisions": {"ask": 1, "deny": 1}, "retries": 1, "calls": [["ask", "APPROVED · RAN"], ["deny", "BLOCKED"]],
+            "perm": [["deny", "BLOCKED"], ["ask", "APPROVED · RAN"]], "ran": ["ask", "deny"],
+            "why": [("deny", None), ("ask", "approve")]})
+
+    def test_a_hold_nobody_has_answered_is_refused_only_once_its_run_is_final(self):
+        """While the run waited for a person, its hold came back blocked: WHY alerted HIGH "Bash was held for approval
+        and not approved" for a call the person could still approve."""
+        run = self.client.run("waiting")
+        self.assertEqual(run.decide("c1", "Bash", {"command": 'echo "wait'})["decision"], "ask")
+        run.call("approval_request", tool_call_id="c1")
+
+        def held():
+            why = load_run(import_v2.convert(self.records()[run.run_id], tempfile.mkdtemp(dir=self.dir), {}))
+            return [a["title"] for a in alerts(why, build_graph(why)) if "held" in a["title"]]
+        self.assertEqual(held(), [])
+        run.close()
+        self.assertTrue(wait_for(lambda: self.records()[run.run_id][-1]["event"]["type"] == "run.final"))
+        self.assertEqual(len(held()), 1)
+
+    def test_the_timeline_says_a_blocked_call_was_blocked(self):
+        """The why timeline said "a ran Bash" of a call the policy blocked."""
+        rows = {r["seq"]: r["text"] for r in timeline(self.why) if r["type"] == "action"}
+        self.assertEqual(rows[self.actions()["sudo rm -rf /"]["seq"]].split("(")[0], "a was blocked from running Bash")
+        self.assertEqual(rows[self.actions()["ls"]["seq"]].split("(")[0], "a ran Bash")
 
     def test_a_deny_comes_back_as_the_blocked_result_and_the_tool_does_not_run(self):
         e = self.actions()["sudo rm -rf /"]

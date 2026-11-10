@@ -109,10 +109,10 @@ GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", 
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
 # harness tools mapped to Bash whose effect comes after their post-tool hook: input typed into another running session
 # (Codex's write_stdin, agy's manage_task send_input, Devin's write_to_process) or a command left running (Qwen Code's
-# monitor); normalise marks their payload `later`, and the hook takes no receipt of what they write
-# (tracekit.model_receipt)
+# monitor, Kilo's background_process); normalise marks their payload `later`, and the hook takes no receipt of what
+# they write (tracekit.model_receipt)
 LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task"),
-                   ("devin", "write_to_process")))
+                   ("devin", "write_to_process"), ("kilo", "background_process")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
@@ -138,8 +138,8 @@ CRUSH_TOOLS = {"bash": "Bash", "view": "Read", "write": "Write", "edit": "Edit",
 CRUSH_PATH_TOOLS = ("lsp_rename", "ls", "grep", "glob")   # they read `path`, the directory they search, not `file_path`
 # Devin's tools (docs.devin.ai/cli/extensibility/hooks/lifecycle-hooks): its payload and event names are Claude Code's.
 # lean: only exec's input (command, shell_id) is documented; read, write and edit are decided on every path under a
-# key that may name one, apply_patch on every file a patch or diff header names, write_to_process on all its text,
-# until a recorded session names their fields
+# key that may name one, apply_patch on every file a patch or diff header names, write_to_process on its one argument
+# besides shell_id (the text it writes), until a recorded session names their fields
 DEVIN_TOOLS = {"exec": "Bash", "write_to_process": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
                "apply_patch": "Edit", "grep": "Grep", "glob": "Glob", "webfetch": "WebFetch"}
 DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
@@ -167,7 +167,28 @@ def _diff_names(name):
 DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
                                     "path under a key ending in path, paths or file (case and _ ignored)"),
                     "apply_patch": "file header (*** Add, Update or Delete File:, or a diff's ---, +++ or diff --git)",
-                    "webfetch": "url under one key spelled url"}
+                    "webfetch": "url under one key spelled url",
+                    "write_to_process": "text under its one argument besides shell_id",
+                    "exec": "command under a key spelled command (case ignored)"}
+# what Tracekit can't read as it runs in text typed into a live terminal (write_to_process), and in an exec command,
+# should Devin type one: a control character, which the line editor acts on (DEL and ^H erase, ^U discards the line,
+# ^C drops it, tab completes, ESC starts a key sequence: an arrow recalls history; C1 too), and in typed text interactive
+# bash's history expansion: a ! before anything but a blank, a line end, = or ( (bash leaves those), and a ^ starting a
+# line (quick substitution). \n ends a line, and so does \r, which tool() reads as \n. exec keeps a tab (a heredoc's)
+# lean: exec's ! isn't denied (git commit -m 'fix!', wait $!): an exec Devin types into bash may expand one
+TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t\n=(])|^[ \t]*\^", re.M),
+         "exec": re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")}
+# what a line typed into a running shell (write_to_process) may set or replay there that changes what a later line
+# runs, which the policy, deciding one call at a time, can't see: history replay (fc; history -s, -r or -n), an alias
+# defined, a key binding, a trap, a loaded builtin, the exec builtin (it can make the shell read commands from a file, or
+# replace it), a shell option (set -o, +H …; shopt), a hashed path, a sourced file, a function, and the variables bash
+# runs at each prompt (PROMPT_COMMAND, PS0 to PS4), finds commands by (PATH, BASH_ENV, BASH_CMDS: hash's table), or
+# expands aliases from (BASH_ALIASES), or the loader loads code by, and a nameref (declare, typeset or local -n), which
+# sets a variable under another name
+# lean: exec isn't read so (a script there sources a venv or defines a function), though Devin may run it in that shell
+SHELL_STATE = {"fc", "bind", "trap", "enable", "exec", "shopt", "hash", "source", "."}
+STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV|BASH_CMDS|BASH_ALIASES|LD_PRELOAD|LD_LIBRARY_PATH|"
+                        r"LD_AUDIT|DYLD_\w+)(?:$|[\[=+])")
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -186,6 +207,12 @@ KILO_BLOCKED = ("notebook_execute",)
 # the harnesses that load Tracekit's OpenCode plugin: their tool names and the argument each file tool reads
 PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_TOOLS, KILO_PATH_ARG)}
 JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+
+
+def _named(harness, name):
+    """A harness's name for a tool as Tracekit reads it: Devin may match a tool's name ignoring case, as it may an
+    argument's (DEVIN_PATH_KEY), so a name that is one of its tools in another case is read as that tool."""
+    return name.casefold() if harness == "devin" and name.casefold() in DEVIN_TOOLS else name
 
 
 def _input(v):
@@ -213,7 +240,7 @@ def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
     if harness in ("droid", "devin"):
-        files = None
+        name, files = _named(harness, name), None
         if name == ("ApplyPatch" if harness == "droid" else "apply_patch"):   # every file a patch header names,
             text = "\n".join(_strings(ti))   # whichever argument holds it
             files = [f.strip() for f in PATCH_FILE.findall(text)]
@@ -227,8 +254,15 @@ def tool(harness, name, ti):
             files = list(dict.fromkeys(f for k in (*PATH_KEYS, "paths", *ti)
                                        if DEVIN_PATH_KEY.search(k.casefold().replace("_", ""))
                                        for f in _strings(ti.get(k)) if f))
-        elif harness == "devin" and name == "write_to_process":   # input typed into a running exec shell
-            ti["command"] = "\n".join(_strings(ti))
+        elif harness == "devin" and name == "write_to_process":   # input typed into a running exec shell: the text
+            # of its one argument besides shell_id, whatever its name; any other shape is denied in _blocked
+            text = [ti[k] for k in ti if k.casefold() != "shell_id"]
+            ti["command"] = text[0].replace("\r", "\n") if len(text) == 1 and isinstance(text[0], str) else None
+        elif harness == "devin" and name == "exec":   # its command under any spelling Devin's decoder may read (_blocked
+            # denies a call that sends a name twice); \r ends a line, should Devin type it into a terminal
+            keys = [k for k in ti if k.casefold() == "command"]
+            if len(keys) == 1:
+                ti["command"] = ti[keys[0]].replace("\r", "\n") if isinstance(ti[keys[0]], str) else ti[keys[0]]
         if files is not None:
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
@@ -409,7 +443,8 @@ def normalise(harness, p):
         out["hook_event_name"] = m[ev]
         if ev in ("PreToolUse", "PostToolUse", "PostToolUseFailure"):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
-            out["tool_use_id"], out["later"] = p.get("tool_use_id"), (harness, p.get("tool_name")) in LATER
+            out["tool_use_id"] = p.get("tool_use_id")
+            out["later"] = (harness, _named(harness, str(p.get("tool_name")))) in LATER
             if harness in ("droid", "devin"):   # their documented payloads carry no call id
                 out["tool_use_id"] = out["session_id"] and _paired_ids(
                     harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
@@ -476,7 +511,7 @@ def normalise(harness, p):
         if ev in ("tool.execute.before", "tool.execute.after"):
             out["hook_event_name"] = "PreToolUse" if ev == "tool.execute.before" else "PostToolUse"
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
-            out["tool_use_id"] = p.get("tool_use_id")
+            out["tool_use_id"], out["later"] = p.get("tool_use_id"), (harness, str(p.get("tool_name"))) in LATER
             if ev == "tool.execute.after":
                 out["tool_response"] = p.get("tool_response")
             return out
@@ -591,8 +626,9 @@ def _blocked_tool(harness, tool_name, raw=""):
         return None
     if tool_name.casefold() in CRUSH_SUBAGENTS:   # as its argument names, Crush may match a tool's name ignoring case
         return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
-                "can't decide them; make each call itself instead. To stop Crush offering it, set "
-                '"options": {"disabled_tools": ["agent", "agentic_fetch"]} in crush.json.')
+                "can't decide them; make each call itself instead. To stop Crush offering it, put "
+                '"permissions deny agent agentic_fetch" in crushrc (in crush.json: '
+                '"options": {"disabled_tools": ["agent", "agentic_fetch"]}).')
     if CRUSH_CODE_MODE.fullmatch(tool_name):
         return (f"Blocked by Tracekit: {tool_name} is Docker MCP Gateway's code-mode, whose script calls MCP tools "
                 "inside the gateway with no hook, so Tracekit can't decide them; make each call itself instead. "
@@ -638,6 +674,48 @@ def _blocked_agy_args(name, args):
     return None
 
 
+def _sets_state(text):
+    """The word of typed text that sets or replays state of the running shell (SHELL_STATE), read as the policy's
+    shell parser reads the line, else None. Text the parser can't read (it holds a state variable set to text it
+    can't name, a nameref to one, `hash -p`) is read as the engine reads such a line, each piece's words as written,
+    with an assignment as its first word; text with none goes to the signer, which holds it."""
+    from .policy2 import engine, shell
+    try:
+        cmds, *_, learned = shell.analyse(text)
+    except RecursionError:
+        return None
+    except shell.ParseError:
+        words = [w for p in engine._PIECE.finditer(text) if (w := p.group().split())]
+        cmds, learned = [{"argv": w} for w in words], {"assigned": [(w[0], w[0]) for w in words], "functions": []}
+    for a in (c["argv"] for c in cmds):
+        if a[0] in SHELL_STATE or a[0] == "set" and any(w.startswith(("-", "+")) for w in a[1:]) or \
+                a[0] == "alias" and any(re.match(r"[^=]+=", w) for w in a[1:]) or a[0] == "history" and any(
+                re.fullmatch(r"-[a-z]*[nrs][a-z]*", w) for w in a[1:]) or a[0] in ("declare", "typeset", "local") and \
+                any(re.fullmatch(r"-[A-Za-z]*n[A-Za-z]*", w) for w in a[1:]):
+            return a[0]
+        hit = next((w for w in a[1:] if STATE_VARS.match(w)), None)
+        if hit and (a[0] in shell._SETS_ANY or shell._sets_with_v(a)):   # export, declare, read, printf -v …
+            return hit
+    return next((n for n, _ in learned["assigned"] if STATE_VARS.match(n)), None) or next(iter(learned["functions"]),
+                                                                                        None)
+
+
+def _repeated(args):
+    """The first argument name in `args` (a tool's input read with _Pairs, or a JSON string of one) that an earlier one
+    has, ignoring case (as str.casefold folds it: K and ſ too), else None."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args, object_pairs_hook=_Pairs)
+        except ValueError:
+            return None
+    seen = set()
+    for k, _ in args if isinstance(args, _Pairs) else ():
+        if k.casefold() in seen:
+            return k
+        seen.add(k.casefold())
+    return None
+
+
 def _blocked(harness, p, raw=""):
     """The reason a pre-tool call is denied in the hook itself, before it is mapped, else None. raw: the payload as
     received."""
@@ -645,18 +723,41 @@ def _blocked(harness, p, raw=""):
         call = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("toolCall") if raw.strip() else None
         call = dict(call) if isinstance(call, _Pairs) else {}
         return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
-    name = str(p.get("tool_name") or "")
+    name = _named(harness, str(p.get("tool_name") or ""))
+    twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
+        raw.strip() else None
+    if twice is not None:
+        return (f"Blocked by Tracekit: Devin's {name[:64]} call sends an argument more than once (case ignored): "
+                f"{twice[:64]!r}. json.loads keeps its last value and Devin's decoder may keep another, so Tracekit "
+                "can't be sure it decides the arguments the tool runs with; send each argument once.")
     if harness == "devin" and name in DEVIN_DECIDED_ON:   # Devin documents none of these tools' arguments: one sent
         # under a name Tracekit doesn't read would leave the call decided on nothing
         ti = tool(harness, name, p.get("tool_input"))[1]
-        v = ti.get("url" if name == "webfetch" else "file_path")
+        v = ti.get({"webfetch": "url", "write_to_process": "command", "exec": "command"}.get(name, "file_path"))
         # a url under another spelling (URL) may be the one Devin's decoder reads, and v1 decides `url` alone
         if not (isinstance(v, str) and v) or name == "webfetch" and [k for k in ti if k.casefold() == "url"] != ["url"]:
             sent = ", ".join(map(str, _input(p.get("tool_input"))))[:200] or "none"
             return (f"Blocked by Tracekit: Devin's {name} call names no {DEVIN_DECIDED_ON[name]}, which Tracekit "
-                    f"decides it on, so it can't decide this call (its arguments: {sent}). Devin doesn't document "
-                    "them: please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so "
-                    "Tracekit can read them.")
+                    f"decides it on, so it can't decide this call (its arguments: {sent})."
+                    + (" Send it as {\"command\": \"...\"}." if name == "exec" else " Devin doesn't document them: "
+                       "please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so Tracekit "
+                       "can read them."))
+        typed = TYPED[name].search(v) if name in TYPED else None
+        if typed and typed.group().strip(" \t") in ("!", "^"):
+            return (f"Blocked by Tracekit: Devin's write_to_process types {typed.group().strip()!r}, which interactive "
+                    "bash expands from its history (a ! before a word, a ^ starting a line), so Tracekit can't read "
+                    "the line that runs; type the command itself.")
+        state = _sets_state(v) if name == "write_to_process" and not typed else None
+        if state:
+            return (f"Blocked by Tracekit: Devin's write_to_process types {state[:64]!r}, which sets or replays state "
+                    "of the running shell (history, an alias, a function, a prompt string, a trap, a key binding, a "
+                    "builtin, a shell option, PATH or a sourced file) that changes what a later line runs, and "
+                    "Tracekit decides each call alone; type the commands themselves.")
+        if typed:
+            return (f"Blocked by Tracekit: Devin's {name} {'types' if name == 'write_to_process' else 'sends'} a "
+                    f"control character ({typed.group()!r}), which a terminal's line editor acts on (erasing, "
+                    "discarding or completing text), so Tracekit can't read the line that runs; send plain text, each "
+                    "line ending in \\n.")
     return _blocked_tool(harness, name, raw)
 
 

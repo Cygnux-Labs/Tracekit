@@ -142,6 +142,15 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(report["by_rule"], {"TK-ENGINE-ERROR": 1})
         self.assertEqual(report["skipped_malformed"], 0)
 
+    def test_each_call_is_decided_as_the_signer_decides_it(self):
+        """The 1.6.0 review: audit decided a call on its name alone, so mcp__<server>__<tool> missed the rules on
+        mcp:<server>/<tool> and on the tool's bare name, and Claude Code's PowerShell tool missed the shell rules."""
+        _write_jsonl(self.root / "s.jsonl", [_call("mcp__acme__tracekit_demo_ask", {"x": 1}),
+                                             _call("PowerShell", {"command": "rm -rf /"})])
+        report = audit.audit(str(self.root))
+        self.assertEqual([c["verdict"] for c in report["calls"]], ["ask", "deny"])
+        self.assertEqual(report["counts"], {"deny": 1, "ask": 1, "flag": 0, "allow": 0})
+
     def test_a_line_nested_past_what_json_takes_is_malformed_and_the_rest_is_read(self):
         """Review of 1.5.3: its RecursionError made the whole file unreadable, its calls uncounted."""
         _write_jsonl(self.root / "s.jsonl", ["[" * 5000 + "]" * 5000, _call("Bash", {"command": "ls"})])
@@ -223,6 +232,33 @@ class TestAudit(unittest.TestCase):
         code, _, err = _run(str(self.root / "missing"))
         self.assertEqual(code, 2)
         self.assertIn("no such folder", err)
+
+    @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")   # installed: init is on PATH
+    def test_the_text_ends_with_the_weeks_summary(self):
+        """The report's last lines say the week in one read: calls, held and blocked, the rules that stopped them most
+        (a flag is no stop) and how to guard from now on."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "rm -rf /"}),
+                                             _call("Bash", {"command": "terraform destroy -auto-approve"}),
+                                             _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=1),
+                                             _call("Bash", {"command": "ls"})])
+        _, out, _ = _run(str(self.root), "--since", "7d")
+        self.assertTrue(out.endswith(
+            "\n\nyour agent's week: 4 tool calls; Tracekit would have held 2 and blocked 1\n"
+            "  top: TK-A001 destroying a deployment, database or volume (2), TK-D004 recursive delete of root or home (1)\n"
+            "  to guard from now on: tracekit init --dev --v2\n"), out)
+        self.assertIn("\nyour agent's 2 days: 4 tool calls;", _run(str(self.root), "--since", "2d")[1])
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        self.assertTrue(_run(str(self.root))[1].endswith(
+            "\nyour agent's transcripts: 1 tool call; Tracekit would have held 0 and blocked 0\n"
+            "  to guard from now on: tracekit init --dev --v2\n"))
+        self.assertNotIn("your agent's", _run(str(self.root), "--json")[1] + _run(str(self.root), "--share")[1])
+
+    def test_without_tracekit_on_path_the_guard_line_says_to_install_it(self):
+        """`uvx --from tracekit-ai tracekit audit` runs with no tracekit on PATH: init alone would not be found."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        with mock.patch("shutil.which", return_value=None):
+            out = _run(str(self.root))[1]
+        self.assertTrue(out.endswith("\n  to guard from now on: pip install tracekit-ai, then tracekit init --dev --v2\n"))
 
     def test_the_default_folder_is_in_claude_config_dir_when_it_is_set(self):
         _write_jsonl(self.root / "config" / "projects" / "p" / "s.jsonl", [_call("Bash", {"command": "rm -rf /"})])

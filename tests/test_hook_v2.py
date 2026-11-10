@@ -23,6 +23,7 @@ import adapter_contract as ac
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
 from tracekit import cli, install, privacy
 from tracekit.bundle_v2 import export
+from tracekit.client import client_home
 from tracekit.format.canon import event_hash
 from tracekit.format import checkpoint
 from tracekit.format.checkpoint import ED25519
@@ -751,7 +752,7 @@ class HookV2(unittest.TestCase):
         proc = self.hook("PreToolUse", tool_name="Edit", tool_input=edit, tool_use_id="t1", wait=False)
         line = proc.stderr.readline()
         self.assertIn("(TK-CONSTRAINT): a person approves it", line)
-        self.assertIn("Why: the person's request in this run said not to modify billing.py; ask the person", line)
+        self.assertIn("Why: the person's request in this run said not to modify \"billing.py\"; ask the person", line)
         self.assertEqual(line.count("TK-CONSTRAINT"), 1, line)
         Client().approval_decide({"approval_id": line.split()[4], "decision": "reject"})
         err = proc.stderr.read()
@@ -759,7 +760,7 @@ class HookV2(unittest.TestCase):
         proc.stdout.close()
         proc.stderr.close()
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("said not to modify billing.py", err)
+        self.assertIn("said not to modify \"billing.py\"", err)
         other = dict(edit, file_path=os.path.join(self.dir, "pager.py"))
         self.assertEqual(self.hook("PreToolUse", tool_name="Edit", tool_input=other, tool_use_id="t2"), (0, ""))
 
@@ -783,7 +784,7 @@ class HookV2(unittest.TestCase):
             self.assertEqual(self.hook("UserPromptSubmit", prompt=prompt), (0, ""))
         first = self.run_handle()
         first.call("close_run", reason="idle")   # as the signer's idle close
-        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t1"))
+        self.assertIn("said not to modify \"billing.py\"", self.held_edit("billing.py", "t1"))
         self.assertNotEqual(self.run_handle().run_id, first.run_id)
         for run in (first, self.run_handle()):
             self.assertEqual([e["data"]["kind"] for e in run.call("read")["events"] if e["type"] == "constraint.added"],
@@ -805,7 +806,7 @@ class HookV2(unittest.TestCase):
         self.assertNotEqual(self.run_handle().run_id, old)
         self.assertEqual([e["type"] for e in self.events()],
                          ["run.registered", "constraint.added", "policy.decision", "tool.result"])
-        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t3"))
+        self.assertIn("said not to modify \"billing.py\"", self.held_edit("billing.py", "t3"))
         autospawn.down()
         store = FileStorage(os.path.join(service.dev_data_dir(), "store"))
         self.addCleanup(store.close)
@@ -828,13 +829,13 @@ class HookV2(unittest.TestCase):
         self.assertFalse(os.path.exists(claude_code._state("s1", "t1")))
         line = self.held_edit("billing.py", "t2")
         self.assertIn("(TK-CONSTRAINT): a person approves it", line)
-        self.assertIn("Why: the person's request in this run said not to modify billing.py", line)
+        self.assertIn("Why: the person's request in this run said not to modify \"billing.py\"", line)
 
     def test_a_prompt_too_large_to_record_still_adds_its_constraints(self):
         code, err = self.hook("UserPromptSubmit", prompt="Don't touch billing.py. " + "x" * (1 << 20))
         self.assertIn("over the signer's limit", err)   # an error the harness shows (exit 1 as `tracekit init` wires it)
         self.assertEqual([e["type"] for e in self.events()], ["run.registered", "constraint.added"])
-        self.assertIn("said not to modify billing.py", self.held_edit("billing.py", "t1"))
+        self.assertIn("said not to modify \"billing.py\"", self.held_edit("billing.py", "t1"))
 
     def test_a_constraint_past_the_signers_cap_is_told_to_the_person_and_every_write_is_held(self):
         prompt = "Don't touch " + " or ".join(f"f{i}.py" for i in range(service.MAX_CONSTRAINTS)) + " or billing.py."
@@ -1492,6 +1493,125 @@ class InitV2(unittest.TestCase):
         with open(settings) as f:
             self.assertEqual(json.load(f), {"enabledPlugins": {install.PLUGIN: True}})
 
+    def test_uninstall_deletes_the_settings_file_init_made_and_says_what_it_keeps(self):
+        """A new user's uninstall left a settings.json holding `{}` that init had made, and didn't say that the dev
+        signer's keys and runs and the client config stay, nor how to delete them and Tracekit."""
+        settings = os.path.join(self.home, ".claude", "settings.json")
+        self.assertEqual(self.init("--dev", "--v2")[0], 0)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(cli.main(["uninstall"]), 0)
+        self.assertFalse(os.path.exists(settings))
+        lines = out.getvalue().splitlines()
+        data = autospawn.data_dir()
+        self.assertIn(f"  {data}  (the dev signer's keys and signed runs: a bundle you exported verifies without "
+                      "them)", lines)
+        self.assertIn(f"  {client_home()}  (Tracekit's client config)", lines)
+        gone = [os.path.dirname(data) if sys.platform == "darwin" else data, client_home()]
+        self.assertEqual(lines[-4:-2], ["to delete these and Tracekit too:", "  tracekit down"])
+        if os.name != "nt":   # the runtime dir too, where one exists
+            self.assertEqual(shlex.split(lines[-2])[:2 + len(gone)], ["rm", "-rf", *gone])
+        self.assertTrue(lines[-1].endswith(" uninstall tracekit-ai"), lines[-1])
+        os.makedirs(os.path.dirname(settings), exist_ok=True)   # a file that was there before init stays
+        with open(settings, "w") as f:
+            f.write("{}")
+        self.assertEqual(self.init("--dev", "--v2", "--no-thinking-summaries")[0], 0)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["uninstall"]), 0)
+        with open(settings) as f:
+            self.assertEqual(json.load(f), {})
+
+    def test_uninstall_of_another_agent_names_the_files_it_leaves(self):
+        """QA of 1.6.0: `uninstall --agent gemini` (or codex, cursor, ...) left the settings file holding `{}` and a
+        .bak copy holding the old hook commands, and what it said it kept named neither."""
+        for agent, path in (("gemini", (".gemini", "settings.json")), ("cursor", (".cursor", "hooks.json"))):
+            with self.subTest(agent):
+                self.assertEqual(self.init("--dev", "--v2", "--agent", agent)[0], 0)
+                with contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(cli.main(["uninstall", "--agent", agent]), 0)
+                settings = os.path.join(self.home, *path)
+                [bak] = glob.glob(settings + ".bak-*")
+                lines = out.getvalue().splitlines()
+                self.assertIn(f"  {settings}  (empty now that Tracekit's entries are out)", lines)
+                self.assertIn(f"  {bak}  (a copy Tracekit made before changing {path[-1]})", lines)
+                if os.name != "nt":
+                    self.assertLessEqual({settings, bak}, set(shlex.split(lines[-2])[2:]), lines[-2])
+
+    def test_uninstall_never_names_system_modes_signer_home(self):
+        """Review of #628: what uninstall keeps named the client config's signer_home in any mode, so on a v1 system
+        mode host it printed `rm -rf … /var/lib/tracekit`, the system signer's ledger and keys. As uninstall() stops
+        it, only a dev mode's home counts, and never under a system config."""
+        from tracekit import client
+        v1 = os.path.join(self.home, "v1-home")
+        os.makedirs(v1)
+        for cfg, system, named in (({"mode": "dev", "signer_home": v1}, None, True),
+                                   ({"mode": "system", "signer_home": v1}, None, False),
+                                   ({"signer_home": v1}, None, False),
+                                   ({"mode": "dev", "signer_home": v1}, {"socket": "/var/lib/tracekit/s.sock"}, False),
+                                   ({"mode": "dev", "signer_home": v1}, client.SystemConfigError("not root's"), False)):
+            with self.subTest(cfg=cfg, system=system), \
+                    mock.patch.object(client, "client_config", return_value=cfg), \
+                    mock.patch.object(client, "system_config", **{"side_effect" if isinstance(system, Exception)
+                                                                   else "return_value": system}):
+                self.assertEqual(any(v1 in line for line in cli._kept()), named)
+
+    def test_uninstall_prints_windows_commands_powershell_runs(self):
+        """Review of #628: on Windows the dev signer's runtime dir (%LOCALAPPDATA%\\tracekit\\run) is inside its data
+        dir, so Remove-Item named it again after deleting its parent, and a Python path with a space came out quoted,
+        which PowerShell runs only after `&`. Final review: the paths were quoted for cmd.exe (only on a space), so a
+        profile such as O'Brien, or a name with , ; ( $ or [ ], broke both lines in PowerShell. They are PowerShell
+        literals now ('...' with each quote PowerShell reads doubled, ’ too), and Remove-Item takes -LiteralPath."""
+        from tracekit import client
+        name = "O'Brien, a;b (c) $x [y] ’z"   # ’: PowerShell reads it as a single quote too
+        home = os.path.join(self.home, name)
+        data = os.path.join(home, "data", "tracekit")
+        run, config = os.path.join(data, "run"), os.path.join(home, ".tracekit-client")
+        for d in (run, config):
+            os.makedirs(d, 0o700)
+        os.environ.pop("TRACEKIT_RUNTIME_DIR", None)   # Windows' own: %LOCALAPPDATA%\tracekit\run (setUp restores it)
+        env = {"HOME": home, "USERPROFILE": home, "LOCALAPPDATA": os.path.join(home, "data")}
+        with mock.patch.dict(os.environ, env), mock.patch.object(os, "name", "nt"), \
+                mock.patch.object(sys, "platform", "win32"), \
+                mock.patch.object(sys, "executable", "C:\\Users\\O'Brien $x\\python.exe"), \
+                mock.patch.object(autospawn, "_short", lambda d: d), \
+                mock.patch.object(client, "system_config", return_value=None):
+            lines = cli._kept()
+        self.assertIn(f"  {run}  (the dev signer's runtime dir)", lines)   # kept, and said so
+        literal = os.path.join(self.home, "O''Brien, a;b (c) $x [y] ’’z")
+        self.assertEqual(lines[-2:], [
+            f"  Remove-Item -Recurse -Force -LiteralPath '{os.path.join(literal, 'data', 'tracekit')}', "
+            f"'{os.path.join(literal, '.tracekit-client')}'",
+            "  & 'C:\\Users\\O''Brien $x\\python.exe' -m pip uninstall tracekit-ai"])
+
+    @unittest.skipIf(not hasattr(os, "getuid"), "Windows has no root-owned system config")
+    def test_uninstall_with_a_system_config_it_cannot_trust_finishes_and_says_so(self):
+        """Final review of #628: what uninstall keeps caught the SystemConfigError of a system config it can't trust,
+        then read the client config, which raised it again, so `uninstall --agent codex` took the hooks out and exited
+        1. It reads it once, lists this user's own files, and says why only those."""
+        from tracekit import client
+        bad = os.path.join(self.home, "client.json")
+        with open(bad, "w") as f:
+            f.write("{}")
+        os.chmod(bad, 0o666)   # world-writable: system_config refuses it, as root too
+        with mock.patch.object(client, "SYSTEM_CONFIG", bad), contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["uninstall", "--agent", "codex"]), 0, err.getvalue())
+        self.assertIn(f"{bad} must be owned by root and not group- or world-writable, so this lists only your own "
+                      "files\n", out.getvalue())
+
+    @unittest.skipIf(os.name == "nt", "Windows has no POSIX key modes: D-KEYS-MODE warns there")
+    def test_doctor_right_after_init_ends_with_dev_setup_ok(self):
+        """Review of #628: the Claude Code quickstart says doctor ends with `dev setup OK` once init has run, but before
+        the dev signer's first start it warned "start the signer once" three times."""
+        from tracekit import client, doctor
+        self.assertEqual(self.init("--dev", "--v2")[0], 0)
+        with mock.patch.object(client, "system_config", return_value=None), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(doctor.main(), 0)
+        self.assertEqual(out.getvalue().splitlines()[-1], "dev setup OK: everything checks out for dev mode, which "
+                                                          "records but does not guard (D-PROCESS-BOUNDARY)",
+                         out.getvalue())
+
     def test_uninstall_leaves_a_persons_own_thinking_setting(self):
         settings = os.path.join(self.home, "settings.json")
         for before in ({}, {install.THINKING: True}, {install.THINKING: False}):
@@ -1546,7 +1666,12 @@ class InitV2(unittest.TestCase):
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
         # #587: init gave the agent nothing on what to do when a call is stopped; it points to the lines that do
         self.assertIn("\n" + cli.guidance() + "\n", self.out)
-        self.assertIn("/wiki/Coding-Agents#when-tracekit-stops-a-call into its CLAUDE.md or AGENTS.md", cli.guidance())
+        # the first-day walkthrough: that anchor wasn't on the published wiki yet; the plugin's skill file is on GitHub
+        self.assertIn(f"{cli.HOLDS_SKILL} into its CLAUDE.md or AGENTS.md", cli.guidance())
+        self.assertTrue(os.path.isfile(os.path.join(ROOT, cli.HOLDS_SKILL.split("/blob/main/")[1])))
+        # and what to do next: a new session, the `!` line a hold shows, the viewer
+        self.assertIn("\n" + cli.next_step() + "\n", self.out)
+        self.assertIn("! tracekit approvals approve <id>", cli.next_step())
 
     def test_the_agent_guidance_init_points_to_is_the_plugins_skill(self):
         """#587: one wording of what an agent does when Tracekit stops its call, in the docs init points to and in the
