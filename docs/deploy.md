@@ -157,12 +157,18 @@ dependencies); on the clone route, delete the clone.
 Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops anything you added by hand, such as
 `witnesses:` or `content:` (without `content:`, new runs keep no content), and doesn't say so. To upgrade:
 
-1. Stop the signer: `sudo systemctl stop tracekit-signer` (with `--harness` also `tracekit-harness-helper`, with
-   `--egress` also `tracekit-egress`). Until init starts it again, AGENT's tool calls are blocked.
+1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
+   `sudo launchctl bootout system/dev.tracekit.signer`. With `--harness`, also stop
+   `tracekit-harness-helper` on Linux or run
+   `sudo launchctl bootout system/dev.tracekit.harness-helper` on macOS; with `--egress`, also stop
+   `tracekit-egress` on Linux. Until init starts it again, AGENT's tool calls are blocked.
 2. Keep a copy of the config: `sudo cp /etc/tracekit/signer.yaml /root/signer.yaml.bak`.
-3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
-   the new release's tag into a new directory.
-4. Add your lines back to `/etc/tracekit/signer.yaml`, then `sudo systemctl restart tracekit-signer`, and
+3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone
+   route, clone the new release's tag into a new directory. On macOS, init bootstraps the signer and,
+   with `--harness`, the helper again; no separate launchd command is needed here.
+4. Add your lines back to `/etc/tracekit/signer.yaml`, then restart the signer: on Linux,
+   `sudo systemctl restart tracekit-signer`; on macOS,
+   `sudo launchctl kickstart -k system/dev.tracekit.signer`. On Linux, also restart
    `tracekit-harness-helper` / `tracekit-egress` if you use them. A run that starts before this keeps no content.
 
 Export and the trust config read the signer's data dir, which only root and the signer's user can open. So AGENT
