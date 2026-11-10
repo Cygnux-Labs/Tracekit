@@ -48,9 +48,10 @@ Agent: tell the person what this call was for and pass on these commands, then w
 
 ## 3. Answer it
 
-Paste the `! tracekit approvals approve <id>` line into the session before the hold expires, an hour after it was
-held. A line that starts with `!` runs as your own user, not as a tool call of Claude's, so it is your answer. Then ask
-Claude to make the same call again: the retry, with exactly the same arguments, runs once. `! tracekit approvals reject
+Paste the `! tracekit approvals approve <id>` line into the session. A line that starts with `!` runs as your own
+user, not as a tool call of Claude's, so it is your answer. Then ask Claude to make the same call again: the retry,
+with exactly the same arguments, runs once. The hold lasts an hour (the HELD line gives the time) or until the session
+ends: approve and retry before then. `! tracekit approvals reject
 <id>` refuses it. `tracekit approvals show <id>` prints why it was held and the signer's copy of the arguments; from
 another terminal, run the same commands without the `!`. `tracekit approvals list` (or `tracekit pending`) lists every
 held call.
