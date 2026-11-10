@@ -4,8 +4,9 @@
 
 # The tamper-evident flight recorder for AI agents
 
-**Tracekit blocks risky tool calls before they run and records every action in a tamper-evident log, so you can put
-agents on real systems and prove what they did.**
+**Tracekit checks each tool call your agent makes before it runs, and risky calls wait for a person to approve them.
+Every action is signed into a tamper-evident log, so you can put agents on real systems, and your customers and
+auditors can check the record for themselves.**
 
 <a href="https://pypi.org/project/tracekit-ai/"><img src="https://img.shields.io/pypi/v/tracekit-ai?style=flat-square&color=F3B23B&labelColor=1C1A1C" alt="PyPI"></a>
 <a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-34_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 34 agents and frameworks"></a>
