@@ -48,11 +48,12 @@ Agent: tell the person what this call was for and pass on these commands, then w
 
 ## 3. Answer it
 
-Paste the `! tracekit approvals approve <id>` line into the session. A line that starts with `!` runs as your own
-user, not as a tool call of Claude's, so it is your answer. Then ask Claude to make the same call again: the retry,
-with exactly the same arguments, runs once. `! tracekit approvals reject <id>` refuses it. `tracekit approvals show
-<id>` prints why it was held and the signer's copy of the arguments; from another terminal, run the same commands
-without the `!`. `tracekit approvals list` (or `tracekit pending`) lists every held call.
+Paste the `! tracekit approvals approve <id>` line into the session before the hold expires, an hour after it was
+held. A line that starts with `!` runs as your own user, not as a tool call of Claude's, so it is your answer. Then ask
+Claude to make the same call again: the retry, with exactly the same arguments, runs once. `! tracekit approvals reject
+<id>` refuses it. `tracekit approvals show <id>` prints why it was held and the signer's copy of the arguments; from
+another terminal, run the same commands without the `!`. `tracekit approvals list` (or `tracekit pending`) lists every
+held call.
 
 Claude itself can't approve its own calls: the policy denies a `tracekit approvals approve` that the agent runs
 (`TK-D012`). In dev mode the signer can't tell you from your agent, so your approval is recorded as a self-approval and
@@ -70,9 +71,11 @@ tracekit last --open   # the session still open, verified up to its last checkpo
 tracekit view --dev    # every run in the browser, replayed and reviewed
 ```
 
-A session's run stays open until the session ends, so `tracekit last` shows the session before it until then.
-`tracekit last` prints `VERIFIED` and where it wrote the bundle; [the v2 quickstart](../quickstart-v2.md#3-see-it-verified)
-explains each line. `tracekit status` shows where the hooks and the signer are.
+A session's run stays open until the session ends (`/exit`), so until then `tracekit last` says it is still open and
+shows the session before it. In your first session there is none before it: use `tracekit last --open`, or end the
+session first. `tracekit last` prints `VERIFIED` and writes the bundle and its trust config to the current directory
+(`-o` picks the path); [the v2 quickstart](../quickstart-v2.md#3-see-it-verified) explains each line. `tracekit status`
+shows where the hooks and the signer are.
 
 ## Remove it
 
