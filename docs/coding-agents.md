@@ -484,7 +484,7 @@ Antigravity CLI (`agy`) support is experimental: tested through agy's documented
 
 ```bash
 tracekit init --dev --v2 --agent antigravity               # ~/.gemini/config/hooks.json; --project: .agents/hooks.json
-sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent antigravity   # system mode (Python 3.11+)
+sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent antigravity   # system mode
 tracekit uninstall --agent antigravity                     # removes Tracekit's hook only
 ```
 

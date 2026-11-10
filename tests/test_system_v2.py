@@ -194,6 +194,17 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
                         cmds.index(["systemctl", "try-restart", install.V2_HELPER + ".service"]))
 
+    def test_macos_init_restarts_the_helper_too(self):
+        """docs/deploy.md's upgrade steps leave the helper to init on macOS as well: launchd's helper is booted out
+        and bootstrapped again, so it runs the new venv."""
+        run = mock.Mock(return_value=mock.Mock(returncode=0))
+        with mock.patch.object(install, "LAUNCHD_DIR", self.d), mock.patch.object(install.subprocess, "run", run):
+            install._install_helper(install.V2_HELPER, install.V2_UNIT, self.me, install.V2_HELPER_SOCKET, True)
+        plist = os.path.join(self.d, install.HELPER_LABEL + ".plist")
+        self.assertIn(plist, self.written)
+        self.assertEqual([c.args[0] for c in run.call_args_list],
+                         [["launchctl", "bootout", "system", plist], ["launchctl", "bootstrap", "system", plist]])
+
     def init_v2(self, sudo_why=None, harnesses=()):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
         v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",
