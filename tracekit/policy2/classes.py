@@ -203,23 +203,27 @@ SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False),
                 "mssql": (False, False, True, False, True, False, False)}
 _DOLLAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 _MYSQL_RUN = re.compile(r"/\*M?!\d*")
-_SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b]+")   # characters no dialect starts a comment, literal or quote with
+_SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b*]+")   # characters no dialect starts a comment, literal or quote with
 
 
 def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space):
     """`stmt` with every comment a space, every literal or quoted identifier '' or "" and a vertical tab (whitespace to
     each dialect, not to a pattern's \\s) a space, as one dialect lexes it: what a keyword rule should see. None when a
     literal or comment is not closed (the database rejects it)."""
-    out, i, n = [], 0, len(stmt)
+    out, i, n, runs = [], 0, len(stmt), 0   # runs: MySQL /*! ... */ open, whose */ closes it as a blank
     while i < n:
         c, two = stmt[i], stmt[i:i + 2]
         if (two == "--" and (not dash_space or stmt[i + 2:i + 3] in ("", " ", "\t", "\n", "\r", "\f", "\v"))) or \
                 (c == "#" and hash_comment):
-            j = stmt.find("\n", i)
-            i = n if j < 0 else j
+            j = min((k for k in (stmt.find("\n", i), stmt.find("\r", i)) if k >= 0), default=n)   # (CR: postgres)
+            i = j
             out.append(" ")
         elif hash_comment and stmt.startswith(("/*!", "/*M!"), i):   # MySQL runs what /*! ... */ holds, MariaDB /*M! too
-            i = _MYSQL_RUN.match(stmt, i).end()
+            i, runs = _MYSQL_RUN.match(stmt, i).end(), runs + 1
+            out.append(" ")
+        elif two == "*/" and runs:
+            i, runs = i + 2, runs - 1
+            out.append(" ")
         elif two == "/*":
             depth, j = 1, i + 2
             while depth:

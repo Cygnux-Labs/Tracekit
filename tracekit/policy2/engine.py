@@ -348,7 +348,7 @@ class Engine:
                 return None
             if key not in memo:
                 try:
-                    subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work)
+                    subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work, name)
                 except shell.ParseError as e:   # the reading spent the decision's budget: held, as an unread line is
                     subjects, spent[:] = [], [e.cause]
                 memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
@@ -460,7 +460,7 @@ class Engine:
                     if isinstance(command, str) else _plain(canonical(command), work, 0, 0, readings, target)), e.cause
 
     @staticmethod
-    def _subjects(cls, field, args, fields, parsed, split=False, finds=None, work=None):
+    def _subjects(cls, field, args, fields, parsed, split=False, finds=None, work=None, tool=""):
         """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
         each line the parser normalised, a shell `code` those without the text a command only writes into a file
@@ -493,6 +493,8 @@ class Engine:
             return _container_host_access(parsed[0])
         if cls == "shell" and field == "push":
             return _pushes(parsed[0])
+        if cls == "unknown" and field == "run":
+            return _runs(args, tool)
         if cls == "sql" and field == "code":
             return fields.get("code", [])
         if cls == "shell" and field == "code":
@@ -1028,15 +1030,70 @@ def _gh_api(argv):
 def _pushes(commands):
     """Each command's argv, as the `argv` field reads it, but a git push as what makes it need a person (_git_push):
     one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master; a gh or hub
-    api call also percent-decoded (_gh_api)."""
+    api call also percent-decoded (_gh_api); a kubectl dry run (_kubectl_dry_run) as `DRYRUN:<argv>`."""
     out = []
     for command in commands:
         argv = command["argv"]
         push = _git_push(argv)
-        out += push if push is not None else [" ".join(argv)]
+        out += push if push is not None else ["DRYRUN:" * _kubectl_dry_run(argv) + " ".join(argv)]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
             out += [s for s in _gh_api(argv) if s not in out]
     return out
+
+
+def _kubectl_dry_run(argv):
+    """Whether a kubectl command is a dry run as kubectl reads its words: its last --dry-run (bare, =client or =server;
+    not =none or =false) comes before a bare `--`, after which kubectl reads every word as a name; no word before that
+    is --raw (a request sent as given) or holds an expansion the line can't resolve (`"$D"` may be `--` or a later
+    --dry-run=none)."""
+    if _program(argv) != "kubectl":
+        return False
+    last = None
+    for word in argv[1:]:
+        if word == "--":
+            break
+        if word.startswith("--raw") or "$" in word or "`" in word:
+            return False
+        if word == "--dry-run" or word.startswith("--dry-run="):
+            last = word
+    return last in ("--dry-run", "--dry-run=client", "--dry-run=server")
+
+
+# what a tool no pack maps is given to run (_runs): TK-S010's command arguments and the SQL ones, in any case
+_COMMAND_KEYS = {"command", "commands", "cmd", "cmds", "script", "shell_command"}
+_SQL_KEYS = {"sql", "query", "statement"}
+_BLANKS = re.compile(r"\s+")   # any Unicode blank: a form feed, a vertical tab, a no-break or line separator space
+_PLAIN_WORD = re.compile(r"[A-Za-z0-9_.:/-]*")   # a value that is one word of plain characters: no blank, quote,
+# metacharacter, expansion or other character the shell reads
+
+
+def _runs(args, tool=""):
+    """The `run` field of a tool no pack maps: for each argument TK-S010 reads as a command (at any depth, its name in
+    any case), `WORD:<its last /-part>` when it is one word of plain characters (letters, digits, `_ . : / -`), else
+    `CMD:<value>` (a string as given, a list or an object as canonical JSON); `MCPCMD:<value>` for any value when the
+    tool's name is an MCP tool's in a case no pack maps (`MCP:x/y`), as TK-S010 reads an MCP tool's; and for each string under a sql,
+    query or statement argument (at any depth, its name in any case, in a list or an object too) each statement as
+    every SQL dialect lexes it (classes.sql_code: comments and literals blanked; one that doesn't close is rejected by
+    the database and gives none), split at its `;`s, each blank run a space: `SQL;<statement>` for one a `;` ends,
+    `SQL:<statement>` for the last."""
+    out, tag = [], "MCPCMD:" if _text(tool).casefold().startswith(("mcp:", "mcp__")) else "CMD:"
+
+    def walk(value):
+        items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
+        for key, v in items:
+            name = key.lower() if isinstance(key, str) else None
+            if name in _COMMAND_KEYS:
+                plain = tag == "CMD:" and isinstance(v, str) and _PLAIN_WORD.fullmatch(v)
+                out.append("WORD:" + v.rsplit("/", 1)[-1] if plain else tag + (v if isinstance(v, str) else canonical(v)))
+            elif name in _SQL_KEYS:
+                for text in (s for s in ([v] if isinstance(v, str) else _strings(v)) if isinstance(s, str)):
+                    for code in dict.fromkeys(classes.sql_code(text, *d) for d in classes.SQL_DIALECTS.values()):
+                        parts = [] if code is None else _BLANKS.sub(" ", code).split(";")
+                        out.extend(("SQL;" if i < len(parts) - 1 else "SQL:") + p.strip()
+                                   for i, p in enumerate(parts) if p.strip())
+            walk(v)
+    walk(args)
+    return list(dict.fromkeys(out))
 
 
 def _program(argv):

@@ -111,7 +111,7 @@ CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_inde
            "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},
            "a2a": {"sender", "receiver", "route", "skills", "kinds", "hosts", "size", "modality", "projector",
                    "weights"},
-           "app": set(), "unknown": set(), "harness": set()}
+           "app": set(), "unknown": {"run"}, "harness": set()}
 for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
