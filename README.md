@@ -12,20 +12,19 @@ agents on real systems and prove what they did.**
 <a href="https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=CI&labelColor=1C1A1C" alt="CI"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-F3B23B?style=flat-square&labelColor=1C1A1C" alt="MIT licence"></a>
 
-**Stop** · **Record** · **Prove**
-
 <table>
 <tr>
-<td align="center" width="25%"><h3>840 of 840</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 890 (E17)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
+<td align="center" width="25%"><h3>840 of 840</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 890 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
+<td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
 </table>
 
-Open source (MIT) · runs on your machines · nothing leaves them unless you send it
+Built like **Certificate Transparency**: signed records in an append-only log that independent witnesses cosign<br>
+**Open file format** · verifiers in **Python** and **TypeScript** · **MIT** · runs on your own machines
 
-**[See what your agent did](#see-what-your-coding-agent-did-last-week) · [Try the demo](#try-it-in-5-seconds) · [Who it's for](#who-its-for) · [Add it](#add-it-to-your-agent) · [How it works](#how-it-works) · [What it proves](#what-it-proves) · [Proof](#proof) · [Pilot](#pilot-it-with-us) · [For AI agents](#if-youre-an-ai-agent-reading-this) · [Docs](#docs)**
+**[Try it](#try-it-in-5-seconds) · [Add it to your agent](#add-it-to-your-agent) · [What it proves](#what-it-proves) · [What's in it](#whats-in-it) · [Proof](#proof) · [How it works](#how-it-works) · [Pilot it](#pilot-it-with-us) · [Contribute](#contribute) · [Docs](#docs)**
 
 </div>
 
@@ -351,7 +350,7 @@ first two rows measure.
 [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md) ·
 [paper](https://arxiv.org/abs/2609.35659).
 
-## Features
+## What's in it
 
 **Stable core**, hardened first:
 
