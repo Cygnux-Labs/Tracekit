@@ -4621,6 +4621,58 @@ class GuardrailsAndPushes(unittest.TestCase):
             "kubectl delete pod scratch --dry-run=client", "kubectl --dry-run=server delete pod scratch",
             "kubectl delete pod scratch --dry-run=server -o yaml -- other")], "flag")
 
+    def test_a_dry_run_word_another_option_may_take_is_not_a_dry_run(self):
+        """Third review of #605: kubectl gives an option written without `=` the next word as its value, so a
+        `--dry-run` right after one may be that value (`--field-manager --dry-run`), and a later `--dry-run=none` there
+        may be the one kubectl reads. A call with such a word isn't read as a dry run."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "kubectl apply -f deploy.yaml -n production --field-manager --dry-run",
+            "kubectl --cache-dir --dry-run apply -f deploy.yaml", "kubectl apply -f --dry-run",
+            "kubectl delete secret db -n prod --cache-dir --dry-run",
+            "kubectl delete configmap c -n prod --dry-run=server --force --dry-run=none")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "kubectl apply -f deploy.yaml -n production --dry-run=client",
+            "kubectl apply -f x.yaml --field-manager=me --dry-run", "kubectl delete secret db -n prod --dry-run=server")],
+                      "flag")
+
+    def test_the_contents_api_on_the_default_branch_in_every_spelling(self):
+        """Third review of #605: _gh_api read the method only as -X PUT or -XPUT, the path only from its start and a
+        branch field as given, so -X=PUT, a full URL, a branch gh reads from a file (-F branch=@b.txt) and any --input
+        (whose body then names the branch, the fields going to the query string) let a write to the default branch
+        run."""
+        c = "repos/o/r/contents/a.txt -f message=m -f content=Yg=="
+        self.verdicts([("Bash", {"command": x}) for x in (
+            f"gh api -X=PUT {c}", f"gh api -X=DELETE {c} -f sha=x", f"gh api -X PUT https://api.github.com/{c}",
+            f"gh api -X PUT https://ghe.example.com/api/v3/{c}", f"hub api -X PUT https://api.github.com/{c}",
+            "gh api -X PUT /repos/o/r//contents/a.txt -f message=m", f"gh api -X PUT {c} -F branch=@b.txt",
+            f"gh api -X PUT {c} -F branch=@-", f"gh api -X PUT {c} -f branch=feature --input b.json",
+            f"gh api -X PUT {c} -f branch=feature --input=b.json", f"gh api -X PUT {c} -f branch=heads/main")],
+                      "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": f"gh api -X=PUT {c} -f branch=feature"})], "allow")
+        self.verdicts([("Bash", {"command": x}) for x in (
+            f"gh api -X PUT https://api.github.com/{c} -f branch=feature",
+            "gh api https://api.github.com/repos/o/r/contents/a.txt")], "flag", "TK-F012")
+
+    def test_a_comment_ends_where_each_database_ends_it(self):
+        """Third review of #605: the second review's fix ended a -- or # comment at a CR in every dialect, but MySQL
+        and SQLite end one only at a LF (SQLite runs `-- x\\r'\\nDROP TABLE users\\n-- '`), so a quote after the CR
+        hid the statement from every reading, and the server and strict packs let it run. Each dialect ends a comment
+        where it does now: PostgreSQL and SQL Server at a CR or LF, MySQL and SQLite at a LF."""
+        cases = [(f"-- x\r'\n{s}\n-- '", rule) for s, rule in (
+            ("DROP TABLE users", "TK-DB001"), ("TRUNCATE users", "TK-DB002"), ("GRANT ALL ON users TO app", "TK-DB004"))]
+        cases += [(s, "TK-DB001") for s in (
+            "SELECT 1; -- x\r'\nDROP TABLE users; -- '", "# x\r'\nDROP TABLE users\n# '", '-- x\r"\nDROP TABLE users\n-- "',
+            "-- x\r/*\nDROP TABLE users\n-- */", "-- x\rDROP TABLE users")]
+        for pack in ("server.yaml", "strict.yaml"):
+            e = Engine(pc.build(os.path.join(PACKS, pack))[0])
+            for tool, key in (("execute_sql", "sql"), ("run_sql", "sql"), ("sql_db_query", "query"),
+                              ("mcp:postgres/query", "sql"), ("mcp:sqlite/write_query", "query"),
+                              ("mcp__postgres__query", "sql")):
+                for s, rule in cases:
+                    with self.subTest(pack=pack, tool=tool, sql=s):
+                        self.assertIn(rule, svc.evaluate(e, tool, {key: s})[0]["rule_ids"])
+        self.verdicts([("warehouse_query", {"query": s}) for s, _ in cases], "ask", "TK-A062")
+
     def test_more_ways_to_push_to_main_and_to_publish(self):
         """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a
         value before the command; git send-pack and hub push name refs as push does; gh and hub api write main's ref

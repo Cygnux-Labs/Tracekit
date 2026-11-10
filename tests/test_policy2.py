@@ -4958,6 +4958,16 @@ class Classes(unittest.TestCase):
         self.assertIsNone(code("SELECT 'open"))
         self.assertEqual(classes.extract("sql", "run_sql", {"sql": "/**/drop table x"})["verb"], "DROP")
 
+    def test_sql_is_lexed_in_linear_time(self):
+        """Third review of #605: a -- or # comment ended by a CR searched on to the next LF, and a nested /* comment
+        searched on to the next */ for each opener, so a 1 MiB statement of them took seconds to minutes."""
+        for unit in ("--\r", "--\n", "#\r", "/* ", "/*x"):
+            s = unit * ((1 << 20) // len(unit)) + "*/"
+            with self.subTest(unit=unit):
+                start = time.process_time()
+                classes.extract("sql", "run_sql", {"sql": s})
+                self.assertLess(time.process_time() - start, 4 * SLOWER)
+
     def test_paths_from_windows_and_case_insensitive_file_systems(self):
         self.assertEqual(classes.fs_path("C:\\Users\\u\\.ssh\\id_rsa"), "C:/Users/u/.ssh/id_rsa")
         self.assertEqual(classes.fs_path("C:\\a\\.\\b"), "C:/a/b")

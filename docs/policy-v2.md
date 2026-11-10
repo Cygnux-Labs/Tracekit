@@ -193,7 +193,9 @@ argv, as `argv` reads it, but a git push (`git push` after git's own options, `g
 take or an ambiguous prefix, a `-c` or `--config-env` remote push or mirror setting), `tags` (`--tags`, `--follow-tags`, a `refs/tags/` or `tags/` refspec, `tag <name>`)
 and `all` (`--all`, `--mirror`, the `:` refspec); a push of named branches other than main and master gives none. A
 `gh` or `hub api` call is also read percent-decoded, as GitHub reads its path, and gives `PUSH:contents` when it puts
-or deletes a file through the contents API on the default branch (no `branch` field, or main or master).
+or deletes a file through the contents API (`repos/<owner>/<repo>/contents/…`, as a path or in a URL) on the default
+branch or one the line can't tell: no `branch` field, main or master, a value gh reads from a file (`-F
+branch=@b.txt`), or any `--input`, whose body then names the branch.
 
 The shell field `effects` is each file the commands write, as `WRITE_TARGET:path`, or delete, as
 `DELETE_TARGET:path`, each also with the path casefolded: what a redirection writes, and the files `rm`, `unlink`,

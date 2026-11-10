@@ -916,11 +916,12 @@ _PUSH_LONG = {"all": "all", "branches": "all", "mirror": "all", "delete": "", "p
               "ipv4": "", "ipv6": ""}
 _PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6": ""}   # and -o VALUE
 _REMOTE_PUSH = re.compile(r"remote\..+\.(?:push|mirror)")   # a config key, casefolded (its remote name keeps case)
-# gh api's method (-X PUT, -XPUT, --method PUT, --method=PUT), a branch field (-f branch=x, --field=branch=x) and the
-# contents API's path. lean: a method in a short-option cluster (-iXPUT) isn't read; read it if one is in use
-_GH_METHOD = re.compile(r"(?:-X|--method=?|--request=?)(.*)", re.S)
+# gh api's method (-X PUT, -XPUT, -X=PUT, --method PUT, --method=PUT), a branch field (-f branch=x, --field=branch=x)
+# and the contents API's path, in a path or a URL (https://api.github.com/repos/…, GHES's /api/v3/repos/…).
+# lean: a method in a short-option cluster (-iXPUT) isn't read; read it if one is in use
+_GH_METHOD = re.compile(r"(?:-X=?|--method=?|--request=?)(.*)", re.S)
 _GH_BRANCH = re.compile(r"(?:-[fF]|--(?:raw-)?field=)?branch=(.*)", re.S)
-_GH_CONTENTS = re.compile(r"/?repos/[^/]+/[^/]+/contents/")
+_GH_CONTENTS = re.compile(r"(?:^|/)repos/+[^/]+/+[^/]+/+contents/", re.I)
 
 
 def _git_push(argv):
@@ -1010,9 +1011,10 @@ def _git_push(argv):
 def _gh_api(argv):
     """A gh or hub api call's argv percent-decoded, as GitHub reads its path (`git/refs/heads%2Fmain`), and
     `PUSH:contents` when it puts or deletes a repository's file (repos/<o>/<r>/contents/…), which commits to the
-    default branch unless a branch field names another (one in an --input file isn't read, so that is held too)."""
+    default branch unless a branch field names another. A branch the line can't tell is held too: one gh reads from a
+    file (`-F branch=@b.txt`), and any with --input, whose body then names the branch (the fields go to the query)."""
     words = [unquote(w) for w in argv]
-    method, branch = "", ""
+    method, branch, body = "", "", False
     for i, w in enumerate(words[2:], 2):
         m = _GH_METHOD.fullmatch(w)
         if m:
@@ -1020,9 +1022,11 @@ def _gh_api(argv):
         m = _GH_BRANCH.fullmatch(w)
         if m:
             branch = m[1]
+        body = body or w == "--input" or w.startswith("--input=")
     out = [" ".join(words)]
-    if method.upper() in ("PUT", "DELETE") and branch.removeprefix("refs/heads/") in ("", "main", "master") and any(
-            _GH_CONTENTS.match(w) for w in words[2:]):
+    branch = branch.removeprefix("refs/").removeprefix("heads/")
+    if method.upper() in ("PUT", "DELETE") and (body or branch[:1] in ("", "@") or branch in ("main", "master")) and \
+            any(_GH_CONTENTS.search(w) for w in words[2:]):
         out.append("PUSH:contents " + method)
     return out
 
@@ -1045,16 +1049,19 @@ def _kubectl_dry_run(argv):
     """Whether a kubectl command is a dry run as kubectl reads its words: its last --dry-run (bare, =client or =server;
     not =none or =false) comes before a bare `--`, after which kubectl reads every word as a name; no word before that
     is --raw (a request sent as given) or holds an expansion the line can't resolve (`"$D"` may be `--` or a later
-    --dry-run=none)."""
+    --dry-run=none), and no --dry-run word comes right after an option written without `=`, which kubectl may give
+    that word as its value (`--field-manager --dry-run`)."""
     if _program(argv) != "kubectl":
         return False
     last = None
-    for word in argv[1:]:
+    for prev, word in zip(argv, argv[1:]):
         if word == "--":
             break
         if word.startswith("--raw") or "$" in word or "`" in word:
             return False
         if word == "--dry-run" or word.startswith("--dry-run="):
+            if prev[:1] == "-" and prev != "-" and "=" not in prev:
+                return False
             last = word
     return last in ("--dry-run", "--dry-run=client", "--dry-run=server")
 
