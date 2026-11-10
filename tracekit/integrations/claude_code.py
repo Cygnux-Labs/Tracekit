@@ -559,6 +559,17 @@ def _reworded(client, sid, args, cap):
     return None, None
 
 
+def _approval_command_prefix(agent, signer):
+    """Return the interactive shell prefix for person-operated approval commands."""
+    if signer:
+        return ""
+    if agent == "claude-code":
+        return "! "
+    if agent == "gemini-cli":
+        return "!"
+    return ""
+
+
 def _pre(client, p, sid, tid):
     end, per_call = time.monotonic() + APPROVAL_WAIT_S, client.timeout   # every signer call is capped to the time left
 
@@ -611,9 +622,9 @@ def _pre(client, p, sid, tid):
         if state in ("requested", "rejected") and _bash(tool, args):   # a wording rejected while the hook waited too
             _keep_held(sid, run.run_id, args, aid)
         if c is None and state == "requested":   # nobody answered yet: the person approves it, then the agent retries
-            # Claude Code runs a `!` line in the session as its OS user: the person, with the dev signer; with a named
-            # signer (system mode, a remote one) that user is the agent's, whom the signer refuses: another terminal
-            bang = "! " if AGENT == "claude-code" and not client.signer else ""
+            # Claude Code's `! ` and Gemini CLI's `!` command run as the person's OS user;
+            # with a named signer, that user is the agent's, whom the signer refuses.
+            bang = _approval_command_prefix(AGENT, client.signer)
             expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
             if waited.get("reason"):   # an agent approver's approval in its veto delay: approved, it may run after it
                 return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])} is {waited['reason']}, then "
