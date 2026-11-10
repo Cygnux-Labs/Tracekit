@@ -1370,8 +1370,11 @@ def _last(a):
     for (_, run_id), kind, agent in [] if a.open else runs[:len(runs) - len(final)]:
         if kind == "run.closing":
             why = "closed, and not finalised yet: is the dev signer still running (`tracekit up`)?"
-        elif agent in {"claude-code", *agent_hooks.AGENT_NAMES.values()}:
+        elif agent == "claude-code":
             why = ("still open: it finishes when the session ends (`/exit` in Claude Code) "
+                   "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
+        elif agent in agent_hooks.AGENT_NAMES.values():
+            why = ("still open: it finishes when the session ends "
                    "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
         else:
             why = ("still open: it finishes when the agent's process exits (tracekit.instrument() closes its run "

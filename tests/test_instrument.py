@@ -90,6 +90,14 @@ class TestOpenRun(DevSigner):
         self.assertIn("it finishes when the session ends (`/exit` in Claude Code)",
                       self.sh("-m", "tracekit", "last", code=1).stderr)
 
+    def test_last_open_explains_other_coding_agent_session(self):
+        self.sh("-c", "import os; from tracekit.sdk.client import Client; r = Client().run('codex'); "
+                      "r.decide('c1', 'Bash', {'command': 'ls'}); print(r.run_id, flush=True); os._exit(0)")
+        stderr = self.sh("-m", "tracekit", "last", code=1).stderr
+        codex_line = next(line for line in stderr.splitlines() if "(codex)" in line)
+        self.assertIn("it finishes when the session ends", codex_line)
+        self.assertNotIn("`/exit` in Claude Code", codex_line)
+
 
 class TestThreeSteps(DevSigner):
     def test_each_framework(self):
