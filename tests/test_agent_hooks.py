@@ -68,8 +68,20 @@ PATCH = "*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: {}\n@@\
         pytest.param(
             "web_search",
             {"query": "Find the official GitHub Copilot CLI documentation on GitHub's official documentation site."},
-            "WebSearch",
+            "mcp:github-mcp-server/web_search",
             id="web-search",
+        ),
+        pytest.param(
+            "tracekit-alpha-probe_note",
+            {"marker": "TRACEKIT_MCP"},
+            "mcp__tracekit-alpha-probe_note",
+            id="mcp-tool",
+        ),
+        pytest.param(
+            "update_todo",
+            {"todos": "- [ ] one"},
+            "update_todo",
+            id="unknown-tool",
         ),
         pytest.param(
             "task",
@@ -103,6 +115,24 @@ def test_copilot_normalises_remaining_tools(tool_name, tool_args, expected_name)
 
     assert normalised["tool_name"] == expected_name
     assert normalised["tool_input"] == tool_args
+    assert normalised["tool_use_id"] == payload["toolCallId"]
+
+
+def test_copilot_failed_call_is_a_post_tool_failure():
+    payload = {   # captured from Copilot CLI 1.0.107: a task call missing a required argument
+        "sessionId": "copilot-failure-1",
+        "cwd": "/tmp/tracekit-copilot-tools-probe-mmiircun/task",
+        "hook_event_name": "postToolUseFailure",
+        "toolCallId": "call_Hg6IuNvmI1R16ujLRQsr4sUw",
+        "toolName": "task",
+        "toolArgs": {"description": "Count sample lines", "agent_type": "explore", "mode": "sync"},
+        "error": '"name": Required',
+    }
+
+    normalised = agent_hooks.normalise("copilot", payload)
+
+    assert normalised["hook_event_name"] == "PostToolUseFailure"
+    assert normalised["error"] == payload["error"]
     assert normalised["tool_use_id"] == payload["toolCallId"]
 
 
@@ -251,10 +281,10 @@ class Harnesses(DaemonCase):
 
         call = calls[0]
 
-        assert call["name"] == "mcp__github-mcp-server__get_file_contents"
+        assert call["name"] == "mcp__github-mcp-server-get_file_contents"
         assert call["tool_use_id"] == expected_tool_call_id
-        assert call["input"]["owner"]["value"] == "Cygnux-Labs"
-        assert call["input"]["repo"]["value"] == "Tracekit"
+        assert call["input"]["owner"] == content_ref("Cygnux-Labs")
+        assert call["input"]["repo"] == content_ref("Tracekit")
         assert call["input"]["path"]["value"] == "LICENSE"
         assert call["input"]["ref"] == content_ref("refs/heads/main")
 
@@ -1242,6 +1272,28 @@ class HarnessList(unittest.TestCase):
 
 
 class Installer(unittest.TestCase):
+    def test_copilot_hooks_file_gives_a_person_time_to_approve_and_uninstall_keeps_their_hooks(self):
+        theirs = {"type": "command", "bash": "echo theirs"}
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stdout(io.StringIO()):
+            path = agent_hooks.config_path("copilot", d)
+            os.makedirs(os.path.dirname(path))
+            with open(path, "w") as f:
+                json.dump({"version": 1, "hooks": {"preToolUse": [theirs]}}, f)
+
+            self.assertEqual(agent_hooks.install("copilot", d, v2=True), path)
+            with open(path) as f:
+                hooks = json.load(f)["hooks"]
+            self.assertEqual(sorted(hooks), sorted(agent_hooks.COPILOT_EVENTS))
+            ours = hooks["preToolUse"][-1]
+            self.assertEqual(hooks["preToolUse"][0], theirs)
+            self.assertEqual(agent_hooks._version(ours["command"]), "v2")
+            self.assertIn("preToolUse", ours["command"])
+            self.assertGreaterEqual(ours["timeout"], 600)   # Copilot's own 30 s is too short for an approval
+
+            agent_hooks.install("copilot", d, uninstall=True)
+            with open(path) as f:
+                self.assertEqual(json.load(f)["hooks"], {"preToolUse": [theirs]})
+
     def test_droid_uninstall_without_standalone_file_preserves_legacy_and_settings(self):
         for with_settings in (False, True):
             with self.subTest(with_settings=with_settings), tempfile.TemporaryDirectory() as d:
@@ -1467,7 +1519,7 @@ class Installer(unittest.TestCase):
                 blob = json.dumps(cfg)
                 self.assertIn("echo mine", blob)
                 self.assertEqual(blob.count("tracekit.agent_hooks"),   # goose installs 3 events, not 5; agy 2
-                                 {"cursor": 6, "goose": 3, "qwen": 6, "antigravity": 2}.get(h, 5), h)
+                                 {"cursor": 6, "goose": 3, "qwen": 6, "antigravity": 2, "copilot": 3}.get(h, 5), h)
                 agent_hooks.install(h, d, uninstall=True)
                 cfg = json.load(open(path))
                 self.assertNotIn("tracekit.agent_hooks", json.dumps(cfg))
@@ -1576,7 +1628,7 @@ class Installer(unittest.TestCase):
         for h in (x for x in agent_hooks.HARNESSES if x not in agent_hooks.PLUGIN_TOOLS):
             ev, bad = {"cursor": "preToolUse", "codex": "PreToolUse", "gemini": "BeforeTool", "goose": "PreToolUse", "qwen": "PreToolUse",
                        "droid": "PreToolUse", "antigravity": "PreToolUse", "crush": "PreToolUse",
-                       "devin": "PreToolUse"}[h], {"command": "echo mine"}
+                       "devin": "PreToolUse", "copilot": "preToolUse"}[h], {"command": "echo mine"}
             path = agent_hooks.config_path(h, d)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             config = {ev: bad} if h in ("droid", "devin") else {

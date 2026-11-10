@@ -124,55 +124,6 @@ class Mapping(HarnessCase):
     def test_goose(self):
         self.check("goose")
 
-    def test_copilot_denies_mcp_call_when_any_split_is_denied(self):
-        policy = Engine({
-            "tools": {"mcp:*/*": "mcp", "mcp__*": "mcp"},
-            "deny": [{
-                "id": "COPILOT-SPLIT-DENY",
-                "class": "mcp",
-                "tool": r"^mcp(:tracekit-delta/read-file|__tracekit-delta__read-file)$",
-                "pattern": "^",
-            }],
-        })
-        arguments = {"marker": "TRACEKIT_MCP_HYPHEN"}
-        assert policy.decide("mcp:tracekit/delta-read-file", arguments)["verdict"] == "allow"
-        assert policy.decide("mcp:tracekit-delta/read-file", arguments)["verdict"] == "deny"
-        assert policy.decide("mcp:tracekit-delta-read/file", arguments)["verdict"] == "allow"
-        decisions = self.set_signer_policy(policy)
-        payload = {
-            "sessionId": "copilot-mcp-splits",
-            "toolCallId": "call_mcp_splits",
-            "toolName": "tracekit-delta-read-file",
-            "toolArgs": arguments,
-        }
-
-        code, _, error = self.hook("copilot", payload, "preToolUse")
-
-        assert code == 2, error
-        assert "COPILOT-SPLIT-DENY" in error
-        assert any(decision["verdict"] == "deny" for decision in decisions)
-        assert all(request["args"] == arguments for request in self.sent)
-
-    def test_copilot_holds_sanitized_dotted_mcp_tool(self):
-        policy = load_policy()
-        arguments = {"name": "example-secret"}
-        assert "TK-A037" in policy.decide("mcp:tracekit-space/get-secret", arguments)["rule_ids"]
-        decisions = self.set_signer_policy(policy)
-        os.environ[claude_code.WAIT_ENV] = "0"
-        payload = {
-            "sessionId": "copilot-mcp-dotted",
-            "toolCallId": "call_mcp_dotted",
-            # Copilot sanitizes server `tracekit space` and tool `get.secret` before the hook sees them.
-            "toolName": "tracekit-space-get-secret",
-            "toolArgs": arguments,
-        }
-
-        code, _, error = self.hook("copilot", payload, "preToolUse")
-
-        assert code == 2, error
-        assert any(decision["verdict"] == "ask" and "TK-A037" in decision["rule_ids"]
-                   for decision in decisions)
-
     def test_copilot_denies_mcp_names_at_or_above_64_characters(self):
         prefix = "notes-"
         payload = {
@@ -528,6 +479,61 @@ class Mapping(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
 
 
+class CopilotMCPPolicy(HarnessCase):
+    def test_copilot_denies_mcp_call_when_any_split_is_denied(self):
+        policy = Engine({
+            "tools": {"mcp:*/*": "mcp", "mcp__*": "mcp"},
+            "deny": [{
+                "id": "COPILOT-SPLIT-DENY",
+                "class": "mcp",
+                "tool": r"^mcp(:tracekit-delta/read-file|__tracekit-delta__read-file)$",
+                "pattern": "^",
+            }],
+        })
+        arguments = {"marker": "TRACEKIT_MCP_HYPHEN"}
+
+        assert policy.decide("mcp:tracekit/delta-read-file", arguments)["verdict"] == "allow"
+        assert policy.decide("mcp:tracekit-delta/read-file", arguments)["verdict"] == "deny"
+        assert policy.decide("mcp:tracekit-delta-read/file", arguments)["verdict"] == "allow"
+
+        self.start_signer(policy)
+
+        payload = {
+            "sessionId": "copilot-mcp-splits",
+            "toolCallId": "call_mcp_splits",
+            "toolName": "tracekit-delta-read-file",
+            "toolArgs": arguments,
+        }
+        code, out, error = self.hook("copilot", payload, "preToolUse")
+
+        assert code == 2, error
+        assert "COPILOT-SPLIT-DENY" in error
+        reply = json.loads(out)   # Copilot shows the reason only from this JSON
+        assert reply["permissionDecision"] == "deny"
+        assert "COPILOT-SPLIT-DENY" in reply["permissionDecisionReason"]
+
+    def test_copilot_holds_sanitized_dotted_mcp_tool(self):
+        self.start_signer(load_policy())
+        os.environ[claude_code.WAIT_ENV] = "0"
+
+        payload = {
+            "sessionId": "copilot-mcp-dotted",
+            "toolCallId": "call_mcp_dotted",
+            "toolName": "tracekit-space-get-secret",
+            "toolArgs": {"name": "example-secret"},
+        }
+        code, _, error = self.hook("copilot", payload, "preToolUse")
+
+        assert code == 2, error
+        assert "HELD, nothing ran" in error
+        assert "TK-A037" in error
+
+    def start_signer(self, policy):
+        signer = SignerService(ac.tmpdir(self), policy=policy)
+        self.addCleanup(signer.close)
+        os.environ["TRACEKIT_SIGNER"] = ac._serve(self, signer.handle_frame)
+
+
 class OnTheDevPolicy(HarnessCase):
     """The signer's default policy sees what the mapping gives it: every file of a patch, the input typed into a shell."""
 
@@ -759,8 +765,8 @@ class Installer(unittest.TestCase):
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
-                    # Cursor: and what its model said; agy: its tool events only
-                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2}.get(harness, 5))
+                    # Cursor: and what its model said; agy and Copilot: their tool events only
+                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2, "copilot": 3}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
@@ -1013,7 +1019,6 @@ class Installer(unittest.TestCase):
                         contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(agent_hooks.entry("gemini"), code)
                 self.assertEqual("deny" in out.getvalue(), denied, out.getvalue())
-
 
 
 class CodexReasoningSummary(unittest.TestCase):
