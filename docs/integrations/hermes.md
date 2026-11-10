@@ -20,7 +20,7 @@ hermes config set timeouts.tools.sequential_call 600
 hermes config set timeouts.tools.concurrent_batch 600
 ```
 
-The plugin needs `tracekit-ai` 1.4.2 or later, the first release with these hooks; Hermes asks before it installs it
+The plugin needs `tracekit-ai` 1.6.0 or later (1.4.2 added these hooks); Hermes asks before it installs it
 into its own environment. At install Hermes also asks for `TRACEKIT_SIGNER_TOKEN`: leave it empty unless your signer
 is on `tcp://`.
 
