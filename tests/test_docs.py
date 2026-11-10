@@ -131,11 +131,11 @@ class LimitsIndex(unittest.TestCase):
 
 
 class DocCommands(unittest.TestCase):
-
     def test_system_mode_upgrade_docs_include_macos_signer_label(self):
         """The macOS upgrade commands must use the launchd label configured by init."""
         upgrade = read(os.path.join(ROOT, "docs", "deploy.md")).split("To upgrade:", 1)[1]
         self.assertIn(f"sudo launchctl bootout system/{install.V2_LABEL}", upgrade)
+        self.assertIn(f"sudo launchctl bootout system/{install.HELPER_LABEL}", upgrade)
         self.assertIn(f"sudo launchctl kickstart -k system/{install.V2_LABEL}", upgrade)
 
     def test_every_tracekit_command_in_a_code_block_exists(self):
