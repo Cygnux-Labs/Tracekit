@@ -1185,8 +1185,10 @@ class ClineTools(unittest.TestCase):
                          "fix it")
         self.assertIsNone(agent_hooks.normalise("cline", dict(prompt, userPromptSubmit={   # the CLI's own nudge
             "prompt": "[SYSTEM] This run is not complete until you call one of these terminal completion tools"})))
-        self.assertEqual(agent_hooks.normalise("cline", {"taskId": "t-1", "hook_event_name": "TaskCancel"})["reason"],
-                         "task cancel")
+        self.assertEqual(agent_hooks.normalise("cline", {"taskId": "t-1", "hook_event_name": "TaskComplete"})["reason"],
+                         "task complete")
+        # a cancelled task is resumed once its held call is approved, in the same run: a cancel doesn't close it
+        self.assertIsNone(agent_hooks.normalise("cline", {"taskId": "t-1", "hook_event_name": "TaskCancel"}))
 
 
 class GeminiQwenTargets(unittest.TestCase):

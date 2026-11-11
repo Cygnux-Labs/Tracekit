@@ -221,7 +221,9 @@ JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
 # or file_paths, as strings or {path | file_path | filePath}): every command or file in any of them is decided
 CLINE_TOOLS = {"run_commands": "Bash", "read_files": "Read", "editor": "Edit", "apply_patch": "Edit",
                "fetch_web_content": "WebFetch"}
-CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "TaskCancel", "UserPromptSubmit")
+# no TaskCancel: a cancel, Tracekit's own included, stops a task the person resumes once they approve the held call, in
+# the same run; a task left cancelled closes at the signer's idle timeout
+CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "UserPromptSubmit")
 CLINE_FILE = "PreToolUse.ps1" if os.name == "nt" else "PreToolUse"
 CLINE_PATH_KEYS = ("path", "file_path", "filePath")
 
@@ -674,8 +676,8 @@ def normalise(harness, p):
             return dict(out, prompt=prompt)
         if ev == "TaskStart":
             return dict(out, hook_event_name="SessionStart")
-        if ev in ("TaskComplete", "TaskCancel"):
-            return dict(out, hook_event_name="SessionEnd", reason="task " + ev[4:].lower())
+        if ev == "TaskComplete":
+            return dict(out, hook_event_name="SessionEnd", reason="task complete")
         return None
     raise ValueError(f"unknown harness {harness!r}")
 
