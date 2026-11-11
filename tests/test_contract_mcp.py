@@ -16,6 +16,8 @@ import adapter_contract as ac
 from tracekit.sdk.client import Client
 
 try:
+    import mcp
+    import mcp.types
     from mcp import Client as MCPClient
     from mcp import MCPError
     from mcp.server.mcpserver import MCPServer
@@ -373,3 +375,186 @@ class ListsAreObserved(unittest.TestCase):
         [req] = [r for m, r in signer.requests if m == "observe"]
         self.assertEqual((req["source"], req["trust"]), ("mcp:stub/resources", "untrusted"))
         self.assertEqual(req["value"]["resources"][0]["description"], "inbox")
+
+
+@unittest.skipUnless(HAVE_MCP and hasattr(mcp.types, "InputRequiredResult"), "mcp 2.3+ with InputRequiredResult required")
+class InputRequiredRounds(unittest.TestCase):
+    RUN = SignerFailures.RUN
+
+    def setUp(self):
+        from mcp.client.session import ClientSession
+        self.orig_methods = {
+            m: getattr(ClientSession, m)
+            for m in ("call_tool", "get_prompt", "list_tools", "list_resources", "list_prompts")
+            if hasattr(ClientSession, m)
+        }
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        from mcp.client.session import ClientSession
+        for m, fn in self.orig_methods.items():
+            setattr(ClientSession, m, fn)
+
+    def _make_server(self):
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[
+                t.Tool(name="ask_input", description="tool needing input", inputSchema={"type": "object"}),
+                t.Tool(name="fail_round", description="tool that fails in round 2", inputSchema={"type": "object"}),
+            ])
+
+        async def on_call_tool(ctx, params):
+            if params.name == "ask_input":
+                if params.request_state is None:
+                    return t.InputRequiredResult(
+                        request_state="state-tool-1",
+                        input_requests={"req-1": t.ElicitRequest(
+                            params=t.ElicitRequestFormParams(
+                                message="enter data",
+                                requested_schema={"type": "object", "properties": {}},
+                            )
+                        )},
+                    )
+                return t.CallToolResult(content=[t.TextContent(type="text", text="tool ok")], is_error=False)
+            if params.name == "fail_round":
+                if params.request_state is None:
+                    return t.InputRequiredResult(
+                        request_state="state-fail-1",
+                        input_requests={"req-f": t.ElicitRequest(
+                            params=t.ElicitRequestFormParams(
+                                message="enter data",
+                                requested_schema={"type": "object", "properties": {}},
+                            )
+                        )},
+                    )
+                raise RuntimeError("boom in round 2")
+            raise MCPError(-32601, f"unknown tool: {params.name}")
+
+        async def on_list_prompts(ctx, params):
+            return t.ListPromptsResult(prompts=[
+                t.Prompt(name="ask_prompt", description="prompt needing input"),
+            ])
+
+        async def on_get_prompt(ctx, params):
+            if params.name == "ask_prompt":
+                if params.request_state is None:
+                    return t.InputRequiredResult(
+                        request_state="state-prompt-1",
+                        input_requests={"req-p": t.ElicitRequest(
+                            params=t.ElicitRequestFormParams(
+                                message="enter prompt data",
+                                requested_schema={"type": "object", "properties": {}},
+                            )
+                        )},
+                    )
+                return t.GetPromptResult(
+                    description="done prompt",
+                    messages=[t.PromptMessage(role="user", content=t.TextContent(type="text", text="prompt ok"))],
+                )
+            raise MCPError(-32601, f"unknown prompt: {params.name}")
+
+        return Server("contract_server", on_list_tools=on_list_tools, on_call_tool=on_call_tool,
+                      on_list_prompts=on_list_prompts, on_get_prompt=on_get_prompt)
+
+    def test_tool_call_input_required_round_decided_and_completed_once(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_call():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                return await c.call_tool("ask_input", {"k": "v"})
+
+        out = asyncio.run(run_call())
+        self.assertEqual(out.content[0].text, "tool ok")
+        self.assertFalse(out.is_error)
+
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "ok")
+
+        observed = [r for m, r in signer.requests if m == "observe" and r["source"].endswith("/input_required")]
+        self.assertEqual(len(observed), 1)
+        self.assertEqual((observed[0]["source"], observed[0]["trust"]),
+                         ("mcp:contract_server/input_required", "untrusted"))
+        self.assertIn("req-1", observed[0]["value"])
+
+    def test_get_prompt_input_required_round_decided_and_completed_once(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_prompt():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                return await c.get_prompt("ask_prompt", {"k": "v"})
+
+        out = asyncio.run(run_prompt())
+        self.assertEqual(out.messages[0].content.text, "prompt ok")
+
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "ok")
+
+        observed = [r for m, r in signer.requests if m == "observe"]
+        self.assertEqual(len(observed), 1)
+        self.assertEqual((observed[0]["source"], observed[0]["trust"]),
+                         ("mcp:contract_server/input_required", "untrusted"))
+        self.assertIn("req-p", observed[0]["value"])
+
+    def test_made_up_request_state_is_decided_anew(self):
+        from tracekit import autowire
+        server = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_call():
+            async with MCPClient(server) as c:
+                return await c.session.call_tool("ask_input", {"k": "v"}, request_state="forged-state-999")
+
+        asyncio.run(run_call())
+        decides = [r for m, r in signer.requests if m == "decide"]
+        self.assertEqual(len(decides), 1)
+
+    def test_round_that_raises_completes_kept_call_as_error(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_failing():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                await c.call_tool("fail_round", {"k": "v"})
+
+        with self.assertRaises(Exception):
+            asyncio.run(run_failing())
+
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "error")
+        self.assertIn("MCPError", completes[0]["error"])

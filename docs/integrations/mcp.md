@@ -39,7 +39,7 @@ Every other attribute is the wrapped session's. Only calls made through the wrap
 | right before it is sent | `approval_consume` | the same call and arguments, and the approval id when the call waited for one |
 | after the server answers | `complete` | `status` `ok`, or `error` for a result with `isError: true`; a `sha256:` commitment to the result (not the result), or the exception type and message |
 
-`list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`observe`, source `mcp:<server>/tools`, `/resources` or `/prompts`): the model reads the descriptions the server wrote, and the page the caller asked for is what is recorded. A page the signer cannot record is withheld, unless the run fails open for `mcp`, when an unreachable signer returns it with a warning; a refusal is withheld either way.
+`list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`observe`, source `mcp:<server>/tools`, `/resources` or `/prompts`): the model reads the descriptions the server wrote, and the page the caller asked for is what is recorded. A page the signer cannot record is withheld, unless the run fails open for `mcp`, when an unreachable signer returns it with a warning; a refusal is withheld either way. A tool call or prompt that returns an `InputRequiredResult` (MCP 2.3) records each round's input requests as untrusted observed input (`observe`, source `mcp:<server>/input_required`) and is decided and completed once, under its initial decision, when the terminal result arrives.
 
 `<server>` is the name in the server's initialize result, with every character outside `A-Za-z0-9_.-` replaced by `_`
 (`unknown` when the server gave none). The policy's `tools` map should map `mcp:*/*` to the `mcp` class (the coding
@@ -64,7 +64,7 @@ a lost connection) propagates unchanged. Both are recorded as `error`.
 
 ## Not covered
 
-- MCP calls carry no call id, so every `call_tool` is a call of its own (attempt 0); a retry is a new decision.
+- MCP calls carry no call id, so every call_tool is a call of its own (attempt 0); multi-round input-required calls reuse their decision across rounds, while an independent retry is a new decision.
 - There is no saved state: a call waiting for an approval does not survive the process.
 - Servers the agent reaches without this session (another client, a hosted MCP tool of a model provider) are not seen.
 - The server's name in `mcp:<server>/<tool>` is the one the server gives. An mcp 1.x session doesn't keep it:

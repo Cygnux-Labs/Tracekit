@@ -43,6 +43,7 @@ class TracekitSession(HeldCalls):
         `server`: the server's name, else the session's server_info."""
         super().__init__(signer, run, approval_wait_s)
         self._session, self._server = session, server
+        self._pending = {}
 
     def __getattr__(self, name):
         return getattr(self._session, name)
@@ -88,23 +89,44 @@ class TracekitSession(HeldCalls):
         if not raw:
             warnings.warn(_UNNAMED, stacklevel=3)
         tool = f"mcp:{server}/{prefix}{name}"
-        args, call_id = arguments or {}, uuid.uuid4().hex
-        why, d, args = await self._gate(call_id, tool, args)
-        if why is not None:
-            if method == "get_prompt":
-                raise RuntimeError(BLOCKED + why)
-            # isError: mcp 1.x's field name, and mcp 2.x's alias of is_error (1.x ignores is_error=)
-            return CallToolResult(content=[TextContent(type="text", text=BLOCKED + why)], isError=True)
+        args = arguments or {}
+        req_state = kw.get("request_state")
+        key = (tool, event_hash({"tool": tool, "args": args}), req_state) if req_state is not None else None
+        if key is not None and key in self._pending:
+            call_id, req, d = self._pending.pop(key)
+        else:
+            call_id = uuid.uuid4().hex
+            why, d, args = await self._gate(call_id, tool, args)
+            if why is not None:
+                if method == "get_prompt":
+                    raise RuntimeError(BLOCKED + why)
+                # isError: mcp 1.x's field name, and mcp 2.x's alias of is_error (1.x ignores is_error=)
+                return CallToolResult(content=[TextContent(type="text", text=BLOCKED + why)], isError=True)
+            req = None if d is None else {"tool_call_id": call_id, "decision_id": d["decision_id"],
+                                          "args_digest": event_hash({"tool": tool, "args": args})}
         send = getattr(self._session, method)
         if d is None:   # the signer unreachable and the run fails open: the call runs unrecorded
             return await send(name, arguments, *a, **kw)
-        req = {"tool_call_id": call_id, "decision_id": d["decision_id"],
-               "args_digest": event_hash({"tool": tool, "args": args})}
         try:
             out = await send(name, args, *a, **kw)
         except Exception as e:
-            await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
+            if req is not None:
+                await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
             raise
+        if getattr(out, "result_type", None) == "input_required" or hasattr(out, "input_requests"):
+            next_state = getattr(out, "request_state", None)
+            if next_state is not None:
+                self._pending[(tool, event_hash({"tool": tool, "args": arguments or {}}), next_state)] = (call_id, req, d)
+            dump = out.model_dump(mode="json", by_alias=True, exclude_none=True)
+            input_requests = dump.get("input_requests", dump.get("inputRequests", []))
+            try:
+                await self._rpc("observe", source=f"mcp:{server}/input_required", trust="untrusted",
+                                value=input_requests)
+            except SignerUnavailable as e:
+                if not fail_open(self.fail_modes, self.CLASS):
+                    raise
+                warnings.warn(f"tracekit: MCP input_required not recorded: {e}", stacklevel=2)
+            return out
         failed = getattr(out, "is_error", getattr(out, "isError", False))   # mcp 2.x, mcp 1.x
         await self._complete(call_id, req, status="error" if failed else "ok",
                              result=result_field(d.get("send_result"),
