@@ -4743,6 +4743,48 @@ class GuardrailsAndPushes(unittest.TestCase):
             "kubectl apply -Rf --dry-run", "kubectl delete pod x --grace-period --dry-run",
             "kubectl delete pod x -n --dry-run", "kubectl delete pod x --force --cache-dir --dry-run")], "ask", "TK-A056")
 
+    def test_a_ref_or_branch_the_line_cant_name_is_held(self):
+        """Fifth review of #605: the route check took repos/<o>/<r>/git/ as a fixed route, but under git/ an expansion
+        names the ref, and gh fills its {branch} placeholder with the current branch (in an endpoint, and in a -F
+        field; -f sends it as written); a `..` segment may move the path to another route."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api -X PATCH repos/o/r/git/refs/heads/$B -f sha=x",
+            "gh api -X PATCH repos/o/r/git/refs/heads/$(git branch --show-current) -f sha=x",
+            "gh api -X PATCH repos/o/r/git/refs/heads/`git branch --show-current` -f sha=x",
+            "gh api -X PATCH repos/o/r/git/$REF -f sha=x", "gh api -X PATCH repos/o/r/git/refs/$R -f sha=x",
+            "gh api -X PATCH 'repos/{owner}/{repo}/git/refs/heads/{branch}' -f sha=x",
+            "gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=Yg== -F 'branch={branch}'",
+            "gh api -X PUT repos/o/r/../r/contents/x -f message=m -f branch=feature",
+            "B=main; gh api -X PATCH repos/o/r/git/refs/heads/$B -f sha=x")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=Yg== -f 'branch={branch}'",
+            "gh api repos/o/r/git/refs/heads/$B")], "allow")
+
+    def test_an_expansion_for_the_owner_or_repo_reads_the_route_after_it(self):
+        """Fifth review of #605: an expansion in the owner's or repo's place held every write, though the route after it
+        is literal; it fills the owner and the repo ($GITHUB_REPOSITORY fills both), and the route after it decides."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api repos/$GITHUB_REPOSITORY/issues/$N/comments -f body=done",
+            'gh api "repos/$OWNER/$REPO/issues" -f title=x -f body=y',
+            "gh api -X POST repos/$GITHUB_REPOSITORY/pulls/$PR/reviews -f event=COMMENT -f body=x",
+            "gh api -X PATCH repos/$OWNER/$REPO/issues/$N -f state=closed",
+            "gh api repos/$OWNER/$REPO/labels -f name=bug")], "allow")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api -X PUT repos/$OWNER/$REPO/contents/x -f message=m",
+            "gh api -X PUT repos/$GITHUB_REPOSITORY/contents/x -f message=m",
+            "gh api -X PUT repos/$OWNER/r/contents/x -f message=m",
+            "gh api -X PATCH repos/$GITHUB_REPOSITORY/git/refs/heads/main -f sha=x",
+            "gh api -X POST repos/$GITHUB_REPOSITORY/merges -f base=main -f head=f",
+            "gh api -X POST repos/$OWNER/$REPO/$ROUTE -f x=y")], "ask", "TK-A056")
+
+    def test_a_push_key_an_expansion_makes_in_gits_config_environment_is_read(self):
+        """Fifth review of #605: GIT_CONFIG_KEY_0=remote.$R.push was flagged where `-c remote.$R.push=…` is held: the
+        line kept no key it couldn't read. A key an expansion makes is kept as written, as -c keeps one."""
+        pair = "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.$R.push GIT_CONFIG_VALUE_0=refs/heads/feature:refs/heads/main"
+        self.verdicts([("Bash", {"command": c}) for c in (
+            f"{pair} git push origin feature", f"export {pair}; git push origin feature",
+            f"env {pair} git push origin feature")], "ask", "TK-A056")
+
     def test_more_ways_to_push_to_main_and_to_publish(self):
         """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a
         value before the command; git send-pack and hub push name refs as push does; gh and hub api write main's ref

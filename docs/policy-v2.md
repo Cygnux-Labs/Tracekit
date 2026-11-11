@@ -197,8 +197,10 @@ or deletes a file through the contents API (`repos/<owner>/<repo>/contents/…` 
 as a path or in a URL) on the default branch or one the line can't tell: no `branch` field, main or master, a value gh
 reads from a file (`-F branch=@b.txt`) or an expansion gives, `HEAD`, or any `--input`, whose body then names the branch. Its
 words are read as gh reads them (an option that takes a value takes the rest of its word or the next word, so `-f
---method=GET` is a field), and a write whose method or endpoint is an expansion the line can't resolve gives
-`PUSH:unknown`. A remote's push mapping given through git's config environment (`GIT_CONFIG_KEY_<n>`,
+--method=GET` is a field; `-F` fills gh's `{branch}` placeholder, `-f` doesn't). A write whose target the line can't
+tell gives `PUSH:unknown`: an expansion or `{branch}` where the route goes, or anywhere after `git/` (where it names the
+ref), or a `.` or `..` segment; an expansion in the owner's or repo's place (`$GITHUB_REPOSITORY`) is read as filling
+them, and the route after it decides. A write to `merges` gives `PUSH:merges`. A remote's push mapping given through git's config environment (`GIT_CONFIG_KEY_<n>`,
 `GIT_CONFIG_VALUE_<n>`) is read as its `-c` pair.
 
 The shell field `effects` is each file the commands write, as `WRITE_TARGET:path`, or delete, as

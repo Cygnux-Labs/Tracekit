@@ -894,6 +894,7 @@ _GIT_RUNS = re.compile(rf"(?is)({_GIT_RUNS_KEY})(?:=(.*))?")
 # a git config key this parser reads as a git command or a forced push: alias.<name>, remote.<name>.mirror and
 # remote.<name>.push; its value if given (KEY=VALUE)
 _GIT_CONFIG_KEY = re.compile(r"(?is)(alias)\.([^=\s]+)(?:=(.*))?|remote\..+\.(mirror|push)(?:=(.*))?")
+_GIT_ENV_KEY = re.compile(r"GIT_CONFIG_KEY_\d+")   # a -c key the environment gives git (_git_config_env)
 _CONFIG_ENV = re.compile(r"(?i)--config-env=(alias|include)")   # git's options that read config it can't see
 _INCLUDE = re.compile(r"(?i)include(if)?\.")
 # git's own options that take a value (before its subcommand), and its subcommands' options whose value it runs as a
@@ -2794,6 +2795,8 @@ class _Parser:
                 if value is not None or elements:
                     self.ctx["given"].setdefault(var, []).extend([value] if elements is None else
                                                                  [v for v in elements if v is not None])
+                elif _GIT_ENV_KEY.fullmatch(var):   # a git config key an expansion makes: as written, as -c reads one
+                    self.ctx["given"].setdefault(var, []).append(text.partition("=")[2])
                 elif not m.group(1) and self.readings:   # one an expansion joins: each literal reading with a blank
                     self.ctx["given"].setdefault(var, []).extend(   # (bash splits it where X is unquoted: X=" rm"$Y)
                         v for r in self.readings for v in [r.partition("=")[2]]
@@ -3294,7 +3297,7 @@ class _Parser:
                     name not in ("unset", "test", "[", "[["):   # a value IFS gets (None: one the parser can't read)
                 literal = declares and eq and not (nameref or plus or re.search(r"[$`]", value))
                 self.ctx["ifs_values"].append(value if literal else None)
-            if declares and eq and not re.search(r"[$`]", value):
+            if declares and eq and (not re.search(r"[$`]", value) or _GIT_ENV_KEY.fullmatch(var)):
                 self.ctx["given"].setdefault(var, []).append(value)
             if nameref:
                 self.ctx["namerefs"][var] = value or None

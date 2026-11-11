@@ -916,18 +916,45 @@ _PUSH_LONG = {"all": "all", "branches": "all", "mirror": "all", "delete": "", "p
               "ipv4": "", "ipv6": ""}
 _PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6": ""}   # and -o VALUE
 _REMOTE_PUSH = re.compile(r"remote\..+\.(?:push|mirror)")   # a config key, casefolded (its remote name keeps case)
-# gh api's options that take a value (gh api --help), each with what it gives here; hub api reads -t as --flat, which
-# takes none. The contents API's path, in a path or a URL (https://api.github.com/repos/…, GHES's /api/v3/repos/…,
-# GitHub's repositories/<id>/ form)
-_GH_VALUED = {"-X": "method", "--method": "method", "-f": "field", "-F": "field", "--field": "field",
-              "--raw-field": "field", "--input": "input", "-H": "", "--header": "", "-t": "", "--template": "",
-              "-q": "", "--jq": "", "-p": "", "--preview": "", "--hostname": "", "--cache": ""}
-_GH_CONTENTS = re.compile(r"(?:^|/)(?:repos/+[^/]+/+[^/]+|repositories/+[^/]+)/+contents/", re.I)
-# an endpoint's start that fixes its route (repos/<o>/<r>/actions/, user/), after a URL's scheme and host and GHES's
-# api/v3/: an expansion after it can't make the call a contents, ref or merge write
-_GH_ROUTE = re.compile(r"(?:[a-z][a-z0-9+.-]*://[^/]*(?=/|$))?/*(?:api/v3/+)?"
-                       r"(?:(?:repos/+[^/]+/+[^/]+|repositories/+[^/]+)/+[^/]+/"
-                       r"|(?!(?:repos|repositories|api)/)[^/:]+/)", re.I)
+# gh api's options that take a value (gh api --help), each with what it gives here: -F fills gh's placeholders
+# ({owner}, {repo}, {branch}) in its value, -f doesn't; hub api reads -t as --flat, which takes none
+_GH_VALUED = {"-X": "method", "--method": "method", "-F": "field", "--field": "field", "-f": "raw", "--raw-field": "raw",
+              "--input": "input", "-H": "", "--header": "", "-t": "", "--template": "", "-q": "", "--jq": "", "-p": "",
+              "--preview": "", "--hostname": "", "--cache": ""}
+_GH_HOST = re.compile(r"(?:[a-z][a-z0-9+.-]*://[^/]*(?=/|$))?", re.I)   # a URL's scheme and host
+
+
+def _gh_open(text):
+    """Whether the line can't tell what a word of a gh api call is: an expansion, or gh's {branch} placeholder (the
+    current branch)."""
+    return "$" in text or "`" in text or "{branch}" in text
+
+
+def _gh_routes(endpoint):
+    """(the routes a gh api endpoint may name, lower-cased, each with the segments after it; whether the line can't
+    tell where a write to it goes), read from its path as GitHub routes it, after a URL's scheme and host and GHES's
+    api/v3/: repos/<owner>/<repo>/<route>/…, where an expansion in the owner's place may fill the repo's too
+    ($GITHUB_REPOSITORY), so the segment after it is the route, and the one after that may be; repositories/<id>/
+    <route>/…; <route>/… for the rest. Unknown: a `.` or `..` segment, a route _gh_open, or such a segment after
+    git/, where it names the ref."""
+    segs = [s for s in re.split(r"[?#]", endpoint[_GH_HOST.match(endpoint).end():], maxsplit=1)[0].split("/") if s]
+    # from its repos/ or repositories/ segment where it has one, past a host without a scheme (//api.github.com/…) or
+    # GHES's api/v3/; an expansion before it may be any path
+    k = next((k for k, s in enumerate(segs) if s.lower() in ("repos", "repositories")), 0)
+    if any(s in (".", "..") for s in segs) or any(map(_gh_open, segs[:k])):
+        return [], True
+    segs = segs[k:]
+    if segs[:1] == ["api"]:   # GHES serves the API at /api/v3/
+        segs = segs[2:] if segs[1:2] == ["v3"] else segs[1:]
+    first = segs[0].lower() if segs else ""
+    if first == "repos":
+        at = [2, 3] if len(segs) > 2 and _gh_open(segs[1]) and not _gh_open(segs[2]) else [3]
+    else:
+        at = [2] if first == "repositories" else [0]
+    routes = [(segs[k].lower(), segs[k + 1:]) for k in at if k < len(segs)]
+    unknown = bool(routes) and _gh_open(routes[0][0]) or any(
+        r == "git" and any(map(_gh_open, rest)) for r, rest in routes)
+    return [r for r, _ in routes], unknown
 
 
 def _git_push(argv):
@@ -1021,9 +1048,10 @@ def _gh_api(argv):
     from a file (`-F branch=@b.txt`) or an expansion gives, and any with --input, whose body then names the branch
     (the fields go to the query). The words are read as gh reads them: an option that takes a value takes the rest
     of its word or the next word (`-f --method=GET` is a field), the method only from -X or --method (the last; POST
-    with a field or --input, else GET) and the branch only from a field; a method that is an expansion the line can't
-    resolve counts as a write. `PUSH:unknown` for a write whose endpoint has one before its route (`"$EP"`,
-    `repos/o/r/$P`)."""
+    with a field or --input, else GET) and the branch only from a field (`-F branch={branch}` is the current one); a
+    method that is an expansion the line can't resolve counts as a write. The endpoint's route is _gh_routes': a
+    write there gives `PUSH:merges` for repos/<o>/<r>/merges (any form), and `PUSH:unknown` where the line can't
+    tell where it goes (`"$EP"`, `repos/o/r/$P`, `git/refs/heads/$B`, a `..` segment)."""
     words = [unquote(w) for w in argv]
     valued = _GH_VALUED.keys() - ({"-t"} if _program(argv) == "hub" else set())
     given, positional, i = [], [], 2
@@ -1046,20 +1074,25 @@ def _gh_api(argv):
             value, i = (words[i] if i < len(words) else ""), i + 1
         given.append((_GH_VALUED[name], value))
     kinds = {kind for kind, _ in given}
-    fields = [v.partition("=") for kind, v in given if kind == "field"]
+    fields = [(kind, *v.partition("=")[::2]) for kind, v in given if kind in ("field", "raw")]
     method = next((v for kind, v in reversed(given) if kind == "method"),
-                  "POST" if kinds & {"field", "input"} else "GET")
-    branch = next((v for key, _, v in reversed(fields) if key == "branch"), "")
+                  "POST" if kinds & {"field", "raw", "input"} else "GET")
+    magic, branch = next(((kind == "field", v) for kind, key, v in reversed(fields) if key == "branch"), (False, ""))
     branch = branch.removeprefix("refs/").removeprefix("heads/")
-    endpoint = positional[0] if positional else ""
-    cut = min((endpoint.find(c) for c in "$`" if c in endpoint), default=-1)   # the first expansion
+    routes, unknown = [], False
+    for endpoint in positional or [""]:   # (gh takes one; read each of more, which gh refuses)
+        found, unread = _gh_routes(endpoint)
+        routes, unknown = routes + found, unknown or unread
     unread_method = not method or "$" in method or "`" in method
+    write = unread_method or method.upper() not in ("GET", "HEAD")
     out = [" ".join(words)]
-    if cut >= 0 and not _GH_ROUTE.match(endpoint[:cut]) and (unread_method or method.upper() not in ("GET", "HEAD")):
-        out.append("PUSH:unknown " + endpoint[:64])
-    elif (unread_method or method.upper() in ("PUT", "DELETE")) and any(_GH_CONTENTS.search(w) for w in positional) \
-            and ("input" in kinds or branch[:1] in ("", "@") or "$" in branch or "`" in branch or
-                 branch in ("main", "master", "HEAD")):
+    if write and unknown:
+        out.append("PUSH:unknown " + (positional[0] if positional else "")[:64])
+    elif write and "merges" in routes:
+        out.append("PUSH:merges " + method[:64])
+    elif (unread_method or method.upper() in ("PUT", "DELETE")) and "contents" in routes and (
+            "input" in kinds or branch[:1] in ("", "@") or "$" in branch or "`" in branch or
+            magic and "{branch}" in branch or branch in ("main", "master", "HEAD")):
         out.append("PUSH:contents " + method[:64])
     return out
 
