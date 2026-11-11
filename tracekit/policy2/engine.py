@@ -393,7 +393,23 @@ class Engine:
         """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
         ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse); `work`:
         the decision's budget (shell.charge), which _plain() spends too. `fallback`: False leaves _plain() out (None
-        in its place), for a caller that only asks whether the command reads."""
+        in its place), for a caller that only asks whether the command reads. A `commands` list (OpenAI's shell tool,
+        Cline's run_commands) runs each in its own shell: each is read as its own command line, so an open quote, a
+        trailing \\ or a here-doc in one can't hide the next, and the readings are joined."""
+        cmds = args.get("commands")
+        if isinstance(cmds, list) and cmds and all(isinstance(c, str) for c in cmds) and \
+                [k for k in classes.SHELL_KEYS if args.get(k) is not None] == ["commands"]:
+            parts = [self._parse({"command": c}, c, work, readings, fallback) for c in cmds]
+            cause = next((c for _, c in parts if c), None)
+            if any(p is None for p, _ in parts):
+                return None, cause
+            joined = [[x for p, _ in parts for x in p[i]] for i in range(5)]
+            if all(len(p) > 5 for p, _ in parts):   # what else each learned (shell._learned), when every one parsed
+                learned = [p[5] for p, _ in parts]
+                joined.append({k: (any(d[k] for d in learned) if k in ("any_set", "more") else
+                                   set().union(*(d[k] for d in learned)) if isinstance(learned[0][k], set) else
+                                   [x for d in learned for x in d[k]]) for k in learned[0]})
+            return tuple(joined), cause
         target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
             if self._persistent_targets else None
         start = work[0]
@@ -553,9 +569,8 @@ def _path_forms(targets):
 
 def _shell(args, persistent_target=None, readings=True, work=None):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
-    redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool,
-    Cline's run_commands) a list of command lines, each read on its own. Anything else, or more than one of them, raises
-    ParseError."""
+    redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
+    a list of command lines. Anything else, or more than one of them, raises ParseError."""
     present = [k for k in classes.SHELL_KEYS if args.get(k) is not None]
     if len(present) > 1:
         raise shell.ParseError(f"more than one command field: {present}")
@@ -563,15 +578,8 @@ def _shell(args, persistent_target=None, readings=True, work=None):
     strings = isinstance(value, list) and value and all(isinstance(a, str) for a in value)
     if isinstance(value, str):
         return shell.analyse(value, persistent_target, readings, work)
-    if strings and present == ["commands"]:   # each runs in its own shell: an open quote, a trailing \ or a here-doc
-        # in one can't hide the next
-        parts = [shell.analyse(v, persistent_target, readings, work) for v in value]
-        learned = [p[5] for p in parts]
-        return (*([x for p in parts for x in p[i]] for i in range(5)),
-                {"read": [x for d in learned for x in d["read"]], "assigned": [x for d in learned for x in d["assigned"]],
-                 "unresolved": set().union(*(d["unresolved"] for d in learned)),
-                 "any_set": any(d["any_set"] for d in learned), "exports": set().union(*(d["exports"] for d in learned)),
-                 "more": any(d["more"] for d in learned), "functions": [x for d in learned for x in d["functions"]]})
+    if strings and present == ["commands"]:
+        return shell.analyse("\n".join(value), persistent_target, readings, work)
     if strings:
         return shell.analyse_argv(value, readings, work)
     raise shell.ParseError("the command is neither a string nor a list of strings")
