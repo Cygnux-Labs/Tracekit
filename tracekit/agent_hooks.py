@@ -1,5 +1,5 @@
-"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush
-and Devin (CLI and Desktop), on the Claude Code pipeline.
+"""Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush,
+Devin (CLI and Desktop) and Cline (CLI and VS Code extension), on the Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -12,6 +12,7 @@ and Devin (CLI and Desktop), on the Claude Code pipeline.
     tracekit init --dev --agent antigravity  # ~/.gemini/config/hooks.json (project: .agents/hooks.json)
     tracekit init --dev --agent crush        # ~/.config/crush/crush.json (project: crush.json)
     tracekit init --dev --agent devin        # ~/.config/devin/config.json (project: .devin/hooks.v1.json)
+    tracekit init --dev --agent cline        # ~/Documents/Cline/Hooks/<event> (project: .clinerules/hooks/<event>)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -55,9 +56,15 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             (its payload is Claude Code's shape); a read, write, edit, apply_patch or webfetch with nothing to decide
             it on, or a url spelled other than `url`, is denied in the hook; init turns off its reading of Claude
             Code's hooks, which would decide each call a second time
+    Cline   run_commands, read_files, editor, apply_patch, fetch_web_content
+            -> Bash (every command line, one per line, in any shape Cline takes), Read (every file), Edit (its `path`;
+            it creates a missing file), Edit (every file the patch names), WebFetch (every URL); a call Tracekit can't
+            read a command, file or URL from is denied. Its hook blocks by answering a cancel, which stops Cline's
+            task; the VS Code extension's payload carries no call id
 
-What each harness exposes decides what Tracekit can see: Gemini CLI, Droid and Devin do not give tool calls an id, so
-pre and post events are paired by (tool, arguments) in order, and Antigravity CLI's by (step index, tool, arguments);
+What each harness exposes decides what Tracekit can see: Gemini CLI, Droid, Devin and Cline's VS Code extension do not
+give tool calls an id, so pre and post events are paired by (tool, arguments) in order, and Antigravity CLI's by (step
+index, tool, arguments);
 Cursor and Qwen Code report failures through postToolUseFailure.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
@@ -67,6 +74,7 @@ import json
 import os
 import posixpath
 import re
+import shlex
 import sys
 import urllib.parse
 
@@ -78,7 +86,7 @@ from .policy2.classes import PATH_KEYS, first
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
-               "devin": "devin"}
+               "devin": "devin", "cline": "cline"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -207,6 +215,54 @@ KILO_BLOCKED = ("notebook_execute",)
 # the harnesses that load Tracekit's OpenCode plugin: their tool names and the argument each file tool reads
 PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_TOOLS, KILO_PATH_ARG)}
 JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+# Cline's tools that run a command, read or write a file or fetch a URL (sdk/packages/core/src/extensions/tools). Its
+# PreToolUse hook sees a call before Cline checks the input against the tool's schema, which takes several shapes
+# (schemas.ts: run_commands a list, one command, {command, args} run without a shell, or cmd; read_files files, paths
+# or file_paths, as strings or {path | file_path | filePath}): every command or file in any of them is decided
+CLINE_TOOLS = {"run_commands": "Bash", "read_files": "Read", "editor": "Edit", "apply_patch": "Edit",
+               "fetch_web_content": "WebFetch"}
+CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "TaskCancel", "UserPromptSubmit")
+CLINE_FILE = "PreToolUse.ps1" if os.name == "nt" else "PreToolUse"
+CLINE_PATH_KEYS = ("path", "file_path", "filePath")
+
+
+def _each(v, *keys):
+    """v's items: v itself, or the items of the list it is; for an object and `keys`, those of each of them it has."""
+    if isinstance(v, dict) and keys:
+        return [x for k in keys if k in v for x in _each(v[k])]
+    return v if isinstance(v, list) else [v]
+
+
+def _cline_command(c):
+    """One of a run_commands call's commands as a command line: a string, or {command, args}, which Cline runs without a
+    shell, or {cmd}."""
+    if isinstance(c, dict):
+        args = c.get("args") or []
+        c = [c["command"], *args] if isinstance(c.get("command"), str) and isinstance(args, list) and \
+            all(isinstance(a, str) for a in args) else c.get("cmd")
+        c = shlex.join(c) if isinstance(c, list) else c
+    if not isinstance(c, str) or not c.strip():
+        raise ValueError("a Cline run_commands entry Tracekit can't read as a command")
+    return c
+
+
+def _cline_paths(v):
+    """Every path a read_files entry names: a string, or each of its path keys."""
+    return [v] if isinstance(v, str) else [v[k] for k in CLINE_PATH_KEYS if isinstance(v, dict) and k in v]
+
+
+def _unstringified(params):
+    """The VS Code extension's tool parameters, whose non-string values it sends JSON-encoded (toStringRecord).
+    lean: a string argument that is itself a JSON list or object is read as one; Cline's file and command arguments
+    that hold a string are decided as a path or a command line either way"""
+    out = {}
+    for k, v in (params if isinstance(params, dict) else {}).items():
+        try:
+            parsed = json.loads(v) if isinstance(v, str) else v
+        except ValueError:
+            parsed = v
+        out[k] = parsed if isinstance(parsed, (list, dict)) else v
+    return out
 
 
 def _named(harness, name):
@@ -383,6 +439,43 @@ def tool(harness, name, ti):
             if "path" in ti:
                 ti["file_path"] = ti["path"]
         return CRUSH_TOOLS.get(name, name), ti
+    if harness == "cline":
+        v = ti["value"] if list(ti) == ["value"] else ti   # a list or a string the model sent as the whole input
+        one = [v] if isinstance(v, dict) else []
+        if name == "run_commands":   # its command lines, one per line, as `command`, the one field both engines read
+            # (v2 reads more than one command field as a call it can't parse, v1 only `command`)
+            lines = [_cline_command(c) for c in _each(v, "commands") + [c for c in one if "command" in c or "cmd" in c]]
+            if not lines:
+                raise ValueError("Cline's run_commands names no command")
+            ti = {k: x for k, x in ti.items() if k not in ("command", "cmd", "commands", "value")}
+            ti["command"] = "\n".join(lines)
+        elif name == "read_files":
+            files = [p for e in _each(v, "files", "paths", "file_paths") + one for p in _cline_paths(e)]
+            if not files or not all(isinstance(f, str) and f for f in files):
+                raise ValueError("Cline's read_files names a file Tracekit can't read as a path")
+            for k in PATH_KEYS:   # its own paths decide, never a decoy beside them
+                ti.pop(k, None)
+            ti["file_path"], ti["paths"] = files[0], list(dict.fromkeys(files))
+        elif name == "editor":   # creates the file when it is missing, else edits it: an Edit, decided on its `path`
+            path = v.get("path") if one else None
+            if not isinstance(path, str) or not path:
+                raise ValueError("Cline's editor names no path")
+            for k in PATH_KEYS:
+                ti.pop(k, None)
+            ti["path"] = ti["file_path"] = path
+        elif name == "apply_patch":   # the patch is its `input`, or the whole input as a string
+            files = [f.strip() for f in PATCH_FILE.findall(str(v.get("input") if one else v))]
+            if not files or not all(files):
+                raise ValueError("Cline's apply_patch names no file")
+            ti["file_path"], ti["paths"] = files[0], files
+        elif name == "fetch_web_content":
+            urls = [r.get("url") if isinstance(r, dict) else None for r in _each(v, "requests")]
+            if not urls or not all(isinstance(u, str) and u for u in urls):
+                raise ValueError("Cline's fetch_web_content names no URL")
+            ti["url"] = urls[0]
+            if len(set(urls)) > 1:
+                ti["urls"] = list(dict.fromkeys(urls))
+        return CLINE_TOOLS.get(name, name), ti
     return name, ti
 
 
@@ -550,6 +643,40 @@ def normalise(harness, p):
         if ev == "PostToolUse" and p.get("error"):
             out.update(hook_event_name="PostToolUseFailure", error=p["error"])
         return out
+    if harness == "cline":
+        # the event is the hook file's name, on its command line. The CLI sends the call's id and the model's input
+        # (tool_call, tool_result) beside the extension's shape (preToolUse, postToolUse: toolName and the parameters,
+        # its non-string values JSON-encoded, and no id): the extension's calls are paired by (tool, arguments)
+        out.update(session_id=p.get("taskId"), cwd=(p.get("workspaceRoots") or [None])[0], hook_event_name=ev)
+        if ev in ("PreToolUse", "PostToolUse"):
+            call = p.get("tool_call" if ev == "PreToolUse" else "tool_result")
+            ext = p.get("preToolUse" if ev == "PreToolUse" else "postToolUse")
+            call, ext = (call if isinstance(call, dict) else None), (ext if isinstance(ext, dict) else {})
+            name = call.get("name") if call else ext.get("toolName")
+            out["tool_name"], out["tool_input"] = tool(harness, str(name or "?"), call.get("input") if call else
+                                                       _unstringified(ext.get("parameters")))
+            out["tool_use_id"] = call.get("id") if call else out["session_id"] and _paired_ids(
+                harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
+            if ev == "PostToolUse":
+                # the extension 4.1.26 sends a result as "[object Object]" (String() of it): no result is recorded
+                r = call.get("output") if call else ext.get("result")
+                out["tool_response"] = r = None if r == "[object Object]" else r
+                if call and call.get("error") or not call and ext.get("success") is False:
+                    out.update(hook_event_name="PostToolUseFailure", error=r.get("error") if isinstance(r, dict) and
+                               r.get("error") else r or "the call failed")
+            return out
+        if ev == "UserPromptSubmit":
+            prompt = (p.get("userPromptSubmit") or {}).get("prompt")
+            # lean: the CLI also fires it with its own nudge to finish a run ("[SYSTEM] This run is not complete ..."),
+            # which isn't the person's prompt
+            if not isinstance(prompt, str) or prompt.startswith("[SYSTEM] "):
+                return None
+            return dict(out, prompt=prompt)
+        if ev == "TaskStart":
+            return dict(out, hook_event_name="SessionStart")
+        if ev in ("TaskComplete", "TaskCancel"):
+            return dict(out, hook_event_name="SessionEnd", reason="task " + ev[4:].lower())
+        return None
     raise ValueError(f"unknown harness {harness!r}")
 
 
@@ -567,7 +694,7 @@ class Tee(io.StringIO):
 
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
 STOPPED_LINES = ("Why: ", "Instead: ", "Person: ", "Agent: ")   # how the lines after a stop's first go on (stopped)
-PAIRED = ("gemini", "droid", "antigravity", "devin")   # the harnesses whose call ids _paired_ids makes
+PAIRED = ("gemini", "droid", "antigravity", "devin", "cline")   # the harnesses whose call ids _paired_ids makes
 
 
 # goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
@@ -802,8 +929,10 @@ def _exit(harness, code, is_pre):
     status at which Codex reads it. Only a tool call is blocked: a failed prompt or result exits 1, since at 2 Gemini
     CLI erases the prompt or hides the result, and Codex and Cursor block them. Antigravity CLI reads an answer only
     from the JSON of a hook that exits 0 (any other status is a hook that failed, and a failed PostToolUse hook replaced
-    the call's result with an error before agy 1.4.7): its hooks always exit 0."""
-    if harness == "antigravity":
+    the call's result with an error before agy 1.4.7): its hooks always exit 0. Cline reads a hook's answer only from
+    its JSON (the CLI never reads the status; the extension runs the call when a hook exits otherwise without JSON):
+    its hooks always exit 0 too."""
+    if harness in ("antigravity", "cline"):
         return 0
     if code and not is_pre:
         return 1
@@ -834,6 +963,10 @@ def _reply(harness, stdout, allowed, msg, is_pre):
         # `allow` leaves the call to agy's own permissions, as the other hooks' exit 0 does
         stdout.write(json.dumps({} if not is_pre else {"decision": "allow"} if allowed else
                                 {"decision": "deny", "reason": msg or "Blocked by Tracekit"}))
+    elif harness == "cline":
+        # a cancel stops Cline's whole task, not only the call (the CLI and the extension both turn it into a stop)
+        stdout.write(json.dumps({} if allowed or not is_pre else
+                                {"cancel": True, "errorMessage": msg or "Blocked by Tracekit"}))
     elif harness in ("codex", "droid") and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                         "permissionDecisionReason": msg or "Blocked by tracekit"}}))
@@ -874,7 +1007,12 @@ def config_path(harness, project=None, home=None):
             "devin": os.path.join(base, ".devin", "hooks.v1.json") if project else
                      os.path.join(os.environ["APPDATA"], "devin", "config.json")
                      if os.name == "nt" and not home and os.environ.get("APPDATA") else
-                     os.path.join(base, ".config", "devin", "config.json")}[harness]
+                     os.path.join(base, ".config", "devin", "config.json"),
+            # Cline's CLI and VS Code extension both read ~/Documents/Cline/Hooks and a workspace's .clinerules/hooks: a
+            # hook is a file named after its event (on Windows the extension runs <event>.ps1). Its PreToolUse stands
+            # for the set _install_cline writes
+            "cline": os.path.join(base, ".clinerules", "hooks", CLINE_FILE) if project else
+                     os.path.join(base, "Documents", "Cline", "Hooks", CLINE_FILE)}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -1264,6 +1402,126 @@ def _install_crush(path, uninstall=False, v2=False, python=None):
     return path
 
 
+CLINE_WAIT_S = 20   # most a Cline hook waits for an approval: the extension runs a call whose hook takes over 30 s
+
+
+def _cline_hook(argv, ev):
+    """Tracekit's hook file for Cline's `ev`, a script that runs argv: a POSIX shell script, or PowerShell on Windows.
+    Cline runs a call whose hook fails, prints nothing or doesn't answer in time (the CLI 120 s, the extension 30 s),
+    so the script answers a cancel when the hook printed nothing, and caps $TRACEKIT_APPROVAL_WAIT at CLINE_WAIT_S."""
+    fallback = json.dumps({"cancel": True, "errorMessage": "Blocked by Tracekit: its hook could not run, so the call "
+                           "can't be decided"} if ev in PRE else {})
+    if os.name == "nt":
+        cmd = " ".join("'" + a.replace("'", "''") + "'" for a in argv)
+        return f'''# {_plugin_marker("cline")[3:]}
+$w = 0.0
+if ([double]::TryParse([string]$env:TRACEKIT_APPROVAL_WAIT, [ref]$w) -and $w -gt {CLINE_WAIT_S}) {{
+  $env:TRACEKIT_APPROVAL_WAIT = '{CLINE_WAIT_S}'
+}}
+$OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
+$out = ([Console]::In.ReadToEnd() | & {cmd}) -join "`n"
+if ($out) {{ $out }} else {{ '{fallback.replace("'", "''")}' }}
+'''
+    return f'''#!/bin/sh
+# {_plugin_marker("cline")[3:]}
+case ${{TRACEKIT_APPROVAL_WAIT%%.*}} in
+  ''|*[!0-9]*) ;;
+  *) [ "${{TRACEKIT_APPROVAL_WAIT%%.*}}" -lt {CLINE_WAIT_S} ] || export TRACEKIT_APPROVAL_WAIT={CLINE_WAIT_S} ;;
+esac
+out=$({shlex.join(argv)})
+if [ -n "$out" ]; then printf '%s\\n' "$out"; else printf '%s\\n' {shlex.quote(fallback)}; fi
+'''
+
+
+def cline_argv(text):
+    """The argv a Cline hook file `text` (_cline_hook's) runs, else None."""
+    m = re.search(r"^out=\$\((.*)\)$", text, re.M)
+    if m:
+        return shlex.split(m.group(1))
+    m = re.search(r"\| & ((?:'(?:[^']|'')*' ?)+)\) -join", text)
+    return [a.replace("''", "'") for a in re.findall(r"'((?:[^']|'')*)'", m.group(1))] if m else None
+
+
+def cline_documents():
+    """The Documents folder Cline's VS Code extension reads Cline/Hooks in (documents-path.ts): Windows' own (OneDrive
+    may have moved it), on Linux `xdg-user-dir DOCUMENTS` (the home folder itself when none is set up), else
+    ~/Documents, the one Cline's CLI always reads."""
+    docs = os.path.join(os.path.expanduser("~"), "Documents")
+    with contextlib.suppress(Exception):
+        if os.name == "nt":
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                                r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders") as k:
+                return os.path.expandvars(winreg.QueryValueEx(k, "Personal")[0]) or docs
+        if sys.platform.startswith("linux"):
+            import subprocess
+            out = subprocess.run(["xdg-user-dir", "DOCUMENTS"], capture_output=True, text=True, timeout=5).stdout
+            return out.strip() or docs
+    return docs
+
+
+def cline_dirs(home=None, cwd=None):
+    """Every directory Cline's CLI or VS Code extension runs hooks from (paths.ts, disk.ts): the user's
+    ~/Documents/Cline/Hooks (the extension's Documents: cline_documents) and $CLINE_DIR/hooks (else ~/.cline/hooks), a
+    workspace's .cline/hooks and .clinerules/hooks. Each runs every hook in it, so a second copy of Tracekit's records
+    each call twice."""
+    home, cwd = home or os.path.expanduser("~"), cwd or os.getcwd()
+    return list(dict.fromkeys([os.path.join(home, "Documents", "Cline", "Hooks"),
+                               *([os.path.join(cline_documents(), "Cline", "Hooks")] if home == os.path.expanduser("~")
+                                 else []),
+                               os.path.join(os.environ.get("CLINE_DIR") or os.path.join(home, ".cline"), "hooks"),
+                               os.path.join(cwd, ".cline", "hooks"), os.path.join(cwd, ".clinerules", "hooks")]))
+
+
+def _install_cline(path, uninstall=False, v2=False, python=None):
+    """Write (or remove) Tracekit's hook file for each of CLINE_EVENTS in the directory of `path` (its PreToolUse),
+    each named after its event, executable, never over a file that isn't Tracekit's."""
+    from .deploy import files
+    from .install import SettingsError, _dev_hook_argv
+    folder, suffix = os.path.split(os.path.abspath(path))[0], os.path.splitext(path)[1]
+    if uninstall and not os.path.isdir(folder):
+        return path
+    module = V2_MODULE if v2 else "tracekit.agent_hooks"
+    old, wrote = set(), False
+    try:
+        os.makedirs(folder, exist_ok=True)
+        d = files.open_dir(folder)
+        try:
+            for ev in CLINE_EVENTS:
+                name = ev + suffix
+                raw = files.read(d, name)
+                text = raw.decode("utf-8", "replace") if raw is not None else ""
+                if raw is not None and _plugin_marker("cline")[3:] not in text:
+                    raise SettingsError(f"{os.path.join(folder, name)} is not Tracekit's hook; Tracekit did not "
+                                        "change it.")
+                old |= {_version(text)} - {None}
+                if uninstall:
+                    if raw is not None:
+                        os.unlink(name if isinstance(d, int) else os.path.join(folder, name),
+                                  **({"dir_fd": d} if isinstance(d, int) else {}))
+                    continue
+                argv = [python, "-I", "-m", module, "cline", ev] if python else \
+                    _dev_hook_argv(module, "entry", ("cline", ev))
+                hook = _cline_hook(argv, ev).encode("utf-8")
+                if raw != hook:   # Tracekit's own file: no backup, which the CLI would run as a hook too
+                    files.write(d, name, hook, 0o700)
+                    wrote = True
+        finally:
+            files.close(d)
+    except (files.UnsafePath, OSError) as e:
+        raise SettingsError(f"{folder}: {e}") from e
+    _said(path, old, uninstall, v2)
+    if wrote:
+        print("Cline's VS Code extension runs these hooks only with Hooks enabled (Cline's settings, Features); its "
+              "CLI always runs them")
+        ext = os.path.join(cline_documents(), "Cline", "Hooks")
+        user = folder == os.path.dirname(os.path.abspath(config_path("cline")))
+        if user and os.path.normcase(ext) != os.path.normcase(folder):
+            print(f"Cline's VS Code extension reads its hooks in {ext}, not {folder}, on this machine (where your "
+                  "Documents folder is): for the extension, install them in each workspace with --project")
+    return path
+
+
 def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
     """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
@@ -1275,6 +1533,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         return _install_goose(path, uninstall, v2, python)
     if harness == "crush":
         return _install_crush(path, uninstall, v2, python)
+    if harness == "cline":
+        return _install_cline(path, uninstall, v2, python)
     if harness == "droid" and uninstall and not os.path.exists(path):
         return path
     if harness == "droid" and not uninstall and not os.path.exists(path):
