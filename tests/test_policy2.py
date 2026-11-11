@@ -4897,6 +4897,15 @@ class ValueFold(unittest.TestCase):
         self.assertNotEqual(part.key("0"), part.key("1000"), "TK-A029 reads 0 and 1000 differently")
         self.assertEqual(part.key("1000"), part.key("2000"), "TK-A029 reads 1000 and 2000 the same")
 
+    def test_a_loop_the_budget_used_to_hold_is_now_read_once_per_class(self):
+        """A loop over 2,000 values read its body once per value, spent the parse budget and was held for a
+        person (TK-SHELL-PARSE); read once per class of value it is read. The budget still holds a longer loop,
+        so the fold moves the line the reading pays at rather than removing it."""
+        loop = "for f in {}; do echo $f; ls $f; cat $f; done"
+        self.assertEqual(self.verdict(loop.format(" ".join(f"a{i}" for i in range(2000)))), ("allow", []))
+        self.assertEqual(self.verdict(loop.format(" ".join(f"a{i}" for i in range(4000)))),
+                         ("ask", ["TK-SHELL-PARSE"]))
+
 
 class ReadOnce(unittest.TestCase):
     """A decision reads each part of a call once: a line whose second readings read nothing more is not parsed again
