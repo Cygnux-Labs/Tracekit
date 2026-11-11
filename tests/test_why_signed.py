@@ -327,6 +327,41 @@ class SignedRuntime(unittest.TestCase):
                                            "calls": [["ask", "APPROVED"], ["flag", "⚑ OK"]],
                                            "perm": [["flag", "RAN · FLAGGED"], ["ask", "APPROVED"]], "ran": ["flag"], "why": [("flag", None)]})
 
+    def test_an_unused_approval_expires_for_its_own_call_not_a_later_deny_or_flag(self):
+        """When an approved call did not run and the agent subsequently issued a different decision
+        under the same tool_use_id (e.g. deny or flag), the approval's expiry on run close must
+        attach to the held call, leaving the held call EXPIRED and the later call intact (BLOCKED
+        or RAN · FLAGGED)."""
+        needs_node(self)
+        deny, flag = (self.client.run(n) for n in ("deny-expiry-under-same-id", "flag-expiry-under-same-id"))
+        self.approved(deny, retry=False)
+        self.assertEqual(deny.decide("c1", "Bash", self.DENY)["decision"], "deny")
+        deny.close()
+        self.approved(flag, retry=False)
+        flag.decide("c1", "Bash", self.FLAG)
+        flag.complete("c1")
+        flag.close()
+        self.settled()
+        self.assertEqual(self.seen(deny), {
+            "decisions": {"ask": 1, "deny": 1}, "retries": 0,
+            "calls": [["ask", "EXPIRED"], ["deny", "BLOCKED"]],
+            "perm": [["deny", "BLOCKED"], ["ask", "EXPIRED"]],
+            "ran": [],
+            "why": [("deny", None)],
+        })
+        self.assertEqual(self.seen(flag), {
+            "decisions": {"ask": 1, "flag": 1}, "retries": 0,
+            "calls": [["ask", "EXPIRED"], ["flag", "⚑ OK"]],
+            "perm": [["flag", "RAN · FLAGGED"], ["ask", "EXPIRED"]],
+            "ran": ["flag"],
+            "why": [("flag", None)],
+        })
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        self.assertEqual(dict(view.review(self.records()[deny.run_id], rep, "verified")["permissions"]),
+                         {"expired": 1, "blocked": 1})
+        self.assertEqual(dict(view.review(self.records()[flag.run_id], rep, "verified")["permissions"]),
+                         {"expired": 1, "flagged": 1})
+
     def test_only_the_signers_consume_files_a_decision_with_a_held_call(self):
         """A fold guessed from the id the agent names: once a retry with another id had used c1's approval, c1 sent again
         and unapproved hid under c1, and c2 sent again read approved in the why log."""
