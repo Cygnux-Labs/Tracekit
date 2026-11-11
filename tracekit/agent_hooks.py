@@ -240,15 +240,12 @@ def _cline_commands(v):
     """The commands a run_commands input runs, each in its own shell, as Cline reads it (helpers.ts
     normalizeRunCommandsInput, definitions.ts coalesceAdjacentStringHeredocs): `commands` (a list or one), else
     `command` (with `args` a list of strings, an argv run without a shell; with no such `args`, the line as written),
-    else `cmd`; a list, or a string. Adjacent lines are joined only from a here-doc's line to its delimiter's."""
+    else `cmd`; a list, or a string. Adjacent strings are joined only from a here-doc's line to its delimiter's: an
+    object entry ends a run of them and runs in a shell of its own."""
     if isinstance(v, dict):
         v = v["commands"] if "commands" in v else [v] if "command" in v else v.get("cmd")
-    out, lines = [], []   # lines: the run of command lines since the last argv, which a here-doc may join
+    out, lines = [], []   # lines: the run of plain strings since the last object, which a here-doc may join
     for c in [*(v if isinstance(v, list) else [v]), None]:
-        argv = isinstance(c, dict) and isinstance(c.get("command"), str) and isinstance(c.get("args"), list) and \
-            all(isinstance(a, str) for a in c["args"]) and bool(c["args"])
-        if isinstance(c, dict) and isinstance(c.get("command"), str) and not argv:
-            c = c["command"]
         if isinstance(c, str) and c.strip():
             lines.append(c)
             continue
@@ -259,10 +256,14 @@ def _cline_commands(v):
                             if JS_TRIM.sub("", x) == next(filter(None, m.groups()))), 0)
             out.append("\n".join(lines[:end + 1]))
             lines = lines[end + 1:]
-        if argv:
-            out.append(shlex.join([c["command"], *c["args"]]))
-        elif c is not None:
+        if c is None:
+            continue
+        line = c.get("command") if isinstance(c, dict) else None
+        if not isinstance(line, str) or not line.strip():
             raise ValueError("a Cline run_commands entry Tracekit can't read as a command")
+        args = c.get("args")
+        argv = isinstance(args, list) and bool(args) and all(isinstance(a, str) for a in args)
+        out.append(shlex.join([line, *args]) if argv else line)   # an argv, else the line as written
     if not out:
         raise ValueError("Cline's run_commands names no command")
     return out
@@ -946,6 +947,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         code = 2
     else:
         H.AGENT_NAME = AGENT_NAMES[harness]
+        H.APPROVAL_CAP_S = CLINE_WAIT_S if harness == "cline" else None   # Cline runs a call whose hook is late
         real_stdin, real_stderr = sys.stdin, sys.stderr
         sys.stdin, sys.stderr = io.StringIO(json.dumps(q)), err
         try:

@@ -450,23 +450,19 @@ class Engine:
         """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
         ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse); `work`:
         the decision's budget (shell.charge), which _plain() spends too. `fallback`: False leaves _plain() out (None
-        in its place), for a caller that only asks whether the command reads. A `commands` list (OpenAI's shell tool,
-        Cline's run_commands) runs each in its own shell: each is read as its own command line, so an open quote, a
-        trailing \\ or a here-doc in one can't hide the next, and the readings are joined."""
-        cmds = args.get("commands")
-        if isinstance(cmds, list) and cmds and all(isinstance(c, str) for c in cmds) and \
-                [k for k in classes.SHELL_KEYS if args.get(k) is not None] == ["commands"]:
-            parts = [self._parse({"command": c}, c, work, readings, fallback) for c in cmds]
-            cause = next((c for _, c in parts if c), None)
-            if any(p is None for p, _ in parts):
-                return None, cause
-            joined = [[x for p, _ in parts for x in p[i]] for i in range(5)]
-            if all(len(p) > 5 for p, _ in parts):   # what else each learned (shell._learned), when every one parsed
-                learned = [p[5] for p, _ in parts]
-                joined.append({k: (any(d[k] for d in learned) if k in ("any_set", "more") else
-                                   set().union(*(d[k] for d in learned)) if isinstance(learned[0][k], set) else
-                                   [x for d in learned for x in d[k]]) for k in learned[0]})
-            return tuple(joined), cause
+        in its place), for a caller that only asks whether the command reads. A `commands` list is read joined, as one
+        shell runs it (LangChain's ShellTool), and each entry on its own too, as its own shell runs it (OpenAI's shell
+        tool, Cline's run_commands), where an open quote, a trailing \\ or a here-doc in one can't hide the next: the
+        call is decided on what either reading finds."""
+        parts = [self._parse_one(args, command, work, readings, fallback)]
+        for c in commands_each(args):
+            parts.append(self._parse_one({"command": c}, c, work, readings, fallback))
+        return parts[0] if len(parts) == 1 else (None if any(p is None for p, _ in parts) else
+                                                 joined_readings([p for p, _ in parts]),
+                                                 next((c for _, c in parts if c), None))
+
+    def _parse_one(self, args, command, work, readings=True, fallback=True):
+        """_parse's reading of one shell call as written."""
         target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
             if self._persistent_targets else None
         start = work[0]
@@ -674,6 +670,26 @@ def _path_forms(targets):
                          if n not in have]
     have = set(targets)
     return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
+
+
+def commands_each(args):
+    """The entries of a shell call's `commands` list of command lines, when it has several and no other command field:
+    each is also read on its own (Engine._parse, constraints.shell), else []."""
+    cmds = args.get("commands")
+    return cmds if isinstance(cmds, list) and len(cmds) > 1 and all(isinstance(c, str) for c in cmds) and \
+        [k for k in classes.SHELL_KEYS if args.get(k) is not None] == ["commands"] else []
+
+
+def joined_readings(parts):
+    """Several readings of one shell call (_shell's or _plain's tuples) as one: their lists joined, and what else they
+    learned (shell._learned) when every one has it."""
+    out = [[x for p in parts for x in p[i]] for i in range(5)]
+    if all(len(p) > 5 for p in parts):
+        learned = [p[5] for p in parts]
+        out.append({k: (any(d[k] for d in learned) if isinstance(learned[0][k], bool) else
+                        set().union(*(d[k] for d in learned)) if isinstance(learned[0][k], set) else
+                        [x for d in learned for x in d[k]]) for k in learned[0]})
+    return tuple(out)
 
 
 def _shell(args, persistent_target=None, readings=True, work=None):
