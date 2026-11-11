@@ -653,9 +653,11 @@ def normalise(harness, p):
         # (tool_call, tool_result) beside the extension's shape (preToolUse, postToolUse: toolName and the parameters,
         # its non-string values JSON-encoded, and no id): the extension's calls are paired by (tool, arguments)
         # The run is the CLI's session, the id `cline --id` resumes (sessionContext.rootSessionId; its taskId is the
-        # conversation's), else the extension's task, which keeps its taskId when resumed
+        # conversation's), else the extension's task, which keeps its taskId when resumed. A subagent's calls are in
+        # its root session's run, which only the root agent's task starts and ends (parent_agent_id null)
         ctx = p.get("sessionContext") if isinstance(p.get("sessionContext"), dict) else {}
-        out.update(session_id=ctx.get("rootSessionId") or p.get("taskId"), cwd=(p.get("workspaceRoots") or [None])[0], hook_event_name=ev)
+        out.update(session_id=ctx.get("rootSessionId") or p.get("taskId"), cwd=(p.get("workspaceRoots") or [None])[0],
+                   hook_event_name=ev)
         if ev in ("PreToolUse", "PostToolUse"):
             call = p.get("tool_call" if ev == "PreToolUse" else "tool_result")
             ext = p.get("preToolUse" if ev == "PreToolUse" else "postToolUse")
@@ -680,6 +682,8 @@ def normalise(harness, p):
             if not isinstance(prompt, str) or prompt.startswith("[SYSTEM] "):
                 return None
             return dict(out, prompt=prompt)
+        if p.get("parent_agent_id"):
+            return None
         if ev == "TaskStart":
             return dict(out, hook_event_name="SessionStart")
         if ev == "TaskComplete":

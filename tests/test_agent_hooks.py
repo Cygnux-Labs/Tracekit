@@ -1195,6 +1195,11 @@ class ClineTools(unittest.TestCase):
                          "task complete")
         # a cancelled task is resumed once its held call is approved, in the same run: a cancel doesn't close it
         self.assertIsNone(agent_hooks.normalise("cline", {"taskId": "t-1", "hook_event_name": "TaskCancel"}))
+        # a subagent's task neither starts nor ends its root session's run
+        for ev in ("TaskStart", "TaskComplete"):
+            self.assertIsNone(agent_hooks.normalise("cline", {"taskId": "t-2", "hook_event_name": ev,
+                                                              "sessionContext": {"rootSessionId": "1794_ab"},
+                                                              "parent_agent_id": "agent_1"}))
 
 
 class GeminiQwenTargets(unittest.TestCase):
