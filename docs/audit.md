@@ -39,8 +39,8 @@ denied and held calls (--all for every call):
   exits 2 with the reason.
 - `--agent NAME`, with `--calls`: each call is decided as that agent's Tracekit hook would decide it (`codex`,
   `cursor`, `gemini`, `opencode`, ...): a call the hook denies before it maps it (Kilo's `notebook_execute`, goose's
-  Code Mode, Crush's `agent` and `agentic_fetch`, a Devin call missing the argument it is decided on) is a deny, with
-  no rule; the others are mapped as the hook maps them, so `run_shell_command` or `Shell` is decided as `Bash`. A line
+  Code Mode, Crush's `agent` and `agentic_fetch`, a Devin call missing the argument it is decided on) is a deny by
+  `TK-HOOK-BLOCKED`; the others are mapped as the hook maps them, so `run_shell_command` or `Shell` is decided as `Bash`. A line
   the mapping can't take (nested too deep) counts as malformed. Without `--agent`, names are taken as Tracekit's
   (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`, `mcp__<server>__<tool>`). With ROOT, it names the reader that reads
   ROOT; with neither ROOT nor `--calls`, it exits 2.

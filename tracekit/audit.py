@@ -229,7 +229,8 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                     continue
             try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its bare name,
                 # PowerShell also as a shell line
-                decision = {"verdict": "deny", "rule_ids": []} if blocked else evaluate(engine, tool, args)[0]
+                decision = {"verdict": "deny", "rule_ids": ["TK-HOOK-BLOCKED"]} if blocked else \
+                    evaluate(engine, tool, args)[0]
             except RecursionError:   # nesting the signer refuses (it denies an engine error itself)
                 decision = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"]}
             verdict = decision.get("verdict", "allow")

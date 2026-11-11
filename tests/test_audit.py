@@ -409,8 +409,13 @@ class TestAudit(unittest.TestCase):
         """#730 review: Kilo's notebook_execute, Crush's sub-agents and a Devin call missing its argument are denied in
         the hook before mapping."""
         _write_jsonl(self.root / "calls.jsonl", [_line("notebook_execute", {"cell": "print(1)"})])
-        call = audit.audit(calls=str(self.root / "calls.jsonl"), agent="kilo")["calls"][0]
-        self.assertEqual((call["verdict"], call["rule_ids"]), ("deny", []))
+        report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="kilo")
+        self.assertEqual((report["calls"][0]["verdict"], report["calls"][0]["rule_ids"]),
+                         ("deny", ["TK-HOOK-BLOCKED"]))
+        self.assertEqual(report["by_rule"], {"TK-HOOK-BLOCKED": 1})   # the per-rule counts agree with the total
+        self.assertIn("TK-HOOK-BLOCKED: 1  (the agent's Tracekit hook denies", audit.format_report(report))
+        # Tracekit's own id, not a custom rule; like an engine check, it has no section of the policy
+        self.assertIn("  deny TK-HOOK-BLOCKED 1 (not placed)", audit.share(report).splitlines())
         _write_jsonl(self.root / "calls.jsonl", [_line("agent", {"prompt": "tidy up"})])
         self.assertEqual(audit.audit(calls=str(self.root / "calls.jsonl"), agent="crush")["counts"]["deny"], 1)
         _write_jsonl(self.root / "calls.jsonl", [_line("read", {"path_name": "notes.txt"})])   # no file_path
