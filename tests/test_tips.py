@@ -587,7 +587,8 @@ class Command(unittest.TestCase):
         in the folder setUp wrote: before growing()'s session and the store's records."""
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(svc, "dev_data_dir", return_value=self.cfg["data_dir"]), \
-                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc}), \
+                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc,
+                                             "CODEX_HOME": os.path.join(self.cc, "no-codex")}), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(["tips", "--since", "2026-10-01", *args])
         return code, out.getvalue(), err.getvalue()
@@ -829,6 +830,21 @@ class Codex(unittest.TestCase):
         agents, _files, _bad = tips.read_codex_sessions(self.week(), 0)
         s = next(iter(agents.values()))["steps"][1]   # 63_000 cached + 3_000 written, no input of its own
         self.assertEqual((s["in"], s["cr"], s["w"]), (0, 63_000, 3_000))
+        # the same step's dollars, exactly: gpt-6-astra's 63_000 cache reads at 1 and 3_000 writes at 12.5 per million
+        self.assertEqual(tips._input_usd(s, tips._RATES.rate(s["model"])), (63_000 * 1 + 3_000 * 12.5) / 1e6)
+
+    def test_the_codex_root_honors_the_env_and_falls_back_to_dot_codex_under_home(self):
+        from tracekit import audit
+        home = tmp(self)
+        os.makedirs(os.path.join(home, ".codex", "sessions"))
+        with mock.patch.dict(os.environ, {"HOME": home}, clear=False):
+            os.environ.pop("CODEX_HOME", None)
+            self.assertEqual(audit.codex_root(), os.path.join(home, ".codex", "sessions"))
+        os.environ["CODEX_HOME"] = os.path.join(home, "elsewhere")
+        try:
+            self.assertEqual(audit.codex_root(), os.path.join(home, "elsewhere", "sessions"))
+        finally:
+            del os.environ["CODEX_HOME"]
 
     def test_the_cache_tip_is_left_off_for_codex_whose_records_name_no_cache_lifetime(self):
         t = tips.build([], codex=self.week(), now=NOW)["tips"][1]

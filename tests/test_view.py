@@ -1685,6 +1685,7 @@ class View(unittest.TestCase):
             with self.subTest(line=line), mock.patch.object(view, "server") as server, \
                     mock.patch.object(view, "dev_data_dir", return_value=self.d), \
                     mock.patch("tracekit.audit.default_root", return_value=folder), \
+                    mock.patch("tracekit.audit.codex_root", return_value=os.path.join(self.d, "no-codex")), \
                     mock.patch.object(view.StoreFeed, "_watch", lambda feed: None), \
                     mock.patch.object(view.StoreFeed, "_mirrors", lambda feed: None), \
                     mock.patch.object(view.Store, "watch"), mock.patch.object(view.signal, "signal"), \
