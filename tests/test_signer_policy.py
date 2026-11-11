@@ -4894,6 +4894,31 @@ class GuardrailsAndPushes(unittest.TestCase):
             "gh api /graphql -f query='query{viewer{login}}'", "gh api -X PATCH /user -f bio=x",
             "gh api -X POST markdown -f text=x")], "allow")
 
+    def test_a_repos_segment_is_a_repository_only_where_one_follows(self):
+        """Ninth review of #605: the route reading started from the first `repos` segment wherever it was, so creating a
+        repository (`user/repos`, `orgs/o/repos`) read as the one-segment endpoint `repos`, which the eighth review's
+        rule held. It starts there only at the path's start or where an owner and repo follow, and the one-segment rule
+        reads the whole path."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api user/repos -f name=x", "gh api -X POST user/repos -f name=x -F private=true",
+            "gh api --method POST /user/repos -f name=x", "gh api -X POST orgs/o/repos -f name=x",
+            "gh api -X POST users/repos -f name=x")], "allow")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api -X POST % -f x=y", "echo repos/o/r/merges | xargs -J % gh api % -f base=main -f head=feature",
+            "gh api -X PUT users/repos/o/r/contents/a.txt -f message=m -f content=Yg==",
+            "gh api -X PUT //api.github.com/repos/o/r/contents/a.txt -f message=m -f content=Yg==")], "ask", "TK-A056")
+
+    def test_a_repository_a_runner_gives_gh_repo_sync_is_unknown(self):
+        """Ninth review of #605: under xargs, gxargs, parallel or find -exec, `gh repo sync` with no repository argument
+        may be given one by the runner, so it isn't read as a local pull; and --branch refs/heads/main or HEAD names the
+        default branch, as a contents write's branch field does."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "echo o/r | xargs gh repo sync", "echo o/r | gxargs gh repo sync --branch main",
+            "parallel gh repo sync ::: o/r", "gh repo sync o/r --branch refs/heads/main", "gh repo sync o/r -b HEAD")],
+                      "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh repo sync", "gh repo sync --branch main", "echo o/r | xargs gh repo sync --branch feature")], "allow")
+
     def test_a_branch_field_is_compared_in_any_case(self):
         """Eighth review of #605: a branch field was compared with main and master in their case only, so `Main` behind
         an expansion read as another branch (whether GitHub's contents API folds case is unverified)."""

@@ -976,18 +976,20 @@ def _gh_routes(endpoint, replaced=None, strict=True):
         return [], False, False
     path = _gh_mask(endpoint, replaced)
     segs = re.split(r"[?#]", path[_GH_HOST.match(path).end():], maxsplit=1)[0].strip("/").split("/")
-    # from its repos/ or repositories/ segment where it has one, past a host without a scheme (//api.github.com/…) or
-    # GHES's api/v3/; an expansion before it may be any path
-    k = next((k for k, s in enumerate(segs) if s.lower() in ("repos", "repositories")), 0)
+    if segs[:1] == ["api"]:   # GHES serves the API at /api/v3/
+        segs = segs[2:] if segs[1:2] == ["v3"] else segs[1:]
+    if strict and len(segs) == 1 and segs[0].lower() not in _GH_ONE_WORD:   # (xargs -J %, parallel -I ,,: the input)
+        return [], True, True
+    # from a later repos/ or repositories/ segment that an owner and a repo (an id) follow, past a host without a
+    # scheme (//api.github.com/…) or another prefix; an expansion before it may be any path. Elsewhere (user/repos,
+    # orgs/o/repos: creating a repository) it is a route of the path's own
+    k = next((k for k, s in enumerate(segs) if s.lower() == "repos" and len(segs) > k + 2 or
+              s.lower() == "repositories" and len(segs) > k + 1), 0)
     if any(s in (".", "..") for s in segs) or any("\0" in s for s in segs[:k]):
         return [], True, True
     segs = segs[k:]
-    if segs[:1] == ["api"]:   # GHES serves the API at /api/v3/
-        segs = segs[2:] if segs[1:2] == ["v3"] else segs[1:]
     first = segs[0].lower() if segs else ""
     at = 3 if first == "repos" else 2 if first == "repositories" else 0
-    if strict and len(segs) == 1 and first not in _GH_ONE_WORD:   # (xargs -J %, parallel -I ,,: the input)
-        return [], True, True
     # an empty segment (a doubled `/`, or an expansion read as empty), or one GitHub can't route, is as unplaced as an
     # expansion
     opened = next((j for j, s in enumerate(segs[:at + 1])
@@ -1169,16 +1171,18 @@ def _pushes(commands):
         push = _git_push(argv)
         out += push if push is not None else ["DRYRUN:" * _kubectl_dry_run(argv) + " ".join(argv)]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
-            given = replaced if {"xargs", "gxargs"} & set(command["via"]) else None
+            given = replaced if {"xargs", "gxargs"} & set(command.get("via", ())) else None
             out += [s for s in _gh_api(argv, given) if s not in out]
-        out += [s for s in _gh_repo_sync(argv) if s not in out]
+        runner = {v.split(" ", 1)[0] for v in command.get("via", ())} & {"xargs", "gxargs", "parallel", "find"}
+        out += [s for s in _gh_repo_sync(argv, bool(runner)) if s not in out]
     return out
 
 
-def _gh_repo_sync(argv):
+def _gh_repo_sync(argv, runner=False):
     """`PUSH:repo-sync <branch>` for `gh repo sync <owner/repo>`, which merges the fork's branch from its upstream: the
-    default branch unless --branch names another, held for main or master (any case) or a branch the line can't tell.
-    With no repository it updates the local one from its remote, a pull: none."""
+    default branch unless --branch names another, held for main, master or HEAD (any case, refs/heads/ too) or a branch
+    the line can't tell. With no repository it updates the local one from its remote, a pull: none, unless a `runner`
+    (xargs, parallel, find -exec) may give it one."""
     if _program(argv) != "gh" or argv[1:3] != ["repo", "sync"]:
         return []
     repo, branch, i = None, "", 3
@@ -1195,8 +1199,9 @@ def _gh_repo_sync(argv):
             continue
         if w.lstrip("-")[:1] == "b":
             branch = value
-    named = branch and "$" not in branch and "`" not in branch and branch.casefold() not in ("main", "master")
-    return [] if repo is None or named else ["PUSH:repo-sync " + (branch or "default")[:64]]
+    branch = branch.removeprefix("refs/").removeprefix("heads/")
+    named = branch and "$" not in branch and "`" not in branch and branch.casefold() not in ("main", "master", "head")
+    return [] if repo is None and not runner or named else ["PUSH:repo-sync " + (branch or "default")[:64]]
 
 
 def _kubectl_dry_run(argv):
