@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-79'
+version: '2026.11-v2-80'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -558,11 +558,11 @@ ask:
     remedy: Have a person approve the held call, or flush only the keys the change needs.
     rationale: FLUSHALL and FLUSHDB piped or fed into redis-cli empty the whole cache or database; a person confirms it.
   - id: TK-A041
-    class: mcp
     tool: .*([^a-zA-Z]|^)(sql|postgres|postgresql|mysql|maria|sqlite|clickhouse|mongo|database|duckdb|snowflake|bigquery|redshift|psql|pg|oracle|mssql|sqlserver|db)([^a-zA-Z]|$).*
     # a destructive SQL statement in an MCP tool's sql, query or statement argument, but only for SQL-like tools
-    # (the tool name carries sql, postgres, mysql, sqlite, database, db as a whole word, and kin; the mapped ones,
-    # mcp:postgres/query and kin, are TK-DB001..003's already, and a search tool's query text is not a call). The
+    # (the tool name carries sql, postgres, mysql, sqlite, database, db as a whole word, and kin; a search tool's query
+    # text is not a call), in any class: also where a pack maps the tool to class sql (the server parts map
+    # mcp:postgres/query and kin, which TK-DB001..003 read too, so the dev pack keeps this reading of them). The
     # statement is read as TK-A039 reads a client's: up to eight statements may come first, where a statement ends
     # at `;` only (an escape counts as one character, so a quoted or escaped keyword cannot hide the
     # destructive one), and a comment may come before the keyword; a comment ends with its argument's text (another

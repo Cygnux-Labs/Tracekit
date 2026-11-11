@@ -208,11 +208,18 @@ _SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b*]+")   # characters no dialect starts 
 _LINE_END = {False: re.compile("\n"), True: re.compile("[\r\n]")}
 
 
-def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space, cr):
+def sql_code(stmt, *dialect):
     """`stmt` with every comment a space, every literal or quoted identifier '' or "" and a vertical tab (whitespace to
     each dialect, not to a pattern's \\s) a space, as one dialect lexes it: what a keyword rule should see. None when a
-    literal or comment is not closed (the database rejects it). Each search starts where the last one ended, so a
-    statement is read in time linear in its length."""
+    literal or comment is not closed (the database rejects it)."""
+    code, closed = sql_read(stmt, *dialect)
+    return code if closed else None
+
+
+def sql_read(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space, cr):
+    """(what sql_code reads of `stmt`, whether every literal and comment closed): where one doesn't, the code read
+    before it (a database may run the statements a `;` ends there, then fail). Each search starts where the last one
+    ended, so a statement is read in time linear in its length."""
     out, i, n, runs = [], 0, len(stmt), 0   # runs: MySQL /*! ... */ open, whose */ closes it as a blank
     while i < n:
         c, two = stmt[i], stmt[i:i + 2]
@@ -233,7 +240,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
                 if close < j:   # the */ found last is still the next one until it is read
                     close = stmt.find("*/", j)
                     if close < 0:
-                        return None
+                        return "".join(out), False
                 opened = stmt.find("/*", j, close) if nest else -1
                 depth, j = (depth + 1, opened + 2) if opened >= 0 else (depth - 1, close + 2)
             out.append(" ")
@@ -245,7 +252,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
             j = i + 1
             while True:
                 if j >= n:
-                    return None
+                    return "".join(out), False
                 if escapes and stmt[j] == "\\":
                     j += 2
                 elif stmt[j] != close:
@@ -260,7 +267,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
             tag = _DOLLAR.match(stmt, i).group(0)
             end = stmt.find(tag, i + len(tag))
             if end < 0:
-                return None
+                return "".join(out), False
             out.append("''")
             i = end + len(tag)
         elif m := _SQL_TEXT.match(stmt, i):   # a run of text, read in one step
@@ -269,7 +276,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
         else:
             out.append(" " if c == "\x0b" else c)
             i += 1
-    return "".join(out)
+    return "".join(out), True
 
 
 A2A_PARTS = ("text", "file", "data")

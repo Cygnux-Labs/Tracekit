@@ -98,8 +98,10 @@ class Packs(unittest.TestCase):
                 d = e.decide(tool, args)
                 self.assertIn(d["verdict"], ("ask", "deny"), d)
                 self.assertIn(rule, d["rule_ids"], d)
+                # what the laptop default did before; a SQL tool's destructive statement is TK-A041's ask on the
+                # coding pack now too, in any class
                 self.assertIn(Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide(tool, args)["verdict"],
-                              ("allow", "flag"))   # what the laptop default did before
+                              ("ask",) if tool == "run_sql" else ("allow", "flag"))
         self.assertEqual(e.decide("SomeUnmappedTool", {"x": 1})["verdict"], "flag")
 
     def test_a_harness_message_is_read_for_secrets_and_addresses_not_file_names(self):
@@ -3806,7 +3808,7 @@ class PackReading(unittest.TestCase):
             "SELECT 1 /* don't drop anything */", "SELECT name FROM t WHERE note = 'it''s' -- drop this later",
             "CREATE FUNCTION f() RETURNS trigger AS $$ BEGIN NEW.at = now(); RETURN NEW; END; $$ LANGUAGE plpgsql")], "allow")
         d = self.server.decide("run_sql", {"sql": "SELECT 'unclosed; DROP TABLE users"})
-        self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SQL-PARSE"]))
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SQL-PARSE", "TK-A041"]))   # (A041: the raw text)
 
     def test_constant_conditions_server_files_untrusted_languages_and_sql_servers_roles(self):
         """The 1.5.3 sweep: a DELETE whose WHERE was constant in another form, MySQL's DELETE t FROM t, COPY of a
@@ -4672,6 +4674,74 @@ class GuardrailsAndPushes(unittest.TestCase):
                     with self.subTest(pack=pack, tool=tool, sql=s):
                         self.assertIn(rule, svc.evaluate(e, tool, {key: s})[0]["rule_ids"])
         self.verdicts([("warehouse_query", {"query": s}) for s, _ in cases], "ask", "TK-A062")
+
+    def test_tk_a041_keeps_reading_the_mcp_sql_tools_the_dev_pack_maps(self):
+        """Fourth review of #605: TK-A041 keeps reading the MCP SQL tools the dev pack maps to class sql (it read only
+        class mcp, and the dev pack's server parts map these five to class sql)."""
+        for tool, key in (("mcp:postgres/query", "sql"), ("mcp:supabase/execute_sql", "query"),
+                          ("mcp:mysql/execute_sql", "sql"), ("mcp:sqlite/read_query", "query"),
+                          ("mcp:sqlite/write_query", "query")):
+            for e in self.engines:
+                for s in ("DROP TABLE users", "DELETE FROM users"):
+                    with self.subTest(engine=e.engine, tool=tool, sql=s):
+                        self.assertIn("TK-A041", svc.evaluate(e, tool, {key: s})[0]["rule_ids"])
+
+    def test_the_statements_a_semicolon_ends_before_an_unclosed_tail_are_read(self):
+        """Fourth review of #605: TK-A062 read no statement from text that a literal or comment leaves open, but SQLite
+        runs each statement a `;` ends before it, then fails on the rest."""
+        self.verdicts([("warehouse_query", {"query": q}) for q in (
+            "DROP TABLE users; SELECT '", 'DROP TABLE users; SELECT "x', "DROP TABLE users; /*",
+            "SELECT 1; DROP TABLE users; SELECT 'x")], "ask", "TK-A062")
+        self.verdicts([("warehouse_query", {"query": q}) for q in ("SELECT 'open", "DROP TABLE users /*")], "flag",
+                      "TK-UNKNOWN-TOOL")
+
+    def test_gh_api_gives_each_option_its_own_value(self):
+        """Fourth review of #605: _gh_api read every word as an option of its own, so a word another option takes as its
+        value (`-f --method=GET`, `-H -XGET:1`) set the method, and a template's, a query's or a preview's
+        (`-t branch=feature`) the branch; a method or endpoint the line can't tell wasn't held; and GitHub's
+        /repositories/<id>/ paths weren't read."""
+        c = "gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=Yg=="
+        self.verdicts([("Bash", {"command": x}) for x in (
+            f"{c} -f --method=GET", f"{c} -F --method=GET", f"{c} -f -X=GET", f"{c} -H -XGET:1", f"{c} -H --method=GET:1",
+            f"{c} -t branch=feature", f"{c} --template branch=feature", f"{c} -q branch=feature",
+            f"{c} --jq branch=feature", f"{c} -f --field=branch=feature", f"{c} -f -fbranch=feature",
+            f"{c} --cache 1h -p branch=feature", f"{c} --hostname github.com -t branch=feature", f"{c} -f branch=HEAD",
+            "gh api -X PUT repositories/123/contents/a.txt -f message=m",
+            "gh api -X PUT /repositories/123/contents/a.txt -f message=m",
+            "gh api -X POST repositories/123/merges -f base=main -f head=f", 'gh api -X PUT "$EP" -f message=m',
+            'gh api -X "$M" repos/o/r/contents/a.txt -f message=m', 'gh api -X PATCH "$EP" -f sha=x',
+            'gh api -X PUT "repos/o/r/$P" -f message=m', 'gh api -X PUT "https://api.github.com/$P" -f message=m')],
+                      "ask", "TK-A056")
+        # an expansion after the route is fixed (a loop over run or pull request ids) can't make a write to a branch
+        self.verdicts([("Bash", {"command": x}) for x in (
+            f"{c} -f branch=feature", f"{c} -H 'Accept: x' -f branch=feature",
+            "gh api -XPUT repos/o/r/contents/a.txt -fbranch=feature -fmessage=m", "gh api repositories/123/contents/a.txt",
+            "gh api -iXPUT repos/o/r/contents/a.txt -f branch=feature", 'gh api "$EP"',
+            "for id in 1 2; do gh api -X POST repos/o/r/actions/runs/$id/approve; done",
+            'gh api -X PUT "repos/o/r/pulls/$N/update-branch"')], "allow")
+
+    def test_a_push_mapping_from_gits_config_environment_is_read_as_its_dash_c(self):
+        """Fourth review of #605: a remote's push mapping given through git's config environment (GIT_CONFIG_COUNT,
+        GIT_CONFIG_KEY_<n>, GIT_CONFIG_VALUE_<n>) sends a named branch's push to main, as `-c` does; it was flagged."""
+        pair = "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.push GIT_CONFIG_VALUE_0=refs/heads/feature:refs/heads/main"
+        self.verdicts([("Bash", {"command": x}) for x in (
+            f"{pair} git push origin feature", f"env {pair} git push origin feature",
+            f"export {pair}; git push origin feature")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=x "
+                                            "git push origin feature"})], "flag")
+
+    def test_kubectls_boolean_flags_and_attached_values_take_no_word(self):
+        """Fourth review of #605: the third review's reading took every option without `=` before `--dry-run` as one
+        that takes the next word, so a boolean flag (`--server-side`, `--now`, `--validate`, `--force`) or a short
+        option with its value attached (`-nprod`) held a dry run. A short option that ends its word still takes the
+        next one (`-Rf --dry-run`: the file name), and so does a long option kubectl doesn't list as a boolean."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "kubectl apply -f x.yaml --server-side --dry-run=server", "kubectl delete pod x --now --dry-run=client",
+            "kubectl apply -f x.yaml --validate --dry-run=client", "kubectl delete pod x -nprod --dry-run=client",
+            "kubectl apply -f x.yaml --force --dry-run=client", "kubectl apply -Rf dir --dry-run=client")], "flag")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "kubectl apply -Rf --dry-run", "kubectl delete pod x --grace-period --dry-run",
+            "kubectl delete pod x -n --dry-run", "kubectl delete pod x --force --cache-dir --dry-run")], "ask", "TK-A056")
 
     def test_more_ways_to_push_to_main_and_to_publish(self):
         """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a

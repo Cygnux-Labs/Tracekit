@@ -3751,6 +3751,9 @@ class _Parser:
                             head = [a for k, a in enumerate(cargs[:csub]) if k not in (j - 1, j) and k >= len(env)]
                             cmds += self.emit(["git", *head, cargs[csub], force, *cargs[csub + 1:]], pid,
                                               via + ["git config"])
+                    elif key == "push" and given and j < len(env) and csub is not None and cargs[csub] == "push":
+                        # a push mapping the environment gives picks the push's target, as its -c pair does
+                        cmds += self.emit(["git", cargs[j - 1], cargs[j], *args], pid, via + ["git config"])
                 # a URL of git's ext:: transport runs its command (git's % escapes decoded), read as those words; where
                 # a config or the environment allows the transport, a word the line builds may be one: held
                 allows = any(re.fullmatch(r"(?is)protocol\.(?:ext\.)?allow=(?:always|user)", a) for a in cargs) or any(

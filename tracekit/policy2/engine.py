@@ -916,12 +916,18 @@ _PUSH_LONG = {"all": "all", "branches": "all", "mirror": "all", "delete": "", "p
               "ipv4": "", "ipv6": ""}
 _PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6": ""}   # and -o VALUE
 _REMOTE_PUSH = re.compile(r"remote\..+\.(?:push|mirror)")   # a config key, casefolded (its remote name keeps case)
-# gh api's method (-X PUT, -XPUT, -X=PUT, --method PUT, --method=PUT), a branch field (-f branch=x, --field=branch=x)
-# and the contents API's path, in a path or a URL (https://api.github.com/repos/…, GHES's /api/v3/repos/…).
-# lean: a method in a short-option cluster (-iXPUT) isn't read; read it if one is in use
-_GH_METHOD = re.compile(r"(?:-X=?|--method=?|--request=?)(.*)", re.S)
-_GH_BRANCH = re.compile(r"(?:-[fF]|--(?:raw-)?field=)?branch=(.*)", re.S)
-_GH_CONTENTS = re.compile(r"(?:^|/)repos/+[^/]+/+[^/]+/+contents/", re.I)
+# gh api's options that take a value (gh api --help), each with what it gives here; hub api reads -t as --flat, which
+# takes none. The contents API's path, in a path or a URL (https://api.github.com/repos/…, GHES's /api/v3/repos/…,
+# GitHub's repositories/<id>/ form)
+_GH_VALUED = {"-X": "method", "--method": "method", "-f": "field", "-F": "field", "--field": "field",
+              "--raw-field": "field", "--input": "input", "-H": "", "--header": "", "-t": "", "--template": "",
+              "-q": "", "--jq": "", "-p": "", "--preview": "", "--hostname": "", "--cache": ""}
+_GH_CONTENTS = re.compile(r"(?:^|/)(?:repos/+[^/]+/+[^/]+|repositories/+[^/]+)/+contents/", re.I)
+# an endpoint's start that fixes its route (repos/<o>/<r>/actions/, user/), after a URL's scheme and host and GHES's
+# api/v3/: an expansion after it can't make the call a contents, ref or merge write
+_GH_ROUTE = re.compile(r"(?:[a-z][a-z0-9+.-]*://[^/]*(?=/|$))?/*(?:api/v3/+)?"
+                       r"(?:(?:repos/+[^/]+/+[^/]+|repositories/+[^/]+)/+[^/]+/"
+                       r"|(?!(?:repos|repositories|api)/)[^/:]+/)", re.I)
 
 
 def _git_push(argv):
@@ -1011,23 +1017,50 @@ def _git_push(argv):
 def _gh_api(argv):
     """A gh or hub api call's argv percent-decoded, as GitHub reads its path (`git/refs/heads%2Fmain`), and
     `PUSH:contents` when it puts or deletes a repository's file (repos/<o>/<r>/contents/…), which commits to the
-    default branch unless a branch field names another. A branch the line can't tell is held too: one gh reads from a
-    file (`-F branch=@b.txt`), and any with --input, whose body then names the branch (the fields go to the query)."""
+    default branch unless a branch field names another. A branch the line can't tell is held too: HEAD, one gh reads
+    from a file (`-F branch=@b.txt`) or an expansion gives, and any with --input, whose body then names the branch
+    (the fields go to the query). The words are read as gh reads them: an option that takes a value takes the rest
+    of its word or the next word (`-f --method=GET` is a field), the method only from -X or --method (the last; POST
+    with a field or --input, else GET) and the branch only from a field; a method that is an expansion the line can't
+    resolve counts as a write. `PUSH:unknown` for a write whose endpoint has one before its route (`"$EP"`,
+    `repos/o/r/$P`)."""
     words = [unquote(w) for w in argv]
-    method, branch, body = "", "", False
-    for i, w in enumerate(words[2:], 2):
-        m = _GH_METHOD.fullmatch(w)
-        if m:
-            method = m[1] or (words[i + 1] if i + 1 < len(words) else "")
-        m = _GH_BRANCH.fullmatch(w)
-        if m:
-            branch = m[1]
-        body = body or w == "--input" or w.startswith("--input=")
-    out = [" ".join(words)]
+    valued = _GH_VALUED.keys() - ({"-t"} if _program(argv) == "hub" else set())
+    given, positional, i = [], [], 2
+    while i < len(words):
+        w, i = words[i], i + 1
+        if w == "--":
+            positional += words[i:]
+            break
+        if w.startswith("--"):
+            name, eq, value = w.partition("=")
+        elif w.startswith("-") and len(w) > 1:   # a cluster (-iXPUT): its first valued letter takes the rest
+            k = next((k for k in range(1, len(w)) if "-" + w[k] in valued), len(w))
+            name, eq, value = "-" + w[k:k + 1], w[k + 1:k + 2] == "=", w[k + 1:].removeprefix("=")
+        else:
+            positional.append(w)
+            continue
+        if name not in valued:
+            continue   # a flag (--paginate, -i) or an option gh refuses
+        if not eq and not value:
+            value, i = (words[i] if i < len(words) else ""), i + 1
+        given.append((_GH_VALUED[name], value))
+    kinds = {kind for kind, _ in given}
+    fields = [v.partition("=") for kind, v in given if kind == "field"]
+    method = next((v for kind, v in reversed(given) if kind == "method"),
+                  "POST" if kinds & {"field", "input"} else "GET")
+    branch = next((v for key, _, v in reversed(fields) if key == "branch"), "")
     branch = branch.removeprefix("refs/").removeprefix("heads/")
-    if method.upper() in ("PUT", "DELETE") and (body or branch[:1] in ("", "@") or branch in ("main", "master")) and \
-            any(_GH_CONTENTS.search(w) for w in words[2:]):
-        out.append("PUSH:contents " + method)
+    endpoint = positional[0] if positional else ""
+    cut = min((endpoint.find(c) for c in "$`" if c in endpoint), default=-1)   # the first expansion
+    unread_method = not method or "$" in method or "`" in method
+    out = [" ".join(words)]
+    if cut >= 0 and not _GH_ROUTE.match(endpoint[:cut]) and (unread_method or method.upper() not in ("GET", "HEAD")):
+        out.append("PUSH:unknown " + endpoint[:64])
+    elif (unread_method or method.upper() in ("PUT", "DELETE")) and any(_GH_CONTENTS.search(w) for w in positional) \
+            and ("input" in kinds or branch[:1] in ("", "@") or "$" in branch or "`" in branch or
+                 branch in ("main", "master", "HEAD")):
+        out.append("PUSH:contents " + method[:64])
     return out
 
 
@@ -1049,8 +1082,8 @@ def _kubectl_dry_run(argv):
     """Whether a kubectl command is a dry run as kubectl reads its words: its last --dry-run (bare, =client or =server;
     not =none or =false) comes before a bare `--`, after which kubectl reads every word as a name; no word before that
     is --raw (a request sent as given) or holds an expansion the line can't resolve (`"$D"` may be `--` or a later
-    --dry-run=none), and no --dry-run word comes right after an option written without `=`, which kubectl may give
-    that word as its value (`--field-manager --dry-run`)."""
+    --dry-run=none), and no --dry-run word comes right after an option that may take it as its value (_kubectl_takes:
+    `--field-manager --dry-run`)."""
     if _program(argv) != "kubectl":
         return False
     last = None
@@ -1060,10 +1093,32 @@ def _kubectl_dry_run(argv):
         if word.startswith("--raw") or "$" in word or "`" in word:
             return False
         if word == "--dry-run" or word.startswith("--dry-run="):
-            if prev[:1] == "-" and prev != "-" and "=" not in prev:
+            if _kubectl_takes(prev):
                 return False
             last = word
     return last in ("--dry-run", "--dry-run=client", "--dry-run=server")
+
+
+# kubectl's options that take no word after them: its boolean flags, and those with a value they take only after `=`
+# (--dry-run, --validate, --cascade); any other option may take the next word as its value
+_KUBECTL_FLAGS = {"all", "all-namespaces", "allow-missing-template-keys", "cascade", "delete-emptydir-data",
+                  "disable-compression", "disable-eviction", "dry-run", "force", "force-conflicts", "help",
+                  "ignore-daemonsets", "ignore-not-found", "insecure-skip-tls-verify", "interactive", "local",
+                  "match-server-version", "no-headers", "now", "output-watch-events", "overwrite", "prune", "quiet",
+                  "record", "recursive", "save-config", "server-print", "server-side", "show-kind", "show-labels",
+                  "show-managed-fields", "stdin", "tty", "validate", "wait", "warnings-as-errors", "watch",
+                  "watch-only", "windows-line-endings"}
+_KUBECTL_SHORT_FLAGS = set("ARhiqtw")   # --all-namespaces, --recursive, --help, --stdin, --quiet, --tty, --watch
+
+
+def _kubectl_takes(word):
+    """Whether kubectl gives the word after `word` to it as its value: an option written without `=` that isn't one of
+    its flags, or a short-option cluster whose first letter that takes a value ends the word (`-Rf`, not `-nprod`)."""
+    if word.startswith("--"):
+        return "=" not in word and word[2:] not in _KUBECTL_FLAGS
+    if word.startswith("-") and "=" not in word:
+        return next((k for k in range(1, len(word)) if word[k] not in _KUBECTL_SHORT_FLAGS), None) == len(word) - 1
+    return False
 
 
 # what a tool no pack maps is given to run (_runs): TK-S010's command arguments and the SQL ones, in any case
@@ -1080,9 +1135,9 @@ def _runs(args, tool=""):
     `CMD:<value>` (a string as given, a list or an object as canonical JSON); `MCPCMD:<value>` for any value when the
     tool's name is an MCP tool's in a case no pack maps (`MCP:x/y`), as TK-S010 reads an MCP tool's; and for each string under a sql,
     query or statement argument (at any depth, its name in any case, in a list or an object too) each statement as
-    every SQL dialect lexes it (classes.sql_code: comments and literals blanked; one that doesn't close is rejected by
-    the database and gives none), split at its `;`s, each blank run a space: `SQL;<statement>` for one a `;` ends,
-    `SQL:<statement>` for the last."""
+    every SQL dialect lexes it (classes.sql_read: comments and literals blanked), split at its `;`s, each blank run a
+    space: `SQL;<statement>` for one a `;` ends, `SQL:<statement>` for the last; before a literal or comment that
+    doesn't close, only those a `;` ends (a database may run them, then fails on the rest)."""
     out, tag = [], "MCPCMD:" if _text(tool).casefold().startswith(("mcp:", "mcp__")) else "CMD:"
 
     def walk(value):
@@ -1094,10 +1149,12 @@ def _runs(args, tool=""):
                 out.append("WORD:" + v.rsplit("/", 1)[-1] if plain else tag + (v if isinstance(v, str) else canonical(v)))
             elif name in _SQL_KEYS:
                 for text in (s for s in ([v] if isinstance(v, str) else _strings(v)) if isinstance(s, str)):
-                    for code in dict.fromkeys(classes.sql_code(text, *d) for d in classes.SQL_DIALECTS.values()):
-                        parts = [] if code is None else _BLANKS.sub(" ", code).split(";")
-                        out.extend(("SQL;" if i < len(parts) - 1 else "SQL:") + p.strip()
-                                   for i, p in enumerate(parts) if p.strip())
+                    readings = (classes.sql_read(text, *d) for d in classes.SQL_DIALECTS.values())
+                    for code, closed in dict.fromkeys(readings):
+                        *ended, last = _BLANKS.sub(" ", code).split(";")
+                        out.extend("SQL;" + p.strip() for p in ended if p.strip())
+                        if closed and last.strip():
+                            out.append("SQL:" + last.strip())
             walk(v)
     walk(args)
     return list(dict.fromkeys(out))
