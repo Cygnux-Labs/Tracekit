@@ -23,8 +23,13 @@ FS_OPS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit":
           "Grep": "read", "Glob": "read"}
 
 
-_CI_WORKFLOW = re.compile(r"(?:^|/)(?:\.github/workflows/[^/].*|\.gitlab-ci\.yml|\.circleci/config\.yml|"
-                          r"azure-pipelines\.yml|jenkinsfile)$")
+_CI_WORKFLOW = re.compile(r"(?:^|/)(?:\.github/(?:workflows/[^/].*|actions/(?:[^/]+/)+action\.ya?ml)|"
+                          r"\.gitlab-ci\.yml|\.circleci/config\.yml|azure-pipelines\.ya?ml|jenkinsfile)$")
+# A GitHub commit SHA is public build metadata, even when a notification includes it in a request body.
+_CI_PUBLIC_SHA = re.compile(r"\$GITHUB_SHA\b")
+_CI_SINGLE_QUOTED = re.compile(r"'([^']*)'")
+_CI_JENKINS_SH = re.compile(r"\bsh(?:\s*\(\s*script:\s*)?\s*(['\"])(.*?)\1")
+_CI_SHELL_VARIABLE = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})")
 
 
 def first(args, *keys):
@@ -325,6 +330,11 @@ def extract(cls, tool, args):
         # Only newly written CI text: neither removed Edit text nor an unrelated large file is an ask subject.
         written = args.get({"Write": "content", "Edit": "new_string"}.get(tool))
         if isinstance(written, str) and any(_CI_WORKFLOW.search(p.casefold()) for p in fs_forms(path)):
+            written = _CI_PUBLIC_SHA.sub("GITHUB_SHA", written)
+            written = _CI_JENKINS_SH.sub(
+                lambda m: "sh " + (re.sub(r"\$\{env\.[A-Za-z_][A-Za-z0-9_]*\}", "LITERAL", m.group(2))
+                                    if m.group(1) == "'" else m.group(2)), written)
+            written = _CI_SINGLE_QUOTED.sub(lambda m: _CI_SHELL_VARIABLE.sub("LITERAL", m.group()), written)
             out["ci_workflow"] = written
     elif cls in ("http", "browser"):
         url = first(args, "url")
