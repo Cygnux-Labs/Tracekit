@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -1949,6 +1950,15 @@ class Installer(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(json.load(f), {"theme": "dark",
                                             "hooks": {"PreToolUse": [{"name": "mine", "command": "echo mine", "timeout": 5}]}})
+
+    def test_cline_argv_reads_a_powershell_hook_in_linear_time(self):
+        argv = ["C:\\py\\python.exe", "-I", "it's", "", "a''b", "x y"]
+        cmd = " ".join("'" + a.replace("'", "''") + "'" for a in argv)
+        self.assertEqual(agent_hooks.cline_argv("$out = ([Console]::In.ReadToEnd() | & " + cmd + ") -join"), argv)
+        # CodeQL on #732: quotes a hook file could hold made the pattern backtrack exponentially (minutes at 30)
+        t = time.monotonic()
+        self.assertIsNone(agent_hooks.cline_argv("| & '" + "''" * 5000 + "x"))
+        self.assertLess(time.monotonic() - t, 1)
 
     def test_cline_hooks_are_one_executable_file_per_event_and_never_replace_a_persons(self):
         from tracekit.install import SettingsError

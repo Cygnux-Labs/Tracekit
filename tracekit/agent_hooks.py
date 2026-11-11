@@ -1450,8 +1450,9 @@ def cline_argv(text):
     m = re.search(r"^out=\$\((.*)\)$", text, re.M)
     if m:
         return shlex.split(m.group(1))
-    m = re.search(r"\| & ((?:'(?:[^']|'')*' ?)+)\) -join", text)
-    return [a.replace("''", "'") for a in re.findall(r"'((?:[^']|'')*)'", m.group(1))] if m else None
+    # one space between the quoted arguments, as _cline_hook writes them: a quote then ends an argument or doubles one
+    m = re.search(r"\| & ('(?:[^']|'')*'(?: '(?:[^']|'')*')*)\) -join", text)
+    return [a.replace("''", "'") for a in re.findall(r"'((?:[^']|'')*)'(?: |$)", m.group(1))] if m else None
 
 
 def cline_documents():
