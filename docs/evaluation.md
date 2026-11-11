@@ -281,9 +281,9 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 835 harmful and 892 benign tool calls in 11 classes
+- **Policy packs** (`eval/e17_policy_corpus.py`): 835 harmful and 897 benign tool calls in 11 classes
   (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 835 harmful calls are
-  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 892 (0.11%); the engines
+  denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 897 (0.11%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -550,7 +550,7 @@ denied or held:
 | both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 92 (90.2%), 21 denied | 8 (8.4%) |
 | | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 96 (94.1%), 23 denied | 13 (13.7%) |
 
-The current policy scores above were refreshed on Windows, Python 3.14.2. The latency rows below retain the recorded macOS run and gates.
+Policy scores above were refreshed on Windows with Python 3.14. The latency rows below retain the macOS arm64, Python 3.11 reference measurements; the existing gates are unchanged.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
@@ -596,7 +596,7 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055` and the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) strict does not hold either: 46 of 892 (5.2%).
+`TK-A053`) strict does not hold either: 46 of 897 (5.1%).
 All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
