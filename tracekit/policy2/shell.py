@@ -911,7 +911,7 @@ def parse(command):
     return analyse(command)[0]
 
 
-def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None):
+def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None, fold=None):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code, what else it learned: _learned). `readings`: False reads the line only as written, without its second
     readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all.
@@ -935,7 +935,8 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            # a ${F=w} may have given its word w, and those words (dollar, ways); each value the line gives IFS (None:
            # one it can't read), each literal it gives a variable anywhere, and each command with what its unquoted
            # expansions may expand to and the variables they read whose literals it doesn't know there (_made_text)
-           "assigns": False, "defaults": {}, "ifs_values": [], "given": {}, "split_values": [], "exports": set()}
+           "assigns": False, "defaults": {}, "ifs_values": [], "given": {}, "split_values": [], "exports": set(),
+           "fold": fold, "folded": set()}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -2993,6 +2994,13 @@ class _Parser:
             if alt and (key := tuple(alt)) not in seen and not data:
                 seen.add(key)
                 self.charge(sum(map(len, alt)))
+                key_of = self.ctx["fold"]   # (#683) the same reading, by the classes the live rules read
+                if key_of is not None:
+                    shared = key_of(alt)
+                    if shared is not None:
+                        if shared in self.ctx["folded"]:
+                            continue
+                        self.ctx["folded"].add(shared)
                 more = self.emit(alt, pid, self.via, glob, [names[i] if f == words[i] else
                                                             bool(_GLOB.search(f)) or _name_unreadable(f)
                                                             for f, i in zip(alt, kept)])

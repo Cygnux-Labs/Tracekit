@@ -14,6 +14,7 @@ import unicodedata
 
 from . import classes, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
+from .fold import Lazy, Partition
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
 # a space inside one argv word, in the argv subject a rule also reads (_subjects): rules match argv joined by spaces,
@@ -40,6 +41,9 @@ _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 28
 # too much
 _BARE_TARGET = re.compile(r"http://[1-9][0-9]*(\.[0-9]+){3}/")
 _SCHEDULED = {"at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's `via` for code at or batch run later
+# (#683) a rule anchored on an upper-case tag reads a subject the shell makes (`ACT:rm x`), not words of the
+# line: its literals need not appear in the command, so it always narrows a fold
+_TAG_ANCHORED = re.compile(r"\^[A-Z][A-Z_]*:")
 # what every second reading of a line starts from (shell.analyse's `readings`): an expansion or substitution read as
 # empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
 # line's characters ($'…' decodes others, after a $)
@@ -122,6 +126,13 @@ class Engine:
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._deny_ids = {r["id"] for sec, r, *_ in self.rules if sec == "deny"}
+        # (#683) the characters the rules that may read a shell subject tell apart: a loop reads its body once
+        # per value, and two values alike in this partition give every rule the same match, so one reading
+        # stands for both (shell.py's `folded`). A rule of no class reads every class, so it counts here too
+        self._fold_rules = [(r["pattern"], lits, bool(_TAG_ANCHORED.search(r["pattern"])))
+                            for _s, r, _t, _p, _u, lits, _q, _tl in self.rules
+                            if r.get("class", "shell") == "shell"]
+        self._fold = None   # built from the policy alone, on the first line that has a value to fold
         self._of = {}
         # whether a rule's tool pattern takes a tool name, by (pattern, name): RE2's matches spend no deadline (_backend)
         self._names = {} if self.engine.startswith("re2@") else None
@@ -222,6 +233,25 @@ class Engine:
             self._names[tool_re, name] = got
         return got
 
+    def _fold_key(self, command):
+        """(#683) The key this command's loop readings fold by, or None. A rule alive in the command is one
+        whose literals the line holds (a prefilterless rule and one on a made subject are always alive): only
+        the characters those rules read must be kept apart, since a rule that cannot fire here cannot tell two
+        values apart either."""
+        if not isinstance(command, str):
+            return None
+        if self._fold is None:
+            self._fold = Partition([p for p, _l, _s in self._fold_rules] +
+                                   [r["unless"] for _s, r, _t, _p, _u, _l, _q, _tl in self.rules
+                                    if r.get("class", "shell") == "shell" and "unless" in r])
+        low = command.lower()
+        alive = [p for p, lits, made in self._fold_rules
+                 if made or lits is None or any(s in low for s in lits)]
+        mask = self._fold.mask(alive)
+        if mask is None:
+            return None
+        return lambda texts: self._fold.key(texts, mask)
+
     def decide(self, tool, args, cls=None, untrusted=None, _hidden=0, _budget=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
         (`oversize`: the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the class the
@@ -257,7 +287,8 @@ class Engine:
                 hits["deny"].append("TK-OVERSIZE")
                 oversize.append("the shell command")
             else:
-                parsed, unread = self._parse(args, command, work, fallback=not _hidden)
+                parsed, unread = self._parse(args, command, work, fallback=not _hidden,
+                                             fold=Lazy(lambda: self._fold_key(command)))
                 if _hidden and unread:   # (the parser can't read it as a command)
                     return {"verdict": "allow", "rule_ids": [], "policy_hash": self.policy_hash, "engine": self.engine,
                             "unparsed": True}
@@ -389,7 +420,7 @@ class Engine:
             out["unread"] = cause
         return out
 
-    def _parse(self, args, command, work, readings=True, fallback=True):
+    def _parse(self, args, command, work, readings=True, fallback=True, fold=None):
         """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
         ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse); `work`:
         the decision's budget (shell.charge), which _plain() spends too. `fallback`: False leaves _plain() out (None
@@ -398,7 +429,7 @@ class Engine:
             if self._persistent_targets else None
         start = work[0]
         try:
-            return _shell(args, target, readings, work), None
+            return _shell(args, target, readings, work, fold), None
         except shell.ParseError as e:
             if not fallback:
                 return None, e.cause
@@ -551,7 +582,7 @@ def _path_forms(targets):
     return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
 
 
-def _shell(args, persistent_target=None, readings=True, work=None):
+def _shell(args, persistent_target=None, readings=True, work=None, fold=None):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
     a list of command lines. Anything else, or more than one of them, raises ParseError."""
@@ -561,7 +592,7 @@ def _shell(args, persistent_target=None, readings=True, work=None):
     value = args[present[0]] if present else ""
     strings = isinstance(value, list) and value and all(isinstance(a, str) for a in value)
     if isinstance(value, str):
-        return shell.analyse(value, persistent_target, readings, work)
+        return shell.analyse(value, persistent_target, readings, work, fold=fold)
     if strings and present == ["commands"]:
         return shell.analyse("\n".join(value), persistent_target, readings, work)
     if strings:
