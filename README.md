@@ -428,13 +428,13 @@ Each of these helps on its own, and none needs the whole codebase:
   ([SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)). You'll be the first name in the
   [hall of fame](https://github.com/Cygnux-Labs/Tracekit/blob/main/HALL_OF_FAME.md).
 - **Find a harmful call the packs let through, or a harmless one they hold.** Add it to
-  [`tests/data/policy/`](https://github.com/Cygnux-Labs/Tracekit/tree/main/tests/data/policy) with a rule ([#258](https://github.com/Cygnux-Labs/Tracekit/issues/258),
-  [#384](https://github.com/Cygnux-Labs/Tracekit/issues/384)).
+  [`tests/data/policy/`](https://github.com/Cygnux-Labs/Tracekit/tree/main/tests/data/policy) with a rule (the
+  [open-to-many issues](https://github.com/Cygnux-Labs/Tracekit/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22open%20to%20many%22)).
 - **Write a verifier in Rust or another language** from the [spec](https://github.com/Cygnux-Labs/Tracekit/wiki/Format-v2)
   and its [test vectors](https://github.com/Cygnux-Labs/Tracekit/tree/main/tests/vectors) alone.
 - **Add a framework** that passes the
   [adapter contract](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md#adding-a-framework-adapter).
-- **Run it on your agent and tell us what broke.** One command gives a [field report](https://github.com/Cygnux-Labs/Tracekit/issues/385). Doing
+- **Run it on your agent and tell us what broke.** One command gives a [field report](https://github.com/Cygnux-Labs/Tracekit/issues/new?template=field-report.yml). Doing
   this with two open-source agents found real bugs ([case study](https://github.com/Cygnux-Labs/Tracekit/wiki/Case-Study-OSS-Agents)).
 
 `make install`, then `make check` ([contributing](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md)). Smaller tasks:
