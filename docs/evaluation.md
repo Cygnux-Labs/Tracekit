@@ -281,8 +281,8 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 840 harmful and 890 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 840 harmful calls are denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 890 (0.11%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 849 harmful and 901 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 849 harmful calls are denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 901 (0.11%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -533,7 +533,7 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
 destructive 16 of 36, defence evasion 15 of 30, supply chain 16 of 27; strongest: database 32 of
-32, Kubernetes 25 of 27. By evasion, calls with none are caught 155 of 275; quoting 9 of 18, environment prefixes 8 of 14, substitution 40
+32, Kubernetes 25 of 27. By evasion, calls with none are caught 158 of 275; quoting 9 of 18, environment prefixes 9 of 14, substitution 40
 of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
 and one that is a bare program name, `K=kubectl; $K …`, is still held: it only hides that name). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
@@ -598,15 +598,15 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055` and the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) strict does not hold either: 46 of 890 (5.2%).
-All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
+`TK-A053`) strict does not hold either: 47 of 901 (5.2%).
+All 47 are benign calls strict holds (seven more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 33 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
-Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 511 shell
+Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 519 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 840 originals and all 2,451 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 849 originals and all 2,489 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
