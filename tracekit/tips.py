@@ -43,7 +43,7 @@ from .why import import_v2
 # if Haiku agents with longer prompts show up
 _OPUS4 = {"input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10}
 _FABLE = {"input": 10, "output": 50, "cache_read": 1, "cache_write": 12.5, "cache_write_1h": 20}
-PRICES = {"currency": "USD", "per": 1_000_000, "as_of": "2026-11-05", "models": {
+PRICES = {"currency": "USD", "per": 1_000_000, "as_of": "2026-11-07", "models": {
     "claude-fable-5-1*": {**_FABLE, "cache_read": 0.25}, "claude-mythos-5-1*": {**_FABLE, "cache_read": 0.25},
     "claude-fable-5*": _FABLE, "claude-mythos-5*": _FABLE,
     "claude-opus-5-5*": {"input": 4, "output": 20, "cache_read": 0.2, "cache_write": 5, "cache_write_1h": 8},
@@ -889,7 +889,7 @@ def main(argv=None):
     import argparse
     import sys
 
-    from .audit import default_root
+    from .audit import codex_root, default_root
     from .report import when
     from .signer.service import dev_data_dir
     from .storage.base import StorageCorrupt, StorageUnavailable
@@ -916,8 +916,7 @@ def main(argv=None):
         print(f"tracekit tips: {e}", file=sys.stderr)
         return 1
     root = None if a.data_dir else default_root()
-    codex = None if a.data_dir else \
-        os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~"), "sessions")
+    codex = None if a.data_dir else codex_root()
     t = build(rows, root, now, a.since, codex=codex)
     if a.json and failed:   # the text says it in its first line
         print(f"tracekit tips: {failed} run{'s' * (failed != 1)} left out: they didn't verify (tracekit view shows why)",

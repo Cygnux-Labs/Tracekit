@@ -1970,8 +1970,7 @@ def main(argv=None):
                 from . import audit, tips
                 feed.tips = tips.Page(functools.partial(shown, feed),
                                       transcripts or (audit.default_root() if dev else None),
-                                      codex=os.path.join(os.environ.get("CODEX_HOME") or os.path.expanduser("~"),
-                                                         "sessions") if dev else None)
+                                      codex=audit.codex_root() if dev else None)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
@@ -1995,7 +1994,7 @@ def main(argv=None):
             print(f"  tips: Claude Code's transcripts in {feed.tips.root}, read-only" if os.path.isdir(feed.tips.root)
                   else "  tips: no Claude Code transcripts found", flush=True)
         if feed.tips.codex and os.path.isdir(feed.tips.codex):   # Codex CLI's sessions too, for the context tip
-            print(f"  tips · Codex CLI's sessions in {feed.tips.codex}, read-only", flush=True)
+            print(f"  tips: Codex CLI's sessions in {feed.tips.codex}, read-only", flush=True)
     if why and mirror:
         why.watch()
         print("  graphs: each verified run is drawn as a graph too, from a copy in a temp dir", flush=True)

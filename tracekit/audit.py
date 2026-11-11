@@ -32,6 +32,13 @@ def default_root():
                         "projects")
 
 
+def codex_root():
+    """Codex CLI's sessions' folder: sessions/ in $CODEX_HOME when set, else in ~/.codex, as Codex's own
+    CODEX_HOME default resolves it (HOME wins over the platform's user folder, as on Windows)."""
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(os.environ.get("CODEX_HOME") or os.path.join(home, ".codex"), "sessions")
+
+
 def _session_from_path(path: str) -> str:
     """Best-effort session id from a Claude Code transcript's path under the root: a subagent's file
     (<session>/subagents/agent-*.jsonl, a workflow's agents' in <session>/subagents/workflows/<workflow>/) counts under
