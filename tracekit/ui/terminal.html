@@ -3965,7 +3965,7 @@
         const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" };
         // an approval's records are the call's its request was for; a use refused, the call's that tried it
         const owner = (S.req ||= new Map()).get(aidKey(r));
-        const act = r.v2?.approval && (owner && !refusedUse(r) && !r.v2.held ? owner : latestAct(r));
+        const act = r.v2?.approval && (owner?.id === tuid(r) && !refusedUse(r) ? owner : latestAct(r));
         if (r.v2?.approval === "requested" && act) S.req.set(aidKey(r), act);
         if (act) act.approvals.push(r);
         // the agent's retry of a held call, using that call's approval: the held call's answer is the retry's, and the
@@ -4532,7 +4532,7 @@
         // under its id and attempt), as the tape files it; a held call's retry with its id (foldsOf) is no move of its own
         if (r.event === "PreToolUse") { if (!again.has(r)) cur.set(callKey(r), r).set(tuid(r), r); continue; }
         const owner = owners.get(aidKey(r)), mine = cur.get(r.v2?.attempt == null ? tuid(r) : callKey(r));
-        const d = owner && !refusedUse(r) && !r.v2?.held ? owner : mine;
+        const d = owner && tuid(owner) === tuid(r) && !refusedUse(r) ? owner : mine;
         if (d && r.v2?.approval in ANSWER) ans.set(d, r.v2.approval);
         if (mine && r.v2?.approval && r.v2.held) retry.set(mine, owner || cur.get(r.session_id + "|" + r.v2.held));   // the held call it retried
       }
@@ -5462,7 +5462,7 @@
         else if (r.event === "PostToolUse") { const row = r.v2?.decision_id ? dids.get(didKey(r)) : latest(x => couldRun(x.rec.v2, x.answers)); if (row) row.post = r; }
         else if (r.v2?.approval) {
           // an approval's records are the call's its request was for; a use refused, the call's that tried it
-          const row = owner && !refusedUse(r) && !r.v2?.held ? owner : latest();
+          const row = owner?.k === k && !refusedUse(r) ? owner : latest();
           if (!row) continue;
           row.answers.push(r);
           if (held) { row.retry = true; if (r.v2.approval === "consumed") held.ranBy = row; }

@@ -356,6 +356,11 @@ class SignedRuntime(unittest.TestCase):
             "ran": ["flag"],
             "why": [("flag", None)],
         })
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        self.assertEqual(dict(view.review(self.records()[deny.run_id], rep, "verified")["permissions"]),
+                         {"expired": 1, "blocked": 1})
+        self.assertEqual(dict(view.review(self.records()[flag.run_id], rep, "verified")["permissions"]),
+                         {"expired": 1, "flagged": 1})
 
     def test_only_the_signers_consume_files_a_decision_with_a_held_call(self):
         """A fold guessed from the id the agent names: once a retry with another id had used c1's approval, c1 sent again

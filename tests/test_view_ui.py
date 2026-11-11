@@ -2962,6 +2962,8 @@ class ApproveThenRetry(unittest.TestCase):
             }}));"""))
         self.assertEqual(out["calls"], [["ask", "EXPIRED"], ["deny", "BLOCKED"]])
         self.assertEqual(out["perm"], [["deny", "BLOCKED"], ["ask", "EXPIRED"]])
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev")
+        self.assertEqual(dict(view.review(recs, rep, "verified")["permissions"]), {"expired": 1, "blocked": 1})
 
         recs_flag = [
             v2rec(1, "run.registered", {"agent": {"name": "a"}}, **top),
@@ -2994,6 +2996,7 @@ class ApproveThenRetry(unittest.TestCase):
             }}));"""))
         self.assertEqual(out_flag["calls"], [["ask", "EXPIRED"], ["flag", "⚑ OK"]])
         self.assertEqual(out_flag["perm"], [["flag", "RAN · FLAGGED"], ["ask", "EXPIRED"]])
+        self.assertEqual(dict(view.review(recs_flag, rep, "verified")["permissions"]), {"expired": 1, "flagged": 1})
 
     def test_approvals_lists_the_held_call_once_with_the_retry_that_ran_and_who_approved_one_that_expired(self):
         """APPROVALS read "NOT ANSWERED · the approved call ran with the approved arguments" for the retry beside an
