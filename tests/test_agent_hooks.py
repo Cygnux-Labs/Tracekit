@@ -1156,7 +1156,7 @@ class ClineTools(unittest.TestCase):
                 agent_hooks.tool("cline", name, ti)
         pol = load_policy()
         self.assertNotEqual(pol.decide(*agent_hooks.tool("cline", "read_files", {"files": [
-            {"path": "/w/a"}, {"path": "/home/agent/.ssh/id_rsa"}]}))["decision"], "allow")
+            {"path": "/w/a"}, {"path": "/home/agent/.ssh/id_rsa"}]}))["verdict"], "allow")
 
     def test_the_extensions_payload_is_read_and_its_calls_paired(self):
         # the VS Code extension sends toolName and parameters, its non-string values JSON-encoded, and no call id; the
