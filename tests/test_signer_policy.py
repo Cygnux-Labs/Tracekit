@@ -8,9 +8,11 @@ import os
 import random
 import shutil
 import tempfile
+import time
 import unittest
 from unittest import mock
 
+from factories import SLOWER
 from tracekit import schema
 from tracekit.format.canon import event_hash
 from tracekit.policy2 import classes, compile as pc, shell
@@ -4784,6 +4786,52 @@ class GuardrailsAndPushes(unittest.TestCase):
         self.verdicts([("Bash", {"command": c}) for c in (
             f"{pair} git push origin feature", f"export {pair}; git push origin feature",
             f"env {pair} git push origin feature")], "ask", "TK-A056")
+
+    def test_one_expansion_may_stand_for_several_path_segments(self):
+        """Sixth review of #605: _gh_routes split the endpoint at `/` before anything resolved and took an expansion in
+        the owner's place for the owner and the repo, but one expansion may hold any number of segments
+        (X=o/r/contents). A write whose route an expansion may hold is held unless a literal segment after it names a
+        route that writes no branch; a PUT or DELETE is held with an expansion before its route whatever follows (the
+        contents API takes every segment after `contents/` as the file's path)."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api -X PUT repos/$X/a.txt -f message=m -f content=Yg==", "gh api -X PATCH repos/$X/heads/main -f sha=x",
+            "gh api repos/$X -f base=main -f head=feature",
+            "gh api -X PUT repos/$GITHUB_REPOSITORY/$P -f message=m -f content=Yg==",
+            "gh api -X PUT repos/o/$R/a.txt -f message=m -f content=Yg==",
+            "gh api -X POST repos/o/$R -f base=main -f head=feature", "gh api -X PUT repos/$OWNER/r/$ROUTE -f message=m",
+            "gh api -X PUT repos/$OWNER/r/$ROUTE/a.txt -f message=m", "gh api -X PUT repositories/$X -f message=m",
+            "gh api -X POST repositories/$X -f base=main -f head=f",
+            "gh api -X PUT 'repos/${GITHUB_REPOSITORY%/*}/r/contents/a.txt' -f message=m",
+            'gh api -X PUT "repos/$(echo o/r/contents)/a.txt" -f message=m',
+            'gh api -X PUT "repos/`echo o/r/contents`/a.txt" -f message=m',
+            "gh api -X PUT repos/$X/issues/1 -f message=m -f content=Yg==",
+            "gh api -X DELETE repos/$X/issues/1 -f message=m -f sha=s")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api repos/$GITHUB_REPOSITORY/issues/$N/comments -f body=done",
+            "gh api -X POST repos/$OWNER/$REPO/git/refs -f ref=refs/heads/feature-x -f sha=$SHA",
+            "gh api -X PATCH repos/$OWNER/r/issues/$N -f state=closed")], "allow")
+
+    def test_a_graphql_update_of_several_refs_is_held(self):
+        """Sixth review of #605: TK-A056 read GraphQL's updateRef, not updateRefs, which updates several refs."""
+        self.verdicts([("Bash", {"command": "gh api graphql -f query='mutation{updateRefs(input:{repositoryId:\"x\","
+                                            "refUpdates:[{name:\"refs/heads/main\",afterOid:\"x\"}]}){clientMutationId}}'"})],
+                      "ask", "TK-A056")
+
+    def test_an_over_cap_calls_sql_isnt_lexed_and_its_verdict_stands(self):
+        """Sixth review of #605: TK-A062's SQL reading and the sql class's lexed every dialect of a call over MAX_SUBJECT,
+        which every pack that reads them denies unread (TK-OVERSIZE): a 900 KB statement took about half a second. A
+        call that size is read as written now, its rules taking TK-OVERSIZE in their sections."""
+        server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
+        for engine, tool, args in (
+                (self.engines[0], "warehouse_query", {"query": "x;$a" * 225000 + "'"}),
+                (self.engines[0], "warehouse_query", {"query": ["x;$a" * 3750] * 60}),
+                (self.engines[0], "execute_sql", {"sql": "SELECT '" + "a" * (1 << 20) + "'"}),
+                (server, "execute_sql", {"sql": "x;$a" * 225000 + "'"})):
+            with self.subTest(tool=tool, size=len(str(args))):
+                start = time.process_time()
+                d = engine.decide(tool, args)
+                self.assertLess(time.process_time() - start, 0.1 * SLOWER)
+                self.assertEqual((d["verdict"], "TK-OVERSIZE" in d["rule_ids"]), ("deny", True), d)
 
     def test_more_ways_to_push_to_main_and_to_publish(self):
         """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a

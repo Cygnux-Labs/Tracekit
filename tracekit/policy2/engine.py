@@ -271,7 +271,7 @@ class Engine:
         (DECISION_COST each). Once it is spent nothing more is read, and the call is held (TK-SHELL-PARSE, budget)."""
         args = args if isinstance(args, dict) else {"value": args}
         cls = cls or self.tool_class(tool)
-        fields = classes.extract(cls, tool, args)
+        fields = classes.extract(cls, tool, args, MAX_SUBJECT)
         hits = {sec: [] for sec in SECTIONS}
         if cls == "unknown" and self.policy.get("unknown_tools") in SECTIONS:
             hits[self.policy["unknown_tools"]].append("TK-UNKNOWN-TOOL")
@@ -479,8 +479,8 @@ class Engine:
             one = {k: v for k, v in args.items() if k != "urls"}
             # read once what no URL changes (a raw argument's canonical form); per URL, the class's fields and target
             each = [{**one, "url": u} for u in args["urls"]] if field == "target" or field in CLASSES[cls] else []
-            return list(dict.fromkeys(s for a in [one, *each] for s in
-                                      Engine._subjects(cls, field, a, classes.extract(cls, "", a), parsed, split)))
+            return list(dict.fromkeys(s for a in [one, *each] for s in Engine._subjects(
+                cls, field, a, classes.extract(cls, "", a, MAX_SUBJECT), parsed, split)))
         if field == "target":
             return Engine._targets(cls, args, fields, parsed)
         if cls == "shell" and field == "effects":
@@ -924,37 +924,64 @@ _GH_VALUED = {"-X": "method", "--method": "method", "-F": "field", "--field": "f
 _GH_HOST = re.compile(r"(?:[a-z][a-z0-9+.-]*://[^/]*(?=/|$))?", re.I)   # a URL's scheme and host
 
 
-def _gh_open(text):
-    """Whether the line can't tell what a word of a gh api call is: an expansion, or gh's {branch} placeholder (the
-    current branch)."""
-    return "$" in text or "`" in text or "{branch}" in text
+_GH_OPENS = re.compile(r"[$`]|\{branch\}")
+_GH_UNIT = re.compile(r"\$\{[^}]*\}?|`[^`]*`?|\$[A-Za-z_]\w*|\$.?|\{branch\}", re.S)
+# routes of repos/<owner>/<repo>/ that write no branch: a literal one after an expansion places the call
+_GH_SAFE = frozenset(("actions", "assignees", "autolinks", "branches", "check-runs", "check-suites", "collaborators",
+                      "comments", "commits", "deployments", "dispatches", "environments", "forks", "hooks",
+                      "invitations", "issues", "keys", "labels", "milestones", "pages", "projects", "pulls",
+                      "releases", "rulesets", "statuses", "subscription", "tags", "topics"))
+
+
+def _gh_mask(text):
+    """`text` with each part the line can't tell (an expansion: `$X`, `${…}`, `$(…)` with what it nests, a backquoted
+    span; gh's {branch} placeholder, the current branch) one NUL: a unit that may stand for any number of segments,
+    a `/` inside it not one of the path's."""
+    out, i = [], 0
+    while m := _GH_OPENS.search(text, i):
+        out.append(text[i:m.start()] + "\0")
+        if text.startswith("$(", m.start()):
+            depth, j = 0, m.start() + 1
+            while j < len(text) and (depth := depth + (text[j] == "(") - (text[j] == ")")) > 0:
+                j += 1
+            i = j + 1
+        else:
+            i = _GH_UNIT.match(text, m.start()).end()
+    return "".join(out) + text[i:]
 
 
 def _gh_routes(endpoint):
-    """(the routes a gh api endpoint may name, lower-cased, each with the segments after it; whether the line can't
-    tell where a write to it goes), read from its path as GitHub routes it, after a URL's scheme and host and GHES's
-    api/v3/: repos/<owner>/<repo>/<route>/…, where an expansion in the owner's place may fill the repo's too
-    ($GITHUB_REPOSITORY), so the segment after it is the route, and the one after that may be; repositories/<id>/
-    <route>/…; <route>/… for the rest. Unknown: a `.` or `..` segment, a route _gh_open, or such a segment after
-    git/, where it names the ref."""
-    segs = [s for s in re.split(r"[?#]", endpoint[_GH_HOST.match(endpoint).end():], maxsplit=1)[0].split("/") if s]
+    """(the route a gh api endpoint names, lower-cased; whether the line can't tell where a write to it goes; whether
+    an expansion comes before its route), read from its path as GitHub routes it, after a URL's scheme and host and
+    GHES's api/v3/: repos/<owner>/<repo>/<route>/…, repositories/<id>/<route>/…, <route>/… for the rest. An
+    expansion or {branch} (_gh_mask) may stand for any number of segments: one (or an empty segment) at or before the
+    route's place leaves the route to the first literal segment after it that names one (_GH_SAFE, git, contents,
+    merges), and unknown without one. Unknown too: a `.` or `..` segment, and an expansion after git/, where it names
+    the ref."""
+    if not endpoint:
+        return [], False, False
+    path = _gh_mask(endpoint)
+    segs = re.split(r"[?#]", path[_GH_HOST.match(path).end():], maxsplit=1)[0].rstrip("/").split("/")
     # from its repos/ or repositories/ segment where it has one, past a host without a scheme (//api.github.com/…) or
     # GHES's api/v3/; an expansion before it may be any path
     k = next((k for k, s in enumerate(segs) if s.lower() in ("repos", "repositories")), 0)
-    if any(s in (".", "..") for s in segs) or any(map(_gh_open, segs[:k])):
-        return [], True
+    if any(s in (".", "..") for s in segs) or any("\0" in s for s in segs[:k]):
+        return [], True, True
     segs = segs[k:]
     if segs[:1] == ["api"]:   # GHES serves the API at /api/v3/
         segs = segs[2:] if segs[1:2] == ["v3"] else segs[1:]
     first = segs[0].lower() if segs else ""
-    if first == "repos":
-        at = [2, 3] if len(segs) > 2 and _gh_open(segs[1]) and not _gh_open(segs[2]) else [3]
-    else:
-        at = [2] if first == "repositories" else [0]
-    routes = [(segs[k].lower(), segs[k + 1:]) for k in at if k < len(segs)]
-    unknown = bool(routes) and _gh_open(routes[0][0]) or any(
-        r == "git" and any(map(_gh_open, rest)) for r, rest in routes)
-    return [r for r, _ in routes], unknown
+    at = 3 if first == "repos" else 2 if first == "repositories" else 0
+    # an empty segment (a doubled `/`, or an expansion read as empty) is as unplaced as an expansion
+    opened = next((j for j, s in enumerate(segs[:at + 1]) if "\0" in s or not s), None)
+    if opened is None:
+        route = segs[at].lower() if at < len(segs) else ""
+        return [route] if route else [], route == "git" and any("\0" in s for s in segs[at + 1:]), False
+    for j in range(opened + 1, len(segs)):
+        route = segs[j].lower()
+        if route in _GH_SAFE or route in ("git", "contents", "merges"):
+            return [route], route == "git" and any("\0" in s for s in segs[j + 1:]), True
+    return [], True, True
 
 
 def _git_push(argv):
@@ -1079,12 +1106,15 @@ def _gh_api(argv):
                   "POST" if kinds & {"field", "raw", "input"} else "GET")
     magic, branch = next(((kind == "field", v) for kind, key, v in reversed(fields) if key == "branch"), (False, ""))
     branch = branch.removeprefix("refs/").removeprefix("heads/")
-    routes, unknown = [], False
+    routes, unknown, expanded = [], False, False
     for endpoint in positional or [""]:   # (gh takes one; read each of more, which gh refuses)
-        found, unread = _gh_routes(endpoint)
-        routes, unknown = routes + found, unknown or unread
+        found, unread, before = _gh_routes(endpoint)
+        routes, unknown, expanded = routes + found, unknown or unread, expanded or before
     unread_method = not method or "$" in method or "`" in method
     write = unread_method or method.upper() not in ("GET", "HEAD")
+    # a PUT or DELETE with an expansion before its route may be the contents API's, whose file path is every segment
+    # after contents/ (X=o/r/contents: repos/$X/issues/1 is a file)
+    unknown = unknown or expanded and (unread_method or method.upper() in ("PUT", "DELETE"))
     out = [" ".join(words)]
     if write and unknown:
         out.append("PUSH:unknown " + (positional[0] if positional else "")[:64])
@@ -1172,6 +1202,10 @@ def _runs(args, tool=""):
     space: `SQL;<statement>` for one a `;` ends, `SQL:<statement>` for the last; before a literal or comment that
     doesn't close, only those a `;` ends (a database may run them, then fails on the rest)."""
     out, tag = [], "MCPCMD:" if _text(tool).casefold().startswith(("mcp:", "mcp__")) else "CMD:"
+    # a call over MAX_SUBJECT isn't lexed (every pack that reads `run` denies it unread: TK-OVERSIZE): its SQL is the
+    # whole call as written, longer than MAX_SUBJECT, which every rule on it takes as TK-OVERSIZE
+    whole = canonical(args)
+    whole = "SQL:" + whole if len(whole) > MAX_SUBJECT else None
 
     def walk(value):
         items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
@@ -1180,6 +1214,8 @@ def _runs(args, tool=""):
             if name in _COMMAND_KEYS:
                 plain = tag == "CMD:" and isinstance(v, str) and _PLAIN_WORD.fullmatch(v)
                 out.append("WORD:" + v.rsplit("/", 1)[-1] if plain else tag + (v if isinstance(v, str) else canonical(v)))
+            elif name in _SQL_KEYS and whole:
+                out.append(whole)
             elif name in _SQL_KEYS:
                 for text in (s for s in ([v] if isinstance(v, str) else _strings(v)) if isinstance(s, str)):
                     readings = (classes.sql_read(text, *d) for d in classes.SQL_DIALECTS.values())

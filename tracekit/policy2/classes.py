@@ -324,8 +324,9 @@ def _name(v):
     return v.lower() if isinstance(v, str) and A2A_NAME.fullmatch(v) else None
 
 
-def extract(cls, tool, args):
-    """{field: value} for `cls`; a missing value is left out."""
+def extract(cls, tool, args, limit=None):
+    """{field: value} for `cls`; a missing value is left out. SQL longer than `limit` characters (the engine's
+    MAX_SUBJECT) isn't lexed: its `code` is the text as written, which every rule on it takes as TK-OVERSIZE."""
     if cls == "shell":
         out = {"command": first(args, *SHELL_KEYS)}
     elif cls == "fs":
@@ -361,8 +362,8 @@ def extract(cls, tool, args):
         stmt = first(args, "sql", "query", "statement")
         text = stmt if isinstance(stmt, str) else "\n;\n".join(stmt) if isinstance(stmt, list) and all(
             isinstance(s, str) for s in stmt) else None
-        code = [] if text is None else list(dict.fromkeys(c for c in (sql_code(text, *d) for d in SQL_DIALECTS.values())
-                                                          if c is not None))
+        code = [] if text is None else [text] if limit is not None and len(text) > limit else list(dict.fromkeys(
+            c for c in (sql_code(text, *d) for d in SQL_DIALECTS.values()) if c is not None))
         out = {"statement": stmt, "db": first(args, "db", "database"), "code": code or None,
                "verb": code[0].split()[0].upper() if code and code[0].split() else None}
     elif cls == "payment":

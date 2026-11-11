@@ -20,7 +20,7 @@
 # rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-2'
+version: '2026.11-dev-3'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
 
@@ -73,14 +73,14 @@ ask:
     # ref=refs/heads/main), merging branches (repos/<o>/<r>/merges, repositories/<id>/merges) or putting or deleting a
     # file (engine._gh_api's `PUSH:contents`, `PUSH:merges` for any form of the merges path, and `PUSH:unknown` for a
     # write whose target the line can't tell), read percent-decoded as GitHub reads its path;
-    # a GraphQL updateRef, mergeBranch or createCommitOnBranch, read as TK-A002 reads deleteRef; Sapling's
-    # `sl push --to main`, `git town ship` (or git-town), and Jujutsu's `jj git push` with no arguments, --all,
-    # --tracked, a main or master bookmark (exact: too) or a glob:.
+    # a GraphQL updateRef or updateRefs, mergeBranch or createCommitOnBranch, read as TK-A002 reads deleteRef;
+    # Sapling's `sl push --to main`, `git town ship` (or git-town), and Jujutsu's `jj git push` with no arguments,
+    # --all, --tracked, a main or master bookmark (exact: too) or a glob:.
     # lean: another deploy CLI (vercel, fly deploy, gh release create) is recorded, not held; a gh or hub api GET of
     # main's ref, a merge into any branch and a GraphQL mutation on any ref are held as one on main would be (the
     # method, the base and the ref id aren't read: reading /merges with base=main in either order took the fallback
     # engine seconds on 64 KiB); add a verb here when one is in use
-    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^terragrunt(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:run-all |stack run |run (?:-[^ ]+ )*)?apply(?:-all)?(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\b(?:repos/[^/ ]+/[^/ ]+|repositories/[^/ ]+)/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRef|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/)?(?:main|master)(?: |$)|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))'
+    pattern: '^PUSH:|^(?:npm|pnpm|yarn|bun)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:npm )?publish(?: |$)|^(?:uv|poetry|cargo)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} publish(?: |$)|^gem(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} push(?: |$)|^twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^[^ ]+(?: [^ ]+){0,8}? -[A-Za-z]*m ?twine(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} upload(?: |$)|^(?:docker|podman)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:image )?push(?: |$)|^helm(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:install|upgrade|push)(?: |$)|^(?:terraform|tofu)(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} apply(?: |$)|^terragrunt(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:run-all |stack run |run (?:-[^ ]+ )*)?apply(?:-all)?(?: |$)|^pulumi(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} up(?: |$)|^kubectl(?: -[^ ]+(?: [^- ][^ ]*)?){0,8} (?:apply|delete)(?: |$)|^(?:gh|hub) api [\w\W]*?/git/refs/heads/(?:main|master)(?:[ ?#/]|$)|^(?:gh|hub) api [\w\W]*?(?: |-f|-F|=)ref=refs/heads/(?:main|master)(?: |$)|^(?:gh|hub) api [\w\W]*?\b(?:repos/[^/ ]+/[^/ ]+|repositories/[^/ ]+)/merges(?:[/?#][^ ]*)?(?: |$)|^(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?(?:updateRefs?|mergeBranch|createCommitOnBranch)\b|^sl (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}push [\w\W]*?(?:--to[ =]|-t ?)(?:remote/)?(?:main|master)(?: |$)|^(?:git (?:-[Cc] [^ ]* |--(?:git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(?:=[^ ]*)? ){0,8}town|git-town) (?:-[^ ]+ )*ship(?: |$)|^jj (?:-[^ ]+(?: [^- ][^ ]*)? ){0,8}git push(?:$| [\w\W]*?(?:(?:(?:-b ?|--(?:bookmark|branch)[ =])[''"]?(?:exact:)?(?:main|master)[''"]?|--all|--tracked)(?: |$)|glob:))'
     reason: a push to the default branch or of tags, or a publish or deploy
     remedy: Have a person approve the held call, or push a named feature branch and leave the merge or release to a person.
     rationale: These reach a shared branch, a registry or a running system, where others build, install or deploy from them; a person confirms each one.
