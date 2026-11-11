@@ -1,5 +1,5 @@
 {
-  "machine": "Windows AMD64 Intel64 Family 6 Model 165 Stepping 2, GenuineIntel python 3.14.2",
+  "machine": "Darwin arm64 arm python 3.11.15",
   "heldout_cases": 852,
   "blind_cases": {
     "amandeavor": 90,
@@ -9,7 +9,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:c05be7fe46805c6763a0ca16b4d12ee4e45cc66846427531f6d8eba35ea6aa64",
+      "policy_hash": "sha256:663e96839a46176f55ed51155a60a08c78aa292467b55233546792f49fad4d65",
       "heldout": {
         "recall": 0.6071428571428571,
         "deny_recall": 0.2761904761904762,
@@ -2412,27 +2412,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0011210762331838565,
+        "fp_rate": 0.0011148272017837235,
         "totals": {
-          "benign": 892,
+          "benign": 897,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 892,
+              "benign": 897,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 892,
+              "benign": 897,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 892,
+              "benign": 897,
               "fp": 1
             }
           }
@@ -2453,7 +2453,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:ea7706c251200cbecaab1f97a347b5a5824a3a7d88f5074cb652a8fea771e798",
+      "policy_hash": "sha256:2d8da3be013715dd247afe0847a8715af5671a560bec22cbb7a3e392b2fbc07d",
       "heldout": {
         "recall": 0.6785714285714286,
         "deny_recall": 0.36666666666666664,
@@ -5039,27 +5039,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0515695067264574,
+        "fp_rate": 0.05128205128205128,
         "totals": {
-          "benign": 892,
+          "benign": 897,
           "fp": 46
         },
         "by": {
           "category": {
             "none": {
-              "benign": 892,
+              "benign": 897,
               "fp": 46
             }
           },
           "severity": {
             "none": {
-              "benign": 892,
+              "benign": 897,
               "fp": 46
             }
           },
           "evasion": {
             "none": {
-              "benign": 892,
+              "benign": 897,
               "fp": 46
             }
           }
@@ -5543,7 +5543,7 @@
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 13.68% over the 5% target",
     "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.16% over the 5% target"
+    "strict e17 false positives 5.13% over the 5% target"
   ],
   "failed": [],
   "ok": true

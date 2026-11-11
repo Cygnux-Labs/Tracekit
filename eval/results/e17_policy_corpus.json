@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:c05be7fe46805c6763a0ca16b4d12ee4e45cc66846427531f6d8eba35ea6aa64",
+  "policy_hash": "sha256:663e96839a46176f55ed51155a60a08c78aa292467b55233546792f49fad4d65",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.11.9"
@@ -26,7 +26,7 @@
     "fs": {
       "deny": 39,
       "caught": 39,
-      "benign": 68,
+      "benign": 73,
       "fp": 0
     },
     "http": {
@@ -1194,6 +1194,11 @@
     "benign/fs:66": "allow",
     "benign/fs:67": "allow",
     "benign/fs:68": "allow",
+    "benign/fs:69": "allow",
+    "benign/fs:70": "allow",
+    "benign/fs:71": "allow",
+    "benign/fs:72": "allow",
+    "benign/fs:73": "allow",
     "benign/http:1": "flag TK-F002 TK-F012",
     "benign/http:2": "flag TK-F002 TK-F012",
     "benign/http:3": "flag TK-F002 TK-F012",
@@ -1823,6 +1828,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0011210762331838565,
+  "benign_fp_rate": 0.0011148272017837235,
   "ok": true
 }
