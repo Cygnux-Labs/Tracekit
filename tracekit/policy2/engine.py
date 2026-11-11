@@ -924,19 +924,25 @@ _GH_VALUED = {"-X": "method", "--method": "method", "-F": "field", "--field": "f
 _GH_HOST = re.compile(r"(?:[a-z][a-z0-9+.-]*://[^/]*(?=/|$))?", re.I)   # a URL's scheme and host
 
 
-_GH_OPENS = re.compile(r"[$`]|\{branch\}")
-_GH_UNIT = re.compile(r"\$\{[^}]*\}?|`[^`]*`?|\$[A-Za-z_]\w*|\$.?|\{branch\}", re.S)
+# an expansion, or a {…} word gh (its {branch}: the current branch) or a program running gh fills in (find -exec's,
+# parallel's and xargs -I{}'s {}); gh's {owner} and {repo} are the current repository
+_GH_OPENS = re.compile(r"[$`]|\{(?!(?:owner|repo)\})[^{}]*\}")
+_GH_UNIT = re.compile(r"\$\{[^}]*\}?|`[^`]*`?|\$[A-Za-z_]\w*|\$.?|\{[^{}]*\}", re.S)
 # routes of repos/<owner>/<repo>/ that write no branch: a literal one after an expansion places the call
-_GH_SAFE = frozenset(("actions", "assignees", "autolinks", "branches", "check-runs", "check-suites", "collaborators",
-                      "comments", "commits", "deployments", "dispatches", "environments", "forks", "hooks",
-                      "invitations", "issues", "keys", "labels", "milestones", "pages", "projects", "pulls",
-                      "releases", "rulesets", "statuses", "subscription", "tags", "topics"))
+_GH_SAFE = frozenset((
+    "actions", "assignees", "attestations", "autolinks", "automated-security-fixes", "branches", "check-runs",
+    "check-suites", "code-scanning", "collaborators", "comments", "commits", "dependabot", "deployments", "dispatches",
+    "environments", "forks", "hooks", "interaction-limits", "invitations", "issues", "keys", "labels", "milestones",
+    "notifications", "pages", "private-vulnerability-reporting", "projects", "properties", "pulls", "releases",
+    "rulesets", "secret-scanning", "statuses", "subscription", "tags", "topics", "vulnerability-alerts"))
+_GH_WRITES = ("git", "contents", "merges", "merge-upstream")   # routes that write a branch
 
 
-def _gh_mask(text):
+def _gh_mask(text, replaced=None):
     """`text` with each part the line can't tell (an expansion: `$X`, `${…}`, `$(…)` with what it nests, a backquoted
-    span; gh's {branch} placeholder, the current branch) one NUL: a unit that may stand for any number of segments,
-    a `/` inside it not one of the path's."""
+    span; a {…} word gh or the program running it fills in; the word xargs -I replaces, `replaced`) one NUL: a unit
+    that may stand for any number of segments, a `/` inside it not one of the path's."""
+    text = text.replace(replaced, "\0") if replaced else text
     out, i = [], 0
     while m := _GH_OPENS.search(text, i):
         out.append(text[i:m.start()] + "\0")
@@ -950,17 +956,17 @@ def _gh_mask(text):
     return "".join(out) + text[i:]
 
 
-def _gh_routes(endpoint):
+def _gh_routes(endpoint, replaced=None):
     """(the route a gh api endpoint names, lower-cased; whether the line can't tell where a write to it goes; whether
     an expansion comes before its route), read from its path as GitHub routes it, after a URL's scheme and host and
     GHES's api/v3/: repos/<owner>/<repo>/<route>/…, repositories/<id>/<route>/…, <route>/… for the rest. An
     expansion or {branch} (_gh_mask) may stand for any number of segments: one (or an empty segment) at or before the
     route's place leaves the route to the first literal segment after it that names one (_GH_SAFE, git, contents,
-    merges), and unknown without one. Unknown too: a `.` or `..` segment, and an expansion after git/, where it names
-    the ref."""
+    merges, merge-upstream), and unknown without one. Unknown too: a `.` or `..` segment, and an expansion after git/,
+    where it names the ref."""
     if not endpoint:
         return [], False, False
-    path = _gh_mask(endpoint)
+    path = _gh_mask(endpoint, replaced)
     segs = re.split(r"[?#]", path[_GH_HOST.match(path).end():], maxsplit=1)[0].rstrip("/").split("/")
     # from its repos/ or repositories/ segment where it has one, past a host without a scheme (//api.github.com/…) or
     # GHES's api/v3/; an expansion before it may be any path
@@ -979,7 +985,7 @@ def _gh_routes(endpoint):
         return [route] if route else [], route == "git" and any("\0" in s for s in segs[at + 1:]), False
     for j in range(opened + 1, len(segs)):
         route = segs[j].lower()
-        if route in _GH_SAFE or route in ("git", "contents", "merges"):
+        if route in _GH_SAFE or route in _GH_WRITES:
             return [route], route == "git" and any("\0" in s for s in segs[j + 1:]), True
     return [], True, True
 
@@ -1068,7 +1074,7 @@ def _git_push(argv):
     return ["PUSH:" + w[:64] for w in why]   # what matters is the reason; a word is cut, so a subject stays short
 
 
-def _gh_api(argv):
+def _gh_api(argv, replaced=None):
     """A gh or hub api call's argv percent-decoded, as GitHub reads its path (`git/refs/heads%2Fmain`), and
     `PUSH:contents` when it puts or deletes a repository's file (repos/<o>/<r>/contents/…), which commits to the
     default branch unless a branch field names another. A branch the line can't tell is held too: HEAD, one gh reads
@@ -1076,9 +1082,13 @@ def _gh_api(argv):
     (the fields go to the query). The words are read as gh reads them: an option that takes a value takes the rest
     of its word or the next word (`-f --method=GET` is a field), the method only from -X or --method (the last; POST
     with a field or --input, else GET) and the branch only from a field (`-F branch={branch}` is the current one); a
-    method that is an expansion the line can't resolve counts as a write. The endpoint's route is _gh_routes': a
-    write there gives `PUSH:merges` for repos/<o>/<r>/merges (any form), and `PUSH:unknown` where the line can't
-    tell where it goes (`"$EP"`, `repos/o/r/$P`, `git/refs/heads/$B`, a `..` segment)."""
+    method that is an expansion the line can't resolve counts as a write. The endpoint's route is _gh_routes' (with
+    `replaced`, the word xargs -I puts its input in place of): a write there gives `PUSH:merges` for repos/<o>/<r>/merges
+    (any form), `PUSH:merge-upstream` for a fork's merge-upstream into the default branch or one the line can't tell,
+    and `PUSH:unknown` where the line can't tell where it goes (`"$EP"`, `repos/o/r/$P`, `git/refs/heads/$B`, a `..`
+    segment, no endpoint, which xargs appends). A PUT or DELETE with an expansion before its route is unknown too
+    when its body is the contents API's (message and content, or message and sha, or one the line can't read) and
+    no literal branch field names another branch."""
     words = [unquote(w) for w in argv]
     valued = _GH_VALUED.keys() - ({"-t"} if _program(argv) == "hub" else set())
     given, positional, i = [], [], 2
@@ -1106,23 +1116,30 @@ def _gh_api(argv):
                   "POST" if kinds & {"field", "raw", "input"} else "GET")
     magic, branch = next(((kind == "field", v) for kind, key, v in reversed(fields) if key == "branch"), (False, ""))
     branch = branch.removeprefix("refs/").removeprefix("heads/")
-    routes, unknown, expanded = [], False, False
-    for endpoint in positional or [""]:   # (gh takes one; read each of more, which gh refuses)
-        found, unread, before = _gh_routes(endpoint)
+    keys = {key for _, key, _ in fields}
+    unread_body = "input" in kinds or any("$" in k or "`" in k for k in keys)
+    # a branch field that alone names a branch other than the default: literal, and no body or field name hides another
+    named = bool(branch) and not unread_body and branch[:1] != "@" and "$" not in branch and "`" not in branch and \
+        not (magic and "{branch}" in branch) and branch not in ("main", "master", "HEAD")
+    routes, unknown, expanded = [], not positional, False   # no endpoint: xargs appends it (gh refuses none)
+    for endpoint in positional:   # (gh takes one; read each of more, which gh refuses)
+        found, unread, before = _gh_routes(endpoint, replaced)
         routes, unknown, expanded = routes + found, unknown or unread, expanded or before
     unread_method = not method or "$" in method or "`" in method
+    put, delete = (unread_method or method.upper() == m for m in ("PUT", "DELETE"))
     write = unread_method or method.upper() not in ("GET", "HEAD")
     # a PUT or DELETE with an expansion before its route may be the contents API's, whose file path is every segment
-    # after contents/ (X=o/r/contents: repos/$X/issues/1 is a file)
-    unknown = unknown or expanded and (unread_method or method.upper() in ("PUT", "DELETE"))
+    # after contents/ (X=o/r/contents: repos/$X/issues/1 is a file), but only with the body that API takes
+    unknown = unknown or expanded and not named and (put and (unread_body or {"message", "content"} <= keys) or
+                                                      delete and (unread_body or {"message", "sha"} <= keys))
     out = [" ".join(words)]
     if write and unknown:
         out.append("PUSH:unknown " + (positional[0] if positional else "")[:64])
     elif write and "merges" in routes:
         out.append("PUSH:merges " + method[:64])
-    elif (unread_method or method.upper() in ("PUT", "DELETE")) and "contents" in routes and (
-            "input" in kinds or branch[:1] in ("", "@") or "$" in branch or "`" in branch or
-            magic and "{branch}" in branch or branch in ("main", "master", "HEAD")):
+    elif write and "merge-upstream" in routes and not named:
+        out.append("PUSH:merge-upstream " + branch[:64])
+    elif (put or delete) and "contents" in routes and not named:
         out.append("PUSH:contents " + method[:64])
     return out
 
@@ -1131,13 +1148,17 @@ def _pushes(commands):
     """Each command's argv, as the `argv` field reads it, but a git push as what makes it need a person (_git_push):
     one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master; a gh or hub
     api call also percent-decoded (_gh_api); a kubectl dry run (_kubectl_dry_run) as `DRYRUN:<argv>`."""
-    out = []
+    out, replaced = [], None
     for command in commands:
         argv = command["argv"]
+        if argv[:1] == ["xargs"]:   # the word its -I puts the input in place of, for the command it runs (next)
+            inner = next(shell._unwrap("xargs", argv[1:]))
+            replaced = shell._xargs_replace(argv[1:len(argv) - len(inner)])
         push = _git_push(argv)
         out += push if push is not None else ["DRYRUN:" * _kubectl_dry_run(argv) + " ".join(argv)]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
-            out += [s for s in _gh_api(argv) if s not in out]
+            given = replaced if command["via"][-1:] == ["xargs"] else None
+            out += [s for s in _gh_api(argv, given) if s not in out]
     return out
 
 

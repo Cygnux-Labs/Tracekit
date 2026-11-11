@@ -198,12 +198,16 @@ as a path or in a URL) on the default branch or one the line can't tell: no `bra
 reads from a file (`-F branch=@b.txt`) or an expansion gives, `HEAD`, or any `--input`, whose body then names the branch. Its
 words are read as gh reads them (an option that takes a value takes the rest of its word or the next word, so `-f
 --method=GET` is a field; `-F` fills gh's `{branch}` placeholder, `-f` doesn't). A write whose target the line can't
-tell gives `PUSH:unknown`. An expansion (`$X`, `${…}`, `$(…)`, a backquoted span) or `{branch}` may stand for any
-number of path segments, so one at or before the route's place leaves the route to the first literal segment after it
-that names one (`issues`, `pulls`, `actions` and the like, or `git`, `contents`, `merges`), and is unknown without one;
-a PUT or DELETE with one before its route is unknown whatever follows (the contents API takes every segment after
-`contents/` as the file's path). Unknown too: an expansion or `{branch}` after `git/` (where it names the ref), and a
-`.` or `..` segment. A write to `merges` gives `PUSH:merges`. A remote's push mapping given through git's config environment (`GIT_CONFIG_KEY_<n>`,
+tell gives `PUSH:unknown`. An expansion (`$X`, `${…}`, `$(…)`, a backquoted span), `{branch}`, a `{}` that `find
+-exec`, `parallel` or `xargs -I{}` fills in, or the word `xargs -I` replaces may stand for any number of path segments,
+so one at or before the route's place leaves the route to the first literal segment after it that names one (`issues`,
+`pulls`, `actions`, `code-scanning` and the like, or `git`, `contents`, `merges`, `merge-upstream`), and is unknown
+without one. A PUT or DELETE with one before its route is unknown whatever follows when its body is the contents API's
+(`message` and `content`, or `message` and `sha`, or a body the line can't read) and no literal `branch` field names
+another branch: that API takes every segment after `contents/` as the file's path. Unknown too: a write with no
+endpoint (`xargs` appends it), an expansion or `{branch}` after `git/` (where it names the ref), and a `.` or `..`
+segment. A write to `merges` gives `PUSH:merges`, and a fork's `merge-upstream` into main or master (or a branch the
+line can't tell) `PUSH:merge-upstream`. A remote's push mapping given through git's config environment (`GIT_CONFIG_KEY_<n>`,
 `GIT_CONFIG_VALUE_<n>`) is read as its `-c` pair.
 
 The shell field `effects` is each file the commands write, as `WRITE_TARGET:path`, or delete, as

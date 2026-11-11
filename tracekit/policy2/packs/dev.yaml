@@ -71,8 +71,9 @@ ask:
     # kubectl apply or delete, but not a dry run kubectl reads as one: engine._kubectl_dry_run's `DRYRUN:`), each after
     # up to eight options with a value or not; a gh or hub api call naming main's or master's ref (git/refs/heads/main,
     # ref=refs/heads/main), merging branches (repos/<o>/<r>/merges, repositories/<id>/merges) or putting or deleting a
-    # file (engine._gh_api's `PUSH:contents`, `PUSH:merges` for any form of the merges path, and `PUSH:unknown` for a
-    # write whose target the line can't tell), read percent-decoded as GitHub reads its path;
+    # file (engine._gh_api's `PUSH:contents`, `PUSH:merges` for any form of the merges path, `PUSH:merge-upstream`
+    # for a fork's merge-upstream into main or master, and `PUSH:unknown` for a write whose target the line can't
+    # tell), read percent-decoded as GitHub reads its path;
     # a GraphQL updateRef or updateRefs, mergeBranch or createCommitOnBranch, read as TK-A002 reads deleteRef;
     # Sapling's `sl push --to main`, `git town ship` (or git-town), and Jujutsu's `jj git push` with no arguments,
     # --all, --tracked, a main or master bookmark (exact: too) or a glob:.

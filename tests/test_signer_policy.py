@@ -4811,6 +4811,62 @@ class GuardrailsAndPushes(unittest.TestCase):
             "gh api -X POST repos/$OWNER/$REPO/git/refs -f ref=refs/heads/feature-x -f sha=$SHA",
             "gh api -X PATCH repos/$OWNER/r/issues/$N -f state=closed")], "allow")
 
+    def test_an_endpoint_the_line_doesnt_give_is_unknown(self):
+        """Seventh review of #605: xargs appends gh api's endpoint, and xargs -I, find -exec and parallel put it in place
+        of a word ({} or xargs' own), so a write with no endpoint, or one that word makes, named no route and ran. Such
+        a write is held now; a read through xargs isn't, nor a loop that fills an id after a fixed route."""
+        c = "-f message=m -f content=Yg=="
+        self.verdicts([("Bash", {"command": x}) for x in (
+            "echo repos/o/r/merges | xargs gh api -f base=main -f head=feature",
+            "echo repos/o/r/git/refs/heads/main | xargs gh api -X PATCH -f sha=x",
+            f"echo repos/o/r/contents/a.txt | xargs gh api -X PUT {c}",
+            f"echo repos/o/r/contents/a.txt | xargs -I{{}} gh api -X PUT {{}} {c}",
+            f"echo repos/o/r/contents/a.txt | xargs -I% gh api -X PUT % {c}",
+            f"find . -name ep -exec gh api -X PUT {{}} {c} \\;",
+            f"parallel gh api -X PUT {{}} {c} ::: repos/o/r/contents/a.txt",
+            "xargs gh api -X PATCH -f sha=x < endpoints.txt", f"xargs -a eps.txt gh api -X PUT {c}",
+            "echo repos/o/r/git/refs/heads/main | xargs -n1 gh api -X PATCH -f sha=x")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": x}) for x in (
+            "echo repos/o/r/pulls | xargs gh api",
+            "echo 1 2 | xargs -I{} gh api -X POST repos/o/r/issues/{}/comments -f body=x")], "allow")
+
+    def test_a_put_or_delete_behind_an_expansion_is_held_only_with_a_contents_body(self):
+        """Seventh review of #605: the PUT and DELETE rule held every PUT or DELETE with an expansion before its route,
+        but GitHub's contents API refuses a PUT without both message and content (422) and a DELETE without both
+        message and sha, and a literal branch field other than main or master picks the target alone. One is held now
+        only with such a body (or one the line can't read: --input, a field name that is an expansion)."""
+        for repo in ("$REPO", "$GITHUB_REPOSITORY"):
+            self.verdicts([("Bash", {"command": f"gh api -X PUT repos/{repo}/{x}"}) for x in (
+                "issues/$N/labels -f 'labels[]=bug'", "collaborators/$USER -f permission=push", "issues/$N/lock",
+                "topics -f 'names[]=x'", "subscription -F subscribed=true", "pulls/$PR/update-branch",
+                "actions/permissions -F enabled=true", "notifications",
+                "contents/a.txt -f message=m -f content=Yg== -f branch=feature")], "allow")
+            self.verdicts([("Bash", {"command": f"gh api {x}"}) for x in (
+                f"-X PUT repos/{repo}/contents/a.txt -f message=m -f content=Yg== -f branch=main",
+                f"-X PUT repos/{repo}/issues/1 -f message=m -f content=Yg==",
+                f"-X DELETE repos/{repo}/issues/1 -f message=m -f sha=s", f"-X PUT repos/{repo}/issues/1 --input b.json",
+                f'-X PUT repos/{repo}/issues/1 -f "$K=x" -f message=m',
+                f"-X PUT repos/{repo}/issues/1 -f message=m -f content=Yg== -f branch=feature -f $K=main")],
+                          "ask", "TK-A056")
+
+    def test_security_and_repository_setting_routes_place_a_call(self):
+        """Seventh review of #605: code scanning, Dependabot, secret scanning, attestations and the other routes that
+        write no branch weren't among the routes that place a call behind an expansion, so their writes were held."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api -X POST repos/$REPO/code-scanning/sarifs -f commit_sha=$SHA -f ref=$REF -f sarif=$S",
+            "gh api -X POST repos/$REPO/attestations --input att.json",
+            "gh api -X POST repos/$REPO/dependabot/alerts/$N -f state=dismissed",
+            "gh api -X PATCH repos/$REPO/code-scanning/alerts/$N -f state=dismissed")], "allow")
+
+    def test_merging_upstream_into_the_default_branch_is_held(self):
+        """Seventh review of #605: POST repos/<o>/<r>/merge-upstream updates a fork's branch from upstream; with main or
+        master, or a branch the line can't tell, it is a push to main."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh api -X POST repos/o/r/merge-upstream -f branch=main",
+            "gh api -X POST repos/$X/merge-upstream -f branch=master",
+            "gh api -X POST repos/o/r/merge-upstream -f branch=$B")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": "gh api -X POST repos/o/r/merge-upstream -f branch=feature"})], "allow")
+
     def test_a_graphql_update_of_several_refs_is_held(self):
         """Sixth review of #605: TK-A056 read GraphQL's updateRef, not updateRefs, which updates several refs."""
         self.verdicts([("Bash", {"command": "gh api graphql -f query='mutation{updateRefs(input:{repositoryId:\"x\","
