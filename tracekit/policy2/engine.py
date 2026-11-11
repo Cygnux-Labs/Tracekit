@@ -432,6 +432,9 @@ class Engine:
         if (spent or work[0] > shell.MAX_WORK) and "TK-SHELL-PARSE" not in hits[on_parse_error]:
             hits[on_parse_error].append("TK-SHELL-PARSE")
             cause = cause or "budget"
+        if self.policy.get("oversize") == "ask" and "TK-OVERSIZE" in hits["deny"]:   # what it can't read waits for a
+            hits["deny"] = [i for i in hits["deny"] if i != "TK-OVERSIZE"]          # person (the dev pack), not a deny
+            hits["ask"].append("TK-OVERSIZE")
         verdict = next((sec for sec in SECTIONS if hits[sec]), "allow")
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
                "policy_hash": self.policy_hash, "engine": self.engine}
@@ -1168,6 +1171,8 @@ def _pushes(commands):
         if argv[:1] in (["xargs"], ["gxargs"]):   # the word its -I puts the input in place of, for what it runs
             inner = next(shell._unwrap(argv[0], argv[1:]))
             replaced = shell._xargs_replace(argv[1:len(argv) - len(inner)])
+        elif not {"xargs", "gxargs"} & set(command.get("via", ())):
+            replaced = None   # (the word was that xargs' only)
         push = _git_push(argv)
         out += push if push is not None else ["DRYRUN:" * _kubectl_dry_run(argv) + " ".join(argv)]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
@@ -1270,24 +1275,35 @@ def _runs(args, tool=""):
     whole = canonical(args)
     whole = "SQL:" + whole if len(whole) > MAX_SUBJECT else None
 
-    def walk(value):
+    def lex(text):
+        for code, closed in dict.fromkeys(classes.sql_read(text, *d) for d in classes.SQL_DIALECTS.values()):
+            *ended, last = _BLANKS.sub(" ", code).split(";")
+            out.extend("SQL;" + p.strip() for p in ended if p.strip())
+            if closed and last.strip():
+                out.append("SQL:" + last.strip())
+
+    def walk(value, sql=False, cmd=False):
+        """`sql`, `cmd`: under a sql or command argument already read, so each string is lexed once (the keys of an
+        object under a sql argument too) and a command argument's value is written out once, at the outermost."""
+        if isinstance(value, str):
+            if sql and not whole:
+                lex(value)
+            return
         items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
         for key, v in items:
             name = key.lower() if isinstance(key, str) else None
-            if name in _COMMAND_KEYS:
+            if sql and not whole and name is not None:
+                lex(key)
+            if name in _COMMAND_KEYS and not cmd:
                 plain = tag == "CMD:" and isinstance(v, str) and _PLAIN_WORD.fullmatch(v)
                 out.append("WORD:" + v.rsplit("/", 1)[-1] if plain else tag + (v if isinstance(v, str) else canonical(v)))
-            elif name in _SQL_KEYS and whole:
-                out.append(whole)
-            elif name in _SQL_KEYS:
-                for text in (s for s in ([v] if isinstance(v, str) else _strings(v)) if isinstance(s, str)):
-                    readings = (classes.sql_read(text, *d) for d in classes.SQL_DIALECTS.values())
-                    for code, closed in dict.fromkeys(readings):
-                        *ended, last = _BLANKS.sub(" ", code).split(";")
-                        out.extend("SQL;" + p.strip() for p in ended if p.strip())
-                        if closed and last.strip():
-                            out.append("SQL:" + last.strip())
-            walk(v)
+                walk(v, sql, True)
+            elif name in _SQL_KEYS and not sql:
+                if whole:
+                    out.append(whole)
+                walk(v, True, cmd)
+            else:
+                walk(v, sql, cmd)
     walk(args)
     return list(dict.fromkeys(out))
 

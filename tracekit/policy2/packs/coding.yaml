@@ -887,7 +887,7 @@ ask:
     # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
     # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin). Claude Code
     # keeps its user settings and MCP servers in ~/.claude.json, and its skills and slash commands (which can run
-    # commands with `!` lines) under .claude/ (flagged as the rest of .claude/); Cursor its MCP servers in
+    # commands with `!` lines) under .claude/ (held, as the rest of .claude/ is); Cursor its MCP servers in
     # .cursor/mcp.json.
     # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
     # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),

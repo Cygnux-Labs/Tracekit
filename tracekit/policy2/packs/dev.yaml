@@ -20,9 +20,12 @@
 # rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-3'
+version: '2026.11-dev-4'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
+# a call over 64 KiB, which the policy doesn't read, waits for a person (TK-OVERSIZE as an ask) where the server pack's
+# TK-S002 would deny it unread: on a laptop a large file write is ordinary work
+oversize: ask
 
 tools:
   Agent: harness             # Claude Code: a subagent's prompt
@@ -97,7 +100,7 @@ ask:
     field: run
     # what a tool no pack maps (unknown_tools flags it) is given to run (engine._runs): `CMD:<value>` for each argument
     # TK-S010 reads as a command (command, commands, cmd, cmds, script or shell_command, in any case, at any depth),
-    # and each statement under a sql, query or statement argument as every SQL dialect lexes it (classes.sql_code:
+    # and each statement under a sql, query or statement argument as every SQL dialect lexes it (classes.sql_read:
     # comments and literals blanked, every blank run a space), `SQL;` before one a `;` ends and `SQL:` before the
     # last. A command line is any value but one plain word (`WORD:<its last /-part>`; letters, digits, `_ . : / -`: a
     # list or an object, a blank, a shell metacharacter or expansion makes one), and a plain word that changes the

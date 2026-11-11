@@ -132,6 +132,11 @@ class Compile(unittest.TestCase):
             with self.subTest(pack=name):
                 self.assertEqual(pc.build(os.path.join(PACKS, name))[1], [])
 
+    def test_oversize_is_ask_and_inherited(self):
+        self.assertIn("oversize must be ask", "\n".join(self.errors("oversize: deny\n")))
+        self.write("base.yaml", "oversize: ask\ntools:\n  Bash: shell\n")
+        self.assertEqual(pc.build(self.write("p.yaml", "extends: base.yaml\n"))[0]["oversize"], "ask")
+
     def test_on_parse_error_is_ask_or_deny_and_inherited(self):
         self.assertIn("on_parse_error must be ask or deny", "\n".join(self.errors("on_parse_error: flag\n")))
         self.write("base.yaml", "on_parse_error: deny\ntools:\n  Bash: shell\n")
@@ -4959,8 +4964,8 @@ class Classes(unittest.TestCase):
         self.assertEqual(classes.extract("sql", "run_sql", {"sql": "/**/drop table x"})["verb"], "DROP")
 
     def test_sql_is_lexed_in_linear_time(self):
-        """Third review of #605: a -- or # comment ended by a CR searched on to the next LF, and a nested /* comment
-        searched on to the next */ for each opener, so a 1 MiB statement of them took seconds to minutes."""
+        """Third review of #605: each SQL reading is linear in the statement's length: 1 MiB of comments a CR or LF
+        ends, or of nested comment openers, is read within the bound."""
         for unit in ("--\r", "--\n", "#\r", "/* ", "/*x"):
             s = unit * ((1 << 20) // len(unit)) + "*/"
             with self.subTest(unit=unit):

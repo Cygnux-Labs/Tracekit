@@ -9,6 +9,7 @@ import random
 import shutil
 import tempfile
 import time
+import tracemalloc
 import unittest
 from unittest import mock
 
@@ -4285,15 +4286,18 @@ class PackReading(unittest.TestCase):
                 self.assertEqual(self.server.decide(tool, args, cls)["verdict"], "allow")
         self.assertEqual(self.server.decide("mcp:billing/get_refund", {"id": "re_FAKE"})["verdict"], "flag")
 
-    def test_a_large_write_is_denied_unread_on_the_laptop_pack_as_on_a_server(self):
+    def test_a_large_write_waits_for_a_person_on_the_laptop_pack_and_is_denied_on_a_server(self):
         """#604: the laptop pack has the server pack's TK-S002, which reads a Write's content for a secret: content
-        over 64 KiB it can't read is denied (TK-OVERSIZE in TK-S002's section), as on a server. The coding pack alone
-        only flags it."""
-        args = {"file_path": "/repo/data.py", "content": "x = 1\n" * 12000}
-        d = self.dev.decide("Write", args)
-        self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
-        d = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex").decide("Write", args)
-        self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-OVERSIZE"]))
+        over 64 KiB it can't read takes TK-OVERSIZE in TK-S002's section, a deny on a server. The laptop pack's
+        `oversize: ask` makes it wait for a person instead (what Tracekit can't read is never an unapprovable deny
+        there). The coding pack alone only flags it."""
+        args = {"file_path": "/repo/data.py", "content": "x = 1\n" * 18000}
+        for pack, want in (("dev.yaml", "ask"), ("server.yaml", "deny"), ("strict.yaml", "deny"), ("coding.yaml", "flag")):
+            with self.subTest(pack=pack):
+                d = Engine(pc.build(os.path.join(PACKS, pack))[0], "regex").decide("Write", args)
+                self.assertEqual((d["verdict"], d["rule_ids"]), (want, ["TK-OVERSIZE"]))
+        d = self.dev.decide("Write", {"file_path": "/repo/.env", "content": "x = 1\n" * 18000})
+        self.assertEqual(d["verdict"], "deny")   # a deny a rule reads before the long subject stays a deny
 
     def test_a_deployment_glob_for_one_mcp_server_beats_the_packs_catch_all(self):
         d = os.path.join(tmpdir(self), "packs")
@@ -4497,11 +4501,11 @@ class GuardrailsAndPushes(unittest.TestCase):
                       "flag", "TK-UNKNOWN-TOOL")
 
     def test_sql_is_read_as_each_dialect_reads_it(self):
-        """Second review of #605: TK-A062 matched SQL blanks with a pattern, so a form feed or vertical tab, a long or
-        starred comment, `--` ended by CR, MySQL's `#`, an alias in UPDATE, INSERT IGNORE, DELETE alias FROM, DROP
-        TEMPORARY, ALTER TABLE … DROP, and an unterminated GRANT, ALTER USER, CREATE USER or COPY TO PROGRAM slipped by.
-        It reads each statement as classes.sql_code does for every dialect now (comments and literals blanked, any blank
-        a space). A bare SELECT, and English shaped otherwise, stay flagged."""
+        """Second review of #605: TK-A062 reads each statement as every SQL dialect lexes it (classes.sql_read:
+        comments and literals blanked, any blank a space), so a form feed or vertical tab, a long or starred comment,
+        `--` ended by CR, MySQL's `#`, an alias in UPDATE, INSERT IGNORE, DELETE alias FROM, DROP TEMPORARY, ALTER
+        TABLE … DROP, and an unterminated GRANT, ALTER USER, CREATE USER or COPY TO PROGRAM are each read as the
+        statement they are. A bare SELECT, and English shaped otherwise, stay flagged."""
         held = ["DROP\fTABLE users", "\fDROP TABLE users", "DROP\x0bTABLE users", "DROP TABLE users",
                 "/* a*b */ DROP TABLE users", "/* " + "x" * 300 + " */ DROP TABLE users", "-- x\rDROP TABLE users",
                 "# x\nDROP TABLE users", "DROP -- x\nTABLE users", "COPY (SELECT '') TO PROGRAM 'id'",
@@ -4658,10 +4662,9 @@ class GuardrailsAndPushes(unittest.TestCase):
             "gh api https://api.github.com/repos/o/r/contents/a.txt")], "flag", "TK-F012")
 
     def test_a_comment_ends_where_each_database_ends_it(self):
-        """Third review of #605: the second review's fix ended a -- or # comment at a CR in every dialect, but MySQL
-        and SQLite end one only at a LF (SQLite runs `-- x\\r'\\nDROP TABLE users\\n-- '`), so a quote after the CR
-        hid the statement from every reading, and the server and strict packs let it run. Each dialect ends a comment
-        where it does now: PostgreSQL and SQL Server at a CR or LF, MySQL and SQLite at a LF."""
+        """Third review of #605: a -- or # comment ends where each database ends it: PostgreSQL and SQL Server at a
+        CR or LF, MySQL and SQLite at a LF. The statement after it is read in each reading, by the server and strict
+        packs' SQL rules and by TK-A062."""
         cases = [(f"-- x\r'\n{s}\n-- '", rule) for s, rule in (
             ("DROP TABLE users", "TK-DB001"), ("TRUNCATE users", "TK-DB002"), ("GRANT ALL ON users TO app", "TK-DB004"))]
         cases += [(s, "TK-DB001") for s in (
@@ -4676,6 +4679,29 @@ class GuardrailsAndPushes(unittest.TestCase):
                     with self.subTest(pack=pack, tool=tool, sql=s):
                         self.assertIn(rule, svc.evaluate(e, tool, {key: s})[0]["rule_ids"])
         self.verdicts([("warehouse_query", {"query": s}) for s, _ in cases], "ask", "TK-A062")
+
+    def test_a_nested_argument_is_read_once(self):
+        """Final review of #605: TK-A062 read each string under a sql, query or statement argument once for each such
+        argument above it, and wrote a command argument's value out again for each command argument above it, so a
+        call under 64 KiB nested 480 levels deep took about 22 s. Each string is read once, in time and memory linear in
+        the call (300 levels here: deeper, main's _strings reaches Python's recursion limit, an engine error)."""
+        sql, cmd = "*" * 60000, "y" * 60000
+        for _ in range(300):
+            sql = {"sql": sql}
+            cmd = {"command": cmd}
+        for args in ({"query": sql}, {"command": cmd}):
+            verdicts = set()
+            for e in self.engines:
+                with self.subTest(engine=e.engine, key=next(iter(args))):
+                    start = time.process_time()
+                    verdicts.add((e.decide("my_db_tool", args)["verdict"]))
+                    self.assertLess(time.process_time() - start, 1.0 * SLOWER)
+                    tracemalloc.start()
+                    e.decide("my_db_tool", args)
+                    peak = tracemalloc.get_traced_memory()[1]
+                    tracemalloc.stop()
+                    self.assertLess(peak, 8 << 20)
+            self.assertEqual(len(verdicts), 1, verdicts)
 
     def test_tk_a041_keeps_reading_the_mcp_sql_tools_the_dev_pack_maps(self):
         """Fourth review of #605: TK-A041 keeps reading the MCP SQL tools the dev pack maps to class sql (it read only
@@ -4939,19 +4965,20 @@ class GuardrailsAndPushes(unittest.TestCase):
 
     def test_an_over_cap_calls_sql_isnt_lexed_and_its_verdict_stands(self):
         """Sixth review of #605: TK-A062's SQL reading and the sql class's lexed every dialect of a call over MAX_SUBJECT,
-        which every pack that reads them denies unread (TK-OVERSIZE): a 900 KB statement took about half a second. A
-        call that size is read as written now, its rules taking TK-OVERSIZE in their sections."""
+        which every pack that reads them holds unread (TK-OVERSIZE): a 900 KB statement took about half a second. A
+        call that size is read as written now, its rules taking TK-OVERSIZE in their sections (on the laptop pack an
+        ask, `oversize: ask`; a deny on a server)."""
         server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0])
-        for engine, tool, args in (
-                (self.engines[0], "warehouse_query", {"query": "x;$a" * 225000 + "'"}),
-                (self.engines[0], "warehouse_query", {"query": ["x;$a" * 3750] * 60}),
-                (self.engines[0], "execute_sql", {"sql": "SELECT '" + "a" * (1 << 20) + "'"}),
-                (server, "execute_sql", {"sql": "x;$a" * 225000 + "'"})):
+        for engine, want, tool, args in (
+                (self.engines[0], "ask", "warehouse_query", {"query": "x;$a" * 225000 + "'"}),
+                (self.engines[0], "ask", "warehouse_query", {"query": ["x;$a" * 3750] * 60}),
+                (self.engines[0], "ask", "execute_sql", {"sql": "SELECT '" + "a" * (1 << 20) + "'"}),
+                (server, "deny", "execute_sql", {"sql": "x;$a" * 225000 + "'"})):
             with self.subTest(tool=tool, size=len(str(args))):
                 start = time.process_time()
                 d = engine.decide(tool, args)
                 self.assertLess(time.process_time() - start, 0.1 * SLOWER)
-                self.assertEqual((d["verdict"], "TK-OVERSIZE" in d["rule_ids"]), ("deny", True), d)
+                self.assertEqual((d["verdict"], "TK-OVERSIZE" in d["rule_ids"]), (want, True), d)
 
     def test_more_ways_to_push_to_main_and_to_publish(self):
         """Review of #605: git reads `heads/main` as main and `tags/v1` or `tag v1` as a tag; `--attr-source` takes a
@@ -5348,6 +5375,15 @@ class SignerPolicy(unittest.TestCase):
         [rec] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
         self.assertEqual(rec["reasons"], [d["reason"]])
         self.assertTrue(d["reason"].startswith("TK-OVERSIZE: over 64 KiB, so never matched: "), d["reason"])
+        self.assertTrue(d["reason"].endswith(". Instead: Split it into calls under 64 KiB each (write a large file in "
+                                             "parts)."), d["reason"])
+
+    def test_an_oversize_call_on_the_laptop_pack_waits_for_a_person(self):
+        """Final review of #605: on the laptop pack a call over 64 KiB is held (`oversize: ask`), and says so."""
+        self.open(svc.load_policy(svc.DEFAULT_POLICY))
+        d = self.decide("Write", {"file_path": "/repo/big.py", "content": "x = 1\n" * 18000})
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-OVERSIZE"]))
+        self.assertTrue(d["reason"].endswith("(write a large file in parts), or have a person approve it."), d["reason"])
 
     def test_a_fallback_timeout_says_its_rule_did_not_match(self):
         # the timed-out rule's own reason and remedy were shown, as if it had matched

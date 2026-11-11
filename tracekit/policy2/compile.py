@@ -19,7 +19,7 @@ from ..wiki import wiki_url
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", "on_parse_error", *SECTIONS, *DETECT}
+            "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
              "remedy"}
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
@@ -404,6 +404,8 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
+    if pol.get("oversize", "ask") != "ask":   # (left out, TK-OVERSIZE takes its rule's section)
+        errors.append(f"{path}: oversize must be ask")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):
