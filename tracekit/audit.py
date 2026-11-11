@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import __version__
+from .agent_hooks import AGENT_NAMES, tool as hook_tool
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
@@ -45,9 +46,9 @@ def _session_from_path(path: str) -> str:
     return base
 
 
-def _entry_time(entry: dict) -> datetime | None:
+def _entry_time(entry: dict, key: str = "timestamp") -> datetime | None:
     """Time of a transcript entry if present (Claude Code uses 'timestamp'), UTC unless it says."""
-    ts = entry.get("timestamp")
+    ts = entry.get(key)
     if isinstance(ts, str):
         try:
             dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
@@ -87,29 +88,11 @@ def _iter_transcripts(root: str, unreadable: list):
             yield path, _session_from_path(os.path.relpath(path, root))
 
 
-def audit(root: str, policy_path: str | None = None, since: str | None = None, show: bool = False) -> dict:
-    """Replay tool calls under root. Returns the report dict.
-
-    Counts malformed lines and unreadable files. Never writes.
-    """
-    now = time.time()
-    try:
-        since_ts = when(since, now) if since else 0.0
-    except argparse.ArgumentTypeError as e:   # report's --since type: here an unreadable --since is a ValueError
-        raise ValueError(str(e)) from None
-    if since_ts >= now:
-        raise ValueError(f"--since {since[:40]!r} is not in the past")
-    engine = load_policy(policy_path or DEFAULT_POLICY)
-
-    counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
-    by_rule: dict[str, int] = {}
-    # lean: every call is kept in memory (about 1 KB each, 2 KB with --json, measured on 158k calls; --show text is
-    # capped at report.CALL_WIDTH); stream the report's lines instead if a real transcript folder outgrows that
-    calls: list[dict] = []
-    skipped_malformed = 0
-    unreadable: list[dict] = []
-    seen: set[bytes] = set()   # calls by id and content: a resumed or forked session's file repeats those it copied
-
+def _claude_code(root: str, since_ts: float, unreadable: list):
+    """Claude Code's reader: (time, session, tool, args) for each tool use in the transcripts under root, None for a
+    line that isn't JSON. A tool use whose id and call were read already (a resumed or forked session's file repeats
+    those it copied) is yielded once."""
+    seen: set[bytes] = set()
     for path, session in _iter_transcripts(root, unreadable):
         f, err = _safe_open(path)
         if err:
@@ -118,7 +101,7 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
         try:
             for _n, entry in transcript_entries(f, final=True):
                 if entry is None:
-                    skipped_malformed += 1
+                    yield None
                     continue
                 if entry.get("type") != "assistant":
                     continue
@@ -142,29 +125,116 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
                         continue
                     if key:
                         seen.add(key)
-                    try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its
-                        # bare name, PowerShell also as a shell line
-                        decision = evaluate(engine, tool, args)[0]
-                    except RecursionError:   # nesting the signer refuses (it denies an engine error itself)
-                        decision = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"]}
-                    verdict = decision.get("verdict", "allow")
-                    counts[verdict] = counts.get(verdict, 0) + 1
-                    for rid in decision.get("rule_ids") or []:
-                        by_rule[rid] = by_rule.get(rid, 0) + 1
-                    rec = {
-                        "session": session,
-                        "time": at.isoformat() if at else None,
-                        "tool": tool,
-                        "verdict": verdict,
-                        "rule_ids": decision.get("rule_ids") or [],
-                    }
-                    if show:   # what an approver sees: redacted as the signer redacts it (.env content too)
-                        rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
-                    calls.append(rec)
+                    yield at, session, tool, args
         except OSError as e:   # a read that fails (a line nested past what json.loads takes is malformed)
             unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
             f.close()
+
+
+# one entry per agent: its name, its default folder (read when audit runs, so the env var that moves it counts), where
+# that folder is as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
+# (time, session, tool, args), None for a line it counts as malformed
+READERS = {"claude-code": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
+                           _claude_code)}
+
+
+def _calls(path: str, since_ts: float, unreadable: list, agent: str | None = None):
+    """The reader of a plain calls file (`-` for stdin): one JSON object a line, with `tool` (a string) and `args` (an
+    object), and optionally `time` (ISO-8601) and `session`. A line without `tool` and `args` is malformed. With an
+    agent of agent_hooks.AGENT_NAMES, each call is mapped as that agent's live hook maps it."""
+    if path == "-":
+        f, err = sys.stdin.buffer, None
+    else:
+        f, err = _safe_open(path)
+    if err:
+        unreadable.append({"path": path, "error": err})
+        return
+    name = "stdin" if path == "-" else os.path.basename(path)
+    try:
+        for _n, entry in transcript_entries(f, final=True):
+            if entry is None or not isinstance(entry.get("tool"), str) or not isinstance(entry.get("args"), dict):
+                yield None
+                continue
+            at = _entry_time(entry, "time")
+            if at is not None and at.timestamp() < since_ts:
+                continue
+            tool, args = entry["tool"], entry["args"]
+            if agent in AGENT_NAMES:
+                tool, args = hook_tool(agent, tool, args)
+            session = entry.get("session")
+            yield at, session if isinstance(session, str) else name, tool, args
+    except OSError as e:
+        unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+    finally:
+        if f is not sys.stdin.buffer:
+            f.close()
+
+
+def audit(root: str | None = None, policy_path: str | None = None, since: str | None = None, show: bool = False,
+          agent: str | None = None, calls: str | None = None) -> dict:
+    """Replay tool calls and return the report dict: those of a calls file (`calls`, mapped as `agent`'s hook maps
+    them), else those under root (Claude Code's folder, or `agent`'s reader's), else those in every reader's default
+    folder that exists.
+
+    Counts malformed lines and unreadable files. Never writes.
+    """
+    now = time.time()
+    try:
+        since_ts = when(since, now) if since else 0.0
+    except argparse.ArgumentTypeError as e:   # report's --since type: here an unreadable --since is a ValueError
+        raise ValueError(str(e)) from None
+    if since_ts >= now:
+        raise ValueError(f"--since {since[:40]!r} is not in the past")
+    engine = load_policy(policy_path or DEFAULT_POLICY)
+    unreadable: list[dict] = []
+    if calls is not None:
+        sources = [(agent or "other", calls, _calls(calls, since_ts, unreadable, agent))]
+    elif root is not None:
+        name = agent or "claude-code"
+        sources = [(name, root, READERS[name][2](root, since_ts, unreadable))]
+    else:
+        sources = [(name, folder, read(folder, since_ts, unreadable))
+                   for name, (default, _, read) in READERS.items() if os.path.isdir(folder := default())]
+
+    counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
+    by_rule: dict[str, int] = {}
+    # lean: every call is kept in memory (about 1 KB each, 2 KB with --json, measured on 158k calls; --show text is
+    # capped at report.CALL_WIDTH); stream the report's lines instead if a real transcript folder outgrows that
+    calls_out: list[dict] = []
+    skipped_malformed = 0
+    agents: dict[str, dict] = {}
+
+    for name, folder, read in sources:
+        start = len(calls_out)
+        for item in read:
+            if item is None:
+                skipped_malformed += 1
+                continue
+            at, session, tool, args = item
+            try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its bare name,
+                # PowerShell also as a shell line
+                decision = evaluate(engine, tool, args)[0]
+            except RecursionError:   # nesting the signer refuses (it denies an engine error itself)
+                decision = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"]}
+            verdict = decision.get("verdict", "allow")
+            counts[verdict] = counts.get(verdict, 0) + 1
+            for rid in decision.get("rule_ids") or []:
+                by_rule[rid] = by_rule.get(rid, 0) + 1
+            rec = {
+                "agent": name,
+                "session": session,
+                "time": at.isoformat() if at else None,
+                "tool": tool,
+                "verdict": verdict,
+                "rule_ids": decision.get("rule_ids") or [],
+            }
+            if show:   # what an approver sees: redacted as the signer redacts it (.env content too)
+                rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
+            calls_out.append(rec)
+        mine = calls_out[start:]
+        agents[name] = {"folder": folder, "calls": len(mine), "sessions": len({c["session"] for c in mine})}
+    calls = calls_out
 
     times = [datetime.fromisoformat(c["time"]).timestamp() for c in calls if c["time"]]
     first = min(times, default=None)
@@ -176,7 +246,8 @@ def audit(root: str, policy_path: str | None = None, since: str | None = None, s
         "policy": policy_path or DEFAULT_POLICY,
         "policy_hash": engine.policy_hash,
         "since": since,
-        "sessions": len({c["session"] for c in calls}),
+        "sessions": len({(c["agent"], c["session"]) for c in calls}),
+        "agents": agents,
         "counts": counts,
         "by_rule": by_rule,
         "reasons": {**{i: ENGINE_RULES[i] for i in by_rule if i in ENGINE_RULES},   # what each rule is, as the viewer says it
@@ -202,6 +273,8 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
         report["disclaimer"],
         f"policy: {report['policy']} ({report['policy_hash']})",
         "",
+        "read: " + ("; ".join(f"{a} ({v['folder']}): {v['calls']} call{'s' * (v['calls'] != 1)} in {v['sessions']} "
+                             f"session{'s' * (v['sessions'] != 1)}" for a, v in report["agents"].items()) or "nothing"),
         f"{total} tool call{'s' * (total != 1)} in {s} session{'s' * (s != 1)}{window}: Tracekit would have denied "
         f"{n.get('deny', 0)} and held {n.get('ask', 0)} for a person; it would have flagged {n.get('flag', 0)} "
         f"and allowed {n.get('allow', 0)}.",
@@ -258,8 +331,9 @@ def share(report: dict) -> str:
     by_rule = collections.Counter((c["verdict"], rid, secs[rid] == c["verdict"] if rid in secs else None)
                                   for c in report["calls"] for rid in c["rule_ids"])
     window = _days(time.time() - when(report["since"])) if report["since"] else "every transcript"
+    kind = "Claude Code" if set(report["agents"]) == {"claude-code"} else "coding-agent"
     lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
-             f"{report['disclaimer']}: {s:,} Claude Code session{'s' * (s != 1)}",
+             f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
              "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule),
              *share_rules(by_rule)]
@@ -268,10 +342,16 @@ def share(report: dict) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code) through the policy and count what it would have held or "
-                                 "denied. Read-only, local, and a replay against today's policy, not a signed record.")
-    ap.add_argument("root", nargs="?", default=default_root(), help="the transcripts' folder (default: "
-                    "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)")
+                                 "transcripts (Claude Code), or in a calls file any agent's log can be turned into, "
+                                 "through the policy and count what it would have held or denied. Read-only, local, "
+                                 "and a replay against today's policy, not a signed record.")
+    ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or --agent's reader's (default: "
+                    "every known agent's folder that exists: " + "; ".join(f"{n}: {w}" for n, (_, w, _) in
+                                                                          READERS.items()) + ")")
+    ap.add_argument("--calls", metavar="FILE", help="read the calls from FILE (- for stdin) instead: one JSON object "
+                    'a line, {"tool": ..., "args": {...}}, with "time" and "session" if known')
+    ap.add_argument("--agent", choices=sorted({*READERS, *AGENT_NAMES}), help="with --calls, map each call's tool "
+                    "names as that agent's hook does; with ROOT, read it with that agent's reader")
     ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
     ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
     ap.add_argument("--show", action="store_true", help="also print each call, with secrets redacted")
@@ -281,13 +361,27 @@ def main(argv=None):
     o.add_argument("--share", action="store_true", help="print its counts alone, to post as a field report: no "
                                                        "session, path, time or call")
     a = ap.parse_args(argv)
-    root = os.path.expanduser(a.root)
-    if not os.path.isdir(root):
-        print(f"tracekit audit: no such folder: {root} (Claude Code keeps its transcripts in "
-              "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects)", file=sys.stderr)
+    if a.calls is not None and a.root is not None:
+        ap.error("give ROOT or --calls, not both")
+    root = os.path.expanduser(a.root) if a.root is not None else None
+    where = "; ".join(f"{n}: {w}" for n, (_, w, _) in READERS.items())
+    if a.calls is not None:
+        if a.calls != "-" and not os.path.isfile(a.calls):
+            print(f"tracekit audit: no such file: {a.calls}", file=sys.stderr)
+            return 2
+    elif root is not None:
+        if a.agent is not None and a.agent not in READERS:
+            print(f"tracekit audit: no reader for {a.agent}'s sessions yet; turn them into a calls file and use "
+                  f"--calls FILE --agent {a.agent}", file=sys.stderr)
+            return 2
+        if not os.path.isdir(root):
+            print(f"tracekit audit: no such folder: {root} ({where})", file=sys.stderr)
+            return 2
+    elif not any(os.path.isdir(default()) for default, _, _ in READERS.values()):
+        print(f"tracekit audit: no agent's folder found ({where}); give a ROOT, or --calls FILE", file=sys.stderr)
         return 2
     try:
-        report = audit(root, a.policy, a.since, a.show)
+        report = audit(root, a.policy, a.since, a.show, agent=a.agent, calls=a.calls)
     except (ValueError, OSError) as e:   # an unreadable --since; a policy file that's missing or doesn't lint
         print(f"tracekit audit: {e}", file=sys.stderr)
         return 2

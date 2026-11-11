@@ -11,7 +11,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from tracekit import __version__, audit, cli
+from tracekit import __version__, agent_hooks, audit, cli
+from tracekit.signer.service import DEFAULT_POLICY, evaluate, load_policy
 
 
 def _call(tool, args, days_ago=0):
@@ -19,6 +20,12 @@ def _call(tool, args, days_ago=0):
     at = datetime.now(timezone.utc) - timedelta(days=days_ago)
     return {"type": "assistant", "timestamp": at.isoformat().replace("+00:00", "Z"),
             "message": {"content": [{"type": "tool_use", "name": tool, "input": args}]}}
+
+
+def _line(tool, args, days_ago=0, **extra):
+    """A line of a calls file (#714)."""
+    at = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return {"time": at.isoformat().replace("+00:00", "Z"), "tool": tool, "args": args, **extra}
 
 
 def _write_jsonl(path: Path, lines: list[dict | str]):
@@ -322,6 +329,61 @@ class TestAudit(unittest.TestCase):
         text = audit.format_report(audit.audit(str(self.root)), every=True)
         self.assertNotIn("\x1b", text)
         self.assertIn("\\u001b", text)
+
+    def test_a_calls_file_is_decided_as_transcripts_are(self):
+        """#714: a calls file any agent's log can be turned into: a line without tool and args is malformed, --since
+        cuts by its time, and a line without a session counts under the file's name."""
+        path = self.root / "calls.jsonl"
+        _write_jsonl(path, [_line("Bash", {"command": "rm -rf /"}, session="s1"),
+                            _line("Bash", {"command": "terraform destroy -auto-approve"}),
+                            _line("Bash", {"command": "rm -rf /"}, days_ago=10),
+                            {"args": {"command": "ls"}}, {"tool": "Bash", "args": "ls"}, "not json"])
+        report = audit.audit(calls=str(path), since="7d")
+        self.assertEqual(report["counts"], {"deny": 1, "ask": 1, "flag": 0, "allow": 0})
+        self.assertEqual(report["skipped_malformed"], 3)
+        self.assertEqual([(c["agent"], c["session"]) for c in report["calls"]], [("other", "s1"), ("other", "calls.jsonl")])
+        code, out, _ = _run("--calls", str(path), "--since", "7d", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["counts"], report["counts"])
+        self.assertEqual(_run("--calls", str(self.root / "missing.jsonl"))[0], 2)
+
+    def test_a_calls_file_is_read_from_stdin(self):
+        data = (json.dumps(_line("Bash", {"command": "rm -rf /"})) + "\n").encode()
+        with mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(data))):
+            code, out, _ = _run("--calls", "-", "--json")
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["counts"]["deny"], 1)
+        self.assertEqual(report["calls"][0]["session"], "stdin")
+
+    def test_agent_maps_a_calls_files_names_as_its_hook_does(self):
+        args = {"command": "rm -rf /"}
+        _write_jsonl(self.root / "calls.jsonl", [_line("run_shell_command", args)])
+        tool, mapped = agent_hooks.tool("gemini", "run_shell_command", args)
+        expected = evaluate(load_policy(DEFAULT_POLICY), tool, mapped)[0]
+        call = audit.audit(calls=str(self.root / "calls.jsonl"), agent="gemini")["calls"][0]
+        self.assertEqual((call["agent"], call["tool"], call["verdict"], call["rule_ids"]),
+                         ("gemini", "Bash", expected["verdict"], expected["rule_ids"]))
+        self.assertEqual(call["verdict"], "deny")
+        code, _, err = _run(str(self.root), "--agent", "gemini")   # no reader of Gemini CLI's own sessions yet
+        self.assertEqual(code, 2)
+        self.assertIn("--calls FILE --agent gemini", err)
+
+    def test_with_no_root_every_known_agents_folder_that_exists_is_read(self):
+        home = self.root / "home"
+        folder = home / ".claude" / "projects"
+        _write_jsonl(folder / "p" / "s.jsonl", [_call("Bash", {"command": "rm -rf /"}), _call("Bash", {"command": "ls"})])
+        absent = ("nothere", (lambda: str(home / ".nothere"), "~/.nothere", audit._claude_code))
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}), \
+                mock.patch.dict(audit.READERS, dict([absent])):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, _ = _run("--json")
+            text = _run()[1]
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["agents"], {"claude-code": {"folder": str(folder), "calls": 2, "sessions": 1}})
+        self.assertEqual({c["agent"] for c in report["calls"]}, {"claude-code"})
+        self.assertIn(f"\nread: claude-code ({folder}): 2 calls in 1 session\n", text)
 
 
 if __name__ == "__main__":
