@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.10-v2-79'
+version: '2026.11-v2-81'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -63,8 +63,9 @@ deny:
   - id: TK-D003
     class: shell
     # each command's argv, as TK-A002: a later command (`git push origin main && ls -f`), a heredoc after the push or
-    # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push,
-    # git --work-tree dir push, an empty value too: git --namespace '' push); -f may sit in a short-option cluster
+    # a commit message naming one is not the push's arguments. `git send-pack` and `hub push` (hub runs git) push as
+    # `git push` does. Global options may come before `push` (git -C dir push, git --work-tree dir push, an empty
+    # value too: git --namespace '' push); -f may sit in a short-option cluster
     # before any `o` (`-uf`, `-4f`; `-of` is -o's value); --mirror may be abbreviated (`--m`: push's only option
     # starting with m); a `+` refspec forces too; so does send-pack's (git's plumbing push). A config that forces a push
     # (a mirror remote, a + push refspec) and an alias to push are read as the push they make (policy2/shell.py), and
@@ -72,7 +73,7 @@ deny:
     # field or body of any value but a literal false or 0 (a PATCH without one only fast-forwards, as a plain push
     # does; one whose body the parser can't read, from a file or a variable, is held as TK-SHELL-PARSE).
     # `[\w\W]*?` crosses a newline inside an argument; anchored and lazy, so the fallback engine stays linear
-    pattern: '^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack)\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
+    pattern: '^(?:git|hub) (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack)\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
     reason: force push
     remedy: Push without --force, --mirror or a + refspec (rebase onto the remote branch, or push a new branch); a person rewrites shared history themselves.
     rationale: Rewrites shared history.
@@ -294,6 +295,16 @@ ask:
     reason: removing or stopping Tracekit
     remedy: Have a person approve the held call if they mean to remove or stop Tracekit; the agent's own work has no need to.
     rationale: Uninstalling Tracekit's hooks, package or plugin, or stopping its signer, ends the record of what the agent does next; a person confirms it, where a deny would leave a person working through the agent no way to.
+  - id: TK-A057
+    class: shell
+    # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit
+    # init` run by the agent, which rewrites Tracekit's hooks (`--no-hooks` takes them out of the agent's settings)
+    # lean: `tracekit init --help` is held too: the joined argv can't tell a last word `--help` from a quoted value
+    # ending in ` --help`, with which init still runs; exempt it if the engine ever matches argv word by word
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? init( |$)'
+    reason: running Tracekit's setup from the agent's session
+    remedy: Have a person run tracekit init from their own terminal; it changes Tracekit's hooks.
+    rationale: Init rewrites the hooks that record the agent; a person confirms it, as for removing Tracekit (TK-A054).
   - id: TK-A020
     class: fs
     tool: Read|Grep
@@ -547,11 +558,11 @@ ask:
     remedy: Have a person approve the held call, or flush only the keys the change needs.
     rationale: FLUSHALL and FLUSHDB piped or fed into redis-cli empty the whole cache or database; a person confirms it.
   - id: TK-A041
-    class: mcp
     tool: .*([^a-zA-Z]|^)(sql|postgres|postgresql|mysql|maria|sqlite|clickhouse|mongo|database|duckdb|snowflake|bigquery|redshift|psql|pg|oracle|mssql|sqlserver|db)([^a-zA-Z]|$).*
     # a destructive SQL statement in an MCP tool's sql, query or statement argument, but only for SQL-like tools
-    # (the tool name carries sql, postgres, mysql, sqlite, database, db as a whole word, and kin; the mapped ones,
-    # mcp:postgres/query and kin, are TK-DB001..003's already, and a search tool's query text is not a call). The
+    # (the tool name carries sql, postgres, mysql, sqlite, database, db as a whole word, and kin; a search tool's query
+    # text is not a call), in any class: also where a pack maps the tool to class sql (the server parts map
+    # mcp:postgres/query and kin, which TK-DB001..003 read too, so the dev pack keeps this reading of them). The
     # statement is read as TK-A039 reads a client's: up to eight statements may come first, where a statement ends
     # at `;` only (an escape counts as one character, so a quoted or escaped keyword cannot hide the
     # destructive one), and a comment may come before the keyword; a comment ends with its argument's text (another
@@ -577,7 +588,8 @@ ask:
     rationale: Bulk deletes and version purges in object storage can't be undone, and a bucket's version history is often the only copy left.
   - id: TK-A002
     class: shell
-    # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. No dry-run exemption: `-o` takes the next
+    # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. A push is also `git send-pack` or
+    # `hub push`, as TK-D003 reads one. No dry-run exemption: `-o` takes the next
     # word as its value, so `git push -d origin main -o --dry-run` deletes main. Also held: a long-option prefix (`--del`,
     # `--pru`), `d` in a short-option cluster before any `o` (`-4d`, `-doci.skip`; the class leaves `d` out so a long word
     # can't backtrack) and an all-zero source object id (SHA-1 or SHA-256). `[\w\W]*?` crosses a newline inside an
@@ -588,7 +600,7 @@ ask:
     # glab api too; GitLab's name URL-encoded, as it takes one), or a GraphQL deleteRef mutation.
     # lean: a GitHub ref of up to nine `/`-separated parts (refs/heads/a/b/…), so the fallback engine doesn't back off
     # over a long path one character at a time; read more parts if a real branch name has them
-    pattern: '^(?:git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:/?repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:/?repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|glab api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:/?projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)|glab api (?:[^ ]* ){0,16}(?:/?projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:curl|wget|https?|xhs?) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)|(?:curl|wget|https?|xhs?) (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:https?|xhs?) (?:[^ ]* ){0,16}[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?deleteRef\b)'
+    pattern: '^(?:(?:git|hub) (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(?:push|send-pack)\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:/?repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)|(?:gh|hub) api (?:[^ ]* ){0,16}(?:/?repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|glab api (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:/?projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)|glab api (?:[^ ]* ){0,16}(?:/?projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches)))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:curl|wget|https?|xhs?) (?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*) (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)|(?:curl|wget|https?|xhs?) (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)(?:[^ ]* ){0,16}(?:-[^ =-]*X|--method|--request)(?:[ =]?[Dd][Ee][Ll][Ee][Tt][Ee]|[ =]?[$\x60][^ ]*|[ =][^ $\x60]*[$\x60][^ ]*)(?: |$)|(?:https?|xhs?) (?:[^ ]* ){0,16}[Dd][Ee][Ll][Ee][Tt][Ee] (?:[^ ]* ){0,16}(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+(?:/api/v3)?/repos/(?:[^/ ?#]+/[^/ ?#]+|[^/ ?#$]*\$[^/ ?#]*)/git/refs/(?:[^/ ?#]+/){0,8}[^/ ?#]+|(?:(?:[Hh][Tt][Tt][Pp][Ss]?://)?[^/ ?#]+/api/v4|\$\{?CI_API_V4_URL\}?)/projects/[^/ ?#]+/repository/(?:(?:branches|tags)/[^/ ?#]+|merged_branches))/?(?:[?#][^ ]*)?(?: |$)|(?:(?:gh|glab|hub) api|curl|wget|https?|xhs?) [\w\W]*?deleteRef\b)'
     reason: deleting a remote Git ref
     remedy: Have a person approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
@@ -798,8 +810,9 @@ ask:
   - id: TK-A014
     # TK-A003's twin for Claude Code's auto mode: a Bash, PowerShell or Monitor call's allowed_domains opens those hosts
     # to that one command inside the sandbox. Matched as canonical JSON: any list with an entry (or a value that isn't
-    # a list); an empty list opens nothing and isn't held. WebSearch's allowed_domains only narrows its results
-    tool: Bash|PowerShell|Monitor
+    # a list); an empty list opens nothing and isn't held. WebSearch's allowed_domains only narrows its results. `bash`
+    # too: the server parts map that name (Anthropic's bash tool) to the shell class as Bash
+    tool: '[Bb]ash|PowerShell|Monitor'
     field: allowed_domains
     pattern: '^(\[[^\]]|[^\[])'
     reason: opening network hosts beyond Claude Code's sandbox for one command
@@ -857,10 +870,69 @@ ask:
     # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
     # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
     # held
-    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^[^ =]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
+    pattern: '^(cp|install|mv|ln) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])([^ ]*?[^ ])?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^[^ =]*?\.git/(?:modules/(?:[^/ ]+/){1,8})?hooks(/| |$)|^git (-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
+
+  # --- the agent harness's settings: held, as changing the guardrails (#604)
+  - id: TK-F009
+    class: fs
+    tool: Write|Edit|MultiEdit
+    field: path
+    # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
+    # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
+    # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
+    # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
+    # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
+    # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin). Claude Code
+    # keeps its user settings and MCP servers in ~/.claude.json, and its skills and slash commands (which can run
+    # commands with `!` lines) under .claude/ (held, as the rest of .claude/ is); Cursor its MCP servers in
+    # .cursor/mcp.json. Cline runs every hook file in Documents/Cline/Hooks (wherever Documents is), ~/.cline/hooks and
+    # a workspace's .cline/hooks and .clinerules/hooks, and keeps its settings, hooksEnabled among them, in ~/.cline/.
+    # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
+    # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
+    # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
+    # ~/.config/powershell/, and the machine's in $PSHOME (System32/WindowsPowerShell/v1.0/, PowerShell/7/ and
+    # PowerShell/7-preview/).
+    # A file inside one of Claude Code's worktrees (.claude/worktrees/<name>/…) is judged as it is in the worktree: that
+    # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
+    # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
+    # itself, and a name starting with a dot
+    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline)(/|$)|(^|/)(\.clinerules/hooks|cline/hooks)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
+    # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
+    unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: These files decide which hooks run, Tracekit's among them, and what the agent may do without asking.
+  - id: TK-F015
+    class: shell
+    field: effects
+    # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
+    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
+    # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
+    # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
+    # (.kilo, .kilocode, ~/.config/kilo, kilo.json); Cline's are ~/.cline and its hook folders, .cline/hooks,
+    # .clinerules/hooks and Documents/Cline/Hooks. $XDG_CONFIG_HOME/opencode and /kilo, and the folder
+    # $XDG_CONFIG_HOME itself, are matched by the variable's name. The agy, goose, Droid and Devin paths are TK-F009's,
+    # and a delete of a whole .agents folder (agy's hooks.json with it), or .clinerules or Cline folder (its hooks).
+    # PowerShell's profiles are TK-F009's, and
+    # $PROFILE by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other
+    # three), in any case.
+    # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
+    # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
+    # there that can make one (`$`, a backquote, `*`, `?`, `[`, `{`: `x/$D/`, `x/.{.,}/`, `x/.*/`), and when it names
+    # only the worktree (`x/`, `x/.`, `x//`).
+    # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
+    # bounded and the fallback engine linear; read deeper if a real worktree nests further
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    # Claude Code's memory notes, as TK-D008 reads them
+    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: TK-F009 for the shell.
 
 flag:
   - id: TK-F001
@@ -880,12 +952,12 @@ flag:
   - id: TK-F004
     class: shell
     field: line
-    # git's push, reset --hard and clean after up to eight global options, as TK-D003 reads `push` (git -C dir push); a
-    # package install or publish (npm, pnpm, yarn, bun, pip of any version, uv, pipx, poetry, conda, cargo, gem,
+    # git's push (send-pack, hub push too), reset --hard and clean after up to eight global options, as TK-D003 reads
+    # `push` (git -C dir push); a package install or publish (npm, pnpm, yarn, bun, pip of any version, uv, pipx, poetry, conda, cargo, gem,
     # bundle, go, brew, apt, dnf, yum, apk, twine), a docker or podman run or push (container run, image push, after
     # up to eight options), terraform or tofu apply, pulumi up, helm install, upgrade or push and kubectl apply or
     # delete (both after up to eight options). The strict pack holds it, so its list is what "every install" means there
-    pattern: '\b(git\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
+    pattern: '\b((?:git|hub)\s+(-[Cc] [^ ]* |--(git-dir|work-tree|namespace|super-prefix|config-env|attr-source) [^ ]* |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}(push|send-pack|reset\s+--hard|clean)|(npm|pnpm|yarn|bun)\s+(publish|install|i|ci|add)|pip[0-9.]*\s+install|uv\s+(add|sync|publish|tool\s+install)|pipx\s+(install|inject)|poetry\s+(add|install|publish)|(conda|mamba)\s+install|cargo\s+(install|add|publish)|gem\s+(install|push)|bundle\s+(install|add)|go\s+(install|get)|brew\s+install|(apt|apt-get|dnf|yum)\s+install|apk\s+add|twine\s+upload|(docker|podman)(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+((container\s+)?run|(image\s+)?push)|(terraform|tofu)\s+apply|pulumi\s+up|helm(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(install|upgrade|push)|kubectl(\s+-[^\s]+(\s+[^-\s][^\s]*)?){0,8}?\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
     # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
@@ -913,61 +985,10 @@ flag:
     pattern: '&\s*$|&\s*;'
     label: background_spawn
   - id: TK-F008
-    tool: Bash
+    tool: '[Bb]ash'   # bash too, as TK-A014
     field: run_in_background
     pattern: '^[Tt][Rr][Uu][Ee]$'
     label: background_spawn
-  - id: TK-F009
-    class: fs
-    tool: Write|Edit|MultiEdit
-    field: path
-    # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
-    # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
-    # Factory Droid keeps its hooks and settings in .factory/, goose its settings in ~/.config/goose (on Windows
-    # AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
-    # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
-    # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin). Claude Code
-    # keeps its user settings and MCP servers in ~/.claude.json, and its skills and slash commands (which can run
-    # commands with `!` lines) under .claude/ (flagged as the rest of .claude/); Cursor its MCP servers in
-    # .cursor/mcp.json. Cline runs every hook file in Documents/Cline/Hooks (wherever Documents is), ~/.cline/hooks and
-    # a workspace's .cline/hooks and .clinerules/hooks, and keeps its settings, hooksEnabled among them, in ~/.cline/.
-    # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
-    # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
-    # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
-    # ~/.config/powershell/, and the machine's in $PSHOME (System32/WindowsPowerShell/v1.0/, PowerShell/7/ and
-    # PowerShell/7-preview/).
-    # A file inside one of Claude Code's worktrees (.claude/worktrees/<name>/…) is judged as it is in the worktree: that
-    # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
-    # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
-    # itself, and a name starting with a dot
-    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline)(/|$)|(^|/)(\.clinerules/hooks|cline/hooks)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
-    # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
-    unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
-    label: harness_config
-  - id: TK-F015
-    class: shell
-    field: effects
-    # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
-    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
-    # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
-    # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
-    # (.kilo, .kilocode, ~/.config/kilo, kilo.json); Cline's are ~/.cline and its hook folders, .cline/hooks,
-    # .clinerules/hooks and Documents/Cline/Hooks. $XDG_CONFIG_HOME/opencode and /kilo, and the folder
-    # $XDG_CONFIG_HOME itself, are matched by the variable's name. The agy, goose, Droid and Devin paths are TK-F009's,
-    # and a delete of a whole .agents folder (agy's hooks.json with it), or .clinerules or Cline folder (its hooks).
-    # PowerShell's profiles are TK-F009's, and
-    # $PROFILE by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other
-    # three), in any case.
-    # A file inside one of Claude Code's worktrees is judged as TK-F009 judges it. Targets aren't normalised, so a
-    # worktree path is still flagged with a `..` among its parts after the worktree, with an expansion or a glob
-    # there that can make one (`$`, a backquote, `*`, `?`, `[`, `{`: `x/$D/`, `x/.{.,}/`, `x/.*/`), and when it names
-    # only the worktree (`x/`, `x/.`, `x//`).
-    # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
-    # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
-    # Claude Code's memory notes, as TK-D008 reads them
-    unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
-    label: harness_config
   - id: TK-F016
     class: fs
     tool: Write|Edit|MultiEdit
