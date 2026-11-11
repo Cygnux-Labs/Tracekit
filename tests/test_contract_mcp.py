@@ -659,3 +659,159 @@ class InputRequiredRounds(unittest.TestCase):
         self.assertEqual(len(completes), 1)
         self.assertEqual(completes[0]["status"], "error")
         self.assertIn("MCPError", completes[0]["error"])
+
+    def test_resumed_round_refused_by_signer_completes_as_error(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server, seen_args = self._make_server()
+
+        consume_calls = 0
+
+        class QuarantinedSigner(_Signer):
+            def __getattr__(self, method):
+                call = super().__getattr__(method)
+                if method == "approval_consume":
+                    def consume(req):
+                        nonlocal consume_calls
+                        consume_calls += 1
+                        if consume_calls > 1:
+                            return {"ok": False, "rule_ids": ["TK-QUARANTINE"], "reason": "run quarantined"}
+                        return {"ok": True, "rule_ids": []}
+                    return consume
+                return call
+
+        signer = QuarantinedSigner()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_call():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                return await c.call_tool("ask_input", {"k": "v"})
+
+        out = asyncio.run(run_call())
+        self.assertEqual(len(seen_args), 1)
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "error")
+        self.assertIn("TK-QUARANTINE", completes[0]["error"])
+        self.assertTrue(out.is_error)
+        self.assertIn("TK-QUARANTINE", out.content[0].text)
+
+    def test_request_state_is_used_once(self):
+        from tracekit import autowire
+        server, _ = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_calls():
+            async with MCPClient(server) as c:
+                out1 = await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+                real_state = out1.request_state
+                await c.session.call_tool("ask_input", {"k": "v"}, request_state=real_state,
+                                          allow_input_required=True)
+                d1 = len([r for m, r in signer.requests if m == "decide"])
+                await c.session.call_tool("ask_input", {"k": "v"}, request_state=real_state,
+                                          allow_input_required=True)
+                d2 = len([r for m, r in signer.requests if m == "decide"])
+                return d1, d2
+
+        d1, d2 = asyncio.run(run_calls())
+        self.assertEqual(d1, 1)
+        self.assertEqual(d2, 2)
+
+    def test_server_that_reuses_request_state_completes_both_calls(self):
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+        from tracekit import autowire
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[
+                t.Tool(name="constant_state_tool", description="returns fixed state", inputSchema={"type": "object"}),
+            ])
+
+        async def on_call_tool(ctx, params):
+            if params.request_state is None:
+                return t.InputRequiredResult(
+                    request_state="fixed-state-123",
+                    input_requests={"req": t.ElicitRequest(
+                        params=t.ElicitRequestFormParams(
+                            message="input",
+                            requested_schema={"type": "object", "properties": {}},
+                        )
+                    )},
+                )
+            return t.CallToolResult(content=[t.TextContent(type="text", text="done")], is_error=False)
+
+        server = Server("constant_state_server", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_test():
+            async with MCPClient(server) as c:
+                out1 = await c.session.call_tool("constant_state_tool", {"k": "v"}, allow_input_required=True)
+                out2 = await c.session.call_tool("constant_state_tool", {"k": "v"}, allow_input_required=True)
+                out3 = await c.session.call_tool("constant_state_tool", {"k": "v"}, request_state="fixed-state-123",
+                                                  allow_input_required=True)
+                return out1, out2, out3
+
+        asyncio.run(run_test())
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 2)
+        self.assertEqual(len(completes), 2)
+
+    def test_round_whose_observe_fails_warns_when_fail_open(self):
+        from tracekit import autowire
+        from tracekit.sdk.client import SignerUnavailable
+        server, _ = self._make_server()
+        signer = _Signer(observe=SignerUnavailable("down"))
+        run = mock.Mock(client=signer, registered={**self.RUN, "fail_modes": {"mcp": "open"}})
+        autowire._mcp(run)
+
+        async def run_call():
+            async with MCPClient(server) as c:
+                return await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+
+        with self.assertWarns(UserWarning) as cm:
+            out = asyncio.run(run_call())
+
+        self.assertEqual(out.result_type, "input_required")
+        self.assertIn("MCP input_required not recorded: down", str(cm.warning))
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(completes), 0)
+
+    def test_round_without_input_requests_skips_observe(self):
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+        from tracekit import autowire
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[
+                t.Tool(name="state_only", description="state only", inputSchema={"type": "object"}),
+            ])
+
+        async def on_call_tool(ctx, params):
+            if params.request_state is None:
+                return t.InputRequiredResult(request_state="s1", input_requests=None)
+            return t.CallToolResult(content=[t.TextContent(type="text", text="done")], is_error=False)
+
+        server = Server("state_only_server", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_call():
+            async with MCPClient(server) as c:
+                return await c.session.call_tool("state_only", {"k": "v"}, allow_input_required=True)
+
+        out = asyncio.run(run_call())
+        self.assertEqual(out.result_type, "input_required")
+        observed = [r for m, r in signer.requests if m == "observe"]
+        self.assertEqual(len(observed), 0)
