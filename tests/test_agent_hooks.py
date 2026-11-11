@@ -1068,7 +1068,8 @@ class CrushTools(unittest.TestCase):
         secret = pol.decide(*agent_hooks.tool("crush", "mcp_vault_get_secret", {"name": "db"}))
         self.assertEqual((secret["verdict"], secret["rule_ids"]), ("ask", ["TK-A037", "TK-F006"]))
         money = pol.decide(*agent_hooks.tool("crush", "mcp_stripe_send_money", {"amount": 1000, "currency": "usd"}))
-        self.assertEqual((money["verdict"], money["rule_ids"]), ("ask", ["TK-A044", "TK-F006"]))
+        # the shipped default has the server pack's money rules too since #604 (TK-M002 over MCP)
+        self.assertEqual((money["verdict"], money["rule_ids"]), ("ask", ["TK-A044", "TK-M002", "TK-F006"]))
         self.assertTrue(pol.untrusted_results(agent_hooks.tool("crush", "mcp_github_get_issue", {})[0]))
         # the shipped policy decides a credential read and a download into authorized_keys as it does the same write
         self.assertNotEqual(pol.decide(*agent_hooks.tool("crush", "view", {"file_path": "/home/agent/.ssh/id_rsa"}))

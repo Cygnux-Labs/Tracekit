@@ -132,7 +132,7 @@ class SignerTests(unittest.TestCase):
         return self.s.handle({"op": "append", "cseq": cseq, "event": e})
 
     def events(self):
-        return [json.loads(l)["event"] for l in read_text(os.path.join(self.home, "ledger", "ledger.jsonl")).splitlines()]
+        return [r["event"] for r in ledger_records(self.home)]
 
     def test_counter_gap_ordering_and_checkpoints(self):
         self.assertTrue(self.send(ev("tool.call", {"tool_use_id": "a", "name": "Bash", "input": {}}), 0)["ok"])
@@ -159,7 +159,7 @@ class SignerTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, home, True)
         s = make_signer(home, witnesses=["git:/nonexistent-dir/for-sure@/nonexistent/remote.git"], checkpoint_every=1)
         s.handle({"op": "append", "cseq": 0, "event": run_start()})
-        gaps = [json.loads(l)["event"]["data"].get("reason", "") for l in read_text(os.path.join(home, "ledger", "ledger.jsonl")).splitlines()]
+        gaps = [r["event"]["data"].get("reason", "") for r in ledger_records(home)]
         self.assertTrue(any("not yet on git:" in g for g in gaps))
         self.assertTrue(s.retry)
 
@@ -219,7 +219,7 @@ class DevStack(unittest.TestCase):
         install.start_dev_daemon(self.home)
         self.assertEqual(self.pre("t4", "ls")[0], 0)
         self.hook("SessionEnd")
-        evs = [json.loads(l)["event"] for l in read_text(os.path.join(self.home, "ledger", "ledger.jsonl")).splitlines()]
+        evs = [r["event"] for r in ledger_records(self.home)]
         gaps = [e["data"]["reason"] for e in evs if e["type"] == "capture.gap"]
         self.assertTrue(any("client-reported" in g for g in gaps), gaps)
         self.assertTrue(any(e["type"] == "capture.gap" and e["data"].get("missed_events") for e in evs))

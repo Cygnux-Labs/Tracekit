@@ -9,7 +9,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:c9a13fcab9418d6a7e9c5ea30e2064edf49092e63cc9baec13cfd94ab606c099",
+      "policy_hash": "sha256:3e9ce0dba7980383becade5f7e796a9bc2061153782dc750b5858bd4136cf97c",
       "heldout": {
         "recall": 0.6166666666666667,
         "deny_recall": 0.2761904761904762,
@@ -18,7 +18,7 @@
           "harmful": 420,
           "caught": 259,
           "deny": 116,
-          "unknown_only": 44,
+          "unknown_only": 33,
           "benign": 432,
           "fp": 18
         },
@@ -55,7 +55,7 @@
             "database": {
               "harmful": 32,
               "caught": 32,
-              "unknown_only": 24,
+              "unknown_only": 14,
               "deny": 1
             },
             "defense_evasion": {
@@ -65,8 +65,7 @@
             "destructive": {
               "harmful": 36,
               "caught": 16,
-              "deny": 8,
-              "unknown_only": 1
+              "deny": 8
             },
             "exfiltration": {
               "harmful": 39,
@@ -115,13 +114,13 @@
               "harmful": 122,
               "caught": 89,
               "deny": 44,
-              "unknown_only": 16
+              "unknown_only": 8
             },
             "high": {
               "harmful": 232,
               "caught": 139,
               "deny": 64,
-              "unknown_only": 23
+              "unknown_only": 20
             },
             "low": {
               "harmful": 8,
@@ -151,8 +150,7 @@
             "case": {
               "harmful": 6,
               "caught": 4,
-              "deny": 2,
-              "unknown_only": 2
+              "deny": 2
             },
             "encoding": {
               "harmful": 35,
@@ -173,7 +171,7 @@
               "harmful": 275,
               "caught": 158,
               "deny": 66,
-              "unknown_only": 35,
+              "unknown_only": 29,
               "benign": 432,
               "fp": 18
             },
@@ -191,7 +189,7 @@
               "harmful": 49,
               "caught": 40,
               "deny": 14,
-              "unknown_only": 4
+              "unknown_only": 1
             },
             "unicode": {
               "harmful": 3,
@@ -1946,7 +1944,7 @@
           "deny": 21,
           "benign": 95,
           "fp": 8,
-          "unknown_only": 4
+          "unknown_only": 2
         },
         "by": {
           "category": {
@@ -1995,7 +1993,7 @@
             "database": {
               "harmful": 15,
               "caught": 15,
-              "unknown_only": 3
+              "unknown_only": 1
             },
             "defense_evasion": {
               "harmful": 13,
@@ -2041,13 +2039,13 @@
               "harmful": 52,
               "caught": 50,
               "deny": 16,
-              "unknown_only": 2
+              "unknown_only": 1
             },
             "high": {
               "harmful": 47,
               "caught": 40,
               "deny": 5,
-              "unknown_only": 2
+              "unknown_only": 1
             },
             "medium": {
               "harmful": 3,
@@ -2097,7 +2095,7 @@
               "deny": 19,
               "benign": 95,
               "fp": 8,
-              "unknown_only": 4
+              "unknown_only": 2
             },
             "python_b64": {
               "harmful": 1
@@ -2327,7 +2325,7 @@
               "harmful": 57,
               "caught": 55,
               "deny": 3,
-              "unknown_only": 4
+              "unknown_only": 2
             }
           }
         }
@@ -2425,7 +2423,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:eb2bf478783e059e53c024a7735e67288cf694145f9cbf50ff940a901ab84853",
+      "policy_hash": "sha256:1c77e116128df09a4e550f55a67da8d1a1be348e8f539380a5428b204c59c829",
       "heldout": {
         "recall": 0.680952380952381,
         "deny_recall": 0.36666666666666664,
@@ -2434,7 +2432,7 @@
           "harmful": 420,
           "caught": 286,
           "deny": 154,
-          "unknown_only": 44,
+          "unknown_only": 33,
           "benign": 432,
           "fp": 56
         },
@@ -2471,7 +2469,7 @@
             "database": {
               "harmful": 32,
               "caught": 32,
-              "unknown_only": 24,
+              "unknown_only": 14,
               "deny": 3
             },
             "defense_evasion": {
@@ -2482,8 +2480,7 @@
             "destructive": {
               "harmful": 36,
               "caught": 16,
-              "deny": 13,
-              "unknown_only": 1
+              "deny": 13
             },
             "exfiltration": {
               "harmful": 39,
@@ -2533,13 +2530,13 @@
               "harmful": 122,
               "caught": 92,
               "deny": 56,
-              "unknown_only": 16
+              "unknown_only": 8
             },
             "high": {
               "harmful": 232,
               "caught": 156,
               "deny": 83,
-              "unknown_only": 23
+              "unknown_only": 20
             },
             "low": {
               "harmful": 8,
@@ -2569,8 +2566,7 @@
             "case": {
               "harmful": 6,
               "caught": 4,
-              "deny": 2,
-              "unknown_only": 2
+              "deny": 2
             },
             "encoding": {
               "harmful": 35,
@@ -2591,7 +2587,7 @@
               "harmful": 275,
               "caught": 173,
               "deny": 71,
-              "unknown_only": 35,
+              "unknown_only": 29,
               "benign": 432,
               "fp": 56
             },
@@ -2609,7 +2605,7 @@
               "harmful": 49,
               "caught": 44,
               "deny": 33,
-              "unknown_only": 4
+              "unknown_only": 1
             },
             "unicode": {
               "harmful": 3,
@@ -4408,7 +4404,7 @@
           "deny": 23,
           "benign": 95,
           "fp": 13,
-          "unknown_only": 4
+          "unknown_only": 2
         },
         "by": {
           "category": {
@@ -4458,7 +4454,7 @@
             "database": {
               "harmful": 15,
               "caught": 15,
-              "unknown_only": 3
+              "unknown_only": 1
             },
             "defense_evasion": {
               "harmful": 13,
@@ -4505,13 +4501,13 @@
               "harmful": 52,
               "caught": 50,
               "deny": 17,
-              "unknown_only": 2
+              "unknown_only": 1
             },
             "high": {
               "harmful": 47,
               "caught": 42,
               "deny": 6,
-              "unknown_only": 2
+              "unknown_only": 1
             },
             "medium": {
               "harmful": 3,
@@ -4562,7 +4558,7 @@
               "deny": 19,
               "benign": 95,
               "fp": 13,
-              "unknown_only": 4
+              "unknown_only": 2
             },
             "python_b64": {
               "harmful": 1
@@ -4806,7 +4802,7 @@
               "harmful": 57,
               "caught": 56,
               "deny": 4,
-              "unknown_only": 4
+              "unknown_only": 2
             }
           }
         }
@@ -5516,7 +5512,7 @@
       "strict/re2": 7.1,
       "strict/regex": 8.26,
       "dev/re2": 6.96,
-      "dev/regex": 7.63
+      "dev/regex": 8.25
     }
   },
   "over_target": [
