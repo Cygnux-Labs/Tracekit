@@ -608,16 +608,19 @@ class AntigravityHooks(unittest.TestCase):
             self.assertEqual(row["fix"], "tracekit init --dev --v2 --agent antigravity")
             self.assertEqual(got["D-AGY-HOOKS-RUN"]["status"], "ok", got["D-AGY-HOOKS-RUN"])
 
-    def test_openhands_project_hooks_and_concurrent_calls_are_warned_about(self):
-        # #563 review: a working directory's .openhands/hooks.json replaces the user's (a repo can switch Tracekit off),
-        # and with tool_concurrency_limit above 1 identical calls running at once can be mis-paired
+    def test_openhands_project_hooks_that_replace_the_users_are_warned_about(self):
+        # #563 review: the CLI's working directory ($OPENHANDS_WORK_DIR, else the current one) has a .openhands/hooks.json
+        # that replaces the user's (a repo can switch Tracekit off); only a Tracekit v2 PreToolUse hook there decides calls
         from tracekit import agent_hooks
         with tempfile.TemporaryDirectory() as d:
-            repo = os.path.join(d, "repo")
-            os.makedirs(os.path.join(repo, ".openhands"))
+            repo, work = os.path.join(d, "repo"), os.path.join(d, "work")
+            for p in (repo, work):
+                os.makedirs(os.path.join(p, ".openhands"))
             with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), mock.patch("os.getcwd", return_value=repo), \
                     contextlib.redirect_stdout(io.StringIO()):
-                os.environ["OH_PERSISTENCE_DIR"] = os.path.join(d, "elsewhere")   # SDK main only: not the CLI's
+                for k in ("OPENHANDS_WORK_DIR", "OH_PERSISTENCE_DIR"):
+                    os.environ.pop(k, None)
+                os.environ["OPENHANDS_PERSISTENCE_DIR"] = os.path.join(d, "elsewhere")   # the CLI's settings, not hooks
                 path = agent_hooks.install("openhands", v2=True)
                 self.assertEqual(path, os.path.join(d, ".openhands", "hooks.json"))
 
@@ -628,19 +631,25 @@ class AntigravityHooks(unittest.TestCase):
                 for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
                     self.assertEqual(got[rid]["status"], "ok", got[rid])
                 self.assertNotIn("D-OPENHANDS-PROJECT", got)
-                self.assertNotIn("D-OPENHANDS-CONCURRENCY", got)
                 project = os.path.join(repo, ".openhands", "hooks.json")
                 with open(project, "w") as f:
                     json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "true"}]}]}}, f)
-                with open(os.path.join(d, ".openhands", "agent_settings.json"), "w") as f:
-                    json.dump({"tool_concurrency_limit": 4}, f)
-                got = rows()
-                self.assertEqual(got["D-OPENHANDS-PROJECT"]["status"], "warn")
-                self.assertIn(f"{project} replaces {path}", got["D-OPENHANDS-PROJECT"]["detail"])
-                self.assertEqual(got["D-OPENHANDS-CONCURRENCY"]["status"], "warn")
-                self.assertIn("tool_concurrency_limit 4", got["D-OPENHANDS-CONCURRENCY"]["detail"])
+                got = rows()["D-OPENHANDS-PROJECT"]
+                self.assertEqual(got["status"], "warn")
+                self.assertIn(f"{project} replaces {path}", got["detail"])
                 agent_hooks.install("openhands", project=repo, v2=True)   # Tracekit's own project hooks: fine
                 self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "ok")
+                with open(project) as f:   # Tracekit's hooks on every event but PreToolUse: its calls go undecided
+                    blob = json.load(f)
+                blob["hooks"].pop("PreToolUse")
+                with open(project, "w") as f:
+                    json.dump(blob, f)
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "warn")
+                os.environ["OPENHANDS_WORK_DIR"] = work   # the CLI's working directory, not the current one
+                self.assertNotIn("D-OPENHANDS-PROJECT", rows())
+                with open(os.path.join(work, ".openhands", "hooks.json"), "w") as f:
+                    json.dump({"pre_tool_use": []}, f)
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "warn")
 
     def test_agy_sign_ins_and_a_disabled_hook_that_run_no_hook_are_warned_about(self):
         # agy loads its hooks and never runs them when signed in with a Gemini API key (antigravity-cli#893) or

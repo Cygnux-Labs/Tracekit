@@ -191,6 +191,25 @@ class Mapping(HarnessCase):
         self.assertIn("identical call again", err)
         self.assertLess(time.monotonic() - start, 30)
 
+    def test_openhands_sub_agents_are_denied_before_the_signer_and_typed_input_is_sent_marked(self):
+        # #563 review: task and delegate run a sub-agent with no hooks; text typed into the running command, a key and
+        # a line left open reach the signer marked `typed`, which the engine holds
+        for name in ("task", "delegate"):
+            with self.subTest(tool=name):
+                code, out, err = self.hook("openhands", {"session_id": "oh-s", "event_type": "PreToolUse", "tool_name": name,
+                                                         "tool_input": {"prompt": "ls"}}, "PreToolUse")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("runs a sub-agent whose tool calls run no hooks", err)
+        self.assertEqual(self.sent, [])
+        for ti in ({"command": "push --force origin main", "is_input": True}, {"command": "UP"}, {"command": "git \\"}):
+            with self.subTest(ti=ti):
+                self.hook("openhands", {"session_id": "oh-t", "event_type": "PreToolUse", "tool_name": "terminal",
+                                        "tool_input": {**ti, "kind": "TerminalAction"}}, "PreToolUse")
+                self.assertEqual((self.sent[-1]["tool"], self.sent[-1]["args"].get("typed")), ("Bash", True))
+        self.hook("openhands", {"session_id": "oh-t", "event_type": "PreToolUse", "tool_name": "terminal",
+                                "tool_input": {"command": "ls", "is_input": False, "kind": "TerminalAction"}}, "PreToolUse")
+        self.assertNotIn("typed", self.sent[-1]["args"])
+
     def test_openhands_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         for name, ti in (("file_editor", {"command": "view", "path": None}), ("apply_patch", {"patch": "no headers"})):
             with self.subTest(tool=name):

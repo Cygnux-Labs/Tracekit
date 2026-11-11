@@ -197,10 +197,26 @@ STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV|BASH_CMDS|BAS
                         r"LD_AUDIT|DYLD_\w+)(?:$|[\[=+])")
 # OpenHands' tools (software-agent-sdk openhands-tools): tool_input is the Action's model_dump(), with a `kind` key and
 # every optional field (null when unset); file_editor's tool name depends on its `command` (tool())
-OPENHANDS_TOOLS = {"terminal": "Bash", "apply_patch": "Edit", "glob": "Glob", "grep": "Grep"}
+# the gemini preset's file tools (openhands/tools/gemini) read `file_path`, list_directory `dir_path`
+OPENHANDS_TOOLS = {"terminal": "Bash", "apply_patch": "Edit", "glob": "Glob", "grep": "Grep", "write_file": "Write",
+                   "edit": "Edit", "read_file": "Read", "list_directory": "LS"}
+OPENHANDS_PATH_ARG = {"file_editor": "path", "write_file": "file_path", "edit": "file_path", "read_file": "file_path",
+                      "list_directory": "dir_path"}
+# task (TaskToolSet, in the CLI's default tools) and delegate (DelegateTool) run a sub-conversation with
+# hook_config=None for the built-in agents (tools/task/manager.py, delegate/impl.py): its calls run no hook
+OPENHANDS_SUBAGENTS = ("task", "task_tool_set", "delegate")
+# what the terminal sends as keystrokes, not a command, even with is_input false (terminal/interface.py
+# SUPPORTED_SPECIAL_KEYS and parse_ctrl_key; tmux_terminal.send_keys): matched on the text stripped and upper-cased
+OPENHANDS_KEYS = re.compile(r"ENTER|TAB|BS|ESC|UP|DOWN|LEFT|RIGHT|HOME|END|PGUP|PGDN|(?:C-|CTRL[-+])[A-Z]")
+# a line bash continues on the next call: it ends in an odd number of backslashes (the terminal sends Enter after it)
+OPENHANDS_OPEN_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\$")
 OPENHANDS_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
+# HookConfig reads hooks.json in three forms: {"hooks": {...}}, or the event map itself with Claude Code's names, or with
+# its own field names (HookConfig.save's); a file with both names for one event doesn't load (_normalize_hooks_input)
+OPENHANDS_FIELDS = {ev: re.sub(r"(?<!^)(?=[A-Z])", "_", ev).lower() for ev in (*OPENHANDS_EVENTS, "Stop")}
 # what each of these OpenHands tools is decided on: a call that sends none of it is denied in the hook (_blocked)
-OPENHANDS_DECIDED_ON = {"file_editor": "path", "apply_patch": "file header (*** Add, Update or Delete File:)"}
+OPENHANDS_DECIDED_ON = {**{t: k for t, k in OPENHANDS_PATH_ARG.items()},
+                        "apply_patch": "file header (*** Add, Update or Delete File:)"}
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -252,12 +268,22 @@ def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
     if harness == "openhands":
+        if ti.get("kind") == "MCPToolAction" and isinstance(ti.get("data"), dict):   # an MCP call's arguments
+            return name, dict(ti["data"])
         ti.pop("kind", None)   # the Action class's name, not an argument
-        if name == "file_editor":
-            path = ti.get("path")
+        if name in OPENHANDS_PATH_ARG:
+            path = ti.get(OPENHANDS_PATH_ARG[name])
             ti["paths"] = [path] if isinstance(path, str) and path else []
             ti["file_path"] = ti["paths"][0] if ti["paths"] else None
-            return {"view": "Read", "create": "Write"}.get(ti.get("command"), "Edit"), ti
+            if name == "file_editor":
+                return {"view": "Read", "create": "Write"}.get(ti.get("command"), "Edit"), ti
+        if name == "terminal" and isinstance(ti.get("command"), str):
+            # the terminal is interactive (bash in tmux): text typed into the command running, a key, and a line left
+            # open run with what comes before or after them, which this call alone doesn't show; the engine holds a
+            # call marked `typed` (TK-SHELL-PARSE), and holds an unclosed quote or heredoc as a line it can't read
+            c = ti["command"]
+            if ti.get("is_input") is True or OPENHANDS_KEYS.fullmatch(c.strip().upper()) or OPENHANDS_OPEN_LINE.search(c):
+                ti["typed"] = True
         if name == "apply_patch":   # Codex's patch format
             files = [f.strip() for f in PATCH_FILE.findall(str(ti.get("patch") or ""))]
             ti["paths"], ti["file_path"] = files, files[0] if files else None
@@ -645,6 +671,9 @@ def _blocked_tool(harness, tool_name, raw=""):
     a Crush input the tool may read otherwise than Tracekit. tool_name: the harness's own name for the tool, before it
     is mapped; raw: the hook payload as received."""
     name = tool_name.removeprefix("code_execution__")
+    if harness == "openhands" and tool_name in OPENHANDS_SUBAGENTS:
+        return (f"Blocked by Tracekit: OpenHands' {tool_name} runs a sub-agent whose tool calls run no hooks, so "
+                "Tracekit can't decide them; make each call itself instead.")
     if harness == "goose" and name in GOOSE_CODE_MODE:
         return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
@@ -913,7 +942,7 @@ def config_path(harness, project=None, home=None):
                      os.path.join(os.environ["APPDATA"], "devin", "config.json")
                      if os.name == "nt" and not home and os.environ.get("APPDATA") else
                      os.path.join(base, ".config", "devin", "config.json"),
-            # the OpenHands CLI (1.16.0, on SDK 1.28.1) reads <working dir>/.openhands/hooks.json, else
+            # the OpenHands CLI (1.16.0 as released, on SDK 1.21.0; its main is on 1.28.1) reads <working dir>/.openhands/hooks.json, else
             # ~/.openhands/hooks.json, the first that exists (HookConfig.load); $OH_PERSISTENCE_DIR is honoured on SDK
             # main only, so it isn't followed here
             "openhands": os.path.join(base, ".openhands", "hooks.json")}[harness]
@@ -1334,7 +1363,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     # and Devin's config.json nest that map under `hooks`. agy's maps each hook's name to its event map: Tracekit's is
     # AGY_HOOK
     key = AGY_HOOK if harness == "antigravity" else "hooks"
-    bare = harness == "droid" or harness == "devin" and os.path.basename(path) == "hooks.v1.json"
+    bare = harness == "droid" or harness == "devin" and os.path.basename(path) == "hooks.v1.json" or \
+        harness == "openhands" and "hooks" not in s and any(k in OPENHANDS_FIELDS or k in OPENHANDS_FIELDS.values()
+                                                           for k in s)   # its direct form: merged as it is written
+    fields = harness == "openhands" and bare and any(k in OPENHANDS_FIELDS.values() for k in s)   # snake_case keys
     hooks = s if bare else s.setdefault(key, {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'{key}' in {path} must be an object; Tracekit did not change it.")
@@ -1370,7 +1402,11 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 h["timeout"] = 600 if ev == "PreToolUse" else 30
             # Devin's matcher is a regex, which "*" isn't: a group with none matches every tool
             return {"matcher": "*", "hooks": [h]} if ev in tools and harness != "devin" else {"hooks": [h]}
-        removed = _merge(hooks, path, events, entry, uninstall)
+        if fields:   # a file in OpenHands' own field names keeps them: Tracekit's hooks go under pre_tool_use, ...
+            named = {OPENHANDS_FIELDS[ev]: ev for ev in events}
+            removed = _merge(hooks, path, list(named), lambda k: entry(named[k]), uninstall)
+        else:
+            removed = _merge(hooks, path, events, entry, uninstall)
     if harness == "antigravity":   # Tracekit's named hook holds only its own two entries, rewritten whole: agy loads a
         # named hook with "enabled": false and never runs it
         if not uninstall:
