@@ -93,7 +93,7 @@ class TracekitSession(HeldCalls):
         req_state = kw.get("request_state")
         key = (tool, event_hash({"tool": tool, "args": args}), req_state) if req_state is not None else None
         if key is not None and key in self._pending:
-            call_id, req, d = self._pending.pop(key)
+            call_id, req, d, args = self._pending.pop(key)
         else:
             call_id = uuid.uuid4().hex
             why, d, args = await self._gate(call_id, tool, args)
@@ -110,13 +110,9 @@ class TracekitSession(HeldCalls):
         try:
             out = await send(name, args, *a, **kw)
         except Exception as e:
-            if req is not None:
-                await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
+            await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
             raise
-        if getattr(out, "result_type", None) == "input_required" or hasattr(out, "input_requests"):
-            next_state = getattr(out, "request_state", None)
-            if next_state is not None:
-                self._pending[(tool, event_hash({"tool": tool, "args": arguments or {}}), next_state)] = (call_id, req, d)
+        if getattr(out, "result_type", None) == "input_required":
             dump = out.model_dump(mode="json", by_alias=True, exclude_none=True)
             input_requests = dump.get("input_requests", dump.get("inputRequests", []))
             try:
@@ -124,8 +120,19 @@ class TracekitSession(HeldCalls):
                                 value=input_requests)
             except SignerUnavailable as e:
                 if not fail_open(self.fail_modes, self.CLASS):
+                    await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
                     raise
                 warnings.warn(f"tracekit: MCP input_required not recorded: {e}", stacklevel=2)
+            except Exception as e:
+                await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
+                raise
+            next_state = getattr(out, "request_state", None)
+            if next_state is None:
+                await self._complete(call_id, req, status="ok",
+                                     result=result_field(d.get("send_result"), dump))
+            else:
+                self._pending[(tool, event_hash({"tool": tool, "args": arguments or {}}), next_state)] = (
+                    call_id, req, d, args)
             return out
         failed = getattr(out, "is_error", getattr(out, "isError", False))   # mcp 2.x, mcp 1.x
         await self._complete(call_id, req, status="error" if failed else "ok",

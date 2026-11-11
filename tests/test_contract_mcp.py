@@ -399,13 +399,17 @@ class InputRequiredRounds(unittest.TestCase):
         from mcp.server.lowlevel import Server
         import mcp.types as t
 
+        seen_args = []
+
         async def on_list_tools(ctx, params):
             return t.ListToolsResult(tools=[
                 t.Tool(name="ask_input", description="tool needing input", inputSchema={"type": "object"}),
+                t.Tool(name="ask_input_no_state", description="tool needing input without state", inputSchema={"type": "object"}),
                 t.Tool(name="fail_round", description="tool that fails in round 2", inputSchema={"type": "object"}),
             ])
 
         async def on_call_tool(ctx, params):
+            seen_args.append(dict(params.arguments or {}))
             if params.name == "ask_input":
                 if params.request_state is None:
                     return t.InputRequiredResult(
@@ -418,6 +422,16 @@ class InputRequiredRounds(unittest.TestCase):
                         )},
                     )
                 return t.CallToolResult(content=[t.TextContent(type="text", text="tool ok")], is_error=False)
+            if params.name == "ask_input_no_state":
+                return t.InputRequiredResult(
+                    request_state=None,
+                    input_requests={"req-no-state": t.ElicitRequest(
+                        params=t.ElicitRequestFormParams(
+                            message="enter data",
+                            requested_schema={"type": "object", "properties": {}},
+                        )
+                    )},
+                )
             if params.name == "fail_round":
                 if params.request_state is None:
                     return t.InputRequiredResult(
@@ -455,13 +469,14 @@ class InputRequiredRounds(unittest.TestCase):
                 )
             raise MCPError(-32601, f"unknown prompt: {params.name}")
 
-        return Server("contract_server", on_list_tools=on_list_tools, on_call_tool=on_call_tool,
-                      on_list_prompts=on_list_prompts, on_get_prompt=on_get_prompt)
+        srv = Server("contract_server", on_list_tools=on_list_tools, on_call_tool=on_call_tool,
+                     on_list_prompts=on_list_prompts, on_get_prompt=on_get_prompt)
+        return srv, seen_args
 
     def test_tool_call_input_required_round_decided_and_completed_once(self):
         from tracekit import autowire
         import mcp.types as t
-        server = self._make_server()
+        server, _ = self._make_server()
         signer = _Signer()
         run = mock.Mock(client=signer, registered=self.RUN)
         autowire._mcp(run)
@@ -492,7 +507,7 @@ class InputRequiredRounds(unittest.TestCase):
     def test_get_prompt_input_required_round_decided_and_completed_once(self):
         from tracekit import autowire
         import mcp.types as t
-        server = self._make_server()
+        server, _ = self._make_server()
         signer = _Signer()
         run = mock.Mock(client=signer, registered=self.RUN)
         autowire._mcp(run)
@@ -519,25 +534,111 @@ class InputRequiredRounds(unittest.TestCase):
                          ("mcp:contract_server/input_required", "untrusted"))
         self.assertIn("req-p", observed[0]["value"])
 
-    def test_made_up_request_state_is_decided_anew(self):
+    def test_resumed_round_sends_signer_agreed_arguments(self):
         from tracekit import autowire
-        server = self._make_server()
+        import mcp.types as t
+        server, seen_args = self._make_server()
+
+        class T2Signer(_Signer):
+            def __getattr__(self, method):
+                call = super().__getattr__(method)
+                if method == "approval_consume":
+                    return lambda req: {"ok": True, "rule_ids": [], "args": {"k": "t2-rewritten"}}
+                return call
+
+        signer = T2Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_call():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                return await c.call_tool("ask_input", {"k": "caller-original"})
+
+        out = asyncio.run(run_call())
+        self.assertEqual(out.content[0].text, "tool ok")
+        self.assertEqual(seen_args, [{"k": "t2-rewritten"}, {"k": "t2-rewritten"}])
+        self.assertEqual(len([r for m, r in signer.requests if m == "decide"]), 1)
+        self.assertEqual(len([r for m, r in signer.requests if m == "complete"]), 1)
+
+    def test_result_without_request_state_completes_call(self):
+        from tracekit import autowire
+        server, _ = self._make_server()
         signer = _Signer()
         run = mock.Mock(client=signer, registered=self.RUN)
         autowire._mcp(run)
 
         async def run_call():
             async with MCPClient(server) as c:
-                return await c.session.call_tool("ask_input", {"k": "v"}, request_state="forged-state-999")
+                return await c.session.call_tool("ask_input_no_state", {"k": "v"}, allow_input_required=True)
 
-        asyncio.run(run_call())
+        out = asyncio.run(run_call())
+        self.assertEqual(out.result_type, "input_required")
         decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
         self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "ok")
+
+    def test_round_whose_observe_fails_completes_kept_call_as_error(self):
+        from tracekit import autowire
+        from tracekit.sdk.client import SignerUnavailable
+        server, _ = self._make_server()
+        signer = _Signer(observe=SignerUnavailable("down"))
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_call():
+            async with MCPClient(server) as c:
+                return await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+
+        def find_exc(e, cls):
+            if isinstance(e, cls):
+                return True
+            if hasattr(e, "exceptions"):
+                return any(find_exc(sub, cls) for sub in e.exceptions)
+            return False
+
+        with self.assertRaises(Exception) as cm:
+            asyncio.run(run_call())
+        self.assertTrue(find_exc(cm.exception, SignerUnavailable))
+
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "error")
+        self.assertIn("SignerUnavailable: down", completes[0]["error"])
+
+    def test_made_up_request_state_is_decided_anew(self):
+        from tracekit import autowire
+        server, _ = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_calls():
+            async with MCPClient(server) as c:
+                # 1. Get real state from ask_input
+                out1 = await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+                real_state = out1.request_state
+                # 2. Send different state with same arguments -> decides anew
+                await c.session.call_tool("ask_input", {"k": "v"}, request_state="different-state",
+                                          allow_input_required=True)
+                # 3. Send real state with different arguments -> decides anew
+                await c.session.call_tool("ask_input", {"k": "other"}, request_state=real_state,
+                                          allow_input_required=True)
+
+        asyncio.run(run_calls())
+        decides = [r for m, r in signer.requests if m == "decide"]
+        self.assertEqual(len(decides), 3)
 
     def test_round_that_raises_completes_kept_call_as_error(self):
         from tracekit import autowire
         import mcp.types as t
-        server = self._make_server()
+        server, _ = self._make_server()
         signer = _Signer()
         run = mock.Mock(client=signer, registered=self.RUN)
         autowire._mcp(run)

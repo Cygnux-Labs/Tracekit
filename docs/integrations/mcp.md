@@ -64,7 +64,7 @@ a lost connection) propagates unchanged. Both are recorded as `error`.
 
 ## Not covered
 
-- MCP calls carry no call id, so every call_tool is a call of its own (attempt 0); multi-round input-required calls reuse their decision across rounds, while an independent retry is a new decision.
+- MCP calls carry no call id, so every `call_tool` is a call of its own (attempt 0); multi-round input-required calls reuse their decision across rounds, while an independent retry is a new decision. A call whose later rounds never reach the session (the elicitation callback fails, or mcp's `input_required_max_rounds` runs out, both inside `mcp.Client`) stays decided and is never completed.
 - There is no saved state: a call waiting for an approval does not survive the process.
 - Servers the agent reaches without this session (another client, a hosted MCP tool of a model provider) are not seen.
 - The server's name in `mcp:<server>/<tool>` is the one the server gives. An mcp 1.x session doesn't keep it:
