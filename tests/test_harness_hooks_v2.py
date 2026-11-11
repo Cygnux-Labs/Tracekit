@@ -118,6 +118,14 @@ class Mapping(HarnessCase):
     def test_gemini(self):
         self.check("gemini")
 
+    def test_gemini_person_approval_command_prefix(self):
+        prefix = claude_code._approval_command_prefix
+
+        self.assertEqual(prefix("claude-code", None), "! ")
+        self.assertEqual(prefix("claude-code", "/path/to/signer.sock"), "")
+        self.assertEqual(prefix("gemini-cli", None), "!")
+        self.assertEqual(prefix("gemini-cli", "/path/to/signer.sock"), "")
+
     def test_opencode(self):
         self.check("opencode")
 
