@@ -1172,6 +1172,9 @@ class ClineTools(unittest.TestCase):
         pre = agent_hooks.normalise("cline", dict(ext, hook_event_name="PreToolUse"))
         self.assertEqual((pre["tool_name"], pre["tool_input"], pre["session_id"], pre["cwd"]),
                          ("Bash", {"command": "echo a"}, "t-1", "/w"))
+        # the CLI's run is its session, the one `cline --id` resumes, not the conversation's taskId
+        cli = dict(ext, hook_event_name="TaskStart", sessionContext={"rootSessionId": "1794_ab"})
+        self.assertEqual(agent_hooks.normalise("cline", cli)["session_id"], "1794_ab")
         post = agent_hooks.normalise("cline", {"taskId": "t-1", "hook_event_name": "PostToolUse", "postToolUse": {
             "toolName": "run_commands", "parameters": {"commands": '["echo a"]'}, "result": "a", "success": False}})
         self.assertRegex(pre["tool_use_id"], r"^cline_[0-9a-f]{16}_\d+$")
