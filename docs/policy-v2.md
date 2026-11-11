@@ -211,7 +211,7 @@ endpoint (`xargs` appends it), one whose endpoint is one segment that isn't one 
 and a `.` or `..` segment. A write to `merges` gives `PUSH:merges`, a fork's `merge-upstream` into main or master (in
 any case, or a branch the line can't tell) `PUSH:merge-upstream`, and `gh repo sync <owner/repo>` into the same
 `PUSH:repo-sync` (`refs/heads/main` and `HEAD` too; with no repository it updates the local one, a pull, not held,
-unless `xargs`, `parallel` or `find -exec` runs it and may give it one). The path is read from a `repos/` or
+unless `xargs`, `parallel`, `find -exec` or `fd -x` runs it and may give it one). The path is read from a `repos/` or
 `repositories/` segment past its start only where an owner and a repository (an id) follow it, so creating a
 repository (`user/repos`, `orgs/o/repos`) is a route of its own. A remote's push mapping given through git's config environment (`GIT_CONFIG_KEY_<n>`,
 `GIT_CONFIG_VALUE_<n>`) is read as its `-c` pair.

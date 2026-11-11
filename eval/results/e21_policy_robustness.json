@@ -5550,7 +5550,7 @@
       "strict/re2": 7.1,
       "strict/regex": 8.26,
       "dev/re2": 6.96,
-      "dev/regex": 7.63
+      "dev/regex": 8.25
     }
   },
   "over_target": [

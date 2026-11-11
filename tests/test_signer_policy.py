@@ -4919,6 +4919,12 @@ class GuardrailsAndPushes(unittest.TestCase):
         self.verdicts([("Bash", {"command": c}) for c in (
             "gh repo sync", "gh repo sync --branch main", "echo o/r | xargs gh repo sync --branch feature")], "allow")
 
+    def test_fd_gives_gh_repo_sync_a_repository_as_find_does(self):
+        """Finishing #605: fd's -x and -X run a command with each path it finds appended, as find's -exec does."""
+        self.verdicts([("Bash", {"command": c}) for c in ("fd -x gh repo sync", "fd -X gh repo sync --branch main")],
+                      "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": "fd -x gh repo sync --branch feature"})], "allow")
+
     def test_a_branch_field_is_compared_in_any_case(self):
         """Eighth review of #605: a branch field was compared with main and master in their case only, so `Main` behind
         an expansion read as another branch (whether GitHub's contents API folds case is unverified)."""

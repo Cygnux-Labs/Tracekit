@@ -1173,7 +1173,7 @@ def _pushes(commands):
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
             given = replaced if {"xargs", "gxargs"} & set(command.get("via", ())) else None
             out += [s for s in _gh_api(argv, given) if s not in out]
-        runner = {v.split(" ", 1)[0] for v in command.get("via", ())} & {"xargs", "gxargs", "parallel", "find"}
+        runner = {v.split(" ", 1)[0] for v in command.get("via", ())} & {"xargs", "gxargs", "parallel", "find", "fd"}
         out += [s for s in _gh_repo_sync(argv, bool(runner)) if s not in out]
     return out
 
@@ -1182,7 +1182,7 @@ def _gh_repo_sync(argv, runner=False):
     """`PUSH:repo-sync <branch>` for `gh repo sync <owner/repo>`, which merges the fork's branch from its upstream: the
     default branch unless --branch names another, held for main, master or HEAD (any case, refs/heads/ too) or a branch
     the line can't tell. With no repository it updates the local one from its remote, a pull: none, unless a `runner`
-    (xargs, parallel, find -exec) may give it one."""
+    (xargs, parallel, find -exec, fd -x) may give it one."""
     if _program(argv) != "gh" or argv[1:3] != ["repo", "sync"]:
         return []
     repo, branch, i = None, "", 3

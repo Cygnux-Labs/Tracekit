@@ -167,7 +167,9 @@ def run(record=False):
     # The recorded max_p99_ref of strict and dev (re2 and regex) was re-baselined on 2026-11-08: that day's security
     # reading of shell lines added the cost on purpose. Each cap is 5% over the highest p99_ref measured across its
     # runs: strict/re2 7.1 (runs 6.42 and 6.75), dev/regex 7.63 (runs 7.1 to 7.27); the others 5% over one run.
-    # Default's is still the first run's.
+    # Default's is still the first run's. dev/regex was re-recorded on 2026-11-11, the same way: 8.25 (runs 7.62 to
+    # 7.86), as the dev pack carries the server parts' rules since #605, a deliberate per-rule cost of about 3.5%
+    # against main on the fallback engine.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
