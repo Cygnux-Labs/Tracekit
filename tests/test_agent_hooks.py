@@ -1139,9 +1139,12 @@ class ClineTools(unittest.TestCase):
             with self.subTest(ti=ti):
                 name, args = agent_hooks.tool("cline", "read_files", ti)
                 self.assertEqual((name, args["file_path"], args["paths"]), ("Read", want[0], want))
-        # editor creates a missing file, else edits it: decided on its `path`, never a decoy beside it
+        # editor with no old_text or insert_line creates a missing file, a Write, else edits it: decided on its `path`,
+        # never a decoy beside it
         self.assertEqual(agent_hooks.tool("cline", "editor", {"path": "/w/a", "new_text": "x", "file_path": "/w/b"}),
-                         ("Edit", {"path": "/w/a", "new_text": "x", "file_path": "/w/a"}))
+                         ("Write", {"path": "/w/a", "new_text": "x", "file_path": "/w/a"}))
+        for ti in ({"path": "/w/a", "old_text": "y", "new_text": "x"}, {"path": "/w/a", "insert_line": 3, "new_text": "x"}):
+            self.assertEqual(agent_hooks.tool("cline", "editor", ti)[0], "Edit")
         name, args = agent_hooks.tool("cline", "apply_patch", {"input": PATCH.format(".env")})
         self.assertEqual((name, args["paths"]), ("Edit", ["notes.txt", ".env"]))
         self.assertEqual(agent_hooks.tool("cline", "apply_patch", PATCH.format("a.py"))[1]["paths"], ["notes.txt", "a.py"])

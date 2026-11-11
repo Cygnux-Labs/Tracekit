@@ -458,13 +458,16 @@ def tool(harness, name, ti):
             for k in PATH_KEYS:   # its own paths decide, never a decoy beside them
                 ti.pop(k, None)
             ti["file_path"], ti["paths"] = files[0], list(dict.fromkeys(files))
-        elif name == "editor":   # creates the file when it is missing, else edits it: an Edit, decided on its `path`
+        elif name == "editor":   # decided on its `path`: with no old_text or insert_line it creates a missing file, a
+            # Write; else an Edit
             path = v.get("path") if one else None
             if not isinstance(path, str) or not path:
                 raise ValueError("Cline's editor names no path")
             for k in PATH_KEYS:
                 ti.pop(k, None)
             ti["path"] = ti["file_path"] = path
+            if v.get("old_text") is None and v.get("insert_line") is None:
+                return "Write", ti
         elif name == "apply_patch":   # the patch is its `input`, or the whole input as a string
             files = [f.strip() for f in PATCH_FILE.findall(str(v.get("input") if one else v))]
             if not files or not all(files):
