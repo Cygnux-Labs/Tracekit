@@ -198,6 +198,44 @@ class CodingPack(unittest.TestCase):
                     if command in deletes:
                         self.assertEqual(result["verdict"], "ask", result)
                     self.assertNotIn("nondeterministic", result)
+
+    def test_container_escape_moves_ask(self):
+        held = ["curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json",
+                "curl -s --unix-socket /var/run/docker.sock -X POST http://localhost/containers/create "
+                "-H 'Content-Type: application/json' -d '{\"Image\":\"alpine\"}'",
+                "socat - UNIX-CONNECT:/run/podman/podman.sock", "nc -U /var/run/docker.sock",
+                "sh -c 'curl --unix-socket /run/docker.sock http://x/info'",
+                "DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "env DOCKER_HOST=unix:///run/podman/podman.sock python x.py",
+                "echo 1 > /sys/fs/cgroup/x/notify_on_release && echo '/cmd' > /sys/fs/cgroup/x/release_agent",
+                "echo /cmd | tee /sys/fs/cgroup/x/release_agent",
+                "curl " + "-s " * 32 + "--unix-socket /var/run/docker.sock http://localhost/containers/json",
+                "DOCKER_HOST=unix:///var/run/docker.sock /a/b/c/d/e/f/g/h/i/python x.py"]
+        benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
+                  "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps",
+                  "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up",
+                  "cat /sys/fs/cgroup/cpu.max", "DOCKER_HOST=unix:///var/run/docker.sock docker ps",
+                  "export DOCKER_HOST=unix:///var/run/docker.sock && docker ps",
+                  "grep release_agent notes.txt", "cat /sys/fs/cgroup/x/release_agent",
+                  "echo 1 > /sys/fs/cgroup/x/cgroup.procs", "echo curl docker.sock"]
+        rules = {"TK-A063", "TK-A064", "TK-A065"}
+        files = (("Write", "/sys/fs/cgroup/x/release_agent", True), ("Edit", "/sys/fs/cgroup/x/notify_on_release", True),
+                 ("Read", "/sys/fs/cgroup/x/release_agent", False), ("Write", "/w/notes/release_agent_notes.md", False))
+        for pack, backend, engine in self.every_pack():
+            for tool, path, held_file in files:
+                with self.subTest(pack=pack, backend=backend, tool=tool, path=path):
+                    result = engine.decide(tool, {"file_path": path})
+                    self.assertEqual("TK-A066" in result["rule_ids"], held_file, result)
+                    if held_file:
+                        self.assertEqual(result["verdict"], "ask", result)
+            for command in held + benign:
+                with self.subTest(pack=pack, backend=backend, command=command):
+                    result = engine.decide("Bash", {"command": command})
+                    self.assertEqual(bool(rules & set(result["rule_ids"])), command in held, result)
+                    if command in held:
+                        self.assertEqual(result["verdict"], "ask", result)
+                    self.assertNotIn("nondeterministic", result)
+
     def test_claude_codes_monitor_tool_is_decided_as_its_shell(self):
         # Monitor runs its command in the shell Bash uses; the packs flagged it as an unknown tool, so a command Bash
         # denies ran through it, the agent approving its own held call among them (PowerShell: SignerPolicy's test)

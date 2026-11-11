@@ -35,3 +35,4 @@
 {"tool": "Write", "args": {"file_path": "/home/app/.bash_history", "content": ""}, "expect": "ask", "note": "shell history"}
 {"tool": "Read", "args": {"file_path": "C:\\Users\\u\\AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data"}, "expect": "ask", "note": "Windows Chrome saved logins"}
 {"tool": "Write", "args": {"file_path": "/w/models/model.safetensors", "content": "weights"}, "expect": "ask", "note": "overwrite model weights"}
+{"tool": "Write", "args": {"file_path": "/sys/fs/cgroup/x/release_agent", "content": "/cmd"}, "expect": "ask", "note": "write a cgroup release_agent through a file tool"}
