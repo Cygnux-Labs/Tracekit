@@ -171,6 +171,7 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
                            "--stop-timeout", "--shell", "-E", "--env", "--workdir", "--on-busy-update",
                            "--emit-events-to", "--project-origin", "--filter-file", "--ignore-file", "--poll",
                            "--color", "--log-file", "-j", "--filter-prog", "--fs-events"), 0)}
+WRAPPERS["gxargs"] = WRAPPERS["xargs"]   # GNU xargs as Homebrew installs it beside macOS's own
 # wrapper or runner -> options known to take no value (_unwrap reads an option neither table names both ways), a
 # short-option cluster of them too (`caffeinate -dims`, `sudo -Eu root`)
 _UV_FLAGS = ("-q", "--quiet", "-v", "--verbose", "--frozen", "--locked", "--no-sync", "--isolated", "--no-project",
@@ -196,6 +197,7 @@ WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                  "setsid": ("-c", "-f", "-w", "--ctty", "--fork", "--wait"),
                  "npx": ("-y", "--yes", "-q", "--quiet"), "uvx": _UV_FLAGS, "uv": _UV_FLAGS,
                  "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z")}
+WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
 # runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
 # "--": the command follows a `--`, after the tools to run it with)
 # lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
@@ -1213,7 +1215,7 @@ def _home_readings(ctx):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
             printed[c["pipeline"]] = (c.get("stage", 0), ops)
-        if c["via"][-1:] == ["xargs"] and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
+        if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
             argv = argv + printed[c["pipeline"]][1]
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
@@ -3628,7 +3630,7 @@ class _Parser:
                 if name == "flock" and inner[:1] in (["-c"], ["--command"]):
                     self.nested(self.code(cmd, inner[1:2]), via + ["flock -c"])
                     break
-                if name == "xargs":
+                if name in ("xargs", "gxargs"):
                     repl = _xargs_replace(args[:len(args) - len(inner)])
                 argv, via, unreadable = inner, via + [name], unreadable[len(argv) - len(inner):]
                 self.charge(len(argv))   # each wrapper level copies the words after it
@@ -4776,11 +4778,11 @@ def _stdin_interpreter(cmds):
 
 
 def _xargs_replace(opts):
-    """The string xargs replaces with its input (-I R, -iR, -i, --replace[=R]), or None."""
+    """The string xargs replaces with its input (-I R, -iR, -i, --replace[=R]; BSD's -J R), or None."""
     for i, a in enumerate(opts):
-        if a == "-I":
+        if a in ("-I", "-J"):
             return opts[i + 1] if i + 1 < len(opts) else None
-        if a.startswith("-I") or (a.startswith("-i") and len(a) > 2):
+        if a.startswith(("-I", "-J")) or (a.startswith("-i") and len(a) > 2):
             return a[2:]
         if a in ("-i", "--replace"):
             return "{}"

@@ -4867,6 +4867,39 @@ class GuardrailsAndPushes(unittest.TestCase):
             "gh api -X POST repos/o/r/merge-upstream -f branch=$B")], "ask", "TK-A056")
         self.verdicts([("Bash", {"command": "gh api -X POST repos/o/r/merge-upstream -f branch=feature"})], "allow")
 
+    def test_gh_repo_sync_into_the_default_branch_is_held(self):
+        """Eighth review of #605: `gh repo sync <owner/repo>` merges a fork's branch from upstream, its default branch
+        unless --branch names another, as merge-upstream does; with no repository it updates the local one (a pull)."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh repo sync o/r --branch main", "gh repo sync o/r", "gh repo sync o/r -b MASTER",
+            "gh repo sync o/r --branch=main", "gh repo sync o/r --branch $B", "gh repo sync $R")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "gh repo sync o/r --branch feature", "gh repo sync", "gh repo sync --branch main")], "allow")
+        self.verdicts([("Bash", {"command": "gh repo sync o/r --force"})], "deny", "TK-D003")
+
+    def test_an_endpoint_a_runner_fills_in_is_unknown(self):
+        """Eighth review of #605: BSD xargs -J, gxargs, xargs running gh through another wrapper and parallel -I put the
+        endpoint in place of a word only they know (`%`, `,,`), which named no route. A write whose endpoint is one word
+        that isn't one of GitHub's (graphql, user, markdown, …), or whose route's place holds a word GitHub can't serve,
+        is held now."""
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "echo repos/o/r/merges | xargs -J % gh api % -f base=main -f head=feature",
+            "echo repos/o/r/merges | gxargs -I% gh api % -f base=main -f head=feature",
+            "echo repos/o/r/merges | xargs -I% timeout 9 gh api % -f base=main -f head=feature",
+            "parallel -I ,, gh api ,, -f base=main -f head=feature ::: repos/o/r/merges",
+            "gh api -X PUT repos/o/r/%/a.txt -f message=m -f content=Yg==")], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": c}) for c in (
+            "echo repos/o/r/pulls | xargs gh api", "xargs -I% gh api %",
+            "echo 1 | xargs -I{} gh api -X POST repos/o/r/issues/{}/comments -f body=x",
+            "gh api /graphql -f query='query{viewer{login}}'", "gh api -X PATCH /user -f bio=x",
+            "gh api -X POST markdown -f text=x")], "allow")
+
+    def test_a_branch_field_is_compared_in_any_case(self):
+        """Eighth review of #605: a branch field was compared with main and master in their case only, so `Main` behind
+        an expansion read as another branch (whether GitHub's contents API folds case is unverified)."""
+        self.verdicts([("Bash", {"command": f"gh api -X PUT {r}/contents/a.txt -f message=m -f content=Yg== -f branch={b}"})
+                       for r in ("repos/$REPO", "repos/o/r") for b in ("Main", "MAIN", "Master")], "ask", "TK-A056")
+
     def test_a_graphql_update_of_several_refs_is_held(self):
         """Sixth review of #605: TK-A056 read GraphQL's updateRef, not updateRefs, which updates several refs."""
         self.verdicts([("Bash", {"command": "gh api graphql -f query='mutation{updateRefs(input:{repositoryId:\"x\","

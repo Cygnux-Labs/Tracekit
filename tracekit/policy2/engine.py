@@ -936,6 +936,12 @@ _GH_SAFE = frozenset((
     "notifications", "pages", "private-vulnerability-reporting", "projects", "properties", "pulls", "releases",
     "rulesets", "secret-scanning", "statuses", "subscription", "tags", "topics", "vulnerability-alerts"))
 _GH_WRITES = ("git", "contents", "merges", "merge-upstream")   # routes that write a branch
+# a segment GitHub can route in an owner's, a repo's or a route's place (a name, or gh's {owner} and {repo}); anything
+# else there (`%`, `,,`) is a word a program running gh fills in, which the line can't tell
+_GH_SEGMENT = re.compile(r"[\w.-]+|\{(?:owner|repo)\}")
+_GH_ONE_WORD = frozenset(("app", "emojis", "events", "feeds", "gists", "graphql", "issues", "licenses", "markdown",
+                          "meta", "notifications", "octocat", "organizations", "rate_limit", "repositories", "user",
+                          "versions", "zen"))   # GitHub's endpoints of one segment
 
 
 def _gh_mask(text, replaced=None):
@@ -956,18 +962,20 @@ def _gh_mask(text, replaced=None):
     return "".join(out) + text[i:]
 
 
-def _gh_routes(endpoint, replaced=None):
+def _gh_routes(endpoint, replaced=None, strict=True):
     """(the route a gh api endpoint names, lower-cased; whether the line can't tell where a write to it goes; whether
     an expansion comes before its route), read from its path as GitHub routes it, after a URL's scheme and host and
     GHES's api/v3/: repos/<owner>/<repo>/<route>/…, repositories/<id>/<route>/…, <route>/… for the rest. An
     expansion or {branch} (_gh_mask) may stand for any number of segments: one (or an empty segment) at or before the
     route's place leaves the route to the first literal segment after it that names one (_GH_SAFE, git, contents,
-    merges, merge-upstream), and unknown without one. Unknown too: a `.` or `..` segment, and an expansion after git/,
-    where it names the ref."""
+    merges, merge-upstream), and unknown without one; so does a segment there GitHub can't route (_GH_SEGMENT). Unknown
+    too: an endpoint of one segment that isn't one of GitHub's (_GH_ONE_WORD), a `.` or `..` segment, and an expansion
+    after git/, where it names the ref. Not `strict` (a word after gh's endpoint, which gh refuses), a word there is
+    read as GitHub routes it."""
     if not endpoint:
         return [], False, False
     path = _gh_mask(endpoint, replaced)
-    segs = re.split(r"[?#]", path[_GH_HOST.match(path).end():], maxsplit=1)[0].rstrip("/").split("/")
+    segs = re.split(r"[?#]", path[_GH_HOST.match(path).end():], maxsplit=1)[0].strip("/").split("/")
     # from its repos/ or repositories/ segment where it has one, past a host without a scheme (//api.github.com/…) or
     # GHES's api/v3/; an expansion before it may be any path
     k = next((k for k, s in enumerate(segs) if s.lower() in ("repos", "repositories")), 0)
@@ -978,8 +986,12 @@ def _gh_routes(endpoint, replaced=None):
         segs = segs[2:] if segs[1:2] == ["v3"] else segs[1:]
     first = segs[0].lower() if segs else ""
     at = 3 if first == "repos" else 2 if first == "repositories" else 0
-    # an empty segment (a doubled `/`, or an expansion read as empty) is as unplaced as an expansion
-    opened = next((j for j, s in enumerate(segs[:at + 1]) if "\0" in s or not s), None)
+    if strict and len(segs) == 1 and first not in _GH_ONE_WORD:   # (xargs -J %, parallel -I ,,: the input)
+        return [], True, True
+    # an empty segment (a doubled `/`, or an expansion read as empty), or one GitHub can't route, is as unplaced as an
+    # expansion
+    opened = next((j for j, s in enumerate(segs[:at + 1])
+                   if (not _GH_SEGMENT.fullmatch(s) if strict else "\0" in s or not s)), None)
     if opened is None:
         route = segs[at].lower() if at < len(segs) else ""
         return [route] if route else [], route == "git" and any("\0" in s for s in segs[at + 1:]), False
@@ -1120,10 +1132,10 @@ def _gh_api(argv, replaced=None):
     unread_body = "input" in kinds or any("$" in k or "`" in k for k in keys)
     # a branch field that alone names a branch other than the default: literal, and no body or field name hides another
     named = bool(branch) and not unread_body and branch[:1] != "@" and "$" not in branch and "`" not in branch and \
-        not (magic and "{branch}" in branch) and branch not in ("main", "master", "HEAD")
+        not (magic and "{branch}" in branch) and branch.casefold() not in ("main", "master", "head")
     routes, unknown, expanded = [], not positional, False   # no endpoint: xargs appends it (gh refuses none)
-    for endpoint in positional:   # (gh takes one; read each of more, which gh refuses)
-        found, unread, before = _gh_routes(endpoint, replaced)
+    for n, endpoint in enumerate(positional):   # (gh takes one; read each of more, which gh refuses)
+        found, unread, before = _gh_routes(endpoint, replaced, strict=not n)
         routes, unknown, expanded = routes + found, unknown or unread, expanded or before
     unread_method = not method or "$" in method or "`" in method
     put, delete = (unread_method or method.upper() == m for m in ("PUT", "DELETE"))
@@ -1151,15 +1163,40 @@ def _pushes(commands):
     out, replaced = [], None
     for command in commands:
         argv = command["argv"]
-        if argv[:1] == ["xargs"]:   # the word its -I puts the input in place of, for the command it runs (next)
-            inner = next(shell._unwrap("xargs", argv[1:]))
+        if argv[:1] in (["xargs"], ["gxargs"]):   # the word its -I puts the input in place of, for what it runs
+            inner = next(shell._unwrap(argv[0], argv[1:]))
             replaced = shell._xargs_replace(argv[1:len(argv) - len(inner)])
         push = _git_push(argv)
         out += push if push is not None else ["DRYRUN:" * _kubectl_dry_run(argv) + " ".join(argv)]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
-            given = replaced if command["via"][-1:] == ["xargs"] else None
+            given = replaced if {"xargs", "gxargs"} & set(command["via"]) else None
             out += [s for s in _gh_api(argv, given) if s not in out]
+        out += [s for s in _gh_repo_sync(argv) if s not in out]
     return out
+
+
+def _gh_repo_sync(argv):
+    """`PUSH:repo-sync <branch>` for `gh repo sync <owner/repo>`, which merges the fork's branch from its upstream: the
+    default branch unless --branch names another, held for main or master (any case) or a branch the line can't tell.
+    With no repository it updates the local one from its remote, a pull: none."""
+    if _program(argv) != "gh" or argv[1:3] != ["repo", "sync"]:
+        return []
+    repo, branch, i = None, "", 3
+    while i < len(argv):
+        w, i = argv[i], i + 1
+        if w in ("-b", "--branch", "-s", "--source"):
+            value, i = (argv[i] if i < len(argv) else ""), i + 1
+        elif w.startswith(("--branch=", "--source=")) or w[:2] in ("-b", "-s") and len(w) > 2:
+            value = w.partition("=")[2] if w.startswith("--") else w[2:]
+        elif w.startswith("-"):
+            continue   # --force (TK-D003's deny), or an option gh refuses
+        else:
+            repo = repo or w
+            continue
+        if w.lstrip("-")[:1] == "b":
+            branch = value
+    named = branch and "$" not in branch and "`" not in branch and branch.casefold() not in ("main", "master")
+    return [] if repo is None or named else ["PUSH:repo-sync " + (branch or "default")[:64]]
 
 
 def _kubectl_dry_run(argv):
