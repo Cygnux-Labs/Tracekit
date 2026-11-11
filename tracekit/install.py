@@ -1284,25 +1284,29 @@ def _root_only(path):
     return None
 
 
-def _install_source():
+def _install_source(init):
     """Check, before init changes anything, that it runs a root-owned Python and installs Tracekit from a source the
-    agent's user cannot modify. Returns the pip requirement for an installed release, or None for this source checkout."""
+    agent's user cannot modify; `init` is the command its hints name (`init --v2 --user <agent-user>`). Returns the pip
+    requirement for an installed release, or None for this source checkout."""
+    from . import __version__
     from .harness_helper import trusted_file
+    # a clone of this release needs no pip in the system Python, which may refuse it (PEP 668); docs/deploy.md's route
+    src = f"/usr/local/src/tracekit-{__version__}"   # one per release: the next one's clone doesn't meet this one's
+    clone = (f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit {src}, then "
+             f"cd {src} && sudo /usr/bin/python3 -m tracekit {init}")
     for f in (sys.executable, os.path.dirname(os.__file__)):
         bad = trusted_file(f)
         if bad:
             raise SystemExit(f"the Python running init could be modified by a non-root user ({bad}). Run init with a "
-                             "root-owned Python, e.g. sudo /usr/bin/python3 -m tracekit init")
+                             f"root-owned Python from a root-owned clone, e.g. {clone}")
     if not os.path.isfile(os.path.join(ROOT, "pyproject.toml")):
-        from . import __version__
         # lean: trusts PyPI over TLS for the exact version; hash pinning comes with signed release artifacts (M3-15)
         return (["--pre"] if any(c.isalpha() for c in __version__) else []) + [f"tracekit-ai=={__version__}"]
     # lean: one stat per file and ancestor; fine for a checkout of a few thousand files
     bad = trusted_file(ROOT) or _first_problem(ROOT, trusted_file, skip=(".git",))
     if bad:
         raise SystemExit(f"the source checkout could be modified by a non-root user ({bad}). Clone into a root-owned "
-                         "directory, e.g. sudo git clone https://github.com/Cygnux-Labs/Tracekit /usr/local/src/Tracekit, "
-                         "then cd /usr/local/src/Tracekit && sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
+                         f"directory, e.g. {clone}")
     return None
 
 
@@ -1600,7 +1604,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
     if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
-    requirement = _install_source()
+    requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
     for path, mode in ((V2_DATA, 0o700),) + (((run_dir, 0o755),) if darwin else ()):
@@ -1826,7 +1830,7 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     darwin = _require_system(experimental_macos)
     checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
     owner = _agent_user(target_user, allow_privileged)
-    requirement = _install_source()
+    requirement = _install_source("init --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     user = SYS_USER_DARWIN if darwin else SYS_USER
     try:
         pwd.getpwnam(user)

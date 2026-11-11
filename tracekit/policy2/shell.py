@@ -171,6 +171,7 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
                            "--stop-timeout", "--shell", "-E", "--env", "--workdir", "--on-busy-update",
                            "--emit-events-to", "--project-origin", "--filter-file", "--ignore-file", "--poll",
                            "--color", "--log-file", "-j", "--filter-prog", "--fs-events"), 0)}
+WRAPPERS["gxargs"] = WRAPPERS["xargs"]   # GNU xargs as Homebrew installs it beside macOS's own
 # wrapper or runner -> options known to take no value (_unwrap reads an option neither table names both ways), a
 # short-option cluster of them too (`caffeinate -dims`, `sudo -Eu root`)
 _UV_FLAGS = ("-q", "--quiet", "-v", "--verbose", "--frozen", "--locked", "--no-sync", "--isolated", "--no-project",
@@ -196,6 +197,7 @@ WRAPPER_FLAGS = {"caffeinate": ("-d", "-i", "-m", "-s", "-u"),
                  "setsid": ("-c", "-f", "-w", "--ctty", "--fork", "--wait"),
                  "npx": ("-y", "--yes", "-q", "--quiet"), "uvx": _UV_FLAGS, "uv": _UV_FLAGS,
                  "entr": ("-a", "-c", "-cc", "-d", "-n", "-p", "-r", "-s", "-z")}
+WRAPPER_FLAGS["gxargs"] = WRAPPER_FLAGS["xargs"]
 # runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
 # "--": the command follows a `--`, after the tools to run it with)
 # lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
@@ -894,6 +896,7 @@ _GIT_RUNS = re.compile(rf"(?is)({_GIT_RUNS_KEY})(?:=(.*))?")
 # a git config key this parser reads as a git command or a forced push: alias.<name>, remote.<name>.mirror and
 # remote.<name>.push; its value if given (KEY=VALUE)
 _GIT_CONFIG_KEY = re.compile(r"(?is)(alias)\.([^=\s]+)(?:=(.*))?|remote\..+\.(mirror|push)(?:=(.*))?")
+_GIT_ENV_KEY = re.compile(r"GIT_CONFIG_KEY_\d+")   # a -c key the environment gives git (_git_config_env)
 _CONFIG_ENV = re.compile(r"(?i)--config-env=(alias|include)")   # git's options that read config it can't see
 _INCLUDE = re.compile(r"(?i)include(if)?\.")
 # git's own options that take a value (before its subcommand), and its subcommands' options whose value it runs as a
@@ -1213,7 +1216,7 @@ def _home_readings(ctx):
             links[ops[-1].rstrip("/")] = ops[0]
         elif argv[0] in ("echo", "printf") and ops:
             printed[c["pipeline"]] = (c.get("stage", 0), ops)
-        if c["via"][-1:] == ["xargs"] and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
+        if c["via"][-1:] in (["xargs"], ["gxargs"]) and c["pipeline"] in printed and printed[c["pipeline"]][0] < c.get("stage", 0):
             argv = argv + printed[c["pipeline"]][1]
         if argv[0] != "rm" or not any(re.fullmatch(r"-\w*[rR]\w*|--recursive", a) for a in argv[1:]):
             continue
@@ -2795,6 +2798,8 @@ class _Parser:
                 if value is not None or elements:
                     self.ctx["given"].setdefault(var, []).extend([value] if elements is None else
                                                                  [v for v in elements if v is not None])
+                elif _GIT_ENV_KEY.fullmatch(var):   # a git config key an expansion makes: as written, as -c reads one
+                    self.ctx["given"].setdefault(var, []).append(text.partition("=")[2])
                 elif not m.group(1) and self.readings:   # one an expansion joins: each literal reading with a blank
                     self.ctx["given"].setdefault(var, []).extend(   # (bash splits it where X is unquoted: X=" rm"$Y)
                         v for r in self.readings for v in [r.partition("=")[2]]
@@ -3302,7 +3307,7 @@ class _Parser:
                     name not in ("unset", "test", "[", "[["):   # a value IFS gets (None: one the parser can't read)
                 literal = declares and eq and not (nameref or plus or re.search(r"[$`]", value))
                 self.ctx["ifs_values"].append(value if literal else None)
-            if declares and eq and not re.search(r"[$`]", value):
+            if declares and eq and (not re.search(r"[$`]", value) or _GIT_ENV_KEY.fullmatch(var)):
                 self.ctx["given"].setdefault(var, []).append(value)
             if nameref:
                 self.ctx["namerefs"][var] = value or None
@@ -3633,7 +3638,7 @@ class _Parser:
                 if name == "flock" and inner[:1] in (["-c"], ["--command"]):
                     self.nested(self.code(cmd, inner[1:2]), via + ["flock -c"])
                     break
-                if name == "xargs":
+                if name in ("xargs", "gxargs"):
                     repl = _xargs_replace(args[:len(args) - len(inner)])
                 argv, via, unreadable = inner, via + [name], unreadable[len(argv) - len(inner):]
                 self.charge(len(argv))   # each wrapper level copies the words after it
@@ -3759,6 +3764,9 @@ class _Parser:
                             head = [a for k, a in enumerate(cargs[:csub]) if k not in (j - 1, j) and k >= len(env)]
                             cmds += self.emit(["git", *head, cargs[csub], force, *cargs[csub + 1:]], pid,
                                               via + ["git config"])
+                    elif key == "push" and given and j < len(env) and csub is not None and cargs[csub] == "push":
+                        # a push mapping the environment gives picks the push's target, as its -c pair does
+                        cmds += self.emit(["git", cargs[j - 1], cargs[j], *args], pid, via + ["git config"])
                 # a URL of git's ext:: transport runs its command (git's % escapes decoded), read as those words; where
                 # a config or the environment allows the transport, a word the line builds may be one: held
                 allows = any(re.fullmatch(r"(?is)protocol\.(?:ext\.)?allow=(?:always|user)", a) for a in cargs) or any(
@@ -4778,11 +4786,11 @@ def _stdin_interpreter(cmds):
 
 
 def _xargs_replace(opts):
-    """The string xargs replaces with its input (-I R, -iR, -i, --replace[=R]), or None."""
+    """The string xargs replaces with its input (-I R, -iR, -i, --replace[=R]; BSD's -J R), or None."""
     for i, a in enumerate(opts):
-        if a == "-I":
+        if a in ("-I", "-J"):
             return opts[i + 1] if i + 1 < len(opts) else None
-        if a.startswith("-I") or (a.startswith("-i") and len(a) > 2):
+        if a.startswith(("-I", "-J")) or (a.startswith("-i") and len(a) > 2):
             return a[2:]
         if a in ("-i", "--replace"):
             return "{}"
