@@ -17,6 +17,7 @@ $ tracekit audit --since 7d --show
 a replay against today's policy, not a signed record
 policy: …/tracekit/policy2/packs/dev.yaml (sha256:…)
 
+read: claude-code (~/.claude/projects): 1204 calls in 31 sessions
 1204 tool calls in 31 sessions since 7d: Tracekit would have denied 2 and held 9 for a person; it would have flagged 57 and allowed 1136.
 …
 by rule:
@@ -33,11 +34,16 @@ denied and held calls (--all for every call):
 - `ROOT` is a Claude Code transcripts' folder (another agent's with `--agent NAME`, once that agent has a reader); a
   folder that doesn't exist is an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's
   default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
-- `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin).
-- `--agent NAME`, with `--calls`: each call's tool name and arguments are first mapped as that agent's Tracekit hook
-  maps them (`codex`, `cursor`, `gemini`, `opencode`, ...), so `run_shell_command` or `Shell` is decided as the hook
-  would decide it. Without it, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
-  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT.
+- `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
+  file: a pipe (as `<(...)` gives) goes to `--calls -`. A file it can't open, or `--calls -` with no standard input,
+  exits 2 with the reason.
+- `--agent NAME`, with `--calls`: each call is decided as that agent's Tracekit hook would decide it (`codex`,
+  `cursor`, `gemini`, `opencode`, ...): a call the hook denies before it maps it (Kilo's `notebook_execute`, goose's
+  Code Mode, Crush's `agent` and `agentic_fetch`, a Devin call missing the argument it is decided on) is a deny, with
+  no rule; the others are mapped as the hook maps them, so `run_shell_command` or `Shell` is decided as `Bash`. A line
+  the mapping can't take (nested too deep) counts as malformed. Without `--agent`, names are taken as Tracekit's
+  (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`, `mcp__<server>__<tool>`). With ROOT, it names the reader that reads
+  ROOT; with neither ROOT nor `--calls`, it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -60,8 +66,8 @@ One reader per agent, each with its default folder:
 |---|---|
 | `claude-code` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
 
-With no ROOT, the first line after the policy names each agent read, its folder, and its calls and sessions; `--json`
-has the same under `agents`, and gives each call its `agent`.
+The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
+`--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`.
 
 Claude Code's reader reads every `.jsonl` file under its folder, at any depth: each Claude Code session's transcript, and its subagents' files
 (`<session>/subagents/*.jsonl`, a workflow's agents' in `<session>/subagents/workflows/<workflow>/`), which count
@@ -80,8 +86,9 @@ Any agent, or any log, can be audited by turning it into a calls file: one JSON 
 ```
 
 `tool` (a string) and `args` (an object) are required; a line without them counts as malformed. `time` (ISO-8601, UTC
-unless it gives an offset) and `session` are optional: a call without a time is kept whatever `--since`, and one
-without a session counts under the file's name (`stdin` for `-`).
+unless it gives an offset) and `session` are optional: a call without a time is kept whatever `--since`, a `time`
+that isn't ISO-8601 (an epoch number, say) counts the line as malformed, and a call without a session counts under
+the file's name (`stdin` for `-`). With `--share`, a calls file read without `--since` is "the whole calls file".
 
 For example, a log of one JSON object a line with `ts`, `tool` and `input`:
 
@@ -91,8 +98,8 @@ jq -c '{time: .ts, tool: .tool, args: .input}' agent.log | tracekit audit --call
 
 ## Output
 
-- One line first: how many calls in how many sessions, and how many Tracekit would have denied, held, flagged and
-  allowed.
+- After the disclaimer and the policy, the `read:` line: each agent read, with its folder, calls and sessions.
+- Then how many calls in how many sessions, and how many Tracekit would have denied, held, flagged and allowed.
 - Counts per verdict (`deny`, `ask` / held, `flag`, `allow`). A call the policy engine fails on counts as a deny
   (`TK-ENGINE-ERROR`), as the signer would decide it.
 - Counts per rule id, most first, each with what the rule is (its `reason` or `label`, or the viewer's words for the

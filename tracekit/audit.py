@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import __version__
-from .agent_hooks import AGENT_NAMES, tool as hook_tool
+from .agent_hooks import AGENT_NAMES, _blocked, tool as hook_tool
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
@@ -139,35 +139,27 @@ READERS = {"claude-code": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is
                            _claude_code)}
 
 
-def _calls(path: str, since_ts: float, unreadable: list, agent: str | None = None):
-    """The reader of a plain calls file (`-` for stdin): one JSON object a line, with `tool` (a string) and `args` (an
-    object), and optionally `time` (ISO-8601) and `session`. A line without `tool` and `args` is malformed. With an
-    agent of agent_hooks.AGENT_NAMES, each call is mapped as that agent's live hook maps it."""
-    if path == "-":
-        f, err = sys.stdin.buffer, None
-    else:
-        f, err = _safe_open(path)
-    if err:
-        unreadable.append({"path": path, "error": err})
-        return
-    name = "stdin" if path == "-" else os.path.basename(path)
+def _calls(f, name: str, since_ts: float, unreadable: list):
+    """The reader of a plain calls file, open as f (binary): one JSON object a line, with `tool` (a string) and `args`
+    (an object), and optionally `time` (ISO-8601) and `session` (else the call counts under `name`). A line without
+    `tool` and `args`, or with a `time` that isn't one, is malformed."""
     try:
         for _n, entry in transcript_entries(f, final=True):
             if entry is None or not isinstance(entry.get("tool"), str) or not isinstance(entry.get("args"), dict):
                 yield None
                 continue
             at = _entry_time(entry, "time")
+            if at is None and entry.get("time") is not None:   # an epoch number, or text no date reads
+                yield None
+                continue
             if at is not None and at.timestamp() < since_ts:
                 continue
-            tool, args = entry["tool"], entry["args"]
-            if agent in AGENT_NAMES:
-                tool, args = hook_tool(agent, tool, args)
             session = entry.get("session")
-            yield at, session if isinstance(session, str) else name, tool, args
+            yield at, session if isinstance(session, str) else name, entry["tool"], entry["args"]
     except OSError as e:
-        unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+        unreadable.append({"path": name, "error": f"cannot read: {type(e).__name__}: {e}"})
     finally:
-        if f is not sys.stdin.buffer:
+        if f is not getattr(sys.stdin, "buffer", None):
             f.close()
 
 
@@ -188,8 +180,21 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         raise ValueError(f"--since {since[:40]!r} is not in the past")
     engine = load_policy(policy_path or DEFAULT_POLICY)
     unreadable: list[dict] = []
+    hook = agent if calls is not None and agent in AGENT_NAMES else None   # map a calls file's names as its hook does
     if calls is not None:
-        sources = [(agent or "other", calls, _calls(calls, since_ts, unreadable, agent))]
+        if calls == "-":
+            if sys.stdin is None:   # started with stdin closed (<&-)
+                raise OSError("--calls -: there is no standard input to read")
+            f, label = sys.stdin.buffer, "stdin"
+        else:
+            f, err = _safe_open(calls)
+            if err:
+                raise OSError(f"cannot read the calls file: {err}" + (
+                    "; to read a pipe (as <(...) gives), send it to --calls -" if "not a regular file" in err else ""))
+            label = os.path.basename(calls)
+        sources = [(agent or "other", calls, _calls(f, label, since_ts, unreadable))]
+    elif agent is not None and root is None:
+        raise ValueError(f"--agent {agent} needs a ROOT or --calls FILE")
     elif root is not None:
         name = agent or "claude-code"
         sources = [(name, root, READERS[name][2](root, since_ts, unreadable))]
@@ -212,9 +217,19 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 skipped_malformed += 1
                 continue
             at, session, tool, args = item
+            blocked = None
+            if hook:
+                try:   # as the live hook: a call it denies before mapping (a tool whose calls it can't see),
+                    # then mapped
+                    blocked = _blocked(hook, {"tool_name": tool, "tool_input": args}, json.dumps(
+                        {"tool_name": tool, "tool_input": args, "toolCall": {"name": tool, "args": args}}))
+                    tool, args = hook_tool(hook, tool, args)
+                except RecursionError:   # nested past what the mapping takes, as json.loads counts such a line
+                    skipped_malformed += 1
+                    continue
             try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its bare name,
                 # PowerShell also as a shell line
-                decision = evaluate(engine, tool, args)[0]
+                decision = {"verdict": "deny", "rule_ids": []} if blocked else evaluate(engine, tool, args)[0]
             except RecursionError:   # nesting the signer refuses (it denies an engine error itself)
                 decision = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"]}
             verdict = decision.get("verdict", "allow")
@@ -234,7 +249,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
             calls_out.append(rec)
         mine = calls_out[start:]
         agents[name] = {"folder": folder, "calls": len(mine), "sessions": len({c["session"] for c in mine})}
-    calls = calls_out
+    calls_file, calls = calls is not None, calls_out
 
     times = [datetime.fromisoformat(c["time"]).timestamp() for c in calls if c["time"]]
     first = min(times, default=None)
@@ -248,6 +263,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         "since": since,
         "sessions": len({(c["agent"], c["session"]) for c in calls}),
         "agents": agents,
+        "calls_file": calls_file,
         "counts": counts,
         "by_rule": by_rule,
         "reasons": {**{i: ENGINE_RULES[i] for i in by_rule if i in ENGINE_RULES},   # what each rule is, as the viewer says it
@@ -310,7 +326,7 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
     stopped = collections.Counter(r for c in report["calls"] if c["verdict"] in ("ask", "deny") for r in c["rule_ids"]
                                   if report["sections"].get(r, c["verdict"]) == c["verdict"])
     window = "week" if report["since"] == "7d" else _days(time.time() - when(report["since"])) if report["since"] \
-        else "transcripts"
+        else "calls file" if report["calls_file"] else "transcripts"
     lines += ["", f"your agent's {window}: {total:,} tool call{'s' * (total != 1)}; Tracekit would have held "
               f"{n.get('ask', 0):,} and blocked {n.get('deny', 0):,}",
               *(["  top: " + ", ".join(f"{r} {report['reasons'][r]} ({k})" if report["reasons"].get(r) else f"{r} ({k})"
@@ -330,7 +346,8 @@ def share(report: dict) -> str:
     n, s, secs = report["counts"], report["sessions"], report["sections"]
     by_rule = collections.Counter((c["verdict"], rid, secs[rid] == c["verdict"] if rid in secs else None)
                                   for c in report["calls"] for rid in c["rule_ids"])
-    window = _days(time.time() - when(report["since"])) if report["since"] else "every transcript"
+    window = _days(time.time() - when(report["since"])) if report["since"] else \
+        "the whole calls file" if report["calls_file"] else "every transcript"
     kind = "Claude Code" if set(report["agents"]) == {"claude-code"} else "coding-agent"
     lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
              f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
@@ -365,11 +382,9 @@ def main(argv=None):
         ap.error("give ROOT or --calls, not both")
     root = os.path.expanduser(a.root) if a.root is not None else None
     where = "; ".join(f"{n}: {w}" for n, (_, w, _) in READERS.items())
-    if a.calls is not None:
-        if a.calls != "-" and not os.path.isfile(a.calls):
-            print(f"tracekit audit: no such file: {a.calls}", file=sys.stderr)
-            return 2
-    elif root is not None:
+    # a calls file is opened once, in audit(): what it can't open, and --agent with neither ROOT nor --calls, exit 2
+    # there
+    if a.calls is None and root is not None:
         if a.agent is not None and a.agent not in READERS:
             print(f"tracekit audit: no reader for {a.agent}'s sessions yet; turn them into a calls file and use "
                   f"--calls FILE --agent {a.agent}", file=sys.stderr)
@@ -377,7 +392,7 @@ def main(argv=None):
         if not os.path.isdir(root):
             print(f"tracekit audit: no such folder: {root} ({where})", file=sys.stderr)
             return 2
-    elif not any(os.path.isdir(default()) for default, _, _ in READERS.values()):
+    elif a.calls is None and a.agent is None and not any(os.path.isdir(d()) for d, _, _ in READERS.values()):
         print(f"tracekit audit: no agent's folder found ({where}); give a ROOT, or --calls FILE", file=sys.stderr)
         return 2
     try:
