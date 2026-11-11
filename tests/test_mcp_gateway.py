@@ -402,8 +402,10 @@ class McpGateway(unittest.TestCase):
                     next_cursor="2")
             raise RuntimeError("upstream failed on page 2")
         self._swap_upstream(LowServer("bad", on_list_resources=on_list_resources))
-        with self.assertRaises(Exception):
+        with self.assertRaises(Exception) as e:
             self.agent(lambda c: c.list_resources())
+        self.assertIn("upstream error: RuntimeError: upstream failed on page 2",
+                      messages(e.exception))
         self.assertNotIn("note://r1", self.srv.mcp["resources"])
 
 
