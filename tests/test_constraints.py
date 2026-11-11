@@ -630,7 +630,7 @@ class Live(Signed):
         """For every kind, each call decides at least as strictly with constraints as without: a deny stays a deny, an
         ask stays an ask and names TK-CONSTRAINT beside the policy's rules, an allow may become an ask."""
         calls = [("Bash", {"command": "pkill tracekitd"}), ("Bash", {"command": 'echo "open'}),
-                 ("Bash", {"command": "git push origin main"}),
+                 ("Bash", {"command": "git push origin feat"}),   # a branch push: flagged (one to main asks, #604)
                  ("Edit", {"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"}),
                  ("Bash", {"command": "curl https://example.org"}), ("Read", {"file_path": "/w/x.py"}),
                  ("Bash", {"command": "ls"})]
@@ -659,7 +659,7 @@ class Live(Signed):
         run = self.run_()
         self.add(run, "no_push")
         self.add(run, "no_network")
-        for kind, command, flag in (("no_push", "git push origin main", "TK-F004"),
+        for kind, command, flag in (("no_push", "git push origin feat", "TK-F004"),
                                     ("no_network", "curl https://example.org", "TK-F012")):
             with self.subTest(kind):
                 held = self.decide(run, "Bash", {"command": command})
