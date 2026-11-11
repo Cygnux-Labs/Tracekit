@@ -286,7 +286,7 @@ class SystemModeUsesOpt(unittest.TestCase):
                 install._install_source("init")
         self.assertIn("pyproject.toml is mine", str(cm.exception))
         self.assertIn(f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit "
-                      "/usr/local/src/Tracekit", str(cm.exception))   # this release, as docs/deploy.md clones it
+                      f"/usr/local/src/tracekit-{__version__}", str(cm.exception))   # this release, as docs/deploy.md
         with mock.patch.object(install, "ROOT", src), \
                 mock.patch("tracekit.harness_helper.trusted_file", lambda p: f"{p} is mine" if p.startswith(vcs) else None):
             self.assertIsNone(install._install_source("init"))  # the repository metadata is not installed

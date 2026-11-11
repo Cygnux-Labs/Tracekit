@@ -1291,8 +1291,9 @@ def _install_source(init):
     from . import __version__
     from .harness_helper import trusted_file
     # a clone of this release needs no pip in the system Python, which may refuse it (PEP 668); docs/deploy.md's route
-    clone = (f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit "
-             f"/usr/local/src/Tracekit, then cd /usr/local/src/Tracekit && sudo /usr/bin/python3 -m tracekit {init}")
+    src = f"/usr/local/src/tracekit-{__version__}"   # one per release: the next one's clone doesn't meet this one's
+    clone = (f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit {src}, then "
+             f"cd {src} && sudo /usr/bin/python3 -m tracekit {init}")
     for f in (sys.executable, os.path.dirname(os.__file__)):
         bad = trusted_file(f)
         if bad:

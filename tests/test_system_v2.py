@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 from test_system_install import as_root_on_linux
-from tracekit import agent_hooks, install
+from tracekit import __version__, agent_hooks, install
 from tracekit.sdk import client as sdk_client
 from tracekit.signer import service
 
@@ -141,8 +141,8 @@ class InitRefusals(unittest.TestCase):
                 with self.assertRaises(SystemExit) as cm:
                     install.init_system_v2(AGENT.pw_name, approver="admin")
                 self.assertIn(f"{untrusted} is mine", str(cm.exception))
-                self.assertIn("cd /usr/local/src/Tracekit && sudo /usr/bin/python3 -m tracekit init --v2 --user "
-                              "<agent-user>", str(cm.exception))
+                self.assertIn(f"cd /usr/local/src/tracekit-{__version__} && sudo /usr/bin/python3 -m tracekit init --v2 "
+                              "--user <agent-user>", str(cm.exception))
 
 
 @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
