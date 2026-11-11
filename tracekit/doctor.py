@@ -10,6 +10,7 @@ Doctor output is advice, not evidence: it reads the host as it is now, and nothi
 """
 import ast
 import base64
+import contextlib
 import errno
 import hashlib
 import itertools
@@ -607,6 +608,14 @@ def _hook_run(scale=1, unit="s"):
             f"{(APPROVAL_WAIT_S - 2 * 30) * scale} {unit}, only with {WAIT_ENV} set)")
 
 
+def _ps_policy():
+    """PowerShell's effective execution policy (Restricted, RemoteSigned, ...), else None when it can't be read."""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"],
+                              capture_output=True, text=True, timeout=15).stdout.strip() or None
+    return None
+
+
 def _harness_hook_checks(add, harnesses, prod, home=None):
     """Event arguments and approval timeouts of the other coding agents' v2 command hooks (home: the agent user's home
     directory, where agy's sign-in settings are)."""
@@ -620,6 +629,14 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             add("D-HOOKS-EVENT", len(copies) < 2,
                 f"Tracekit's Cline hooks are in {' and '.join(copies)}: Cline runs both, so each call is decided and "
                 "recorded twice" if len(copies) > 1 else f"Tracekit's Cline hooks are in one place ({path})", fix, bad=WARN)
+            if os.name == "nt":   # Cline's CLI runs a .ps1 hook with `powershell -File`, under the execution policy
+                policy = _ps_policy()
+                add("D-HOOKS-EVENT", policy not in ("Restricted", "AllSigned"),
+                    f"PowerShell's execution policy is {policy}: Cline's CLI can't start Tracekit's .ps1 hooks, so "
+                    "every call runs undecided (its VS Code extension passes -ExecutionPolicy Bypass)"
+                    if policy in ("Restricted", "AllSigned") else
+                    f"PowerShell's execution policy ({policy or 'unread'}) lets Cline's CLI start Tracekit's hooks",
+                    "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned", bad=WARN)
             continue
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue

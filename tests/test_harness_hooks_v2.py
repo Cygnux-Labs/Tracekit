@@ -173,13 +173,20 @@ class Mapping(HarnessCase):
         self.check("cline")
 
     def test_cline_results_and_task_events_answer_with_no_cancel(self):
-        # the VS Code extension 4.1.26's PostToolUse, as captured: no call id, and its result String()-ed
+        # the VS Code extension 4.1.26's PostToolUse and TaskComplete as recorded (userId redacted, taskId the case's):
+        # no call id, and its result String()-ed
         pre = cases("cline")[3]["payload"]
         self.assertEqual(self.hook("cline", pre, "PreToolUse")[0], 0)
-        post = {k: v for k, v in pre.items() if k != "preToolUse"}
-        post.update(hookName="PostToolUse", postToolUse={**pre["preToolUse"], "result": "[object Object]",
-                                                          "success": True, "executionTimeMs": 541})
-        for ev, payload in (("PostToolUse", post), ("TaskComplete", {"taskId": pre["taskId"], "taskComplete": {}}),
+        base = {"clineVersion": "4.1.26", "taskId": pre["taskId"], "workspaceRoots": ["/tmp/clinework"],
+                "userId": "redacted", "model": {"provider": "unknown", "slug": "unknown"}}
+        post = dict(base, hookName="PostToolUse", timestamp="1794403395665", postToolUse={
+            "toolName": "run_commands", "parameters": {"commands": "[\"echo captured-by-tracekit\"]"},
+            "result": "[object Object]", "success": True, "executionTimeMs": 541})
+        done = dict(base, hookName="TaskComplete", timestamp="1794403397702", taskComplete={"taskMetadata": {
+            "taskId": pre["taskId"], "ulid": "", "initialTask": "", "result": "done"}})
+        self.assertIsNone(agent_hooks.normalise("cline", {"hook_event_name": "PostToolUse", "postToolUse": {
+            **post["postToolUse"], "result": "[object Object],[object Object]"}})["tool_response"])   # a list's String()
+        for ev, payload in (("PostToolUse", post), ("TaskComplete", done),
                             ("UserPromptSubmit", {"taskId": pre["taskId"], "userPromptSubmit": {"prompt": "go"}})):
             with self.subTest(event=ev):
                 self.assertEqual(self.hook("cline", payload, ev)[:2], (0, "{}"))

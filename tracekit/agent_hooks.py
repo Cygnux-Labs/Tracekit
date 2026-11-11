@@ -226,6 +226,7 @@ CLINE_TOOLS = {"run_commands": "Bash", "read_files": "Read", "editor": "Edit", "
 CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "UserPromptSubmit")
 CLINE_FILE = "PreToolUse.ps1" if os.name == "nt" else "PreToolUse"
 CLINE_PATH_KEYS = ("path", "file_path", "filePath")
+CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))""")   # getHeredocDelimiter
 
 
 def _each(v, *keys):
@@ -235,17 +236,36 @@ def _each(v, *keys):
     return v if isinstance(v, list) else [v]
 
 
-def _cline_command(c):
-    """One of a run_commands call's commands as a command line: a string, or {command, args}, which Cline runs without a
-    shell, or {cmd}."""
-    if isinstance(c, dict):
-        args = c.get("args") or []
-        c = [c["command"], *args] if isinstance(c.get("command"), str) and isinstance(args, list) and \
-            all(isinstance(a, str) for a in args) else c.get("cmd")
-        c = shlex.join(c) if isinstance(c, list) else c
-    if not isinstance(c, str) or not c.strip():
-        raise ValueError("a Cline run_commands entry Tracekit can't read as a command")
-    return c
+def _cline_commands(v):
+    """The commands a run_commands input runs, each in its own shell, as Cline reads it (helpers.ts
+    normalizeRunCommandsInput, definitions.ts coalesceAdjacentStringHeredocs): `commands` (a list or one), else
+    `command` (with `args` a list of strings, an argv run without a shell; with no such `args`, the line as written),
+    else `cmd`; a list, or a string. Adjacent lines are joined only from a here-doc's line to its delimiter's."""
+    if isinstance(v, dict):
+        v = v["commands"] if "commands" in v else [v] if "command" in v else v.get("cmd")
+    out, lines = [], []   # lines: the run of command lines since the last argv, which a here-doc may join
+    for c in [*(v if isinstance(v, list) else [v]), None]:
+        argv = isinstance(c, dict) and isinstance(c.get("command"), str) and isinstance(c.get("args"), list) and \
+            all(isinstance(a, str) for a in c["args"]) and bool(c["args"])
+        if isinstance(c, dict) and isinstance(c.get("command"), str) and not argv:
+            c = c["command"]
+        if isinstance(c, str) and c.strip():
+            lines.append(c)
+            continue
+        while lines:
+            m, end = CLINE_HEREDOC.search(lines[0]), 0
+            if m:
+                end = next((i for i, x in enumerate(lines[1:], 1)
+                            if JS_TRIM.sub("", x) == next(filter(None, m.groups()))), 0)
+            out.append("\n".join(lines[:end + 1]))
+            lines = lines[end + 1:]
+        if argv:
+            out.append(shlex.join([c["command"], *c["args"]]))
+        elif c is not None:
+            raise ValueError("a Cline run_commands entry Tracekit can't read as a command")
+    if not out:
+        raise ValueError("Cline's run_commands names no command")
+    return out
 
 
 def _cline_paths(v):
@@ -444,13 +464,13 @@ def tool(harness, name, ti):
     if harness == "cline":
         v = ti["value"] if list(ti) == ["value"] else ti   # a list or a string the model sent as the whole input
         one = [v] if isinstance(v, dict) else []
-        if name == "run_commands":   # its command lines, one per line, as `command`, the one field both engines read
-            # (v2 reads more than one command field as a call it can't parse, v1 only `command`)
-            lines = [_cline_command(c) for c in _each(v, "commands") + [c for c in one if "command" in c or "cmd" in c]]
-            if not lines:
-                raise ValueError("Cline's run_commands names no command")
-            ti = {k: x for k, x in ti.items() if k not in ("command", "cmd", "commands", "value")}
-            ti["command"] = "\n".join(lines)
+        if "__" in name and not name.startswith("mcp__"):   # an MCP tool, <server>__<tool> (name-transform.ts)
+            return "mcp__" + name, ti
+        if name == "run_commands":   # one command as `command`, several as `commands`, which v2 reads each on its own
+            # (v1 reads a call with no `command` as its whole input)
+            cmds = _cline_commands(v)
+            ti = {k: x for k, x in ti.items() if k not in ("command", "cmd", "commands", "args", "value")}
+            ti.update(command=cmds[0]) if len(cmds) == 1 else ti.update(commands=cmds)
         elif name == "read_files":
             files = [p for e in _each(v, "files", "paths", "file_paths") + one for p in _cline_paths(e)]
             if not files or not all(isinstance(f, str) and f for f in files):
@@ -466,10 +486,13 @@ def tool(harness, name, ti):
             for k in PATH_KEYS:
                 ti.pop(k, None)
             ti["path"] = ti["file_path"] = path
+            new = v.get("new_text")   # its content, as a Write's or an Edit's
             if v.get("old_text") is None and v.get("insert_line") is None:
-                return "Write", ti
+                return "Write", {**ti, "content": new} if isinstance(new, str) else ti
+            if isinstance(new, str):
+                ti["new_string"] = new
         elif name == "apply_patch":   # the patch is its `input`, or the whole input as a string
-            files = [f.strip() for f in PATCH_FILE.findall(str(v.get("input") if one else v))]
+            files = [JS_TRIM.sub("", f) for f in PATCH_FILE.findall(str(v.get("input") if one else v))]   # JS trim()
             if not files or not all(files):
                 raise ValueError("Cline's apply_patch names no file")
             ti["file_path"], ti["paths"] = files[0], files
@@ -652,9 +675,10 @@ def normalise(harness, p):
         # the event is the hook file's name, on its command line. The CLI sends the call's id and the model's input
         # (tool_call, tool_result) beside the extension's shape (preToolUse, postToolUse: toolName and the parameters,
         # its non-string values JSON-encoded, and no id): the extension's calls are paired by (tool, arguments)
-        # The run is the CLI's session, the id `cline --id` resumes (sessionContext.rootSessionId; its taskId is the
-        # conversation's), else the extension's task, which keeps its taskId when resumed. A subagent's calls are in
-        # its root session's run, which only the root agent's task starts and ends (parent_agent_id null)
+        # A run is one task, TaskStart to TaskComplete (the CLI fires both for each prompt), keyed on the CLI's session,
+        # the id `cline --id` resumes (sessionContext.rootSessionId; its taskId is the conversation's), else the
+        # extension's taskId, which a resumed task keeps: a cancelled task the person resumes goes on in its run. A
+        # subagent's calls are in its root's run, which only the root agent's task starts and ends (parent_agent_id null)
         ctx = p.get("sessionContext") if isinstance(p.get("sessionContext"), dict) else {}
         out.update(session_id=ctx.get("rootSessionId") or p.get("taskId"), cwd=(p.get("workspaceRoots") or [None])[0],
                    hook_event_name=ev)
@@ -668,9 +692,11 @@ def normalise(harness, p):
             out["tool_use_id"] = call.get("id") if call else out["session_id"] and _paired_ids(
                 harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
             if ev == "PostToolUse":
-                # the extension 4.1.26 sends a result as "[object Object]" (String() of it): no result is recorded
+                # the extension 4.1.26 sends a result as String() of it, "[object Object]" for each entry joined with
+                # commas: no result is recorded
                 r = call.get("output") if call else ext.get("result")
-                out["tool_response"] = r = None if r == "[object Object]" else r
+                out["tool_response"] = r = None if isinstance(r, str) and re.fullmatch(
+                    r"\[object Object\](?:,\[object Object\])*", r) else r
                 if call and call.get("error") or not call and ext.get("success") is False:
                     out.update(hook_event_name="PostToolUseFailure", error=r.get("error") if isinstance(r, dict) and
                                r.get("error") else r or "the call failed")
@@ -1420,29 +1446,29 @@ CLINE_WAIT_S = 20   # most a Cline hook waits for an approval: the extension run
 def _cline_hook(argv, ev):
     """Tracekit's hook file for Cline's `ev`, a script that runs argv: a POSIX shell script, or PowerShell on Windows.
     Cline runs a call whose hook fails, prints nothing or doesn't answer in time (the CLI 120 s, the extension 30 s),
-    so the script answers a cancel when the hook printed nothing, and caps $TRACEKIT_APPROVAL_WAIT at CLINE_WAIT_S."""
+    so the script answers a cancel when the hook printed nothing (cline_cap_wait keeps the hook's wait under them)."""
     fallback = json.dumps({"cancel": True, "errorMessage": "Blocked by Tracekit: its hook could not run, so the call "
                            "can't be decided"} if ev in PRE else {})
     if os.name == "nt":
         cmd = " ".join("'" + a.replace("'", "''") + "'" for a in argv)
         return f'''# {_plugin_marker("cline")[3:]}
-$w = 0.0
-if ([double]::TryParse([string]$env:TRACEKIT_APPROVAL_WAIT, [ref]$w) -and $w -gt {CLINE_WAIT_S}) {{
-  $env:TRACEKIT_APPROVAL_WAIT = '{CLINE_WAIT_S}'
-}}
 $OutputEncoding = [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false
 $out = ([Console]::In.ReadToEnd() | & {cmd}) -join "`n"
 if ($out) {{ $out }} else {{ '{fallback.replace("'", "''")}' }}
 '''
     return f'''#!/bin/sh
 # {_plugin_marker("cline")[3:]}
-case ${{TRACEKIT_APPROVAL_WAIT%%.*}} in
-  ''|*[!0-9]*) ;;
-  *) [ "${{TRACEKIT_APPROVAL_WAIT%%.*}}" -lt {CLINE_WAIT_S} ] || export TRACEKIT_APPROVAL_WAIT={CLINE_WAIT_S} ;;
-esac
 out=$({shlex.join(argv)})
 if [ -n "$out" ]; then printf '%s\\n' "$out"; else printf '%s\\n' {shlex.quote(fallback)}; fi
 '''
+
+
+def cline_cap_wait():
+    """$TRACEKIT_APPROVAL_WAIT at most CLINE_WAIT_S, as the v2 hook reads it (float(): 1e3, 1_000 and inf too), so a held
+    call's hook answers before Cline's timeout runs the call."""
+    with contextlib.suppress(ValueError):
+        if float(os.environ.get("TRACEKIT_APPROVAL_WAIT") or 0) > CLINE_WAIT_S:
+            os.environ["TRACEKIT_APPROVAL_WAIT"] = str(CLINE_WAIT_S)
 
 
 def cline_argv(text):
@@ -1525,8 +1551,6 @@ def _install_cline(path, uninstall=False, v2=False, python=None):
         raise SettingsError(f"{folder}: {e}") from e
     _said(path, old, uninstall, v2)
     if wrote:
-        print("Cline's VS Code extension runs these hooks only with Hooks enabled (Cline's settings, Features); its "
-              "CLI always runs them")
         ext = os.path.join(cline_documents(), "Cline", "Hooks")
         user = folder == os.path.dirname(os.path.abspath(config_path("cline")))
         if user and os.path.normcase(ext) != os.path.normcase(folder):
