@@ -4865,6 +4865,39 @@ class Classes(unittest.TestCase):
         self.assertEqual(classes.fs_forms("C:\\p\\..\\.ENV"), [".ENV", "C:/.ENV", ".env", "c:/.env"])
 
 
+class ValueFold(unittest.TestCase):
+    """#683: a value a rule cannot tell apart from one already read is not read again. The key is the value's class
+    sequence under that rule's own partition of characters (the sets its pattern holds), so `0` and `1000` stay apart
+    under TK-A029 while `1000` and `2000` share one reading. The end-to-end pair below is the invariant the fold must
+    never cross: values that decide differently must not share a key."""
+    PACK = os.path.join(os.path.dirname(pc.__file__), "packs", "coding.yaml")
+
+    def rule(self, rid):
+        pol = pc.build(self.PACK)[0]
+        return next(r for sec in ("deny", "ask", "flag") for r in pol.get(sec, []) if r["id"] == rid)
+
+    def verdict(self, command):
+        d = Engine(pc.build(self.PACK)[0], "regex").decide("Bash", {"command": command})
+        return d["verdict"], d["rule_ids"]
+
+    def test_a_zeroed_history_size_is_not_folded_onto_one_that_keeps_the_history(self):
+        """The two differ by one character in the value: `HISTSIZE=0` clears the history file, `HISTSIZE=1000` does
+        not. A fold that keys a value by the rule's name or by the body around it merges these two and turns an ask
+        into an allow."""
+        self.assertEqual(self.verdict("for n in 1000 0; do export HISTSIZE=$n; done"), ("ask", ["TK-A029"]))
+        self.assertEqual(self.verdict("for n in 1000 2000; do export HISTSIZE=$n; done"), ("allow", []))
+
+    def test_the_fold_keeps_apart_only_what_the_rule_reads_differently(self):
+        try:
+            from tracekit.policy2 import fold   # the value fold of #683
+        except ImportError:
+            self.fail("the value fold is not built yet: nothing keeps TK-A029 from folding `0` onto `1000`, which is "
+                      "the pair the test above requires to decide differently")
+        part = fold.partition(self.rule("TK-A029")["pattern"], False)
+        self.assertNotEqual(part.key("0"), part.key("1000"), "TK-A029 reads 0 and 1000 differently")
+        self.assertEqual(part.key("1000"), part.key("2000"), "TK-A029 reads 1000 and 2000 the same")
+
+
 class ReadOnce(unittest.TestCase):
     """A decision reads each part of a call once: a line whose second readings read nothing more is not parsed again
     as written, an argument the parser can't read as a command is not read further, and a parse's write effects are
