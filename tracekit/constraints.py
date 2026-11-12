@@ -68,8 +68,9 @@ import re
 
 from .findings import WRITE_TOOLS
 from .policy2.classes import PATH_KEYS, SHELL_KEYS
-from .policy2.engine import _shell as _parse
+from .policy2.engine import _shell as _parse, commands_each
 from .policy2.shell import ParseError
+from .signer.rpc_schema import quoted
 
 OBJECT_KINDS = ("keep_away", "only_change")
 MAX_TEXT = 1 << 16   # lean: characters of one text the grammar reads; past it, cut
@@ -796,19 +797,25 @@ def shell(cmd):
     command runs its own after the line returns (LATER_RUNS, setsid -f), "push": a git push, "network": a command that
     reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell call's arguments (`command`
     or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine reads them
-    (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included).
+    (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included; a `commands` list joined
+    and each entry on its own, Engine._parse: what either reading finds).
     lean: redirections, the arguments of tee/touch/mkdir/rm/rmdir/truncate/shred/unlink and of formatters that write
     in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
     ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
     after `--`, and the -name of a find that deletes or runs a command; a word with a variable, a glob, braces or a
-    command substitution is no path; a line the parser can't read (`case`, over its size) does nothing, and the
+    command substitution is no path; a line the parser can't read (`coproc`, over its size) does nothing, and the
     policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
     out = {"paths": [], "dirs": [], "cd": False, "elsewhere": False, "later": False, "push": False, "network": False,
            "writes": False}
-    try:
-        cmds, _, _, written, _ = _parse(cmd if isinstance(cmd, dict) else
-                                        {"command": cmd if isinstance(cmd, str) else ""})
-    except ParseError:
+    args = cmd if isinstance(cmd, dict) else {"command": cmd if isinstance(cmd, str) else ""}
+    cmds, written, read = [], [], False
+    for a in [args, *({"command": c} for c in commands_each(args))]:
+        try:
+            found, _, _, wrote = _parse(a)[:4]
+        except ParseError:
+            continue
+        cmds, written, read = cmds + found, written + wrote, True
+    if not read:
         return out
     for c in cmds:
         name, rest = c["argv"][0], c["argv"][1:]
@@ -886,10 +893,11 @@ def breaks(kind, f, is_object):
 def held(kind, name):
     """What the agent is told when a live constraint holds its call (`name`: from breaks(), out of its own
     arguments; for "many", the most files of one call the signer checks; for "full", the most file constraints a run
-    takes)."""
-    return {"keep_away": f"the person's request in this run said not to modify {name}",
-            "only_change": f"the person's request in this run said to change only certain files, and {name} is not "
-                           "one of them",
+    takes). A file or directory name is quoted, so no line of its starts a line of the reason: only_change's is any the
+    agent wrote, keep_away's the object constraint_add took, which the agent's own identity may add."""
+    return {"keep_away": f"the person's request in this run said not to modify {quoted(name, 512)}",
+            "only_change": f"the person's request in this run said to change only certain files, and "
+                           f"{quoted(name, 512)} is not one of them",
             "read_only": "the person's request in this run said to make no changes (read-only)",
             "no_push": "the person's request in this run said not to push",
             "no_network": "the person's request in this run said not to use the network",

@@ -31,6 +31,7 @@ experimental.
 | `tracekit graph`: graph and report built from v2 bundles | [graph](graph.md) |
 | `tracekit report`: a week of a signer's store on one page, as text or JSON | [viewer](viewer.md#weekly-report) |
 | `tracekit audit`: Claude Code transcripts replayed through the policy, read-only and not a record | [audit](audit.md) |
+| `tracekit tips`: the viewer's TIPS page as text or JSON | [viewer](viewer.md#tracekit-tips) |
 | Model receipts: the coding-agent hooks' receipts of the weights files a call wrote, and `tracekit verify-model` | [coding agents](coding-agents.md#weights-files-a-call-wrote) |
 | Detection and containment: sequences and limits, holds, quarantine, suspensions, incidents, the webhook outbox | [incidents](incidents.md), [webhooks](webhooks.md) |
 | Argument provenance (`untrusted`, `from_untrusted`) | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
@@ -47,7 +48,9 @@ experimental.
 | Wassette behind the MCP gateway (its policy rule is tested against a stand-in with Wassette's tool names, not against Wassette in CI) | [Wassette](integrations/wassette.md) |
 | `tracekit follow` (agentsh's audit log) and the signer's `importers` | [agentsh](integrations/agentsh.md) |
 | Verified tool results (signer.yaml `verify_tool_results`) | [gateway](gateway.md#verified-tool-results) |
+| Tracekit Box's agent channel (signer.yaml `box_daemons`, `channel_open`, `ext.box` and verify's `boxed agent` line; tested against a stand-in daemon on the signer's Unix socket, not Tracekit Box itself) | [limits](limits.md#tracekit-box-experimental) |
 | The kernel sensor import (`tracekit sensor import`), Linux: checked against event lines shaped as Tetragon's and Falco's source writes them, not a live sensor | [Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md) |
+| Intent grants: `tracekit grant`, `tracekit approvals approve --grant`, the `grant_*` RPCs, signer.yaml `grants`, a rule's `approval: {grant: ...}` and verify's `intent grants` line | [intent grants](intent-grants.md) |
 | OTLP import and export, the v1 OTLP receiver, ingest gateway and model proxy (these three need `--experimental`) | [OpenTelemetry](otel.md) |
 | Witnesses, the public witness, Rekor and RFC 3161 anchors, `tracekit monitor`, the record-key issuer, external and KMS log keys, SLH-DSA hybrid checkpoints | [witnesses](witnesses.md), [monitor](monitor.md), [issuer](issuer.md) |
 | Cost, usage, coverage and findings (`tracekit cost`, `tracekit analyze`), and the intent, reasoning and action checks of v2 runs (`tracekit analyze --v2`, signed into a findings run with `review_finding`; `--review`, a reviewer model) | [findings](findings.md) |
@@ -58,9 +61,11 @@ experimental.
 | The Claude Code plugin (`plugin/`): the v2 Claude Code hooks through Claude Code's plugin system (its hook script is tested against the dev signer; loading inside a live Claude Code isn't) | [plugin](../plugin/README.md) |
 | The sandbox-runtime decider (`tracekit srt-decider`; tested against a stand-in that speaks srt-proxy's decider protocol, not a released srt-proxy) | [sandbox-runtime](integrations/sandbox-runtime.md) |
 | Codex CLI, Cursor, Gemini CLI and OpenCode 1.x hooks (checked against recorded hook payloads, OpenCode's written in its documented shape, not the live tools) | [coding agents](coding-agents.md) |
-| goose, Qwen Code, Factory Droid, Antigravity CLI and Crush hooks (written to each harness's published hook documentation and tested against payloads in that shape, not the live tools) | [coding agents](coding-agents.md) |
+| goose, Qwen Code, Factory Droid, Antigravity CLI, Crush and Devin hooks (written to each harness's published hook documentation and tested against payloads in that shape, not the live tools), and Kilo Code's plugin (OpenCode's, run with the Kilo CLI 7.8.18 on Linux, not in its VS Code extension) | [coding agents](coding-agents.md) |
+| Cline hooks (checked against payloads recorded from Cline CLI 3.0.74 and the VS Code extension 4.1.26 on Linux, each driven by a scripted model) | [coding agents](coding-agents.md) |
 | The Hermes Agent plugin (`integrations/hermes/`; tested against a stand-in for the sequential path of Hermes's agent loop and its plugin hook dispatch as v0.22.5's source defines them, not a running Hermes) | [Hermes Agent](integrations/hermes.md) |
-| CrewAI (tested against a stand-in, not the real library) and Browser Use (its real-library contract runs nightly only) | [CrewAI](integrations/crewai.md), [Browser Use](integrations/browser-use.md) |
+| CrewAI (unit tests against a stand-in, and the example against real CrewAI 1.15.x in a CI job of its own; not yet run through `tests/adapter_contract.py`) | [CrewAI](integrations/crewai.md) |
+| Browser Use (its real-library contract runs nightly only) | [Browser Use](integrations/browser-use.md) |
 | Pydantic AI (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Pydantic AI](integrations/pydantic-ai.md) |
 | Google ADK (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Google ADK](integrations/google-adk.md) |
 | Haystack (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Haystack](integrations/haystack.md) |

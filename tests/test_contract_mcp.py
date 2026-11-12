@@ -16,6 +16,8 @@ import adapter_contract as ac
 from tracekit.sdk.client import Client
 
 try:
+    import mcp
+    import mcp.types
     from mcp import Client as MCPClient
     from mcp import MCPError
     from mcp.server.mcpserver import MCPServer
@@ -137,6 +139,13 @@ class _Mcp1Session:
         self.calls += 1
         return CallToolResult(content=[TextContent(type="text", text="done")], is_error=False)
 
+    async def get_prompt(self, name, arguments=None):
+        from mcp.types import GetPromptResult, PromptMessage, TextContent
+        self.calls += 1
+        if name == "boom":
+            raise MCPError(-32603, "boom")
+        return GetPromptResult(messages=[PromptMessage(role="user", content=TextContent(type="text", text="hi"))])
+
 
 class _StubSession(_Mcp1Session):
     server_info = type("Info", (), {"name": "stub"})()
@@ -145,15 +154,17 @@ class _StubSession(_Mcp1Session):
 class _Signer:
     """A signer that fails the way it is told: `decide` and `complete` raise `errors[method]` when set."""
 
-    def __init__(self, **errors):
-        self.errors, self.tools = errors, []
+    def __init__(self, decision="allow", **errors):
+        self.decision, self.errors, self.tools, self.completed, self.requests = decision, errors, [], [], []
 
     def __getattr__(self, method):
         def call(req):
+            self.requests.append((method, req))
             self.tools += [req["tool"]] if method == "decide" else []
+            self.completed += [req] if method == "complete" else []
             if method in self.errors:
                 raise self.errors[method]
-            return {"decide": {"decision": "allow", "decision_id": "dec-1", "rule_ids": []},
+            return {"decide": {"decision": self.decision, "decision_id": "dec-1", "rule_ids": ["r1"]},
                     "approval_consume": {"ok": True, "rule_ids": []}}.get(method, {"run_seq": 0})
         return call
 
@@ -219,3 +230,588 @@ class SignerFailures(unittest.TestCase):
             asyncio.run(TracekitSession(_Mcp1Session(), signer, self.RUN).call_tool("x", {}))
         self.assertEqual(signer.tools, ["mcp:git_hub/x", "mcp:unknown/x"])
         self.assertIn("server=", str(cm.warning))
+
+    def test_get_prompt_is_decided_and_completed_as_a_prompt_call(self):
+        session, signer = _StubSession(), _Signer()
+        out = asyncio.run(TracekitSession(session, signer, self.RUN).get_prompt("triage", {"issue": "1"}))
+        self.assertEqual((out.messages[0].content.text, session.calls, signer.tools),
+                         ("hi", 1, ["mcp:stub/prompt:triage"]))
+        self.assertEqual([r["status"] for r in signer.completed], ["ok"])
+
+        session = _StubSession()
+        with self.assertRaises(RuntimeError) as cm:
+            asyncio.run(TracekitSession(session, _Signer(decision="deny"), self.RUN).get_prompt("triage", {}))
+        self.assertIn("Tool call blocked by policy: ", str(cm.exception))
+        self.assertEqual(session.calls, 0)
+
+        signer = _Signer()
+        with self.assertRaises(MCPError):
+            asyncio.run(TracekitSession(_StubSession(), signer, self.RUN).get_prompt("boom", {}))
+        self.assertEqual([(r["status"], r["error"]) for r in signer.completed], [("error", "MCPError: boom")])
+
+        from tracekit import autowire
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        with mock.patch("mcp.ClientSession", _StubSession), \
+                mock.patch.object(_StubSession, "call_tool", _StubSession.call_tool), \
+                mock.patch.object(_StubSession, "get_prompt", _StubSession.get_prompt):
+            autowire._mcp(run)
+            out = asyncio.run(_StubSession().get_prompt("triage", {"issue": "1"}))
+        self.assertEqual((out.messages[0].content.text, signer.tools), ("hi", ["mcp:stub/prompt:triage"]))
+
+
+class _ListingSession(_StubSession):
+    """List methods return one page, the one `params.cursor` names (the first when the caller asks for none)."""
+
+    def __init__(self):
+        super().__init__()
+        self.cursors, self.results = [], []
+
+    def _page(self, kw):
+        cursor = getattr(kw.get("params"), "cursor", None)
+        self.cursors.append(cursor)
+        self.calls += 1
+        return cursor
+
+    async def list_tools(self, *a, **kw):
+        from mcp.types import ListToolsResult, Tool
+        if self._page(kw) == "boom":
+            raise MCPError(-32603, "boom")
+        out = ListToolsResult(tools=[Tool(name="echo", description="do this", inputSchema={"type": "object"})])
+        self.results.append(out)
+        return out
+
+    async def list_resources(self, *a, **kw):
+        from mcp.types import ListResourcesResult, Resource
+        cursor = self._page(kw) or "page-1"
+        out = ListResourcesResult(resources=[Resource(name="box", uri=f"mem://{cursor}", description="inbox")])
+        self.results.append(out)
+        return out
+
+    async def list_prompts(self, *a, **kw):
+        from mcp.types import ListPromptsResult, Prompt
+        self._page(kw)
+        out = ListPromptsResult(prompts=[Prompt(name="triage", description="sort issues")])
+        self.results.append(out)
+        return out
+
+
+@unittest.skipUnless(HAVE_MCP, "mcp not installed")
+class ListsAreObserved(unittest.TestCase):
+    RUN = SignerFailures.RUN
+
+    def test_each_list_is_one_untrusted_observe_of_the_page_asked_for(self):
+        from mcp.types import PaginatedRequestParams
+        session, signer = _ListingSession(), _Signer()
+        gate = TracekitSession(session, signer, self.RUN, server="git hub")
+        tools = asyncio.run(gate.list_tools())
+        resources = asyncio.run(gate.list_resources(params=PaginatedRequestParams(cursor="page-2")))
+        prompts = asyncio.run(gate.list_prompts())
+        self.assertIs(tools, session.results[0])
+        self.assertIs(resources, session.results[1])
+        self.assertIs(prompts, session.results[2])
+        self.assertEqual(session.cursors, [None, "page-2", None])
+        observed = [r for m, r in signer.requests if m == "observe"]
+        self.assertEqual([(r["source"], r["trust"]) for r in observed],
+                         [("mcp:git_hub/tools", "untrusted"), ("mcp:git_hub/resources", "untrusted"),
+                          ("mcp:git_hub/prompts", "untrusted")])
+        self.assertEqual([r["client_seq"] for r in observed], [0, 1, 2])
+        self.assertEqual(observed[0]["value"], tools.model_dump(mode="json", by_alias=True, exclude_none=True))
+        self.assertEqual(observed[1]["value"]["resources"][0]["uri"], "mem://page-2")
+        self.assertEqual(observed[1]["value"], resources.model_dump(mode="json", by_alias=True, exclude_none=True))
+        self.assertEqual(observed[2]["value"]["prompts"][0]["description"], "sort issues")
+
+    def test_an_unrecorded_list_is_withheld_when_the_run_fails_closed(self):
+        """The default fail mode is closed, and a signer refusal is withheld even when the run fails open."""
+        from tracekit.sdk.client import SignerUnavailable
+        from tracekit.signer.rpc_schema import RPCError
+        session = _ListingSession()
+        with self.assertRaises(SignerUnavailable):
+            asyncio.run(TracekitSession(session, _Signer(observe=SignerUnavailable("down")), self.RUN).list_tools())
+        self.assertEqual(session.results[0].tools[0].name, "echo")   # fetched from the server, not returned
+        with self.assertRaises(RPCError):
+            asyncio.run(TracekitSession(_ListingSession(), _Signer(observe=RPCError("unavailable", "down")),
+                                        {**self.RUN, "fail_modes": {"mcp": "open"}}).list_prompts())
+
+    def test_an_unrecorded_list_is_returned_when_the_run_fails_open(self):
+        from tracekit.sdk.client import SignerUnavailable
+        session = _ListingSession()
+        with self.assertWarns(UserWarning) as cm:
+            out = asyncio.run(TracekitSession(session, _Signer(observe=SignerUnavailable("down")),
+                                              {**self.RUN, "fail_modes": {"mcp": "open"}}).list_resources())
+        self.assertIs(out, session.results[0])
+        self.assertEqual(out.resources[0].uri, "mem://page-1")
+        self.assertIn("not recorded", str(cm.warning))
+
+    def test_a_list_the_session_fails_to_return_is_not_observed(self):
+        from mcp.types import PaginatedRequestParams
+        signer = _Signer()
+        with self.assertRaises(MCPError):
+            asyncio.run(TracekitSession(_ListingSession(), signer, self.RUN).list_tools(
+                params=PaginatedRequestParams(cursor="boom")))
+        self.assertEqual(signer.requests, [])
+
+    def test_an_unnamed_session_records_unknown_and_warns(self):
+        session, signer = _ListingSession(), _Signer()
+        session.server_info = None
+        with self.assertWarns(UserWarning) as cm:
+            asyncio.run(TracekitSession(session, signer, self.RUN).list_resources())
+        self.assertEqual(signer.requests[0][1]["source"], "mcp:unknown/resources")
+        self.assertIn("server=", str(cm.warning))
+
+    def test_instrument_observes_a_sessions_lists(self):
+        from tracekit import autowire
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        with mock.patch("mcp.ClientSession", _ListingSession), \
+                mock.patch.object(_ListingSession, "call_tool", _ListingSession.call_tool), \
+                mock.patch.object(_ListingSession, "get_prompt", _ListingSession.get_prompt), \
+                mock.patch.object(_ListingSession, "list_tools", _ListingSession.list_tools), \
+                mock.patch.object(_ListingSession, "list_resources", _ListingSession.list_resources), \
+                mock.patch.object(_ListingSession, "list_prompts", _ListingSession.list_prompts):
+            autowire._mcp(run)
+            out = asyncio.run(_ListingSession().list_resources(params=None))
+        self.assertEqual(out.resources[0].uri, "mem://page-1")
+        [req] = [r for m, r in signer.requests if m == "observe"]
+        self.assertEqual((req["source"], req["trust"]), ("mcp:stub/resources", "untrusted"))
+        self.assertEqual(req["value"]["resources"][0]["description"], "inbox")
+
+
+@unittest.skipUnless(HAVE_MCP and hasattr(mcp.types, "InputRequiredResult"), "mcp 2.3+ with InputRequiredResult required")
+class InputRequiredRounds(unittest.TestCase):
+    RUN = SignerFailures.RUN
+
+    def setUp(self):
+        from mcp.client.session import ClientSession
+        self.orig_methods = {
+            m: getattr(ClientSession, m)
+            for m in ("call_tool", "get_prompt", "list_tools", "list_resources", "list_prompts")
+            if hasattr(ClientSession, m)
+        }
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        from mcp.client.session import ClientSession
+        for m, fn in self.orig_methods.items():
+            setattr(ClientSession, m, fn)
+
+    def _make_server(self):
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+
+        seen_args = []
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[
+                t.Tool(name="ask_input", description="tool needing input", inputSchema={"type": "object"}),
+                t.Tool(name="ask_input_no_state", description="tool needing input without state", inputSchema={"type": "object"}),
+                t.Tool(name="fail_round", description="tool that fails in round 2", inputSchema={"type": "object"}),
+            ])
+
+        async def on_call_tool(ctx, params):
+            seen_args.append(dict(params.arguments or {}))
+            if params.name == "ask_input":
+                if params.request_state is None:
+                    return t.InputRequiredResult(
+                        request_state="state-tool-1",
+                        input_requests={"req-1": t.ElicitRequest(
+                            params=t.ElicitRequestFormParams(
+                                message="enter data",
+                                requested_schema={"type": "object", "properties": {}},
+                            )
+                        )},
+                    )
+                return t.CallToolResult(content=[t.TextContent(type="text", text="tool ok")], is_error=False)
+            if params.name == "ask_input_no_state":
+                return t.InputRequiredResult(
+                    request_state=None,
+                    input_requests={"req-no-state": t.ElicitRequest(
+                        params=t.ElicitRequestFormParams(
+                            message="enter data",
+                            requested_schema={"type": "object", "properties": {}},
+                        )
+                    )},
+                )
+            if params.name == "fail_round":
+                if params.request_state is None:
+                    return t.InputRequiredResult(
+                        request_state="state-fail-1",
+                        input_requests={"req-f": t.ElicitRequest(
+                            params=t.ElicitRequestFormParams(
+                                message="enter data",
+                                requested_schema={"type": "object", "properties": {}},
+                            )
+                        )},
+                    )
+                raise RuntimeError("boom in round 2")
+            raise MCPError(-32601, f"unknown tool: {params.name}")
+
+        async def on_list_prompts(ctx, params):
+            return t.ListPromptsResult(prompts=[
+                t.Prompt(name="ask_prompt", description="prompt needing input"),
+            ])
+
+        async def on_get_prompt(ctx, params):
+            if params.name == "ask_prompt":
+                if params.request_state is None:
+                    return t.InputRequiredResult(
+                        request_state="state-prompt-1",
+                        input_requests={"req-p": t.ElicitRequest(
+                            params=t.ElicitRequestFormParams(
+                                message="enter prompt data",
+                                requested_schema={"type": "object", "properties": {}},
+                            )
+                        )},
+                    )
+                return t.GetPromptResult(
+                    description="done prompt",
+                    messages=[t.PromptMessage(role="user", content=t.TextContent(type="text", text="prompt ok"))],
+                )
+            raise MCPError(-32601, f"unknown prompt: {params.name}")
+
+        srv = Server("contract_server", on_list_tools=on_list_tools, on_call_tool=on_call_tool,
+                     on_list_prompts=on_list_prompts, on_get_prompt=on_get_prompt)
+        return srv, seen_args
+
+    def test_tool_call_input_required_round_decided_and_completed_once(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server, _ = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_call():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                return await c.call_tool("ask_input", {"k": "v"})
+
+        out = asyncio.run(run_call())
+        self.assertEqual(out.content[0].text, "tool ok")
+        self.assertFalse(out.is_error)
+
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "ok")
+
+        observed = [r for m, r in signer.requests if m == "observe" and r["source"].endswith("/input_required")]
+        self.assertEqual(len(observed), 1)
+        self.assertEqual((observed[0]["source"], observed[0]["trust"]),
+                         ("mcp:contract_server/input_required", "untrusted"))
+        self.assertIn("req-1", observed[0]["value"])
+
+    def test_get_prompt_input_required_round_decided_and_completed_once(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server, _ = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_prompt():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                return await c.get_prompt("ask_prompt", {"k": "v"})
+
+        out = asyncio.run(run_prompt())
+        self.assertEqual(out.messages[0].content.text, "prompt ok")
+
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "ok")
+
+        observed = [r for m, r in signer.requests if m == "observe"]
+        self.assertEqual(len(observed), 1)
+        self.assertEqual((observed[0]["source"], observed[0]["trust"]),
+                         ("mcp:contract_server/input_required", "untrusted"))
+        self.assertIn("req-p", observed[0]["value"])
+
+    def test_resumed_round_sends_signer_agreed_arguments(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server, seen_args = self._make_server()
+
+        class T2Signer(_Signer):
+            def __getattr__(self, method):
+                call = super().__getattr__(method)
+                if method == "approval_consume":
+                    return lambda req: {"ok": True, "rule_ids": [], "args": {"k": "t2-rewritten"}}
+                return call
+
+        signer = T2Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_call():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                return await c.call_tool("ask_input", {"k": "caller-original"})
+
+        out = asyncio.run(run_call())
+        self.assertEqual(out.content[0].text, "tool ok")
+        self.assertEqual(seen_args, [{"k": "t2-rewritten"}, {"k": "t2-rewritten"}])
+        self.assertEqual(len([r for m, r in signer.requests if m == "decide"]), 1)
+        self.assertEqual(len([r for m, r in signer.requests if m == "complete"]), 1)
+
+    def test_result_without_request_state_completes_call(self):
+        from tracekit import autowire
+        server, _ = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_call():
+            async with MCPClient(server) as c:
+                return await c.session.call_tool("ask_input_no_state", {"k": "v"}, allow_input_required=True)
+
+        out = asyncio.run(run_call())
+        self.assertEqual(out.result_type, "input_required")
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "ok")
+
+    def test_round_whose_observe_fails_completes_kept_call_as_error(self):
+        from tracekit import autowire
+        from tracekit.sdk.client import SignerUnavailable
+        server, _ = self._make_server()
+        signer = _Signer(observe=SignerUnavailable("down"))
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_call():
+            async with MCPClient(server) as c:
+                return await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+
+        def find_exc(e, cls):
+            if isinstance(e, cls):
+                return True
+            if hasattr(e, "exceptions"):
+                return any(find_exc(sub, cls) for sub in e.exceptions)
+            return False
+
+        with self.assertRaises(Exception) as cm:
+            asyncio.run(run_call())
+        self.assertTrue(find_exc(cm.exception, SignerUnavailable))
+
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "error")
+        self.assertIn("SignerUnavailable: down", completes[0]["error"])
+
+    def test_made_up_request_state_is_decided_anew(self):
+        from tracekit import autowire
+        server, _ = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_calls():
+            async with MCPClient(server) as c:
+                # 1. Get real state from ask_input
+                out1 = await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+                real_state = out1.request_state
+                # 2. Send different state with same arguments -> decides anew
+                await c.session.call_tool("ask_input", {"k": "v"}, request_state="different-state",
+                                          allow_input_required=True)
+                # 3. Send real state with different arguments -> decides anew
+                await c.session.call_tool("ask_input", {"k": "other"}, request_state=real_state,
+                                          allow_input_required=True)
+
+        asyncio.run(run_calls())
+        decides = [r for m, r in signer.requests if m == "decide"]
+        self.assertEqual(len(decides), 3)
+
+    def test_round_that_raises_completes_kept_call_as_error(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server, _ = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_failing():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                await c.call_tool("fail_round", {"k": "v"})
+
+        with self.assertRaises(Exception):
+            asyncio.run(run_failing())
+
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "error")
+        self.assertIn("MCPError", completes[0]["error"])
+
+    def test_resumed_round_refused_by_signer_completes_as_error(self):
+        from tracekit import autowire
+        import mcp.types as t
+        server, seen_args = self._make_server()
+
+        consume_calls = 0
+
+        class QuarantinedSigner(_Signer):
+            def __getattr__(self, method):
+                call = super().__getattr__(method)
+                if method == "approval_consume":
+                    def consume(req):
+                        nonlocal consume_calls
+                        consume_calls += 1
+                        if consume_calls > 1:
+                            return {"ok": False, "rule_ids": ["TK-QUARANTINE"], "reason": "run quarantined"}
+                        return {"ok": True, "rule_ids": []}
+                    return consume
+                return call
+
+        signer = QuarantinedSigner()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def elicit(ctx, params):
+            return t.ElicitResult(action="accept", content=None)
+
+        async def run_call():
+            async with MCPClient(server, elicitation_callback=elicit) as c:
+                return await c.call_tool("ask_input", {"k": "v"})
+
+        out = asyncio.run(run_call())
+        self.assertEqual(len(seen_args), 1)
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 1)
+        self.assertEqual(len(completes), 1)
+        self.assertEqual(completes[0]["status"], "error")
+        self.assertIn("TK-QUARANTINE", completes[0]["error"])
+        self.assertTrue(out.is_error)
+        self.assertIn("TK-QUARANTINE", out.content[0].text)
+
+    def test_request_state_is_used_once(self):
+        from tracekit import autowire
+        server, _ = self._make_server()
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_calls():
+            async with MCPClient(server) as c:
+                out1 = await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+                real_state = out1.request_state
+                await c.session.call_tool("ask_input", {"k": "v"}, request_state=real_state,
+                                          allow_input_required=True)
+                d1 = len([r for m, r in signer.requests if m == "decide"])
+                await c.session.call_tool("ask_input", {"k": "v"}, request_state=real_state,
+                                          allow_input_required=True)
+                d2 = len([r for m, r in signer.requests if m == "decide"])
+                return d1, d2
+
+        d1, d2 = asyncio.run(run_calls())
+        self.assertEqual(d1, 1)
+        self.assertEqual(d2, 2)
+
+    def test_server_that_reuses_request_state_completes_both_calls(self):
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+        from tracekit import autowire
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[
+                t.Tool(name="constant_state_tool", description="returns fixed state", inputSchema={"type": "object"}),
+            ])
+
+        async def on_call_tool(ctx, params):
+            if params.request_state is None:
+                return t.InputRequiredResult(
+                    request_state="fixed-state-123",
+                    input_requests={"req": t.ElicitRequest(
+                        params=t.ElicitRequestFormParams(
+                            message="input",
+                            requested_schema={"type": "object", "properties": {}},
+                        )
+                    )},
+                )
+            return t.CallToolResult(content=[t.TextContent(type="text", text="done")], is_error=False)
+
+        server = Server("constant_state_server", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_test():
+            async with MCPClient(server) as c:
+                out1 = await c.session.call_tool("constant_state_tool", {"k": "v"}, allow_input_required=True)
+                out2 = await c.session.call_tool("constant_state_tool", {"k": "v"}, allow_input_required=True)
+                out3 = await c.session.call_tool("constant_state_tool", {"k": "v"}, request_state="fixed-state-123",
+                                                  allow_input_required=True)
+                return out1, out2, out3
+
+        asyncio.run(run_test())
+        decides = [r for m, r in signer.requests if m == "decide"]
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(decides), 2)
+        self.assertEqual(len(completes), 2)
+
+    def test_round_whose_observe_fails_warns_when_fail_open(self):
+        from tracekit import autowire
+        from tracekit.sdk.client import SignerUnavailable
+        server, _ = self._make_server()
+        signer = _Signer(observe=SignerUnavailable("down"))
+        run = mock.Mock(client=signer, registered={**self.RUN, "fail_modes": {"mcp": "open"}})
+        autowire._mcp(run)
+
+        async def run_call():
+            async with MCPClient(server) as c:
+                return await c.session.call_tool("ask_input", {"k": "v"}, allow_input_required=True)
+
+        with self.assertWarns(UserWarning) as cm:
+            out = asyncio.run(run_call())
+
+        self.assertEqual(out.result_type, "input_required")
+        self.assertIn("MCP input_required not recorded: down", str(cm.warning))
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(len(completes), 0)
+
+    def test_round_without_input_requests_skips_observe(self):
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+        from tracekit import autowire
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[
+                t.Tool(name="state_only", description="state only", inputSchema={"type": "object"}),
+            ])
+
+        async def on_call_tool(ctx, params):
+            if params.request_state is None:
+                return t.InputRequiredResult(request_state="s1", input_requests=None)
+            return t.CallToolResult(content=[t.TextContent(type="text", text="done")], is_error=False)
+
+        server = Server("state_only_server", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        autowire._mcp(run)
+
+        async def run_call():
+            async with MCPClient(server) as c:
+                return await c.session.call_tool("state_only", {"k": "v"}, allow_input_required=True)
+
+        out = asyncio.run(run_call())
+        self.assertEqual(out.result_type, "input_required")
+        observed = [r for m, r in signer.requests if m == "observe"]
+        self.assertEqual(len(observed), 0)

@@ -885,8 +885,9 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
         for w in sorted(writes[f] + reported[f] + tried[f], key=lambda e: (e["src"], e["grade"])):
             rules = [e for e in g.in_edges(w["src"], GRADES) if nodes[e["src"]]["kind"] == "rule"]
             if rules:
-                who = [f"{lab(a['src'])} {a['kind']}d it ({a['grade']}"
-                       + (", self-approved)" if a.get("self_approved") else ")") for a in approvers(w["src"])]
+                who = [f"{lab(a['src'])} {a['kind'].rstrip('e')}ed it ({a['grade']}"
+                       + (", self-approved)" if a.get("self_approved") and a["kind"] == "approve" else ")")
+                       for a in approvers(w["src"])]
                 attested = w["kind"] == "wrote"
                 reported_run = w["kind"] == "reported writing"
                 sensitive.append({"text": f"{lab(f)}: {where(w['src'])} {w['kind']} it ({w['grade']}) under "
@@ -926,7 +927,8 @@ def highlights(doc: Dict[str, Any]) -> Dict[str, Any]:
     for p in of("person"):
         es = g.out_edges(p, GRADES)
         waits = [e["wait_ms"] for e in es if e["grade"] == "SIGNED" and "wait_ms" in e]
-        kinds, selfs = dict(sorted(Counter(e["kind"] for e in es).items())), sum(bool(e.get("self_approved")) for e in es)
+        kinds = dict(sorted(Counter(e["kind"] for e in es).items()))
+        selfs = sum(bool(e.get("self_approved")) for e in es if e["kind"] == "approve")   # a rejection approves nothing
         people.append({"text": f"{lab(p)}: " + ", ".join(f"{n} {k}" for k, n in kinds.items())
                        + (f", median wait {statistics.median(waits):g} ms" if waits else ", no wait recorded")
                        + (f", {selfs} self-approved (the approver is the run's own identity)" if selfs else "")
@@ -1086,9 +1088,8 @@ def _drawn(g: Graph, outcomes: OutcomeIndex, hits: List[str], things: List[str],
         rules = [a for a in g.in_edges(call, ("SIGNED",)) if g.nodes[a["src"]]["kind"] == "rule"]
         return "; ".join(filter(None, [
             ", ".join(f"{g.nodes[a['src']]['label']} {a['kind']}" for a in rules),
-            ", ".join(f"{g.nodes[a['src']]['label']} {a['kind']}d it" + (" (the run's own identity)"
-                                                                         if a.get("self_approved") else "")
-                      for a in ok)
+            ", ".join(f"{g.nodes[a['src']]['label']} {a['kind'].rstrip('e')}ed it"
+                      + (" (the run's own identity)" if a.get("self_approved") else "") for a in ok)
             or ("no person approved it" if e["kind"] in ("wrote", "reached") else "")]))
 
     answers = []

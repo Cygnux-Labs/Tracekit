@@ -82,7 +82,8 @@ from tracekit.integrations import executor_tools as ex
 actions = ex.actions("https://executor.internal:8090", run, headers={"authorization": f"Bearer {token}"})
 agent = Agent(name="ops", tools=[ex.openai_agents(a) for a in actions])          # OpenAI Agents
 tools = [ex.langchain(a) for a in actions]                                         # LangChain
-options = ClaudeAgentOptions(mcp_servers={ex.SERVER: ex.claude_agent_sdk(actions)})  # the key the hooks skip
+servers = {ex.SERVER: ex.claude_agent_sdk(actions)}                                # Claude Agent SDK
+options = ClaudeAgentOptions(mcp_servers=servers, hooks=tracekit_hooks(signer, run, mcp_servers=servers))
 ```
 
 ```ts
@@ -93,12 +94,17 @@ generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(
 ```
 
 `run` is the agent's `register_run` response (Python) or `RunHandle` (TypeScript). A refusal reaches the model as the
-tool's error. The Tracekit adapters leave these tools alone (each is marked; the Claude Agent SDK hooks skip the tools
-of the server registered under the key `tracekit-executor` in `mcp_servers`, `ex.SERVER`: the SDK names its tools by
-that key, not by the server's own name), so they can sit next to gated tools of your own: the
-executor decides and records them. TypeScript has no Claude Agent SDK helper (its `tool()` takes only a zod shape):
-write a `tool()` per action with its zod shape whose handler returns `action.call(args)`, and keep the Tracekit hooks
-off it (name its server `tracekit-executor`).
+tool's error. The Tracekit adapters leave these tools alone (each is marked), so they can sit next to gated tools of
+your own: the executor decides and records them. The Claude Agent SDK hooks skip only the exact tool names of the
+executor's actions, `mcp__tracekit-executor__<action>` (`ex.SERVER`; the SDK names its tools by the key in
+`mcp_servers`, not by the server's own name), and only when you hand them the same `mcp_servers` and the server under
+that key is the in-process one `ex.claude_agent_sdk` built. A project `.mcp.json` can add a server of that name, which
+the CLI loads when your app has none of its own (Claude Code 2.1.294; your app's server replaces it when it has one),
+or one whose name starts with it (`tracekit-executor__x`); the hooks gate their tools like any other. `tracekit.instrument()`
+hands each `ClaudeAgentOptions`' own `mcp_servers` to the hooks it adds. TypeScript has no Claude Agent SDK helper (its
+`tool()` takes only a zod shape): write a `tool()` per action with its zod shape whose handler returns
+`action.call(args)`, put the `createSdkMcpServer` server under the key `tracekit-executor`, and pass the hooks the same
+servers and the actions (`tracekitHooks(run, { mcpServers, executorActions: actions })`).
 
 ## What is recorded
 

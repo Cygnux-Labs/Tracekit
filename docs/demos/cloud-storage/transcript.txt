@@ -34,7 +34,7 @@ the agent: the call was rejected
 Bash 'git diff --stat': allow
   ran
 
-$ tracekit verify 74c80b3b6d40df36b4540888b27e0e4b.tkb --trust trust.json
+$ tracekit verify 74c80b3b6d40df36b4540888b27e0e4b.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/773997074cac0b4711cdfa672b714df4 at tree size 20, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required

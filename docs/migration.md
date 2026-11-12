@@ -42,7 +42,7 @@ A v2 bundle can then prove it continues that v1 ledger:
 ```sh
 tracekit signer trust -o trust.json
 tracekit export --v2 --run <run id> -o run.tkb
-tracekit verify run.tkb --trust trust.json \
+tracekit verify run.tkb --trust trust.json --detail \
     --v1-ledger ~/.tracekit-signer/ledger/ledger.jsonl --v1-key ~/.tracekit-signer/ledger/signer.pub
 ```
 

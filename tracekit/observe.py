@@ -407,7 +407,9 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
     session, each read scoped to the session's tenant by Runs itself; `feed` may then be None (`/` goes to /runs).
     `why`: a why.server.Store; its read API (/api/why/...) for the token only (why logs belong to no tenant, so never to
     an OIDC session), its replay POSTs for the token with a same-origin JSON body, and /v1/ingest for a bearer token
-    only: one of the Store's ingest tokens, else (none set) the token."""
+    only: one of the Store's ingest tokens, else (none set) the token. A feed with `tips` (a tips.Page) answers
+    /api/tips, the TIPS page's data (`?fresh=1` works it out again now), for the token only: it reads local transcripts
+    and every tenant's runs."""
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
     pages = [p for p, on in (("/", feed is not None), ("/runs", runs), ("/approvals", approvals)) if on]
 
@@ -544,8 +546,13 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                             "records": [r for r in itertools.chain(getattr(feed, "kept", {}).values(), feed.records)
                                         if r is not RETRACTED and (scope is ALL or r.get("tenant") == scope)],
                             **({"source": feed.source} if getattr(feed, "source", None) else {}),
-                            **({"signer": feed.signer} if getattr(feed, "signer", None) else {})}
+                            **({"signer": feed.signer} if getattr(feed, "signer", None) else {}),
+                            **({"tips": True} if getattr(feed, "tips", None) and self._token_ok() else {})}
                 return self._send(200, json.dumps(body, ensure_ascii=False))
+            if u.path == "/api/tips" and getattr(feed, "tips", None):   # view.StoreFeed's: tips.Page
+                if not self._token_ok():   # local transcripts and every tenant's runs: no session's to see
+                    return self._send(403, '{"error":"tips need the viewer token, not a sign-in"}')
+                return self._send(200, feed.tips(fresh=parse_qs(u.query).get("fresh") == ["1"]))   # READ AGAIN
             if u.path == "/api/rows" and hasattr(feed, "rows"):   # a run of the store, verified again, in full
                 q = {k: v[0] for k, v in parse_qs(u.query).items()}
                 if not (q.get("tenant") and q.get("run")):
@@ -788,7 +795,7 @@ def ledger_path(home=None, bundle=None, prog="tracekit observe"):
         return None, code
     if code != 0:
         print(f"{prog}: bundle {bundle} FAILED verification (exit {code}); refusing to show it. "
-              f"Run `tracekit verify {bundle}` for the details.", file=sys.stderr)
+              f"Run `tracekit verify {bundle} --detail` for the details.", file=sys.stderr)
         return None, code
     print(f"{prog}: bundle {bundle} verified", file=sys.stderr)
     return path, 0

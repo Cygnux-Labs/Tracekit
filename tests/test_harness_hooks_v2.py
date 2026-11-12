@@ -117,6 +117,14 @@ class Mapping(HarnessCase):
     def test_gemini(self):
         self.check("gemini")
 
+    def test_gemini_person_approval_command_prefix(self):
+        prefix = claude_code._approval_command_prefix
+
+        self.assertEqual(prefix("claude-code", None), "! ")
+        self.assertEqual(prefix("claude-code", "/path/to/signer.sock"), "")
+        self.assertEqual(prefix("gemini-cli", None), "!")
+        self.assertEqual(prefix("gemini-cli", "/path/to/signer.sock"), "")
+
     def test_opencode(self):
         self.check("opencode")
 
@@ -161,6 +169,30 @@ class Mapping(HarnessCase):
     def test_crush(self):
         self.check("crush")
 
+    def test_cline(self):
+        self.check("cline")
+
+    def test_cline_results_and_task_events_answer_with_no_cancel(self):
+        # the VS Code extension 4.1.26's PostToolUse and TaskComplete as recorded (userId redacted, taskId the case's):
+        # no call id, and its result String()-ed
+        pre = cases("cline")[3]["payload"]
+        self.assertEqual(self.hook("cline", pre, "PreToolUse")[0], 0)
+        base = {"clineVersion": "4.1.26", "taskId": pre["taskId"], "workspaceRoots": ["/tmp/clinework"],
+                "userId": "redacted", "model": {"provider": "unknown", "slug": "unknown"}}
+        post = dict(base, hookName="PostToolUse", timestamp="1794403395665", postToolUse={
+            "toolName": "run_commands", "parameters": {"commands": "[\"echo captured-by-tracekit\"]"},
+            "result": "[object Object]", "success": True, "executionTimeMs": 541})
+        done = dict(base, hookName="TaskComplete", timestamp="1794403397702", taskComplete={"taskMetadata": {
+            "taskId": pre["taskId"], "ulid": "", "initialTask": "", "result": "done"}})
+        self.assertIsNone(agent_hooks.normalise("cline", {"hook_event_name": "PostToolUse", "postToolUse": {
+            **post["postToolUse"], "result": "[object Object],[object Object]"}})["tool_response"])   # a list's String()
+        for ev, payload in (("PostToolUse", post), ("TaskComplete", done),
+                            ("UserPromptSubmit", {"taskId": pre["taskId"], "userPromptSubmit": {"prompt": "go"}})):
+            with self.subTest(event=ev):
+                self.assertEqual(self.hook("cline", payload, ev)[:2], (0, "{}"))
+        code, out, err = self.hook("cline", "not json", "PreToolUse")   # a payload it can't read: cancelled
+        self.assertEqual((code, json.loads(out)["cancel"]), (0, True), err)
+
     def test_devin(self):
         self.check("devin")
 
@@ -170,13 +202,19 @@ class Mapping(HarnessCase):
         for name, ti in (("read", {"target": "/w/a.py"}), ("write", {"content": "x"}), ("edit", {"file_path": None}),
                          ("write", {"file_path": "", "content": "x"}), ("apply_patch", {"input": "no headers"}),
                          ("apply_patch", {"input": "*** Add File:  \n+x"}), ("webfetch", {"uri": "https://x.example"}),
-                         ("webfetch", {"url": "https://example.com", "Url": "http://169.254.169.254/latest"})):
+                         ("webfetch", {"Url": "http://169.254.169.254/latest"})):
             with self.subTest(tool=name, ti=ti):
                 code, out, err = self.hook("devin", {"session_id": "dv-9", "hook_event_name": "PreToolUse",
                                                      "tool_name": name, "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Devin's {name} call names no", err)
                 self.assertIn("issues/566", err)
+        # a url beside one in another case: an argument sent twice (the review of #673)
+        code, out, err = self.hook("devin", {"session_id": "dv-9", "hook_event_name": "PreToolUse", "tool_name": "webfetch",
+                                             "tool_input": {"url": "https://example.com",
+                                                            "Url": "http://169.254.169.254/latest"}})
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("Devin's webfetch call sends an argument more than once (case ignored)", err)
         self.assertEqual(self.sent, [])
 
     def test_crush_sub_agents_are_denied_before_the_signer(self):
@@ -189,7 +227,8 @@ class Mapping(HarnessCase):
                                                      "tool_input": {"prompt": "p", "url": "https://x.example"}})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Crush's {name}", err)
-                self.assertIn('"disabled_tools": ["agent", "agentic_fetch"]', err)
+                self.assertLess(err.index('"permissions deny agent agentic_fetch" in crushrc'),
+                                err.index('"disabled_tools": ["agent", "agentic_fetch"]'))
                 self.assertEqual(self.sent, [])
 
     def test_crush_argument_names_crush_reads_otherwise_are_denied_before_the_signer(self):
@@ -275,7 +314,10 @@ class Mapping(HarnessCase):
                     "conversationId": "ag-pair", "workspacePaths": ["/w"]}
         self.decision = "deny"
         code, out, err = self.hook("antigravity", pre(3, "ls"), "PreToolUse")
-        self.assertEqual((code, json.loads(out)), (0, {"decision": "deny", "reason": "Blocked by tracekit policy: R-1"}))
+        self.assertEqual((code, json.loads(out)), (0, {"decision": "deny", "reason": "[tracekit] BLOCKED, nothing ran, "
+                                                       "and no one can approve it (R-1).\nAgent: tell the person what "
+                                                       "you were doing and why it was blocked. Never hide what a call "
+                                                       "runs to get past the policy: every call is signed and kept."}))
         self.decision = "allow"
         for step, cmd in ((4, "ls"), (4, "pwd"), (5, "ls")):
             self.assertEqual(self.hook("antigravity", pre(step, cmd), "PreToolUse")[:2], (0, '{"decision": "allow"}'))
@@ -510,7 +552,8 @@ class OnTheDevPolicy(HarnessCase):
             code, out, err = self.hook("devin", {"session_id": "dv-p", "hook_event_name": "PreToolUse", "tool_name": "write",
                                                  "tool_input": {decoy: f"/w/notes{i}.txt", real: "/w/.env", "content": "A=1"}})
             self.assertEqual((code, out), (2, ""), (real, decoy))
-            self.assertIn("TK-D005", err)
+            # one name in two cases is an argument sent twice, denied in the hook (the review of #673)
+            self.assertIn("TK-D005" if real.casefold() != decoy.casefold() else "more than once (case ignored)", err)
         # and a unified diff's files, beside a decoy patch header in another argument
         code, out, err = self.hook("devin", {"session_id": "dv-p", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
                                              "tool_input": {"patch": "--- a/config/.env\n+++ b/config/.env\n@@\n-A=1\n+A=2\n",
@@ -525,8 +568,8 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
         aid = err.split()[4]
         self.assertRegex(json.loads(out)["reason"],   # what Gemini CLI shows the person and the model
-                         rf"\(TK-A004(; TK-F\d+)*\): a person lets it run with `tracekit approvals( --signer \S+)? approve {aid}`"
-                         ", then asks the agent to try the same call again")
+                         rf"\(TK-A004(, TK-F\d+)*\), expires \d\d:\d\d UTC\.\nPerson: .*; allow once with "
+                         rf"`tracekit approvals( --signer \S+)? approve {aid}`;")
         pre["tool_input"]["additional_permissions"] = {"network": False}
         self.assertEqual(self.hook("gemini", pre)[0], 0)
 
@@ -541,12 +584,13 @@ class OnTheDevPolicy(HarnessCase):
             with self.subTest(name=name):
                 code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
                 self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)
-                self.assertIn("Blocked by tracekit policy", json.loads(out)["reason"])
+                self.assertTrue(json.loads(out)["reason"].startswith("[tracekit] BLOCKED, nothing ran, and no one "
+                                                                     "can approve it (TK-D"), out)
         cmd = {"CommandLine": "mkdir -p /tmp/x", "BypassSandbox": True}
         code, out, err = self.hook("antigravity", pre(3, "run_command", cmd), "PreToolUse")   # held: blocked at once
         self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
-        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\): a person lets it run with `tracekit approvals "
-                                                    r"(--signer \S+ )?approve apr-")
+        self.assertRegex(json.loads(out)["reason"], r"\(TK-A003\), expires \d\d:\d\d UTC\.\nPerson: look with "
+                                                    r"`tracekit approvals (--signer \S+ )?show apr-")
         self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
                          (0, '{"decision": "allow"}'))
 
@@ -592,6 +636,11 @@ class OnTheDevPolicy(HarnessCase):
 
 class Installer(unittest.TestCase):
     def setUp(self):
+        home = ac.tmpdir(self)
+        env = mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+                                           "LOCALAPPDATA": os.path.join(home, "data")})   # init makes the dev log key
+        env.start()
+        self.addCleanup(env.stop)
         agent = mock.patch.object(claude_code, "AGENT", claude_code.AGENT)   # the in-process hooks below set it
         agent.start()
         self.addCleanup(agent.stop)
@@ -653,6 +702,18 @@ class Installer(unittest.TestCase):
                         self.assertEqual(code, 0)
                         self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
                         self.assertFalse(os.path.exists(path))   # uninstall removes the plugin's files
+                        continue
+                    if harness == "cline":   # one hook file per event, each running the v2 hook with its event
+                        folder = os.path.dirname(path)
+                        for ev in agent_hooks.CLINE_EVENTS:
+                            with open(os.path.join(folder, ev + os.path.splitext(path)[1]), encoding="utf-8") as f:
+                                self.assertEqual(agent_hooks.cline_argv(f.read()),
+                                                 install._dev_hook_argv(harness_hooks.__name__, "entry", (harness, ev)))
+                        again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
+                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
+                        code, out = self.cli("uninstall", "--agent", harness, "--project")
+                        self.assertEqual((code, out), (0, f"Tracekit v2 hooks removed from {path}" + chr(10)))
+                        self.assertEqual(os.listdir(folder), [])
                         continue
                     with open(path) as f:
                         blob = json.load(f)
@@ -772,8 +833,9 @@ class Installer(unittest.TestCase):
         gone, old = os.path.join(d, "gone", "python"), install._blocking
         for python in (None, gone):   # dev mode (this interpreter, moved), system mode (OPT_PYTHON)
             # OpenCode: no shell; agy answers at exit 0 in JSON (test_antigravity_installed_commands_answer_in_json_…)
+            # Cline's hook files answer a cancel themselves (test_a_cline_hook_file_cancels_a_call_whose_hook_...)
             for harness in ("claude", *(h for h in agent_hooks.HARNESSES
-                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity"))):
+                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity", "cline"))):
                 path = os.path.join(d, str(bool(python)), harness, "hooks.json")
 
                 def init():
@@ -925,6 +987,11 @@ class CodexReasoningSummary(unittest.TestCase):
 
     def setUp(self):
         self.d = ac.tmpdir(self)
+        self.home = ac.tmpdir(self)
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": os.path.join(self.home, "data"),
+                                           "LOCALAPPDATA": os.path.join(self.home, "data")})   # init makes the dev log key
+        env.start()
+        self.addCleanup(env.stop)
         self.hooks = os.path.join(self.d, ".codex", "hooks.json")
         self.toml = os.path.join(self.d, ".codex", "config.toml")
         os.makedirs(os.path.dirname(self.toml))
@@ -1005,6 +1072,28 @@ class CodexReasoningSummary(unittest.TestCase):
             self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project"]), 0)
         self.assertEqual(self.read(), agent_hooks.CODEX_LINE)
         self.assertIn("Codex reasoning summaries: on", out.getvalue())
+
+    @unittest.skipIf(os.name == "nt", "uses POSIX advisory locks")
+    def test_init_does_not_open_a_store_held_by_another_process(self):
+        from tracekit.sdk.autospawn import data_dir
+
+        store = os.path.join(data_dir(), "store")
+        os.makedirs(store, exist_ok=True)
+        lock_path = os.path.join(store, "lock")
+        ready_r, ready_w = os.pipe()
+        code = ("import fcntl, os, sys, time; f=open(sys.argv[1], 'a'); fcntl.flock(f, fcntl.LOCK_EX); "
+                "os.write(int(sys.argv[2]), b'x'); time.sleep(30)")
+        holder = subprocess.Popen([sys.executable, "-c", code, lock_path, str(ready_w)], pass_fds=(ready_w,))
+        os.close(ready_w)
+        try:
+            self.assertEqual(os.read(ready_r, 1), b"x")
+            with mock.patch("os.getcwd", return_value=self.d), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--agent", "codex", "--project",
+                                           "--no-thinking-summaries"]), 0)
+        finally:
+            os.close(ready_r)
+            holder.terminate()
+            holder.wait(timeout=10)
 
 
 class CodexHookTrust(unittest.TestCase):
@@ -1518,9 +1607,10 @@ class VersionNotice(HarnessCase):
     def test_a_blocked_call_carries_no_notice_and_the_next_call_let_through_does(self):
         self.decision = "deny"
         code, out, err = self.pre("t1")
-        self.assertEqual((code, out), (2, ""))
-        self.assertIn("Blocked by tracekit policy", err)
-        self.assertNotIn("older than", err)
+        self.assertEqual(code, 2)
+        self.assertTrue(err.startswith("[tracekit] BLOCKED, nothing ran"), err)
+        self.assertEqual(json.loads(out)["systemMessage"], err.strip())   # the block's own JSON (#587), no notice
+        self.assertNotIn("older than", err + out)
         self.decision = "allow"
         self.assertIn("older than this hook's", json.loads(self.pre("t2")[1])["systemMessage"])
 

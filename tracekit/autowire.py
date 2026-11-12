@@ -12,7 +12,8 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
   `handle_tool_errors`, and through `.with_fallbacks()`;
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
   (tracekit_hooks);
-* MCP client: every ClientSession.call_tool goes through TracekitSession;
+* MCP client: every ClientSession.call_tool goes through TracekitSession, and its list_tools, list_resources and
+  list_prompts are recorded as untrusted input;
 * Browser Use: the actions of every Tools built from now on (an Agent builds one) are gated (trace_tools);
 * CrewAI: global tool hooks decide every tool call and block by return value (tracekit.integrations.crewai);
 * Pydantic AI: every Agent built from now on gets the Tracekit capability (tracekit.integrations.pydantic_ai), unless
@@ -221,52 +222,74 @@ def _langgraph(run):
 def _claude_agent_sdk(run):
     from claude_agent_sdk import ClaudeAgentOptions
 
-    from .integrations.claude_agent_sdk import tracekit_hooks
-    ours = tracekit_hooks(run.client, run.registered)
-    del ours["SessionEnd"]   # the run is the process's: closed at exit, not when its first session ends
+    from .integrations.claude_agent_sdk import _executor_tools, tracekit_hooks
+    from .integrations.executor_tools import SERVER
+    built = {}   # the executor tools of an options' mcp_servers -> the hooks that leave those to the executor
+
+    def ours(servers):
+        tools = _executor_tools(servers)
+        if tools not in built:
+            # lean: a hooks instance, and so a stream, per distinct executor server (the signer allows 64 per run)
+            built[tools] = tracekit_hooks(run.client, run.registered, {SERVER: servers[SERVER]} if tools else None)
+            del built[tools]["SessionEnd"]   # the run is the process's: closed at exit, not when its first session ends
+        return built[tools]
     init = ClaudeAgentOptions.__init__
 
     @functools.wraps(init)
     def hooked(self, *a, **kw):
         init(self, *a, **kw)
-        hooks = dict(self.hooks or {})
-        for event, matchers in ours.items():   # dataclasses.replace builds options again from hooked ones
-            hooks[event] = [*hooks.get(event, []), *(m for m in matchers if m not in hooks.get(event, []))]
+        mine = ours(self.mcp_servers)
+        # dataclasses.replace builds options again from hooked ones, maybe with other servers: ours go in once, fresh
+        built_ids = {id(m) for h in built.values() for ms in h.values() for m in ms}
+        hooks = {e: [m for m in ms if id(m) not in built_ids] for e, ms in (self.hooks or {}).items()}
+        for event, matchers in mine.items():
+            hooks[event] = [*hooks.get(event, []), *matchers]
         self.hooks = hooks
     ClaudeAgentOptions.__init__ = hooked
 
 
 class _Unpatched:
-    """A ClientSession as TracekitSession sees it: its call_tool is the one instrument() replaced."""
+    """A ClientSession as TracekitSession sees it: the methods instrument() replaced are the originals."""
 
-    def __init__(self, session, call_tool):
-        self._session, self._call_tool = session, call_tool
+    def __init__(self, session, methods):
+        self._session, self._methods = session, methods
 
     def __getattr__(self, name):
+        orig = self._methods.get(name)
+        if orig is not None:   # the session's own method, not the one instrument() put on the class
+            return lambda *a, **kw: orig(self._session, *a, **kw)
         return getattr(self._session, name)
-
-    def call_tool(self, *a, **kw):
-        return self._call_tool(self._session, *a, **kw)
 
 
 def _mcp(run):
     from mcp import ClientSession
 
     from .integrations.mcp import TracekitSession
-    call_tool = ClientSession.call_tool
+    methods = {}
+    for name in ("call_tool", "get_prompt", "list_tools", "list_resources", "list_prompts"):
+        orig = getattr(ClientSession, name, None)
+        if orig is not None:   # get_prompt is absent on mcp 1.x
+            methods[name] = orig
     gates, stream, servers = weakref.WeakKeyDictionary(), {}, weakref.WeakKeyDictionary()
 
-    @functools.wraps(call_tool)
-    async def gated(self, *a, **kw):
-        if DECIDED_UPSTREAM.get():
-            return await call_tool(self, *a, **kw)
-        if self not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
+    def gate(session):
+        if session not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
             # the gate holds its session weakly: a strong one would keep every session (the dict's key) alive
-            g = gates[self] = TracekitSession(_Unpatched(weakref.proxy(self), call_tool), run.client, run.registered,
-                                              server=servers.get(self))
+            g = gates[session] = TracekitSession(_Unpatched(weakref.proxy(session), methods),
+                                                 run.client, run.registered, server=servers.get(session))
             g.stream, g._seq, g._lock = stream.setdefault("s", (g.stream, g._seq, g._lock))
-        return await gates[self].call_tool(*a, **kw)
-    ClientSession.call_tool = gated
+        return gates[session]
+
+    def wrap(method, orig):
+        @functools.wraps(orig)
+        async def gated(self, *a, **kw):
+            if DECIDED_UPSTREAM.get():
+                return await orig(self, *a, **kw)
+            return await getattr(gate(self), method)(*a, **kw)
+        return gated
+
+    for name, orig in methods.items():
+        setattr(ClientSession, name, wrap(name, orig))
     if hasattr(ClientSession, "server_info"):
         return
     initialize = ClientSession.initialize   # mcp 1.x: only initialize()'s result names the server

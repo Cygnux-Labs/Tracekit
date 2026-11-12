@@ -39,11 +39,13 @@ const client = new Client();                              // or new Client({ sig
 const run = await client.registerRun("research-bot");
 const d = await run.decide(call.id, "Bash", call.function.arguments);   // the raw model string, or a parsed value
 if (d.decision === "allow") {
-  const out = await runShell(call);
-  await run.complete(call.id, "ok", { result: out });      // never throws: a recording failure is a warning
+  if ((await run.approvalConsume(call.id, "Bash", call.function.arguments)).ok)   // never throws: ok false means it doesn't run
+    await run.complete(call.id, "ok", { result: await runShell(call) });   // never throws: a recording failure is a warning
 } else if (d.decision === "ask") {
   const { approval_id } = await run.approvalRequest(call.id);
   const { state } = await run.approvalWait(approval_id, 300_000);   // on a connection of its own
+  if (state === "approved" && (await run.approvalConsume(call.id, "Bash", call.function.arguments, approval_id)).ok)
+    await run.complete(call.id, "ok", { result: await runShell(call) });
 }
 await run.close();
 await client.close();                                     // waits for what is in flight
@@ -127,7 +129,8 @@ applies only when the signer cannot be reached at the decision; a refusal, or a 
 never lets the call run. Recording a finished call never throws and never changes its result (a failure is a
 `TracekitWarning`). The frameworks are optional peer dependencies: the adapters import none of them, and the client
 keeps no runtime dependencies. No adapter wraps a provider client, so the SDKs' own `APIPromise` (`.withResponse()`)
-and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offline examples: `examples/v2_*.mjs`.
+and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offline examples: `examples/v2_*.mjs`, and
+[a Mastra workflow](examples/mastra/) that suspends on a held call and resumes with its approval id.
 
 - **A server: a run per conversation.** Register a run per conversation and make it current around each request with
   `withRun(run, () => runner.run(...))`: every adapter decides the calls made inside it in that run (its complete and

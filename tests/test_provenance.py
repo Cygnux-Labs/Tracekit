@@ -483,7 +483,7 @@ class Bundles(Case):
                 self.assertEqual(need, "1.1.0")
                 rep, code = self.verify(out)
                 self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
-                with mock.patch.object(v2, "__version__", "1.0.0"):
+                with mock.patch.object(v2, "READS", "1.0.0"):
                     rep, code = self.verify(out)
                 self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 1.1.0)"))
             shutil.rmtree(os.path.join(self.d, "store"))

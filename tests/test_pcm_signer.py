@@ -10,6 +10,7 @@ import itertools
 import json
 import os
 import re
+import shutil
 import socket
 import threading
 import time
@@ -262,6 +263,22 @@ class TestGrant(Case):
         self.s.close()
         self.s = self.open()   # replayed: the call still has its result
         self.assertIn("already issued", self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args))
+
+    def test_one_grant_per_approval_before_the_call_completes(self):
+        """A second pcm_grant (its own request_id) while the call is still open mints nothing: the first consumed the
+        approval, and a restart, from the snapshot or from the records alone, keeps it consumed (#588)."""
+        args = self.args()
+        self.approve(args)
+        self.call("pcm_grant", tool_call_id="g1", args=args)
+        self.assertIn("already issued", self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args))
+        for snapshot in (True, False):
+            self.s.close()
+            if not snapshot:
+                shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
+            self.s = self.open()
+            with self.subTest(snapshot=snapshot):
+                self.assertIn("already issued", self.refused("forbidden", "pcm_grant", tool_call_id="g1", args=args))
+        self.assertEqual(len([e for e in self.records() if e["type"] == "ext"]), 1)
 
     def test_after_approve_then_retry_only_the_retry_has_a_grant(self):
         """Approve, then retry: the retry consumed the blocked pcm.grant call's approval, so the retry's call has the

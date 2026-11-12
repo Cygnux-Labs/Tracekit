@@ -170,7 +170,7 @@ class HarnessFileWrites(unittest.TestCase):
                 path = os.path.join(home, ".claude", "settings.json") if harness == "claude" else \
                     agent_hooks.config_path(harness, home=home)
                 os.makedirs(os.path.dirname(path))
-                theirs = harness not in ("goose", *agent_hooks.PLUGIN_TOOLS)   # those files are Tracekit's own plugin
+                theirs = harness not in ("goose", "cline", *agent_hooks.PLUGIN_TOOLS)   # those files are Tracekit's own
                 if theirs:
                     with open(path, "w", encoding="utf-8") as f:
                         json.dump({"theme": theme}, f, ensure_ascii=False)
@@ -191,7 +191,7 @@ class HarnessFileWrites(unittest.TestCase):
         from tracekit import agent_hooks
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("goose", *agent_hooks.PLUGIN_TOOLS))):
+        for harness in ("claude", *(h for h in agent_hooks.HARNESSES if h not in ("goose", "cline", *agent_hooks.PLUGIN_TOOLS))):
             with self.subTest(harness):
                 home = os.path.join(d, harness)
                 path = os.path.join(home, ".claude", "settings.json") if harness == "claude" else \
@@ -467,10 +467,12 @@ class SystemV2Install(unittest.TestCase):
         self.assertEqual(install.uninstall_system_v2(purge=True), [])
         for p in (install.V2_DATA, install.V2_CONFIG, client.SYSTEM_CONFIG):
             self.assertFalse(os.path.exists(p), p)
-        with open(settings) as f:
-            self.assertEqual(json.load(f), admin if managed else {})
         if managed:
+            with open(settings) as f:
+                self.assertEqual(json.load(f), admin)
             self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o644)
+        else:
+            self.assertFalse(os.path.exists(settings))   # init made it, and nothing else is in it
         for user in ("tk-test-signer", "tk-test-tailer"):
             with self.assertRaises(KeyError):
                 pwd.getpwnam(user)
@@ -523,7 +525,7 @@ class ClaudeConfigDir(unittest.TestCase):
                 with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(io.StringIO()):
                     self.assertEqual(doctor._dev_settings(), settings)
                     self.assertEqual(install.uninstall(), settings)
-                self.assertEqual(install.read_json(settings).get("hooks"), None)
+                self.assertFalse(os.path.exists(settings))   # init made it, and nothing else is in it
 
     def test_hooks_are_found_and_removed_with_or_without_claude_config_dir(self):
         for installed_with, removed_with in ((True, False), (False, True)):
@@ -545,7 +547,7 @@ class ClaudeConfigDir(unittest.TestCase):
                         os.environ.pop("CLAUDE_CONFIG_DIR", None)
                     self.assertIn(path, [h["settings"] for h in install._installed_hooks()])
                     self.assertEqual(install.uninstall(), path)   # it named files it never found
-                    self.assertEqual(install._hook_summary(install.read_json(path)), install._hook_summary({}))
+                    self.assertFalse(os.path.exists(path))   # install_hooks made it: no hooks, and no file
 
 
 if __name__ == "__main__":

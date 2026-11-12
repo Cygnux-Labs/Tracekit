@@ -1,13 +1,13 @@
 # Field reports
 
 Every number Tracekit publishes so far comes from us: our own agents, our evals and our demos. A field report is a
-week of your real use, as counts only, posted as a GitHub issue. It tells us what Tracekit held or denied that it
-shouldn't have (false alarms), what it let through that it should have held (misses), and what broke. Each one is a
-measurement from outside our machines, and its false alarms and misses tell us which shipped rules to change.
+week of your real use, as counts only, posted as a GitHub issue or a pull request. You use Tracekit as you always do
+and share the counts; we read from them which shipped rules to change (a rule people approve nearly every time is a
+false alarm). Each one is a measurement from outside our machines.
 
 ## Run Tracekit for a week
 
-`--share` needs Tracekit 1.5.3 or later (`pip install -U tracekit-ai`).
+`--share` needs Tracekit 1.6.0 or later (`pip install -U tracekit-ai`).
 
 ```bash
 tracekit init --dev --v2               # Claude Code's hooks and the dev signer; --agent codex, cursor, ...: coding-agents.md
@@ -20,7 +20,7 @@ tracekit report --share --since 7d     # the week's counts, to post
 `tracekit report` does ([weekly report](viewer.md#weekly-report)) and prints its counts alone:
 
 ```text
-Tracekit 1.5.3 field report (tracekit report --share): 7 days
+Tracekit 1.6.0 field report (tracekit report --share): 7 days
 Integrity: the store verified, 31 of 31 runs verify
 Runs that verify, by agent: claude-code 27, codex 2, other 2
 Tool calls: 18,204   allow 15,733, flag 2,318, ask 61, deny 92
@@ -35,14 +35,20 @@ Denied and flagged calls, by rule (one call can match several rules):
   flag TK-F011 1,402
   flag TK-UNKNOWN-TOOL 377 (not placed)
   ...
+Holds by rule: held, approved (by a person or the run's own user), rejected or expired:
+  TK-A015 31, 4, 27
+  TK-A001 22, 21, 1
+  ...
 ```
 
 (The numbers above are an example, not a measurement.) A rule marked `also matched, not why` is a rule of another
 section that matched the call too; `not placed` is an engine check, or a rule of a policy the report can't read, which
 may or may not be why ([weekly report](viewer.md#weekly-report)). The holds count a call held at once and the agent's
 retry of it, which ran under its approval, as one hold, so the line says how many such asks it counted with their
-held calls. It exits 1, as `tracekit report` does, when the store or a run fails to verify: post the report anyway,
-and say so under what broke.
+held calls. `Holds by rule` reads the signed approval records: a hold counts as approved when its first answer
+approved it, by a person or the run's own user (on a dev signer, every answer is the run's own user's), even if the
+approval then expired unused; rejected or expired counts the holds never approved. A rule approved nearly every time
+(TK-A001 above) is likely a false alarm, and one rejected or let expire is doing its job. It exits 1, as `tracekit report` does, when the store or a run fails to verify: post the report anyway.
 
 ## Without a hook: replay past transcripts
 
@@ -66,7 +72,7 @@ of the calls it matched, marked as `report --share` marks it.
 | Tool calls by decision: allow, flag, ask, deny | An example call, a rule's description, a hold's reason or who answered it |
 | Holds by outcome: approved · ran, rejected, expired, ... (`report`) | What the model or the person said, a tool's result, a gap's reason |
 | The gaps by kind: the signer's own kinds, any other as `other` (`report`) | An agent name that isn't Tracekit's own |
-| Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` (`no rule` for a decision no rule named, `report`) | A rule id that isn't Tracekit's own; any record, hash or signature |
+| Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` (`no rule` for a decision no rule named, `report`); each rule's holds, with how many were approved (by a person or the run's own user, as on a dev signer) and how many never approved were rejected or expired (`report`) | A rule id that isn't Tracekit's own; any record, hash or signature |
 
 An agent name is printed only when it is one Tracekit's own hooks and tools give a run (`claude-code`, `codex`,
 `cursor`, `gemini-cli`, `opencode`, `goose`, `qwen-code`, `droid`, `antigravity`, `crush`, `agentsh`,
@@ -84,9 +90,17 @@ record to your store.
 
 1. Run one of the commands above and read what it prints.
 2. Open a [field report](https://github.com/Cygnux-Labs/Tracekit/issues/new?template=field-report.yml) and paste it.
-3. Name the agent or framework and the kind of work, then list the false alarms (calls held or denied that shouldn't
-   have been: the rule id and what the call was doing, in your own words), the misses (calls that should have been
-   held), and anything that broke.
+3. Name the agent or framework and the kind of work. Anything else you'd like to tell us is optional.
+
+`tracekit feedback` prints that form's link pre-filled
+(your Tracekit, OS, Python, which agents' hooks are installed, and the week's `report --share` counts when the dev
+signer has a store) and exactly what the link holds; it sends nothing, and `--open` opens it in your browser. For one
+false alarm, `tracekit feedback --harmless <approval-id> [--why "one line"]` fills in the held call's rule ids, tool
+name, policy hash and verdict, and your Tracekit, OS, Python and hook names, never its command, arguments or paths;
+it prints all of it before anything is submitted (`tracekit approvals show` prints the line).
+To send a report as a pull request instead, so it stays in the repository and you show as a contributor,
+`tracekit feedback --file report.md` writes one to fill in
+([docs/field-reports](https://github.com/Cygnux-Labs/Tracekit/tree/main/docs/field-reports) says where it goes).
 
 A way an agent could get a call past the policy is a security problem: report it privately, as
 [SECURITY.md](../SECURITY.md) says, not in a field report.

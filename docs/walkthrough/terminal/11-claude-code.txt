@@ -16,15 +16,18 @@ SessionEnd         ""                                                           
 
 $ tracekit last
 run 72f1ea6cf657d3512d6c2ecaf752a972 (claude-code)
-Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2524cf9a0e001c45620723a9a4374abb); no witness cosignature; key retirements not proven complete.
+VERIFIED: 3 tool calls in 9 signed records, none changed, removed or added after signing.
+NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the record.
+To make it proof, keep the key away from the agent: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy
+NOT ANCHORED: no independent witness or anchor cosigned the log (https://github.com/Cygnux-Labs/Tracekit/wiki/Witnesses).
+Pinned log key SHA-256 fingerprint: a82527b19abf8d5df3ca6d8f5484d29bb451d0a86b8919838ed26cffe731a927.
 bundle: ~/demo/cc/72f1ea6cf657d3512d6c2ecaf752a972.tkb
 check it again: tracekit verify ~/demo/cc/72f1ea6cf657d3512d6c2ecaf752a972.tkb --trust ~/demo/cc/72f1ea6cf657d3512d6c2ecaf752a972.trust.json
 next: tracekit view --dev   (every run, replayed and reviewed)
 [exit 0]
 
 $ tracekit doctor
-WARN  dev signer: it runs as your user, so the agent could rewrite its log (dev assurance)  (D-PROCESS-BOUNDARY)
+WARN  Dev mode records; it does not guard. The agent runs as you and can reach the key. For protection, use system mode or Box.  (D-PROCESS-BOUNDARY)
       fix: use system mode where the agent must not reach the signer: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>
 ok    7 keys, 0600 in a 0700 dir  (D-KEYS-MODE)
 ok    off: the signer keeps commitments only, no content  (D-CONTENT-VAULT)

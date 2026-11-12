@@ -46,7 +46,8 @@ Monitor reports (`tracekit monitor`) come from the verifier's side, never the bu
 A report signed by a pinned monitor, no older than its max_age_s, for the checkpoint's origin, checked to at least the
 checkpoint's size (and to its root at that size) and with no conflicts makes a witnessed assurance witnessed+monitored.
 A pinned monitor's report of conflicts for the origin, or of another root at the checkpoint's size, fails `monitor`.
-A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
+A run with any self-approval (dev mode: the approver was the requester), or an intent grant its own user issued
+(intent.grant self_approved), is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
 `executed_against_policy`; each is a `policy` warning. A call a gateway or executor decided whose run ended without its
@@ -109,9 +110,10 @@ tracekit >= x)` (exit 2), the `bundle readable` line listing the commands that v
 (`upgrade`). Format 1.4's non-critical slot: an `ext` field on any record and the `ext` record type, whose names a
 verifier checks when it interprets them (EXT_CHECKS, each on lines of its own) and otherwise reports on a `not
 interpreted` warning each (MAX_UNREAD of them; one more counts the rest); the records are signed, chained and included like any other, and the bundle stays VERIFIED.
-This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`)
-and `openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import: `openshell
-policy`).
+This one interprets `amended` (the fields an LLM gateway changed in a request to show reasoning: `gateway amendments`),
+`openshell.policy` (OpenShell's sandbox policy changes, from the OpenShell middleware's OCSF import: `openshell
+policy`) and `box` (the label of a Tracekit Box box's run and of its agent channel's runs: `boxed agent`, which says
+what they prove instead of the general claim).
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -154,9 +156,10 @@ import sys
 import zipfile
 import zlib
 
-from tracekit import __version__, crypto
+from tracekit import __version__, crypto, grants, pcm
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, NOT_RATED, Report, _load_trusted_key
-from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, ext_names, run_files, run_name
+from tracekit.bundle_v2 import FORMAT, KEY_TYPES, PART, VERIFIER_MIN_VERSION, VERSIONS, ext_names, needs, raised_by, \
+    run_files, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import cert, checkpoint, registry
@@ -176,6 +179,8 @@ INFO_GAPS = {"witness_late", "witness_failed", "degraded_unanchored", "clock_ske
              "args_coerced", "approval_expired"}
 # capture.gap kinds warned on lines of their own
 OWN_LINE = {"executed_against_policy", "held_call_unresolved", "decision_mismatch", "observer_lost"}
+# capture.gap kinds of a call that ran, or a decision imported, against the signer's: recorded, not missed
+AGAINST = ("executed_against_policy", "decision_mismatch")
 
 MAX_ENTRIES = 10_000
 MAX_ENTRY = 64 << 20
@@ -248,9 +253,198 @@ def _openshell_policy(rep, events):
                for e in bad][:20], warn=True)
 
 
+# a Tracekit Box engine, as verify names what its box is (tracekit.signer.service.ENGINES)
+ENGINES = {"firecracker": "micro-VM"}
+BOXED = "PROOF AGAINST THE BOXED AGENT"
+DOORS = "the box's doors (its connections and file writes)"
+_BOX_ID, _SHA256 = re.compile(r"[A-Za-z0-9._:-]{1,128}"), re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def _box_label(e):
+    """Whether `e` carries ext.box as the signer writes it: on run.registered only, {id, image_digest, allow, engine,
+    channel?}, under a Box daemon's identity (a uid): its box run, or with parent_run a run of its box's agent
+    channel."""
+    v, d = e["ext"].get("box") if isinstance(e.get("ext"), dict) else None, e.get("data")
+    i = d.get("identity") if isinstance(d, dict) else None
+    return e.get("type") == "run.registered" and isinstance(v, dict) and isinstance(i, dict) \
+        and i.get("scheme") == "uid" and {"id", "image_digest", "allow", "engine"} <= set(v) \
+        and set(v) <= {"id", "image_digest", "allow", "engine", "channel"} and isinstance(v["id"], str) \
+        and bool(_BOX_ID.fullmatch(v["id"])) and isinstance(v["image_digest"], str) \
+        and bool(_SHA256.fullmatch(v["image_digest"])) and isinstance(v["allow"], list) \
+        and all(isinstance(a, str) for a in v["allow"]) and isinstance(v["engine"], str) and v["engine"] in ENGINES \
+        and v.get("channel", "agent") == "agent"
+
+
+def _box(rep, events):
+    """ext.box: the label of a Tracekit Box box's run (its daemon's account of the box, with the engine from the
+    signer's own config) and of each run its agent channel registered (a copy, with parent_run). The signing key was
+    outside that box, so the runs are proof against the agent in it, and no more: an agent run's records are its own
+    account, the box's doors held it, and anything running as the daemon's or the signer's user on the host is outside
+    the claim. Anywhere else, or in another shape, a warning and no claim. Only the bundle's own runs are claimed for
+    (rep.firsts: the seqs of their first records): a run-set's records of other runs (`pointed`) carry their labels
+    too. rep.boxed: the runs claimed for and the lines tracekit.verify.summary prints for them in place of the general
+    claim (with a label the signer never writes: every run, and none is claimed for)."""
+    firsts = getattr(rep, "firsts", None)
+    bad = [e for e in events if not _box_label(e)]
+    if bad:
+        rep.boxed = (len(events) if firsts is None else len(firsts), [
+            "NOT SHOWN: a record carries a box label the signer never writes, so nothing is claimed about who could "
+            "reach the signing key."])
+        rep.check("boxed agent", False, f"{len(bad)} record(s) carry ext.box where or how the signer never writes it: "
+                  "no proof against a boxed agent", [f"seq {e.get('seq')}: ext.box is not a box's label on its "
+                                                     "run.registered" for e in bad][:20], warn=True)
+        return
+    good = [e for e in events if firsts is None or e.get("seq") in firsts]
+    if not good:   # labels of runs this bundle doesn't hold
+        return
+    one, agent = len(good) == 1, any("parent_run" in e["data"] for e in good)
+    lines = [f"{BOXED} ({', '.join(sorted({ENGINES[e['ext']['box']['engine']] for e in good}))}): the signing key was "
+             f"outside its box for {'this run' if one else f'these {len(good)} runs'}.",
+             f"This run's records are the agent's own account of its calls; {DOORS} are the record of what it could do."
+             if one and agent else f"This run's records are {DOORS}, as the Box daemon recorded them." if one else
+             f"In these runs, the agent's records are its own account of its calls; {DOORS} are the record of what it "
+             "could do.",
+             "Before you run anything the box wrote, review it: code you run on this machine can reach the key.",
+             *(f"anchored by {a}" for a in getattr(rep, "anchored", ()))]
+    rep.boxed = (len(good), lines)
+    rep.check("boxed agent", True, lines[0], lines[1:])
+
+
+_GRANT_KEYS = {"name", "id", "grant", "tools", "limits", "used", "self_approved", "first", "description"}
+
+
+def _grant_issued(e):
+    """Why `e` is not an intent.grant record as the signer writes one (SignerService._grant_issue), or None: a PCM grant
+    of an intent this verifier knows, issued by a person for this very run and tenant, never passed on, its id its
+    hash's; caveats and limits a grant may have, an expiry within 24 h of its issue (grants.problems); and its totals
+    those of no call, or of the held call it was issued from (`first`), which must be within it."""
+    d = e.get("data")
+    if e.get("source") != "signer" or not isinstance(d, dict) or not set(d) <= _GRANT_KEYS \
+            or not isinstance(d.get("id"), str) or not isinstance(d.get("used"), list) \
+            or not all(type(u) is int for u in d["used"]) \
+            or not isinstance(d.get("grant"), dict) or rpc_schema.validate(rpc_schema.PCM_GRANT, d["grant"]) \
+            or rpc_schema.validate(rpc_schema._LIMITS, d.get("limits")) or type(d.get("self_approved")) is not bool:
+        return "an intent.grant record that is not as the signer writes one"
+    g, intent = d["grant"], grants.REFS.get(d["grant"]["intent"])
+    if intent is None:
+        return f"a grant of intent {g['intent'][:80]}, which this verifier doesn't know"
+    if d["id"] != grants.grant_id(g):
+        return f"grant {str(d['id'])[:24]} is not its grant's id ({grants.grant_id(g)})"
+    if (g["issuer"]["kind"], g["issuer"]["run"], g["issuer"]["tenant"], g["parent"], g["delegable"]) != \
+            ("person", e.get("run_id"), e.get("tenant"), None, False):
+        return f"grant {d['id']} is not a person's, for this run and tenant, kept to its run"
+    bad = grants.problems(intent, g["caveats"], d["limits"], g["expires_at"], g["ts"], tools=d.get("tools"))
+    if bad:
+        return f"grant {d['id']}: {'; '.join(bad)[:300]}"
+    used, f = grants.zero(d["limits"]), d.get("first")
+    if f is not None:
+        fields = f.get("fields") if isinstance(f, dict) else None
+        if not (isinstance(fields, dict) and not pcm.check_args(grants.INTENTS[intent], fields)
+                and isinstance(f.get("approval_id"), str) and isinstance(f.get("tool_call_id"), str)):
+            return f"grant {d['id']}: its first use is not a held call's"
+        used, why = grants.check({"grant": g, "limits": d["limits"], "used": used}, fields, g["ts"])
+        if why:
+            return f"grant {d['id']} was issued from a held call outside it ({why})"
+    if d["used"] != used:
+        return f"grant {d['id']} starts with totals {json.dumps(d['used'])[:64]}, not {json.dumps(used)}"
+    if "description" in d and not (isinstance(d["description"], str) and len(d["description"]) <= 512):
+        return f"grant {d['id']}: its description is not a string of at most 512 characters"
+    return None
+
+
+def _tk_grant(e):
+    """Whether `e` is a decision whose rule ids name TK-GRANT: one a grant released, as its ext.grant must say."""
+    d = e.get("data")
+    return e.get("type") == "policy.decision" and isinstance(d, dict) and isinstance(d.get("rule_ids"), list) \
+        and "TK-GRANT" in d["rule_ids"]
+
+
+def _grants(rep, events):
+    """intent.grant, intent.revoked and ext.grant (docs/intent-grants.md): the grants people issued for a run, their
+    revocations, and the calls they released. Each grant is checked as _grant_issued says; each released call against
+    its grant, as the signer decided it: a policy.decision flagged with TK-GRANT, its grant recorded earlier in the same
+    run and not revoked before it, decided before the grant expired, of a tool the grant covers, its fields those of
+    the intent (whole numbers where they count) and within every caveat, its totals the previous call's plus its own,
+    whole numbers within every limit, and its tier the record's (T2: an executor or gateway decided and ran the call;
+    T1: the arguments the harness reported). A release that breaks its grant fails the line, and so does one whose
+    grant the bundle doesn't hold earlier in its run, or holds only in a record a signer never writes, a decision
+    flagged TK-GRANT without ext.grant, and a tier that isn't the record's: the records are the signer's own word that
+    the call was within a person's grant. Any other record in a shape the signer never writes is a warning, as for
+    every ext name. `events` also holds the decisions TK-GRANT names (_ext)."""
+    live, invalid, bad, broken, issued, selfish, revoked = {}, set(), [], [], 0, 0, 0
+    issuers, tiers = set(), collections.Counter()
+    for e in sorted(events, key=lambda e: e["seq"] if type(e.get("seq")) is int else -1):
+        at, d, run = f"seq {e.get('seq')}", e.get("data"), (e.get("tenant"), e.get("run_id"))
+        name = d.get("name") if e.get("type") == "ext" and isinstance(d, dict) else None
+        if name == "intent.grant":
+            why = _grant_issued(e)
+            if why:
+                bad.append(f"{at}: {why}")
+                if isinstance(d.get("id"), str):   # what it released is released under no valid grant
+                    invalid.add((run, d["id"]))
+                continue
+            live[(run, d["id"])] = {"grant": d["grant"], "tools": d["tools"], "limits": d["limits"], "used": d["used"],
+                                    "revoked": False}
+            issued, selfish = issued + 1, selfish + d["self_approved"]
+            if not d["self_approved"]:
+                issuers.add(d["grant"]["issuer"].get("person") or d["grant"]["issuer"]["id"])
+        elif name == "intent.revoked":
+            g = live.get((run, d.get("id"))) if isinstance(d.get("id"), str) else None
+            if e.get("source") != "signer" or g is None or g["revoked"]:
+                bad.append(f"{at}: revokes no grant still live in its run")
+            else:
+                g["revoked"], revoked = True, revoked + 1
+        x = e["ext"].get("grant", e) if isinstance(e.get("ext"), dict) else e
+        if x is e:
+            rules = d.get("rule_ids") if e.get("type") == "policy.decision" and isinstance(d, dict) else None
+            if isinstance(rules, list) and "TK-GRANT" in rules:
+                broken.append(f"{at}: a decision flagged TK-GRANT carries no ext.grant: it names no grant it was "
+                              "released under")
+            continue
+        g = live.get((run, x["id"])) if isinstance(x, dict) and isinstance(x.get("id"), str) else None
+        intent = g and grants.REFS[g["grant"]["intent"]]
+        ok = e.get("type") == "policy.decision" and isinstance(d, dict) and d.get("decision") == "flag" \
+            and isinstance(d.get("rule_ids"), list) and "TK-GRANT" in d["rule_ids"] and isinstance(x, dict) \
+            and set(x) == {"id", "fields", "used", "tier"}
+        errs = ok and g and (["not an object"] if not isinstance(x["fields"], dict) else
+                      pcm.check_args(grants.INTENTS[intent], x["fields"]))
+        if not ok:
+            bad.append(f"{at}: ext.grant is not on a decision a grant released, as the signer writes it")
+        elif g is None and (run, x["id"] if isinstance(x.get("id"), str) else None) in invalid:
+            broken.append(f"{at}: released under grant {x['id'][:24]}, whose record is not as the signer writes one")
+        elif g is None:
+            broken.append(f"{at}: names grant {str(x['id'])[:24]}, which this bundle doesn't hold earlier in the run "
+                          "(export the whole run to check it)")
+        elif errs:
+            broken.append(f"{at}: the fields it records are not a {intent} call's ({errs[0][:120]})")
+        elif d.get("tool") not in g["tools"]:
+            broken.append(f"{at}: released a call of {json.dumps(d.get('tool'))[:64]}, a tool grant {x['id']} doesn't "
+                          "cover")
+        else:
+            used, why = grants.check(g, x["fields"], e.get("ts") or "")
+            if why:
+                broken.append(f"{at}: released a call the grant holds ({why})")
+            elif not (isinstance(x["used"], list) and all(type(u) is int for u in x["used"]) and x["used"] == used):
+                broken.append(f"{at}: records totals {json.dumps(x['used'])[:64]}, not {json.dumps(used)}")
+            elif x["tier"] != ("T2" if e.get("tier") == "T2" else "T1"):
+                broken.append(f"{at}: says tier {str(x['tier'])[:8]}, the record {e.get('tier') or 'T1'}")
+            else:
+                g["used"] = used
+                tiers[x["tier"]] += 1
+    rep.check("intent grants", not (bad or broken),
+              f"{issued} grant(s)" + (f" by {', '.join(sorted(issuers))[:200]}" if issuers else "")
+              + (f" ({selfish} self-approved: issued by the run's own user, which the agent can be)" if selfish else "")
+              + (f", {revoked} revoked" if revoked else "") + f"; {sum(tiers.values())} call(s) released within them "
+              f"({tiers['T2']} at T2, decided and run by an executor or gateway; {tiers['T1']} at T1, on the arguments "
+              "the harness reported), each re-checked against its grant and its running totals",
+              (broken + bad)[:20], warn=not broken)
+
+
 # the ext names this verifier interprets (bundle_v2.VERSIONS rows' "ext"): name -> check(rep, the events carrying it),
-# whose lines are its own: every other line of the report reads the same without them (format-v2.md §9)
-EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy}
+# whose lines are its own: every other line of the report reads the same without them (format-v2.md §9). Names that
+# share a check are read together, once: a grant, its revocation and the calls it released
+EXT_CHECKS = {"amended": _amended, "openshell.policy": _openshell_policy, "box": _box, "intent.grant": _grants,
+              "intent.revoked": _grants, "grant": _grants}
 MAX_UNREAD = 20   # `not interpreted` lines, one per ext name; the rest on one line
 RUN_PROBLEMS = 20   # a run's problems past which its later records go unchecked: forged records cost a verifier little
 
@@ -422,6 +616,11 @@ def _version(v):
     return tuple(int(x) for x in re.findall(r"[0-9]+", v)[:3])
 
 
+# the newest bundle format version this verifier reads: its newest VERSIONS row, or its release when that is later (a
+# row lands with its checks, before the release that ships it); a bundle needing a later one is UNVERIFIABLE
+READS = max(__version__, *VERSIONS, key=_version)
+
+
 class Memo(set):
     """verify()'s memo for a caller that checks runs as they grow (tracekit view): the record_digests whose signature
     and schema held, and `runs`, of the RUNS_KEPT run files checked last whose records all held and none is a run.final:
@@ -464,7 +663,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), re
         need = manifest.get("verifier_min_version")
         if not (isinstance(need, str) and _VERSION.fullmatch(need)):
             raise Unusable("verifier_min_version is not a version number")
-        if _version(need) > _version(__version__):
+        if _version(need) > _version(READS):
             rep.integrity = f"UNVERIFIABLE (needs tracekit >= {need})"
             rep.check("bundle readable", False, rep.integrity, upgrade(need, path, trust_path))
             return rep, EXIT_BAD
@@ -501,11 +700,18 @@ def _ext(rep, events, full):
         for n in {str(x)[:64] for x in ext_names(e)}:
             carry.setdefault(n, []).append(e)
     later = f"; tracekit >= {full} checks it" if isinstance(full, str) and _VERSION.fullmatch(full) \
-        and _version(full) > _version(__version__) else ""
-    shown, more = 0, 0
+        and _version(full) > _version(READS) else ""
+    shown, more, done = 0, 0, set()
+    also = {_grants: [e for e in events if _tk_grant(e)]}   # records a check reads beside its names' own
+
+    def run(f):   # once, over the records of every name it reads and what it reads beside them
+        done.add(f)
+        f(rep, list({id(e): e for e in [*(e for k, v in carry.items() if EXT_CHECKS.get(k) is f for e in v),
+                                         *also.get(f, [])]}.values()))
     for n, es in sorted(carry.items()):
         if n in EXT_CHECKS:
-            EXT_CHECKS[n](rep, es)
+            if EXT_CHECKS[n] not in done:
+                run(EXT_CHECKS[n])
         elif shown < MAX_UNREAD:
             shown += 1
             rep.check("not interpreted", False, f"{len(es)} record(s) carry ext.{n}: their signatures, chain and "
@@ -515,6 +721,9 @@ def _ext(rep, events, full):
     if more:
         rep.check("not interpreted", False, f"{more} more ext name(s), on records whose signatures, chain and inclusion "
                   f"are checked above; what they mean is not checked{later}", warn=True)
+    for f, extra in also.items():   # a check whose names no record carries reads what it reads beside them
+        if extra and f not in done:
+            run(f)
 
 
 def _revocations(rep, trust, paths):
@@ -584,11 +793,19 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     except checkpoint.NoteError as e:
         rep.check("checkpoint", False, str(e))
         return
+    signed = checkpoint.signers(files[name].decode("utf-8") if isinstance(files[name], bytes) else files[name])
+    key = next((k for k in trust["logs"] if checkpoint.parse_vkey(k)[0::2] == (origin, checkpoint.ED25519)
+                and (origin, checkpoint.parse_vkey(k)[1]) in signed), None)   # open_note verified its line
+    rep.log_fingerprint = key and hashlib.sha256(checkpoint.parse_vkey(key)[3]).hexdigest()   # as `init` prints it
     rep.check("checkpoint", size == proofs["tree_size"], f"{origin} at tree size {size}, signed by its pinned log key"
               + ("" if size == proofs["tree_size"] else ", but the proofs are for another tree size"))
     rep.check("witness quorum", len(cosigs) >= trust["witnesses_required"],
               f"{len(cosigs)} pinned cosignature(s), {trust['witnesses_required']} required")
     anchors = _anchor(rep, files, trust, files[name], origin, size)
+    # for verify's ANCHORED line, whatever the run's approvals: the independent cosigners and anchors, how many the
+    # trust file asks for (_level's rule) and the size they cosigned
+    rep.anchoring = ([k.split("+")[0] for k, _ in cosigs if witnesses[k] != "operator"]
+                     + [log for log, cls, _ in anchors if cls != "operator"], max(1, trust["witnesses_required"]), size)
     monitored = _monitor(rep, trust, monitor_reports, origin, size, root)
 
     def included(record):
@@ -672,12 +889,12 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                     if (pin["vkey"], c["serial"]) in revocations:
                         revoked[k["kid"]] = revocations[(pin["vkey"], c["serial"])]
                 declared[k["kid"]] = {"spki": der, "from": e["seq"], "until": None}
-        check_record(r, keys_at(e["seq"]) + [k["spki"] for k in declared.values()], key_problems)
-        if e["type"] == "key.retire":
+        if e["type"] == "key.retire":   # first: a key.retire is a record too, valid only under a key valid at its seq
             if e["data"]["kid"] not in timeline:
                 key_problems.append(f"seq {e['seq']}: retires an unknown key")
             else:
                 timeline[e["data"]["kid"]]["until"] = e["data"]["last_seq"]
+        check_record(r, keys_at(e["seq"]) + [k["spki"] for k in declared.values()], key_problems)
         timeline.update(declared)
 
     # the runs: one, or with a run-set any number; each in one file or in parts
@@ -770,7 +987,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("run parts", not layout, _found(layout, f"{len(parted)} run(s) in {sum(map(len, parted))} parts, "
                                                           "each part continuing the one before it",
                                                   f"the parts of {len(parted)} run(s)"), layout)
-    count = sum(map(len, runs.values())) - unchecked
+    count = rep.events = sum(map(len, runs.values())) - unchecked
     rep.check("signatures", not problems, _found(problems, f"{count} record(s), keys valid at their position",
                                                  f"{count} record(s)"), problems)
     only = len(runs) == 1 and next(iter(runs.values()))[0]["event"]
@@ -798,10 +1015,17 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   warn=True)
         rep.integrity = "UNVERIFIABLE (key revoked)"
     every = [r for rs in runs.values() for r in rs]
-    self_approved = any(r["event"].get("type") == "approval" and r["event"]["data"].get("self_approved") is True
-                        for r in every)
+    # a grant the run's own user issued (intent.grant) approves the calls it releases: a self-approval too
+    self_approved = any((r["event"].get("type") == "approval" or r["event"].get("type") == "ext"
+                         and r["event"]["data"].get("name") == "intent.grant")
+                        and r["event"]["data"].get("self_approved") is True for r in every)
     against = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
                if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "executed_against_policy"]
+    # read as `against` reads them, which raised first on a malformed record; tuples, as a kind may be unhashable; the
+    # gaps a run-set's tenant-level leaves hold are counted already (_run_set)
+    kinds = [r["event"]["data"].get("kind") for r in every if r["event"].get("type") == "capture.gap"]
+    rep.gaps += sum(k not in (*INFO_GAPS, *AGAINST) for k in kinds)
+    rep.mismatches += sum(k in AGAINST for k in kinds)
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
@@ -887,6 +1111,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         if decided:
             paths.setdefault(k, set()).add((str(e.get("source"))[:64], tier))
     tiers.update(claims)
+    rep.calls = len(tiers)   # the tool calls the records name, by run and tool_call_id
     split = [f"{str(run)[:200]} {str(tcid)[:200]}: " + ", ".join(sorted(f"{s} {t or 'untiered'}" for s, t in p))
              for (run, tcid), p in ((json.loads(k), p) for k, p in paths.items()) if len(p) > 1]
     if tiers:
@@ -900,7 +1125,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("args source", True, f"{len(sources)} record(s): "
                   + ", ".join(f"{s} {sources.count(s)}" for s in ("raw", "parsed", "coerced")))
     registered = [rs[0]["event"]["data"] if rs[0]["event"].get("type") == "run.registered" else {} for rs in runs.values()]
-    isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64] for d in registered)
+    isolation = rep.isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64]
+                                                    for d in registered)
     rep.check("isolation", True, "signer-reported: " + ", ".join(f"{k} {n} run(s)" for k, n in sorted(isolation.items())))
     principals = [f"{str(e['principal'])[:256]} ({'attested' if e.get('principal_attested') is True else 'app-asserted'})"
                   for e in (rs[0]["event"] for rs in runs.values())
@@ -931,8 +1157,29 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
-    _ext(rep, list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values()),
-         manifest.get("verifier_version"))
+    # for the box check: the pinned cosignatures, and the seqs of the bundle's own runs' first records
+    rep.anchored = [f"{k.split('+')[0]} ({witnesses[k]}) at "
+                    f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
+                    for k, ts in sorted(cosigs, key=lambda c: c[1])]
+    rep.firsts = {rs[0]["event"]["seq"] for rs in runs.values()}
+    events = list({r["event"]["seq"]: r["event"] for r in key_records + pointed + every}.values())
+    _ext(rep, events, manifest.get("verifier_version"))
+    _minimum(rep, events, files, manifest["verifier_min_version"])
+
+
+def _minimum(rep, events, files, said):
+    """`verifier minimum`, a warning only when the manifest's verifier_min_version (`said`) is below what the records
+    and layout need (bundle_v2.needs, as export computes it). The manifest is never signed: edited down, it lets an
+    older verifier read records it can't interpret and claim more than they show (a self-issued grant's dev assurance,
+    a signed finding's citations). A record it can't read (no type, data or seq: other checks fail it) needs nothing."""
+    events = [e for e in events if isinstance(e, dict) and isinstance(e.get("type"), str) and "seq" in e
+              and isinstance(e.get("data"), dict) and (e["type"] != "ext" or "name" in e["data"])]
+    layout = ["run parts"] if any(PART.fullmatch(n) for n in files) else []
+    need = needs(events, layout)[0]
+    if need != VERIFIER_MIN_VERSION and _version(need) > _version(said):   # a row raised it (0.x bundles: the base)
+        rep.check("verifier minimum", False, f"the records need tracekit >= {need}, the manifest asks for {said}: a "
+                  f"verifier older than {need} may have read this bundle and claimed more than its records show",
+                  raised_by(events, need, layout)[:20], warn=True)
 
 
 def _approvals(rep, runs, policies):
@@ -1494,12 +1741,20 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
         problems.append(f"records after log.closed at seq {closed['seq']}")
     counted = ", ".join(f"{k} {n}" for k, n in sorted(gaps.items()))
     named = "" if tenant is None else f" of tenant {tenant[:64]!r}"
+    # what the range holds, for a reader that needs every run of the tenant (tracekit analyze --v2's TK-X212)
+    rep.run_set = {"from": lo, "registered": set(registered), "open": set(registered) - set(finals)} if not problems \
+        else None
     rep.check("run-set", not problems, f"COMPLETE, {span}{named} ({len(registered)} runs registered, {len(finals)} "
                                        f"final, {len(set(registered) - set(finals))} open"
                                        + (f"; tenant-level gaps: {counted}" if gaps else "") + ")" if not problems else
               f"INCOMPLETE, {span}", problems)
     if gaps:
         rep.check("tenant-level gaps", False, f"{sum(gaps.values())} in the range: {counted}", warn=True)
+        # as _verify counts run records' (and adds them to these): what the signer missed, what ran against it, and the
+        # informational kinds (no witness for a while, a late or skewed cosignature), which are neither
+        rep.gaps = sum(n for k, n in gaps.items() if k not in (*INFO_GAPS, *AGAINST))
+        rep.mismatches = sum(n for k, n in gaps.items() if k in AGAINST)
+        rep.info = {k: n for k, n in gaps.items() if k in INFO_GAPS}
     rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
               f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
     return retired, top if lo == 0 else -1, reg_cosigs, pointed
@@ -1654,12 +1909,19 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
             + ("; approvals: self" if self_approved else ""))
 
 
+# the checkpoint check's refusal of a cosignature names the pinned witness by its key name, which docs/public-witness.md
+# makes `witness.<domain>/w1`: "pinned witness witness.example.org/w1" prints "pinned witness.example.org/w1" (--json
+# keeps the detail as checked)
+_WITNESS_TWICE = re.compile(r"(cosignature from pinned) witness (?=witness\.)")
+
+
 def print_report(rep, code, stream=None):
     """The report as text; control and bidirectional format characters in bundle-derived strings are dropped, so they
     reach no terminal and can't reorder the signer's words around them."""
     s, clean = stream or sys.stdout, lambda x: _CONTROL.sub("", str(x))
     for c in rep.checks:
-        s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(c['detail'])}" if c["detail"] else "") + "\n")
+        detail = _WITNESS_TWICE.sub(r"\1 ", str(c["detail"])) if c["check"] == "checkpoint" else c["detail"]
+        s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(detail)}" if detail else "") + "\n")
         for p in c["problems"]:
             s.write(f"        {clean(p)}\n")
     s.write(f"\nIntegrity: {clean(rep.integrity)}.\n"

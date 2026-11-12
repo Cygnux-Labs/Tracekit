@@ -22,9 +22,8 @@ These hooks record to the v2 signer ([below](#on-the-v2-signer)), and a v2 hook 
 runs as root from a root-owned Python and puts no `tracekit` command on root's `PATH`. It writes these agents' hooks
 into the agent user's own config, which that user can edit: `--managed` (hooks in admin-managed settings the agent can't
 edit or turn off) is for Claude Code only, and init refuses it with these agents
-([limits](limits.md#dev-mode-vs-system-mode)). The system-mode line is for Python
-3.11 or later, after [laptop system mode](deploy.md#laptop-system-mode)'s install; that page also gives the commands for
-3.9 and 3.10. The v1 hooks, for the older laptop path (the `tracekitd` signer), are the same dev commands without
+([limits](limits.md#dev-mode-vs-system-mode)). The system-mode line runs after
+[laptop system mode](deploy.md#laptop-system-mode)'s install. The v1 hooks, for the older laptop path (the `tracekitd` signer), are the same dev commands without
 `--v2` and write the same files:
 
 ```bash
@@ -65,11 +64,13 @@ a rule whose matcher is a bare `*`, which is an invalid regex); the PreToolUse a
 which translates the harness's payload into the Claude Code hook shape and runs the same pipeline as the Claude Code
 hook ([v2 hooks](#on-the-v2-signer)).
 
-Crush (`crush.json` in a project; the user's is `$CRUSH_GLOBAL_CONFIG/crush.json`, else
-`$XDG_CONFIG_HOME/crush/crush.json`, or `~/.config/crush/crush.json`, on Windows `%USERPROFILE%\.config\crush`) keeps
-its hooks as a flat list of `{name, command, timeout}` entries per event, not Claude Code's nested matcher groups. Its
-payload and event names are already Claude Code's (`hook_event_name`, `session_id`, `tool_name`, `tool_input`,
-`tool_use_id`, `tool_response`, `error`), so the adapter only maps its lower-case tool names: `bash` -> `Bash`,
+Crush reads `crushrc` / `.crushrc` (a Bash file, since Crush 0.88) first and `crush.json` as its legacy format, and
+merges both. Tracekit's hooks go in `crush.json` (in a project; the user's is `$CRUSH_GLOBAL_CONFIG/crush.json`, else
+`$XDG_CONFIG_HOME/crush/crush.json`, or `~/.config/crush/crush.json`, on Windows `%USERPROFILE%\.config\crush`).
+Crush keeps its hooks as a flat list of `{name, command, timeout}` entries per event, not Claude Code's nested
+matcher groups. Its payload and event names are already Claude Code's (`hook_event_name`, `session_id`, `tool_name`,
+`tool_input`, `tool_use_id`, `tool_response`, `error`), so the adapter only maps its lower-case tool names:
+`bash` -> `Bash`,
 `view` -> `Read`, `write` -> `Write`, `edit`, `multiedit`, `lsp_replace_symbol` and `lsp_rename` -> `Edit`, `ls` -> `LS`,
 `grep` -> `Grep`, `glob` -> `Glob` (`lsp_rename`, `ls`, `grep` and `glob` are decided on the `path` they read, never a
 `file_path` sent beside it), `fetch` -> `WebFetch`, `download` -> `Write` (the file it creates is what the file rules
@@ -78,8 +79,9 @@ untrusted. That joined name doesn't split the server from the tool: the signer t
 server's end, so the shipped packs' MCP rules and `mcp:<server>/<tool>` mappings read it, and holds it as an unknown
 tool on the server packs, but a rule of your own written for `mcp__<server>__<tool>` doesn't match it
 ([limits](limits.md)). Crush runs no hooks
-inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself; set
-`"options": {"disabled_tools": ["agent", "agentic_fetch"]}` in `crush.json` so Crush doesn't offer them. It denies
+inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself; put `permissions deny agent agentic_fetch`
+in `crushrc` (in `crush.json`: `"options": {"disabled_tools": ["agent", "agentic_fetch"]}`) so Crush doesn't offer
+them. It denies
 Docker MCP Gateway's `code-mode` tools too (`mcp_<server>_code-mode` and the `code-mode-<name>` tools it makes), whose
 scripts call MCP tools inside the gateway, where no hook sees them. Crush reads a built-in tool's argument names ignoring case and lets a later repeat win unless
 it is null, so the hook denies a built-in tool call whose input repeats a name or has one that isn't lower-case
@@ -96,6 +98,29 @@ carries no prompt, and Tracekit doesn't read `TurnEnd`'s `last_assistant_message
 `SessionStart`, `SessionEnd`, `PreToolUse`, `PostToolUse` and `PostToolUseFailure` only; no prompt or model text is
 recorded (`SessionEnd` has a two-second budget). Tested through Crush's published hook payloads and Tracekit's
 installer, not yet in a live Crush session.
+
+Cline's CLI and its VS Code extension run a hook file named after its event: `init --agent cline` writes Tracekit's
+`PreToolUse`, `PostToolUse`, `TaskStart`, `TaskComplete` and `UserPromptSubmit` files, executable and
+without an extension (on Windows `<event>.ps1`, the only form the extension runs), into `~/Documents/Cline/Hooks`, or
+with `--project` into the workspace's `.clinerules/hooks`, the folders both read. It never writes over a file that
+isn't Tracekit's, and makes no backup next to one (the CLI runs a hook file whatever its extension). Cline runs every
+hook file it finds, in `~/.cline/hooks` and a workspace's `.cline/hooks` too, so keep Tracekit's in one of them:
+`tracekit doctor` warns about a second copy, which would decide and record each call twice. The extension reads
+`Cline/Hooks` in the Documents folder the system reports (Windows' own, which OneDrive may have moved; on Linux
+`xdg-user-dir DOCUMENTS`, which is the home folder itself when no Documents folder is set up), while the CLI always
+reads `~/Documents`: when they differ `init` says so, and `--project` reaches the extension. The extension runs hooks
+only while Hooks is on in Cline's settings (Features), as it is by default.
+
+The CLI's payload carries the call's id and the model's input (`tool_call`, `tool_result`) beside the extension's
+shape (`preToolUse`, `postToolUse`: `toolName` and `parameters`, each non-string value JSON-encoded, and no id), so the
+hook reads the first when it is there. A hook answers `{"cancel": true, "errorMessage": "..."}` to block, and Cline turns
+that into a stop of the whole task: approve a held call (`tracekit approvals approve <id>`) and resume the task, and the
+retried call runs. Cline lets a call run when its hook fails, prints nothing, or takes longer than its timeout (the CLI
+120 s, the extension 30 s), so each hook file prints the cancel itself when Tracekit's hook printed nothing, and the v2
+hook caps `TRACEKIT_APPROVAL_WAIT` at 20 s. `PreToolUse` fires before Cline checks a call's input against the tool's schema, which
+takes several shapes for each tool: every command, file or URL in any of them is decided. Tested with Cline CLI 3.0.74
+and the VS Code extension 4.1.26 on Linux, each driven by a scripted model: a denied call, a held call approved and
+its task resumed, and allowed calls, verified with `tracekit last`.
 
 Devin (the Devin CLI, and Devin Desktop, formerly Windsurf; [hooks](https://docs.devin.ai/cli/extensibility/hooks/overview))
 runs hooks in Claude Code's format: nested matcher groups under `hooks` in its user config
@@ -123,13 +148,13 @@ Devin then reads none of Claude Code's hooks, rules, skills, commands or MCP ser
 says where to set it back to `true`. Desktop runs no hooks in Restricted Mode. Tested through Devin's documented
 payloads and Tracekit's installer; not tested in a live Devin session.
 
-| | Codex CLI | Cursor | Gemini CLI | OpenCode | goose | Qwen Code | Factory Droid | Devin |
-|---|---|---|---|---|---|---|---|---|
-| Hook events used | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | preToolUse, postToolUse, postToolUseFailure, beforeSubmitPrompt, sessionStart, sessionEnd | BeforeTool, AfterTool, BeforeAgent, SessionStart, SessionEnd | tool.execute.before, tool.execute.after | PreToolUse, PostToolUse, PostToolUseFailure | PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd |
-| Run id | `session_id` | `conversation_id` | `session_id` | `sessionID` | `session_id` | `session_id` | `session_id` | `session_id` |
-| Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) | exit 2 + a reason on stderr, stdout empty (a stray stdout line reads as no decision to goose) | exit 2 + a reason on stderr (Qwen Code ignores stdout at exit 2 and sends stderr to the model); nothing on stdout; on Windows the command ends in `; exit $LASTEXITCODE`, since PowerShell turns 2 into 1 | exit 2 + a reason on stderr and `hookSpecificOutput.permissionDecision: "deny"` | exit 2 + a reason on stderr |
-| Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` | `tool_call_id`, from the harness | `tool_use_id`, from the harness | none in documented stdin: paired by tool and arguments, first in first out | none in the documented payload: paired by tool and arguments, first in first out |
-| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`; current Codex sends no hook for it, so what is typed into a running command isn't decided: [limits](limits.md#signer-and-capture)); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; every path the input names is decided (`file_path`, `path`, `target_file`, `filePath`: Cursor doesn't document which its tools read); `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` and `read_many_files` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `grep_search` (`search_file_content` in older releases) → `Grep`; `glob`, `list_directory`, `web_fetch`, `google_web_search`; MCP tools, which Gemini CLI names `mcp_<server>_<tool>`, → `mcp__<server>_<tool>`; every path a file tool reads is decided, under each release's name for it (`file_path`, `absolute_path`, `dir_path`, `path`, and `read_many_files`' `paths` and `include`); `web_fetch` is decided on every URL its prompt names (`urls`) and on a `url` beside it | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental; OpenCode 1.x before 1.4 only: later releases and OpenCode 2 have none) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools | `shell` → `Bash`; `write` → `Write` (path: `path`); `edit` → `Edit` (path: `path`); `tree` → `LS` (path: `path`); `read_image` → `Read` (path: `source`, not `path`); `<extension>__<tool>` → `mcp__<extension>__<tool>`; other names pass through unchanged, which the policy treats as unknown tools | `run_shell_command` and `monitor` → `Bash`; `read_file` → `Read` (path: `file_path`, `absolute_path` before 0.13); `write_file` → `Write`; `edit` (and Gemini's `replace`) → `Edit`; `notebook_edit` → `NotebookEdit` (path: `notebook_path`); `grep_search` → `Grep`; `glob`, `list_directory`, `web_fetch`, `web_search`, `todo_write`; `agent` → `Task`; any other tool, MCP tools included, under its own name; file paths as for Gemini CLI; `web_fetch` is decided on its `url` and also on every URL its prompt names (Qwen Code fetches only the `url`) | `Execute` → `Bash`; `Create` → `Write`; `ApplyPatch` → `Edit` (`input`: complete patch; `paths`: all file headers); `FetchUrl` → `WebFetch`; other names, including `mcp__server__tool`, pass through | `exec` → `Bash`; `write_to_process` → `Bash` (`command` = all its text: its fields aren't documented); `read` → `Read`; `write` → `Write`; `edit` → `Edit` (each decided on every path under a key ending in `path`, `paths` or `file`, case and `_` ignored, and denied in the hook with none); `apply_patch` → `Edit` (`paths`: all patch file headers and a unified diff's file names; denied in the hook with none); `grep`, `glob`; `webfetch` → `WebFetch` (denied in the hook without a `url`, or with one under another spelling too); `mcp__server__tool` and other names pass through |
+| | Codex CLI | Cursor | Gemini CLI | OpenCode | goose | Qwen Code | Factory Droid | Devin | Cline (CLI and VS Code extension) |
+|---|---|---|---|---|---|---|---|---| --- |
+| Hook events used | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | preToolUse, postToolUse, postToolUseFailure, beforeSubmitPrompt, sessionStart, sessionEnd | BeforeTool, AfterTool, BeforeAgent, SessionStart, SessionEnd | tool.execute.before, tool.execute.after | PreToolUse, PostToolUse, PostToolUseFailure | PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, TaskStart, TaskComplete, UserPromptSubmit: one hook file each |
+| Run id | `session_id` | `conversation_id` | `session_id` | `sessionID` | `session_id` | `session_id` | `session_id` | `session_id` | one task (each prompt, from `TaskStart` to `TaskComplete`), keyed on `sessionContext.rootSessionId` (the CLI's session, which `cline --id` resumes; its subagents' calls are in it too), else `taskId` |
+| Blocking a call | exit 2 + a reason on stderr (and `permissionDecision: deny`); on Windows exit 0 + the JSON deny, since PowerShell turns 2 into 1 and Codex reads the JSON only at 0 | exit 2 + `{"permission": "deny"}` | exit 2 + `{"decision": "deny"}` | the plugin throws before the tool runs when Tracekit blocks the call (exit 2) or the hook can't decide it (any other exit, or Python can't start) | exit 2 + a reason on stderr, stdout empty (a stray stdout line reads as no decision to goose) | exit 2 + a reason on stderr (Qwen Code ignores stdout at exit 2 and sends stderr to the model); nothing on stdout; on Windows the command ends in `; exit $LASTEXITCODE`, since PowerShell turns 2 into 1 | exit 2 + a reason on stderr and `hookSpecificOutput.permissionDecision: "deny"` | exit 2 + a reason on stderr | `{"cancel": true, "errorMessage": ...}` at exit 0 (Cline reads no exit status); a cancel stops the whole task, not only the call |
+| Tool call ids | from the harness | from the harness | none: paired by tool and arguments, first in first out | `callID` | `tool_call_id`, from the harness | `tool_use_id`, from the harness | none in documented stdin: paired by tool and arguments, first in first out | none in the documented payload: paired by tool and arguments, first in first out | the CLI's `tool_call.id`; the VS Code extension sends none: paired by tool and arguments, first in first out |
+| Tool names | `Bash`; `write_stdin` → `Bash` (`command` = the typed `chars`; current Codex sends no hook for it, so what is typed into a running command isn't decided: [limits](limits.md#signer-and-capture)); `apply_patch` → `Edit` (`paths`: every file the patch adds, updates, deletes or moves to, its file headers read as Codex reads them, indented ones too); `apply_patch` run from the shell stays a `Bash` call, which the v2 coding pack holds for a person (`TK-A034`); MCP as `mcp__server__tool` | `Shell` → `Bash`; `Read`, `Write`, `Grep`; `Delete` → `Edit`, so the file rules read it; every path the input names is decided (`file_path`, `path`, `target_file`, `filePath`: Cursor doesn't document which its tools read); `MCP:x` → `mcp__cursor__x` | `run_shell_command` → `Bash`; `read_file` and `read_many_files` → `Read`; `write_file` → `Write`; `replace` → `Edit`; `grep_search` (`search_file_content` in older releases) → `Grep`; `glob`, `list_directory`, `web_fetch`, `google_web_search`; MCP tools, which Gemini CLI names `mcp_<server>_<tool>`, → `mcp__<server>_<tool>`; every path a file tool reads is decided, under each release's name for it (`file_path`, `absolute_path`, `dir_path`, `path`, and `read_many_files`' `paths` and `include`); `web_fetch` is decided on every URL its prompt names (`urls`) and on a `url` beside it | `bash` → `Bash`; `read`, `write`, `edit` (path: `filePath`); `apply_patch` (and 1.0's `patch`) → `Edit` (`paths`: every file its headers name, and a path with a `:` also up to it, as OpenCode 1.2 reads it); `batch` (experimental; OpenCode 1.x before 1.4 only: later releases and OpenCode 2 have none) is blocked: OpenCode runs the calls in it without plugin hooks; `glob`, `grep` (path: `path`); `webfetch`, `websearch`, `task`; MCP tools under OpenCode's `<server>_<tool>` names, which the policy treats as unknown tools | `shell` → `Bash`; `write` → `Write` (path: `path`); `edit` → `Edit` (path: `path`); `tree` → `LS` (path: `path`); `read_image` → `Read` (path: `source`, not `path`); `<extension>__<tool>` → `mcp__<extension>__<tool>`; other names pass through unchanged, which the policy treats as unknown tools | `run_shell_command` and `monitor` → `Bash`; `read_file` → `Read` (path: `file_path`, `absolute_path` before 0.13); `write_file` → `Write`; `edit` (and Gemini's `replace`) → `Edit`; `notebook_edit` → `NotebookEdit` (path: `notebook_path`); `grep_search` → `Grep`; `glob`, `list_directory`, `web_fetch`, `web_search`, `todo_write`; `agent` → `Task`; any other tool, MCP tools included, under its own name; file paths as for Gemini CLI; `web_fetch` is decided on its `url` and also on every URL its prompt names (Qwen Code fetches only the `url`) | `Execute` → `Bash`; `Create` → `Write`; `ApplyPatch` → `Edit` (`input`: complete patch; `paths`: all file headers); `FetchUrl` → `WebFetch`; other names, including `mcp__server__tool`, pass through | `exec` → `Bash` (`command` in any case, `\r` read as a line end; denied in the hook with no command, input that isn't an object, or a control character but a tab or line end); `write_to_process` → `Bash` (`command` = its one argument besides `shell_id`, the text it writes, whatever its name: its fields aren't documented; `\r` read as a line end; denied in the hook with any other argument, no text, a control character or a bash history expansion (`!-1`, a `^` starting a line) in the text, or text that sets shell state a later line runs: `fc`, an `alias` definition, a function, `trap`, the `exec` builtin, `PROMPT_COMMAND`, `LD_PRELOAD` …); a name sent twice to any tool, in any case, is denied in the hook; `read` → `Read`; `write` → `Write`; `edit` → `Edit` (each decided on every path under a key ending in `path`, `paths` or `file`, case and `_` ignored, and denied in the hook with none); `apply_patch` → `Edit` (`paths`: all patch file headers and a unified diff's file names; denied in the hook with none); `grep`, `glob`; `webfetch` → `WebFetch` (denied in the hook without a `url`, or with one under another spelling too); `mcp__server__tool` and other names pass through | `run_commands` → `Bash` (`command` for one command, `commands` for several, each decided on its own as Cline runs it in its own shell, a here-doc joined to its delimiter's line; from any shape Cline takes: a list, one command, `{command, args}`, `cmd`); `read_files` → `Read` (`paths`: every file, under `files`, `paths` or `file_paths`); `editor` → `Write` when it sends neither `old_text` nor `insert_line` (it then creates a missing file), else `Edit` (its `path`); `apply_patch` → `Edit` (`paths`: every file the patch names); `fetch_web_content` → `WebFetch` (`urls`: every request's URL); an MCP tool `<server>__<tool>` → `mcp__<server>__<tool>`; a call none of these can be read from is cancelled; the other tools pass under their own names |
 
 What is the same as Claude Code: the policy gate runs before the tool (deny blocks; ask blocks the call until someone
 approves it from another terminal, then the agent's retry runs: [held calls](#held-calls-approve-then-retry)), events
@@ -194,20 +219,47 @@ to verify it as it stands, `tracekit last --open`.
 
 ### Held calls: approve, then retry
 
-A call the policy holds (`ask`) is blocked at once, in Claude Code and every harness above, with the approval's id and
-the command that approves it, as the harness's block message (in Claude Code also a `systemMessage`, which it shows
-you, and the deny reason, which the model reads):
+A call the policy holds (`ask`) is blocked at once, in Claude Code and every harness above, with the approval's id, why,
+what to do instead, the commands that answer it and what the agent does, as the harness's block message (in Claude
+Code also a `systemMessage`, which it shows you, and the deny reason, which the model reads):
 
 ```text
-[tracekit] held for approval apr-… (TK-A032): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: uploading to cloud storage. Have a person approve the held call, or write the files locally and let a person upload them.
+[tracekit] HELD, nothing ran: apr-… (TK-A032), expires 09:27 UTC.
+Why: uploading to cloud storage
+Instead: Have a person approve the held call, or write the files locally and let a person upload them.
+Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
+Agent: tell the person what this call was for and pass on these commands, then wait for their answer; a subagent puts them in its final report. Once it is approved, make the identical call again. If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs to get past the policy: every call is signed and kept.
 ```
 
-In Claude Code, paste the `! …` line into the same session: `!` runs it as you, the session's user, not as the agent.
-In another harness, or from another terminal, run the same command without the `!` (a shell reads a leading `!` as
-"not", and an approval that worked would report failure). With a named signer (system mode, a remote one) the line
-has no `!`: the session's user is the agent's, whom the signer refuses as an approver, so the approver runs it from
-their own account. Then tell the agent to make the same call again, unchanged: the signer lets that call run under
-your approval, once ([approve, then retry](approvals.md#approve-then-retry)).
+A call the policy denies says so, in the same form, with no commands: no one can approve it.
+
+```text
+[tracekit] BLOCKED, nothing ran, and no one can approve it (TK-D005, TK-F005).
+Why: writing to a credentials file
+Instead: Write a template with placeholders (.env.example) instead; a person fills in the real credentials file.
+Agent: tell the person what you were doing and why it was blocked. If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs to get past the policy: every call is signed and kept.
+```
+
+`tracekit approvals show apr-…` prints why and what to do instead, when it expires, the commands that answer it, and
+the command that opens the call in the viewer, `tracekit view --approval apr-…` (the page opens at `#approval=apr-…`).
+`tracekit approvals list` lists the calls waiting for an answer first, newest first, each with what it runs; the
+expired ones only with `--all`.
+
+
+In Claude Code, paste the `! …` line into the same session: `!` runs it as you, the session's user, not as
+the agent.
+
+In Gemini CLI, paste the `!command` line into the same session, with no space after `!`: Gemini runs it
+directly as you, the session's user, not as the agent. Alternatively, press `!` to enter shell mode and
+enter the command without the prefix.
+
+In another harness, or from another terminal, run the same command without the `!` (a shell reads a
+leading `!` as "not", and an approval that worked would report failure). With a named signer (system
+mode, a remote one) the line has no `!`: the session's user is the agent's, whom the signer refuses as an
+approver, so the approver runs it from their own account. Then tell the agent to make the same call
+again, unchanged: the signer lets that call run under your approval, once
+([approve, then retry](approvals.md#approve-then-retry)).
+
 The same call a third time, or one with other arguments, is held again, with a new approval. A call you rejected is
 held again if the agent tries it again, and the block says so first among its reasons (`Why: a person rejected this
 exact call (apr-…, by uid:501); ask them before trying again; …`), so the agent asks you. In Claude Code a Bash
@@ -242,6 +294,28 @@ so why none waits by default:
 | Devin | not documented | not documented |
 | Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |
 
+### When Tracekit stops a call
+
+The block message tells the agent what to do, but an agent reads its own instructions first. `tracekit init --v2`
+points to these lines; paste them into the agent's `CLAUDE.md` or `AGENTS.md`. The Claude Code plugin ships them as
+its `tracekit-holds` skill.
+
+```markdown
+## When Tracekit stops a tool call
+
+- `[tracekit] HELD, nothing ran`: a person must answer it. In one message, tell them what the call was for, its Why
+  line and the commands on its Person line, then wait. A subagent or a background job puts the same in its final
+  report.
+- Once the person says it is approved, make exactly the same call again (the same tool and arguments): it runs once.
+- `[tracekit] BLOCKED, nothing ran` or `NOT APPROVED`: tell the person what you were doing and why it was stopped. If
+  there is an Instead line, you may do that instead; say you did.
+- Never run `tracekit approvals approve` or `reject` yourself: they are the person's commands. `tracekit approvals
+  list` and `show` only read.
+- Never hide what a call runs to get past a hold or a block (encoding it, a variable for the program, a script file,
+  another tool or agent): every call is signed and kept. A readable call that does the same thing, as an Instead line
+  says, is fine; say you made it.
+```
+
 ### Calls that move money
 
 Stripe holds an agent's refunds, payouts and outbound payments for a person only when the agent uses an agent-tagged
@@ -260,7 +334,11 @@ The v2 coding pack holds these calls for a person whatever the key:
 The hold says what to check:
 
 ```text
-[tracekit] held for approval apr-… (TK-A043): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund). Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier
+[tracekit] HELD, nothing ran: apr-… (TK-A043), expires 09:27 UTC.
+Why: moving money (a Stripe, PayPal or Square charge, payout, transfer or refund)
+Instead: Check the amount, currency and payee in the command or the file it sends before approving it; a refund with no amount refunds in full, and a confirm, capture or pay moves the amount set earlier.
+Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
+Agent: …
 ```
 
 Read the command before you approve it, and the file it sends (`-d @body.json`): the approval covers that exact
@@ -318,7 +396,10 @@ in a sentence is live, though the text from that name on is recorded as untruste
 held for your approval ([held calls](#held-calls-approve-then-retry)), and you and the agent read why:
 
 ```text
-[tracekit] held for approval apr-… (TK-CONSTRAINT): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: the person's request in this run said not to modify billing.py; ask the person
+[tracekit] HELD, nothing ran: apr-… (TK-CONSTRAINT), expires 09:27 UTC.
+Why: the person's request in this run said not to modify "billing.py"; ask the person
+Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
+Agent: …
 ```
 
 Answer it with the command the line names: in Claude Code, its `! …` form in the session; elsewhere, from another
@@ -351,7 +432,7 @@ one, blocks that event when the hook can't run (a command init wrote before 1.3,
 `D-HOOKS-TIMEOUT` when a pre-tool timeout is shorter than the 540 s the hook may take to answer (milliseconds for
 Gemini CLI and Qwen Code; a held call waits, up to about 480 s, only with `TRACEKIT_APPROVAL_WAIT` set). Re-run init for the active mode to repair the other coding agents' hooks
 (`tracekit init --dev --v2 --agent NAME` in dev, or `sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT
---agent NAME` in system mode; with Python 3.9 or 3.10, [laptop system mode](deploy.md#laptop-system-mode)'s command). `tracekit doctor` also checks Droid's and Antigravity CLI's hook presence and timeout, and warns when agy would
+--agent NAME` in system mode). `tracekit doctor` also checks Droid's and Antigravity CLI's hook presence and timeout, and warns when agy would
 load its hooks and run none (`D-AGY-HOOKS-RUN`, [below](#antigravity-cli)). OpenCode's JavaScript plugin isn't checked; re-run init after upgrading.
 
 For the other coding agents (Antigravity CLI too, not OpenCode, whose plugin doctor doesn't read), `D-HOOKS-EVENT` also warns when a call can run that no hook
@@ -435,7 +516,7 @@ Antigravity CLI (`agy`) support is experimental: tested through agy's documented
 
 ```bash
 tracekit init --dev --v2 --agent antigravity               # ~/.gemini/config/hooks.json; --project: .agents/hooks.json
-sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent antigravity   # system mode (Python 3.11+)
+sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent antigravity   # system mode
 tracekit uninstall --agent antigravity                     # removes Tracekit's hook only
 ```
 
