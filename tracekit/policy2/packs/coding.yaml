@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-81'
+version: '2026.11-v2-82'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -469,12 +469,33 @@ ask:
     reason: dropping or resetting a database through a framework command
     remedy: Wait for a person to approve the held call, or reset a disposable copy of the database and leave the real one.
     rationale: A framework's reset or drop command wipes the database its configuration points at, which may not be a throwaway one; a person confirms it.
+  - id: TK-A067
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # a .pth file written directly into a site-packages or dist-packages folder: Python's site module reads
+    # every one at each interpreter start and runs its import lines, so it isn't a model weights file
+    pattern: '(?:^|[/\\])(?:site|dist)-packages[/\\][^/\\]*\.pth$'
+    reason: writing a Python .pth file, which runs at every Python start
+    remedy: Have a person approve the held call.
+    rationale: A .pth file in site-packages or dist-packages runs at every Python start, so a person confirms the write.
+  - id: TK-A068
+    class: shell
+    field: effects
+    # each file a command writes (redirections, cp, mv, tee …), as TK-D008 reads them, directly in a
+    # site-packages or dist-packages folder and ending in .pth; TK-A067's shell twin
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:site|dist)-packages[/\\][^/\\]*\.pth$'
+    reason: writing a Python .pth file, which runs at every Python start
+    remedy: Have a person approve the held call.
+    rationale: A .pth file in site-packages or dist-packages runs at every Python start, so a person confirms the write.
   - id: TK-A058
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
     # model weights files (.safetensors, .gguf, .pt, .pth, .ckpt) written or edited through file tools; reads are allowed
     pattern: '\.(safetensors|gguf|pt|pth|ckpt)$'
+    # a .pth directly in site-packages or dist-packages is TK-A067's, not a weights file
+    unless: '(?:^|[/\\])(?:site|dist)-packages[/\\][^/\\]*\.pth$'
     reason: writing a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
@@ -484,6 +505,8 @@ ask:
     # each file a command writes (redirections, cp, mv, tee …), as TK-D008 reads them, ending in model weights
     # extensions (.safetensors, .gguf, .pt, .pth, .ckpt); reads, listings and non-weights files aren't held
     pattern: '^WRITE_TARGET:[\w\W]*?\.(?:safetensors|gguf|pt|pth|ckpt)$'
+    # a .pth directly in site-packages or dist-packages is TK-A068's, not a weights file
+    unless: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:site|dist)-packages[/\\][^/\\]*\.pth$'
     reason: writing a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
