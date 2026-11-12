@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:9d266fdb9e6ea0d47f40fa38a7422ec77fa6cdbcc1b0fbc13a257ee239b3c250",
+  "policy_hash": "sha256:e8cb265118d901c97eca5f5a92923911fae5c8e9bb52ff2cacfd56aa44a5e79a",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -26,7 +26,7 @@
     "fs": {
       "deny": 37,
       "caught": 37,
-      "benign": 63,
+      "benign": 64,
       "fp": 0
     },
     "http": {
@@ -1137,11 +1137,11 @@
     "benign/fs:4": "flag TK-F005",
     "benign/fs:5": "flag TK-F005",
     "benign/fs:6": "flag TK-F005",
-    "benign/fs:7": "allow",
+    "benign/fs:7": "flag TK-F005",
     "benign/fs:8": "allow",
-    "benign/fs:9": "flag TK-F005",
+    "benign/fs:9": "allow",
     "benign/fs:10": "flag TK-F005",
-    "benign/fs:11": "allow",
+    "benign/fs:11": "flag TK-F005",
     "benign/fs:12": "allow",
     "benign/fs:13": "allow",
     "benign/fs:14": "allow",
@@ -1168,12 +1168,12 @@
     "benign/fs:35": "allow",
     "benign/fs:36": "allow",
     "benign/fs:37": "allow",
-    "benign/fs:38": "flag TK-F006",
+    "benign/fs:38": "allow",
     "benign/fs:39": "flag TK-F006",
     "benign/fs:40": "flag TK-F006",
     "benign/fs:41": "flag TK-F006",
     "benign/fs:42": "flag TK-F006",
-    "benign/fs:43": "allow",
+    "benign/fs:43": "flag TK-F006",
     "benign/fs:44": "allow",
     "benign/fs:45": "allow",
     "benign/fs:46": "allow",
@@ -1181,8 +1181,8 @@
     "benign/fs:48": "allow",
     "benign/fs:49": "allow",
     "benign/fs:50": "allow",
-    "benign/fs:51": "flag TK-F005",
-    "benign/fs:52": "allow",
+    "benign/fs:51": "allow",
+    "benign/fs:52": "flag TK-F005",
     "benign/fs:53": "allow",
     "benign/fs:54": "allow",
     "benign/fs:55": "allow",
@@ -1194,6 +1194,7 @@
     "benign/fs:61": "allow",
     "benign/fs:62": "allow",
     "benign/fs:63": "allow",
+    "benign/fs:64": "allow",
     "benign/http:1": "flag TK-F002 TK-F012",
     "benign/http:2": "flag TK-F002 TK-F012",
     "benign/http:3": "flag TK-F002 TK-F012",
@@ -1826,6 +1827,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0011235955056179776,
+  "benign_fp_rate": 0.001122334455667789,
   "ok": true
 }

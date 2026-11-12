@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-81'
+version: '2026.11-v2-82'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -157,7 +157,9 @@ deny:
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
     pattern: '(^|/)(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|credentials)$|(^|/)\.ssh/|(^|/)\.aws/'
-    unless: '(^|/)\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
+    # .env templates, and SSH public keys: a *.pub file under .ssh (id_ed25519.pub, id_rsa-cert.pub) holds no
+    # secret — SSH never reads a private key from a .pub path, and the pack lets public keys move (TK-D011)
+    unless: '(^|/)\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$|(^|/)\.ssh/[^/]*\.pub$'
     reason: writing to a credentials file
     remedy: Write a template with placeholders (.env.example) instead; a person fills in the real credentials file.
     rationale: Credential files are high-value and rarely a legitimate agent target.

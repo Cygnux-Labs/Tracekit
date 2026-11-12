@@ -4243,6 +4243,20 @@ class PackReading(unittest.TestCase):
         self.check(self.dev, [("Write", {"file_path": p}) for p in ("/Users/u/proj/.ENV.example", "C:\\proj\\app.py")],
                    "allow")
 
+    def test_an_ssh_public_key_may_be_written_but_not_the_key_itself(self):
+        # #742: TK-D005's .ssh/ branch denied a public key too; a *.pub file holds no secret (SSH never reads a
+        # private key from a .pub path, and TK-D011 lets a public key leave the machine), so it is exempt — the
+        # path is still flagged as secret-looking by TK-F005, but no longer denied
+        for p in ("/home/u/.ssh/id_ed25519.pub", "/home/u/.ssh/id_rsa.pub", "/home/u/.ssh/id_ed25519-cert.pub",
+                  "C:\\Users\\u\\.ssh\\id_ed25519.pub"):
+            with self.subTest(path=p):
+                d = self.dev.decide("Write", {"file_path": p, "content": "ssh-ed25519 AAAA u@h"})
+                self.assertNotEqual(d["verdict"], "deny", d)
+                self.assertNotIn("TK-D005", d["rule_ids"], d)
+        self.check(self.dev, [("Write", {"file_path": p, "content": "x"}) for p in (
+            "/home/u/.ssh/id_ed25519", "/home/u/.ssh/id_rsa", "/home/u/.ssh/authorized_keys", "/home/u/.ssh/config")],
+            "deny")
+
     def test_a_windows_path_is_also_read_as_windows_opens_it(self):
         # the 1.5.3 sweep: Windows drops a part's trailing dots and spaces and opens a file's default stream for
         # `::$DATA`, so each of these writes the file the rule names

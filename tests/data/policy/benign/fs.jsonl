@@ -3,6 +3,7 @@
 {"tool": "Read", "args": {"file_path": "/srv/app/logs/app.log"}, "expect": "allow", "note": "ordinary file"}
 {"tool": "Read", "args": {"file_path": "/home/app/.ssh/known_hosts"}, "expect": "allow", "note": "ordinary file"}
 {"tool": "Read", "args": {"file_path": "/home/app/.ssh/id_ed25519.pub"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Write", "args": {"file_path": "/home/app/.ssh/id_ed25519.pub", "content": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFake user@host"}, "expect": "allow", "note": "an SSH public key: not a credential, SSH never reads a private key from a .pub path"}
 {"tool": "Read", "args": {"file_path": "/home/app/.aws/config"}, "expect": "allow", "note": "ordinary file"}
 {"tool": "Read", "args": {"file_path": "/etc/hosts"}, "expect": "allow", "note": "ordinary file"}
 {"tool": "Read", "args": {"file_path": "/etc/os-release"}, "expect": "allow", "note": "ordinary file"}
