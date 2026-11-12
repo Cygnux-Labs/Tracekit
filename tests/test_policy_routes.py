@@ -731,12 +731,15 @@ class MCPAnswers(unittest.TestCase):
         from tracekit.format.canon import event_hash
         tool = "mcp:bank/transfer"
         for answer, more in ((ElicitResult(action="accept"), 0), (ElicitResult(action="accept", content={"to": "x"}), 1)):
-            s._pending[(tool, event_hash({"tool": tool, "args": {"amount": 5}}), "st")] = (
-                "c1", {"tool_call_id": "c1", "decision_id": "d1", "args_digest": "x"}, {"decision": "allow"},
-                {"amount": 5})
+            async def resumed():   # the call this task left waiting after its first round
+                s._pending[asyncio.current_task()] = (
+                    (tool, event_hash({"tool": tool, "args": {"amount": 5}}), "st"), "c1",
+                    {"tool_call_id": "c1", "decision_id": "d1", "args_digest": "x"}, {"decision": "allow"},
+                    {"amount": 5})
+                return await s.call_tool("transfer", {"amount": 5}, input_responses={"q1": answer},
+                                         request_state="st")
             before = len(decided)
-            out = asyncio.run(s.call_tool("transfer", {"amount": 5}, input_responses={"q1": answer},
-                                          request_state="st"))
+            out = asyncio.run(resumed())
             self.assertFalse(out.is_error)
             self.assertEqual(len(decided) - before, more, answer)
             if more:

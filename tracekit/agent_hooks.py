@@ -393,7 +393,7 @@ def tool(harness, name, ti):
             return "Bash", ti
         if name in ("shell", "local_shell", "exec_command"):
             cmd = ti.get("command")
-            if isinstance(cmd, list):
+            if isinstance(cmd, list) and all(isinstance(w, str) for w in cmd):   # Codex's argv: a list of strings
                 ti["command"] = " ".join(cmd[2:] if cmd[:2] in (["bash", "-lc"], ["bash", "-c"], ["sh", "-c"]) else cmd)
             return "Bash", ti
         return name, ti
@@ -455,7 +455,7 @@ def tool(harness, name, ti):
             if isinstance(ti.get("image"), str):   # its `image`, an existing file, is read and sent to the image
                 # provider: decided as a Read of it, with the `path` it writes (Kilo gives that an image extension)
                 ti["file_path"] = ti["image"]
-                ti["paths"] = [ti["image"]] + [ti["path"]] * isinstance(ti.get("path"), str)
+                ti["paths"] = [ti["image"]] + ([ti["path"]] if isinstance(ti.get("path"), str) else [])
                 return "Read", ti
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
@@ -1081,6 +1081,17 @@ def keep_typed(path, line, text):
             json.dump({"text": rest}, f)
 
 
+def _not_text(q):
+    """The v1 hook's reason to deny a mapped call `q` whose shell command isn't text, else None: the v1 policy would
+    match its rules against the value's repr, not the line that runs. Codex's argv of strings is a line once mapped
+    (tool); an argv with an item that isn't a string no agent sends, and the v2 signer holds it (TK-SHELL-PARSE)."""
+    cmd = q["tool_input"].get("command") if q.get("tool_name") == "Bash" else None
+    if cmd is None or isinstance(cmd, str):
+        return None
+    return (f"Blocked by Tracekit: the shell command isn't text ({json.dumps(cmd)[:200]}), so the policy can't read "
+            "the line it runs; send the command as text.")
+
+
 def run(harness, raw, stdout=None, stderr=None, event=None):
     """Handle one hook invocation (`event`: the hook event from the command line, or None). -> exit code. Writes the
     harness's expected stdout. A payload that is not a JSON object raises: entry answers it."""
@@ -1097,7 +1108,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     typed = typed_line(harness, p, q) if is_pre else None
     if typed and typed[1] != typed[2]:   # also decided as the line a shell there would read it into
         q["tool_input"]["typed_line"] = typed[1]
-    reason = _blocked(harness, p, raw, typed and typed[1]) if is_pre else None
+    reason = (_blocked(harness, p, raw, typed and typed[1]) or _not_text(q)) if is_pre else None
     err = Tee(stderr)
     if reason is not None:   # a call the hook can't decide as it runs: denied before the pipeline
         print(reason, file=err)
