@@ -1254,10 +1254,11 @@ class EndToEnd(unittest.TestCase):
         self.assertIn(f"- {service._dev_identity()}: 1 approve, no wait recorded, 1 self-approved", sec[titles[4]])
         self.assertIn(f"- aws\\_access\\_key: in 1 run, held by Bash \\(allow\\) in run {self.mail} \\(1 SIGNED, 1 UNVERIFIED\\)",
                       sec[titles[5]])
-        self.assertIn(f"TK-X202 \\(medium\\): Edit of a file not mentioned before: about send\\_email \\(flag\\) in run "
+        # the default holds the server pack's email rules since #604: send_email is an email call, asked for here
+        self.assertIn(f"TK-X202 \\(medium\\): Edit of a file not mentioned before: about send\\_email \\(ask\\) in run "
                       f"{self.mail} \\(1 SIGNED\\)", sec[titles[6]])
         [chain] = [x for x in sec[titles[7]].splitlines() if x.startswith(f"- untrusted web:page in run {self.mail} ")]
-        self.assertIn("web:page -argument to \\(email\\), untrusted \\(SIGNED\\)-\\> send\\_email \\(flag\\)", chain)
+        self.assertIn("web:page -argument to \\(email\\), untrusted \\(SIGNED\\)-\\> send\\_email \\(ask\\)", chain)
         self.assertNotIn("asked to write", chain)
         self.assertIn(f"run {self.findings} analyses run {self.mail} \\(SIGNED\\)", sec[titles[7]])
         self.assertIn("4 sources \\(1 failed verification\\), 7 runs, ", self.report)

@@ -454,8 +454,8 @@ def _parser():
                        "calls, holds, denies and flags by rule, gaps, integrity (--since, --json, --share)",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
-                       "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
+    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts, or a calls file) "
+                       "through the policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("tips", help="what each step of your coding agents cost and how to cut it, as tracekit view's "
                        "TIPS page says it, from the dev signer's store and Claude Code's transcripts (--since, --json)",
@@ -1368,9 +1368,17 @@ def _last(a):
         return 1
     final = [x for x in runs if x[1] == "run.final"]
     for (_, run_id), kind, agent in [] if a.open else runs[:len(runs) - len(final)]:
-        why = ("closed, and not finalised yet: is the dev signer still running (`tracekit up`)?" if kind == "run.closing"
-               else "still open: it finishes when the agent's process exits (tracekit.instrument() closes its run "
-                    "then) or after the signer's idle timeout; tracekit last --open verifies it as it stands")
+        if kind == "run.closing":
+            why = "closed, and not finalised yet: is the dev signer still running (`tracekit up`)?"
+        elif agent == "claude-code":
+            why = ("still open: it finishes when the session ends (`/exit` in Claude Code) "
+                   "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
+        elif agent in agent_hooks.AGENT_NAMES.values():
+            why = ("still open: it finishes when the session ends "
+                   "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
+        else:
+            why = ("still open: it finishes when the agent's process exits (tracekit.instrument() closes its run "
+                   "then) or after the signer's idle timeout; tracekit last --open verifies it as it stands")
         print(f"tracekit last: the newer run {run_id} ({agent}) is {why}" + (
             "; showing the run before it" if final else "; run tracekit last again once it has finished"),
             file=sys.stderr)
