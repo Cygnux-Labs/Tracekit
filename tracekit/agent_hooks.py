@@ -609,10 +609,6 @@ def normalise(harness, p):
                 out["tool_response"] = r = p.get("tool_response")
                 if harness == "devin" and isinstance(r, dict) and r.get("success") is False:   # {success, output, error}
                     out["hook_event_name"], out["error"] = "PostToolUseFailure", r.get("error")
-                # CodeBuddy sends a call that failed inside the tool (a DeferExecuteTool whose deferred tool was blocked
-                # or threw) to PostToolUse as {content, error}: it didn't run, so it is completed as the error
-                if harness == "codebuddy" and isinstance(r, dict) and isinstance(r.get("error"), str) and r["error"]:
-                    out["hook_event_name"], out["error"] = "PostToolUseFailure", r["error"]
             if ev == "PostToolUseFailure":
                 out["error"] = p.get("error")
         if ev == "UserPromptSubmit":
