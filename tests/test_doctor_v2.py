@@ -253,6 +253,44 @@ class CodingAgentHooks(unittest.TestCase):
                         rid, doctor.OK if ok else bad), {harness: path}, False, self.d)
                     self.assertEqual(got["D-HOOKS-TIMEOUT"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
 
+    def test_a_codebuddy_pre_tool_hook_that_runs_after_tracekits_is_named(self):
+        """#761's review: CodeBuddy Code runs the user's settings' PreToolUse hooks, then the project's
+        .codebuddy/settings.json and settings.local.json, each in its order, and the last permissionDecision stands, so
+        a later hook's allow runs a call Tracekit denied: doctor names each file such a hook is in."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user, project = agent_hooks.config_path("codebuddy", home=home), agent_hooks.config_path("codebuddy", proj)
+        local = os.path.join(os.path.dirname(project), "settings.local.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+        other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 approve-safe-commands.py"}]}
+
+        def later():
+            rows = []
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((rid, ok, detail)),
+                                            {"codebuddy": user}, False, home)
+            (row,) = [r for r in rows if "after Tracekit's" in r[2]]
+            return row
+
+        self.assertEqual(later()[:2], ("D-HOOKS-EVENT", True))
+        with open(user) as f:
+            settings = json.load(f)
+        settings["hooks"]["PreToolUse"].insert(0, other)   # before Tracekit's: its allow is overridden by a deny
+        with open(user, "w") as f:
+            json.dump(settings, f)
+        self.assertTrue(later()[1])
+        os.makedirs(os.path.dirname(project))
+        for f in (project, local):
+            with open(f, "w") as out:
+                json.dump({"hooks": {"PreToolUse": [other]}}, out)
+            rid, ok, detail = later()
+            self.assertEqual((rid, ok), ("D-HOOKS-EVENT", False))
+            self.assertIn(f, detail)
+        settings["hooks"]["PreToolUse"].append(other)   # after Tracekit's in the same file
+        with open(user, "w") as f:
+            json.dump(settings, f)
+        self.assertIn(user, later()[2])
+
     def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
         # agy and Crush wait 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states theirs
         from tracekit import agent_hooks
@@ -1737,6 +1775,20 @@ class Versions(unittest.TestCase):
             mine, relative = doctor._user_hook_files()
         self.assertNotIn(planted, mine)
         self.assertIn(home, relative)
+
+    def test_codebuddys_config_dir_places_its_user_hook_file(self):
+        """#761's review: $CODEBUDDY_CONFIG_DIR moves CodeBuddy Code's user settings (agent_hooks.config_path), so it
+        is one of the variables that place a user's hook files: an absolute one places the user's own, and a relative
+        one, which resolves against the working directory, is named instead."""
+        cb = os.path.join(os.path.realpath(self.d), "cb")
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": cb}):
+            mine, relative = doctor._user_hook_files()
+        self.assertIn(os.path.join(cb, "settings.json"), mine)
+        self.assertNotIn("CODEBUDDY_CONFIG_DIR", relative)
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": "cb"}):
+            mine, relative = doctor._user_hook_files()
+        self.assertIn("CODEBUDDY_CONFIG_DIR", relative)
+        self.assertNotIn(os.path.realpath(os.path.join("cb", "settings.json")), mine)
 
     def test_a_relative_interpreter_or_path_is_never_run(self):
         """Review of #512: a relative interpreter, or a relative working tree a -c hook puts on sys.path, resolves against

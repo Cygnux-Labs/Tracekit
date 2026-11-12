@@ -524,12 +524,21 @@ def tool(harness, name, ti):
         if name in CODEBUDDY_READS:
             ti["file_path"] = ti.get(CODEBUDDY_READS[name])
             return "Read", ti
-        if name == "LibraryUpload":   # it sends the file at `path` (or a file: URI of it) off the machine: the packs
-            # decide it as the upload it is (TK-D022, TK-F024), on that file, never on a decoy beside it
+        if name == "LibraryUpload":   # it sends the file at `path` off the machine: the packs decide it as the upload it
+            # is (TK-D022, TK-F024), on that file, never on a decoy beside it. CodeBuddy parses no URL
+            # (PathUtils.resolveFilePathToWorkDir): it takes `file://`, else `file:`, off the front and opens the rest,
+            # `~/` in the home folder and a relative path in its cwd (`@x` as itself, else as x), decoding nothing. Each
+            # form it may open is decided, and each percent-decoded too
             path = ti.get("path")
-            if isinstance(path, str) and path[:5].casefold() == "file:":
-                path = urllib.parse.unquote(urllib.parse.urlsplit(path).path)
+            if isinstance(path, str):
+                path = path[7:] if path.startswith("file://") else path[5:] if path.startswith("file:") else path
+            forms = [path] if isinstance(path, str) else []
+            forms += [f[1:] for f in forms if f.startswith("@")]
+            forms = list(dict.fromkeys(forms + [urllib.parse.unquote(f) for f in forms]))
+            ti.pop("paths", None)
             ti["file_path"] = path
+            if len(forms) > 1:
+                ti["paths"] = forms
     return name, ti
 
 
@@ -600,6 +609,10 @@ def normalise(harness, p):
                 out["tool_response"] = r = p.get("tool_response")
                 if harness == "devin" and isinstance(r, dict) and r.get("success") is False:   # {success, output, error}
                     out["hook_event_name"], out["error"] = "PostToolUseFailure", r.get("error")
+                # CodeBuddy sends a call that failed inside the tool (a DeferExecuteTool whose deferred tool was blocked
+                # or threw) to PostToolUse as {content, error}: it didn't run, so it is completed as the error
+                if harness == "codebuddy" and isinstance(r, dict) and isinstance(r.get("error"), str) and r["error"]:
+                    out["hook_event_name"], out["error"] = "PostToolUseFailure", r["error"]
             if ev == "PostToolUseFailure":
                 out["error"] = p.get("error")
         if ev == "UserPromptSubmit":
@@ -1050,9 +1063,11 @@ def config_path(harness, project=None, home=None):
     codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
         else os.path.join(base, ".codex")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
-    # CodeBuddy Code reads its user settings from $CODEBUDDY_CONFIG_DIR when it is set to more than blanks
-    codebuddy = os.environ["CODEBUDDY_CONFIG_DIR"] if not (project or home) and \
-        os.environ.get("CODEBUDDY_CONFIG_DIR", "").strip() else os.path.join(base, ".codebuddy")
+    # CodeBuddy Code reads its user settings from $CODEBUDDY_CONFIG_DIR, and a project's from
+    # $CODEBUDDY_PROJECT_CONFIG_DIR (absolute, or in the project), when each is set to more than blanks
+    moved = os.environ.get("CODEBUDDY_PROJECT_CONFIG_DIR" if project else "CODEBUDDY_CONFIG_DIR", "")
+    codebuddy = os.path.join(project, moved.strip()) if project and moved.strip() else moved \
+        if not home and moved.strip() else os.path.join(base, ".codebuddy")
     return {"codex": os.path.join(codex, "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "codebuddy": os.path.join(codebuddy, "settings.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
