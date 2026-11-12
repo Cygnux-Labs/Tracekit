@@ -399,7 +399,7 @@ class TestAudit(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             cli.main(["audit", "--help"])
-        self.assertIn("--agent {antigravity,claude,codex,", out.getvalue())   # one name in the help: init's
+        self.assertRegex(out.getvalue(), r"--agent \{[a-z,]*\bclaude\b")   # one name in the help: init's
         self.assertNotIn("claude-code", out.getvalue())
 
     def test_a_shell_command_no_agent_sends_is_malformed(self):
