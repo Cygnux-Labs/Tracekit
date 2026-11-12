@@ -19,7 +19,7 @@ from ..wiki import wiki_url
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            "explains", "on_parse_error", *SECTIONS, *DETECT}
+            "explains", "on_parse_error", "oversize", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
              "remedy"}
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
@@ -103,7 +103,7 @@ BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access",
-                     "tracekit"},
+                     "tracekit", "push"},
            "fs": {"path", "op", "content_digest"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
@@ -111,7 +111,7 @@ CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_inde
            "browser": {"action", "url", "scheme", "host", "internal", "sends_to"},
            "a2a": {"sender", "receiver", "route", "skills", "kinds", "hosts", "size", "modality", "projector",
                    "weights"},
-           "app": set(), "unknown": set()}
+           "app": set(), "unknown": {"run"}, "harness": set()}
 for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
@@ -404,6 +404,8 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
+    if pol.get("oversize", "ask") != "ask":   # (left out, TK-OVERSIZE takes its rule's section)
+        errors.append(f"{path}: oversize must be ask")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):

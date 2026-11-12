@@ -267,7 +267,7 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         with mock.patch.object(install, "ROOT", d), \
                 mock.patch("tracekit.harness_helper.trusted_file", return_value=None):
-            req = install._install_source()
+            req = install._install_source("init")
         self.assertEqual(req[-1], f"tracekit-ai=={__version__}")
         self.assertEqual("--pre" in req, any(c.isalpha() for c in __version__))
 
@@ -283,12 +283,13 @@ class SystemModeUsesOpt(unittest.TestCase):
             return None if p in (sys.executable, os.path.dirname(os.__file__), src) or p.startswith(vcs) else f"{p} is mine"
         with mock.patch.object(install, "ROOT", src), mock.patch("tracekit.harness_helper.trusted_file", trusted_file):
             with self.assertRaises(SystemExit) as cm:
-                install._install_source()
+                install._install_source("init")
         self.assertIn("pyproject.toml is mine", str(cm.exception))
-        self.assertIn("sudo git clone https://github.com/Cygnux-Labs/Tracekit /usr/local/src/Tracekit", str(cm.exception))
+        self.assertIn(f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit "
+                      f"/usr/local/src/tracekit-{__version__}", str(cm.exception))   # this release, as docs/deploy.md
         with mock.patch.object(install, "ROOT", src), \
                 mock.patch("tracekit.harness_helper.trusted_file", lambda p: f"{p} is mine" if p.startswith(vcs) else None):
-            self.assertIsNone(install._install_source())  # the repository metadata is not installed
+            self.assertIsNone(install._install_source("init"))  # the repository metadata is not installed
 
     def opt(self):
         d = tempfile.mkdtemp()
