@@ -10,6 +10,7 @@ Doctor output is advice, not evidence: it reads the host as it is now, and nothi
 """
 import ast
 import base64
+import contextlib
 import errno
 import hashlib
 import itertools
@@ -218,7 +219,8 @@ def _dev_harnesses():
     out = {}
     for harness in agent_hooks.HARNESSES:
         for path in (agent_hooks.config_path(harness), agent_hooks.config_path(harness, os.getcwd())):
-            if harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin, not a JSON hook config
+            if harness in agent_hooks.PLUGIN_TOOLS or harness == "cline":   # a JavaScript plugin or Cline's hook
+                # files, not a JSON hook config
                 try:
                     if agent_hooks._version(install.agent_file(path).decode("utf-8", "replace")) == "v2":
                         out.setdefault(harness, path)
@@ -235,8 +237,13 @@ def _dev_harnesses():
 
 def _hook_commands(harness, path):
     """The command of each of Tracekit's v2 hooks in a coding agent's hook config at `path`; OpenCode's plugin: each
-    event's argv."""
+    event's argv; Cline's: the argv of each of Tracekit's hook files beside `path`."""
     from . import agent_hooks
+    if harness == "cline":
+        folder, suffix = os.path.split(path)[0], os.path.splitext(path)[1]
+        texts = [install.agent_file(os.path.join(folder, ev + suffix)).decode("utf-8", "replace")
+                 for ev in agent_hooks.CLINE_EVENTS if os.path.exists(os.path.join(folder, ev + suffix))]
+        return [agent_hooks.cline_argv(t) for t in texts if agent_hooks._version(t) == "v2"]
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
         return list(json.loads(m.group(1)).values()) if m else []
@@ -626,12 +633,36 @@ def _openhands_checks(add, path, home, fix):
         f"{fix} --project (in this directory), or don't run OpenHands on this repo", bad=WARN)
 
 
+def _ps_policy():
+    """PowerShell's effective execution policy (Restricted, RemoteSigned, ...), else None when it can't be read."""
+    with contextlib.suppress(OSError, subprocess.SubprocessError):
+        return subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-ExecutionPolicy"],
+                              capture_output=True, text=True, timeout=15).stdout.strip() or None
+    return None
+
+
 def _harness_hook_checks(add, harnesses, prod, home=None):
     """Event arguments and approval timeouts of the other coding agents' v2 command hooks (home: the agent user's home
     directory, where agy's sign-in settings are)."""
     from . import agent_hooks
     from .integrations.claude_code import APPROVAL_WAIT_S
     for harness, path in sorted((harnesses or {}).items()):
+        if harness == "cline":   # its hooks are files, one per event: a second copy of them runs each hook again
+            fix = "keep Tracekit's Cline hooks in one place: tracekit uninstall --agent cline [--project] for the other"
+            copies = [d for d in agent_hooks.cline_dirs(home)
+                      if agent_hooks._version(_text(os.path.join(d, agent_hooks.CLINE_FILE))) is not None]
+            add("D-HOOKS-EVENT", len(copies) < 2,
+                f"Tracekit's Cline hooks are in {' and '.join(copies)}: Cline runs both, so each call is decided and "
+                "recorded twice" if len(copies) > 1 else f"Tracekit's Cline hooks are in one place ({path})", fix, bad=WARN)
+            if os.name == "nt":   # Cline's CLI runs a .ps1 hook with `powershell -File`, under the execution policy
+                policy = _ps_policy()
+                add("D-HOOKS-EVENT", policy not in ("Restricted", "AllSigned"),
+                    f"PowerShell's execution policy is {policy}: Cline's CLI can't start Tracekit's .ps1 hooks, so "
+                    "every call runs undecided (its VS Code extension passes -ExecutionPolicy Bypass)"
+                    if policy in ("Restricted", "AllSigned") else
+                    f"PowerShell's execution policy ({policy or 'unread'}) lets Cline's CLI start Tracekit's hooks",
+                    "Set-ExecutionPolicy -Scope CurrentUser RemoteSigned", bad=WARN)
+            continue
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
         fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
@@ -675,6 +706,14 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
                 f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
+
+
+def _text(path):
+    """A file the agent's user controls as text (install.agent_file), or "" when it can't be read."""
+    try:
+        return install.agent_file(path).decode("utf-8", "replace")
+    except OSError:
+        return ""
 
 
 def _json(path):

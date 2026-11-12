@@ -2007,7 +2007,7 @@
   "engine_mismatches": [],
   "engines": [
     "re2@1.1.20251105",
-    "regex@2026.11.9"
+    "regex@2026.9.29"
   ],
   "excluded_rewrites": [
     {
@@ -2535,6 +2535,16 @@
         "same_rule_rate": 1.0,
         "total": 1
       },
+      "TK-F015": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
       "TK-S001": {
         "contained": 12,
         "coverage_rate": 1.0,
@@ -3007,6 +3017,16 @@
         "same_rule_rate": 1.0,
         "total": 1
       },
+      "TK-F015": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
       "TK-S001": {
         "contained": 12,
         "coverage_rate": 1.0,
@@ -3420,6 +3440,16 @@
         "total": 1
       },
       "TK-D021": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
+      "TK-F015": {
         "contained": 1,
         "coverage_rate": 1.0,
         "covered_by_rule_or_parse": 1,
@@ -3882,6 +3912,16 @@
         "total": 1
       },
       "TK-D021": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
+      "TK-F015": {
         "contained": 1,
         "coverage_rate": 1.0,
         "covered_by_rule_or_parse": 1,
@@ -4363,6 +4403,16 @@
         "same_rule_rate": 1.0,
         "total": 1
       },
+      "TK-F015": {
+        "contained": 1,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 1,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 1,
+        "same_rule_rate": 1.0,
+        "total": 1
+      },
       "TK-S001": {
         "contained": 12,
         "coverage_rate": 1.0,
@@ -4425,7 +4475,7 @@
       }
     }
   },
-  "policy_hash": "sha256:ebc9bdb2e15873762530f29d16356862c50d2483711ca3380a8c05480a4d2962",
+  "policy_hash": "sha256:5f99a572397239e7f3d3a21681df573be2bdffb0b92cb530a05a894177326096",
   "regressions": [],
   "rewrite_missed": [],
   "rewritten_cases": 511,

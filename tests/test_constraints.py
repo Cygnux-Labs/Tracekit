@@ -584,9 +584,15 @@ class Live(Signed):
             "command": "*** Begin Patch\n*** Update File: src/config.py\n@@\n-a\n+b\n*** End Patch"})
         for tool, args in ((tool, ti), ("Bash", {"command": "bash -c 'git push origin main'"}),
                            ("shell", {"command": ["git", "push", "origin", "main"]}),
-                           ("shell", {"commands": ["git push origin main"]})):
+                           ("shell", {"commands": ["git push origin main"]}),
+                           # #732's review: each entry read on its own too (Cline's run_commands runs each in its own
+                           # shell), so a trailing \ in one doesn't hide the next, and the joined reading still finds
+                           # what one entry gives the next (LangChain's ShellTool runs them in one shell)
+                           ("Bash", {"commands": ["echo ok \\", "git push origin main"]}),
+                           ("Bash", {"commands": ["g=git", "$g push origin main"]})):
             with self.subTest(args):
                 self.assertIn("TK-CONSTRAINT", self.decide(run, tool, args)["rule_ids"])
+        self.assertTrue(constraints.facts("Bash", {"commands": ["echo ok \\", "touch notes.txt"]}, "shell")["write"])
 
     def test_the_writer_checks_at_most_max_names_files_per_constraint(self):
         """The salted commitments of a call's files are computed off the writer, once per distinct name and file
@@ -630,7 +636,7 @@ class Live(Signed):
         """For every kind, each call decides at least as strictly with constraints as without: a deny stays a deny, an
         ask stays an ask and names TK-CONSTRAINT beside the policy's rules, an allow may become an ask."""
         calls = [("Bash", {"command": "pkill tracekitd"}), ("Bash", {"command": 'echo "open'}),
-                 ("Bash", {"command": "git push origin main"}),
+                 ("Bash", {"command": "git push origin feat"}),   # a branch push: flagged (one to main asks, #604)
                  ("Edit", {"file_path": "/w/billing.py", "old_string": "a", "new_string": "b"}),
                  ("Bash", {"command": "curl https://example.org"}), ("Read", {"file_path": "/w/x.py"}),
                  ("Bash", {"command": "ls"})]
@@ -659,7 +665,7 @@ class Live(Signed):
         run = self.run_()
         self.add(run, "no_push")
         self.add(run, "no_network")
-        for kind, command, flag in (("no_push", "git push origin main", "TK-F004"),
+        for kind, command, flag in (("no_push", "git push origin feat", "TK-F004"),
                                     ("no_network", "curl https://example.org", "TK-F012")):
             with self.subTest(kind):
                 held = self.decide(run, "Bash", {"command": command})

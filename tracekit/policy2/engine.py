@@ -11,6 +11,7 @@ import re
 import shlex
 import time
 import unicodedata
+from urllib.parse import unquote
 
 from . import classes, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
@@ -39,6 +40,7 @@ _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 28
 # lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
 # too much
 _BARE_TARGET = re.compile(r"http://[1-9][0-9]*(\.[0-9]+){3}/")
+_PROSE_SPLIT = re.compile(r"[\s()<>{}\[\],;'\"`|]+")   # a message's words: `(169.254.169.254)`, `169.254.169.254,`
 _SCHEDULED = {"at <<<", "at <<", "batch <<<", "batch <<"}   # shell.py's `via` for code at or batch run later
 # what every second reading of a line starts from (shell.analyse's `readings`): an expansion or substitution read as
 # empty, a pattern as matching nothing or as the names its brackets make. The texts the parser reads hold only the
@@ -80,6 +82,7 @@ def _backend(name):
             return (f"re2@{version('google-re2')}", lambda p, anycase=False: re2.compile("(?i)" * anycase + p, opts),
                     lambda c, s, full, deadline: (c.fullmatch if full else c.search)(s))
     import regex
+    ignorecase = int(regex.IGNORECASE)
 
     def match(c, s, full, deadline):
         if deadline[0] <= 0:   # spent: a tiny match could finish inside any floor, so the outcome would vary by machine
@@ -87,8 +90,9 @@ def _backend(name):
         start = time.perf_counter()
         try:
             found = (c.fullmatch if full else c.search)(s, timeout=deadline[0])
-            # a pattern matched in any case also as RE2 folds the text, which ASCII mode doesn't (_ASCII_FOLDS)
-            if found is None and c.flags & regex.IGNORECASE and ("ſ" in s or "K" in s):
+            # a pattern matched in any case also as RE2 folds the text, which ASCII mode doesn't (_ASCII_FOLDS); its
+            # flag as an int, read last: `flags & regex.IGNORECASE` ran Python's enum code on every match
+            if found is None and ("ſ" in s or "K" in s) and c.flags & ignorecase:
                 left = deadline[0] - (time.perf_counter() - start)
                 if left <= 0:
                     raise TimeoutError("the fallback's 1 s for this decision is spent")
@@ -116,9 +120,39 @@ class Engine:
         def rx(r, key):
             return compile_(r[key], r.get("class") == "a2a" or r.get("field") == "tracekit")
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, rx(r, "pattern"),
-                       rx(r, "unless") if "unless" in r else None, literals(r["pattern"]), requirements(r["pattern"]),
-                       literals(r["tool"]) if "tool" in r else None)
+                       rx(r, "unless") if "unless" in r else None, lits := literals(r["pattern"]),
+                       _finer(requirements(r["pattern"]), lits), literals(r["tool"]) if "tool" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
+        # on RE2, every rule's prefilter strings are one RE2 Set, which finds each string a text holds in one search
+        # (768 strings over 300 characters: 0.8 us; the dev pack's rules scanned 688 of them one at a time), so a
+        # rule's prefilter is a lookup of its strings' ids (holds() in decide). The Set also holds `^`, which matches
+        # every text: a match without it is one RE2 couldn't finish (its DFA out of memory, which the binding doesn't
+        # report), and that text is scanned. The fallback scans: {id(strings): frozenset of their ids}
+        self._set, self._ids = None, {}
+        if self.engine.startswith("re2@"):
+            import re2
+            index = {}
+            for *_, lits, _, _ in self.rules:
+                for x in lits or ():
+                    index.setdefault(x, len(index))
+            opts = re2.Options()
+            opts.log_errors, opts.max_mem = False, 64 << 20
+            self._set = re2.Set.SearchSet(opts)
+            for x in index:
+                self._set.Add(re2.escape(x))
+            self._every = self._set.Add("^")
+            self._set.Compile()
+            self._ids = {id(lits): frozenset(map(index.__getitem__, lits)) for *_, lits, _, _ in self.rules if lits}
+        # on the fallback, a pattern whose top level is an alternation of parts that each have a prefilter is searched a
+        # part at a time, each only where the subject holds one of its strings: the regex module can't skip ahead in an
+        # alternation as it can in one part (TK-S002 took 36 us over a curl line, its parts 9 and 2 us), and a search
+        # of a|b matches where one of a or b does: {id(compiled pattern): [(compiled part, its strings), ...]}
+        self._parts = {}
+        if not self.engine.startswith("re2@"):
+            for _, r, _, pat, *_ in self.rules:
+                parts = _alternatives(r["pattern"]) or ()
+                if parts and all(map(literals, parts)):
+                    self._parts[id(pat)] = [(rx({**r, "pattern": a}, "pattern"), literals(a)) for a in parts]
         # The filesystem persistence rules are the source of truth for paths whose written text stays executable.
         self._persistent_targets = [pat for _, rule, _, pat, *_ in self.rules if rule["id"] in ("TK-A010", "TK-A012")]
         self._deny_ids = {r["id"] for sec, r, *_ in self.rules if sec == "deny"}
@@ -205,7 +239,7 @@ class Engine:
         cls, name, deadline = cls or self.tool_class(tool), _text(tool), [REGEX_TIMEOUT_S]
         low, out = name.lower(), {sec: [] for sec in SECTIONS}
         for sec, rule, tool_re, *_, tool_lits in self.rules:
-            if rule.get("class", cls) == cls and self._named(tool_re, tool_lits, name, low, deadline):
+            if _reaches(rule, cls) and self._named(tool_re, tool_lits, name, low, deadline):
                 out[sec].append(rule["id"])
         return out
 
@@ -237,7 +271,7 @@ class Engine:
         (DECISION_COST each). Once it is spent nothing more is read, and the call is held (TK-SHELL-PARSE, budget)."""
         args = args if isinstance(args, dict) else {"value": args}
         cls = cls or self.tool_class(tool)
-        fields = classes.extract(cls, tool, args)
+        fields = classes.extract(cls, tool, args, MAX_SUBJECT)
         hits = {sec: [] for sec in SECTIONS}
         if cls == "unknown" and self.policy.get("unknown_tools") in SECTIONS:
             hits[self.policy["unknown_tools"]].append("TK-UNKNOWN-TOOL")
@@ -282,14 +316,25 @@ class Engine:
         nondeterministic = False
         name, memo = _text(tool), {}
         low_name = name.lower()
-        if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class, each with
-            # the subjects it reads, its memo key (rules on the same subjects read them once; a shell rule with no field
-            # reads argv)
+        if cls not in self._of:   # the rules a class's calls reach: those of no class and of that class (_reaches),
+            # each with the subjects it reads, its memo key (rules on the same subjects read them once; a shell rule with
+            # no field reads argv), its prefilter strings' ids in the RE2 Set and its _parts
             self._of[cls] = [(*x, ("argv" if x[1].get("field") is None and cls == "shell" else x[1].get("field"),
-                                   "from" in x[1])) for x in self.rules if x[1].get("class", cls) == cls]
+                                   "from" in x[1]), self._ids.get(id(x[5])), self._parts.get(id(x[3])))
+                             for x in self.rules if _reaches(x[1], cls)]
             self._of[cls, "deny"] = [x for x in self._of[cls] if x[0] == "deny"]
 
         spent = []   # why the engine's reading of the parse stopped (its budget), if it did
+        in_set = {}   # (RE2) the ids of the prefilter strings each text holds: one Set search a text
+
+        def holds(lits, ids, text):
+            """Whether `text` holds one of a rule's prefilter strings `lits` (compile.literals; `ids`: theirs in the RE2
+            Set), so its pattern may match there: a lookup on RE2, a str scan for each on the fallback."""
+            if ids is None:
+                return any(map(text.__contains__, lits))
+            if (have := in_set.get(text)) is None:
+                have = in_set[text] = frozenset(self._set.Match(text))
+            return not have.isdisjoint(ids) if self._every in have else any(map(text.__contains__, lits))
 
         def finds(pattern, anycase, whole, texts):
             """Whether a regex the call gives (pgrep's, grep's) matches one of `texts`, on this engine's backend: linear
@@ -304,24 +349,26 @@ class Engine:
         def hit(entry, parsed, memo, oversize):
             """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
             over MAX_SUBJECT), else None; TimeoutError past the deadline."""
-            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key = entry
+            sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, ids, parts = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
             if key not in memo:
                 try:
-                    subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work)
+                    subjects = self._subjects(cls, key[0], args, fields, parsed, key[1], finds, work, name)
                 except shell.ParseError as e:   # the reading spent the decision's budget: held, as an unread line is
                     subjects, spent[:] = [], [e.cause]
                 memo[key] = _prepare(subjects, _TAGGED.get(key[0], 0))
             texts, lows, joined, big = memo[key]
-            if lits is None or any(map(joined.__contains__, lits)):
+            if lits is None or holds(lits, ids, joined):
                 for subject, low in zip(texts, lows):
                     # `unless`: an exemption checked against the same subject (use it only where the subject is
                     # one target, e.g. a file path; in a whole command it could exempt a different target)
-                    if (lits is None or len(texts) == 1 or any(map(low.__contains__, lits))) and (
+                    if (lits is None or len(texts) == 1 or holds(lits, ids, low)) and (
                             req is None or len(low) < REQUIREMENTS_FROM or
-                            any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and \
-                            self._match(pat, subject, False, deadline) and not (
+                            any(all(any(map(low.__contains__, s)) for s in alt) for alt in req)) and (
+                            self._match(pat, subject, False, deadline) if parts is None else any(
+                                self._match(rx, subject, False, deadline) for rx, strings in parts
+                                if any(map(low.__contains__, strings)))) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
                             "from" not in rule or untrusted is not None and _brought(untrusted, subject, rule.get("field"),
                                                                                      fields)):
@@ -331,11 +378,18 @@ class Engine:
                 oversize.append(f"{rule['id']}'s subject ({field})")
                 return "TK-OVERSIZE"
             return None
-        for entry in self._of[cls, "deny"] if _hidden else self._of[cls]:   # (an argument's command: its denies)
+        # (an argument's command: its denies) less the rules whose tool pattern needs a string the tool's name lacks
+        # (_named would refuse the name without a search): kept per class and name
+        if (rules := self._of.get((cls, bool(_hidden), low_name))) is None:
+            rules = [x for x in (self._of[cls, "deny"] if _hidden else self._of[cls])
+                     if x[7] is None or any(map(low_name.__contains__, x[7]))]
+            if len(self._of) < 4096 and len(low_name) <= 256:
+                self._of[cls, bool(_hidden), low_name] = rules
+        for entry in rules:
             # a rule with no tool pattern whose subjects, read already, are none or hold none of its strings (and none
             # is over MAX_SUBJECT) gives nothing: hit() would match nothing
             if entry[2] is None and (m := memo.get(entry[8])) and not m[3] and (
-                    not m[0] or entry[5] is not None and not any(map(m[2].__contains__, entry[5]))):
+                    not m[0] or entry[5] is not None and not holds(entry[5], entry[9], m[2])):
                 continue
             try:
                 if (found := hit(entry, parsed, memo, oversize)) is not None:
@@ -384,6 +438,9 @@ class Engine:
         if (spent or work[0] > shell.MAX_WORK) and "TK-SHELL-PARSE" not in hits[on_parse_error]:
             hits[on_parse_error].append("TK-SHELL-PARSE")
             cause = cause or "budget"
+        if self.policy.get("oversize") == "ask" and "TK-OVERSIZE" in hits["deny"]:   # what it can't read waits for a
+            hits["deny"] = [i for i in hits["deny"] if i != "TK-OVERSIZE"]          # person (the dev pack), not a deny
+            hits["ask"].append("TK-OVERSIZE")
         verdict = next((sec for sec in SECTIONS if hits[sec]), "allow")
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
                "policy_hash": self.policy_hash, "engine": self.engine}
@@ -399,7 +456,19 @@ class Engine:
         """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
         ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse); `work`:
         the decision's budget (shell.charge), which _plain() spends too. `fallback`: False leaves _plain() out (None
-        in its place), for a caller that only asks whether the command reads."""
+        in its place), for a caller that only asks whether the command reads. A `commands` list is read joined, as one
+        shell runs it (LangChain's ShellTool), and each entry on its own too, as its own shell runs it (OpenAI's shell
+        tool, Cline's run_commands), where an open quote, a trailing \\ or a here-doc in one can't hide the next: the
+        call is decided on what either reading finds."""
+        parts = [self._parse_one(args, command, work, readings, fallback)]
+        for c in commands_each(args):
+            parts.append(self._parse_one({"command": c}, c, work, readings, fallback))
+        return parts[0] if len(parts) == 1 else (None if any(p is None for p, _ in parts) else
+                                                 joined_readings([p for p, _ in parts]),
+                                                 next((c for _, c in parts if c), None))
+
+    def _parse_one(self, args, command, work, readings=True, fallback=True):
+        """_parse's reading of one shell call as written."""
         target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
             if self._persistent_targets else None
         start = work[0]
@@ -412,7 +481,7 @@ class Engine:
                     if isinstance(command, str) else _plain(canonical(command), work, 0, 0, readings, target)), e.cause
 
     @staticmethod
-    def _subjects(cls, field, args, fields, parsed, split=False, finds=None, work=None):
+    def _subjects(cls, field, args, fields, parsed, split=False, finds=None, work=None, tool=""):
         """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
         each line the parser normalised, a shell `code` those without the text a command only writes into a file
@@ -431,8 +500,8 @@ class Engine:
             one = {k: v for k, v in args.items() if k != "urls"}
             # read once what no URL changes (a raw argument's canonical form); per URL, the class's fields and target
             each = [{**one, "url": u} for u in args["urls"]] if field == "target" or field in CLASSES[cls] else []
-            return list(dict.fromkeys(s for a in [one, *each] for s in
-                                      Engine._subjects(cls, field, a, classes.extract(cls, "", a), parsed, split)))
+            return list(dict.fromkeys(s for a in [one, *each] for s in Engine._subjects(
+                cls, field, a, classes.extract(cls, "", a, MAX_SUBJECT), parsed, split)))
         if field == "target":
             return Engine._targets(cls, args, fields, parsed)
         if cls == "shell" and field == "effects":
@@ -443,6 +512,10 @@ class Engine:
             return _package_indexes(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
             return _container_host_access(parsed[0])
+        if cls == "shell" and field == "push":
+            return _pushes(parsed[0])
+        if cls == "unknown" and field == "run":
+            return _runs(args, tool)
         if cls == "sql" and field == "code":
             return fields.get("code", [])
         if cls == "shell" and field == "code":
@@ -479,7 +552,10 @@ class Engine:
         and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
         writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
         mcp: the whole call without the text it only carries (_acted_on), each string in it with a `/` or `\\` also
-        read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call. Each
+        read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call;
+        harness (a coding agent's message to its own agents): only the URLs and bare network addresses in it (its words
+        split at spaces and punctuation, a bare IPv4 address also read as its canonical host, as a shell argv's is), so the
+        rules that read a target for file names (TK-S004, TK-F005) don't read a prompt's prose as a file it opens. Each
         URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal, hex, octal or IPv6
         form reads as the address it is: of mcp, app and unknown tools, each URL in a string of what they act on."""
         if cls == "shell":
@@ -508,6 +584,14 @@ class Engine:
             to = fields.get("receiver")
             receiver = [] if to is None else [to if isinstance(to, str) else canonical(to)]
             return receiver + [canonical(args.get("params"))]
+        if cls == "harness":   # a message to the agent's own agents: the addresses it names, not its file names
+            strings = _strings(args)
+            urls = [u for s in strings for u in _URL.findall(s)]
+            bare = list(dict.fromkeys(w for s in strings for w in _PROSE_SPLIT.split(s) if _BARE_ADDRESS.match(w)))
+            # a bare address's canonical host, without a scheme: TK-S001 reads it, and TK-F012 (egress, `://`) doesn't
+            # flag prose that only names a version (1.2.3 reads as an address)
+            hosts = [t[7:-1] for t in (classes.url_target("http://" + w) for w in bare) if t and _BARE_TARGET.fullmatch(t)]
+            return list(dict.fromkeys(urls + [t for t in map(classes.url_target, urls) if t] + bare + hosts))
         if cls not in ("mcp", "app", "unknown"):
             return []
         tool = fields.get("tool")
@@ -516,6 +600,43 @@ class Engine:
         paths = [f for s in strings if "/" in s or "\\" in s for f in classes.fs_forms(s)] if cls == "mcp" else []
         urls = [t for t in map(classes.url_target, (u for s in strings for u in _URL.findall(s))) if t]
         return list(dict.fromkeys([canonical(call)] + paths + urls))
+
+
+def _alternatives(pattern):
+    """A checked pattern's top-level alternatives (`a|b(c|d)` is `a` and `b(c|d)`), or None when it has one."""
+    parts, depth, cls, start, i = [], 0, None, 0, 0
+    while i < len(pattern):
+        c = pattern[i]
+        if c == "\\":
+            i += 2
+            continue
+        if cls is not None:
+            if c == "]" and i > cls:
+                cls = None
+        elif c == "[":
+            cls = i + 1 + (pattern[i + 1:i + 2] == "^")   # a ] right after [ or [^ is literal (compile.translate)
+            i = cls
+            continue
+        elif c in "()":
+            depth += 1 if c == "(" else -1
+        elif c == "|" and not depth:
+            parts.append(pattern[start:i])
+            start = i + 1
+        i += 1
+    return parts + [pattern[start:]] if parts else None
+
+
+def _finer(req, lits):
+    """compile.requirements when it says more than compile.literals: None where each alternative needs a string of one
+    set and those sets together are the literals (`(?:ab|cd|ef)`), whose check, made first, already said it."""
+    if req is not None and all(len(alt) == 1 for alt in req) and {s for alt in req for s in alt[0]} == set(lits or ()):
+        return None
+    return req
+
+
+def _reaches(rule, cls):
+    """Whether a rule reads a call of class `cls`: one of no class or of that class (decide and reads alike)."""
+    return rule.get("class", cls) == cls
 
 
 def _unread_cause(command):
@@ -555,6 +676,26 @@ def _path_forms(targets):
                          if n not in have]
     have = set(targets)
     return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have]
+
+
+def commands_each(args):
+    """The entries of a shell call's `commands` list of command lines, when it has several and no other command field:
+    each is also read on its own (Engine._parse, constraints.shell), else []."""
+    cmds = args.get("commands")
+    return cmds if isinstance(cmds, list) and len(cmds) > 1 and all(isinstance(c, str) for c in cmds) and \
+        [k for k in classes.SHELL_KEYS if args.get(k) is not None] == ["commands"] else []
+
+
+def joined_readings(parts):
+    """Several readings of one shell call (_shell's or _plain's tuples) as one: their lists joined, and what else they
+    learned (shell._learned) when every one has it."""
+    out = [[x for p in parts for x in p[i]] for i in range(5)]
+    if all(len(p) > 5 for p in parts):
+        learned = [p[5] for p in parts]
+        out.append({k: (any(d[k] for d in learned) if isinstance(learned[0][k], bool) else
+                        set().union(*(d[k] for d in learned)) if isinstance(learned[0][k], set) else
+                        [x for d in learned for x in d[k]]) for k in learned[0]})
+    return tuple(out)
 
 
 def _shell(args, persistent_target=None, readings=True, work=None):
@@ -799,6 +940,415 @@ def _container_host_access(commands):
                                                  for k, _, v in (item.partition("=") for item in value.split(",")))):
                 return ["host-access"]
     return []
+
+
+# git's own options before its command that take the next word as their value (git -C dir push); the rest are flags
+_GIT_VALUED = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env",
+               "--attr-source"}
+# git push's long options (git push -h), each with what it means here: a reason to hold the push, "value" (it takes
+# the next word unless given with `=`), or "" (neither). git reads a unique prefix of one as it, and so does _pushes.
+# A force (-f, --force, --force-with-lease, a +refspec) is TK-D003's deny and a delete (-d, --delete, --prune, a
+# :refspec) TK-A002's ask, so they give no reason here: a denied force push isn't also told to wait for approval
+_PUSH_LONG = {"all": "all", "branches": "all", "mirror": "all", "delete": "", "prune": "", "tags": "tags",
+              "follow-tags": "tags", "force": "", "force-with-lease": "", "force-if-includes": "",
+              "repo": "value", "recurse-submodules": "value", "receive-pack": "value", "exec": "value",
+              "push-option": "value", "verbose": "", "quiet": "", "dry-run": "", "porcelain": "", "thin": "",
+              "set-upstream": "", "progress": "", "verify": "", "no-verify": "", "signed": "", "atomic": "",
+              "ipv4": "", "ipv6": ""}
+_PUSH_SHORT = {"d": "", "f": "", "v": "", "q": "", "n": "", "u": "", "4": "", "6": ""}   # and -o VALUE
+_REMOTE_PUSH = re.compile(r"remote\..+\.(?:push|mirror)")   # a config key, casefolded (its remote name keeps case)
+# gh api's options that take a value (gh api --help), each with what it gives here: -F fills gh's placeholders
+# ({owner}, {repo}, {branch}) in its value, -f doesn't; hub api reads -t as --flat, which takes none
+_GH_VALUED = {"-X": "method", "--method": "method", "-F": "field", "--field": "field", "-f": "raw", "--raw-field": "raw",
+              "--input": "input", "-H": "", "--header": "", "-t": "", "--template": "", "-q": "", "--jq": "", "-p": "",
+              "--preview": "", "--hostname": "", "--cache": ""}
+_GH_HOST = re.compile(r"(?:[a-z][a-z0-9+.-]*://[^/]*(?=/|$))?", re.I)   # a URL's scheme and host
+
+
+# an expansion, or a {…} word gh (its {branch}: the current branch) or a program running gh fills in (find -exec's,
+# parallel's and xargs -I{}'s {}); gh's {owner} and {repo} are the current repository
+_GH_OPENS = re.compile(r"[$`]|\{(?!(?:owner|repo)\})[^{}]*\}")
+_GH_UNIT = re.compile(r"\$\{[^}]*\}?|`[^`]*`?|\$[A-Za-z_]\w*|\$.?|\{[^{}]*\}", re.S)
+# routes of repos/<owner>/<repo>/ that write no branch: a literal one after an expansion places the call
+_GH_SAFE = frozenset((
+    "actions", "assignees", "attestations", "autolinks", "automated-security-fixes", "branches", "check-runs",
+    "check-suites", "code-scanning", "collaborators", "comments", "commits", "dependabot", "deployments", "dispatches",
+    "environments", "forks", "hooks", "interaction-limits", "invitations", "issues", "keys", "labels", "milestones",
+    "notifications", "pages", "private-vulnerability-reporting", "projects", "properties", "pulls", "releases",
+    "rulesets", "secret-scanning", "statuses", "subscription", "tags", "topics", "vulnerability-alerts"))
+_GH_WRITES = ("git", "contents", "merges", "merge-upstream")   # routes that write a branch
+# a segment GitHub can route in an owner's, a repo's or a route's place (a name, or gh's {owner} and {repo}); anything
+# else there (`%`, `,,`) is a word a program running gh fills in, which the line can't tell
+_GH_SEGMENT = re.compile(r"[\w.-]+|\{(?:owner|repo)\}")
+_GH_ONE_WORD = frozenset(("app", "emojis", "events", "feeds", "gists", "graphql", "issues", "licenses", "markdown",
+                          "meta", "notifications", "octocat", "organizations", "rate_limit", "repositories", "user",
+                          "versions", "zen"))   # GitHub's endpoints of one segment
+
+
+def _gh_mask(text, replaced=None):
+    """`text` with each part the line can't tell (an expansion: `$X`, `${…}`, `$(…)` with what it nests, a backquoted
+    span; a {…} word gh or the program running it fills in; the word xargs -I replaces, `replaced`) one NUL: a unit
+    that may stand for any number of segments, a `/` inside it not one of the path's."""
+    text = text.replace(replaced, "\0") if replaced else text
+    out, i = [], 0
+    while m := _GH_OPENS.search(text, i):
+        out.append(text[i:m.start()] + "\0")
+        if text.startswith("$(", m.start()):
+            depth, j = 0, m.start() + 1
+            while j < len(text) and (depth := depth + (text[j] == "(") - (text[j] == ")")) > 0:
+                j += 1
+            i = j + 1
+        else:
+            i = _GH_UNIT.match(text, m.start()).end()
+    return "".join(out) + text[i:]
+
+
+def _gh_routes(endpoint, replaced=None, strict=True):
+    """(the route a gh api endpoint names, lower-cased; whether the line can't tell where a write to it goes; whether
+    an expansion comes before its route), read from its path as GitHub routes it, after a URL's scheme and host and
+    GHES's api/v3/: repos/<owner>/<repo>/<route>/…, repositories/<id>/<route>/…, <route>/… for the rest. An
+    expansion or {branch} (_gh_mask) may stand for any number of segments: one (or an empty segment) at or before the
+    route's place leaves the route to the first literal segment after it that names one (_GH_SAFE, git, contents,
+    merges, merge-upstream), and unknown without one; so does a segment there GitHub can't route (_GH_SEGMENT). Unknown
+    too: an endpoint of one segment that isn't one of GitHub's (_GH_ONE_WORD), a `.` or `..` segment, and an expansion
+    after git/, where it names the ref. Not `strict` (a word after gh's endpoint, which gh refuses), a word there is
+    read as GitHub routes it."""
+    if not endpoint:
+        return [], False, False
+    path = _gh_mask(endpoint, replaced)
+    segs = re.split(r"[?#]", path[_GH_HOST.match(path).end():], maxsplit=1)[0].strip("/").split("/")
+    if segs[:1] == ["api"]:   # GHES serves the API at /api/v3/
+        segs = segs[2:] if segs[1:2] == ["v3"] else segs[1:]
+    if strict and len(segs) == 1 and segs[0].lower() not in _GH_ONE_WORD:   # (xargs -J %, parallel -I ,,: the input)
+        return [], True, True
+    # from a later repos/ or repositories/ segment that an owner and a repo (an id) follow, past a host without a
+    # scheme (//api.github.com/…) or another prefix; an expansion before it may be any path. Elsewhere (user/repos,
+    # orgs/o/repos: creating a repository) it is a route of the path's own
+    k = next((k for k, s in enumerate(segs) if s.lower() == "repos" and len(segs) > k + 2 or
+              s.lower() == "repositories" and len(segs) > k + 1), 0)
+    if any(s in (".", "..") for s in segs) or any("\0" in s for s in segs[:k]):
+        return [], True, True
+    segs = segs[k:]
+    first = segs[0].lower() if segs else ""
+    at = 3 if first == "repos" else 2 if first == "repositories" else 0
+    # an empty segment (a doubled `/`, or an expansion read as empty), or one GitHub can't route, is as unplaced as an
+    # expansion
+    opened = next((j for j, s in enumerate(segs[:at + 1])
+                   if (not _GH_SEGMENT.fullmatch(s) if strict else "\0" in s or not s)), None)
+    if opened is None:
+        route = segs[at].lower() if at < len(segs) else ""
+        return [route] if route else [], route == "git" and any("\0" in s for s in segs[at + 1:]), False
+    for j in range(opened + 1, len(segs)):
+        route = segs[j].lower()
+        if route in _GH_SAFE or route in _GH_WRITES:
+            return [route], route == "git" and any("\0" in s for s in segs[j + 1:]), True
+    return [], True, True
+
+
+def _git_push(argv):
+    """Why a git push needs a person, from its argv as the parser read it: a list of `PUSH:<why> <word>`, empty for a
+    push of named branches other than main and master; None for any other command. A push is `git push` (after git's
+    own options, `git -C dir push`), `git send-pack`, which names its refs as push does, `hub push` (hub runs git) and
+    git-push or git-send-pack themselves. Held: a target of main or master (`main`, `HEAD:main`, `refs/heads/master`,
+    `heads/main`, `:main`); one the line can't tell (no refspec, so push.default picks; HEAD, @ or origin/HEAD; an
+    expansion or a pattern, or a remote's push or mirror setting given with -c or --config-env); tags (--tags,
+    --follow-tags, a refs/tags/ or tags/ refspec, `tag <name>`); every branch (--all, --mirror, the `:` refspec); an
+    option push doesn't take, or an ambiguous prefix, which git refuses (send-pack's --stdin, whose refs come from its
+    input, among them). A force or a delete is another rule's (_PUSH_LONG).
+    lean: a git alias (`git p`) or `git subtree push` isn't read, as TK-D003 doesn't read them; nor a tag pushed by its
+    bare name (`git push origin v1.0`), which reads as a branch"""
+    name = _program(argv)
+    why = []
+    if name in ("git", "hub"):
+        i = 1
+        while i < len(argv) and argv[i].startswith("-"):
+            # a remote's push or mirror setting given for this run (`-c remote.origin.push=HEAD:main`) picks the target
+            value = argv[i + 1] if argv[i] in ("-c", "--config-env") and i + 1 < len(argv) else \
+                argv[i].removeprefix("--config-env=") if argv[i].startswith("--config-env=") else None
+            if value is not None and _REMOTE_PUSH.fullmatch(value.partition("=")[0].casefold()):
+                why.append("unknown " + value)
+            i += 2 if argv[i] in _GIT_VALUED else 1
+        if argv[i:i + 1] not in (["push"], ["send-pack"]):
+            return None
+        words = argv[i + 1:]
+    elif name in ("git-push", "git-send-pack"):
+        words = argv[1:]
+    else:
+        return None
+    positional, i = [], 0
+    while i < len(words):
+        w = words[i]
+        i += 1
+        if w == "--":
+            positional += words[i:]
+            break
+        if w.startswith("--"):
+            opt, eq, _ = w[2:].partition("=")
+            names = [opt] if opt in _PUSH_LONG or opt.startswith("no-") else [n for n in _PUSH_LONG if n.startswith(opt)]
+            if len(names) != 1:
+                why.append("unknown " + w)
+                continue
+            kind = "" if names[0].startswith("no-") and names[0] != "no-verify" else _PUSH_LONG[names[0]]
+            if kind == "value":
+                i += not eq
+            elif kind:
+                why.append(f"{kind} {w}")
+        elif w.startswith("-") and len(w) > 1:
+            kinds = set()
+            for j, c in enumerate(w[1:], 1):
+                if c == "o":   # -o takes the rest of the word, or the next one
+                    i += j == len(w) - 1
+                    break
+                kinds.add(_PUSH_SHORT.get(c, "unknown"))
+                if c not in _PUSH_SHORT:
+                    break
+            why += [f"{k} {w}" for k in sorted(kinds - {""})]
+        else:
+            positional.append(w)
+    refspecs = positional[1:]   # the first is the repository
+    if not refspecs:
+        why.append("unknown no refspec")
+    tag = False
+    for r in refspecs:
+        if tag or r == "tag":   # `tag <name>` pushes refs/tags/<name>
+            why.append("tags tag " + r)
+            tag = not tag
+            continue
+        spec = r[1:] if r.startswith("+") else r
+        src, colon, dst = spec.partition(":")
+        target = dst if colon else src
+        ref = target.removeprefix("refs/")   # git reads `heads/main` as refs/heads/main, `tags/v1` as a tag
+        if spec == ":":
+            why.append("all " + r)
+        if "refs/tags/" in spec or ref.startswith("tags/"):
+            why.append("tags " + r)
+        elif ref.removeprefix("heads/") in ("main", "master"):
+            why.append("default " + r)
+        elif not target or target in ("HEAD", "@") or target.endswith("/HEAD") or any(c in target for c in "$`*?[{"):
+            why.append("unknown " + r)
+    return ["PUSH:" + w[:64] for w in why]   # what matters is the reason; a word is cut, so a subject stays short
+
+
+def _gh_api(argv, replaced=None):
+    """A gh or hub api call's argv percent-decoded, as GitHub reads its path (`git/refs/heads%2Fmain`), and
+    `PUSH:contents` when it puts or deletes a repository's file (repos/<o>/<r>/contents/…), which commits to the
+    default branch unless a branch field names another. A branch the line can't tell is held too: HEAD, one gh reads
+    from a file (`-F branch=@b.txt`) or an expansion gives, and any with --input, whose body then names the branch
+    (the fields go to the query). The words are read as gh reads them: an option that takes a value takes the rest
+    of its word or the next word (`-f --method=GET` is a field), the method only from -X or --method (the last; POST
+    with a field or --input, else GET) and the branch only from a field (`-F branch={branch}` is the current one); a
+    method that is an expansion the line can't resolve counts as a write. The endpoint's route is _gh_routes' (with
+    `replaced`, the word xargs -I puts its input in place of): a write there gives `PUSH:merges` for repos/<o>/<r>/merges
+    (any form), `PUSH:merge-upstream` for a fork's merge-upstream into the default branch or one the line can't tell,
+    and `PUSH:unknown` where the line can't tell where it goes (`"$EP"`, `repos/o/r/$P`, `git/refs/heads/$B`, a `..`
+    segment, no endpoint, which xargs appends). A PUT or DELETE with an expansion before its route is unknown too
+    when its body is the contents API's (message and content, or message and sha, or one the line can't read) and
+    no literal branch field names another branch."""
+    words = [unquote(w) for w in argv]
+    valued = _GH_VALUED.keys() - ({"-t"} if _program(argv) == "hub" else set())
+    given, positional, i = [], [], 2
+    while i < len(words):
+        w, i = words[i], i + 1
+        if w == "--":
+            positional += words[i:]
+            break
+        if w.startswith("--"):
+            name, eq, value = w.partition("=")
+        elif w.startswith("-") and len(w) > 1:   # a cluster (-iXPUT): its first valued letter takes the rest
+            k = next((k for k in range(1, len(w)) if "-" + w[k] in valued), len(w))
+            name, eq, value = "-" + w[k:k + 1], w[k + 1:k + 2] == "=", w[k + 1:].removeprefix("=")
+        else:
+            positional.append(w)
+            continue
+        if name not in valued:
+            continue   # a flag (--paginate, -i) or an option gh refuses
+        if not eq and not value:
+            value, i = (words[i] if i < len(words) else ""), i + 1
+        given.append((_GH_VALUED[name], value))
+    kinds = {kind for kind, _ in given}
+    fields = [(kind, *v.partition("=")[::2]) for kind, v in given if kind in ("field", "raw")]
+    method = next((v for kind, v in reversed(given) if kind == "method"),
+                  "POST" if kinds & {"field", "raw", "input"} else "GET")
+    magic, branch = next(((kind == "field", v) for kind, key, v in reversed(fields) if key == "branch"), (False, ""))
+    branch = branch.removeprefix("refs/").removeprefix("heads/")
+    keys = {key for _, key, _ in fields}
+    unread_body = "input" in kinds or any("$" in k or "`" in k for k in keys)
+    # a branch field that alone names a branch other than the default: literal, and no body or field name hides another
+    named = bool(branch) and not unread_body and branch[:1] != "@" and "$" not in branch and "`" not in branch and \
+        not (magic and "{branch}" in branch) and branch.casefold() not in ("main", "master", "head")
+    routes, unknown, expanded = [], not positional, False   # no endpoint: xargs appends it (gh refuses none)
+    for n, endpoint in enumerate(positional):   # (gh takes one; read each of more, which gh refuses)
+        found, unread, before = _gh_routes(endpoint, replaced, strict=not n)
+        routes, unknown, expanded = routes + found, unknown or unread, expanded or before
+    unread_method = not method or "$" in method or "`" in method
+    put, delete = (unread_method or method.upper() == m for m in ("PUT", "DELETE"))
+    write = unread_method or method.upper() not in ("GET", "HEAD")
+    # a PUT or DELETE with an expansion before its route may be the contents API's, whose file path is every segment
+    # after contents/ (X=o/r/contents: repos/$X/issues/1 is a file), but only with the body that API takes
+    unknown = unknown or expanded and not named and (put and (unread_body or {"message", "content"} <= keys) or
+                                                      delete and (unread_body or {"message", "sha"} <= keys))
+    out = [" ".join(words)]
+    if write and unknown:
+        out.append("PUSH:unknown " + (positional[0] if positional else "")[:64])
+    elif write and "merges" in routes:
+        out.append("PUSH:merges " + method[:64])
+    elif write and "merge-upstream" in routes and not named:
+        out.append("PUSH:merge-upstream " + branch[:64])
+    elif (put or delete) and "contents" in routes and not named:
+        out.append("PUSH:contents " + method[:64])
+    return out
+
+
+def _pushes(commands):
+    """Each command's argv, as the `argv` field reads it, but a git push as what makes it need a person (_git_push):
+    one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master; a gh or hub
+    api call also percent-decoded (_gh_api); a kubectl dry run (_kubectl_dry_run) as `DRYRUN:<argv>`."""
+    out, replaced = [], None
+    for command in commands:
+        argv = command["argv"]
+        if argv[:1] in (["xargs"], ["gxargs"]):   # the word its -I puts the input in place of, for what it runs
+            inner = next(shell._unwrap(argv[0], argv[1:]))
+            replaced = shell._xargs_replace(argv[1:len(argv) - len(inner)])
+        elif not {"xargs", "gxargs"} & set(command.get("via", ())):
+            replaced = None   # (the word was that xargs' only)
+        push = _git_push(argv)
+        out += push if push is not None else ["DRYRUN:" * _kubectl_dry_run(argv) + " ".join(argv)]
+        if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
+            given = replaced if {"xargs", "gxargs"} & set(command.get("via", ())) else None
+            out += [s for s in _gh_api(argv, given) if s not in out]
+        runner = {v.split(" ", 1)[0] for v in command.get("via", ())} & {"xargs", "gxargs", "parallel", "find", "fd"}
+        out += [s for s in _gh_repo_sync(argv, bool(runner)) if s not in out]
+    return out
+
+
+def _gh_repo_sync(argv, runner=False):
+    """`PUSH:repo-sync <branch>` for `gh repo sync <owner/repo>`, which merges the fork's branch from its upstream: the
+    default branch unless --branch names another, held for main, master or HEAD (any case, refs/heads/ too) or a branch
+    the line can't tell. With no repository it updates the local one from its remote, a pull: none, unless a `runner`
+    (xargs, parallel, find -exec, fd -x) may give it one."""
+    if _program(argv) != "gh" or argv[1:3] != ["repo", "sync"]:
+        return []
+    repo, branch, i = None, "", 3
+    while i < len(argv):
+        w, i = argv[i], i + 1
+        if w in ("-b", "--branch", "-s", "--source"):
+            value, i = (argv[i] if i < len(argv) else ""), i + 1
+        elif w.startswith(("--branch=", "--source=")) or w[:2] in ("-b", "-s") and len(w) > 2:
+            value = w.partition("=")[2] if w.startswith("--") else w[2:]
+        elif w.startswith("-"):
+            continue   # --force (TK-D003's deny), or an option gh refuses
+        else:
+            repo = repo or w
+            continue
+        if w.lstrip("-")[:1] == "b":
+            branch = value
+    branch = branch.removeprefix("refs/").removeprefix("heads/")
+    named = branch and "$" not in branch and "`" not in branch and branch.casefold() not in ("main", "master", "head")
+    return [] if repo is None and not runner or named else ["PUSH:repo-sync " + (branch or "default")[:64]]
+
+
+def _kubectl_dry_run(argv):
+    """Whether a kubectl command is a dry run as kubectl reads its words: its last --dry-run (bare, =client or =server;
+    not =none or =false) comes before a bare `--`, after which kubectl reads every word as a name; no word before that
+    is --raw (a request sent as given) or holds an expansion the line can't resolve (`"$D"` may be `--` or a later
+    --dry-run=none), and no --dry-run word comes right after an option that may take it as its value (_kubectl_takes:
+    `--field-manager --dry-run`)."""
+    if _program(argv) != "kubectl":
+        return False
+    last = None
+    for prev, word in zip(argv, argv[1:]):
+        if word == "--":
+            break
+        if word.startswith("--raw") or "$" in word or "`" in word:
+            return False
+        if word == "--dry-run" or word.startswith("--dry-run="):
+            if _kubectl_takes(prev):
+                return False
+            last = word
+    return last in ("--dry-run", "--dry-run=client", "--dry-run=server")
+
+
+# kubectl's options that take no word after them: its boolean flags, and those with a value they take only after `=`
+# (--dry-run, --validate, --cascade); any other option may take the next word as its value
+_KUBECTL_FLAGS = {"all", "all-namespaces", "allow-missing-template-keys", "cascade", "delete-emptydir-data",
+                  "disable-compression", "disable-eviction", "dry-run", "force", "force-conflicts", "help",
+                  "ignore-daemonsets", "ignore-not-found", "insecure-skip-tls-verify", "interactive", "local",
+                  "match-server-version", "no-headers", "now", "output-watch-events", "overwrite", "prune", "quiet",
+                  "record", "recursive", "save-config", "server-print", "server-side", "show-kind", "show-labels",
+                  "show-managed-fields", "stdin", "tty", "validate", "wait", "warnings-as-errors", "watch",
+                  "watch-only", "windows-line-endings"}
+_KUBECTL_SHORT_FLAGS = set("ARhiqtw")   # --all-namespaces, --recursive, --help, --stdin, --quiet, --tty, --watch
+
+
+def _kubectl_takes(word):
+    """Whether kubectl gives the word after `word` to it as its value: an option written without `=` that isn't one of
+    its flags, or a short-option cluster whose first letter that takes a value ends the word (`-Rf`, not `-nprod`)."""
+    if word.startswith("--"):
+        return "=" not in word and word[2:] not in _KUBECTL_FLAGS
+    if word.startswith("-") and "=" not in word:
+        return next((k for k in range(1, len(word)) if word[k] not in _KUBECTL_SHORT_FLAGS), None) == len(word) - 1
+    return False
+
+
+# what a tool no pack maps is given to run (_runs): TK-S010's command arguments and the SQL ones, in any case
+_COMMAND_KEYS = {"command", "commands", "cmd", "cmds", "script", "shell_command"}
+_SQL_KEYS = {"sql", "query", "statement"}
+_BLANKS = re.compile(r"\s+")   # any Unicode blank: a form feed, a vertical tab, a no-break or line separator space
+_PLAIN_WORD = re.compile(r"[A-Za-z0-9_.:/-]*")   # a value that is one word of plain characters: no blank, quote,
+# metacharacter, expansion or other character the shell reads
+
+
+def _runs(args, tool=""):
+    """The `run` field of a tool no pack maps: for each argument TK-S010 reads as a command (at any depth, its name in
+    any case), `WORD:<its last /-part>` when it is one word of plain characters (letters, digits, `_ . : / -`), else
+    `CMD:<value>` (a string as given, a list or an object as canonical JSON); `MCPCMD:<value>` for any value when the
+    tool's name is an MCP tool's in a case no pack maps (`MCP:x/y`), as TK-S010 reads an MCP tool's; and for each string under a sql,
+    query or statement argument (at any depth, its name in any case, in a list or an object too) each statement as
+    every SQL dialect lexes it (classes.sql_read: comments and literals blanked), split at its `;`s, each blank run a
+    space: `SQL;<statement>` for one a `;` ends, `SQL:<statement>` for the last; before a literal or comment that
+    doesn't close, only those a `;` ends (a database may run them, then fails on the rest)."""
+    out, tag = [], "MCPCMD:" if _text(tool).casefold().startswith(("mcp:", "mcp__")) else "CMD:"
+    # a call over MAX_SUBJECT isn't lexed (every pack that reads `run` denies it unread: TK-OVERSIZE): its SQL is the
+    # whole call as written, longer than MAX_SUBJECT, which every rule on it takes as TK-OVERSIZE
+    whole = canonical(args)
+    whole = "SQL:" + whole if len(whole) > MAX_SUBJECT else None
+
+    def lex(text):
+        for code, closed in dict.fromkeys(classes.sql_read(text, *d) for d in classes.SQL_DIALECTS.values()):
+            *ended, last = _BLANKS.sub(" ", code).split(";")
+            out.extend("SQL;" + p.strip() for p in ended if p.strip())
+            if closed and last.strip():
+                out.append("SQL:" + last.strip())
+
+    def walk(value, sql=False, cmd=False):
+        """`sql`, `cmd`: under a sql or command argument already read, so each string is lexed once (the keys of an
+        object under a sql argument too) and a command argument's value is written out once, at the outermost."""
+        if isinstance(value, str):
+            if sql and not whole:
+                lex(value)
+            return
+        items = value.items() if isinstance(value, dict) else enumerate(value) if isinstance(value, list) else ()
+        for key, v in items:
+            name = key.lower() if isinstance(key, str) else None
+            if sql and not whole and name is not None:
+                lex(key)
+            if name in _COMMAND_KEYS and not cmd:
+                plain = tag == "CMD:" and isinstance(v, str) and _PLAIN_WORD.fullmatch(v)
+                out.append("WORD:" + v.rsplit("/", 1)[-1] if plain else tag + (v if isinstance(v, str) else canonical(v)))
+                walk(v, sql, True)
+            elif name in _SQL_KEYS and not sql:
+                if whole:
+                    out.append(whole)
+                walk(v, True, cmd)
+            else:
+                walk(v, sql, cmd)
+    walk(args)
+    return list(dict.fromkeys(out))
+
+
+def _program(argv):
+    """The program an argv runs, by its file name, casefolded and without .exe."""
+    return argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe") if argv else ""
 
 
 _HISTORY = (".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")

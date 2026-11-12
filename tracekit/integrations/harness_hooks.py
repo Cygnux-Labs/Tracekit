@@ -1,7 +1,7 @@
-"""Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin and
-OpenHands hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin,
+Cline and OpenHands hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin|openhands EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin|cline|openhands EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -100,7 +100,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
-    if harness in ("qwen", "droid", "antigravity", "crush", "devin", "openhands"):   # lean: their transcript formats are not read; model text goes unrecorded
+    if harness in ("qwen", "droid", "antigravity", "crush", "devin", "cline", "openhands"):   # lean: their transcript formats are not read; model text goes unrecorded
         return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
@@ -269,6 +269,8 @@ def entry(harness=None, event=None):
         print(f"usage: python -m tracekit.integrations.harness_hooks {{{'|'.join(agent_hooks.HARNESSES)}}} [EVENT]; "
               "blocking", file=sys.stderr)
         return 2
+    if harness == "cline":
+        agent_hooks.cline_cap_wait()
     return run(harness, agent_hooks.stdin_text(), event=event)
 
 
