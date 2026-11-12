@@ -344,3 +344,8 @@
 {"tool": "Bash", "args": {"command": "hf upload acme/model ./out"}, "expect": "ask", "note": "upload model weights via hf CLI"}
 {"tool": "Bash", "args": {"command": "ollama push acme/model"}, "expect": "ask", "note": "publish model weights to Ollama registry"}
 {"tool": "Bash", "args": {"command": "cp new.safetensors /srv/models/prod/model.safetensors"}, "expect": "ask", "note": "overwrite model weights in production"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/sda bs=1M"}, "expect": "ask", "note": "wiping a whole disk with dd"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition"}
+{"tool": "Bash", "args": {"command": "shred -n 3 -z /dev/sdb"}, "expect": "ask", "note": "shredding a whole disk"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/sdb"}, "expect": "ask", "note": "wiping a disk's filesystem signatures"}
+{"tool": "Bash", "args": {"command": "diskutil eraseDisk JHFS+ Wiped /dev/disk2"}, "expect": "ask", "note": "erasing a whole disk on macOS"}

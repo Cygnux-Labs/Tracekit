@@ -272,3 +272,9 @@
 {"tool": "Bash", "args": {"command": "env | grep PATH"}, "expect": "allow", "note": "environment read locally"}
 {"tool": "Bash", "args": {"command": "env | sort > env.txt"}, "expect": "allow", "note": "environment written locally"}
 {"tool": "Bash", "args": {"command": "printenv HOME | tee home.txt"}, "expect": "allow", "note": "one variable written locally"}
+{"tool": "Bash", "args": {"command": "dd if=disk.img of=backup.img bs=4M"}, "expect": "allow", "note": "copying a disk image file"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/urandom of=key.bin bs=32 count=1"}, "expect": "allow", "note": "reading randomness into a key file"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 disk.img"}, "expect": "allow", "note": "making a filesystem inside a disk image file"}
+{"tool": "Bash", "args": {"command": "shred -u secrets.txt"}, "expect": "allow", "note": "shredding one ordinary file"}
+{"tool": "Bash", "args": {"command": "lsblk"}, "expect": "allow", "note": "listing block devices"}
+{"tool": "Bash", "args": {"command": "diskutil list"}, "expect": "allow", "note": "listing disks on macOS"}

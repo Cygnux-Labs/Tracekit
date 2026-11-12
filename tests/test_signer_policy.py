@@ -276,6 +276,24 @@ class CodingPack(unittest.TestCase):
                     if command in deletes:
                         self.assertEqual(result["verdict"], "ask", result)
                     self.assertNotIn("nondeterministic", result)
+
+    def test_wiping_a_disk_or_filesystem_asks(self):
+        """#748: writing to a block device erases everything on it, so dd to one, making a filesystem on one,
+        shredding or wiping one, and diskutil's erase and zero wait for a person in every pack; a disk image
+        file is an ordinary file and none of these is held."""
+        wipes = ["dd if=/dev/zero of=/dev/sda bs=1M", "mkfs.ext4 /dev/sda1", "shred -n 3 -z /dev/sdb",
+                 "wipefs -a /dev/sdb", "dd if=/dev/urandom of=/dev/nvme0n1 bs=1M", "mkswap /dev/mmcblk0p1",
+                 "mke2fs /dev/vda", "diskutil eraseDisk JHFS+ Wiped /dev/disk2", "diskutil zeroDisk /dev/disk3"]
+        benign = ["dd if=disk.img of=backup.img bs=4M", "dd if=/dev/urandom of=key.bin bs=32 count=1",
+                  "mkfs.ext4 disk.img", "shred -u secrets.txt", "lsblk", "diskutil list",
+                  "dd if=/dev/sda of=backup.img bs=4M", "wipefs backup.img"]
+        for pack, backend, engine in self.every_pack():
+            for command in wipes + benign:
+                with self.subTest(pack=pack, backend=backend, command=command):
+                    result = engine.decide("Bash", {"command": command})
+                    self.assertEqual("TK-A067" in result["rule_ids"], command in wipes, result)
+                    if command in wipes:
+                        self.assertEqual(result["verdict"], "ask", result)
     def test_claude_codes_monitor_tool_is_decided_as_its_shell(self):
         # Monitor runs its command in the shell Bash uses; the packs flagged it as an unknown tool, so a command Bash
         # denies ran through it, the agent approving its own held call among them (PowerShell: SignerPolicy's test)

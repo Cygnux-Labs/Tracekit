@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-81'
+version: '2026.11-v2-82'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -933,6 +933,18 @@ ask:
     reason: changing the agent harness's settings, hooks or plugins
     remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
     rationale: TK-F009 for the shell.
+  - id: TK-A067
+    class: shell
+    # Wiping a disk or a filesystem (#748): dd whose of= is a block device, mkfs (and mkfs.<type>, mke2fs,
+    # mkswap, newfs*) making a filesystem on one, shred or wipefs erasing one, and diskutil's eraseDisk,
+    # eraseVolume and zeroDisk. A device is /dev's sd, hd, vd or xvd disks and their partitions, nvme or
+    # mmcblk names, a macOS disk name, or a device-mapper path. Options may come before the device, as the
+    # tools read them. A disk image file is an ordinary file: dd to one, mkfs on one and shred of a file
+    # stay as they are.
+    pattern: '^dd( [^ ]+){0,16}? of=/dev/(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^(?:mkfs(?:\.[^ ]+)?|mke2fs|mkswap|newfs[^ ]*)( [^ ]+){0,8}? /dev/(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^(?:shred|wipefs)( [^ ]+){0,8}? /dev/(?:sd[a-z]+[0-9]*|hd[a-z]+[0-9]*|vd[a-z]+[0-9]*|xvd[a-z]+[0-9]*|nvme[^ ]*|mmcblk[^ ]*|disk[0-9][^ ]*|mapper/[^ ]+)( |$)|^diskutil (?:eraseDisk|eraseVolume|zeroDisk)( |$)'
+    reason: wiping a disk or filesystem
+    remedy: Have a person approve the held call, or work on a disk image file instead.
+    rationale: Writing to a block device erases everything on it, and no ordinary coding task needs it.
 
 flag:
   - id: TK-F001
