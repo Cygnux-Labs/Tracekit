@@ -147,10 +147,6 @@ class DemoServer(unittest.TestCase):
                              [("demo run", True), ("demo tampered", True)])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class E22Import(unittest.TestCase):
     def test_importing_e22_leaves_sys_path_alone(self):
         """Importing the E22 script put examples/v2 at the front of sys.path, so ``find_spec("crewai")`` found the
@@ -162,3 +158,7 @@ class E22Import(unittest.TestCase):
         self.assertFalse(spec is not None and spec.origin is None
                          and any(os.path.join("examples", "v2") in p for p in spec.submodule_search_locations),
                          "find_spec('crewai') points into examples/v2")
+
+
+if __name__ == "__main__":
+    unittest.main()
