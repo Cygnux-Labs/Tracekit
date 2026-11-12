@@ -503,6 +503,22 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
         self.assertIn("TK-D001", err)
 
+    def test_a_codex_shell_command_that_isnt_text_is_held(self):
+        """The PR #754 review: an argv with an item that isn't a string (Codex sends none) reaches the signer as a list,
+        which its shell parser can't read: held (TK-SHELL-PARSE), never allowed, as the v1 hook denies it. An argv of
+        strings it reads as one (a force push is denied)."""
+        push = ["git", "push", "--force", "origin", "main"]
+        for i, (name, argv, rule) in enumerate((("shell", push + [None], "TK-SHELL-PARSE"),
+                                                ("shell", ["rm", "-rf", "/", 1], "TK-SHELL-PARSE"),
+                                                ("Bash", push, "TK-D003"))):
+            with self.subTest(name=name, argv=argv):
+                code, out, err = self.hook("codex", {"session_id": "s", "hook_event_name": "PreToolUse",
+                                                     "tool_name": name, "tool_use_id": f"a{i}",
+                                                     "tool_input": {"command": argv}})
+                self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]),
+                                 (CODEX_DENY, "deny"), err)
+                self.assertIn(rule, err)
+
     def test_droid_patch_decides_every_file_including_a_move_destination(self):
         patch = ("*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: src/a.py\n"
                  "*** Move to: {}\n@@\n-x\n+y\n*** End Patch")
