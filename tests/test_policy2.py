@@ -140,12 +140,15 @@ class Compile(unittest.TestCase):
         self.assertEqual(pc.build(self.write("q.yaml", "extends: base.yaml\noversize: deny\n"))[0]["oversize"], "deny")
 
     def test_oversize_deny_on_a_pack_extending_dev_denies_a_large_write(self):
+        import shutil
         from tracekit.policy2.engine import Engine
         dev_path = os.path.join(PACKS, "dev.yaml")
         big = {"file_path": "/repo/big.py", "content": "x = 1\n" * 18000}   # 108 KB
         held = Engine(pc.build(dev_path)[0], "regex").decide("Write", big)
         self.assertEqual((held["verdict"], held["rule_ids"]), ("ask", ["TK-OVERSIZE"]))
-        child = pc.build(self.write("c.yaml", f"extends: {os.path.relpath(dev_path, self.d)}\noversize: deny\n"))[0]
+        shutil.copytree(PACKS, os.path.join(self.d, "packs"))   # a relative extends must stay on one drive
+        child, errs = pc.build(self.write("c.yaml", "extends: packs/dev.yaml\noversize: deny\n"))
+        self.assertEqual(errs, [])
         d = Engine(child, "regex").decide("Write", big)
         self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
 
