@@ -197,7 +197,7 @@ class TestFeedback(unittest.TestCase):
         self.assertEqual(query["title"], ["Field report"])
         # the machine and the hooks go in "agent"; "How long, and on what" is the person's to fill in
         self.assertRegex(query["agent"][0], rf"^Tracekit {re.escape(__version__)}, .+, Python \S+\nCoding-agent hooks "
-                         r"installed: codex\n\(filed with `tracekit feedback`, for #385\)$")
+                         r"installed: codex\n\(filed with `tracekit feedback`\)$")
         self.assertNotIn("how-long", query)
         self.assertEqual(query["share"], ["no dev store on this machine (tracekit audit --share --since 7d prints a "
                                           "replay's counts)"])   # no dev store in this HOME; the form requires it

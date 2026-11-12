@@ -62,10 +62,10 @@ def _os():
 
 def _about(share):
     """The form's two required fields, which every link fills: `share` and `agent`, this machine's Tracekit, OS, Python
-    and hooks (#385)."""
+    and hooks."""
     return {"share": share,
             "agent": f"Tracekit {__version__}, {_os()}, Python {platform.python_version()}\n"
-                     f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n(filed with `tracekit feedback`, for #385)"}
+                     f"Coding-agent hooks installed: {', '.join(_hooks()) or 'none'}\n(filed with `tracekit feedback`)"}
 
 
 def _tool(name):

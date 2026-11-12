@@ -1568,6 +1568,20 @@ class CodingPack(unittest.TestCase):
             self.assertIn(e.decide("Bash", {"command": "rm ~/.claude/projects/p/a.jsonl; echo '"})["verdict"],
                           ("ask", "deny"))
 
+    def test_clines_hook_folders_are_harness_config(self):
+        """#732's review: Cline runs every hook file in ~/Documents/Cline/Hooks, ~/.cline/hooks, .cline/hooks and
+        .clinerules/hooks; deleting .clinerules or a Cline folder as a whole deletes the hooks in it."""
+        for pack, engine, e in self.every_pack():
+            for command in ("rm ~/Documents/Cline/Hooks/PreToolUse", "echo x > .clinerules/hooks/PreToolUse",
+                            "rm -rf .cline", "rm -rf .clinerules", "rm -rf .clinerules/", "rm -rf ~/Documents/Cline",
+                            "rm -r ~/Cline"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for path in ("/home/u/Documents/Cline/Hooks/PreToolUse", "/w/.clinerules/hooks/TaskStart",
+                         "/home/u/.cline/data/globalState.json"):
+                with self.subTest(pack=pack, engine=engine, path=path):
+                    self.assertIn("TK-F009", e.decide("Write", {"file_path": path, "content": "x"})["rule_ids"])
+
     def test_kilo_codes_config_and_data_folders_are_opencodes_under_its_names(self):
         """#551's review: Kilo Code keeps OpenCode's layout under its own names. Its plugin folder (Tracekit's hook is
         in it), project config and data folder were none of the rules' paths, so deleting Tracekit's plugin went
