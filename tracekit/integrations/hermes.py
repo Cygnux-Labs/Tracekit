@@ -80,16 +80,17 @@ def hook_timeout_s(config, env=os.environ):
 
 
 def _typed(tool, args, kept=""):
-    """For text process_manage types into a running process (write: as given; submit: with a newline): (the reason it
-    is blocked before it is decided, as Codex's write_stdin is (agent_hooks._typed), else None; the line the process
-    reads it into: `kept`, the unfinished text earlier calls typed into it, then this call's). (None, None) for any
-    other call."""
+    """For text process_manage types into a running process (write: as given; submit: with a newline; \\r is Enter, as
+    a terminal reads it): (the reason it is blocked before it is decided, as Codex's write_stdin is
+    (agent_hooks._typed), on its own text or on the line it may complete, else None; that line: `kept`, the unfinished
+    text earlier calls typed into it, then this call's; its own text). (None, None, None) for any other call."""
     if tool != "process_manage" or not isinstance(args, dict) or args.get("action") not in ("write", "submit") or \
             not isinstance(args.get("data"), str):
-        return None, None
+        return None, None, None
     from tracekit.agent_hooks import _typed as typed
-    line = kept + args["data"] + "\n" * (args["action"] == "submit")
-    return typed("Hermes's process_manage", args["action"], line), line
+    text = (args["data"] + "\n" * (args["action"] == "submit")).replace("\r", "\n")
+    line, who = kept + text, "Hermes's process_manage"
+    return typed(who, args["action"], text) or typed(who, args["action"], line), line, text
 
 
 def _block(message):
@@ -155,17 +156,17 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
         if not tool_call_id:   # never made up: the call's result could not be bound to its decision
             return _block("Tool call blocked by Tracekit: Hermes gave the call no tool_call_id to decide it under")
         into = (session_id, str(args.get("session_id")) if isinstance(args, dict) else "")
-        typed, line = _typed(tool_name, args, typing.get(into, ""))
+        typed, line, text = _typed(tool_name, args, typing.get(into, ""))
         if typed:
             return _block(typed)
         args = copy.deepcopy(args) if isinstance(args, dict) else {}   # as decided, whatever changes Hermes's dict
-        # text typed into a process is decided as the line it reads it into, beside the data the call types
-        decided = args if line is None else {**args, "typed_line": line}
+        # text typed into a process is decided on its own and as the line a shell there would read it into
+        decided = args if line is None or line == args.get("data") else {**args, "typed_line": line}
 
         def ran():   # the call goes ahead: what the process hasn't read as a line yet is kept for the next
             if line is not None:
-                from tracekit.agent_hooks import unfinished
-                rest = unfinished(line)
+                from tracekit.agent_hooks import typed_rest
+                rest = typed_rest(line, text, line[:len(line) - len(text)])
                 with lock:
                     typing[into] = rest
                     if not rest:

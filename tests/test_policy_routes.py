@@ -3,6 +3,7 @@ engines: every way the shell writes a file (TK-D014, TK-A067, TK-A068, TK-F024) 
 for loop's brace words, a harness's own settings commands and a harness started with settings the agent chose
 (TK-A054, TK-A069, TK-A070), an unmapped file tool read as the file tool it is, a `commands` list read entry by entry,
 SQL comments and dollar quotes as PostgreSQL and MySQL lex them, and text typed into a live shell."""
+import time
 import asyncio
 import importlib.util
 import io
@@ -99,11 +100,62 @@ class Routes(unittest.TestCase):
                               "find src -name '*.py' -exec sed -i 's/foo/bar/' {} +",
                               "find . -name '*.py' -exec perl -pi -e 's/a/b/' {} +"), ("flag", "allow"))
 
+    def test_writers_that_name_their_file_another_way_reach_the_rules(self):
+        # env -C's folder, awk's FILENAME, patch's file after its valued options (and in its -d folder), a vi run
+        # that isn't read-only, and xargs fed by printf's text or by a stage that may print a protected name
+        self.expect(self.bash("env -C ~/.ssh sed -i 's/a/b/' config", "env --chdir=$HOME/.ssh sed -i 's/a/b/' config",
+                              "awk '{print > FILENAME}' .env", "patch -i d .env", "patch -d ~/.ssh -i d config",
+                              "ls -a | grep env | xargs sed -i 's/a/b/'", "printf '.e%s' nv | xargs sed -i 's/a/b/'"),
+                    "deny", "TK-D014")
+        self.expect(self.bash("nvim --headless +%s/a/b/ +wq ~/.bashrc", "vim -c wq ~/.bashrc"),
+                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F024")
+        self.expect(self.bash("env -C src sed -i s/a/b/ config", "awk '{print > FILENAME}' src/a.txt",
+                              "patch -p1 -i fix.diff", "vim -R ~/.bashrc", "vim src/main.py",
+                              "git ls-files | grep '\\.py$' | xargs sed -i s/a/b/",
+                              "grep -rl foo src | xargs sed -i s/foo/bar/", "find . -name '*.py' | xargs sed -i s/a/b/"),
+                    "allow")
+
     def test_a_pattern_is_read_part_by_part_and_with_negated_and_posix_brackets(self):
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
         self.expect(self.bash("sed -i 's/a/b/' ~/.ss?/conf?g", "echo x > .e[^x]v", "echo x > .e[!x]v",
                               "echo x > .e[[:alpha:]]v"), held, "TK-D014")
         self.expect(self.bash("echo x > .git/hook[^x]/pre-commit"), "ask", "TK-A068")
+
+    def test_a_pattern_is_read_with_bash_classes_and_the_glob_options_the_line_sets(self):
+        # bash 3.2 expanded each to the .env or ~/.ssh/config there: an equivalence or collating class is its letter,
+        # dotglob (or a GLOBIGNORE) lets * match a leading dot, nocaseglob matches in any case
+        held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
+        self.expect(self.bash("sed -i 's/a/b/' .e[[=n=]]v", "sed -i 's/a/b/' .e[[.n.]]v",
+                              "sed -i 's/a/b/' ~/.ss[[=h=]]/config", "shopt -s dotglob; sed -i 's/a/b/' *env",
+                              "GLOBIGNORE=x; sed -i 's/a/b/' *env", "shopt -s nocaseglob; sed -i 's/a/b/' .E[N]V"),
+                    held, "TK-D014")
+        # extglob's own syntax isn't read: held, as a line the parser can't read is
+        self.expect(self.bash("shopt -s extglob; sed -i 's/a/b/' .@(env)"), held, "TK-SHELL-PARSE")
+        self.expect(self.bash("sed -i 's/a/b/' *env", "shopt -s dotglob; ls *"), "allow")
+
+    def test_a_pattern_is_matched_in_time_linear_in_its_length(self):
+        # a run of stars is one star: 30 and 60 of them took 61 s and over 90 s, the signer stalled meanwhile
+        e = self.engines[("coding", BACKENDS[0])]
+        for c in ("sed -i s/a/b/ .b" + "*" * 30 + "z", "sed -i s/a/b/ .b" + "*" * 60 + "z",
+                  "sed -i s/a/b/ " + "*a" * 40 + "z", "sed -i s/a/b/ " + "?*" * 60):
+            with self.subTest(command=c):
+                start = time.perf_counter()
+                svc.evaluate(e, "Bash", {"command": c})
+                self.assertLess(time.perf_counter() - start, 0.5)
+
+    def test_a_find_is_read_in_the_protected_folders_only_under_a_home(self):
+        # a project's config isn't ~/.ssh/config: only a find over a home (or /) reaches the folders that keep them
+        self.expect(self.bash("find . -name config -exec sed -i 's/old/new/' {} +",
+                              "cd ~/proj/deploy && find . -name config -exec sed -i 's/a/b/' {} +",
+                              "find ~/proj -name 'config' -print | xargs sed -i 's/a/b/'"), "allow")
+        self.expect(self.bash("find ~ -name config -exec sed -i 's/a/b/' {} +",
+                              "find / -name authorized_keys -exec sed -i 's/a/b/' {} +"), "deny", "TK-D014")
+
+    def test_a_pattern_after_a_cd_joins_only_as_the_names_it_may_make(self):
+        self.expect(self.bash("cd /home/u/p/.claude/worktrees/w && rm -f src/*.orig",
+                              "cd /home/u/p/.claude/worktrees/w && sed -i s/a/b/ tests/*.py"), ("allow", "flag"))
+        self.expect(self.bash("cd ~/.ssh && sed -i s/a/b/ conf?g"),
+                    {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-D014")
 
     def test_ordinary_writes_and_patterns_stay_unheld(self):
         self.expect(self.bash("sed -i 's/foo/bar/g' src/app.py", "sed -i 's/a/b/' *.py", "echo x > out.txt",
@@ -155,6 +207,30 @@ class Routes(unittest.TestCase):
             "CLAUDE_CODE_SIMPLE=1 claude -p x", "codex exec -c sandbox_workspace_write.network_access=true x",
             "codex --profile other exec x", "env -u CODEX_HOME codex exec x"), "ask", "TK-A070")
 
+    def test_a_harness_is_read_with_every_way_the_line_sets_its_settings(self):
+        # codex's own hooks off (--disable is -c features.<name>=false; features disable saves it), a variable set by
+        # a loop, getopts, unset or ${X:=}, positional or unknown words, a runner's version, pnpx, a
+        # runtime's options before the script, and a harness's path, root or data variable
+        self.expect(self.bash(
+            "codex --disable hooks exec 'fix the tests'", "codex exec --disable=codex_hooks x",
+            "codex -c 'features={hooks=false}' exec x", "codex -c features.hooks=false exec x",
+            "codex features disable hooks", "codex -c a=b features disable codex_hooks",
+            "for HOME in /tmp/h; do claude -p x; done", "select HOME in /tmp/h; do claude -p x; break; done <<< 1",
+            "for CLAUDE_CONFIG_DIR; do claude -p x; done", "getopts a HOME; claude -p x",
+            "unset XDG_CONFIG_HOME; claude -p x", ": ${CLAUDE_CONFIG_DIR:=/tmp/c}; claude -p x",
+            "set -- --bare; claude \"$@\" -p x", "claude $OPTS -p x", "codex exec \"$PROMPT\"",
+            "git fetch && X=--bare && claude $X", "X=$(echo --bare); claude $X", "read X; claude $X",
+            "for o; do claude $o; done",
+            "npx -y @anthropic-ai/claude-code@latest --bare -p x", "pnpx @anthropic-ai/claude-code --bare -p x",
+            "node -r /tmp/x.js /usr/lib/node_modules/@anthropic-ai/claude-code/cli.js --bare -p x",
+            "GOOSE_PATH_ROOT=/tmp/g goose run -t x", "CRUSH_GLOBAL_DATA=/tmp/c crush run x"), "ask", "TK-A070")
+        self.expect(self.bash("codex --disable web_search exec x", "codex features disable web_search",
+                              "codex features list", "codex exec 'add features'", "claude -p \"the $HOME var\"",
+                              "for f in a b; do claude -p \"$f\"; done", "node -r ts-node/register src/index.ts",
+                              "npx -y @anthropic-ai/claude-code@latest -p x",
+                              "git fetch && T=/tmp/p && claude plugin validate $T/plugin",
+                              "env -i python3 -m tool codex PreToolUse"), "allow")
+
     def test_options_and_variables_that_leave_a_harness_its_hooks_are_not_held(self):
         # its model, effort or MCP servers, or another tool's settings, change no hook, plugin, approval or sandbox
         self.expect(self.bash(
@@ -190,6 +266,11 @@ class Routes(unittest.TestCase):
     def test_text_typed_into_a_running_process_is_also_read_as_the_shell_line_it_is(self):
         self.expect([("process_manage", {"action": a, "session_id": "p1", "data": "sudo id"})
                      for a in ("write", "submit")], "deny", "TK-D001")
+        # a REPL's line no shell can read is held for nothing a pack names, as it was: flagged as the unknown tool
+        self.expect([("process_manage", {"action": "submit", "session_id": "p1", "data": "print('hello')"}),
+                     ("process_manage", {"action": "write", "session_id": "p1", "data": "x",
+                                         "typed_line": "print('hello')\n"})],
+                    {"dev": "flag", "coding": "flag", "server": "ask", "strict": "ask"}, "TK-UNKNOWN-TOOL")
         self.expect([("process_manage", {"action": "poll", "session_id": "sudo id"})],
                     {"dev": "flag", "coding": "flag", "server": "ask", "strict": "ask"})
 
@@ -234,7 +315,8 @@ class TypedText(unittest.TestCase):
     """Text typed into a live terminal (Devin's write_to_process, Codex's write_stdin, agy's send_input, Hermes's
     process_manage) that the shell hasn't finished reading is joined to the next call's: `git ` with no newline, or
     `git \\`, then `push --force origin main` ran the push in an interactive bash, and a quote opened in one call
-    swallowed the next. Each call is decided as the line the terminal reads it into."""
+    swallowed the next. Each call is decided on its own and as the line a shell there would read it into: the
+    stricter stands, since the hook can't tell a shell from a pager that took a key (`q`)."""
 
     def setUp(self):
         home = tempfile.mkdtemp()
@@ -259,7 +341,8 @@ class TypedText(unittest.TestCase):
         tool, args = agent_hooks.tool(harness, name, dict(ti))
         q = {"session_id": session, "tool_name": tool, "tool_input": args}
         typed = agent_hooks.typed_line(harness, p, q)
-        q["tool_input"]["command"] = typed[1]
+        if typed[1] != typed[2]:
+            q["tool_input"]["typed_line"] = typed[1]
         why = agent_hooks._blocked(harness, p, raw, typed[1])
         if why:
             return why
@@ -281,6 +364,15 @@ class TypedText(unittest.TestCase):
         self.assertEqual(self.call("codex", "sudo", "u"), "deny")
         self.assertEqual(agent_hooks.unfinished("sudo \x03ls"), "ls")
 
+    def test_text_another_program_took_never_makes_a_later_line_look_harmless(self):
+        # `q` quits less, `y` answers a read -n1, `#` …: the shell then runs the next line as typed, not `qsudo id`
+        for harness in ("codex", "devin", "antigravity"):
+            for first, then in (("q", "sudo id\n"), ("y", "rm -rf ~\n"), ("q", PUSH + "\n"), ("#", "rm -rf ~\n")):
+                with self.subTest(harness=harness, first=first, then=then):
+                    s = f"{harness}{first}{then}"
+                    self.assertEqual(self.call(harness, first, session=s), "allow")
+                    self.assertEqual(self.call(harness, then, session=s), "deny")
+
     def test_keys_typed_without_a_newline_wait_for_their_line(self):
         for harness in ("codex", "antigravity", "devin"):
             for key in ("q", "y", "git pu"):
@@ -290,11 +382,22 @@ class TypedText(unittest.TestCase):
             for key in ("\x1b", "\t", "\x1b[A", "\x03", "\x04"):
                 with self.subTest(harness=harness, key=key):
                     self.assertEqual(self.call(harness, key, session=f"{harness}{key!r}"), "allow")
-        # the line a key ends up in is read whole: an arrow, a tab or a line kill in it is blocked
+        # keys alone (Esc to a pager, Tab, an arrow) never hold the lines after them; keys among text hold the line
+        # they end up in (what Tab completed is unknown) until a ^C drops it; a line kill in a line is blocked
         for harness in ("codex", "antigravity"):
-            self.assertEqual(self.call(harness, "\x1b[A", session=f"k{harness}"), "allow")
-            self.assertIn("control character", self.call(harness, "\n", session=f"k{harness}"))
+            for key in ("\x1b", "\t", "\x1b[A", "\x1bOB"):
+                with self.subTest(harness=harness, key=key):
+                    self.assertEqual(self.call(harness, key, session=f"k{harness}{key!r}"), "allow")
+                    self.assertEqual(self.call(harness, "ls\n", session=f"k{harness}{key!r}"), "allow")
+            self.assertEqual(self.call(harness, "git sta\t", session=f"t{harness}"), "allow")
+            self.assertIn("control character", self.call(harness, "\n", session=f"t{harness}"))
+            self.assertEqual(self.call(harness, "\x03", session=f"t{harness}"), "allow")
+            self.assertEqual(self.call(harness, "ls\n", session=f"t{harness}"), "allow")
             self.assertIn("control character", self.call(harness, f"echo ok\x15{PUSH}\n", session=f"j{harness}"))
+            # a line end that isn't \n (readline's Ctrl-O, a ^D that flushes, \r as Enter) ends the line too
+            for text in (f"{PUSH}\x0f", "sudo id\x04", f"it push --fo{'rce'} origin main\x01g\r"):
+                self.assertIsNotNone(self.call(harness, text, session=f"e{harness}{text!r}"))
+                self.assertNotEqual(self.call(harness, text, session=f"e{harness}{text!r}"), "allow")
         # Devin's keys are read as they are typed, as before: a control character, ^C and ^D too
         for key in ("\x1b", "\t", "\x03", "\x04"):
             self.assertIn("control character", self.call("devin", key, session=f"d{key!r}"))
@@ -306,26 +409,46 @@ class TypedText(unittest.TestCase):
                     self.assertIn("sets or replays state", self.call(harness, line, session=f"{harness}{line}"))
 
     def test_hermes_text_typed_into_a_process_is_read_as_its_line(self):
-        reason, line = hermes._typed("process_manage", {"action": "write", "data": "push --fo" + "rce origin main\n"},
-                                     "git ")
+        reason, line, text = hermes._typed("process_manage",
+                                           {"action": "write", "data": "push --fo" + "rce origin main\n"}, "git ")
         self.assertIsNone(reason)
+        self.assertEqual(text, "push --fo" + "rce origin main\n")
         d = svc.evaluate(self.e, "process_manage", {"action": "write", "data": "push", "typed_line": line})[0]
         self.assertEqual(d["verdict"], "deny")
         self.assertEqual(hermes._typed("process_manage", {"action": "write", "data": "q"})[0], None)
         self.assertIn("control character", hermes._typed("process_manage", {"action": "submit", "data": "\x1b[A"})[0])
+        # \r is Enter to a terminal, and the call's own text is checked beside the line it may complete
+        for data in (f"it push --fo{'rce'} origin main\x01g\r", f"{PUSH}\x0f"):
+            self.assertIn("control character", hermes._typed("process_manage", {"action": "write", "data": data})[0])
+        # what is kept after a call ran: keys alone leave it as it was
+        self.assertEqual(agent_hooks.typed_rest("git \x1b", "\x1b", "git "), "git ")
+        self.assertEqual(agent_hooks.typed_rest("git sta\t", "sta\t", "git "), "git sta\t")
+        self.assertEqual(agent_hooks.typed_rest("ls\n\x1b[A", "ls\n\x1b[A", ""), "")
+
+    def test_a_terminal_named_twice_is_refused(self):
+        # agy reads TaskId: a Task_Id decoy beside it gave each fragment an empty buffer
+        raw = json.dumps({"hook_event_name": "PreToolUse", "toolCall": {"name": "manage_task", "args": {
+            "Action": "send_input", "Input": "git ", "TaskId": "t", "Task_Id": "decoy"}}})
+        self.assertIn("names its terminal", agent_hooks._blocked("antigravity", {"tool_name": "manage_task"}, raw))
+        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
+             "tool_input": {"session_id": 1, "sessionId": 2, "chars": "git "}}
+        self.assertIn("names its terminal", agent_hooks._blocked("codex", p, json.dumps(p)))
 
     def test_the_hook_decides_the_joined_line(self):
         from tracekit.integrations import claude_code, harness_hooks
         seen = []
-        decide = mock.Mock(side_effect=lambda q: seen.append(q["tool_input"]["command"]) or 0)
+        decide = mock.Mock(side_effect=lambda q: seen.append((q["tool_input"]["command"],
+                                                              q["tool_input"].get("typed_line"))) or 0)
         # (run sets the hook module's agent name, as each hook process does: put back for the tests after this one)
         with mock.patch.object(claude_code, "handle", decide), \
                 mock.patch.object(claude_code, "AGENT", claude_code.AGENT):
-            for chars in ("git ", "push origin main\n"):
+            for chars in ("git ", "push origin main\n", "q", "ls\n"):
                 p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
                      "tool_use_id": "c" + chars[:1], "tool_input": {"session_id": 1, "chars": chars}}
                 harness_hooks.run("codex", json.dumps(p), stdout=io.StringIO(), stderr=io.StringIO())
-        self.assertEqual(seen, ["git ", "git push origin main\n"])
+        # recorded as typed, each beside the line it completes
+        self.assertEqual(seen, [("git ", None), ("push origin main\n", "git push origin main\n"), ("q", None),
+                                ("ls\n", "qls\n")])
 
 
 class OpenCodePaths(unittest.TestCase):

@@ -323,14 +323,15 @@ ask:
   - id: TK-A070
     class: shell
     field: harness_launch
-    # an agent harness's CLI (also through npx, bunx, pnpm dlx, a JavaScript runtime on its package's script, python
-    # -m hermes_cli, hermes-agent) started with settings the line chooses (engine._harness_launches): HOME,
-    # XDG_CONFIG_HOME or the harness's own home or config variable set in any way bash sets one, env -i or -u of them,
-    # a settings option (claude --settings, --setting-sources or --bare, --config, --profile, codex -p, hermes -p, and
-    # codex -c for a key of its hooks, notify, sandbox, approvals or profiles), words xargs gives it, or a word built at
-    # run time. Such a run reads none of the person's settings, and so runs none of the hooks that would record it. A
-    # model, effort or MCP option (-c model_reasoning_effort=high, --mcp-config) and AWS_PROFILE, KUBECONFIG or
-    # JAVA_HOME change none of them, and a harness started as the person set it up runs those hooks: neither is held
+    # an agent harness's CLI (also through npx, bunx, pnpx, pnpm dlx, a JavaScript runtime on its package's script,
+    # python -m hermes_cli, hermes-agent) started with settings the line chooses (engine._harness_launches): HOME,
+    # XDG_CONFIG_HOME or the harness's own home, config or data variable set or unset in any way bash does (a loop's
+    # too), env -i or -u of them, a settings option (claude --settings, --setting-sources or --bare, --config,
+    # --profile, codex -p, hermes -p, codex -c with its hooks, notify, sandbox, approvals or profiles in its value, and
+    # codex --disable of such a feature), words xargs gives it, or a word set at run time; and codex's `features
+    # disable` of such a feature. Such a run reads none of the person's settings, and so runs none of the hooks that
+    # would record it. A model, effort or MCP option (-c model_reasoning_effort=high, --mcp-config) and AWS_PROFILE,
+    # KUBECONFIG or JAVA_HOME change none of them, and a harness started as the person set it up runs those hooks: neither is held
     pattern: '^LAUNCH:'
     label: harness_config
     reason: starting an agent harness with settings the agent chose

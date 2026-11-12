@@ -154,6 +154,7 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "dbus-run-session": (("--config-file", "--dbus-daemon"), 0),
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
             "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
+            "pnpx": (("-p", "--package"), 0),
             "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
             "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
@@ -938,7 +939,8 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            # a ${F=w} may have given its word w, and those words (dollar, ways); each value the line gives IFS (None:
            # one it can't read), each literal it gives a variable anywhere, and each command with what its unquoted
            # expansions may expand to and the variables they read whose literals it doesn't know there (_made_text)
-           "assigns": False, "defaults": {}, "ifs_values": [], "given": {}, "split_values": [], "exports": set()}
+           "assigns": False, "defaults": {}, "ifs_values": [], "given": {}, "split_values": [], "exports": set(),
+           "globopts": _glob_options(command)}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -1297,10 +1299,11 @@ def _learned(ctx):
     without a value the line gives it ("*": an indirect ${!x}, which may be any); whether a command may have set any
     variable (or exported one: set, read, declare …), and the names an export of literal names exported; whether a
     second reading (`readings`) read anything the line as written doesn't (more: without it,
-    analyse(readings=False) is the same parse); the names of the functions it defines."""
+    analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
+    value (an assignment, a loop's variable), with the literals it may get."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
-            "functions": list(ctx["functions"])}
+            "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()}}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -1316,7 +1319,7 @@ def analyse_argv(argv, readings=True, work=None, downloads=False):
            "code_names": [], "made_files": set(), "opaque_values": set(), "joined_values": set(), "reassigned": set(), "export_built": False,
            "stdin_moved": False, "more": False, "assigns": False, "defaults": {}, "ifs_values": [], "given": {},
            "split_values": [],
-           "exports": set()}
+           "exports": set(), "globopts": ()}
     words = list(argv)
     lines = _lines(words, _programs(words, _Parser("", ctx, []).emit(list(argv), 1, [])))
     _made_text(ctx)
@@ -1605,61 +1608,119 @@ GLOB_NAMES = (".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profi
 _PATTERN_SYNTAX = re.compile(r"[*?]|\[[^]]*\]")
 
 
-# a bracket expression's POSIX classes, as a regular expression's class reads them
-_POSIX_CLASSES = {"alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z",
-                  "xdigit": "0-9A-Fa-f", "space": " \\t\\n\\r\\f\\v", "blank": " \\t", "word": "\\w",
-                  "punct": re.escape("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"), "graph": "!-~", "print": " -~",
-                  "cntrl": "\\x00-\\x1f\\x7f"}
+# a bracket expression's POSIX classes, as bash reads them
+_POSIX_CLASSES = {"alpha": str.isalpha, "digit": str.isdigit, "alnum": str.isalnum, "upper": str.isupper,
+                  "lower": str.islower, "space": str.isspace, "blank": lambda c: c in " \t",
+                  "word": lambda c: c.isalnum() or c == "_", "xdigit": lambda c: c in "0123456789abcdefABCDEF",
+                  "punct": lambda c: c.isprintable() and not c.isalnum() and not c.isspace(),
+                  "graph": lambda c: c.isprintable() and not c.isspace(), "print": str.isprintable,
+                  "cntrl": lambda c: not c.isprintable()}
+_STAR, _ANY = object(), object()
 
 
-def _glob_rx(part):
-    """One component of a pathname pattern as a regular expression bash's matching agrees with: `*`, `?`, and a
-    bracket expression with `!` or `^` negating it, ranges and POSIX classes (`[[:alpha:]]`)."""
+def _glob_tokens(part):
+    """One component of a pathname pattern as bash matches it: _STAR for a run of `*` (one, so matching stays
+    linear), _ANY for `?`, a character, or a bracket expression as (characters, ranges, POSIX classes, negated): `!`
+    or `^` negates it, `[=x=]` and `[.x.]` are x."""
     out, i = [], 0
     while i < len(part):
-        c = part[i]
-        j = i + 1
+        c, j = part[i], i + 1
         if c == "[":
             neg = part[j:j + 1] in ("!", "^")
             j += neg
-            body = ["\\]"] * (part[j:j + 1] == "]")
-            j += part[j:j + 1] == "]"
-            while j < len(part) and part[j] != "]":
-                end = part.find(":]", j) if part.startswith("[:", j) else -1
-                if end > 0:
-                    body.append(_POSIX_CLASSES.get(part[j + 2:end], ""))
+            chars, ranges, classes, start = set(), [], [], j
+            while j < len(part) and (part[j] != "]" or j == start):
+                end = part.find(part[j + 1] + "]", j + 2) if part.startswith(("[:", "[=", "[."), j) else -1
+                if end > 0 and part[j + 1] == ":":
+                    classes.append(_POSIX_CLASSES.get(part[j + 2:end], lambda c: False))
                     j = end + 2
-                elif part[j + 1:j + 2] == "-" and part[j + 2:j + 3] not in ("", "]"):   # a range, if it is one
-                    body.append(re.escape(part[j]) + "-" + re.escape(part[j + 2]) if part[j] <= part[j + 2] else "")
+                elif end > 0:
+                    chars.update(part[j + 2:end])
+                    j = end + 2
+                elif part[j + 1:j + 2] == "-" and part[j + 2:j + 3] not in ("", "]"):   # a range
+                    ranges.append((part[j], part[j + 2]))
                     j += 3
                 else:
-                    body.append(re.escape(part[j]))
+                    chars.add(part[j])
                     j += 1
             if j < len(part):
-                out.append("[" + "^" * neg + "".join(body) + "]" if any(body) else "(?!)" * (not neg) or ".")
+                out.append((frozenset(chars), tuple(ranges), tuple(classes), neg))
                 i = j + 1
                 continue
-        out.append(".*" if c == "*" else "." if c == "?" else re.escape(c))
+        if c != "*" or not out or out[-1] is not _STAR:
+            out.append(_STAR if c == "*" else _ANY if c == "?" else c)
         i += 1
-    try:
-        return re.compile("".join(out), re.S)
-    except re.error:   # a class no regular expression reads: it names nothing here
-        return re.compile("(?!)")
+    return out
 
 
-def _unglob(text):
+def _glob_fits(tokens, name, nocase=False):
+    """Whether `name` matches a component's tokens (_glob_tokens): one pass over the name, keeping each token it may
+    stand at, so time grows with the name times the tokens; more fixed tokens than the name has characters never
+    fit."""
+    if sum(t is not _STAR for t in tokens) > len(name):
+        return False
+
+    def one(t, c):
+        if t is _ANY:
+            return True
+        if isinstance(t, str):
+            return t == c or nocase and t.casefold() == c.casefold()
+        chars, ranges, classes, neg = t
+        hit = c in chars or any(lo <= c <= hi for lo, hi in ranges) or any(f(c) for f in classes) or nocase and (
+            c.casefold() in {x.casefold() for x in chars} or any(lo <= c.swapcase() <= hi for lo, hi in ranges))
+        return hit != neg
+
+    def close(states):   # a star may stand for nothing
+        out = set(states)
+        for k in sorted(states):
+            while k < len(tokens) and tokens[k] is _STAR:
+                k += 1
+                out.add(k)
+        return out
+    states = close({0})
+    for c in name:
+        states = close({k if tokens[k] is _STAR else k + 1 for k in states if k < len(tokens) and
+                        (tokens[k] is _STAR or one(tokens[k], c))})
+        if not states:
+            return False
+    return len(tokens) in states
+
+
+# a line's shell options that change what a pattern matches: shopt -s dotglob, nocaseglob or extglob, and a GLOBIGNORE
+# it sets (which turns dotglob on)
+_SHOPT = re.compile(r"\bshopt\b[^;&|\n]*")
+_EXTGLOB = re.compile(r"[?*+@!]\(")
+
+
+def _glob_options(command):
+    """The shell options `command` sets that change what its patterns match (dotglob, nocaseglob), read anywhere on
+    it. One that sets extglob and writes a pattern of its syntax (`@(…)`, `!(…)`) is unreadable (ParseError): its
+    patterns match more than these read."""
+    found = {o for m in _SHOPT.finditer(command) if re.search(r"\s-[a-z]*s", m.group())
+             for o in re.findall(r"\b(dotglob|nocaseglob|extglob)\b", m.group())}
+    if re.search(r"\bGLOBIGNORE\+?=", command):
+        found.add("dotglob")
+    if "extglob" in found and _EXTGLOB.search(command):
+        raise ParseError("a pattern of extglob's syntax is not supported")
+    return frozenset(found)
+
+
+def _unglob(text, options=()):
     """The names a pathname pattern may make: those its bracket expressions can make (_brackets), and with each of
     its components that has two characters of its own read as each name of GLOB_NAMES it matches, all at once
-    (`~/.ss?/conf?g` is ~/.ssh/config; bash matches a leading dot only with a dot, so `*rc` isn't .bashrc), at most
-    64 of them; [] when it makes none it can list.
+    (`~/.ss?/conf?g` is ~/.ssh/config; bash matches a leading dot only with a dot, so `*rc` isn't .bashrc, unless
+    the line's `options`, shell options it sets, hold dotglob; nocaseglob matches in any case), at most 64 of them;
+    [] when it makes none it can list.
     lean: a pattern of fewer characters of its own (`~/.ssh/*`), or one that stands for a name outside GLOB_NAMES, is
     no name here; list more names when a rule protects them"""
     made = _brackets(text)
     named = []
     for t in made or [text]:
         parts = t.split("/")
-        choices = [[p] + [n for n in GLOB_NAMES if (p[0] == "." or n[0] != ".") and _glob_rx(p).fullmatch(n)]
-                   if _PATTERN_SYNTAX.search(p) and len(_PATTERN_SYNTAX.sub("", p)) > 1 else [p] for p in parts]
+        choices = [[p] + [n for n in GLOB_NAMES if (p[0] == "." or n[0] != "." or "dotglob" in options) and
+                          _glob_fits(tokens, n, "nocaseglob" in options)]
+                   if _PATTERN_SYNTAX.search(p) and len(_PATTERN_SYNTAX.sub("", p)) > 1 and (tokens := _glob_tokens(p))
+                   else [p] for p in parts]
         named += ["/".join(c) for c in itertools.islice(itertools.product(*choices), 1, 64)]
     return list(dict.fromkeys(made + named))
 
@@ -2773,7 +2834,8 @@ class _Parser:
                                 self.ctx["more"] |= bool(other)
                                 named += [piece[0]] + other * self.ctx["readings"]
                         self.spliced = was
-                    made = [c for t in named for c in _unglob(t)] if self.ctx["readings"] and target[2] else []
+                    made = [c for t in named for c in _unglob(t, self.ctx["globopts"])] \
+                        if self.ctx["readings"] and target[2] else []
                     self.ctx["more"] |= bool(made)
                     self.charge(sum(map(len, made)))   # each name its pattern may make
                     named = list(dict.fromkeys(named + made))
@@ -3051,7 +3113,7 @@ class _Parser:
             ([w if t is None else None if not t and a else t for t, w, a in zip(texts, words, alones)]
              for texts in self.fill(slots, True)),
             (words[:i] + [c] + words[i + 1:] for i, p in enumerate(patterns) if p and self.ctx["readings"]
-             for c in _unglob(words[i])))
+             for c in _unglob(words[i], self.ctx["globopts"])))
         glob = any(globs)
         for k, texts in enumerate(extra, 12):
             self.charge(len(texts))

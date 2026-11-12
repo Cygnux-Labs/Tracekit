@@ -188,16 +188,23 @@ DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
 # lean: exec's ! isn't denied (git commit -m 'fix!', wait $!): an exec Devin types into bash may expand one
 TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t\n=(])|^[ \t]*\^", re.M),
          "exec": re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")}
-# Typed text a terminal hasn't finished reading: a line with no \n yet, one ended by a backslash, or a quote, backquote,
-# heredoc, $( or ( left open. The shell joins the next call's text into it (`git ` then `push --force origin main`), so
-# each call is decided as the text the shell reads it into, the unfinished text earlier calls typed and its own
-# (typed_line); what stays unfinished once it ran is kept for the next (keep_typed). Where it is kept: per session and
-# per terminal, Codex's exec session, Devin's shell, agy's background task
-TYPED_INTO = {("codex", "write_stdin"): "sessionid", ("devin", "write_to_process"): "shellid",
-              ("antigravity", "manage_task"): "taskid"}
+# Typed text a terminal hasn't finished reading: a line with no line end yet, one ended by a backslash, or a quote,
+# backquote, heredoc, $( or ( left open. A shell joins the next call's text into it (`git ` then `push --force origin
+# main`), but the hook can't tell a shell from another program that took the keys (`q` to a pager), so each call is
+# decided on its own as before and, under `typed_line`, as the text the shell would read it into: the stricter
+# reading stands (typed_line). What stays unfinished once a call ran is kept for the next (keep_typed); a key a line
+# editor acts on (Esc, Tab, an arrow) adds nothing to it. Where it is kept: per session and per terminal, under the
+# field each tool names its terminal by: Codex's exec session, Devin's shell (in any case), agy's background task
+TYPED_INTO = {("codex", "write_stdin"): "session_id", ("devin", "write_to_process"): "shell_id",
+              ("antigravity", "manage_task"): "TaskId"}
+LINE_END = re.compile(r"[\n\x0f\x04]")   # a line end, readline's Ctrl-O (operate-and-get-next), a ^D that flushes
+# keys alone, which a line editor acts on: control characters and the escape sequences an arrow or a function key sends
+KEYS = re.compile(r"(?:\x1b(?:\[[0-?]*[ -/]*[@-~]|O[ -~])?|[\x00-\x09\x0b-\x1f\x7f-\x9f])+")
 CONTINUED = re.compile(r"(?<!\\)(?:\\\\)*\\\n\Z")   # a backslash before the last line end
 OPEN = ("unterminated", "not terminated", "missing )")   # the parse errors of a construct the next line continues
-MAX_TYPED = 1 << 16   # lean: unfinished text past 64 KiB is dropped, its start first; keep more if a real one is longer
+# past 64 KiB of unfinished text, its start is dropped, but the line kept is still past what the policy reads (it
+# holds the next call, TK-OVERSIZE), so nothing dropped reads as gone
+MAX_TYPED = (1 << 16) + 1
 NO_TEXT = re.compile(r"[\x03\x04\n]*")   # only ^C, ^D or line ends: an interrupt or an end of input, no text
 # what a line typed into a running shell (write_to_process) may set or replay there that changes what a later line
 # runs, which the policy, deciding one call at a time, can't see: history replay (fc; history -s, -r or -n), an alias
@@ -213,7 +220,7 @@ SHELL_STATE = {"fc", "bind", "trap", "enable", "exec", "shopt", "hash", "source"
 STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV|BASH_CMDS|BASH_ALIASES|LD_PRELOAD|LD_LIBRARY_PATH|"
                         r"LD_AUDIT|DYLD_\w+|HOME|USERPROFILE|XDG_CONFIG_HOME|(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|"
                         r"KILOCODE|GOOSE|FACTORY|DROID|ANTIGRAVITY|AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR)_\w*"
-                        r"(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN)\w*)(?:$|[\[=+])")
+                        r"(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*)(?:$|[\[=+])")
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -916,7 +923,8 @@ def _blocked(harness, p, raw="", line=None):
             args = call.get("args")
             ti = tool(harness, name, dict(args) if isinstance(args, _Pairs) else args)[1]
             if str(ti.get("Action")).casefold() == "send_input" and isinstance(ti.get("command"), str):
-                why = _typed("agy's manage_task", "send_input", line or ti["command"])
+                why = _typed("agy's manage_task", "send_input", ti["command"]) or line and _typed(
+                    "agy's manage_task", "send_input", line) or _twice(harness, "manage_task", ti)
         return why
     name = _named(harness, str(p.get("tool_name") or ""))
     twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
@@ -938,23 +946,35 @@ def _blocked(harness, p, raw="", line=None):
                        "please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so Tracekit "
                        "can read them."))
         if name in TYPED:
-            return _typed("Devin's", name, line or v, devin=True)
+            return _typed("Devin's", name, v, devin=True) or line and _typed("Devin's", name, line, devin=True) or \
+                _twice(harness, name, ti)
     if harness == "codex" and name == "write_stdin":
-        v = tool(harness, name, p.get("tool_input"))[1].get("command")
-        if isinstance(v, str):
-            return _typed("Codex's", name, line or v)
+        ti = tool(harness, name, p.get("tool_input"))[1]
+        if isinstance(ti.get("command"), str):
+            return _typed("Codex's", name, ti["command"]) or line and _typed("Codex's", name, line) or \
+                _twice(harness, name, ti)
     return _blocked_tool(harness, name, raw)
+
+
+def _twice(harness, name, ti):
+    """The reason a typed-input call that names its terminal under two spellings (`TaskId` and `Task_Id`) is denied in
+    the hook, else None: which one the harness reads decides which text a shell there joins it to."""
+    terminal = _terminal(harness, name, ti)
+    if terminal and terminal[1]:
+        return (f"Blocked by Tracekit: the call names its terminal as {terminal[0]!r} and as {terminal[1][0]!r}, so "
+                "Tracekit can't tell which text it types into; send the id once, under its own name.")
+    return None
 
 
 def _typed(who, name, text, devin=False):
     """The reason text typed into a live terminal (Devin's write_to_process, Codex's write_stdin, agy's send_input,
     Hermes's process_manage; and a Devin exec command, should Devin type it) is denied in the hook, else None: a
     control character its line editor acts on or a history expansion (TYPED), or state it sets in the shell
-    (_sets_state). `text`: what the terminal reads the call into (typed_line). Devin's are read as they type
-    (`devin`); the others' once a line ends, so a key typed alone (q, y, Esc, Tab, an arrow) waits for the line it
-    ends up in, and a ^C or ^D alone, which only interrupts or ends the program, isn't held."""
+    (_sets_state). Called on a call's own text and on the line it may complete (typed_line). Devin's are read as they
+    type (`devin`); the others' once a line ends (\n, a Ctrl-O, a ^D that flushes it), so a key typed alone (q, y,
+    Esc, Tab, an arrow) isn't held, nor a ^C or ^D alone, which only interrupts or ends the program."""
     typing = name != "exec"
-    if typing and not devin and ("\n" not in text or NO_TEXT.fullmatch(text)):
+    if typing and not devin and (not LINE_END.search(text) or NO_TEXT.fullmatch(text)):
         return None
     typed = TYPED["write_to_process" if typing else "exec"].search(text)
     if typed and typed.group().strip(" \t") in ("!", "^"):
@@ -970,21 +990,33 @@ def _typed(who, name, text, devin=False):
     if typed:
         return (f"Blocked by Tracekit: {who} {name} {'types' if typing else 'sends'} a control character "
                 f"({typed.group()!r}), which a terminal's line editor acts on (erasing, discarding or completing "
-                "text), so Tracekit can't read the line that runs; send plain text, each line ending in \\n.")
+                "text), so Tracekit can't read the line that runs; send plain text, each line ending in \\n (a ^C "
+                "clears a line an earlier call left such a key in).")
     return None
+
+
+def _terminal(harness, name, ti):
+    """(the field a typed-input call names its terminal by, the other fields that spell it with other case or `_`),
+    else None for a call that types into none. Devin's decoder may read a field in any case (DEVIN_PATH_KEY)."""
+    key = TYPED_INTO.get((harness, name))
+    if key is None:
+        return None
+    spell = key.casefold().replace("_", "")
+    named = [k for k in ti if k == key or harness == "devin" and k.casefold() == key]
+    return (named[0] if named else key), [k for k in ti if k.casefold().replace("_", "") == spell and k not in named]
 
 
 def typed_line(harness, p, q):
     """For a pre-tool call that types into a terminal (TYPED_INTO): (where that terminal's unfinished typed text is
-    kept, the text the shell reads this call into: that text, then this call's), else None. q: the normalised
-    payload."""
+    kept, the text a shell there reads this call into: that text, then this call's, the call's own text), else None.
+    q: the normalised payload."""
     ti = q.get("tool_input") if isinstance(q.get("tool_input"), dict) else {}
     name = _named(harness, str(p.get("tool_name") or "")) if harness != "antigravity" else "manage_task" * (
         str(ti.get("Action")).casefold() == "send_input")
-    key, text = TYPED_INTO.get((harness, name)), ti.get("command")
-    if key is None or not isinstance(text, str):
+    terminal, text = _terminal(harness, name, ti), ti.get("command")
+    if terminal is None or not isinstance(text, str):
         return None
-    shell_id = next((str(v) for k, v in ti.items() if k.casefold().replace("_", "") == key), "")
+    shell_id = str(ti.get(terminal[0], ""))
     from . import client
     where = hashlib.sha256(f"{harness}|{q.get('session_id')}|{shell_id}".encode()).hexdigest()[:16]
     path = os.path.join(client.client_dir(), "runs", f"typed-{where}.json")
@@ -993,7 +1025,7 @@ def typed_line(harness, p, q):
             kept = json.load(f)["text"]
     except (OSError, ValueError, KeyError, TypeError):
         kept = ""
-    return path, (kept if isinstance(kept, str) else "") + text
+    return path, (kept if isinstance(kept, str) else "") + text, text
 
 
 def unfinished(line):
@@ -1014,9 +1046,21 @@ def unfinished(line):
     return line[line.rfind("\n") + 1:][-MAX_TYPED:]
 
 
-def keep_typed(path, line):
-    """After a typed-input call ran: keep what the shell hasn't finished reading of `line` for the terminal's next."""
+def typed_rest(line, text, kept):
+    """What a terminal keeps unfinished once a typed-input call ran (`line`: kept, the text earlier calls left, then
+    `text`, the call's own). A call of keys alone (Esc, Tab, an arrow; KEYS), which a line editor acts on, leaves it as
+    it was, and keys alone left after a line end are dropped: neither holds the lines that follow. Keys among text stay
+    with it, so the line they end up in is held (_typed) until a ^C drops it: the hook can't read what they did."""
+    if KEYS.fullmatch(text) and not LINE_END.search(text) and "\x03" not in text:
+        return kept
     rest = unfinished(line)
+    return "" if KEYS.fullmatch(rest) else rest
+
+
+def keep_typed(path, line, text):
+    """After a typed-input call ran: keep what the shell hasn't finished reading (typed_rest) for the terminal's
+    next."""
+    rest = typed_rest(line, text, line[:len(line) - len(text)])
     with contextlib.suppress(OSError):
         if not rest:
             os.remove(path)
@@ -1040,8 +1084,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         _reply(harness, stdout, True, "", is_pre)
         return 0
     typed = typed_line(harness, p, q) if is_pre else None
-    if typed:   # decided as the line the terminal reads it into
-        q["tool_input"]["command"] = typed[1]
+    if typed and typed[1] != typed[2]:   # also decided as the line a shell there would read it into
+        q["tool_input"]["typed_line"] = typed[1]
     reason = _blocked(harness, p, raw, typed and typed[1]) if is_pre else None
     err = Tee(stderr)
     if reason is not None:   # a call the hook can't decide as it runs: denied before the pipeline

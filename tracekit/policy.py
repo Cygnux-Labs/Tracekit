@@ -251,6 +251,9 @@ def evaluate(pol, tool, ti, cwd=None):
         ti = {} if ti is None else {"value": ti}
     paths = ti.get("paths") if FIELD_FOR_TOOL.get(tool) == "file_path" else None
     calls = [ti] + [dict(ti, file_path=p) for p in paths] if isinstance(paths, list) else [ti]
+    # typed input is also decided as the line a shell would read it into (agent_hooks.typed_line)
+    if FIELD_FOR_TOOL.get(tool) == "command" and isinstance(ti.get("typed_line"), str):
+        calls.append(dict(ti, command=ti["typed_line"]))
     # Claude Code's Monitor runs its command in the shell Bash uses, and PowerShell is its shell on Windows: a rule
     # applies under either name, so one written for Bash and one for the tool itself both match
     names = [tool] + (["Bash"] if tool in ("Monitor", "PowerShell") else [])

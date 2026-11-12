@@ -76,8 +76,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
                 warnings.filterwarnings("ignore", claude_code.SKEW)
                 said_since(harness, p, stderr)
         typed = agent_hooks.typed_line(harness, p, q) if q is not None and is_pre else None
-        if typed:   # decided as the line the terminal reads it into
-            q["tool_input"]["command"] = typed[1]
+        if typed and typed[1] != typed[2]:   # also decided as the line a shell there would read it into
+            q["tool_input"]["typed_line"] = typed[1]
         reason = agent_hooks._blocked(harness, p, raw, typed and typed[1]) if q is not None and is_pre else None
         if q is None:   # an event Tracekit does not record
             code = 0
