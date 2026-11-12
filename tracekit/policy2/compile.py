@@ -405,8 +405,8 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
-    if pol.get("oversize", "ask") != "ask":   # (left out, TK-OVERSIZE takes its rule's section)
-        errors.append(f"{path}: oversize must be ask")
+    if pol.get("oversize", "ask") not in ("ask", "deny"):   # (left out or deny, TK-OVERSIZE takes its rule's section)
+        errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):
