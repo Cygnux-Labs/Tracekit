@@ -318,7 +318,9 @@ class TypedText(unittest.TestCase):
         from tracekit.integrations import claude_code, harness_hooks
         seen = []
         decide = mock.Mock(side_effect=lambda q: seen.append(q["tool_input"]["command"]) or 0)
-        with mock.patch.object(claude_code, "handle", decide):
+        # (run sets the hook module's agent name, as each hook process does: put back for the tests after this one)
+        with mock.patch.object(claude_code, "handle", decide), \
+                mock.patch.object(claude_code, "AGENT", claude_code.AGENT):
             for chars in ("git ", "push origin main\n"):
                 p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
                      "tool_use_id": "c" + chars[:1], "tool_input": {"session_id": 1, "chars": chars}}
