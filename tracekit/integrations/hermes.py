@@ -87,10 +87,10 @@ def _typed(tool, args, kept=""):
     if tool != "process_manage" or not isinstance(args, dict) or args.get("action") not in ("write", "submit") or \
             not isinstance(args.get("data"), str):
         return None, None, None
-    from tracekit.agent_hooks import _typed as typed
+    from tracekit.agent_hooks import UNKNOWN, _typed as typed
     text = (args["data"] + "\n" * (args["action"] == "submit")).replace("\r", "\n")
     line, who = kept + text, "Hermes's process_manage"
-    return typed(who, args["action"], text) or typed(who, args["action"], line), line, text
+    return typed(who, args["action"], text) or typed(who, args["action"], line.replace(UNKNOWN, "")), line, text
 
 
 def _block(message):

@@ -193,13 +193,20 @@ TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t
 # main`), but the hook can't tell a shell from another program that took the keys (`q` to a pager), so each call is
 # decided on its own as before and, under `typed_line`, as the text the shell would read it into: the stricter
 # reading stands (typed_line). What stays unfinished once a call ran is kept for the next (keep_typed); a key a line
-# editor acts on (Esc, Tab, an arrow) adds nothing to it. Where it is kept: per session and per terminal, under the
+# editor acts on (Esc, an arrow) adds nothing to it, but one that puts text in it (EDITS) leaves it unknown. Where it
+# is kept: per session and per terminal, under the
 # field each tool names its terminal by: Codex's exec session, Devin's shell (in any case), agy's background task
 TYPED_INTO = {("codex", "write_stdin"): "session_id", ("devin", "write_to_process"): "shell_id",
               ("antigravity", "manage_task"): "TaskId"}
 LINE_END = re.compile(r"[\n\x0f\x04]")   # a line end, readline's Ctrl-O (operate-and-get-next), a ^D that flushes
 # keys alone, which a line editor acts on: control characters and the escape sequences an arrow or a function key sends
 KEYS = re.compile(r"(?:\x1b(?:\[[0-?]*[ -/]*[@-~]|O[ -~])?|[\x00-\x09\x0b-\x1f\x7f-\x9f])+")
+# keys alone that put text the hook can't read into the line (completion, history recall or search, a yank): Tab, Up,
+# Down, Page Up and Down, Ctrl-P, -N, -R, -S and -Y (an Alt- key, Esc and a letter, is no key alone: KEYS). The line
+# then holds UNKNOWN, a NUL no shell reads (bash's strings end there), so the line an Enter runs is held as unread
+# (TK-SHELL-PARSE) until a ^C drops it
+EDITS = re.compile(r"\t|\x1b(?:\[[0-9;]*[AB]|\[[56](?:;[0-9]*)?~|O[AB])|[\x0e\x10\x12\x13\x19]")
+UNKNOWN = "\x00"
 CONTINUED = re.compile(r"(?<!\\)(?:\\\\)*\\\n\Z")   # a backslash before the last line end
 OPEN = ("unterminated", "not terminated", "missing )")   # the parse errors of a construct the next line continues
 # past 64 KiB of unfinished text, its start is dropped, but the line kept is still past what the policy reads (it
@@ -924,7 +931,7 @@ def _blocked(harness, p, raw="", line=None):
             ti = tool(harness, name, dict(args) if isinstance(args, _Pairs) else args)[1]
             if str(ti.get("Action")).casefold() == "send_input" and isinstance(ti.get("command"), str):
                 why = _typed("agy's manage_task", "send_input", ti["command"]) or line and _typed(
-                    "agy's manage_task", "send_input", line) or _twice(harness, "manage_task", ti)
+                    "agy's manage_task", "send_input", line.replace(UNKNOWN, "")) or _twice(harness, "manage_task", ti)
         return why
     name = _named(harness, str(p.get("tool_name") or ""))
     twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
@@ -946,12 +953,13 @@ def _blocked(harness, p, raw="", line=None):
                        "please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so Tracekit "
                        "can read them."))
         if name in TYPED:
-            return _typed("Devin's", name, v, devin=True) or line and _typed("Devin's", name, line, devin=True) or \
+            return _typed("Devin's", name, v, devin=True) or line and _typed("Devin's", name, line.replace(UNKNOWN, ""),
+                                                                    devin=True) or \
                 _twice(harness, name, ti)
     if harness == "codex" and name == "write_stdin":
         ti = tool(harness, name, p.get("tool_input"))[1]
         if isinstance(ti.get("command"), str):
-            return _typed("Codex's", name, ti["command"]) or line and _typed("Codex's", name, line) or \
+            return _typed("Codex's", name, ti["command"]) or line and _typed("Codex's", name, line.replace(UNKNOWN, "")) or \
                 _twice(harness, name, ti)
     return _blocked_tool(harness, name, raw)
 
@@ -972,7 +980,8 @@ def _typed(who, name, text, devin=False):
     control character its line editor acts on or a history expansion (TYPED), or state it sets in the shell
     (_sets_state). Called on a call's own text and on the line it may complete (typed_line). Devin's are read as they
     type (`devin`); the others' once a line ends (\n, a Ctrl-O, a ^D that flushes it), so a key typed alone (q, y,
-    Esc, Tab, an arrow) isn't held, nor a ^C or ^D alone, which only interrupts or ends the program."""
+    Esc, Tab, an arrow) isn't held here, nor a ^C or ^D alone, which only interrupts or ends the program; the line a
+    key alone left UNKNOWN (typed_rest) is the signer's to hold (the callers read it without that mark)."""
     typing = name != "exec"
     if typing and not devin and (not LINE_END.search(text) or NO_TEXT.fullmatch(text)):
         return None
@@ -1048,13 +1057,15 @@ def unfinished(line):
 
 def typed_rest(line, text, kept):
     """What a terminal keeps unfinished once a typed-input call ran (`line`: kept, the text earlier calls left, then
-    `text`, the call's own). A call of keys alone (Esc, Tab, an arrow; KEYS), which a line editor acts on, leaves it as
-    it was, and keys alone left after a line end are dropped: neither holds the lines that follow. Keys among text stay
-    with it, so the line they end up in is held (_typed) until a ^C drops it: the hook can't read what they did."""
+    `text`, the call's own). A call of keys alone (Esc, an arrow; KEYS), which a line editor acts on, leaves it as it
+    was, and keys alone left after a line end are dropped: neither holds the lines that follow; but keys that put text
+    in it the hook can't read (EDITS: completion, history) leave it UNKNOWN, so the line the next Enter runs is held.
+    Keys among text stay with it, so the line they end up in is held (_typed) until a ^C drops it: the hook can't read
+    what they did."""
     if KEYS.fullmatch(text) and not LINE_END.search(text) and "\x03" not in text:
-        return kept
+        return kept + UNKNOWN * (bool(EDITS.search(text)) and not kept.endswith(UNKNOWN))
     rest = unfinished(line)
-    return "" if KEYS.fullmatch(rest) else rest
+    return (UNKNOWN if EDITS.search(rest) else "") if KEYS.fullmatch(rest) else rest
 
 
 def keep_typed(path, line, text):

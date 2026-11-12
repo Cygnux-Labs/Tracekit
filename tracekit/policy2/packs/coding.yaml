@@ -348,6 +348,18 @@ ask:
     reason: starting an agent harness with settings the agent chose
     remedy: Have a person approve the held call, or start the harness with the person's own settings, which record its calls.
     rationale: A nested agent run under another home or settings skips Tracekit's hooks, so none of its calls would be decided or recorded.
+  - id: TK-A071
+    class: shell
+    field: gh_runs
+    # gh running what its own commands don't say (engine._gh_runs): an alias set or imported (a --shell one runs a
+    # shell; a plain one any gh command, `pr merge --admin` or an API write), an extension installed, upgraded, browsed
+    # for or run by `gh extension exec`, a command that is none of gh's own (an alias's or an extension's: `gh m 1`,
+    # `gh x`), and the editor, pager or browser `gh config set` names. Held, as the alias's or extension's own words
+    # aren't on the line that runs them
+    pattern: '^GH:'
+    reason: a gh alias or extension, which runs what its definition says
+    remedy: Run the gh command or program itself, or have a person approve the held call.
+    rationale: An alias or extension runs words the call doesn't show (an admin merge, an API write, any program), so the policy can't decide what it does.
   - id: TK-A057
     class: shell
     # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit

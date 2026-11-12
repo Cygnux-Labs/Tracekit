@@ -516,18 +516,25 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
             d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
         if tool in FILE_TOOLS and cls == "unknown":
             d = _stricter(d, policy.decide(FILE_TOOLS[tool], _as_file_tool(tool, args), untrusted=untrusted))
-        # text typed into a running process (Hermes Agent's process_manage write or submit) is also decided as the
-        # shell line it is, where that process is a shell; and a typed call, as the line a shell there would read it
-        # into (`typed_line`: the unfinished text earlier calls typed, then its own; the hooks set it). Either counts
-        # only where a deny or ask rule of the pack matches it: a line a shell can't read (a REPL's) isn't held for that
-        lines = [args.get("typed_line")] + [args.get("data")] * (tool == "process_manage" and cls == "unknown" and
-                                                                  args.get("action") in ("write", "submit"))
+        # a typed call is also decided as the line a shell there would read it into (`typed_line`: the unfinished text
+        # earlier calls typed, then its own; the hooks set it), which counts wherever a deny or ask rule matches it,
+        # TK-SHELL-PARSE too: a line keys alone put text into that the hook can't read (completion, history) holds a
+        # NUL (agent_hooks.UNKNOWN), unread, and is decided without it too, so a deny the text makes stands. Text typed
+        # into a running process (Hermes Agent's process_manage write or submit) is also decided as the shell line it
+        # is, where that process is a shell, counting only where a deny or ask rule of the pack matches it: a line a
+        # shell can't read (a REPL's) isn't held for that
+        typed = args.get("typed_line")
+        for text in [typed, typed.replace("\x00", "")] if isinstance(typed, str) else []:
+            b = policy.decide("Bash", {"command": text}, untrusted=untrusted)
+            if b["verdict"] in ("ask", "deny"):
+                d = _stricter(d, b)
         flags = {r["id"] for sec, r, *_ in policy.rules if sec == "flag"}
-        for text in lines:
-            if isinstance(text, str):
-                b = policy.decide("Bash", {"command": text}, untrusted=untrusted)
-                if set(b["rule_ids"]) - flags - {"TK-SHELL-PARSE"}:
-                    d = _stricter(d, b)
+        data = args.get("data")
+        if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
+                isinstance(data, str):
+            b = policy.decide("Bash", {"command": data}, untrusted=untrusted)
+            if set(b["rule_ids"]) - flags - {"TK-SHELL-PARSE"}:
+                d = _stricter(d, b)
         mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
         if tool.startswith("mcp__") and "__" in tool[5:]:
             # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>

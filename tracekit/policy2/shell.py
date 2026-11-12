@@ -429,7 +429,7 @@ def _assignments(ways):
 # a bracket expression of a pathname pattern: whether it is negated, and its set (a ] first is one of its characters)
 _BRACKET = re.compile(r"\[([!^]?)(\]?[^]]*)\]")
 # $NAME or ${NAME}, fully matched, and a function's positional parameter $1 to $9 (_Parser.call)
-_PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*|[1-9])\}?")
+_PLAIN_VARIABLE = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*|[0-9])\}?")
 # what bash splits or globs in an unquoted expansion's value (IFS as bash sets it)
 _SPLIT_OR_GLOB = re.compile(r"[ \t\n*?[]")
 # variables bash itself sets as the line runs, whatever the line gives them: never known (track_values). $_ is the
@@ -915,14 +915,18 @@ def parse(command):
     return analyse(command)[0]
 
 
-def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None):
+def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None, globs=frozenset()):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code, what else it learned: _learned). `readings`: False reads the line only as written, without its second
     readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all.
     `downloads`: the line may download (_may_download), so a function on it isn't read (_Parser.define). `aliases`:
     the aliases the line defines ({name: [values]}), read wherever a command has the name (_Parser.emit): bash may
     parse a use after its definition runs (a trap's action, a later line), so the line is read again with them until
-    it defines no more."""
+    it defines no more; `globs`: the glob options its commands set (_globs_set), read again with them until it sets no
+    more. A line with a NUL is unread: no shell reads one (bash's strings end there; a spawn refuses
+    one), and a terminal's typed text holds one where keys put text in it the hook can't read (agent_hooks.UNKNOWN)."""
+    if "\x00" in command:
+        raise ParseError("a NUL character")
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
            "cut": [], "steps": [], "redefined": set(), "functions": {}, "calling": [], "read": [], "assigned": [],
            "unresolved": set(), "uncalled": {}, "exported": set(), "ifs_named": _names_ifs(command),
@@ -940,7 +944,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            # one it can't read), each literal it gives a variable anywhere, and each command with what its unquoted
            # expansions may expand to and the variables they read whose literals it doesn't know there (_made_text)
            "assigns": False, "defaults": {}, "ifs_values": [], "given": {}, "split_values": [], "exports": set(),
-           "globopts": _glob_options(command)}
+           "globopts": _glob_options(command, globs)}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -1010,9 +1014,11 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
         raise
     again = None
     if ctx["aliases"] != (aliases or {}):
-        again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"])
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"], globs)
     elif ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
-        again = analyse(command, persistent_target, readings, ctx["work"], downloads=True, aliases=aliases)
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads=True, aliases=aliases, globs=globs)
+    elif not (more := _globs_set(ctx["cmds"])) <= ctx["globopts"]:
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, aliases, ctx["globopts"] | more)
     if again is not None:
         again[5]["more"] |= ctx["more"]   # (what this reading read decided how the line is read again)
         return again
@@ -1114,16 +1120,36 @@ _CURL_FLAGS = "012346aBfgGhiIjJklLMnNOpqRsSvVZ#:"   # curl's short options with 
 def _ref_update(name, args):
     """How an API call (gh api, curl, wget, HTTPie, xh) updates a GitHub ref: "force" with a field or body naming force
     (any value but a literal false or 0) to /repos/<owner>/<repo>/git/refs/…, or in a GraphQL updateRef or updateRefs;
-    "unread" for a call to a ref with a body the parser can't read (_unread_body), which may force; else None. A PATCH
-    without force only fast-forwards the ref, as a plain push does.
-    lean: a GraphQL query from a file or a variable, and a body from stdin through a pipe or redirect (`… | http PATCH
-    …`), aren't read; read them if an agent sends one"""
-    refs = any(_GIT_REFS.search(a) for a in args)
-    if not refs and not (any(_GRAPHQL.search(a) for a in args) and any(re.search(r"updateRefs?\b", a) for a in args)):
-        return None
-    if any(_FORCE_FIELD.search(a) for a in args):
+    "unread" for a call to a ref with a body the parser can't read (_unread_body), which may force, and for a GraphQL
+    call whose query it can't read (from a file or input, `-F query=@m.graphql`, `--input q.json`, or built at run
+    time), which may be any write an inline one is held for; else None. A PATCH without force only fast-forwards the
+    ref, as a plain push does.
+    lean: a body from stdin through a pipe or redirect (`… | http PATCH …`) isn't read; read it if an agent sends one"""
+    refs, graphql = any(_GIT_REFS.search(a) for a in args), any(_GRAPHQL.search(a) for a in args)
+    if (refs or graphql and any(re.search(r"updateRefs?\b", a) for a in args)) and any(
+            _FORCE_FIELD.search(a) for a in args):
         return "force"
+    if graphql and (_unread_body(name, args) or name == "gh" and _unread_query(args)):
+        return "unread"
     return "unread" if refs and _unread_body(name, args) else None
+
+
+def _unread_query(args):
+    """Whether gh api's GraphQL query is one the parser can't read: a field's value from a file (`-F query=@f`, which
+    -F reads), a substitution (`-f query="$(cat f)"`) or a variable the line doesn't give (`-f query="$Q"`; a query's
+    own `$f` is GraphQL's variable)."""
+    for i, a in enumerate(args):
+        if a in ("-f", "-F", "--field", "--raw-field"):
+            opt, value = a, args[i + 1] if i + 1 < len(args) else ""
+        elif re.match(r"-[fF].", a) or a.startswith(("--field=", "--raw-field=")):
+            opt, value = (a.split("=", 1) if a.startswith("--") else (a[:2], a[2:]))
+        else:
+            continue
+        key, _, v = value.partition("=")
+        if key == "query" and (re.search(r"\$\(|`", v) or re.fullmatch(r"\$\{?\w+\}?", v) or
+                               opt in ("-F", "--field") and v.startswith("@")):
+            return True
+    return False
 
 
 def _unread_body(name, args):
@@ -1365,34 +1391,83 @@ def _sed_prints(script):
 # files whose text is data: notes, logs and data formats, and anything in a memory, notes or reports folder
 _DATA_FILE = re.compile(r"\.(?:md|markdown|txt|text|log|json|jsonl|ndjson|csv|tsv)$|(?:^|/)(?:memory|notes|reports?)/",
                         re.I)
+# programs that only read and print what they're given: none runs, copies or writes it, without an option that does
+# (rg's --pre, yq's in-place edit, any of less's: + commands, a log file); text filters that read only their input and
+# print it (sort and uniq may write a file); commands that read no file. The only company data keeps on a line that
+# reads it as data (a download's bytes, text written into a notes file)
+PURE_READERS = re.compile(r"cat|head|tail|less|wc|grep|rg|jq|yq|sha(?:1|224|256|384|512)?sum|md5sum|file|stat|ls|diff|"
+                          r"cmp")
+_READER_RUNS = {"rg": re.compile(r"--pre\b.*"), "yq": re.compile(r"-[A-Za-z]*[is][A-Za-z]*|--in-?place|--split-exp.*"),
+                "less": re.compile(r"[-+].*")}
+_TEXT_FILTERS = {"cut", "tr", "nl", "fold", "fmt", "column", "tac", "rev", "paste", "comm", "expand", "unexpand"}
+NO_FILES = {"cd", "mkdir", "echo", "printf", "true", "false", ":", "sleep", "pwd", "test", "[", "[[", "date"}
+
+
+def reads_only(c, filters=False):
+    """Whether a command only reads and prints (PURE_READERS; with `filters`, _TEXT_FILTERS too) or reads no file
+    (NO_FILES), writing nowhere but /dev/null or stderr."""
+    name = c["argv"][0]
+    return (PURE_READERS.fullmatch(name) and not (name in _READER_RUNS and any(
+        _READER_RUNS[name].fullmatch(a) for a in c["argv"][1:])) or name in NO_FILES or filters and
+        name in _TEXT_FILTERS) and all(o in ("/dev/null", "/dev/stderr") for o in c.get("out", ()))
+
+
+# what else may run on a line whose text written into a data file stays data: commands that only read and print, or
+# read no file (reads_only), sort and uniq, ones that write text (echo, printf, cat, tee: steps of their own), remove
+# or touch files, sed (one the parser reads: its e runs what it names, else it is unread), and gh's and git's (gh
+# posts a file's text, git commits it; their aliases, extensions and git's mv are read below). Nothing that runs code:
+# a shell, an interpreter, a project script, make, an agent
+_DATA_COMPANY = {"echo", "printf", "cat", "tee", "sort", "uniq", "rm", "touch", "gh", "git", "sed", "gsed"}
+# gh's own commands (cobra's names and aliases: any other word runs an alias or an extension, a program of its own)
+GH_COMMANDS = frozenset((
+    "accessibility", "a11y", "agent-task", "alias", "api", "attestation", "auth", "browse", "cache", "codespace", "cs",
+    "completion", "config", "extension", "ext", "extensions", "gist", "gpg-key", "help", "issue", "label", "org", "pr",
+    "preview", "project", "release", "repo", "ruleset", "rs", "run", "search", "secret", "ssh-key", "status",
+    "variable", "version", "workflow"))
+# what gh and git may do with the data file itself: post it (gh's own commands), commit or stage it (not git mv)
+_GIT_DATA = {"add", "commit", "merge", "tag", "diff", "status", "log"}
 
 
 def _data_write(step, cmds):
     """Whether a step that only copies text into files (cat, tee, echo or printf: `data`) writes data a line can't run
-    whatever runs after it: every file it writes is a data file (_DATA_FILE), the text goes on down no pipe, and no
-    command on the line runs one of those files: by its path, as a shell's, an interpreter's, source's or eval's word
-    or input, after chmod, or as what a reader of it pipes into one of those."""
+    whatever runs after it, on an allow-list: every file it writes is a data file (_DATA_FILE), the text goes on down
+    no pipe, every other command on the line is one that runs no code (_DATA_COMPANY, reads_only), and each that names
+    one of those files (a word the line builds, or a pattern, may name it) only reads and prints it to the terminal or
+    down a pipe of readers and text filters, writes text into it (tee), posts it (gh) or commits it (git add or
+    commit). Anything else keeps main's reading: a copy, move or link (cp, mv, ln, install, rsync, dd, git mv), its
+    text redirected or appended anywhere (`cat notes/a.md >> ~/.bashrc`), and a command that runs it or may."""
     to = step.get("to")
     if not to or step.get("piped_on") or not all(_DATA_FILE.search(t) and not t.startswith("/dev/") for t in to):
         return False
     names = {posixpath.basename(t) for t in to}
-
-    def named(c):   # (a word the line builds, or a pattern, may name it)
-        return any(posixpath.basename(w) in names or re.search(r"[$`*?[]", w)
-                   for w in c["argv"][1:] + list(c.get("in", ())))
-
-    def runs(c):   # (sed and awk only from a script file: -f)
-        kind = _kind(c["argv"][0])
-        return c["argv"][0] in SHELLS or kind not in (None, "sed", "awk") or kind and any(
-            re.fullmatch(r"-[a-zA-Z]*f|--file(=.*)?", a) for a in c["argv"][1:]) or c["argv"][0] in (
-            "source", ".", "eval", "exec", "chmod", "xargs", "parallel", "env", "nohup", "sudo", "doas")
-    readers = {(c["pipeline"], c.get("stage", 0)) for c in cmds if c is not step.get("writer") and named(c)}
+    mention = re.compile(r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(map(re.escape, names)))
+    after = {}   # each pipeline's last stage that doesn't only read and print
     for c in cmds:
+        if c is not step.get("writer") and not reads_only(c, True):
+            after[c["pipeline"]] = max(after.get(c["pipeline"], -1), (c.get("stage") or 0))
+    for c in cmds:
+        name, args = c["argv"][0], c["argv"][1:]
         if c is step.get("writer"):
             continue
-        if posixpath.basename(c["word"]) in names or re.search(r"[$`*?[]", c["word"]) or runs(c) and named(c) or \
-                runs(c) and any(
-                p == c["pipeline"] and s < c.get("stage", 0) for p, s in readers):
+        if not reads_only(c, True) and name not in _DATA_COMPANY or c["opaque"] or posixpath.basename(c["word"]) in names or \
+                re.search(r"[$`*?[]", c["word"]) or name == "gh" and (args[0] if args else "") not in GH_COMMANDS:
+            return False
+        if not any(mention.search(w) or re.search(r"[$`*?[]", w) for w in args + list(c.get("in", ())) + list(
+                c.get("stdin", ()))):
+            continue
+        if name == "tee" and all(_DATA_FILE.search(a) for a in args if not a.startswith("-")) and not c["via"] or \
+                name == "gh" or name in NO_FILES and reads_only(c) and not c["via"]:
+            continue
+        if name == "git" and (k := _git_sub(args)) is not None and args[k] in _GIT_DATA and not c.get("out") and \
+                not c["via"]:
+            continue
+        # sed naming it only in its script's text (a link in another note), not as a file it edits or reads, nor
+        # after r, R, w or W (a file its script reads or writes)
+        script = _sed_scripts([a for a in args if a]) if name in ("sed", "gsed") else None   # (BSD's -i '')
+        if script is not None and not c["via"] and all(w in script for w in args if mention.search(w)) and \
+                not re.search(r"[rRwW][ \t]*[^\s;]*?(?:%s)" % "|".join(map(re.escape, names)), script):
+            continue
+        if not reads_only(c, True) or c["via"] or after.get(c["pipeline"], -1) > (c.get("stage") or 0):
             return False
     return True
 
@@ -1643,6 +1718,13 @@ GLOB_NAMES = (".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profi
 _PATTERN_SYNTAX = re.compile(r"[*?]|\[[^]]*\]")
 
 
+def _bare(part):
+    """`part` without its pattern syntax (_PATTERN_SYNTAX), in linear time: every bracket expression ends by its last
+    `]`, so the regex reads only up to there (from each unclosed `[` to the end is quadratic: 40,000 took minutes)."""
+    cut = part.rfind("]") + 1
+    return _PATTERN_SYNTAX.sub("", part[:cut]) + re.sub(r"[*?]", "", part[cut:])
+
+
 # a bracket expression's POSIX classes, as bash reads them
 _POSIX_CLASSES = {"alpha": str.isalpha, "digit": str.isdigit, "alnum": str.isalnum, "upper": str.isupper,
                   "lower": str.islower, "space": str.isspace, "blank": lambda c: c in " \t",
@@ -1650,37 +1732,81 @@ _POSIX_CLASSES = {"alpha": str.isalpha, "digit": str.isdigit, "alnum": str.isaln
                   "punct": lambda c: c.isprintable() and not c.isalnum() and not c.isspace(),
                   "graph": lambda c: c.isprintable() and not c.isspace(), "print": str.isprintable,
                   "cntrl": lambda c: not c.isprintable()}
+# the collating symbols bash's [.name.] reads (its collsyms.h: POSIX's names of the portable characters)
+_COLLATING = dict(zip(
+    "space exclamation-mark quotation-mark number-sign dollar-sign percent-sign ampersand apostrophe left-parenthesis "
+    "right-parenthesis asterisk plus-sign comma hyphen hyphen-minus period full-stop slash solidus zero one two three "
+    "four five six seven eight nine colon semicolon less-than-sign equals-sign greater-than-sign question-mark "
+    "commercial-at left-square-bracket backslash reverse-solidus right-square-bracket circumflex circumflex-accent "
+    "underscore low-line grave-accent left-brace left-curly-bracket vertical-line right-brace right-curly-bracket "
+    "tilde".split(), " !\"#$%&'()*+,--..//0123456789:;<=>?@[\\\\]^^__`{{|}}~")) | {"tab": "\t", "newline": "\n"}
 _STAR, _ANY = object(), object()
 
 
 def _glob_tokens(part):
     """One component of a pathname pattern as bash matches it: _STAR for a run of `*` (one, so matching stays
     linear), _ANY for `?`, a character, or a bracket expression as (characters, ranges, POSIX classes, negated): `!`
-    or `^` negates it, `[=x=]` and `[.x.]` are x."""
+    or `^` negates it; `[=x=]` is x (one character: `[=ab=]` is no equivalence class, so its `[` is one of the set's
+    characters and its `]` ends the set), `[.x.]` x or the character a collating symbol names (`[.underscore.]` is
+    `_`; an unknown one none); a backslash escapes the next. One without its `]` is a `[`. Linear: where a set read
+    from each place would end is found once for all (`shut`), so an unclosed `[` isn't read to the end for each."""
+    n = len(part)
+    if "[" not in part:
+        return _plain_tokens(part)
+    # after[c][k]: the first place from k where `c]` starts (c is `:` or `.`), n where none
+    after = {}
+    for c in ":.":
+        at, nxt = n, [n] * (n + 2)
+        for k in range(n - 2, -1, -1):
+            if part[k] == c and part[k + 1] == "]":
+                at = k
+            nxt[k] = at
+        after[c] = nxt
+
+    def step(j):   # (what the set's member at j is: a kind and its value, where the next one starts); None: no end
+        c, nxt = part[j], part[j + 1:j + 2]
+        if c == "\\" and nxt:
+            return ("char", nxt), j + 2
+        if c == "[" and nxt == ":" and (end := after[":"][j + 2]) < n:   # (a name longer than any is none: unread)
+            return ("class", part[j + 2:end] if end - j < 12 else ""), end + 2
+        if c == "[" and nxt == "=" and part[j + 3:j + 5] == "=]" and j + 2 < n:
+            return ("char", part[j + 2]), j + 5
+        if c == "[" and nxt == ".":
+            end = after["."][j + 2]
+            if end == n:
+                return None   # bash reads the symbol to the pattern's end: the set has none
+            name = part[j + 2:end] if end - j < 32 else ""
+            return ("char", name if len(name) == 1 else _COLLATING.get(name, "")), end + 2
+        if nxt == "-" and part[j + 2:j + 3] not in ("", "]"):
+            return ("range", (c, part[j + 2])), j + 3
+        return ("char", c), j + 1
+
+    shut = [None] * (n + 6)   # shut[j]: where a set read from j (past its first member) ends, None if it doesn't
+    for j in range(n - 1, -1, -1):
+        if part[j] == "]":
+            shut[j] = j
+        elif (s := step(j)) is not None:
+            shut[j] = shut[s[1]]
     out, i = [], 0
-    while i < len(part):
-        c, j = part[i], i + 1
+    while i < n:
+        c = part[i]
         if c == "[":
-            neg = part[j:j + 1] in ("!", "^")
-            j += neg
-            chars, ranges, classes, start = set(), [], [], j
-            while j < len(part) and (part[j] != "]" or j == start):
-                end = part.find(part[j + 1] + "]", j + 2) if part.startswith(("[:", "[=", "[."), j) else -1
-                if end > 0 and part[j + 1] == ":":
-                    classes.append(_POSIX_CLASSES.get(part[j + 2:end], lambda c: False))
-                    j = end + 2
-                elif end > 0:
-                    chars.update(part[j + 2:end])
-                    j = end + 2
-                elif part[j + 1:j + 2] == "-" and part[j + 2:j + 3] not in ("", "]"):   # a range
-                    ranges.append((part[j], part[j + 2]))
-                    j += 3
-                else:
-                    chars.add(part[j])
-                    j += 1
-            if j < len(part):
+            neg = part[i + 1:i + 2] in ("!", "^")
+            start = i + 1 + neg
+            first = step(start) if start < n else None
+            end = first and (shut[first[1]] if part[start] == "]" else shut[start])
+            if end is not None:
+                chars, ranges, classes, j = set(), [], [], start
+                while j == start or j < end:
+                    (kind, value), j = step(j)
+                    if kind == "class":
+                        classes.append(_POSIX_CLASSES.get(value, lambda c: False))
+                    elif kind == "range":
+                        ranges.append(value)
+                    else:
+                        chars.update(value)
                 out.append((frozenset(chars), tuple(ranges), tuple(classes), neg))
-                i = j + 1
+                i = end + 1
                 continue
         if c != "*" or not out or out[-1] is not _STAR:
             out.append(_STAR if c == "*" else _ANY if c == "?" else c)
@@ -1688,12 +1814,17 @@ def _glob_tokens(part):
     return out
 
 
+def _plain_tokens(part):
+    out = []
+    for c in part:
+        if c != "*" or not out or out[-1] is not _STAR:
+            out.append(_STAR if c == "*" else _ANY if c == "?" else c)
+    return out
+
+
 def _glob_fits(tokens, name, nocase=False):
     """Whether `name` matches a component's tokens (_glob_tokens): one pass over the name, keeping each token it may
-    stand at, so time grows with the name times the tokens; more fixed tokens than the name has characters never
-    fit."""
-    if sum(t is not _STAR for t in tokens) > len(name):
-        return False
+    stand at, so time grows with the name times the tokens (_unglob tries only names as long as its fixed tokens)."""
 
     def one(t, c):
         if t is _ANY:
@@ -1723,38 +1854,92 @@ def _glob_fits(tokens, name, nocase=False):
 
 # a line's shell options that change what a pattern matches: shopt -s dotglob, nocaseglob or extglob, and a GLOBIGNORE
 # it sets (which turns dotglob on)
-_SHOPT = re.compile(r"\bshopt\b[^;&|\n]*")
+# commands that list or change a file's metadata, not its text: a pattern's names among their words are only its
+# bracket sets' (`ls ~/.ssh/id_*` reads no key)
+_METADATA = {"ls", "stat", "du", "chmod", "chown", "chgrp"}
+_SHOPT = re.compile(r"\bshopt\b([^;&|\n]*)")
 _EXTGLOB = re.compile(r"[?*+@!]\(")
+_GLOB_OPTIONS = {"dotglob", "nocaseglob", "extglob"}
+# a shell started with shell options (bash -O x, +O; zsh's -o x, --globdots, its letters: -4 is GLOB_DOTS), bash's
+# BASHOPTS, and zsh's setopt, unsetopt and emulate; in at most 16 words after the shell's name, so each search stays
+# linear (_globs_set reads every word of the commands the parse finds)
+_SHELL_O = re.compile(r"(?<![^\s;&|(`/])(?:ba)?sh\s+(?:[^\s;&|]+[ \t]+){0,16}?[-+]O\s*(\S*)")
+_ZSH_OPTIONS = re.compile(r"\b(?:un)?setopt\b|\bemulate\b|(?<![^\s;&|(`/])zsh\s+(?:[^\s;&|]+[ \t]+){0,16}?(?:[-+]o|--\w|"
+                          r"[-+]\w*[^cilsxvefdnu\s])")
+_BASHOPTS = re.compile(r"\bBASHOPTS\b(?:\+?=([\w:]*)(?=[\s;&|)]|$))?")
 
 
-def _glob_options(command):
-    """The shell options `command` sets that change what its patterns match (dotglob, nocaseglob), read anywhere on
-    it. One that sets extglob and writes a pattern of its syntax (`@(…)`, `!(…)`) is unreadable (ParseError): its
-    patterns match more than these read."""
-    found = {o for m in _SHOPT.finditer(command) if re.search(r"\s-[a-z]*s", m.group())
-             for o in re.findall(r"\b(dotglob|nocaseglob|extglob)\b", m.group())}
-    if re.search(r"\bGLOBIGNORE\+?=", command):
-        found.add("dotglob")
-    if "extglob" in found and _EXTGLOB.search(command):
+def _glob_options(command, more=frozenset()):
+    """The shell options `command` sets that change what its patterns match (dotglob, nocaseglob, extglob), read
+    anywhere on it, as written and with its quotes and escapes gone (`shopt -s dot''glob` is dotglob), with `more`, the
+    ones its commands set (_globs_set): shopt -s, bash -O and BASHOPTS by name, a GLOBIGNORE in any form (set, it
+    turns dotglob on). One set in a way the parser can't read (a name in a variable, zsh's setopt or options) is
+    "unread", so its patterns are read with every option (_unglob). A line that may set extglob and writes a pattern
+    of its syntax (`@(…)`, `!(…)`), or zsh's (`^x`, `x~y`, `x#`), is unreadable (ParseError): its patterns match more
+    than these read."""
+    found = set(more)
+    for text in (command, re.sub(r"['\"\\]", "", command)):
+        for m in _SHOPT.finditer(text):
+            words = m.group(1).split()
+            if any(re.fullmatch(r"-[a-z]*s[a-z]*", w) for w in words):
+                found |= {w if re.fullmatch(r"[A-Za-z_]\w*", w) else "unread" for w in words if not w.startswith("-")}
+        found |= {w if re.fullmatch(r"[A-Za-z_]\w*", w) else "unread" for w in _SHELL_O.findall(text)}
+        found |= {n for m in _BASHOPTS.finditer(text) for n in (m.group(1).split(":") if m.group(1) is not None
+                                                                 else ["unread"])}
+        if "GLOBIGNORE" in text:
+            found.add("dotglob")
+        if _ZSH_OPTIONS.search(text):
+            found.add("unread")
+    found &= _GLOB_OPTIONS | {"unread"}
+    if found & {"extglob", "unread"} and _EXTGLOB.search(command) or "unread" in found and _ZSH_OPTIONS.search(
+            command) and re.search(r"(?:^|[\s/])\^|\w~|\S#", command):
         raise ParseError("a pattern of extglob's syntax is not supported")
     return frozenset(found)
 
 
-def _unglob(text, options=()):
+def _globs_set(cmds):
+    """The glob options the parsed commands set, their names read as the parser resolved them (`$'\\x73hopt' -s
+    dotglob`, `o=dotglob; shopt -s $o`): shopt -s's, bash -O's, and "unread" for a name still unread, zsh's setopt,
+    unsetopt or emulate, or a zsh started with options."""
+    found = set()
+    for c in cmds:
+        name, args = c["argv"][0], c["argv"][1:]
+        if name == "shopt" and any(re.fullmatch(r"-[a-z]*s[a-z]*", a) for a in args):
+            found |= {a if re.fullmatch(r"[A-Za-z_]\w*", a) else "unread" for a in args if not a.startswith("-")}
+        elif name in SHELLS:
+            found |= {(a[2:] or b) if re.fullmatch(r"[A-Za-z_]\w*", a[2:] or b) else "unread"
+                      for a, b in zip(args, args[1:] + [""]) if a[:2] in ("-O", "+O")}
+        if name in ("setopt", "unsetopt", "emulate") or name == "zsh" and any(
+                re.fullmatch(r"[-+]o|--\w.*|[-+]\w*[^cilsxvefdnu]\w*", a) for a in args):
+            found.add("unread")
+    return frozenset(found & (_GLOB_OPTIONS | {"unread"}))
+
+
+def _unglob(text, options=(), work=None):
     """The names a pathname pattern may make: those its bracket expressions can make (_brackets), and with each of
     its components that has two characters of its own read as each name of GLOB_NAMES it matches, all at once
     (`~/.ss?/conf?g` is ~/.ssh/config; bash matches a leading dot only with a dot, so `*rc` isn't .bashrc, unless
     the line's `options`, shell options it sets, hold dotglob; nocaseglob matches in any case), at most 64 of them;
     [] when it makes none it can list.
     lean: a pattern of fewer characters of its own (`~/.ssh/*`), or one that stands for a name outside GLOB_NAMES, is
-    no name here; list more names when a rule protects them"""
+    no name here; list more names when a rule protects them. Linear in the pattern, charged to `work` (charge). With
+    glob options the line sets in a way the parser can't read ("unread": _glob_options), a pattern that makes a name
+    under some option it doesn't under the ones read is unreadable (ParseError)."""
+    if work is not None:
+        charge(work, len(text))
+    if "unread" in options:
+        read = _unglob(text, frozenset(options) - {"unread"}, work)
+        if set(_unglob(text, ("dotglob", "nocaseglob"), work)) - set(read):
+            raise ParseError("a pattern under a glob option the line sets in a way the parser can't read")
+        return read
     made = _brackets(text)
     named = []
-    for t in made or [text]:
+    for t in made + [text]:   # (and as a whole: a set _brackets reads otherwise, `[\\]_]`)
         parts = t.split("/")
         choices = [[p] + [n for n in GLOB_NAMES if (p[0] == "." or n[0] != "." or "dotglob" in options) and
-                          _glob_fits(tokens, n, "nocaseglob" in options)]
-                   if _PATTERN_SYNTAX.search(p) and len(_PATTERN_SYNTAX.sub("", p)) > 1 and (tokens := _glob_tokens(p))
+                          len(n) >= fixed and _glob_fits(tokens, n, "nocaseglob" in options)]
+                   if (bare := _bare(p)) != p and len(bare) > 1 and (tokens := _glob_tokens(p)) and
+                   (fixed := sum(t is not _STAR for t in tokens)) > 1
                    else [p] for p in parts]
         named += ["/".join(c) for c in itertools.islice(itertools.product(*choices), 1, 64)]
     return list(dict.fromkeys(made + named))
@@ -1765,7 +1950,7 @@ def _brackets(text):
     authorized_keys, `[ab]` makes two), its other pattern characters kept; [] when it has none it can list (a negated
     set, a class such as [:alpha:], a range or a product of more)."""
     segments, sets, at = [], [], 0
-    for m in _BRACKET.finditer(text):
+    for m in _BRACKET.finditer(text, 0, text.rfind("]") + 1):   # (linear: past the last `]` none ends)
         if m.group(1) or "[" in m.group(2):
             return []
         chars = []
@@ -2509,9 +2694,10 @@ class _Parser:
         for c in self.ctx["cmds"][start:]:
             c.setdefault("reaches", []).append((pid, stage))
 
-    def nested(self, text, via, args=()):
+    def nested(self, text, via, args=(), zero=()):
         # a new shell sets $PWD and IFS; a trap runs later, where $IFS still splits as it does here; a script given
-        # literal `args` has them as $1 to $9 and "$@", as call() gives a function's. Code a shell of another grammar
+        # literal `args` has them as $1 to $9 and "$@", as call() gives a function's, and sh -c's literal `zero` (the word
+        # after its script) as $0. Code a shell of another grammar
         # reads (sh, dash, ksh: the nearest shell in `via`) is read as bash's only where it uses no operator bash alone
         # has (`&>` is a background job and a redirection in dash)
         if next((w for v in reversed(via) for w in [v.split(" ", 1)[0]] if w in SHELLS), None) in _POSIX_SHELLS and \
@@ -2520,8 +2706,10 @@ class _Parser:
         known = {k: v for k, v in self.known.items() if k in (("IFS",) if via[-1:] == ["trap"] else ("PWD", "IFS"))}
         if args and not any("$" in a or "`" in a for a in args):
             known.update({str(i): [a] for i, a in enumerate(args[:9], 1)}, **{"@": list(args)})
+        if zero and not any("$" in a or "`" in a for a in zero):
+            known["0"] = list(zero)
         self.positional(args)
-        key = (text, tuple(via), frozenset(known), tuple(args))
+        key = (text, tuple(via), frozenset(known), tuple(args), tuple(zero))
         if key in self.ctx["nested"]:   # the same text read the same way again (each reading's eval): the same commands
             return
         self.ctx["nested"].add(key)
@@ -2901,7 +3089,7 @@ class _Parser:
                                 self.ctx["more"] |= bool(other)
                                 named += [piece[0]] + other * self.ctx["readings"]
                         self.spliced = was
-                    made = [c for t in named for c in _unglob(t, self.ctx["globopts"])] \
+                    made = [c for t in named for c in _unglob(t, self.ctx["globopts"], self.ctx["work"])] \
                         if self.ctx["readings"] and target[2] else []
                     self.ctx["more"] |= bool(made)
                     self.charge(sum(map(len, made)))   # each name its pattern may make
@@ -3186,7 +3374,8 @@ class _Parser:
             ([w if t is None else None if not t and a else t for t, w, a in zip(texts, words, alones)]
              for texts in self.fill(slots, True)),
             (words[:i] + [c] + words[i + 1:] for i, p in enumerate(patterns) if p and self.ctx["readings"]
-             for c in _unglob(words[i], self.ctx["globopts"])))
+             for c in (_brackets(words[i]) if words[0] in _METADATA else
+                       _unglob(words[i], self.ctx["globopts"], self.ctx["work"]))))
         glob = any(globs)
         for k, texts in enumerate(extra, 12):
             self.charge(len(texts))
@@ -3365,6 +3554,8 @@ class _Parser:
         words as written (an export's names must be, to set those alone)."""
         if loop:
             kind, (name, *rest) = loop[0], loop[1] or [None]
+            if kind == "for" and rest[:1] != ["in"] and self.known.get("@") and not self.ctx["any_set"]:
+                rest = ["in", *self.known["@"]]   # `for x; do` over the literal arguments a script was given
             literal = kind == "for" and rest[:1] == ["in"] and len(rest) > 1 and None not in rest[1:]
             if name == "IFS":
                 self.ctx["ifs_values"] += rest[1:] if literal else [None]
@@ -3864,8 +4055,9 @@ class _Parser:
                         self.run_file(args[k + 1], via + [name], cmd, unread=unreadable[k + 2])
                 mode, script = _shell_mode(args)
                 if mode == "c":
-                    self.positional(args[args.index(script) + 1:] if script in args else args)
-                    self.nested(self.code(cmd, [script]), via + [name + " -c"])
+                    given = args[args.index(script) + 1:] if script in args else []
+                    self.positional(given if script in args else args)
+                    self.nested(self.code(cmd, [script]), via + [name + " -c"], given[1:], given[:1])
                 elif mode is None:
                     k = args.index(script)
                     self.run_file(script, via + [name], cmd, gives=args[k + 1:], unread=unreadable[k + 1])

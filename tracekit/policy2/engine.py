@@ -3,6 +3,7 @@
 google-re2 when installed, else the `regex` module on the same pattern subset in ASCII mode (`compile.translate`).
 Every decision names the engine (id@version) and the policy_hash. Precedence: deny > ask > flag > allow.
 """
+import bisect
 import fnmatch
 import functools
 import itertools
@@ -11,7 +12,7 @@ import re
 import shlex
 import time
 import unicodedata
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
 from . import classes, shell
 from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, literals, policy_hash, requirements, translate
@@ -509,6 +510,8 @@ class Engine:
             return _environment_sent(parsed)
         if cls == "shell" and field == "harness_launch":
             return _harness_launches(parsed[0], parsed[2], parsed[5] if len(parsed) > 5 else {})
+        if cls == "shell" and field == "gh_runs":
+            return _gh_runs(parsed[0])
         if cls == "shell" and field == "container_host_access":
             return _container_host_access(parsed[0])
         if cls == "shell" and field == "push":
@@ -518,7 +521,7 @@ class Engine:
         if cls == "sql" and field == "code":
             return fields.get("code", [])
         if cls == "shell" and field == "code":
-            return _code(parsed)
+            return _code(parsed, [0] if work is None else work)
         if cls == "shell" and field in (None, "argv"):
             # and each again with its words' own spaces as WORD_SPACE where a word before its last has one (the last
             # word's move no word after it: sqlite3's SQL is searched once), and with each word that is only a variable
@@ -852,6 +855,24 @@ def _set_names(commands, refs, given=()):
     return names | {w.split("=", 1)[0].removesuffix("+") for w in words}
 
 
+def _gh_runs(commands):
+    """What gh runs that its own commands don't say, which TK-A071 holds (`GH: <words>`): an alias set or imported
+    (`gh alias set m 'pr merge --admin'`; a --shell one runs a shell), an extension installed, upgraded, browsed for or
+    run by exec, and a command that is none of gh's own (shell.GH_COMMANDS: an alias's or an extension's, a program of
+    its own), and the editor, pager or browser it is set to run."""
+    out = []
+    for c in commands:
+        argv = c["argv"]
+        if argv[0] != "gh" or len(argv) < 2 or not argv[1] or argv[1].startswith("-"):   # (an empty word is none)
+            continue
+        sub, args = argv[1], argv[2:]
+        if sub == "alias" and args[:1] in (["set"], ["import"]) or sub in ("extension", "ext", "extensions") and \
+                args[:1] in (["install"], ["upgrade"], ["exec"], ["browse"]) or sub not in shell.GH_COMMANDS or \
+                sub == "config" and args[:1] == ["set"] and {"editor", "pager", "browser"} & set(args[1:]):
+            out.append("GH: " + " ".join(argv[1:3]))
+    return out
+
+
 def _harness_launches(commands, refs=(), learned=None):
     """`LAUNCH:<harness> <why>` for each harness CLI (_harness) the line starts with settings it chooses: a home or
     settings variable the line sets (_SETTINGS_VARIABLE, _set_names), an env that runs it clearing variables (-i) or
@@ -910,25 +931,42 @@ def _harness_launches(commands, refs=(), learned=None):
     return list(dict.fromkeys(out))
 
 
-# programs that send what they read off the machine (gh: a gist or an API call; aws: s3; openssl: s_client), and
-# those that pass on only a count or a hash of what they read
+# programs that send what they read off the machine (gh: a gist, an API call or a body it reads from stdin; aws: s3;
+# openssl: s_client), and those that pass on only a count or a hash of what they read
 _SENDERS = {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync", "telnet", "http", "https",
             "xh", "xhs", "ftp", "lftp", "sendmail", "mail", "mailx", "mutt", "rclone", "gsutil"}
 _SENDING = {"gh": ("gist", "api"), "aws": ("s3",), "openssl": ("s_client",)}
 _SUMMARIES = {"wc", "md5", "md5sum", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "shasum", "cksum",
               "b2sum"}
 _ENV_OPTIONS = {"-u": 1, "--unset": 1, "-C": 1, "--chdir": 1, "-P": 1, "-a": 1, "--argv0": 1}
-_ENVIRON_FILE = re.compile(r"/proc/[^/\s]+/environ\b")
+# a process's environ file in any spelling (/proc/self/task/$$/environ, cd /proc/self; cat environ), or a pattern
+# under /proc that may be one
+_ENVIRON_FILE = re.compile(r"/proc/\S*?environ\b|/proc/\S*[*?[]|(?:^|[@<=])(?:\./)?environ$")
 _DUMPERS = {"env", "printenv", "export", "declare", "typeset", "set"}
+# code that reads the whole environment rather than one value: jq's `env` or `$ENV` (not env.HOME), awk iterating
+# ENVIRON, Python's os.environ, Node's process.env, Ruby's ENV, Perl's %ENV, PHP's getenv() or $_ENV, as a whole
+_ENVIRON_CODE = {
+    "jq": re.compile(r"(?<![\w$.])(?:env|\$ENV)(?![\w.\[])"),
+    "awk": re.compile(r"\bin\s+ENVIRON\b"),
+    "python": re.compile(r"\bos\.environ\b(?!\s*(?:\[|\.(?:get|setdefault|pop)\b))|\benviron\.(?:items|keys|values|copy)\b"),
+    "node": re.compile(r"\bprocess\.env\b(?!\s*(?:\.\w|\[))"),
+    "ruby": re.compile(r"\bENV\b(?!\s*(?:\[|\.(?:fetch|key\?|has_key\?|include\?)))"),
+    "perl": re.compile(r"%ENV\b"),
+    "php": re.compile(r"\bgetenv\(\s*\)|\$_ENV\b(?!\s*\[)")}
 
 
-def _environment_dump(command):
+def _environment_dump(command, files=()):
     """Whether a command prints the whole environment: env or printenv with no command or name, export, set, declare
-    or typeset with no name (but declare -f's functions), or a read of a process's environ file."""
+    or typeset with no name (but declare -f's functions), BSD ps's `e` (ps eww, macOS's -E), code that reads it whole
+    (_ENVIRON_CODE: inline, a heredoc, jq's or awk's program), a read of a process's environ file, or of `files`, the
+    ones the line writes it into. One that runs on another host (ssh's remote command) prints that host's."""
     argv = command["argv"]
     prog, args = _program(argv), argv[1:]
-    if any("environ" in w for w in args + list(command.get("in", ()))) and \
-            _ENVIRON_FILE.search(" ".join(args + list(command.get("in", ())))):
+    if "ssh" in command.get("via", ()):
+        return False
+    named = args + list(command.get("in", ()))
+    if any(_ENVIRON_FILE.search(w) or any(re.search(r"(?<![\w.-])%s$" % re.escape(f), w) for f in files)
+           for w in named):
         return True
     if prog == "env":
         i = 0
@@ -941,45 +979,78 @@ def _environment_dump(command):
         return all(a.startswith("-") for a in args)
     if prog in ("export", "declare", "typeset"):
         return all(a.startswith("-") for a in args) and not any(re.fullmatch(r"-[a-zA-Z]*[fF][a-zA-Z]*", a) for a in args)
+    if prog == "ps":
+        return any(re.fullmatch(r"[A-Za-z]*e[A-Za-z]*|-[A-Za-z]*E[A-Za-z]*", a) for a in args)
+    kind = "jq" if prog in ("jq", "gojq", "jaq") else shell._kind(prog)
+    if kind in _ENVIRON_CODE:
+        code = [a for a in args if not a.startswith("-")][:1] if kind == "jq" else [shell._code_arg(kind, args)]
+        return any(t and _ENVIRON_CODE[kind].search(t) for t in code + list(command.get("stdin", ())))
     return prog == "set" and not args
 
 
 def _sends(command):
+    """Whether a command sends what it reads off the machine: _SENDERS; gh's gist or api, or any of its commands given
+    stdin (`--body-file -`, `-F -`, `@-`); aws s3; openssl s_client."""
     prog, argv = _program(command["argv"]), command["argv"]
-    return prog in _SENDERS or prog in _SENDING and any(a in _SENDING[prog] for a in argv[1:3])
+    return prog in _SENDERS or prog in _SENDING and any(a in _SENDING[prog] for a in argv[1:3]) or prog == "gh" and \
+        any(a in ("-", "@-") or a.endswith(("=-", "=@-")) for a in argv[2:])
 
 
 def _environment_sent(parsed):
     """`SENT:<printer> <sender>` for each command that prints the whole environment (_environment_dump) into one that
-    sends it off the machine (_sends): a later stage of its pipeline, or that sender's own words or herestring (a
-    substitution, process substitution, block or subshell whose output reaches it: the parse's `reaches`), unless a
-    stage on the way only counts or hashes it (wc, sha256sum); and a sender that reads a process's environ file
-    itself (`curl -d @/proc/self/environ`). parsed: shell.analyse's."""
+    sends it off the machine (_sends): a later stage of its pipeline, a sender in a block or subshell there or in a
+    process substitution a later stage writes into (`env | (curl …)`, `env | tee >(curl …)`), or that sender's own
+    words, herestring or heredoc (a substitution, process substitution, block or subshell whose output reaches it: the
+    parse's `reaches`; `$(env)` in a heredoc), unless a stage on the way only counts or hashes it (wc, sha256sum); a
+    file it is written into, then read or sent (`env > /tmp/e; curl -T /tmp/e …`); a redirection to /dev/tcp or
+    /dev/udp on a line that prints it; and a sender that reads a process's environ file itself (`curl -d
+    @/proc/self/environ`). parsed: shell.analyse's."""
     commands = parsed[0]
-    if not any(_program(c["argv"]) in _DUMPERS for c in commands) and not any("environ" in t for t in parsed[1]):
+    files, dumps, more = set(), [], True
+    while more:   # (a file the environment is written into is read as it, until the line writes it into no more)
+        dumps = [c for c in commands if _environment_dump(c, files)]
+        held = files | {o for d in dumps for o in d.get("out", ()) if o not in _NOWHERE} | {
+            a for c in commands if _program(c["argv"]) == "tee" and any(
+                d["pipeline"] == c["pipeline"] and (d.get("stage") or 0) < (c.get("stage") or 0) for d in dumps)
+            for a in c["argv"][1:] if not a.startswith("-")}
+        more, files = held != files, held
+    if not dumps:
         return []
-    dumps = [c for c in commands if _environment_dump(c)]
-    senders = [c for c in commands if dumps and _sends(c)]
-    out = [f"SENT:environ {_program(s['argv'])}" for s in senders if _environment_dump({"argv": ["", *s["argv"][1:]],
-                                                                                          "in": s.get("in", ())})]
-    stages, sending = {}, {}   # per pipeline: the stages that only count or hash, and its senders
+    senders = [c for c in commands if _sends(c)]
+    out = [f"SENT:environ {_program(s['argv'])}" for s in senders if _program(s["argv"]) != "ssh" and
+           _environment_dump({"argv": ["", *s["argv"][1:]], "in": s.get("in", ())}, files)]
+    if any(re.match(r"/dev/(?:tcp|udp)/", w) for c in commands for w in list(c.get("out", ())) + list(c.get("in", ()))):
+        out.append("SENT:environ /dev/tcp")
+    summaries, at_of = {}, {}   # per pipeline: the stages that only count or hash; each sender's stages by program
     for c in commands:
         if _program(c["argv"]) in _SUMMARIES:
-            stages.setdefault(c.get("pipeline"), []).append(c.get("stage", 0))
-    for s in senders:
-        sending.setdefault(s.get("pipeline"), []).append(s)
+            summaries.setdefault(c.get("pipeline"), []).append((c.get("stage") or 0))
+    for s in senders:   # where it reads: its own stage, and a block's or a >()'s stage it is in (inside)
+        at_of.setdefault((s.get("pipeline"), False), {}).setdefault(_program(s["argv"]), []).append((s.get("stage") or 0))
+        if not s.get("via") or s["via"][-1] == ">()":
+            for p, k in dict.fromkeys(s.get("reaches") or ()):
+                at_of.setdefault((p, True), {}).setdefault(_program(s["argv"]), []).append(k)
+    for stages in [*summaries.values(), *(v for by in at_of.values() for v in by.values())]:
+        stages.sort()
 
-    def summarised(pipeline, after, before):
-        return any(after < k < before for k in stages.get(pipeline, ()))
+    def until(p, stage):   # the first stage after `stage` that only counts or hashes
+        ks = summaries.get(p, ())
+        i = bisect.bisect_right(ks, stage)
+        return ks[i] if i < len(ks) else float("inf")
+
+    def reached(p, stage, same):   # the senders reading pipeline p after `stage` (or at it: `same`), by program
+        end = until(p, stage)
+        return [prog for inside in (False, True) for prog, ks in at_of.get((p, inside), {}).items()
+                if (i := (bisect.bisect_left if same and not inside else bisect.bisect_right)(ks, stage)) < len(ks)
+                and ks[i] <= end]
     for d in dumps:
-        own = d.get("pipeline"), d.get("stage", 0)
+        own = d.get("pipeline"), (d.get("stage") or 0)
         # a printer inside a substitution or block prints out of it from its own pipeline's last stage
-        spots = [own] + [spot for spot in dict.fromkeys(d.get("reaches", ())) if not summarised(*own, float("inf"))]
-        for p, stage in spots:
-            for s in sending.get(p, ()):
-                at = s.get("stage", 0)
-                if (stage < at or (p, stage) != own and stage == at) and not summarised(p, stage, at):
-                    out.append(f"SENT:{_program(d['argv'])} {_program(s['argv'])}")
+        spots = [own] + [spot for spot in dict.fromkeys(d.get("reaches") or ()) if until(*own) == float("inf")]
+        out += [f"SENT:{_program(d['argv'])} {prog}" for p, stage in spots for prog in reached(p, stage, (p, stage) != own)]
+        if "<<" in d.get("via", ()):   # in a heredoc's substitution: what reads that heredoc
+            out += [f"SENT:{_program(d['argv'])} {_program(s['argv'])}" for s in senders if any(
+                ("$(" in t or "`" in t) and _program(d["argv"]) in t for t in s.get("stdin", ()))]
     return list(dict.fromkeys(out))
 
 
@@ -1571,11 +1642,12 @@ _PUBLISH_FLAGS = {"--provenance", "--workspaces", "--ws", "--include-workspace-r
 
 
 def _publish_dry_run(argv):
-    """Whether a package publish is a dry run, which publishes nothing (npm, pnpm, yarn or bun publish, yarn's `npm
-    publish`, cargo, uv or poetry publish): its last --dry-run (bare or =true; not =false, nor --no-dry-run after it)
-    comes before a bare `--`, after no option that may take it as its value, and no word before holds an expansion
-    the line can't resolve."""
-    if _program(argv) not in _PUBLISHERS or "publish" not in argv[1:4]:
+    """Whether a package publish is a dry run, which publishes nothing (npm, pnpm or bun publish, yarn's `npm publish`,
+    cargo, uv or poetry publish; not Yarn 1's `yarn publish`, which may ignore a flag it doesn't know and publish): its
+    last --dry-run (bare or =true; not =false, nor --no-dry-run after it) comes before a bare `--`, after no option that
+    may take it as its value, and no word before holds an expansion the line can't resolve."""
+    if _program(argv) not in _PUBLISHERS or "publish" not in argv[1:4] or _program(argv) == "yarn" and \
+            argv[argv.index("publish") - 1] != "npm":
         return False
     last = None
     for prev, word in zip(argv, argv[1:]):
@@ -1704,6 +1776,10 @@ def _effects(parsed):
 
 def _write_effects(parsed):
     tags = ["WRITE_TARGET:" + _text(ref) for ref in parsed[3]] + _command_effects(parsed[0])
+    # a write to `{}` in code a find's -exec runs (its sh -c script given {} as $1) writes each file the find finds
+    if "{}" in parsed[3]:
+        tags += ["WRITE_TARGET:" + f for c in parsed[0] if _program(c["argv"]) == "find" and any(
+            a in ("-exec", "-execdir", "-ok", "-okdir") for a in c["argv"]) for f in _find_files(c["argv"][1:])]
     tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c.get("script_args", ())]
     unread = any(c["opaque"] for c in parsed[0])
     if any(_opaque(c) for c in parsed[0]) or unread and _reaches_unread(parsed):
@@ -1867,10 +1943,13 @@ def _find_files(args):
     tested = [args[i] for i in kept if args[i - 1] in ("-name", "-iname") and args[max(i - 2, 0):i - 1] not in
               (["!"], ["-not"])]
     # each protected name a name or pattern stands for (`*.py` and `.DS_Store` stand for none: read as they are)
-    names = [n for t in tested for n in [t, *shell._unglob(t)] if n in shell.GLOB_NAMES]
+    # (find matches as fnmatch does: `*` and `?` match a leading dot, -iname in any case)
+    folded = {args[i] for i in kept if args[i - 1] == "-iname"}
+    names = [n for t in tested for n in [t, *shell._unglob(t, ("dotglob",) + ("nocaseglob",) * (t in folded))]
+             if n in shell.GLOB_NAMES]
     paths = [p for i in range(1, len(args)) if args[i - 1] in ("-path", "-ipath", "-wholename", "-iwholename",
                                                                  "-regex", "-iregex", "-files0-from")
-             for p in [args[i], *shell._unglob(args[i])]]
+             for p in [args[i], *shell._unglob(args[i], ("dotglob",))]]
     starts = starts or ["."]
     # a name found in a .git folder may be one of its hooks (`find .git -name pre-commit`)
     hooks = [f"{s.rstrip('/')}/hooks/{t}" for s in starts if s.rstrip("/").endswith(".git") for t in tested]
@@ -1884,25 +1963,27 @@ def _find_files(args):
 
 
 # an awk program's output redirection: > or >> and the expression it writes to, up to a `;`, `}`, newline or `|`
-_AWK_OUTPUT = re.compile(r'>>?\s*(\([^()\n]*\)|(?:"[^"\n]*"|[A-Za-z_]\w*)(?:[ \t]+(?:"[^"\n]*"|[A-Za-z_]\w*))*)')
+_AWK_PART = r'"[^"\n]*"|ARGV\[[^]\n]*\]|[A-Za-z_]\w*'
+_AWK_OUTPUT = re.compile(r'>>?\s*(\([^()\n]*\)|(?:%s)(?:[ \t]+(?:%s))*)' % (_AWK_PART, _AWK_PART))
 _AWK_ASSIGN = re.compile(r'\b([A-Za-z_]\w*)\s*=\s*"([^"\n]*)"')
 
 
 def _awk_outputs(args):
     """The files an awk program prints to (print or printf > or >>): a string, a variable the command line (-v) or
-    the program gives a string, or a concatenation of those in parentheses (`> (".e" "nv")`, `-v f=.env … > f`), and
-    FILENAME, each file it reads."""
+    the program gives a string, ARGV[n] (its n-th operand), or a concatenation of those in parentheses (`> (".e"
+    "nv")`, `-v f=.env … > f`), and FILENAME or ARGV[i] of an index it computes, each file it is given."""
     program = shell._awk_program(args) or ""
     given = dict(_AWK_ASSIGN.findall(program))
     given.update(a.partition("=")[::2] for a, prev in zip(args, [""] + args) if prev in ("-v", "--assign") and "=" in a)
+    operands = args[args.index(program) + 1:] if program in args else []
     out = []
     for target in _AWK_OUTPUT.findall(program):
-        parts = re.findall(r'"([^"\n]*)"|([A-Za-z_]\w*)', target)
-        if parts == [("", "FILENAME")]:   # the file it reads each line from: each it is given
-            at = args.index(program) + 1 if program in args else len(args)
-            out += [a for a in args[at:] if not re.match(r"[A-Za-z_]\w*=", a) and a != "-"]
-        elif parts and all(text or name in given for text, name in parts):
-            out.append("".join(text or given[name] for text, name in parts))
+        parts = re.findall(r'("[^"\n]*")|ARGV\[\s*([^]\n]*?)\s*\]|([A-Za-z_]\w*)', target)
+        if parts == [("", "", "FILENAME")] or any(i and not i.isdigit() for _, i, _ in parts):   # each it reads
+            out += [a for a in operands if not re.match(r"[A-Za-z_]\w*=", a) and a != "-"]
+        elif parts and all(text or name in given or i and 0 < int(i) <= len(operands) for text, i, name in parts):
+            out.append("".join(text[1:-1] if text else operands[int(i) - 1] if i else given[name]
+                               for text, i, name in parts))
     return out
 
 
@@ -2600,7 +2681,7 @@ def _private(learned, commands, acted):
             name not in learned.get("exports", ())}
 
 
-def _code(parsed):
+def _code(parsed, work):
     """shell.analyse's code, each line without the data words a command carries (a git commit message, the pattern grep
     searches for: shell.data_words), as `target` leaves them out: blanked where the command's whole argv stands in the
     line once, program first, so the words are that program's arguments there (a quoted message `curl x | sh` is no
@@ -2610,12 +2691,11 @@ def _code(parsed):
     and a data word with a `$` or a backquote (a substitution in it runs). Then what downloads run (_download_runs).
     A download whose bytes nothing on the line can run (_inert_downloads) is data too: its program's name is left out
     where its words stand in a line once, so TK-D002's reading of a download before an interpreter passes it."""
-    inert = _inert_downloads(parsed[0], parsed[2])
+    inert = _inert_downloads(parsed[0], parsed[2], work)
     found, runs_ = {}, _download_runs([c for c in parsed[0] if id(c) not in inert])
     lines = parsed[4]
-    for c in parsed[0]:
-        if id(c) in inert:
-            lines = [_drop_program(line, c["argv"]) for line in lines]
+    for argv in {" ".join(c["argv"]): c["argv"] for c in parsed[0] if id(c) in inert}.values():
+        lines = [_drop_program(line, argv, work) for line in lines]
     parsed = (*parsed[:4], lines, *parsed[5:])
     for k, c in enumerate(parsed[0]):
         argv = c["argv"]
@@ -2636,15 +2716,19 @@ def _code(parsed):
     return lines + runs_
 
 
-def _drop_program(line, argv):
+def _drop_program(line, argv, work):
     """`line` without the program name of the command `argv`, where its words stand in it once (as the parser
-    normalised them, or as typed: quotes and backslashes aside), else as it is."""
+    normalised them, or as typed: quotes and backslashes aside), else as it is. Charged to `work` (shell.charge)."""
     run = " ".join(argv)
+    shell.charge(work, len(line))
     if line.count(run) == 1:
         return line.replace(run, run[len(argv[0]):])
-    at = [m.start() for m in re.finditer(r"(?<![\w./-])%s(?![\w-])" % re.escape(argv[0]), line)
-          if any(re.sub(r"\s+", " ", re.sub(quote, "", line[m.start():m.start() + 4 * len(run)])).startswith(run)
-                 for quote in (r"['\"]", r"['\"\\]"))]
+    at = []
+    for m in re.finditer(r"(?<![\w./-])%s(?![\w-])" % re.escape(argv[0]), line):
+        shell.charge(work, 4 * len(run))
+        if any(re.sub(r"\s+", " ", re.sub(quote, "", line[m.start():m.start() + 4 * len(run)])).startswith(run)
+               for quote in (r"['\"]", r"['\"\\]")):
+            at.append(m.start())
     return line[:at[0]] + line[at[0] + len(argv[0]):] if len(at) == 1 else line
 
 
@@ -2681,116 +2765,132 @@ def _may_run_input(argv):
     return name not in _DATA_ONLY
 
 
-# what a saved download may be read as without running it, and what a line may move, unpack or load it with
+# what a saved download may be read as without running it
 _DATA_SAVE = re.compile(r"\.(?:json|jsonl|ndjson|csv|tsv|txt|html?|xml|md|svg|png|jpe?g|gif|webp|ico|pdf|mp3|wav|ogg|"
                         r"mp4|webm|woff2?|ttf|otf)$", re.I)
-_MOVERS = {"cp", "mv", "ln", "install", "rsync", "dd", "tee", "ditto", "tar", "gtar", "bsdtar", "unzip", "gunzip",
-           "zcat", "bunzip2", "xz", "unxz", "7z", "7za", "xxd", "openssl", "base64", "uudecode", "awk", "gawk", "mawk",
-           "nawk", "sed", "gsed", "find", "xargs", "parallel", "mapfile", "readarray", "read", "exec", "chmod",
-           "mkfifo", "eval", "source", ".", "patch", "git"}
-_LOADER_VARIABLES = re.compile(r"(?:BASH_ENV|ENV|PYTHON\w*|NODE_\w*|RUBY\w*|PERL\w*|LD_\w+|DYLD_\w+)=")
-# inline code that runs something: a file it loads or executes, a command it starts (json.load and re.compile read)
-_EXECUTES = re.compile(r"\b(?:exec|eval|execfile|run_path|run_module|__import__|import_module|require|dofile|loadfile|"
-                       r"system|popen|Popen|spawn\w*|execSync|execFile\w*|Function)\s*\(|(?<!json\.)(?<!re\.)"
-                       r"\b(?:load|compile)\s*\(|\b(?:runpy|subprocess|child_process|importlib|pickle|marshal|shelve)\b|"
-                       r"\bos\.exec|\b(?:require|load|do|source|sh|bash)\s+['\"]")
-_DISCARDS = re.compile(r"-[A-Za-z]*I[A-Za-z]*|--head|--spider")
+# the options a download read as data may give: curl's and wget's that only fetch, send or print (no config file, no
+# file of URLs, no header, trace or cookie file, no wgetrc command, nothing verbose: it prints what the server says),
+# each with whether it takes a value
+_CURL_OPTIONS = dict.fromkeys(
+    "-s --silent -S --show-error -L --location -f --fail --fail-with-body -k --insecure -I --head -i --include "
+    "--compressed -g --globoff -N --no-buffer -4 --ipv4 -6 --ipv6 --http1.0 --http1.1 --http2 --http3 -# "
+    "--progress-bar --no-progress-meter -G --get --fail-early -q --disable -O --remote-name --location-trusted "
+    "--no-keepalive".split(), False) | dict.fromkeys(
+    "-o --output -w --write-out -H --header -A --user-agent -e --referer -m --max-time --connect-timeout --retry "
+    "--retry-delay --retry-max-time -X --request -d --data --data-raw --data-binary --data-urlencode --json -u --user "
+    "-r --range -b --cookie --url --max-filesize --limit-rate --max-redirs --resolve --connect-to -x --proxy --cacert "
+    "-E --cert --key --oauth2-bearer -C --continue-at".split(), True)
+_WGET_OPTIONS = dict.fromkeys(
+    "-q --quiet --spider -c --continue --no-check-certificate --https-only --no-cache --no-cookies -4 --inet4-only -6 "
+    "--inet6-only --retry-connrefused -nc --no-clobber".split(), False) | dict.fromkeys(
+    "-O --output-document -T --timeout -t --tries --header -U --user-agent --method --body-data --post-data "
+    "--max-redirect --waitretry --connect-timeout --read-timeout --dns-timeout --compression --user --password "
+    "--referer".split(), True)
+# what curl's -w may print beside text: a status, a size, a time or a count (no header, URL or file: %output{} writes one)
+_STATUS_FORMAT = re.compile(r"(?:[^%@\\]|\\[nrt\\]|%%|%\{(?:http_code|response_code|http_connect|http_version|exitcode|"
+                            r"ssl_verify_result|(?:num|size|speed|time)_[a-z_]+)\})*")
 
 
-def _inert_downloads(commands, refs=()):
-    """The ids of the line's downloads (curl, wget) whose bytes no command on it can run, which TK-D002 reads as data:
-    one that keeps nothing (its output to /dev/null, -I or --spider; what -w prints is a status), unless what it prints
-    goes on down a pipe to a program that may run it or into a substitution that runs; and one that saves only data
-    files (_DATA_SAVE: a name ending in one's extension) on a line where no command moves, links, unpacks or loads
-    anything (_MOVERS, a redirection of a command that names one), no loader variable is set (BASH_ENV, PYTHONPATH,
-    NODE_PATH ...), no shell or interpreter runs interactively (-i: it runs what it reads next), and nothing runs one:
-    by its path, as a shell's, an interpreter's or source's script or input, or as a file inline code names, or is
-    given, and executes (exec(), require, subprocess); a script of the project's own given one as data (`python3
-    parse.py f.json`) doesn't run it."""
+def _download_options(d):
+    """(the files a download writes to: its -o or -O values, curl's -O as `-O`; its -w formats; its URLs; the options
+    it gives) when every option is one a data download may give (_CURL_OPTIONS, _WGET_OPTIONS), else None."""
+    curl, args = d["argv"][0] == "curl", d["argv"][1:]
+    known, outs, formats, urls, given, i = _CURL_OPTIONS if curl else _WGET_OPTIONS, [], [], [], set(), 0
+    while i < len(args):
+        a, value = args[i], None
+        i += 1
+        if a.startswith("--") or not curl and a in ("-nv", "-nc"):
+            name, eq, value = (a, "", None) if curl else a.partition("=")
+            if name not in known or eq and not known[name]:
+                return None
+            if known[name] and not eq:
+                if i == len(args):
+                    return None
+                value, i = args[i], i + 1
+            given.add(name)
+        elif a.startswith("-") and len(a) > 1:
+            for j in range(1, len(a)):
+                name = "-" + a[j]
+                if name not in known:
+                    return None
+                given.add(name)
+                if known[name]:
+                    value = a[j + 1:]
+                    if not value:
+                        if i == len(args):
+                            return None
+                        value, i = args[i], i + 1
+                    break
+        else:
+            urls.append(a)
+            continue
+        if curl and given & {"-O", "--remote-name"} and "-O" not in outs:
+            outs.append("-O")
+        if name in ("-o", "--output", "-O", "--output-document") and value is not None:
+            outs.append(value)
+        elif name in ("-w", "--write-out"):
+            formats.append(value)
+        elif name == "--url":
+            urls.append(value)
+    return outs, formats, urls, given
+
+
+def _url_name(url, wget):
+    """The name a download of `url` saves under by its URL: its path's last part (wget's with the query too)."""
+    parts = urlsplit(url if "://" in url else "//" + url)
+    name = posixpath.basename(parts.path) or ("index.html" if wget else "")
+    return name + ("?" + parts.query if wget and parts.query else "")
+
+
+def _inert_downloads(commands, refs, work):
+    """The ids of the line's downloads (curl, wget) whose bytes nothing on it can run, which TK-D002 reads as data. A
+    download qualifies only on an allow-list: each option it gives only fetches (_download_options), it names one URL
+    (not a curl glob of several), and it is no word of another command (a wrapper's, xargs', eval's). Then it is data
+    - as a status check: it keeps nothing (curl's -o /dev/null, wget's --spider or -O /dev/null) and prints at most a
+      status (_STATUS_FORMAT) to the terminal or pure readers down its pipe, or silent (curl's -s without -S, wget's
+      -q) into a substitution;
+    - where what it prints goes only to pure readers down its pipe or to the terminal (or, saving its bytes, a status
+      into a substitution), and what it saves only to data files (_DATA_SAVE: a name ending in one's extension), and
+      every other command on the line only reads and prints or reads no file (shell.reads_only: cat, jq, grep; cd,
+      echo) or is another such download, and no variable but a lower-case one is set (PATH, LESSOPEN, BASH_ENV,
+      PYTHONPATH change what runs).
+    Any other company keeps main's reading: an interpreter, a runner module, inline code, a project script, a copy,
+    move or link, an extractor. Linear in the line's commands and words, charged to `work` (shell.charge)."""
     out = set()
     downloads = [c for c in commands if c["argv"][0] in ("curl", "wget")]
     if not downloads:
         return out
-    loaders = any(_LOADER_VARIABLES.match(w) for w in refs) or any(
-        _LOADER_VARIABLES.match(a) for c in commands for a in c["argv"][1:] if c["argv"][0] in ("env", "export"))
+    after = {}   # each pipeline's last stage that only reads and prints
+    company = all(re.fullmatch(r"[a-z_][a-z0-9_]*", r.partition("=")[0]) for r in refs if re.match(r"[A-Za-z_]\w*=", r))
+    for c in commands:
+        shell.charge(work, 1 + len(c["argv"]))
+        reads = shell.reads_only(c)
+        if not reads:
+            after[c["pipeline"]] = max(after.get(c["pipeline"], -1), (c.get("stage") or 0))
+        company = company and (reads or c["argv"][0] in ("curl", "wget") and _download_options(c) is not None)
     for d in downloads:
-        args = d["argv"][1:]
-        saved = [s for s in _saves(d, commands) if s not in _NOWHERE]
-        later = [c for c in commands if c["pipeline"] == d["pipeline"] and c.get("stage", 0) > d.get("stage", 0)]
-        if any(_may_run_input(c["argv"]) for c in later) or d["via"][-1:] and d["via"][-1] in ("$()", "``") and any(
-                c["pipeline"] == p and c.get("stage", 0) == s and _runs_words(c, re.compile(r"\$\(|`"))
-                for p, s in d.get("reaches", ()) for c in commands if c is not d):
+        options = _download_options(d)
+        if options is None or len(options[2]) != 1 or not all(_STATUS_FORMAT.fullmatch(f) for f in options[1]):
             continue
-        outputs = [b for a, b in zip(args, args[1:]) if a in ("-o", "--output", "-O", "--output-document")] + [
-            a.partition("=")[2] or a[2:] for a in args if a.startswith(("--output=", "--output-document=")) or
-            re.fullmatch(r"-[oO].+", a)]
-        if not saved and (outputs and all(o == "/dev/null" for o in outputs) or any(_DISCARDS.fullmatch(a)
-                                                                                     for a in args)):
-            out.add(id(d))
+        (outs, _, (url,), given), wget = options, d["argv"][0] == "wget"
+        alone = not d["via"] and after.get(d["pipeline"], -1) <= (d.get("stage") or 0)
+        if outs and all(o == "/dev/null" for o in outs) or wget and "--spider" in given and not outs:   # a status check
+            silent = "--quiet" in given or "-q" in given if wget else (
+                given & {"-s", "--silent"} and not given & {"-S", "--show-error"})
+            if alone or silent and d["via"] in (["$()"], ["``"]):
+                out.add(id(d))
             continue
-        if not saved or not all(_DATA_SAVE.search(s) and "`" not in s and "$(" not in s for s in saved) or loaders:
+        # (in a substitution, one that saves its bytes prints only its status there)
+        saves = outs and "-" not in outs and "/dev/stdout" not in outs
+        if not (alone or saves and d["via"] in (["$()"], ["``"]) and after.get(d["pipeline"], -1) <= (
+                d.get("stage") or 0)) or not company or ("[" in url or "{" in url) and not given & {"-g", "--globoff"}:
             continue
-        names = {posixpath.basename(s) for s in saved}
-        mention = re.compile(r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(map(re.escape, names)))
-
-        def names_it(w):
-            return posixpath.basename(w) in names or bool(re.search(r"[$`*?[]", w))
-
-        def runs(c):
-            if c is d:
-                return False
-            words = c["argv"][1:] + list(c.get("in", ()))
-            if (c["argv"][0] in shell.SHELLS or shell._kind(c["argv"][0])) and any(
-                    re.fullmatch(r"-[A-Za-z]*i[A-Za-z]*|--interactive", w) for w in words):
-                return True   # interactive: it runs what it reads next
-            if c["argv"][0] in _MOVERS or any(o not in _NOWHERE for o in c.get("out", ())) and any(
-                    names_it(w) for w in words):
-                return True
-            if names_it(c["word"]):
-                return True
-            files, code = _scripts(c)
-            return any(names_it(f) for f in files) or any(
-                (mention.search(t) or any(names_it(w) for w in words)) and (
-                    _EXECUTES.search(t) or re.match(r"\s*[$`]", t))   # (code the line builds: unread)
-                for t in code)
-        if not any(runs(c) for c in commands):
+        saved = [o for o in d.get("out", ()) if o not in ("/dev/null", "/dev/stderr")] + [
+            _url_name(url, wget) if o == "-O" else o for o in outs if o not in ("-", "/dev/stdout")] + [
+            _url_name(url, wget) for _ in [1] if wget and not outs and "--spider" not in given]
+        if all(_DATA_SAVE.search(s) and not re.search(r"[$`*?[\]{}#\\]", s) for s in saved):
             out.add(id(d))
     return out
-
-
-def _scripts(c):
-    """(the files a command runs as code: a shell's, an interpreter's or source's script, its input, a module an
-    interpreter loads first; the inline code it is given, a heredoc or herestring it reads as code too), for one that
-    runs code, else ([], [])."""
-    name, args = c["argv"][0], c["argv"][1:]
-    files, code = list(c.get("in", ())), []
-    if name in shell.SHELLS:
-        mode, script = shell._shell_mode(args)
-        files += [script] * (mode is None and bool(script)) + [
-            b for a, b in zip(args, args[1:]) if a in ("--rcfile", "--init-file")]
-        code += ([script] if mode == "c" and script else []) + c.get("stdin", []) * (mode == "stdin")
-    elif name in ("source", "."):
-        files += args[:1]
-    elif (kind := shell._kind(name)) and kind not in ("awk", "sed"):
-        inline = shell._code_arg(kind, args)   # (with code given, its first operand is an argument)
-        k = shell._script_operand(kind, args) if inline is None else None
-        files += ([args[k]] if k is not None else []) + [v for how, v in shell._loaded(kind, args) if how == "module"]
-        code += [t for t in [inline] if t is not None] + [t for how, t in shell._loaded(kind, args) if how == "code"]
-        code += c.get("stdin", []) * shell._reads_stdin(kind, args)
-    else:
-        return [], []
-    return files, code
-
-
-def _runs_words(c, pattern):
-    """Whether a command runs as code a word `pattern` finds: as its name, eval's, source's or exec's words, or a
-    shell's or interpreter's code or script."""
-    if pattern.search(c["word"]):
-        return True
-    if c["argv"][0] in ("eval", "exec", "source", "."):
-        return any(pattern.search(w) for w in c["argv"][1:])
-    files, code = _scripts(c)
-    return any(pattern.search(t) for t in files + code)
 
 
 def _download_runs(commands):
