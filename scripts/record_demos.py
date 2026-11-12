@@ -62,12 +62,17 @@ def dev_signer(env):
         p = subprocess.Popen([sys.executable, "-m", "tracekit", "signer", "serve", "--dev"], cwd=run_dir, env=env,
                              stdin=subprocess.DEVNULL, stdout=log, stderr=log, umask=0o077)
     deadline = time.monotonic() + TIMEOUT_S
-    while not os.path.exists(os.path.join(run_dir, "endpoint.json")):   # it publishes this once it serves
-        if p.poll() is not None or time.monotonic() > deadline:
-            p.kill()
-            p.wait()
-            return None
-        time.sleep(0.05)
+    try:
+        while not os.path.exists(os.path.join(run_dir, "endpoint.json")):   # it publishes this once it serves
+            if p.poll() is not None or time.monotonic() > deadline:
+                p.kill()
+                p.wait()
+                return None
+            time.sleep(0.05)
+    except BaseException:   # interrupted while it starts (Ctrl-C): don't leave it running
+        p.kill()
+        p.wait()
+        raise
     return p
 
 
