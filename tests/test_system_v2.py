@@ -16,7 +16,7 @@ import unittest
 from unittest import mock
 
 from test_system_install import as_root_on_linux
-from tracekit import agent_hooks, install
+from tracekit import __version__, agent_hooks, install
 from tracekit.sdk import client as sdk_client
 from tracekit.signer import service
 
@@ -125,6 +125,25 @@ class InitRefusals(unittest.TestCase):
                 install.init_system_v2("agent", approver="admin")
         self.assertIn("needs root", str(cm.exception))
 
+    def test_an_untrusted_python_or_checkout_names_v2_inits_command(self):
+        """The clone route the refusal gives runs v2 init, not v1's (#464)."""
+        names = {AGENT.pw_name: AGENT, "admin": types.SimpleNamespace(pw_uid=501, pw_name="admin")}
+        src = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, src, True)
+        open(os.path.join(src, "pyproject.toml"), "w").close()
+        for untrusted in (sys.executable, src):
+            with self.subTest(untrusted=untrusted), as_root_on_linux(), mock.patch.object(install, "ROOT", src), \
+                    mock.patch.object(install.pwd, "getpwnam", lambda n: names[n]), \
+                    mock.patch.object(install, "_privileges", return_value=[]), \
+                    mock.patch.object(install.client, "system_config", return_value=None), \
+                    mock.patch("tracekit.harness_helper.trusted_file",
+                               lambda p, bad=untrusted: f"{p} is mine" if p == bad else None):
+                with self.assertRaises(SystemExit) as cm:
+                    install.init_system_v2(AGENT.pw_name, approver="admin")
+                self.assertIn(f"{untrusted} is mine", str(cm.exception))
+                self.assertIn(f"cd /usr/local/src/tracekit-{__version__} && sudo /usr/bin/python3 -m tracekit init --v2 "
+                              "--user <agent-user>", str(cm.exception))
+
 
 @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
 class InstallAndUninstall(unittest.TestCase):
@@ -184,6 +203,26 @@ class InstallAndUninstall(unittest.TestCase):
         cmds = [c.args[0] for c in self.run.call_args_list]
         self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
                         cmds.index(["systemctl", "restart", "tracekit-signer"]))
+
+    def test_init_restarts_a_running_helper_so_an_upgrade_runs_the_new_venv(self):
+        """#463: `enable --now` leaves a helper that is already running on the replaced venv's code; a stopped one
+        starts from its socket, so only a running one is restarted."""
+        with mock.patch.object(install, "resolve_harness", return_value={"name": "claude", "exe": "/usr/local/bin/claude"}):
+            self.init_v2(harnesses=["claude=/usr/local/bin/claude"])
+        cmds = [c.args[0] for c in self.run.call_args_list]
+        self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
+                        cmds.index(["systemctl", "try-restart", install.V2_HELPER + ".service"]))
+
+    def test_macos_init_restarts_the_helper_too(self):
+        """docs/deploy.md's upgrade steps leave the helper to init on macOS as well: launchd's helper is booted out
+        and bootstrapped again, so it runs the new venv."""
+        run = mock.Mock(return_value=mock.Mock(returncode=0))
+        with mock.patch.object(install, "LAUNCHD_DIR", self.d), mock.patch.object(install.subprocess, "run", run):
+            install._install_helper(install.V2_HELPER, install.V2_UNIT, self.me, install.V2_HELPER_SOCKET, True)
+        plist = os.path.join(self.d, install.HELPER_LABEL + ".plist")
+        self.assertIn(plist, self.written)
+        self.assertEqual([c.args[0] for c in run.call_args_list],
+                         [["launchctl", "bootout", "system", plist], ["launchctl", "bootstrap", "system", plist]])
 
     def init_v2(self, sudo_why=None, harnesses=()):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))

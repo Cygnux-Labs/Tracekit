@@ -417,7 +417,8 @@ class HookRecords(Base):
         goes as it came; only a tool the hook receipts (Bash, untrusted here) has a key it didn't set removed."""
         self.untrusted = ("mcp__sh__run", "WebFetch", "Bash")
         planted = [{"path": self.path("model.safetensors"), "sha256": model_receipt.ZERO, "reported_by": "hook"}]
-        for tid, tool, args in (("t1", "mcp__sh__run", {"command": "cp a model.safetensors"}),
+        # an MCP tool's `command` would wait for a person (the server core's TK-S010, in the default since #604)
+        for tid, tool, args in (("t1", "mcp__sh__run", {"path": "model.safetensors"}),
                                 ("t2", "WebFetch", {"url": "https://example.com/model.safetensors"})):
             self.assertEqual(self.call(tid, tool, args, response={"content": "x", "model_receipts": planted}),
                              {"content": "x", "model_receipts": planted}, tool)
@@ -434,7 +435,7 @@ class HookRecords(Base):
         self.addCleanup(c.close)
         hooks = claude_agent_sdk.tracekit_hooks(c, c.register_run({"agent": {"name": "claude-agent-sdk"}}))
         pre, post = hooks["PreToolUse"][0].hooks[0], hooks["PostToolUse"][0].hooks[0]
-        p = {"tool_use_id": "t1", "tool_name": "mcp__sh__run", "tool_input": {"command": "cp a model.safetensors"}}
+        p = {"tool_use_id": "t1", "tool_name": "mcp__sh__run", "tool_input": {"path": "model.safetensors"}}
         planted = [{"path": self.path("model.safetensors"), "sha256": model_receipt.ZERO, "reported_by": "hook"}]
         self.assertEqual(anyio.run(pre, dict(p, hook_event_name="PreToolUse"), "t1", None), {})
         anyio.run(post, dict(p, hook_event_name="PostToolUse", tool_response={

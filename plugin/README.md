@@ -5,7 +5,9 @@
 
 Adds Tracekit's v2 Claude Code hooks through the plugin system, plus `/tracekit-status`, `/tracekit-verify` and
 `/tracekit-pending`, and the `tracekit-holds` skill, which tells Claude what to do when Tracekit holds or blocks one of
-its calls: tell you, pass on the commands that answer it, and make the identical call again once you approve it.
+its calls: tell you, pass on the commands that answer it, and make the identical call again once you approve it. The
+`tracekit-setup` skill, a copy of the one in [tracekit-skills](https://github.com/Cygnux-Labs/tracekit-skills), has
+Claude set Tracekit up for you, asking before each step.
 
 ```text
 /plugin marketplace add Cygnux-Labs/Tracekit

@@ -444,6 +444,9 @@ class Paths(unittest.TestCase):
         self.addCleanup(setattr, ClientSession, "call_tool", ClientSession.call_tool)
         self.addCleanup(setattr, ClientSession, "get_prompt", ClientSession.get_prompt)
         self.addCleanup(setattr, ClientSession, "initialize", ClientSession.initialize)
+        for name in ("list_tools", "list_resources", "list_prompts"):
+            if hasattr(ClientSession, name):
+                self.addCleanup(setattr, ClientSession, name, getattr(ClientSession, name))
 
         async def main(r):
             async with create_connected_server_and_client_session(server._mcp_server) as session:

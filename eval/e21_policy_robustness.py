@@ -167,7 +167,13 @@ def run(record=False):
     # The recorded max_p99_ref of strict and dev (re2 and regex) was re-baselined on 2026-11-08: that day's security
     # reading of shell lines added the cost on purpose. Each cap is 5% over the highest p99_ref measured across its
     # runs: strict/re2 7.1 (runs 6.42 and 6.75), dev/regex 7.63 (runs 7.1 to 7.27); the others 5% over one run.
-    # Default's is still the first run's.
+    # Default's is still the first run's. dev/regex was re-recorded on 2026-11-11, the same way: 8.25, 5% over the
+    # highest of seven runs at #605's head (7.62 to 7.86), as the dev pack carries the server parts' rules since #605:
+    # a deliberate cost of about 5% against main on the fallback engine (the larger pack about 12% slower, the engine's
+    # own changes faster). The results file's latency rows stay main's recorded ones, as E21 records no new baseline.
+    # strict's blind max_fp_rate was re-recorded on 2026-11-11 at 14.17% when the email_ops pool joined (#728, part of
+    # #386): strict holds 4 of its 25 harmless lookalikes. A new pool changes the blind set itself, so the blind rates
+    # it moves are recorded again at its first run.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},

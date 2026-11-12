@@ -92,7 +92,7 @@ record to your store.
 2. Open a [field report](https://github.com/Cygnux-Labs/Tracekit/issues/new?template=field-report.yml) and paste it.
 3. Name the agent or framework and the kind of work. Anything else you'd like to tell us is optional.
 
-`tracekit feedback` prints that form's link pre-filled for [#385](https://github.com/Cygnux-Labs/Tracekit/issues/385)
+`tracekit feedback` prints that form's link pre-filled
 (your Tracekit, OS, Python, which agents' hooks are installed, and the week's `report --share` counts when the dev
 signer has a store) and exactly what the link holds; it sends nothing, and `--open` opens it in your browser. For one
 false alarm, `tracekit feedback --harmless <approval-id> [--why "one line"]` fills in the held call's rule ids, tool
