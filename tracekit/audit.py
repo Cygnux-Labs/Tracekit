@@ -66,9 +66,15 @@ def _safe_open(path: str) -> tuple[Any, str | None]:
         return None, str(e)
 
 
-def _iter_transcripts(root: str, unreadable: list):
-    """Yield (path, session) for each .jsonl under root, at any depth (a session's subagent files too). Follows no
-    symlink; a folder it can't list goes into `unreadable`."""
+def gemini_root():
+    """Gemini CLI's sessions' folder: .gemini/tmp in $GEMINI_CLI_HOME when set (Gemini CLI's own setting for another
+    home), else in ~ (gemini-cli 0.68: utils/paths.ts homedir, config/storage.ts getGlobalTempDir)."""
+    return os.path.join(os.environ.get("GEMINI_CLI_HOME") or os.path.expanduser("~"), ".gemini", "tmp")
+
+
+def _iter_transcripts(root: str, unreadable: list, suffixes: tuple = (".jsonl",)):
+    """Yield (path, Claude Code session) for each file under root ending in one of `suffixes`, at any depth (a
+    session's subagent files too). Follows no symlink; a folder it can't list goes into `unreadable`."""
     root = os.path.realpath(root)   # a root reached through a symlink (macOS /var, a linked ~/.claude) is still the root
 
     def failed(e):
@@ -78,7 +84,7 @@ def _iter_transcripts(root: str, unreadable: list):
         dirnames[:] = sorted(d for d in dirnames if not os.path.islink(os.path.join(dirpath, d)))
         for name in sorted(filenames):
             path = os.path.join(dirpath, name)
-            if not name.endswith(".jsonl") or os.path.islink(path):
+            if not name.endswith(suffixes) or os.path.islink(path):
                 continue
             try:   # stay inside root: a Windows directory junction is no symlink to islink, and the walk enters it
                 if os.path.commonpath([root, os.path.realpath(path)]) != root:
@@ -132,11 +138,81 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
             f.close()
 
 
+def _gemini_calls(entry: dict):
+    """(time, call) for each tool call a Gemini CLI session record holds: a message line's own, those of a $set's full
+    history (an older checkpoint) or of a pre-v0.39 session's messages."""
+    held = entry["$set"].get("messages") if isinstance(entry.get("$set"), dict) else entry.get("messages")
+    for msg in held if isinstance(held, list) else [entry]:
+        if not isinstance(msg, dict) or msg.get("type") != "gemini" or not isinstance(msg.get("toolCalls"), list):
+            continue
+        for c in msg["toolCalls"]:
+            if isinstance(c, dict):
+                yield _entry_time(c) or _entry_time(msg), c
+
+
+def _gemini(root: str, since_ts: float, unreadable: list):
+    """Gemini CLI's reader: (time, session, tool, args) for each tool call in the session files under root
+    (<project>/chats/session-*.jsonl, a subagent's chats/<parent session id>/<id>.jsonl, and the session-*.json
+    written before v0.39), None for a line that isn't JSON. A message is written again on each update: a call counts
+    once in its session, by its id, as its last copy has it, and stays counted after a $rewindTo drops it."""
+    seen: set[bytes] = set()
+    for path, _ in _iter_transcripts(root, unreadable, (".jsonl", ".json")):
+        folder = os.path.dirname(path)
+        sub = os.path.basename(os.path.dirname(folder)) == "chats" and path.endswith(".jsonl")
+        if not sub and not (os.path.basename(folder) == "chats" and os.path.basename(path).startswith("session-")):
+            continue   # the project's other files (logs.json, checkpoints)
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        session = os.path.basename(folder) if sub else None   # a subagent's counts under its parent's session
+        calls: dict = {}   # call id -> (time, tool, args), its last copy
+        try:
+            if path.endswith(".json"):
+                try:
+                    entries = [json.loads(f.read())]
+                except (ValueError, RecursionError):
+                    entries = [None]
+            else:
+                entries = (e for _n, e in transcript_entries(f, final=True))
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    yield None
+                    continue
+                if session is None and isinstance(entry.get("sessionId"), str):
+                    session = entry["sessionId"]
+                for at, c in _gemini_calls(entry):
+                    cid = c.get("id") if isinstance(c.get("id"), str) else (None, len(calls))   # no id: its own call
+                    calls[cid] = (at, c.get("name") if isinstance(c.get("name"), str) else "",
+                                  c.get("args") if isinstance(c.get("args"), dict) else {})
+        except OSError as e:
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+        finally:
+            f.close()
+        session = session or os.path.basename(path).rsplit(".", 1)[0]
+        for cid, (at, tool, args) in calls.items():
+            if at is not None and at.timestamp() < since_ts:
+                continue
+            try:   # the same id and call in another file of the session (a resumed pre-v0.39 session's .jsonl
+                # repeats its .json's): a copy
+                key = isinstance(cid, str) and hashlib.sha256(json.dumps(
+                    [session, cid, tool, args], sort_keys=True, default=str).encode()).digest()
+            except (RecursionError, ValueError):   # arguments the encoder can't take: counted
+                key = None
+            if key in seen:
+                continue
+            if key:
+                seen.add(key)
+            yield at, session, tool, args
+
+
 # one entry per agent: its name, its default folder (read when audit runs, so the env var that moves it counts), where
 # that folder is as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
-# (time, session, tool, args), None for a line it counts as malformed
+# (time, session, tool, args), None for a line it counts as malformed; an agent with a Tracekit hook gets its names
+# mapped as that hook maps them
 READERS = {"claude-code": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
-                           _claude_code)}
+                           _claude_code),
+           "gemini": (gemini_root, "$GEMINI_CLI_HOME/.gemini/tmp when it is set, else ~/.gemini/tmp", _gemini)}
 
 
 def _calls(f, name: str, since_ts: float, unreadable: list):
@@ -180,7 +256,6 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         raise ValueError(f"--since {since[:40]!r} is not in the past")
     engine = load_policy(policy_path or DEFAULT_POLICY)
     unreadable: list[dict] = []
-    hook = agent if calls is not None and agent in AGENT_NAMES else None   # map a calls file's names as its hook does
     if calls is not None:
         if calls == "-":
             if sys.stdin is None:   # started with stdin closed (<&-)
@@ -211,6 +286,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
     agents: dict[str, dict] = {}
 
     for name, folder, read in sources:
+        hook = name if name in AGENT_NAMES else None   # its calls decided as its Tracekit hook decides them
         start = len(calls_out)
         for item in read:
             if item is None:
@@ -360,8 +436,8 @@ def share(report: dict) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code), or in a calls file any agent's log can be turned into, "
-                                 "through the policy and count what it would have held or denied. Read-only, local, "
+                                 "transcripts (Claude Code, Gemini CLI), or in a calls file any agent's log can be "
+                                 "turned into, through the policy and count what it would have held or denied. Read-only, local, "
                                  "and a replay against today's policy, not a signed record.")
     ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or --agent's reader's (default: "
                     "every known agent's folder that exists: " + "; ".join(f"{n}: {w}" for n, (_, w, _) in

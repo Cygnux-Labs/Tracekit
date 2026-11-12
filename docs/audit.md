@@ -31,7 +31,7 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` is a Claude Code transcripts' folder (another agent's with `--agent NAME`, once that agent has a reader); a
+- `ROOT` is a Claude Code transcripts' folder (another agent's with `--agent NAME`, when that agent has a reader); a
   folder that doesn't exist is an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's
   default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
@@ -65,6 +65,7 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude-code` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `gemini` | `$GEMINI_CLI_HOME/.gemini/tmp` when it is set, else `~/.gemini/tmp` |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
 `--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`.
@@ -74,6 +75,15 @@ Claude Code's reader reads every `.jsonl` file under its folder, at any depth: e
 under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
+
+Gemini CLI's reader reads each project's `chats` folder under its folder: `<project>/chats/session-*.jsonl` (JSON
+lines, since Gemini CLI 0.39), `<project>/chats/session-*.json` (one JSON object a session, before 0.39), and a
+subagent's `<project>/chats/<parent session id>/<id>.jsonl`, which counts under its parent's session. The project's
+other files are not read. Tool calls are in a message's `toolCalls`, and in a `$set` line's full history; Gemini CLI
+writes a message again each time it updates, so a call counts once, by its id, as its last copy has it. A call stays
+counted after a `$rewindTo`: the conversation dropped it, but the agent made it. Each call is decided as Gemini
+CLI's Tracekit hook decides it, so `run_shell_command` is decided as `Bash`. Gemini CLI deletes sessions older than 30
+days by default (`general.sessionRetention`), so older calls can't be audited.
 
 It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
 
