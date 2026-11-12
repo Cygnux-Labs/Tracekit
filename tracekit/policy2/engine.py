@@ -109,8 +109,9 @@ def _backend(name):
 
 
 class Engine:
-    def __init__(self, policy, backend=None):
-        """`policy` is a compiled policy (compile.build); `backend` forces "re2" or "regex"."""
+    def __init__(self, policy, backend=None, fold=True):
+        """`policy` is a compiled policy (compile.build); `backend` forces "re2" or "regex"; `fold=False` reads every
+        value of a loop instead of once per class of value (#729's differential test reads both arms)."""
         self.policy, self.policy_hash = policy, policy_hash(policy)
         self.tool_class = functools.lru_cache(maxsize=1024)(self.tool_class)   # a glob scan per call otherwise
         self.engine, self._compile, self._match = _backend(backend)
@@ -163,9 +164,12 @@ class Engine:
         # (#683) the characters the rules that may read a shell subject tell apart: a loop reads its body once
         # per value, and two values alike in this partition give every rule the same match, so one reading
         # stands for both (shell.py's `folded`). A rule of no class reads every class, so it counts here too
-        self._fold_rules = [(r["pattern"], lits, bool(_TAG_ANCHORED.search(r["pattern"])))
+        # (#729) an `unless` pattern is read too: a rule whose pattern matches nothing the value changed, but whose
+        # unless does, is two different decisions, so those classes have to narrow the fold as well
+        self._fold_rules = [(r["pattern"], lits, bool(_TAG_ANCHORED.search(r["pattern"])), r.get("unless"))
                             for _s, r, _t, _p, _u, lits, _q, _tl in self.rules
                             if r.get("class", "shell") == "shell"]
+        self._fold_off = fold is False   # the differential test's arm: the reading every value gets
         self._fold = None   # built from the policy alone, on the first line that has a value to fold
         self._of = {}
         # whether a rule's tool pattern takes a tool name, by (pattern, name): RE2's matches spend no deadline (_backend)
@@ -268,23 +272,46 @@ class Engine:
         return got
 
     def _fold_key(self, command):
-        """(#683) The key this command's loop readings fold by, or None. A rule alive in the command is one
-        whose literals the line holds (a prefilterless rule and one on a made subject are always alive): only
-        the characters those rules read must be kept apart, since a rule that cannot fire here cannot tell two
-        values apart either."""
-        if not isinstance(command, str):
+        """(#683) The key this command's loop readings fold by, or None. A rule alive in a reading is one whose
+        literals that reading holds (a prefilterless rule and one on a made subject are always alive): only the
+        characters those rules read must be kept apart, since a rule that cannot fire here cannot tell two values
+        apart either. Liveness is read on the substituted words as well as on the line as written (#729 class 2): a
+        value spliced into a word makes a rule alive that the line without it does not — `HISTSI${s}E=0` with `Z` is
+        `HISTSIZE=0` — so the mask goes into the key and such a value never folds onto one that leaves the rule dead."""
+        if self._fold_off or not isinstance(command, str):
             return None
         if self._fold is None:
-            self._fold = Partition([p for p, _l, _s in self._fold_rules] +
-                                   [r["unless"] for _s, r, _t, _p, _u, _l, _q, _tl in self.rules
-                                    if r.get("class", "shell") == "shell" and "unless" in r])
+            self._fold = Partition([p for p, _l, _s, _u in self._fold_rules] +
+                                   [u for _p, _l, _s, u in self._fold_rules if u])
         low = command.lower()
-        alive = [p for p, lits, made in self._fold_rules
-                 if made or lits is None or any(s in low for s in lits)]
-        mask = self._fold.mask(alive)
-        if mask is None:
+        # What a rule's literals find in the line as written is the same for every value the loop takes, so the
+        # classes those rules add are OR-ed once per line: only the rules no literal of the line names are asked
+        # again for each value. On the #683 line (1,000 values) asking all of them per value cost 4.07 s of a
+        # 4.07 s decision; asked once it is the parse that dominates, as the fold's first reading of the line found.
+        always, settled, later = [], [], []
+        for pat, lits, made, unless in self._fold_rules:
+            for p in ((pat, unless) if unless else (pat,)):
+                (always if made or lits is None else settled if any(s in low for s in lits)
+                 else later).append((p, lits))
+        base = self._fold.mask([p for p, _lits in always + settled])
+        if base is None:
             return None
-        return lambda texts: self._fold.key(texts, mask)
+
+        def key_of(texts):
+            words = (texts,) if isinstance(texts, str) else tuple(texts)
+            # (#729 class 1) a host is read by code, not by a pattern: `url_target` rearranges an address's digits
+            # (`http://169.254.43518/` is `169.254.169.254`), so no partition over characters can tell two of them
+            # apart, and a value that reaches that check is not folded at all
+            if any("://" in w and classes.url_info(w).get("host") for w in words):
+                return None
+            mask = base
+            if later:
+                sub = " ".join(words).lower()
+                alive = [p for p, lits in later if any(s in sub for s in lits)]
+                if alive:
+                    mask = base | self._fold.mask(alive)
+            return self._fold.key(words, mask)
+        return key_of
 
     def decide(self, tool, args, cls=None, untrusted=None, _hidden=0, _budget=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call

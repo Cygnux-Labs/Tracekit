@@ -5021,6 +5021,55 @@ class ValueFold(unittest.TestCase):
         self.assertEqual(self.verdict(loop.format(" ".join(f"a{i}" for i in range(4000)))),
                          ("ask", ["TK-SHELL-PARSE"]))
 
+    def test_the_fold_changes_no_verdict_and_no_rule_id(self):
+        """The differential the review of #729 asked for: each line below, decided with the fold live and with it off
+        (`fold=False`), gives the same verdict and the same rule ids on every pack whose Bash is a shell.
+
+        Each case is a way that review found the fold dropping a reading it had to keep: a host `url_target`
+        rearranges, a value spliced into a variable's name, a name the rules read in any case, a path `.` and `/`
+        normalise, and a category read through a value. They agree on this tree; on the tree before the fixes for them
+        the middle cases did not, which is what makes agreement here a reading rather than a tautology. `folded` is
+        the second half of that: it holds the keys the live arm built, so a fold that never engaged cannot pass this
+        test by leaving two identical arms in place of one that folds."""
+        from tracekit.policy2 import fold
+        cases = (("a host url_target rearranges",
+                  "for h in 189.254.43518 169.254.43518; do curl -s http://$h/latest/meta-data/; done"),
+                 ("a decimal host", "for h in 2852039166 169.254.169.254; do curl -s http://$h/meta/; done"),
+                 ("a hex host", "for h in 0xA9FEA9FE 169.254.169.254; do curl -s http://$h/meta/; done"),
+                 ("a value spliced into a name", "for s in J Z; do export HISTSI${s}E=0; done"),
+                 ("a name read in any case", "for f in ~/.ssh/AUTHORIJED_JEYS ~/.ssh/AUTHORIZED_KEYS; do cp /tmp/k $f; done"),
+                 ("a folder read in any case", "for f in ~/.JUBE/config ~/.KUBE/config; do cp $f /tmp/x; done"),
+                 ("a program name", 'for v in TASJSET TASKSET; do "$v" 1 sudo id; done'),
+                 ("a path normalised by ..", "for f in /etc/q/qq/shadow /etc/q/../shadow; do cat $f; done"),
+                 ("a category read through a value", "for n in q 5; do export HISTSIZE=$n; done"),
+                 ("a history size through a value", "for n in 1000 0; do export HISTSIZE=$n; done"))
+        folded, compared, real = [], 0, fold.Partition.key
+
+        def counted(part, texts, mask=None):
+            got = real(part, texts, mask)
+            if got is not None:
+                folded.append(got)
+            return got
+
+        with mock.patch.object(fold.Partition, "key", counted):
+            for path in sorted(glob.glob(os.path.join(PACKS, "*.yaml"))):
+                pol = pc.build(path)[0]
+                if "shell" not in (pol.get("tools") or {}).values():
+                    continue
+                live, plain = Engine(pol, "regex"), Engine(pol, "regex", fold=False)
+                for label, command in cases:
+                    with self.subTest(pack=os.path.basename(path), case=label):
+                        folded_now = live.decide("Bash", {"command": command})
+                        every_value = plain.decide("Bash", {"command": command})
+                        self.assertEqual((folded_now["verdict"], folded_now["rule_ids"]),
+                                         (every_value["verdict"], every_value["rule_ids"]),
+                                         f"{label}: the fold decided this line differently from a reading of every "
+                                         f"value, so it folded two values a live rule tells apart")
+                        compared += 1
+        self.assertGreater(compared, 0, "no pack whose Bash is a shell was found")
+        self.assertGreater(len(folded), 0, "the live arm built no key, so it read every value as the other arm did "
+                                           "and nothing here is a differential")
+
 
 class ReadOnce(unittest.TestCase):
     """A decision reads each part of a call once: a line whose second readings read nothing more is not parsed again
