@@ -4391,6 +4391,18 @@ class GuardrailsAndPushes(unittest.TestCase):
             self.assertLess(max(len(s) for s in engine_mod._pushes([{"argv": ["git", "push", "-" + "d" * 60000]}])),
                             100)
 
+    def test_gptme_python_and_hook_settings_wait_for_a_person(self):
+        self.verdicts([("ipython", {"code": "print(123)"})], "ask", "TK-A061")
+        self.verdicts([("Write", {"file_path": path}) for path in (
+            "gptme.toml", ".github/gptme.local.toml", "/home/u/.config/gptme/config.toml",
+            "/home/u/.config/gptme/plugins/tracekit/hooks/bridge.py")], "ask", "TK-F009")
+        self.verdicts([("Bash", {"command": command}) for command in (
+            "echo x > gptme.toml", "echo x > .github/gptme.local.toml",
+            "rm ~/.config/gptme/plugins/tracekit/hooks/bridge.py")], "ask", "TK-F015")
+        self.verdicts([("Read", {"file_path": "gptme.toml"}), ("Bash", {"command": "cat ~/.config/gptme/config.toml"}),
+                       ("Write", {"file_path": "gptme.toml.example"}),
+                       ("Bash", {"command": "echo x > ~/.config/gptme-old/config.toml"})], "allow")
+
     def test_harness_settings_and_the_agents_own_init_are_held(self):
         off = '{"disableAllHooks": true}'
         self.verdicts([("Write", {"file_path": "/w/p/.claude/settings.json", "content": off}),

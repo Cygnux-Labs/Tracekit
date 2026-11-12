@@ -983,6 +983,17 @@ def _handle(client, p, event, sid, tid):
         return _pre(client, p, sid, tid)
     if event in TOOL_EVENTS:
         return _post(client, p, sid, tid)
+    if AGENT == "gptme" and event == "ToolObserved":
+        from tracekit import policy as policy_mod
+        name = p["tool_name"]
+        args = p["tool_input"]
+        capture = policy_mod.load()[0].get("content_capture", "hashed")
+        paths = args.get("paths")
+        secret = privacy.mentions_dotenv(args.get("command"), args.get("file_path"), args.get("path"),
+                                         *(paths if isinstance(paths, list) else ()))
+        value = privacy.content({"args": args, "result": p.get("tool_response")}, capture, secret)
+        _run(client, sid, send="observe", source=f"gptme:tool:{name}"[:256], trust="untrusted", value=value)
+        return 0
     if event == "SessionEnd":   # not at Stop: a background subagent's call may still be running then
         _unfinished(client, sid)
         run, _ = _run(client, sid, register=False)

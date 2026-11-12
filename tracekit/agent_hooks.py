@@ -78,7 +78,7 @@ from .policy2.classes import PATH_KEYS, first
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
-               "devin": "devin"}
+               "devin": "devin", "gptme": "gptme"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -236,9 +236,62 @@ def _strings(value):
             yield from _strings(child)
 
 
+def _gptme_tool(name, ti):
+    args, content, kwargs = ti.get("args"), ti.get("content"), ti.get("kwargs")
+    if kwargs is not None:
+        if not isinstance(kwargs, dict) or args is not None or content is not None:
+            raise ValueError("gptme native calls must carry only a kwargs object")
+    elif not isinstance(args, list) or not all(isinstance(arg, str) for arg in args) or not isinstance(content, str):
+        raise ValueError("gptme markdown calls must carry an args list and text content")
+
+    if name in ("shell", "ipython"):
+        key = "command" if name == "shell" else "code"
+        value = kwargs.get(key) if kwargs is not None else content.strip()
+        if name == "shell" and kwargs is None:
+            if args:
+                raise ValueError("gptme markdown shell takes no positional arguments")
+            value = value.removeprefix("$ ")
+        if not isinstance(value, str):
+            raise ValueError(f"gptme {name} requires text {key}")
+        return ("Bash" if name == "shell" else name), {key: value}
+
+    if name in ("save", "append", "patch", "read"):
+        mapped = {"save": "Write", "append": "Edit", "patch": "Edit", "read": "Read"}[name]
+        if name == "read" and kwargs is None and not args:
+            paths = [line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        else:
+            path = kwargs.get("path") if kwargs is not None else " ".join(args)
+            if kwargs is None and name != "read" and path.startswith(("save ", "append ", "patch ")):
+                path = path.split(" ", 1)[1]
+            paths = [path]
+        if not paths or not all(isinstance(path, str) and path for path in paths):
+            raise ValueError(f"gptme {name} requires a file path")
+        result = {"file_path": os.path.expanduser(paths[0])}
+        if name == "read":
+            if len(paths) > 1:
+                result["paths"] = [os.path.expanduser(path) for path in paths]
+        else:
+            key = "patch" if name == "patch" else "content"
+            value = kwargs.get(key) if kwargs is not None else content
+            if not isinstance(value, str):
+                raise ValueError(f"gptme {name} requires text {key}")
+            result[key] = value
+        return mapped, result
+
+    if "." in name:
+        server, _, command = name.partition(".")
+        params = kwargs if kwargs is not None else json.loads(content)
+        if not server or not command or not isinstance(params, dict):
+            raise ValueError("gptme MCP calls require a qualified tool name and an arguments object")
+        return f"mcp__{server}__{command}", params
+    return name, kwargs if kwargs is not None else ti
+
+
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
+    if harness == "gptme":
+        return _gptme_tool(name, ti)
     if harness in ("droid", "devin"):
         name, files = _named(harness, name), None
         if name == ("ApplyPatch" if harness == "droid" else "apply_patch"):   # every file a patch header names,
@@ -431,7 +484,11 @@ def normalise(harness, p):
     ev = p.get("hook_event_name") or ""
     out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
-    if harness in ("codex", "qwen", "droid", "crush", "devin"):   # Claude Code's payloads; Qwen Code and Crush add
+    if harness == "gptme" and ev == "ToolObserved":
+        name, args = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
+        return dict(out, hook_event_name=ev, session_id=p.get("session_id"), tool_use_id=p.get("tool_use_id"),
+                    tool_name=name, tool_input=args, tool_response=p.get("tool_response"))
+    if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme"):   # Claude Code's payloads; Qwen Code and Crush add
         # PostToolUseFailure (Crush's payload is Claude Code's own: same field and event names)
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
@@ -848,6 +905,8 @@ def config_path(harness, project=None, home=None):
     of ~/.codex, by its real path (codex-rs find_codex_home_from_env), which keys the hooks' trust; ~/.codex as it is.
     lean: another user's (home) is ~/.codex: their CODEX_HOME isn't known here"""
     base = project or home or os.path.expanduser("~")
+    if harness == "gptme":
+        return os.path.join(home or os.path.expanduser("~"), ".config", "gptme", "config.toml")
     codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
         else os.path.join(base, ".codex")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
@@ -1100,6 +1159,125 @@ def _install_opencode(path, uninstall=False, v2=False, python=None, harness="ope
     return path
 
 
+GPTME_MARKER = "# Installed by Tracekit; tracekit uninstall --agent gptme removes this file."
+GPTME_HOOK = "bridge.py"
+
+
+def _gptme_hook_path(config):
+    return os.path.join(os.path.dirname(config), "plugins", "tracekit", "hooks", GPTME_HOOK)
+
+
+def _gptme_plugin(python, v2):
+    from .install import _dev_hook_argv
+    module = V2_MODULE if v2 else "tracekit.agent_hooks"
+    argv = [python, "-I", "-m", module, "gptme"] if python else _dev_hook_argv(module, "entry", ("gptme",))
+    with open(os.path.join(os.path.dirname(__file__), "_gptme_plugin.py"), encoding="utf-8") as f:
+        source = f.read()
+    return GPTME_MARKER + "\n" + source.replace("COMMAND = ()", "COMMAND = " + json.dumps(argv), 1).replace(
+        "V2 = False", f"V2 = {v2}", 1)
+
+
+def _gptme_config(directory, path):
+    from .deploy import files
+    from .install import SettingsError
+    name = os.path.basename(path)
+    raw = files.read(directory, name)
+    text = raw.decode("utf-8") if raw is not None else ""
+    standard = "~/.config/gptme/plugins"
+    paths = f'paths = ["{standard}"]'
+    try:
+        import tomllib
+    except ImportError:
+        # lean: on Python 3.9/3.10 detect the table by its header or key; use a TOML parser if older interpreters
+        # need to read more elaborate plugin config.
+        has_plugins = bool(re.search(r'(?m)^\s*(?:\[+\s*["\']?plugins\b|["\']?plugins["\']?\s*[.=])', text))
+        configured = any(line.strip() == paths for line in text.splitlines())
+    else:
+        try:
+            config = tomllib.loads(text)
+        except ValueError as e:
+            raise SettingsError(f"{path} is not valid TOML; Tracekit did not change it: {e}") from e
+        has_plugins = "plugins" in config
+        plugins = config.get("plugins")
+        entries = plugins.get("paths", ()) if isinstance(plugins, dict) else ()
+        configured = isinstance(entries, list) and any(
+            isinstance(entry, str) and (entry == standard or os.path.realpath(os.path.expanduser(entry)) ==
+                                        os.path.realpath(os.path.join(os.path.dirname(path), "plugins")))
+            for entry in entries
+        )
+    if has_plugins:
+        if not configured:
+            print(f"Add the Tracekit plugin directory to [plugins] in {path}: {paths}")
+        return
+    if raw is not None:
+        files.backup(directory, name, raw)
+    prefix = text.rstrip("\r\n") + "\n\n" if text else ""
+    files.write(directory, name, (prefix + "[plugins]\n" + paths + "\n").encode("utf-8"))
+
+
+def _install_gptme(path, uninstall, v2, python):
+    from .deploy import files
+    from .install import SettingsError
+    path = os.path.abspath(path)
+    plugin = os.path.dirname(os.path.dirname(_gptme_hook_path(path)))
+    if uninstall and not os.path.lexists(plugin):
+        return path
+    marker = (GPTME_MARKER + "\n").encode("utf-8")
+    removed = set()
+    try:
+        with contextlib.ExitStack() as stack:
+            def entered(directory):
+                stack.callback(files.close, directory)
+                return directory
+
+            parent = os.path.dirname(path)
+            os.makedirs(parent, exist_ok=True)
+            root = entered(files.open_dir(parent))
+            plugins = entered(files.subdir(root, "plugins"))
+            existed = os.path.lexists(plugin)
+            package = entered(files.subdir(plugins, "tracekit"))
+            raw = files.read(package, "__init__.py")
+            if existed and (raw is None or not raw.startswith(marker)):
+                raise SettingsError(f"{plugin} is not Tracekit's plugin; Tracekit did not change it.")
+            hook_path = os.path.join(plugin, "hooks")
+            hooks = entered(files.subdir(package, "hooks")) if not uninstall or os.path.lexists(hook_path) else None
+            entries = [(package, "__init__.py", marker)]
+            if hooks is not None:
+                entries.extend(((hooks, "__init__.py", marker + b"from .bridge import register\n"),
+                                (hooks, GPTME_HOOK, b"" if uninstall else _gptme_plugin(python, v2).encode("utf-8"))))
+            for directory, name, _ in entries:
+                existing = files.read(directory, name)
+                if existing is not None and not existing.startswith(marker):
+                    raise SettingsError(f"{plugin}/{name} is not Tracekit's plugin; Tracekit did not change it.")
+                if name == GPTME_HOOK and existing:
+                    version = _version(existing.decode("utf-8", "replace"))
+                    if version:
+                        removed.add(version)
+            if uninstall:
+                for directory, name, _ in reversed(entries[1:]):
+                    with contextlib.suppress(FileNotFoundError):
+                        files.remove(directory, name)
+                if hooks is not None:
+                    with contextlib.suppress(OSError):
+                        os.rmdir(hook_path)
+                # Keep ownership if gptme left bytecode or the user added files to the package.
+                if os.listdir(plugin) == ["__init__.py"]:
+                    files.remove(package, "__init__.py")
+            else:
+                for directory, name, contents in entries:
+                    if files.read(directory, name) != contents:
+                        files.write(directory, name, contents)
+                _gptme_config(root, path)
+    except (OSError, UnicodeDecodeError) as e:
+        raise SettingsError(f"{path}: {e}") from e
+    if uninstall:
+        for directory in (os.path.join(plugin, "hooks"), plugin):
+            with contextlib.suppress(OSError):
+                os.rmdir(directory)
+    _said(path, removed, uninstall, v2)
+    return path
+
+
 def _read(path):
     """(the JSON object in the hook config `path`, its text), or ({}, None) when there is no file."""
     from .install import SettingsError
@@ -1269,6 +1447,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
     from .install import SettingsError, _atomic_write_json, _backup_changed
     path = path or config_path(harness, project)
+    if harness == "gptme":
+        return _install_gptme(path, uninstall, v2, python)
     if harness in PLUGIN_TOOLS:
         return _install_opencode(path, uninstall, v2, python, harness)
     if harness == "goose":
