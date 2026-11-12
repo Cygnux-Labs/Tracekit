@@ -162,7 +162,7 @@ once it is approved. `tool_input` is the tool's Action (with its class name unde
 **`task` and `delegate` are denied in the hook**: they run a sub-agent with no hooks, so its calls would go undecided
 and unrecorded. **The terminal is interactive** (bash in tmux): text typed into the command running (`is_input: true`),
 a key name (`UP`, `TAB`, `ENTER`, `C-r`, which it sends as keystrokes), a command with a control character in it
-(tmux types it as a key: `^U` erases the line before it, `\r` is an Enter) and a line left open (a trailing `\`) run
+(tmux types it as a key: `^U` erases the line before it, `\r` is an Enter, a tab completes the word before it) and a line left open (a trailing `\`) run
 with what came before or comes after them, so the hook marks each `typed` and the policy holds it for a person
 (`TK-SHELL-PARSE`), as it holds an unclosed quote or heredoc; a whole command is decided as before. The v1 hook can't
 hold, so it denies them: use `--v2` with OpenHands. **In the CLI, a working

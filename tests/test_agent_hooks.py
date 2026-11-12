@@ -164,11 +164,12 @@ class Harnesses(DaemonCase):
         base = {"session_id": "oh-5", "event_type": "PreToolUse", "metadata": {}, "tool_name": "terminal"}
         for ti in ({"command": "UP"}, {"command": "ENTER"}, {"command": "push --force origin main", "is_input": True},
                    {"command": "git \\"}, {"command": "echo hi\x15git push --force origin main"},
-                   {"command": "echo hi\rgit push --force origin main"}):
+                   {"command": "echo hi\rgit push --force origin main"}, {"command": "cat ~/.ss\tid_rsa"}):
             with self.subTest(ti=ti):
                 code, out, err = self.hook("openhands", {**base, "tool_input": {**ti, "kind": "TerminalAction"}}, "PreToolUse")
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn("v1 hook can't hold it for a person", err)
+                self.assertIn("a key, a control character or a line left open", err)
                 self.assertIn("--v2", err)
         self.assertEqual(self.hook("openhands", {**base, "tool_input": {"command": "git status", "is_input": False,
                                                                         "kind": "TerminalAction"}}, "PreToolUse")[:2], (0, ""))
@@ -906,12 +907,14 @@ class OpenHandsTools(unittest.TestCase):
                 self.assertEqual((typed, d["verdict"], d["rule_ids"], d.get("unread")), (True, "ask", ["TK-SHELL-PARSE"], "typed"))
         # the second review: tmux types a command as keys, so ^U erases what came before it and \r is an Enter: each
         # runs `git push --force origin main`, which was only flagged (TK-F004) while TK-D003 denies it whole
-        for command in ("echo hi\x15git push --force origin main", "echo hi\rgit push --force origin main", "ls\x1b[A"):
+        # the third review: a tab is a Tab key too, and readline completes the word before it (`~/.ss<TAB>` is ~/.ssh/)
+        for command in ("echo hi\x15git push --force origin main", "echo hi\rgit push --force origin main", "ls\x1b[A",
+                        "echo ssh-ed25519 AAAA x >> ~/.ss\tauthorized_keys", "cat ~/.ss\tid_rsa", "cat <<EOF\n\tx\nEOF"):
             with self.subTest(command=command):
                 typed, d = decide(command)
                 self.assertEqual((typed, d["verdict"], "TK-SHELL-PARSE" in d["rule_ids"], d.get("unread")),
                                  (True, "ask", True, "typed"))
-        for command in ("cat <<EOF\n\tx\nEOF", "ls\n", "printf 'a\\tb'"):   # a tab and a newline aren't keys here
+        for command in ("ls\n", "printf 'a\\tb'", "git status\ngit log -1"):   # a newline ends a line; \\t is two characters
             with self.subTest(command=command):
                 self.assertIsNone(decide(command)[0])
         for command, cause in (("echo 'unclosed", "quote"), ("cat <<EOF", "syntax")):

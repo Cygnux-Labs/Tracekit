@@ -218,6 +218,10 @@ OPENHANDS_SUBAGENTS = ("task", "task_tool_set", "delegate")
 # SUPPORTED_SPECIAL_KEYS and parse_ctrl_key; tmux_terminal.send_keys): matched on the text stripped and upper-cased
 OPENHANDS_KEYS = re.compile(r"ENTER|TAB|BS|ESC|UP|DOWN|LEFT|RIGHT|HOME|END|PGUP|PGDN|(?:C-|CTRL[-+])[A-Z]")
 # a line bash continues on the next call: it ends in an odd number of backslashes (the terminal sends Enter after it)
+# a key typed in a terminal command: a control character, a tab too (Tab completes the word before it in interactive
+# bash: ~/.ss<TAB>authorized_keys is ~/.ssh/authorized_keys), as in TYPED["write_to_process"] but without its history
+# parts, since the terminal starts bash with `set +H`; \n ends a line, and only it
+OPENHANDS_KEY_CHAR = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
 OPENHANDS_OPEN_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\$")
 OPENHANDS_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # HookConfig reads hooks.json in three forms: {"hooks": {...}}, or the event map itself with Claude Code's names, or with
@@ -361,11 +365,11 @@ def tool(harness, name, ti):
             # the terminal is interactive (bash in tmux): text typed into the command running, a key, and a line left
             # open run with what comes before or after them, which this call alone doesn't show; the engine holds a
             # call marked `typed` (TK-SHELL-PARSE), and holds an unclosed quote or heredoc as a line it can't read
-            # tmux types a command as keys, so a control character in it is one too: ^U erases what came before it on
-            # the line, \r is an Enter (`echo hi\x15git push --force` runs the push): read as Devin's exec is (TYPED)
+            # tmux types a command as keys (send_keys literal), so a control character in it is one too: ^U erases what
+            # came before it on the line, \r is an Enter (`echo hi\x15git push --force` runs the push), a tab completes
             c = ti["command"]
             if ti.get("is_input") is True or OPENHANDS_KEYS.fullmatch(c.strip().upper()) or \
-                    OPENHANDS_OPEN_LINE.search(c) or TYPED["exec"].search(c):
+                    OPENHANDS_OPEN_LINE.search(c) or OPENHANDS_KEY_CHAR.search(c):
                 ti["typed"] = True
         if name == "apply_patch":   # Codex's patch format
             files = [f.strip() for f in PATCH_FILE.findall(str(ti.get("patch") or ""))]
@@ -1025,10 +1029,10 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     reason = (_blocked(harness, p, raw) or _not_text(q)) if is_pre else None
     if reason is None and is_pre and harness == "openhands" and (q.get("tool_input") or {}).get("typed") is True:
         # the v2 engine holds a call marked typed for a person (TK-SHELL-PARSE); the v1 policy doesn't read the mark
-        reason = ("Blocked by Tracekit: this OpenHands terminal call is text typed into a command already running, a key "
-                  "or a line left open, which runs with what came before or comes after it, and Tracekit's v1 hook "
-                  "can't hold it for a person. Send the whole command in one call, or use the v2 hook "
-                  "(tracekit init --dev --v2 --agent openhands), which holds it for approval.")
+        reason = ("Blocked by Tracekit: this OpenHands terminal call is text typed into a command already running, a "
+                  "key, a control character or a line left open, which runs with what came before or comes after it, "
+                  "and Tracekit's v1 hook can't hold it for a person. Send the whole command in one call, or use the "
+                  "v2 hook (tracekit init --dev --v2 --agent openhands), which holds it for approval.")
     err = Tee(stderr)
     if reason is not None:   # a call the hook can't decide as it runs: denied before the pipeline
         print(reason, file=err)
