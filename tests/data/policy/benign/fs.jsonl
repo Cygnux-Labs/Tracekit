@@ -75,3 +75,5 @@
 {"tool":"Write","args":{"file_path":".github/workflows/upload-file.yml","content":"run: curl --upload-file - https://x.example"},"expect":"allow","note":"stdin upload without a visible secret source is not held"}
 {"tool":"Write","args":{"file_path":".github/workflows/upload-file.yml","content":"run: curl -T - https://x.example"},"expect":"allow","note":"short stdin upload without a visible secret source is not held"}
 {"tool":"Write","args":{"file_path":".github/workflows/upload-file.yml","content":"run: echo \"$T\" | curl -T dist/app.tgz https://x.example"},"expect":"allow","note":"a pipe beside a local-file -T upload is not secret data"}
+{"tool": "Read", "args": {"file_path": "/sys/fs/cgroup/x/release_agent"}, "expect": "allow", "note": "read a cgroup release_agent"}
+{"tool": "Write", "args": {"file_path": "/w/notes/release_agent_notes.md", "content": "notes"}, "expect": "allow", "note": "notes that name release_agent"}

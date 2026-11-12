@@ -496,6 +496,48 @@ ask:
     reason: publishing model weights to a model hub
     remedy: Have a person approve the held call, or work with local models and leave the hub''s copy as it is.
     rationale: Publishing model weights to a model hub changes what every user of that model gets; a person confirms it.
+  - id: TK-A063
+    class: shell
+    field: argv
+    # each command's argv: curl, wget, socat, nc, ncat or netcat, then any words, one that names docker.sock or
+    # podman.sock (`--unix-socket /var/run/docker.sock`, `UNIX-CONNECT:/run/podman/podman.sock`, `nc -U`, an
+    # http+unix:// URL). Lazy, so the fallback engine stays linear. `ls -la /var/run/docker.sock`, `docker ps` and text
+    # that names the socket aren't held
+    pattern: '^(?:curl|wget|socat|ncat|nc|netcat) [^\n]*?(?:docker|podman)\.sock(?:[^A-Za-z0-9_]|$)'
+    reason: a raw request through the Docker or Podman socket
+    remedy: Use the docker or podman command, which shows what it does, or have a person approve the held call.
+    rationale: A request to the container socket skips what the docker command shows a person, and can start a privileged container that mounts the host; a person confirms it.
+  - id: TK-A064
+    class: shell
+    field: line
+    # DOCKER_HOST set to a unix:// socket where a command starts (also after { then do else, up to eight assignments,
+    # options, env (also by a path), command, time or ! words) for a program that isn't docker, podman, docker-compose
+    # or podman-compose (by a path too, or .exe), which talks to the daemon directly; `export DOCKER_HOST=…` and a grep
+    # for it aren't held
+    pattern: '(?:^|[;&|({]\s*|\b(?:then|do|else)\s+)(?:(?:env|command|time|!|(?:[^\s/;&|()=]*/){1,8}env|-[^\s;&|()]*|[A-Za-z_][A-Za-z0-9_]*=(?:[^\s;&|(){}]|\$\([^\s;&|(){}]*\)|\$\{[^\s;&|(){}]*\})*)\s+){0,8}?DOCKER_HOST=unix://(?:[^\s;&|(){}]|\$\([^\s;&|(){}]*\)|\$\{[^\s;&|(){}]*\})*\s+(?:(?:[^\s/;&|()]*/){9}\S*|(?:[^\s/;&|()]*/){0,8}(?:[^\s/;&|()dp][^\s/]*|d(?:[^\s/o][^\s/]*|o(?:[^\s/c][^\s/]*|c(?:[^\s/k][^\s/]*|k(?:[^\s/e][^\s/]*|e(?:[^\s/r][^\s/]*|r(?:[^\s/\-\.][^\s/]*|\-(?:[^\s/c][^\s/]*|c(?:[^\s/o][^\s/]*|o(?:[^\s/m][^\s/]*|m(?:[^\s/p][^\s/]*|p(?:[^\s/o][^\s/]*|o(?:[^\s/s][^\s/]*|s(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?)?|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?|p(?:[^\s/o][^\s/]*|o(?:[^\s/d][^\s/]*|d(?:[^\s/m][^\s/]*|m(?:[^\s/a][^\s/]*|a(?:[^\s/n][^\s/]*|n(?:[^\s/\-\.][^\s/]*|\-(?:[^\s/c][^\s/]*|c(?:[^\s/o][^\s/]*|o(?:[^\s/m][^\s/]*|m(?:[^\s/p][^\s/]*|p(?:[^\s/o][^\s/]*|o(?:[^\s/s][^\s/]*|s(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?)?|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?))(?:\s|$)'
+    reason: a program pointed at the Docker socket through DOCKER_HOST
+    remedy: Use the docker or podman command, which shows what it does, or have a person approve the held call.
+    rationale: A program given the container socket can start a privileged container that mounts the host without the docker command showing what it does; a person confirms it.
+  - id: TK-A065
+    class: shell
+    field: effects
+    # each file a command writes (redirections, tee …), as TK-A059 reads them, in lower case: a file named
+    # release_agent or notify_on_release, wherever the cgroup is mounted (/sys/fs/cgroup/, or the /tmp/cgrp an
+    # escape mounts); a cgroup's release_agent runs a program as root on the host. One lazy path prefix keeps the
+    # fallback engine linear. Reading either file is allowed
+    pattern: '^WRITE_TARGET:(?:[^\n]*?/)?(?:release_agent|notify_on_release)$'
+    reason: writing a cgroup's release_agent or notify_on_release
+    remedy: Have a person approve the held call; the agent's own work has no need to change a cgroup's release handling.
+    rationale: A cgroup's release_agent makes the host run a program when the cgroup empties, which breaks out of a container; reading the files is allowed.
+  - id: TK-A066
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # a file named release_agent or notify_on_release written or edited through file tools, as TK-A065 reads the shell's
+    pattern: '(?:^|/)(?:release_agent|notify_on_release)$'
+    reason: writing a cgroup's release_agent or notify_on_release
+    remedy: Have a person approve the held call; the agent's own work has no need to change a cgroup's release handling.
+    rationale: A cgroup's release_agent makes the host run a program when the cgroup empties, which breaks out of a container; reading the files is allowed.
   - id: TK-A039
     class: shell
     field: argv
