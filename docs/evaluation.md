@@ -528,8 +528,8 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 255 / 420 (60.7%) | 116 (27.6%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 285 / 420 (67.9%) | 154 (36.7%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
+| default | 259 / 420 (61.7%) | 116 (27.6%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 286 / 420 (68.1%) | 154 (36.7%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
 destructive 16 of 36, defence evasion 15 of 30, supply chain 16 of 27; strongest: database 32 of
