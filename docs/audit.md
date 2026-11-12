@@ -45,7 +45,8 @@ denied and held calls (--all for every call):
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
   `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT. An agent with no reader (every agent but
-  `claude`) needs `--calls FILE`, and `--agent claude` a ROOT or `--calls FILE`: without them it exits 2.
+  `claude` and `cline`) needs `--calls FILE`, and `--agent claude` or `--agent cline` a ROOT or `--calls FILE`:
+  without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -67,6 +68,7 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`) |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
 `--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`.
@@ -77,7 +79,18 @@ under that session. Each line is a JSON object; assistant messages may contain `
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
 
-It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
+Cline's reader reads each task in its folder: `<id>/<id>.messages.json`, where Cline 4.0 and later (the CLI and the
+VS Code extension) keep a session, and `<id>/api_conversation_history.json`, where earlier releases of the extension
+kept a task, in VS Code's global storage (`saoudrizwan.claude-dev/tasks` under `~/Library/Application
+Support/Code/User/globalStorage` on macOS, `~/.config/Code/User/globalStorage` on Linux and
+`%APPDATA%\Code\User\globalStorage` on Windows; Cline 4 reads those but doesn't move them, so give that folder as
+ROOT with `--agent cline`). Each `tool_use` block of an assistant message is a call, mapped as Tracekit's Cline hook
+maps it, so every command of a `run_commands` and every file of a `read_files` is decided; a call the hook can't read
+is a deny by `TK-HOOK-BLOCKED`. A message's `ts` is its time, else the file's modification time. The task's id is its
+session. A file that isn't JSON of that shape counts as one malformed entry.
+
+The readers follow no symlink. Files and folders they can't read are counted and skipped, and so is a line that isn't
+JSON.
 
 ## Calls file
 

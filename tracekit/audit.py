@@ -147,11 +147,71 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
             f.close()
 
 
+def cline_root():
+    """Cline's sessions' folder (v4 and later), as the Cline SDK resolves it: $CLINE_SESSION_DATA_DIR, else sessions/
+    in $CLINE_DATA_DIR, else data/sessions in $CLINE_DIR or ~/.cline."""
+    data = os.environ.get("CLINE_DATA_DIR", "").strip() or os.path.join(
+        os.environ.get("CLINE_DIR", "").strip() or os.path.join(os.path.expanduser("~"), ".cline"), "data")
+    return os.environ.get("CLINE_SESSION_DATA_DIR", "").strip() or os.path.join(data, "sessions")
+
+
+def _cline(root: str, since_ts: float, unreadable: list):
+    """Cline's reader: (time, task, tool, args) for each tool_use block of an assistant message in the tasks under
+    root, a v4 sessions folder (<id>/<id>.messages.json, {"messages": [...]}) or a pre-v4 tasks folder
+    (<id>/api_conversation_history.json, a list of messages). A message's time is its `ts` (ms), else the file's
+    modification time; a file that isn't JSON of that shape is one malformed entry. Follows no symlink."""
+    try:
+        tasks = sorted(os.listdir(root))
+    except OSError as e:
+        unreadable.append({"path": root, "error": f"cannot list: {e}"})
+        return
+    for task in tasks:
+        if os.path.islink(os.path.join(root, task)):
+            continue
+        for path in (os.path.join(root, task, f"{task}.messages.json"),
+                     os.path.join(root, task, "api_conversation_history.json")):
+            if not os.path.lexists(path):
+                continue
+            f, err = _safe_open(path)
+            if err:
+                unreadable.append({"path": path, "error": err})
+                continue
+            try:
+                with f:
+                    mtime, doc = os.fstat(f.fileno()).st_mtime, json.load(f)
+            except OSError as e:
+                unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+                continue
+            except (ValueError, RecursionError):   # not JSON (or not UTF-8), or nested past what json.load takes
+                yield None
+                continue
+            messages = doc.get("messages") if isinstance(doc, dict) else doc
+            if not isinstance(messages, list):
+                yield None
+                continue
+            for m in messages:
+                if not isinstance(m, dict) or m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+                    continue
+                ts = m.get("ts")
+                try:
+                    at = datetime.fromtimestamp(ts / 1000 if type(ts) in (int, float) else mtime, timezone.utc)
+                except (OverflowError, OSError, ValueError):   # a ts no date holds
+                    at = datetime.fromtimestamp(mtime, timezone.utc)
+                if at.timestamp() < since_ts:
+                    continue
+                for b in m["content"]:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        yield (at, task, b.get("name") if isinstance(b.get("name"), str) else "",
+                               b.get("input") if isinstance(b.get("input"), dict) else {})
+
+
 # one entry per agent: its name, its default folder (read when audit runs, so the env var that moves it counts), where
 # that folder is as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
 # (time, session, tool, args), None for a line it counts as malformed
 READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
-                      _claude_code)}
+                      _claude_code),
+           "cline": (cline_root, "$CLINE_SESSION_DATA_DIR, else $CLINE_DATA_DIR/sessions, else "
+                     "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline)", _cline)}
 
 
 def _agent(name: str | None) -> str | None:
@@ -207,7 +267,6 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
     engine = load_policy(policy_path or DEFAULT_POLICY)
     unreadable: list[dict] = []
     agent = _agent(agent)
-    hook = agent if calls is not None and agent in AGENT_NAMES else None   # map a calls file's names as its hook does
     if calls is not None:
         if calls == "-":
             if sys.stdin is None:   # started with stdin closed (<&-)
@@ -239,6 +298,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
 
     for name, folder, read in sources:
         start = len(calls_out)
+        hook = name if name in AGENT_NAMES else None   # map the calls' names as that agent's hook does
         for item in read:
             if item is None:
                 skipped_malformed += 1

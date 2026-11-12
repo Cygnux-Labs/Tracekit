@@ -35,6 +35,23 @@ def _write_jsonl(path: Path, lines: list[dict | str]):
             f.write((line if isinstance(line, str) else json.dumps(line)) + "\n")
 
 
+def _ms(days_ago=0):
+    """A Cline message's ts: milliseconds since the epoch."""
+    return int((datetime.now(timezone.utc) - timedelta(days=days_ago)).timestamp() * 1000)
+
+
+def _cline_use(name, args, ts=None):
+    """A Cline assistant message with one tool_use block (ts in ms, if given)."""
+    msg = {"role": "assistant", "content": [{"type": "text", "text": "ok"},
+                                            {"type": "tool_use", "id": "toolu_1", "name": name, "input": args}]}
+    return {**msg, "ts": ts} if ts is not None else msg
+
+
+def _write_json(path: Path, doc):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(doc if isinstance(doc, str) else json.dumps(doc), encoding="utf-8")
+
+
 def _run(*argv):
     out, err = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -445,6 +462,73 @@ class TestAudit(unittest.TestCase):
         self.assertEqual([(c["verdict"], c["rule_ids"]) for c in report["calls"]],
                          [("allow", []), ("deny", ["TK-HOOK-BLOCKED"]), ("deny", ["TK-HOOK-BLOCKED"]),
                           ("allow", [])])
+
+    def test_cline_sessions_are_read_and_mapped_as_its_hook_maps_them(self):
+        """#717: a v4 session (<id>/<id>.messages.json); run_commands is decided as Bash on every command it runs,
+        read_files as Read on every file."""
+        run = {"commands": ["ls", "rm -rf /"]}
+        _write_json(self.root / "s1" / "s1.messages.json", {"version": 1, "sessionId": "s1", "agent": "cline",
+                                                            "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "tidy up"}], "ts": _ms()},
+            _cline_use("run_commands", run, _ms()),
+            _cline_use("read_files", {"paths": ["/w/a", "/home/u/.ssh/id_rsa"]}, _ms())]})
+        expected = evaluate(load_policy(DEFAULT_POLICY), *agent_hooks.tool("cline", "run_commands", dict(run)))[0]
+        code, out, err = _run(str(self.root), "--agent", "cline", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual([(c["agent"], c["session"], c["tool"]) for c in report["calls"]],
+                         [("cline", "s1", "Bash"), ("cline", "s1", "Read")])
+        self.assertEqual((report["calls"][0]["verdict"], report["calls"][0]["rule_ids"]),
+                         (expected["verdict"], expected["rule_ids"]))
+        self.assertEqual(report["calls"][0]["verdict"], "deny")   # its second command decides
+        self.assertNotEqual(report["calls"][1]["verdict"], "allow")   # its second file decides
+        self.assertEqual(report["agents"], {"cline": {"folder": str(self.root), "calls": 2, "sessions": 1}})
+
+    def test_a_pre_v4_cline_task_is_read_at_its_files_time(self):
+        """#717: an extension task from before 4.0 (<id>/api_conversation_history.json, a list of messages without ts):
+        its calls take the file's modification time."""
+        path = self.root / "t1" / "api_conversation_history.json"
+        _write_json(path, [{"role": "user", "content": "go"}, _cline_use("run_commands", {"commands": ["rm -rf /"]})])
+        old = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp())
+        os.utime(path, (old, old))
+        report = audit.audit(str(self.root), agent="cline")
+        self.assertEqual([(c["session"], c["tool"], c["verdict"]) for c in report["calls"]], [("t1", "Bash", "deny")])
+        self.assertEqual(datetime.fromisoformat(report["calls"][0]["time"]).timestamp(), old)
+        self.assertEqual(audit.audit(str(self.root), since="7d", agent="cline")["calls"], [])
+
+    def test_since_keeps_cline_calls_by_their_ts(self):
+        _write_json(self.root / "s1" / "s1.messages.json", {"messages": [
+            _cline_use("run_commands", {"commands": ["rm -rf /"]}, _ms(days_ago=10)),
+            _cline_use("run_commands", {"commands": ["ls"]}, _ms())]})
+        report = audit.audit(str(self.root), since="7d", agent="cline")
+        self.assertEqual(report["counts"], {"allow": 1, "ask": 0, "deny": 0, "flag": 0})
+
+    def test_a_cline_file_that_isnt_a_task_is_malformed_and_the_rest_is_read(self):
+        _write_json(self.root / "bad" / "bad.messages.json", "{not json")
+        _write_json(self.root / "odd" / "api_conversation_history.json", {"messages": "not a list"})
+        _write_json(self.root / "s1" / "s1.messages.json", {"messages": [
+            _cline_use("run_commands", {"commands": ["ls"]})]})
+        report = audit.audit(str(self.root), agent="cline")
+        self.assertEqual((report["skipped_malformed"], len(report["calls"])), (2, 1))
+
+    def test_clines_default_folder_is_where_the_cline_sdk_keeps_sessions(self):
+        home = self.root / "home"
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+            for k in ("CLINE_DIR", "CLINE_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLAUDE_CONFIG_DIR"):
+                os.environ.pop(k, None)
+            self.assertEqual(audit.cline_root(), str(home / ".cline" / "data" / "sessions"))
+            os.environ["CLINE_DIR"] = str(self.root / "c")
+            self.assertEqual(audit.cline_root(), str(self.root / "c" / "data" / "sessions"))
+            os.environ["CLINE_DATA_DIR"] = str(self.root / "d")
+            self.assertEqual(audit.cline_root(), str(self.root / "d" / "sessions"))
+            os.environ["CLINE_SESSION_DATA_DIR"] = str(self.root / "s")
+            self.assertEqual(audit.cline_root(), str(self.root / "s"))
+            _write_json(self.root / "s" / "x" / "x.messages.json", {"messages": [
+                _cline_use("run_commands", {"commands": ["rm -rf /"]})]})
+            code, out, _ = _run("--json")   # with no ROOT, every agent's folder that exists
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["agents"], {"cline": {"folder": str(self.root / "s"), "calls": 1,
+                                                               "sessions": 1}})
 
     def test_kilo_generate_image_without_a_path_is_decided(self):
         """The 1.7.0 review's fuzzing: --agent kilo crashed (KeyError) on a generate_image with an image and no path;
