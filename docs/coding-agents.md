@@ -192,10 +192,10 @@ patch in `input`; that field and format come from the tool listing, not a captur
 not read for model text or reasoning.
 
 With a v1 hook, an unparseable payload or an unknown harness name is reported on stderr and the call is allowed, unless
-`TRACEKIT_FAIL_CLOSED=1` or the policy says `fail_mode: closed`. Three exceptions block the call whatever the fail mode:
+`TRACEKIT_FAIL_CLOSED=1` or the policy says `fail_mode: closed`. Four exceptions block the call whatever the fail mode:
 an OpenCode call its hook can't decide (the plugin passes the model's arguments before OpenCode checks them), an
-Antigravity CLI pre-tool call its hook can't decide (its command names the event), and, in every hook, a payload
-nested too deep to read.
+Antigravity CLI pre-tool call its hook can't decide (its command names the event), a Cline pre-tool call its hook can't
+decide (its command names the event), and, in every hook, a payload nested too deep to read.
 
 ## On the v2 signer
 

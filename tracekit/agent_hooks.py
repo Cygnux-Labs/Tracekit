@@ -159,6 +159,11 @@ DEVIN_PATH_KEY = re.compile(r"(?:path|paths|file)$")
 DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+)$)", re.M)
 
 
+class UnreadableCall(ValueError):
+    """A call a harness's mapping can't read on purpose (tool()): its hook blocks it, and tracekit audit reports it as
+    TK-HOOK-BLOCKED; any other ValueError is a bug."""
+
+
 def _diff_names(name):
     """A unified diff's file name, without git's a/ or b/. git writes a name with a space, a quote, a backslash or a
     byte past ASCII in "…" with C escapes (\\" \\\\ \\t, \\303\\251): both the name with its quotes dropped and the
@@ -260,12 +265,12 @@ def _cline_commands(v):
             continue
         line = c.get("command") if isinstance(c, dict) else None
         if not isinstance(line, str) or not line.strip():
-            raise ValueError("a Cline run_commands entry Tracekit can't read as a command")
+            raise UnreadableCall("a Cline run_commands entry Tracekit can't read as a command")
         args = c.get("args")
         argv = isinstance(args, list) and bool(args) and all(isinstance(a, str) for a in args)
         out.append(shlex.join([line, *args]) if argv else line)   # an argv, else the line as written
     if not out:
-        raise ValueError("Cline's run_commands names no command")
+        raise UnreadableCall("Cline's run_commands names no command")
     return out
 
 
@@ -434,7 +439,10 @@ def tool(harness, name, ti):
             # decided by scheme, as goose's url::Url::parse reads the source: tabs and newlines dropped, outer spaces and
             # controls trimmed, backslashes read as slashes in a web URL (https:x.example/a, HTTPS:\\x.example\a)
             src = re.sub(r"[\t\n\r]", "", str(ti.get("source") or "")).strip("".join(map(chr, range(33))))
-            parts = urllib.parse.urlsplit(src.replace("\\", "/"))
+            try:
+                parts = urllib.parse.urlsplit(src.replace("\\", "/"))
+            except ValueError:   # a bracketed host that isn't one (http://[::1/cat.png)
+                raise UnreadableCall("goose's read_image source isn't a URL Tracekit can read") from None
             if parts.scheme.lower() in ("http", "https"):
                 return "WebFetch", {**ti, "url": src.replace("\\", "/")}
             if parts.scheme.lower() == "file":   # goose reads a file: URL's path, made absolute (file:etc/x is /etc/x)
@@ -475,7 +483,7 @@ def tool(harness, name, ti):
         elif name == "read_files":
             files = [p for e in _each(v, "files", "paths", "file_paths") + one for p in _cline_paths(e)]
             if not files or not all(isinstance(f, str) and f for f in files):
-                raise ValueError("Cline's read_files names a file Tracekit can't read as a path")
+                raise UnreadableCall("Cline's read_files names a file Tracekit can't read as a path")
             for k in PATH_KEYS:   # its own paths decide, never a decoy beside them
                 ti.pop(k, None)
             ti["file_path"], ti["paths"] = files[0], list(dict.fromkeys(files))
@@ -483,7 +491,7 @@ def tool(harness, name, ti):
             # Write; else an Edit
             path = v.get("path") if one else None
             if not isinstance(path, str) or not path:
-                raise ValueError("Cline's editor names no path")
+                raise UnreadableCall("Cline's editor names no path")
             for k in PATH_KEYS:
                 ti.pop(k, None)
             ti["path"] = ti["file_path"] = path
@@ -495,12 +503,12 @@ def tool(harness, name, ti):
         elif name == "apply_patch":   # the patch is its `input`, or the whole input as a string
             files = [JS_TRIM.sub("", f) for f in PATCH_FILE.findall(str(v.get("input") if one else v))]   # JS trim()
             if not files or not all(files):
-                raise ValueError("Cline's apply_patch names no file")
+                raise UnreadableCall("Cline's apply_patch names no file")
             ti["file_path"], ti["paths"] = files[0], files
         elif name == "fetch_web_content":
             urls = [r.get("url") if isinstance(r, dict) else None for r in _each(v, "requests")]
             if not urls or not all(isinstance(u, str) and u for u in urls):
-                raise ValueError("Cline's fetch_web_content names no URL")
+                raise UnreadableCall("Cline's fetch_web_content names no URL")
             ti["url"] = urls[0]
             if len(set(urls)) > 1:
                 ti["urls"] = list(dict.fromkeys(urls))

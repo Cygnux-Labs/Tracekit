@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from . import __version__
-from .agent_hooks import AGENT_NAMES, _blocked, tool as hook_tool
+from .agent_hooks import AGENT_NAMES, UnreadableCall, _blocked, tool as hook_tool
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
@@ -344,7 +344,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 except RecursionError:   # nested past what the mapping takes, as json.loads counts such a line
                     skipped_malformed += 1
                     continue
-                except ValueError:   # a call the mapping can't read (Cline's): its live hook blocks it
+                except UnreadableCall:   # a call the mapping can't read (Cline's, goose's): its live hook blocks it
                     blocked = True
             try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its bare name,
                 # PowerShell also as a shell line; a shell command its parser can't read is held (TK-SHELL-PARSE)
