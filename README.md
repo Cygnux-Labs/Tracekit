@@ -463,10 +463,8 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 line. Report vulnerabilities privately as [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)
 describes.
 
-<details>
-<summary>Cite the paper</summary>
-
 The paper: [Tracekit-v2-paper.pdf](paper/Tracekit-v2-paper.pdf) ([arXiv:2609.35659](https://arxiv.org/abs/2609.35659)).
+To cite it:
 
 ```bibtex
 @misc{cygnuxlabs2026tracekit,
@@ -479,8 +477,6 @@ The paper: [Tracekit-v2-paper.pdf](paper/Tracekit-v2-paper.pdf) ([arXiv:2609.356
   note          = {Code: \url{https://github.com/Cygnux-Labs/Tracekit}}
 }
 ```
-
-</details>
 
 ---
 
