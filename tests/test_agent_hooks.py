@@ -91,7 +91,7 @@ class CopilotMapping(unittest.TestCase):
                     decision = load_policy().decide(normalised["tool_name"], normalised["tool_input"])
                     self.assertIn("TK-A020", decision["rule_ids"])
 
-    def test_copilots_own_config_is_flagged_as_harness_config(self):
+    def test_copilots_own_config_is_held_as_harness_config(self):
         for tool_name, tool_args, rule in (
                 ("edit", {"path": "~/.copilot/hooks/tracekit.json", "old_str": "a", "new_str": "b"}, "TK-F009"),
                 ("create", {"path": ".github/hooks/other.json", "file_text": "{}"}, "TK-F009"),
@@ -102,6 +102,7 @@ class CopilotMapping(unittest.TestCase):
                 normalised = self.normalise(tool_name, tool_args)
                 decision = load_policy().decide(normalised["tool_name"], normalised["tool_input"])
                 self.assertIn(rule, decision["rule_ids"])
+                self.assertEqual(decision["verdict"], "ask")
         ordinary = self.normalise("create", {"path": ".github/workflows/ci.yml", "file_text": "on: push"})
         self.assertNotIn("TK-F009", load_policy().decide(ordinary["tool_name"], ordinary["tool_input"])["rule_ids"])
 
@@ -1341,7 +1342,8 @@ class CrushTools(unittest.TestCase):
         secret = pol.decide(*agent_hooks.tool("crush", "mcp_vault_get_secret", {"name": "db"}))
         self.assertEqual((secret["verdict"], secret["rule_ids"]), ("ask", ["TK-A037", "TK-F006"]))
         money = pol.decide(*agent_hooks.tool("crush", "mcp_stripe_send_money", {"amount": 1000, "currency": "usd"}))
-        self.assertEqual((money["verdict"], money["rule_ids"]), ("ask", ["TK-A044", "TK-F006"]))
+        # the shipped default has the server pack's money rules too since #604 (TK-M002 over MCP)
+        self.assertEqual((money["verdict"], money["rule_ids"]), ("ask", ["TK-A044", "TK-M002", "TK-F006"]))
         self.assertTrue(pol.untrusted_results(agent_hooks.tool("crush", "mcp_github_get_issue", {})[0]))
         # the shipped policy decides a credential read and a download into authorized_keys as it does the same write
         self.assertNotEqual(pol.decide(*agent_hooks.tool("crush", "view", {"file_path": "/home/agent/.ssh/id_rsa"}))

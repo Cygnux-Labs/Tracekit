@@ -454,8 +454,8 @@ def _parser():
                        "calls, holds, denies and flags by rule, gaps, integrity (--since, --json, --share)",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
-                       "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
+    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts, or a calls file) "
+                       "through the policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("tips", help="what each step of your coding agents cost and how to cut it, as tracekit view's "
                        "TIPS page says it, from the dev signer's store and Claude Code's transcripts (--since, --json)",
