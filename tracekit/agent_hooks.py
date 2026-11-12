@@ -283,7 +283,7 @@ def tool(harness, name, ti):
             return "Bash", ti
         if name in ("shell", "local_shell", "exec_command"):
             cmd = ti.get("command")
-            if isinstance(cmd, list):
+            if isinstance(cmd, list) and all(isinstance(w, str) for w in cmd):   # Codex's argv: a list of strings
                 ti["command"] = " ".join(cmd[2:] if cmd[:2] in (["bash", "-lc"], ["bash", "-c"], ["sh", "-c"]) else cmd)
             return "Bash", ti
         return name, ti
@@ -340,7 +340,7 @@ def tool(harness, name, ti):
             if isinstance(ti.get("image"), str):   # its `image`, an existing file, is read and sent to the image
                 # provider: decided as a Read of it, with the `path` it writes (Kilo gives that an image extension)
                 ti["file_path"] = ti["image"]
-                ti["paths"] = [ti["image"]] + [ti["path"]] * isinstance(ti.get("path"), str)
+                ti["paths"] = [ti["image"]] + ([ti["path"]] if isinstance(ti.get("path"), str) else [])
                 return "Read", ti
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23

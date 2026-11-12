@@ -383,9 +383,50 @@ class TestAudit(unittest.TestCase):
             text = _run()[1]
         self.assertEqual(code, 0)
         report = json.loads(out)
-        self.assertEqual(report["agents"], {"claude-code": {"folder": str(folder), "calls": 2, "sessions": 1}})
-        self.assertEqual({c["agent"] for c in report["calls"]}, {"claude-code"})
-        self.assertIn(f"\nread: claude-code ({folder}): 2 calls in 1 session\n", text)
+        self.assertEqual(report["agents"], {"claude": {"folder": str(folder), "calls": 2, "sessions": 1}})
+        self.assertEqual({c["agent"] for c in report["calls"]}, {"claude"})
+        self.assertIn(f"\nread: claude ({folder}): 2 calls in 1 session\n", text)
+
+    def test_agent_claude_is_init_s_name_and_claude_code_still_works(self):
+        """The 1.7.0 review: audit --agent took claude-code where init, uninstall and the plugin skill take claude."""
+        _write_jsonl(self.root / "p" / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        for name in ("claude", "claude-code"):
+            with self.subTest(name=name):
+                code, out, err = _run(str(self.root), "--agent", name, "--json")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["agents"], {"claude": {"folder": str(self.root), "calls": 1,
+                                                                        "sessions": 1}})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["audit", "--help"])
+        self.assertIn("--agent {antigravity,claude,codex,", out.getvalue())   # one name in the help: init's
+        self.assertNotIn("claude-code", out.getvalue())
+
+    def test_a_shell_command_no_agent_sends_is_malformed(self):
+        """The 1.7.0 review: --agent codex crashed (TypeError) on an argv with an item that isn't a string. Such a
+        line counts as malformed, as a line the mapping can't take does; so does a shell command that is no text for
+        the agents whose shell tools take text."""
+        argvs = [["ls", 1], ["ls", None], ["ls", ["-la"]], [["ls"]], ["ls", 10 ** 30], ["bash", "-lc", 1]]
+        _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"command": a}) for a in argvs]
+                     + [_line("shell", {"command": ["bash", "-lc", "ls -la"]})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "codex", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual((report["skipped_malformed"], [c["tool"] for c in report["calls"]]), (len(argvs), ["Bash"]))
+        for agent, tool in (("gemini", "run_shell_command"), ("opencode", "bash"), ("goose", "shell")):
+            with self.subTest(agent=agent):
+                _write_jsonl(self.root / "calls.jsonl", [_line(tool, {"command": 1}), _line(tool, {"command": {}}),
+                                                         _line(tool, {"command": "ls"})])
+                report = audit.audit(calls=str(self.root / "calls.jsonl"), agent=agent)
+                self.assertEqual((report["skipped_malformed"], len(report["calls"])), (2, 1))
+
+    def test_kilo_generate_image_without_a_path_is_decided(self):
+        """The 1.7.0 review's fuzzing: --agent kilo crashed (KeyError) on a generate_image with an image and no path;
+        it is decided as the Read of the image."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("generate_image", {"prompt": "x", "image": "in.png"})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "kilo", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["tool"] for c in json.loads(out)["calls"]], ["Read"])
 
     def test_a_line_nested_past_what_the_mapping_takes_is_malformed(self):
         """#730 review: --agent droid or devin crashed on a line json.loads takes but agent_hooks._strings can't."""
@@ -425,18 +466,45 @@ class TestAudit(unittest.TestCase):
         code, _, err = _run("--calls", str(self.root / "missing.jsonl"))
         self.assertEqual(code, 2)
         self.assertIn("missing.jsonl", err)
-        code, _, err = _run("--calls", str(self.root))   # not a regular file, as a pipe from <(...) isn't
-        self.assertEqual(code, 2)
-        self.assertIn("--calls -", err)
+        # what isn't a regular file: what it is, and to send a pipe to --calls - only for a pipe (the 1.7.0 review)
+        code, _, err = _run("--calls", str(self.root))
+        self.assertEqual((code, err.splitlines()[-1]),
+                         (2, f"tracekit audit: cannot read the calls file: {self.root} is a directory"))
+        cases = []
+        if os.path.exists("/dev/null"):
+            cases.append(("/dev/null", "/dev/null is not a regular file"))
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(self.root / "fifo")
+            cases.append((str(self.root / "fifo"), "fifo is a pipe (as <(...) gives); send it to --calls -"))
+        try:
+            (self.root / "link.jsonl").symlink_to(self.root / "missing.jsonl")
+            cases.append((str(self.root / "link.jsonl"), "link.jsonl is a symlink, which audit doesn't follow"))
+        except OSError:   # Windows without the privilege
+            pass
+        for path, said in cases:
+            with self.subTest(path=path):
+                code, _, err = _run("--calls", path)
+                self.assertEqual(code, 2)
+                self.assertTrue(err.rstrip().endswith(said), err)
+                self.assertEqual("--calls -" in err, "pipe" in said)
         with mock.patch("sys.stdin", None):   # started with stdin closed (<&-)
             code, _, err = _run("--calls", "-")
         self.assertEqual(code, 2)
         self.assertIn("no standard input", err)
 
     def test_agent_without_root_or_calls_exits_2(self):
-        code, _, err = _run("--agent", "gemini")
+        # an agent with no reader: only --calls FILE, which works (a ROOT is refused); claude: a ROOT or --calls FILE
+        for argv in (["--agent", "codex"], [str(self.root), "--agent", "codex"]):
+            with self.subTest(argv=argv):
+                code, _, err = _run(*argv)
+                self.assertEqual((code, err.splitlines()[-1]), (2, "tracekit audit: no reader for codex's sessions "
+                                                                   "yet; turn them into a calls file and use --calls "
+                                                                   "FILE --agent codex"))
+        code, _, err = _run("--agent", "claude")
         self.assertEqual(code, 2)
-        self.assertIn("needs a ROOT or --calls", err)
+        self.assertIn("--agent claude needs a ROOT or --calls FILE", err)
+        with self.assertRaisesRegex(ValueError, "no reader for gemini's"):   # audit() itself, a ROOT given or not
+            audit.audit(str(self.root), agent="gemini")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as e:
             cli.main(["audit", "--calls", "-", "--agent", "no-such-agent"])
         self.assertEqual(e.exception.code, 2)

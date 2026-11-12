@@ -17,7 +17,7 @@ $ tracekit audit --since 7d --show
 a replay against today's policy, not a signed record
 policy: …/tracekit/policy2/packs/dev.yaml (sha256:…)
 
-read: claude-code (~/.claude/projects): 1204 calls in 31 sessions
+read: claude (~/.claude/projects): 1204 calls in 31 sessions
 1204 tool calls in 31 sessions since 7d: Tracekit would have denied 2 and held 9 for a person; it would have flagged 57 and allowed 1136.
 …
 by rule:
@@ -36,14 +36,17 @@ denied and held calls (--all for every call):
   default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
   file: a pipe (as `<(...)` gives) goes to `--calls -`. A file it can't open, or `--calls -` with no standard input,
-  exits 2 with the reason.
-- `--agent NAME`, with `--calls`: each call is decided as that agent's Tracekit hook would decide it (`codex`,
-  `cursor`, `gemini`, `opencode`, ...): a call the hook denies before it maps it (Kilo's `notebook_execute`, goose's
-  Code Mode, Crush's `agent` and `agentic_fetch`, a Devin call missing the argument it is decided on) is a deny by
-  `TK-HOOK-BLOCKED`; the others are mapped as the hook maps them, so `run_shell_command` or `Shell` is decided as `Bash`. A line
-  the mapping can't take (nested too deep) counts as malformed. Without `--agent`, names are taken as Tracekit's
-  (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`, `mcp__<server>__<tool>`). With ROOT, it names the reader that reads
-  ROOT; with neither ROOT nor `--calls`, it exits 2.
+  exits 2 with the reason; for a FILE that isn't a regular file, what it is: a directory, a pipe, a symlink (audit
+  follows none), or another file that isn't regular, such as `/dev/null`.
+- `--agent NAME` takes an agent's name as `tracekit init --agent` does (`claude`, `codex`, `cursor`, `gemini`,
+  `opencode`, ...). With `--calls`, each call is decided as that agent's Tracekit hook would decide it: a call the hook
+  denies before it maps it (Kilo's `notebook_execute`, goose's Code Mode, Crush's `agent` and `agentic_fetch`, a Devin
+  call missing the argument it is decided on) is a deny by `TK-HOOK-BLOCKED`; the others are mapped as the hook maps
+  them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep), or
+  whose shell command is no text once mapped (a Codex argv with an item that isn't a string), counts as malformed.
+  Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
+  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT. An agent with no reader (every agent but
+  `claude`) needs `--calls FILE`, and `--agent claude` a ROOT or `--calls FILE`: without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -64,7 +67,7 @@ One reader per agent, each with its default folder:
 
 | Agent | Default folder |
 |---|---|
-| `claude-code` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
 `--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`.

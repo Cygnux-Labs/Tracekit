@@ -1603,6 +1603,18 @@ class Installer(unittest.TestCase):
         # with no image, only the path it writes: a `paths` the model sent beside it is dropped, as Kilo drops it
         _, ti = agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "path": "/w/out.png", "paths": ["/w/b"]})
         self.assertEqual(ti["paths"], [])
+        # an image and no path: the image alone (the mapping raised KeyError, so tracekit audit --agent kilo crashed)
+        self.assertEqual(agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "image": "/w/in.png"}),
+                         ("Read", {"prompt": "x", "image": "/w/in.png", "file_path": "/w/in.png", "paths": ["/w/in.png"]}))
+
+    def test_codex_joins_an_argv_only_of_strings(self):
+        """An argv with an item that isn't a string (Codex sends none) is left as sent: joining it raised TypeError,
+        so tracekit audit --agent codex crashed."""
+        self.assertEqual(agent_hooks.tool("codex", "shell", {"command": ["bash", "-lc", "ls -la"]}),
+                         ("Bash", {"command": "ls -la"}))
+        for argv in (["ls", 1], ["ls", None], ["ls", ["-la"]], ["ls", 10 ** 30]):
+            with self.subTest(argv=argv):
+                self.assertEqual(agent_hooks.tool("codex", "shell", {"command": argv}), ("Bash", {"command": argv}))
 
     def test_cursor_decides_every_path_its_input_names(self):
         # Cursor doesn't document which key its tools read a path from: a decoy file_path beside the path, target_file
