@@ -352,3 +352,7 @@
 {"tool": "Bash", "args": {"command": "echo 1 > /sys/fs/cgroup/x/notify_on_release && echo '/cmd' > /sys/fs/cgroup/x/release_agent"}, "expect": "ask", "note": "cgroup release_agent escape"}
 {"tool": "Bash", "args": {"command": "echo /cmd | tee /sys/fs/cgroup/x/release_agent"}, "expect": "ask", "note": "tee into a cgroup release_agent"}
 {"tool": "Bash", "args": {"command": "curl -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s --unix-socket /var/run/docker.sock http://localhost/containers/json"}, "expect": "ask", "note": "Docker socket request behind thirty-two flags"}
+{"tool": "Bash", "args": {"command": "time DOCKER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration"}, "expect": "ask", "note": "DOCKER_HOST to the Podman socket after time"}
+{"tool": "Bash", "args": {"command": "! DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after !"}
+{"tool": "Bash", "args": {"command": "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after env by its path"}
+{"tool": "Bash", "args": {"command": "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after an env option"}

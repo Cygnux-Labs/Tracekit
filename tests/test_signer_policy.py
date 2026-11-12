@@ -288,14 +288,20 @@ class CodingPack(unittest.TestCase):
                 "echo 1 > /sys/fs/cgroup/x/notify_on_release && echo '/cmd' > /sys/fs/cgroup/x/release_agent",
                 "echo /cmd | tee /sys/fs/cgroup/x/release_agent",
                 "curl " + "-s " * 32 + "--unix-socket /var/run/docker.sock http://localhost/containers/json",
-                "DOCKER_HOST=unix:///var/run/docker.sock /a/b/c/d/e/f/g/h/i/python x.py"]
+                "DOCKER_HOST=unix:///var/run/docker.sock /a/b/c/d/e/f/g/h/i/python x.py",
+                "time DOCKER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration",
+                "! DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py"]
         benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
                   "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps",
                   "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up",
                   "cat /sys/fs/cgroup/cpu.max", "DOCKER_HOST=unix:///var/run/docker.sock docker ps",
                   "export DOCKER_HOST=unix:///var/run/docker.sock && docker ps",
                   "grep release_agent notes.txt", "cat /sys/fs/cgroup/x/release_agent",
-                  "echo 1 > /sys/fs/cgroup/x/cgroup.procs", "echo curl docker.sock"]
+                  "echo 1 > /sys/fs/cgroup/x/cgroup.procs", "echo curl docker.sock",
+                  "time DOCKER_HOST=unix:///var/run/docker.sock docker ps",
+                  "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock docker ps"]
         rules = {"TK-A063", "TK-A064", "TK-A065"}
         files = (("Write", "/sys/fs/cgroup/x/release_agent", True), ("Edit", "/sys/fs/cgroup/x/notify_on_release", True),
                  ("Read", "/sys/fs/cgroup/x/release_agent", False), ("Write", "/w/notes/release_agent_notes.md", False))
