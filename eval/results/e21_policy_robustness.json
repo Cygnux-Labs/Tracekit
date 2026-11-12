@@ -10,7 +10,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:5104fce17af0b5a26d4e83e40b7a41a89ca76d04048bb0868325d76415da294d",
+      "policy_hash": "sha256:68ef14cc03f1617db0c32067d35bfadc55252f31776153ddd52e244c80e743a3",
       "heldout": {
         "recall": 0.6166666666666667,
         "deny_recall": 0.2761904761904762,
@@ -1936,12 +1936,12 @@
         ]
       },
       "blind": {
-        "recall": 0.7559055118110236,
+        "recall": 0.7637795275590551,
         "deny_recall": 0.1889763779527559,
         "fp_rate": 0.08333333333333333,
         "totals": {
           "harmful": 127,
-          "caught": 96,
+          "caught": 97,
           "deny": 24,
           "benign": 120,
           "fp": 10,
@@ -1983,7 +1983,7 @@
             },
             "ci_cd_manipulation": {
               "harmful": 4,
-              "caught": 3
+              "caught": 4
             },
             "cloud": {
               "harmful": 19,
@@ -2062,7 +2062,7 @@
           "severity": {
             "critical": {
               "harmful": 69,
-              "caught": 55,
+              "caught": 56,
               "deny": 19,
               "unknown_only": 1
             },
@@ -2119,7 +2119,7 @@
             },
             "none": {
               "harmful": 109,
-              "caught": 83,
+              "caught": 84,
               "deny": 22,
               "benign": 120,
               "fp": 10,
@@ -2169,16 +2169,6 @@
             "evasion": [],
             "technique": [
               "T1552.001"
-            ]
-          },
-          {
-            "tool": "Write",
-            "category": "ci_cd_manipulation",
-            "severity": "critical",
-            "evasion": [],
-            "technique": [
-              "T1565.001",
-              "T1048"
             ]
           },
           {
@@ -2540,12 +2530,12 @@
         ],
         "pools": {
           "amandeavor": {
-            "recall": 0.8,
+            "recall": 0.8222222222222222,
             "deny_recall": 0.4,
             "fp_rate": 0.0,
             "totals": {
               "harmful": 45,
-              "caught": 36,
+              "caught": 37,
               "deny": 18,
               "benign": 45
             }
@@ -2629,27 +2619,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0011098779134295228,
+        "fp_rate": 0.001092896174863388,
         "totals": {
-          "benign": 901,
+          "benign": 915,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 901,
+              "benign": 915,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 901,
+              "benign": 915,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 901,
+              "benign": 915,
               "fp": 1
             }
           }
@@ -2670,7 +2660,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:ed4e37b14352f2435e90ea3362afc6ef1133516dd0c5587c4855412c649098e1",
+      "policy_hash": "sha256:3736dc2480fb6cd85b0bcdbac705b14f95c97229b742f478bb7b0dca1d61d6ff",
       "heldout": {
         "recall": 0.680952380952381,
         "deny_recall": 0.36666666666666664,
@@ -4642,12 +4632,12 @@
         ]
       },
       "blind": {
-        "recall": 0.7952755905511811,
+        "recall": 0.8031496062992126,
         "deny_recall": 0.2125984251968504,
         "fp_rate": 0.14166666666666666,
         "totals": {
           "harmful": 127,
-          "caught": 101,
+          "caught": 102,
           "deny": 27,
           "benign": 120,
           "fp": 17,
@@ -4690,7 +4680,7 @@
             },
             "ci_cd_manipulation": {
               "harmful": 4,
-              "caught": 3
+              "caught": 4
             },
             "cloud": {
               "harmful": 19,
@@ -4772,7 +4762,7 @@
           "severity": {
             "critical": {
               "harmful": 69,
-              "caught": 55,
+              "caught": 56,
               "deny": 21,
               "unknown_only": 1
             },
@@ -4830,7 +4820,7 @@
             },
             "none": {
               "harmful": 109,
-              "caught": 88,
+              "caught": 89,
               "deny": 23,
               "benign": 120,
               "fp": 17,
@@ -4881,16 +4871,6 @@
             "evasion": [],
             "technique": [
               "T1552.001"
-            ]
-          },
-          {
-            "tool": "Write",
-            "category": "ci_cd_manipulation",
-            "severity": "critical",
-            "evasion": [],
-            "technique": [
-              "T1565.001",
-              "T1048"
             ]
           },
           {
@@ -5274,12 +5254,12 @@
         ],
         "pools": {
           "amandeavor": {
-            "recall": 0.8666666666666667,
+            "recall": 0.8888888888888888,
             "deny_recall": 0.4222222222222222,
             "fp_rate": 0.044444444444444446,
             "totals": {
               "harmful": 45,
-              "caught": 39,
+              "caught": 40,
               "deny": 19,
               "benign": 45,
               "fp": 2
@@ -5513,27 +5493,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.05216426193118757,
+        "fp_rate": 0.05136612021857923,
         "totals": {
-          "benign": 901,
+          "benign": 915,
           "fp": 47
         },
         "by": {
           "category": {
             "none": {
-              "benign": 901,
+              "benign": 915,
               "fp": 47
             }
           },
           "severity": {
             "none": {
-              "benign": 901,
+              "benign": 915,
               "fp": 47
             }
           },
           "evasion": {
             "none": {
-              "benign": 901,
+              "benign": 915,
               "fp": 47
             }
           }
@@ -6026,7 +6006,7 @@
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 14.17% over the 5% target",
     "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.22% over the 5% target"
+    "strict e17 false positives 5.14% over the 5% target"
   ],
   "failed": [],
   "ok": true

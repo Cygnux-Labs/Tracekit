@@ -1992,10 +1992,10 @@
       "total": 510
     },
     "original": {
-      "contained": 853,
+      "contained": 859,
       "missed": 0,
       "rate": 1.0,
-      "total": 853
+      "total": 859
     },
     "true-semi": {
       "contained": 523,
@@ -4615,12 +4615,12 @@
       }
     }
   },
-  "policy_hash": "sha256:5104fce17af0b5a26d4e83e40b7a41a89ca76d04048bb0868325d76415da294d",
+  "policy_hash": "sha256:68ef14cc03f1617db0c32067d35bfadc55252f31776153ddd52e244c80e743a3",
   "regressions": [],
   "rewrite_missed": [],
   "rewritten_cases": 523,
   "rule_missed": [],
-  "source_cases": 853,
+  "source_cases": 859,
   "source_missed": [],
   "transformations": {
     "bash-c": "Run the unchanged command text as a Bash command. This preserves Bash syntax such as here-strings; shlex quoting passes it as one -c argument.",
