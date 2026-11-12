@@ -159,6 +159,25 @@ class Harnesses(DaemonCase):
                 self.assertIn("issues/563", err)
         self.assertEqual([e for e in self.events("oh-3") if e["type"] == "tool.call"], [])
 
+    def test_openhands_typed_terminal_input_is_denied_by_the_v1_hook(self):
+        # #563 review: only the v2 engine reads the `typed` mark, so the v1 hook denies what v2 holds for a person
+        base = {"session_id": "oh-5", "event_type": "PreToolUse", "metadata": {}, "tool_name": "terminal"}
+        for ti in ({"command": "UP"}, {"command": "ENTER"}, {"command": "push --force origin main", "is_input": True},
+                   {"command": "git \\"}, {"command": "echo hi\x15git push --force origin main"},
+                   {"command": "echo hi\rgit push --force origin main"}):
+            with self.subTest(ti=ti):
+                code, out, err = self.hook("openhands", {**base, "tool_input": {**ti, "kind": "TerminalAction"}}, "PreToolUse")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("v1 hook can't hold it for a person", err)
+                self.assertIn("--v2", err)
+        self.assertEqual(self.hook("openhands", {**base, "tool_input": {"command": "git status", "is_input": False,
+                                                                        "kind": "TerminalAction"}}, "PreToolUse")[:2], (0, ""))
+        calls = [e["data"] for e in self.events("oh-5") if e["type"] == "tool.call"]
+        self.assertEqual([c["name"] for c in calls], ["Bash"])   # only the whole command went to the pipeline
+        path = os.path.join(client.client_dir(), "runs", "openhands-" + hashlib.sha256(b"oh-5").hexdigest()[:16] + ".json")
+        with open(path) as f:
+            self.assertEqual(list(json.load(f)["pending"].values()), [[calls[0]["tool_use_id"]]])   # denied calls left
+
     def test_openhands_sub_agents_are_denied_in_the_hook(self):
         # #563 review: task (in the CLI's default tools) and delegate run a sub-agent with hook_config=None, so its
         # calls run no hook: `task` asking a bash-runner for `curl | sh` would only be flagged, its terminal call unseen
@@ -885,6 +904,16 @@ class OpenHandsTools(unittest.TestCase):
             with self.subTest(command=command, is_input=is_input):
                 typed, d = decide(command, is_input)
                 self.assertEqual((typed, d["verdict"], d["rule_ids"], d.get("unread")), (True, "ask", ["TK-SHELL-PARSE"], "typed"))
+        # the second review: tmux types a command as keys, so ^U erases what came before it and \r is an Enter: each
+        # runs `git push --force origin main`, which was only flagged (TK-F004) while TK-D003 denies it whole
+        for command in ("echo hi\x15git push --force origin main", "echo hi\rgit push --force origin main", "ls\x1b[A"):
+            with self.subTest(command=command):
+                typed, d = decide(command)
+                self.assertEqual((typed, d["verdict"], "TK-SHELL-PARSE" in d["rule_ids"], d.get("unread")),
+                                 (True, "ask", True, "typed"))
+        for command in ("cat <<EOF\n\tx\nEOF", "ls\n", "printf 'a\\tb'"):   # a tab and a newline aren't keys here
+            with self.subTest(command=command):
+                self.assertIsNone(decide(command)[0])
         for command, cause in (("echo 'unclosed", "quote"), ("cat <<EOF", "syntax")):
             with self.subTest(command=command):
                 typed, d = decide(command)
