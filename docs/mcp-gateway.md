@@ -108,7 +108,9 @@ gateway, for the identity it decided the call for, alone; a run closed mid-call 
   the whole listing fails with an error naming the upstream.
 - One tools/list, resources/list or prompts/list has 600 s for all the upstreams and their pages together, listed one
   after another, so a slow upstream leaves less time for those after it; past that the listing fails with an error
-  naming the upstream it was waiting for. A tools/call, prompts/get or resources/read has 600 s of its own.
+  naming the upstream it was waiting for. Opening a new session to an upstream that went away has 600 s of its own,
+  outside the listing's, and fails naming the upstream. A tools/call, prompts/get or resources/read has 600 s of its
+  own.
 - A resource is read through the upstream that listed it: list resources before reading one; a URI from a resource
   template isn't routed.
 - No server-initiated messages: sampling, elicitation, subscriptions and progress notifications from an upstream don't

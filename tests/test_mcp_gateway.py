@@ -414,6 +414,61 @@ class McpGateway(unittest.TestCase):
             mock.patch.object(mcp_gateway, "_closed", return_value=True),
             mock.patch.object(ups, "_open", side_effect=concurrent.futures.TimeoutError())))
 
+    def test_a_call_that_ends_as_its_wait_runs_out_gives_its_own_answer(self):
+        """An upstream answering between the wait running out and the check gives that answer, not the wait's empty
+        TimeoutError; a TimeoutError the call raised itself is raised as it was."""
+        ups = self.srv.mcp["upstreams"]
+
+        class Late(concurrent.futures.Future):   # the wait runs out, and the answer is there at once
+            def result(self, timeout=None):
+                if timeout is not None:
+                    raise concurrent.futures.TimeoutError()
+                return super().result()
+
+        def run(outcome):
+            def submit(coro, loop):
+                coro.close()
+                fut = Late()
+                if isinstance(outcome, BaseException):
+                    fut.set_exception(outcome)
+                else:
+                    fut.set_result(outcome)
+                return fut
+
+            async def nothing():
+                pass
+            with mock.patch.object(mcp_gateway.asyncio, "run_coroutine_threadsafe", submit):
+                return ups._run(nothing(), timeout=1)
+        self.assertEqual("listed", run("listed"))
+        with self.assertRaisesRegex(TimeoutError, "read timed out"):
+            run(TimeoutError("read timed out"))
+
+    def test_a_reconnect_that_gets_no_session_names_the_upstream(self):
+        """The reconnect's wait for a session names the upstream, and gives up the attempt so the next call opens a
+        new one."""
+        ups = self.srv.mcp["upstreams"]
+
+        class Never:   # an upstream whose session never opens
+            def __init__(self, target):
+                pass
+
+            async def __aenter__(self):
+                await asyncio.Event().wait()
+
+            async def __aexit__(self, *exc):
+                return False
+        held = ups._held["up"]
+        try:
+            with mock.patch("mcp.Client", Never), mock.patch.object(mcp_gateway, "UPSTREAM_TIMEOUT_S", 0.2), \
+                    self.assertRaisesRegex(TimeoutError, r"^upstream 'up' gave no session in 0.2 s$"):
+                ups._open("up")
+            attempt = ups._held["up"]
+            with contextlib.suppress(concurrent.futures.CancelledError, concurrent.futures.TimeoutError):
+                attempt.result(5)
+            self.assertTrue(attempt.cancelled())
+        finally:
+            ups._held["up"] = held   # the open session this test left alone
+
     def test_page_bound_error_forgets_page1_resources(self):
         """Hitting the page cap on resources/list returns an error and remembers nothing."""
         self._swap_upstream(paged_upstream())

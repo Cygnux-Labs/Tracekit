@@ -107,15 +107,21 @@ class Upstreams:
                 raise
         ready = concurrent.futures.Future()
         self._held[name] = asyncio.run_coroutine_threadsafe(hold(ready), self.loop)
-        ready.result(UPSTREAM_TIMEOUT_S)
+        try:
+            ready.result(UPSTREAM_TIMEOUT_S)
+        except concurrent.futures.TimeoutError:
+            if ready.done():   # the connection raised a TimeoutError of its own (from Python 3.11 the same class)
+                raise
+            self._held[name].cancel()   # the next call opens a new session
+            raise TimeoutError(f"upstream {name!r} gave no session in {UPSTREAM_TIMEOUT_S:g} s") from None
 
     def _run(self, coro, timeout=UPSTREAM_TIMEOUT_S):
         fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
         try:
             return fut.result(timeout)
         except concurrent.futures.TimeoutError:
-            if fut.done():   # a TimeoutError the call raised (from Python 3.11 the same class)
-                raise
+            if fut.done():   # the call raised a TimeoutError of its own (from 3.11 the same class), or just ended
+                return fut.result()
             fut.cancel()   # else the call keeps running (and holding its buffers) after its answer was given up
             raise UpstreamTimeout(f"no answer in {timeout:g} s") from None
 

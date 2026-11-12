@@ -15,9 +15,9 @@ Every call that is not denied is sent only after the signer's `approval_consume`
 for an approval with a T2 executor. Multi-round input-required calls (MCP 2.3) with a `request_state` under an allowed
 decision are decided and completed once across rounds: a round continues the call its own asyncio task left waiting (as
 mcp's Client.call_tool drives them), so concurrent calls never share one, whatever `request_state` the server returns.
-A waiting call whose task makes any other call on the session first, or ends, is never completed: the signer's
-decided_not_completed gap at run close. Rounds without `request_state`, or whose decision required human approval, are
-decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
+A waiting call whose task calls a tool or gets a prompt on the session first, or ends, is never completed: the
+signer's decided_not_completed gap at run close. Rounds without `request_state`, or whose decision isn't `allow` (a
+flag, or an approval a person gave), are decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
 propagates unchanged and completes as an error.
 `list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`mcp:<server>/tools`,
 `/resources`, `/prompts`; a page over half a signer frame as its digest) and returned once recorded. A list the signer
