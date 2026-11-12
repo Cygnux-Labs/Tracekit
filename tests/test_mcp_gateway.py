@@ -1,6 +1,8 @@
 """The MCP gateway (tracekit/mcp_gateway.py): an MCP client connects over Streamable HTTP; the gateway proxies an
 in-process upstream MCP server, deciding and recording through an in-process v2 signer as source gateway (tier T2)."""
 import asyncio
+import concurrent.futures
+import contextlib
 import http.client
 import json
 import os
@@ -391,19 +393,26 @@ class McpGateway(unittest.TestCase):
         self.assertIn("upstream 'up': tools/list timed out (one listing has 0.3 s for every upstream and page)",
                       messages(e.exception))
 
-    def test_a_listing_past_its_budget_names_the_upstream_before_python_3_11(self):
-        """Before 3.11 the timeout of the future a listing waits on (concurrent.futures.TimeoutError) isn't the built-in
-        TimeoutError, so the listing's own error was missed."""
-        class FutureTimeout(Exception):   # concurrent.futures.TimeoutError on Python 3.10
-            pass
+    def test_a_timeout_the_upstream_call_raises_is_not_the_listings(self):
+        """Only the listing's own time running out names its budget. A TimeoutError raised inside the upstream call (a
+        socket's, anyio's fail_after) or by the reconnect's wait read "tools/list timed out (one listing has 600 s for
+        every upstream and page)"; it keeps the upstream error and its advice."""
+        ups = self.srv.mcp["upstreams"]
+        advice = "; the gateway connects to an upstream that went away again on the next call"
 
-        def call(up, method, *a, **kw):
-            raise FutureTimeout()
-        with mock.patch("concurrent.futures.TimeoutError", FutureTimeout), \
-                mock.patch.object(self.srv.mcp["upstreams"], "call", call), self.assertRaises(Exception) as e:
-            self.agent(lambda c: c.list_tools())
-        self.assertIn("upstream 'up': tools/list timed out (one listing has 600 s for every upstream and page)",
-                      messages(e.exception))
+        def listing_error(*patches):
+            with contextlib.ExitStack() as stack, self.assertRaises(Exception) as e:
+                for p in patches:
+                    stack.enter_context(p)
+                self.agent(lambda c: c.list_tools())
+            self.assertNotIn("one listing has", messages(e.exception))
+            return messages(e.exception)
+        self.assertIn("upstream error: TimeoutError: read timed out" + advice, listing_error(
+            mock.patch.object(ups.clients["up"], "list_tools", new_callable=mock.AsyncMock,
+                              side_effect=TimeoutError("read timed out"))))
+        self.assertIn("upstream error: TimeoutError: " + advice, listing_error(   # the reconnect's wait for a session
+            mock.patch.object(mcp_gateway, "_closed", return_value=True),
+            mock.patch.object(ups, "_open", side_effect=concurrent.futures.TimeoutError())))
 
     def test_page_bound_error_forgets_page1_resources(self):
         """Hitting the page cap on resources/list returns an error and remembers nothing."""

@@ -15,10 +15,10 @@ Every call that is not denied is sent only after the signer's `approval_consume`
 for an approval with a T2 executor. Multi-round input-required calls (MCP 2.3) with a `request_state` under an allowed
 decision are decided and completed once across rounds: a round continues the call its own asyncio task left waiting (as
 mcp's Client.call_tool drives them), so concurrent calls never share one, whatever `request_state` the server returns.
-A task that makes any other call on the session first ends the waiting one, completed with the input request it
-returned; a task that ends between rounds leaves it to the signer's decided_not_completed gap. Rounds without
-`request_state`, or whose decision required human approval, are decided as calls of their own. A result with
-`isError: true` completes as an error; an exception from the session propagates unchanged and completes as an error.
+A waiting call whose task makes any other call on the session first, or ends, is never completed: the signer's
+decided_not_completed gap at run close. Rounds without `request_state`, or whose decision required human approval, are
+decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
+propagates unchanged and completes as an error.
 `list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`mcp:<server>/tools`,
 `/resources`, `/prompts`; a page over half a signer frame as its digest) and returned once recorded. A list the signer
 cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a refusal is
@@ -114,13 +114,11 @@ class TracekitSession(HeldCalls):
         args = arguments or {}
         caller_args_digest = event_hash({"tool": tool, "args": args})
         task = asyncio.current_task()
+        # a call this task left waiting and doesn't continue now is never completed: its caller may have seen an
+        # exception (mcp's elicitation callback, its round cap), so it ends as the signer's decided_not_completed gap
         held = self._pending.pop(task, None)
-        if held is not None and held[0] != (tool, caller_args_digest, kw.get("request_state")):
-            # this task moved on without the round: the call ended with the input request it returned
-            await self._complete(held[1], held[2], status="ok", result=held[5])
-            held = None
-        if held is not None:
-            _, call_id, req, d, args, _ = held
+        if held is not None and held[0] == (tool, caller_args_digest, kw.get("request_state")):
+            _, call_id, req, d, args = held
             try:
                 c = await self._rpc("approval_consume", tool_call_id=call_id, tool=tool, args_source="parsed", args=args)
             except (RPCError, SignerUnavailable) as e:
@@ -167,11 +165,11 @@ class TracekitSession(HeldCalls):
                     await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
                     raise
             next_state = getattr(out, "request_state", None)
-            result = result_field(d.get("send_result"), dump)
             if next_state is not None and d.get("decision") == "allow":
-                self._pending[task] = ((tool, caller_args_digest, next_state), call_id, req, d, args, result)
+                self._pending[task] = ((tool, caller_args_digest, next_state), call_id, req, d, args)
             else:
-                await self._complete(call_id, req, status="ok", result=result)
+                await self._complete(call_id, req, status="ok",
+                                     result=result_field(d.get("send_result"), dump))
             return out
         failed = getattr(out, "is_error", getattr(out, "isError", False))   # mcp 2.x, mcp 1.x
         await self._complete(call_id, req, status="error" if failed else "ok",

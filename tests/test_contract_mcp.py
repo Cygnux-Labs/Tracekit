@@ -725,7 +725,8 @@ class InputRequiredRounds(unittest.TestCase):
         self.assertEqual(d1, 1)
         self.assertEqual(d2, 2)
 
-    def test_server_that_reuses_request_state_completes_both_calls(self):
+    def test_server_that_reuses_request_state_decides_both_calls(self):
+        """The first call, left after its first round, is never completed; the second completes."""
         from mcp.server.lowlevel import Server
         import mcp.types as t
         from tracekit import autowire
@@ -765,7 +766,7 @@ class InputRequiredRounds(unittest.TestCase):
         decides = [r for m, r in signer.requests if m == "decide"]
         completes = [r for m, r in signer.requests if m == "complete"]
         self.assertEqual(len(decides), 2)
-        self.assertEqual(len(completes), 2)
+        self.assertEqual([(r["tool_call_id"], r["status"]) for r in completes], [(decides[1]["tool_call_id"], "ok")])
 
     def test_round_whose_observe_fails_warns_when_fail_open(self):
         from tracekit import autowire
@@ -871,21 +872,35 @@ class InputRequiredRounds(unittest.TestCase):
             self.assertEqual((r["status"], r["result"]["content"][0]["text"]), ("ok", "done"))
             self.assertEqual(r["decision_id"], f"dec-{list(decided).index(r['tool_call_id']) + 1}")
 
-    def test_a_call_left_between_rounds_ends_when_its_task_makes_another(self):
-        """#718: call A stops after its first round; call B, same tool, arguments and state, ran its last round under A's
-        id and decision. Now A completes with the input request it got, and B under its own decision."""
-        server, signer = self._state_reusing_server(), self._wired()
+    def test_a_call_left_between_rounds_is_never_completed(self):
+        """#718: call A is left after its first round, by its caller or by mcp.Client when the elicitation callback
+        raises; call B, same tool, arguments and state, ran its last round under A's id and decision. Then A was
+        completed "ok" with its input request when B began, though its caller got an exception. A stays decided and
+        is never completed (the signer's decided_not_completed gap at run close); B completes under its own decision."""
+        import mcp.types as t
+        for elicitation_fails in (False, True):
+            with self.subTest(elicitation_fails=elicitation_fails):
+                self._restore()   # _wired() wraps ClientSession's methods again
+                server, signer = self._state_reusing_server(), self._wired()
+                fails = [RuntimeError("the person closed the dialog")] if elicitation_fails else []
 
-        async def abandoned_then_new():
-            async with MCPClient(server, elicitation_callback=self._elicit) as c:
-                await c.session.call_tool("ask", {"k": "v"}, allow_input_required=True)   # A: round 1 only
-                return await c.call_tool("ask", {"k": "v"})                                 # B, to its end
-        self.assertEqual(asyncio.run(abandoned_then_new()).content[0].text, "done")
-        a, b = [r["tool_call_id"] for m, r in signer.requests if m == "decide"]
-        completes = [(r["tool_call_id"], r["decision_id"], r["status"]) for m, r in signer.requests if m == "complete"]
-        self.assertEqual(completes, [(a, "dec-1", "ok"), (b, "dec-2", "ok")])
-        first, last = [r["result"] for m, r in signer.requests if m == "complete"]
-        self.assertEqual((first["resultType"], last["content"][0]["text"]), ("input_required", "done"))
+                async def elicit(ctx, params):
+                    if fails:
+                        raise fails.pop()
+                    return t.ElicitResult(action="accept", content={})
+
+                async def left_then_new():
+                    async with MCPClient(server, elicitation_callback=elicit) as c:
+                        if elicitation_fails:
+                            with self.assertRaises(Exception):   # an ExceptionGroup holding the callback's error
+                                await c.call_tool("ask", {"k": "v"})                                   # A
+                        else:
+                            await c.session.call_tool("ask", {"k": "v"}, allow_input_required=True)   # A: round 1
+                        return await c.call_tool("ask", {"k": "v"})                                     # B, to its end
+                self.assertEqual(asyncio.run(left_then_new()).content[0].text, "done")
+                _, b = [r["tool_call_id"] for m, r in signer.requests if m == "decide"]
+                self.assertEqual([(r["tool_call_id"], r["decision_id"], r["status"], r["result"]["content"][0]["text"])
+                                  for m, r in signer.requests if m == "complete"], [(b, "dec-2", "ok", "done")])
 
 
 @unittest.skipUnless(HAVE_MCP and hasattr(mcp.types, "InputRequiredResult"), "mcp 2.3+ with InputRequiredResult required")
@@ -948,3 +963,25 @@ class BigLists(unittest.TestCase):
         self.assertEqual((out.is_error, out.content[0].text), (False, "ran tool_7"))
         self.assertEqual(self.events("input.observed"), [])
         self.assertEqual([r["ok"] for r in self.events("tool.result")], [True])
+
+    def test_input_requests_over_half_a_frame_are_recorded_as_their_digest(self):
+        """A round's input requests are recorded as a list is: sent whole, the signer refused requests over its frame
+        (quota_exceeded) and the call failed."""
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[t.Tool(name="ask", inputSchema={"type": "object"})])
+
+        async def on_call_tool(ctx, params):
+            return t.InputRequiredResult(request_state="S", input_requests={"q": t.ElicitRequest(
+                params=t.ElicitRequestFormParams(message="who? " * 300_000,   # 1.5 MB
+                                                 requested_schema={"type": "object", "properties": {}}))})
+
+        async def asked():
+            async with MCPClient(Server("big", on_list_tools=on_list_tools, on_call_tool=on_call_tool)) as c:
+                return await c.session.call_tool("ask", {}, allow_input_required=True)
+        self.assertEqual(asyncio.run(asked()).result_type, "input_required")
+        [seen] = self.events("input.observed")
+        self.assertEqual((seen["source"], seen["trust"]), ("mcp:big/input_required", "untrusted"))
+        self.assertLess(seen["output"]["size"], 100)   # the digest, not the requests

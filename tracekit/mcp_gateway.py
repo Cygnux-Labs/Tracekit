@@ -72,6 +72,11 @@ LISTS = {"tools/list": ("list_tools", "tools"), "prompts/list": ("list_prompts",
          "resources/list": ("list_resources", "resources")}
 
 
+class UpstreamTimeout(TimeoutError):
+    """An upstream call that didn't answer within the time Upstreams waits for it, unlike a TimeoutError the call
+    raised itself (a socket's, anyio's fail_after, a reconnect's)."""
+
+
 class Upstreams:
     """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, ...)` runs one
     of the mcp Client's methods on it from any thread. A session that ended (a stdio upstream that exited, a remote
@@ -109,8 +114,10 @@ class Upstreams:
         try:
             return fut.result(timeout)
         except concurrent.futures.TimeoutError:
+            if fut.done():   # a TimeoutError the call raised (from Python 3.11 the same class)
+                raise
             fut.cancel()   # else the call keeps running (and holding its buffers) after its answer was given up
-            raise
+            raise UpstreamTimeout(f"no answer in {timeout:g} s") from None
 
     def call(self, name, method, *a, timeout=UPSTREAM_TIMEOUT_S, **kw):
         with self._locks[name]:
@@ -191,7 +198,7 @@ class _McpGateway(_Handler):
                 while True:
                     try:
                         result = ups.call(up, call, cursor=cursor, timeout=deadline - time.monotonic())
-                    except (TimeoutError, concurrent.futures.TimeoutError):   # one class from Python 3.11, two before
+                    except UpstreamTimeout:   # the listing's time ran out; any other TimeoutError is the upstream's
                         raise _Error(-32603, f"upstream {up!r}: {kind}/list timed out (one listing has "
                                              f"{UPSTREAM_TIMEOUT_S:g} s for every upstream and page)") from None
                     items = getattr(result, kind)
