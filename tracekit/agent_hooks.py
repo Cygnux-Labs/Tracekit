@@ -323,6 +323,47 @@ def _gptme_tool(name, ti):
     elif not isinstance(args, list) or not all(isinstance(arg, str) for arg in args) or not isinstance(content, str):
         raise ValueError("gptme markdown calls must carry an args list and text content")
 
+    if name == "tmux":
+        operations = ti.get("operations")
+        if not isinstance(operations, list) or not operations or not all(isinstance(op, str) for op in operations):
+            raise ValueError("gptme tmux requires the parsed operations")
+        commands, pane_input = [], False
+        for op in operations:
+            parts = op.split(maxsplit=1)
+            if len(parts) == 2 and parts[0] == "new-session":
+                commands.append(parts[1])
+            elif len(parts) == 2 and parts[0] == "send-keys":
+                pane = parts[1].split(maxsplit=1)
+                if len(pane) != 2:
+                    continue   # gptme rejects the missing keys
+                keys = pane[1]
+                # A pane can already contain partial input or run another program. Inspect the new text and
+                # require approval even when it looks harmless.
+                pane_input = True
+                try:
+                    tokens = shlex.split(keys)
+                except ValueError:
+                    tokens = [keys]
+                commands.append("".join({"Space": " ", "Enter": "\n", "C-m": "\n"}.get(k, k) for k in tokens))
+        if commands:
+            result = {"commands": commands, "tmux_operations": operations}
+            if pane_input:
+                result["gptme_tmux_input"] = True
+            return "Bash", result
+        return name, {"operations": operations}
+
+    if name == "patch_many":
+        patches = ti.get("patches")
+        if not isinstance(patches, list) or not patches or not all(
+                isinstance(p, list) and len(p) == 2 and all(isinstance(v, str) and v for v in p) for p in patches):
+            raise ValueError("gptme patch_many requires the prepared patches")
+        return "Edit", {"paths": [path for path, _ in patches], "patches": [patch for _, patch in patches]}
+
+    if name == "mcp":
+        command = kwargs.get("command") if kwargs is not None else content
+        if isinstance(command, str) and command.lstrip().startswith("load"):
+            return "mcp__gptme__load", {"command": command}
+
     if name in ("shell", "ipython"):
         key = "command" if name == "shell" else "code"
         value = kwargs.get(key) if kwargs is not None else content.strip()
@@ -334,8 +375,9 @@ def _gptme_tool(name, ti):
             raise ValueError(f"gptme {name} requires text {key}")
         return ("Bash" if name == "shell" else name), {key: value}
 
-    if name in ("save", "append", "patch", "read"):
-        mapped = {"save": "Write", "append": "Edit", "patch": "Edit", "read": "Read"}[name]
+    if name in ("save", "append", "patch", "read", "morph", "hashline_edit"):
+        mapped = {"save": "Write", "append": "Edit", "patch": "Edit", "read": "Read",
+                  "morph": "Edit", "hashline_edit": "Edit"}[name]
         if name == "read" and kwargs is None and not args:
             paths = [line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
         else:
@@ -351,7 +393,8 @@ def _gptme_tool(name, ti):
                 result["paths"] = [os.path.expanduser(path) for path in paths]
         else:
             key = "patch" if name == "patch" else "content"
-            value = kwargs.get(key) if kwargs is not None else content
+            native_key = "edit" if name in ("morph", "hashline_edit") else key
+            value = kwargs.get(native_key) if kwargs is not None else content
             if not isinstance(value, str):
                 raise ValueError(f"gptme {name} requires text {key}")
             result[key] = value
@@ -606,8 +649,14 @@ def normalise(harness, p):
     ev = p.get("hook_event_name") or ""
     out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
+    if harness == "gptme" and ev in ("PromptObserved", "UserPromptSubmit"):
+        return dict(out, hook_event_name="PromptObserved", session_id=p.get("session_id"), prompt=p.get("prompt"))
     if harness == "gptme" and ev == "ToolObserved":
-        name, args = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
+        name, args = p.get("tool_name") or "?", _input(p.get("tool_input"))
+        try:
+            name, args = tool(harness, name, args)
+        except (ValueError, TypeError):
+            pass   # an undecided tool may have run without a confirmation preview
         return dict(out, hook_event_name=ev, session_id=p.get("session_id"), tool_use_id=p.get("tool_use_id"),
                     tool_name=name, tool_input=args, tool_response=p.get("tool_response"))
     if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme"):   # Claude Code's payloads; Qwen Code and Crush add
@@ -1005,6 +1054,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     p = dict(p, hook_event_name=event) if event else p
     is_pre = p.get("hook_event_name") in PRE or (harness == "goose" and p.get("event") in PRE)
     q = normalise(harness, p)
+    if harness == "gptme" and q and q["hook_event_name"] == "PromptObserved":
+        q = None   # v1 has no untrusted prompt observation
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
@@ -1374,6 +1425,7 @@ def _gptme_config(directory, path):
     text = raw.decode("utf-8") if raw is not None else ""
     standard = "~/.config/gptme/plugins"
     paths = f'paths = ["{standard}"]'
+    enabled_hint = None
     try:
         import tomllib
     except ImportError:
@@ -1381,6 +1433,7 @@ def _gptme_config(directory, path):
         # need to read more elaborate plugin config.
         has_plugins = bool(re.search(r'(?m)^\s*(?:\[+\s*["\']?plugins\b|["\']?plugins["\']?\s*[.=])', text))
         configured = any(line.strip() == paths for line in text.splitlines())
+        enabled_hint = 'If [plugins].enabled is nonempty, include "tracekit" in the list.'
     else:
         try:
             config = tomllib.loads(text)
@@ -1394,9 +1447,17 @@ def _gptme_config(directory, path):
                                         os.path.realpath(os.path.join(os.path.dirname(path), "plugins")))
             for entry in entries
         )
+        if isinstance(entries, list) and all(isinstance(entry, str) for entry in entries):
+            paths = "paths = " + json.dumps([*entries, standard], ensure_ascii=False)
+        enabled = plugins.get("enabled") if isinstance(plugins, dict) else None
+        if isinstance(enabled, list) and enabled and "tracekit" not in enabled and all(isinstance(p, str) for p in enabled):
+            enabled_hint = "enabled = " + json.dumps([*enabled, "tracekit"], ensure_ascii=False)
     if has_plugins:
+        # lean: print changes for existing tables; use a TOML editor if automatic merges are needed.
         if not configured:
             print(f"Add the Tracekit plugin directory to [plugins] in {path}: {paths}")
+        if enabled_hint:
+            print(f"Enable the Tracekit plugin in [plugins] in {path}: {enabled_hint}")
         return
     if raw is not None:
         files.backup(directory, name, raw)
@@ -1927,7 +1988,7 @@ def entry(harness=None, event=None):
             pre = True   # unreadable: answered as a tool call
         # OpenCode's plugin passes the model's arguments unchecked: a call its hook can't decide doesn't run, as when
         # the hook can't start; nor, in any hook, one whose payload nests too deep to read
-        closed = event in PRE or isinstance(e, RecursionError) or H.fail_closed()
+        closed = event in PRE or (harness == "gptme" and pre) or isinstance(e, RecursionError) or H.fail_closed()
         print(f"[tracekit] {harness} hook error ({e}); "
               + ("allowing (fail-open)" if not closed else "blocking" if pre else "event not recorded"), file=sys.stderr)
         _reply(harness, sys.stdout, not closed, str(e), pre)

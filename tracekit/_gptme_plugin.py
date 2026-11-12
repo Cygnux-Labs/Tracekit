@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from gptme.hooks import ConfirmationResult, HookType, register_hook
 from gptme.logmanager import LogManager
+from gptme.tools import get_tool
 from gptme.tools.base import get_current_tool_use
 
 COMMAND = ()
@@ -26,7 +27,7 @@ def _session(logdir):
 def _send(event, payload):
     try:
         result = subprocess.run(
-            [*COMMAND, event], input=json.dumps(payload).encode("utf-8"),
+            COMMAND, input=json.dumps(dict(payload, hook_event_name=event)).encode("utf-8"),
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=TIMEOUT,
         )
     except subprocess.TimeoutExpired:
@@ -43,10 +44,30 @@ def _record(event, payload):
 
 
 def _payload(call, sid, tid, workspace):
+    spec = get_tool(call.tool)
     return {
         "session_id": sid, "tool_use_id": tid, "cwd": str(workspace or Path.cwd()),
-        "tool_name": call.tool, "tool_input": {"args": call.args, "content": call.content, "kwargs": call.kwargs},
+        "tool_name": spec.name if spec is not None else call.tool,
+        "tool_input": {"args": call.args, "content": call.content, "kwargs": call.kwargs},
     }
+
+
+def _prepare(payload, preview):
+    name, args = payload["tool_name"], payload["tool_input"]
+    if name == "patch_many":
+        from gptme.tools.patch_many import _parse_confirmation_payload
+
+        # gptme's preview is the prepared patch for every target, including resolved paths.
+        if not isinstance(preview, str):
+            raise ValueError("patch_many has no confirmation preview")
+        args["patches"] = [[str(path), patch] for path, patch in _parse_confirmation_payload(preview)]
+    if name == "tmux":
+        from gptme.tools.tmux import _split_tmux_commands
+
+        command = args["content"] if args["kwargs"] is None else args["kwargs"].get("command")
+        if not isinstance(command, str):
+            raise ValueError("tmux has no command text")
+        args["operations"] = _split_tmux_commands(command)
 
 
 def _start(logdir, workspace, initial_msgs):
@@ -56,11 +77,12 @@ def _start(logdir, workspace, initial_msgs):
 
 def _turn(manager):
     messages = manager.log.messages
-    if messages and messages[-1].role == "user":
+    if V2 and messages and messages[-1].role == "user":
         prompt = messages[-1].content
         # gptme's loop control submits its own prompts using a user-role system wrapper.
         if isinstance(prompt, str) and prompt and not prompt.lstrip().startswith("<system>"):
-            _record("UserPromptSubmit", {"session_id": _session(manager.logdir), "prompt": prompt, "cwd": str(Path.cwd())})
+            # TURN_PRE exposes only the expanded text, which can include files, pages and piped input.
+            _record("PromptObserved", {"session_id": _session(manager.logdir), "prompt": prompt, "cwd": str(Path.cwd())})
     return []
 
 
@@ -71,9 +93,15 @@ def _confirm(tool_use, preview, workspace):
     # IPython can ask confirmation under a registered helper's name. The cell is what will execute.
     call = get_current_tool_use() or tool_use
     sid, tid = _session(manager.logdir), uuid4().hex
-    code, reason = _send("PreToolUse", _payload(call, sid, tid, workspace))
+    payload = _payload(call, sid, tid, workspace)
+    try:
+        _prepare(payload, preview)
+    except (ImportError, OSError, TypeError, ValueError) as error:
+        code, reason = 2, f"[tracekit] could not read gptme's prepared call: {error}"
+    else:
+        code, reason = _send("PreToolUse", payload)
     # Keep the object alive until post (or session end), so another call cannot reuse its id.
-    _calls[id(call)] = (call, sid, tid, code)
+    _calls[id(call)] = (call, payload, code)
     if code:
         return ConfirmationResult.skip(reason or f"[tracekit] the hook blocked the call (exit {code})")
     # A later gptme confirmation can edit the command after Tracekit decides it.
@@ -87,9 +115,9 @@ def _post(data):
     decision = _calls.pop(id(call), None)
     result = [{"role": msg.role, "content": msg.content} for msg in data.result_msgs or ()]
     if decision is not None:
-        _, sid, tid, code = decision
+        _, payload, code = decision
         if code == 0:
-            _record("PostToolUse", dict(_payload(call, sid, tid, data.workspace), tool_response=result))
+            _record("PostToolUse", dict(payload, tool_response=result))
     elif V2:
         manager = LogManager.get_current_log()
         if manager is not None:
@@ -100,8 +128,8 @@ def _post(data):
 
 def _end(manager):
     sid = _session(manager.logdir)
-    for key, (_, session_id, _, _) in list(_calls.items()):
-        if session_id == sid:
+    for key, (_, payload, _) in list(_calls.items()):
+        if payload["session_id"] == sid:
             _calls.pop(key, None)
     _record("SessionEnd", {"session_id": sid})
     return []
@@ -110,6 +138,6 @@ def _end(manager):
 def register():
     register_hook("tracekit.session_start", HookType.SESSION_START, _start)
     register_hook("tracekit.turn_pre", HookType.TURN_PRE, _turn)
-    register_hook(CONFIRM_HOOK, HookType.TOOL_CONFIRM, _confirm, priority=1000)
+    register_hook(CONFIRM_HOOK, HookType.TOOL_CONFIRM, _confirm, priority=10_000)
     register_hook("tracekit.tool_post", HookType.TOOL_EXECUTE_POST, _post)
     register_hook("tracekit.session_end", HookType.SESSION_END, _end)
