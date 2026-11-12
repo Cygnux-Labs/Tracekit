@@ -577,7 +577,7 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.12% default; 13.0%, 15.4%, 5.5%
-strict; the blind pools', recorded when they joined: 8.4% default, 14.2% strict, re-recorded when email_ops joined); `p99_ref` stays within 25% of its on the same machine (strict's and dev's within 5% of the run of 2026-11-08, whose security reading of shell lines added that cost on purpose, or of the highest of several runs for strict on RE2 and dev on regex, whose runs spread wider; re-measured once before failing; another machine,
+strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler and email_ops: 0, 8 and 2 default; 2, 11 and 4 strict); `p99_ref` stays within 25% of its on the same machine (strict's and dev's within 5% of the run of 2026-11-08, whose security reading of shell lines added that cost on purpose, or of the highest of several runs for strict on RE2 and dev on regex, whose runs spread wider; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
 every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5
