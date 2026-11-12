@@ -46,7 +46,8 @@ class Routes(unittest.TestCase):
 
     # --- every way the shell writes a file
     def test_a_credentials_file_written_by_any_writer_is_denied(self):
-        self.expect(self.bash("sed -i 's/a/b/' .env", "perl -pi -e 's/a/b/' .env", "truncate -s0 .env",
+        self.expect(self.bash("sed -i 's/a/b/' .env", "perl -pi -e 's/a/b/' .env", "ruby -i -pe '1' .env",
+                              "sed --in-place 's/a/b/' .env", "f=.env; sed -i 's/a/b/' $f", "truncate -s0 .env",
                               "dd if=x of=.env", "awk '{print > \".env\"}' x", "sed -i 's/a/b/' ~/.aws/credentials",
                               "sed -i 's/a/b/' ~/.ssh/config", "sed -i 's/a/b/' ~/.ssh/authorized_keys",
                               "find . -name .env -exec sed -i 's/a/b/' {} +"), "deny", "TK-D014")

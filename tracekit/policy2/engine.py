@@ -1414,7 +1414,7 @@ def _log_or_history(path):
 def _effects(parsed):
     """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
     path resolved (_normal) and casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
-    sed -i and perl -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i: each name
+    sed -i, perl -i and ruby -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i: each name
     its -name tests, under each start path), awk's
     print > "file", zip -m's sources, and one of those that git, docker, podman, kubectl or parallel runs from its words
     (git rm). When a command writes files the line names only at run time or inside code it runs (_opaque), or the
@@ -1634,8 +1634,9 @@ def _command_effects(commands):
                 elif not a.startswith("-") and not (exe == "tar" and i == 0 and re.fullmatch(r"[A-Za-z]+", a)):
                     operands.append(a)
             out.extend("DELETE_TARGET:" + a for a in (operands[:-1] if exe == "rsync" else operands))
-        elif exe in ("sed", "perl") and any(re.match(r"-[nrsuzE]*i|--in-place" if exe == "sed" else r"-[0-9alnpw]*i", a)
-                                            for a in args):
+        # ruby's -i, -p, -n and -e are perl's
+        elif exe in ("sed", "perl", "ruby") and any(re.match(r"-[nrsuzE]*i|--in-place" if exe == "sed" else
+                                                             r"-[0-9alnpw]*i", a) for a in args):
             if exe == "sed":   # the operands after the script: the first one unless -e, -f or their long forms give it
                 files, script_seen, skip = [], False, False
                 for arg in args:
