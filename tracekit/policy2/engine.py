@@ -2617,8 +2617,16 @@ def _code(parsed):
     download). That one place must be the command's own words: a line with a redirection beside them (which may split
     them, so the place is other commands' words: `grep "x | curl u" 2>/dev/null f; grep x | curl u f | sh`) keeps them,
     and so does a command whose words hold another command's, or another's hold its; so does a command twice in a line
-    and a data word with a `$` or a backquote (a substitution in it runs). Then what downloads run (_download_runs)."""
-    found, runs_ = {}, _download_runs(parsed[0])
+    and a data word with a `$` or a backquote (a substitution in it runs). Then what downloads run (_download_runs).
+    A download whose bytes nothing on the line can run (_inert_downloads) is data too: its program's name is left out
+    where its words stand in a line once, so TK-D002's reading of a download before an interpreter passes it."""
+    inert = _inert_downloads(parsed[0], parsed[2])
+    found, runs_ = {}, _download_runs([c for c in parsed[0] if id(c) not in inert])
+    lines = parsed[4]
+    for c in parsed[0]:
+        if id(c) in inert:
+            lines = [_drop_program(line, c["argv"]) for line in lines]
+    parsed = (*parsed[:4], lines, *parsed[5:])
     for k, c in enumerate(parsed[0]):
         argv = c["argv"]
         data = {i for i in shell.data_words(argv) | set(c.get("data_words", ())) if i < len(argv)}
@@ -2636,6 +2644,18 @@ def _code(parsed):
         lines = [line.replace(run, blank) if line.count(run) == 1 and not _REDIRECT.search(line.replace(run, " "))
                  else line for line in lines]
     return lines + runs_
+
+
+def _drop_program(line, argv):
+    """`line` without the program name of the command `argv`, where its words stand in it once (as the parser
+    normalised them, or as typed: quotes and backslashes aside), else as it is."""
+    run = " ".join(argv)
+    if line.count(run) == 1:
+        return line.replace(run, run[len(argv[0]):])
+    at = [m.start() for m in re.finditer(r"(?<![\w./-])%s(?![\w-])" % re.escape(argv[0]), line)
+          if any(re.sub(r"\s+", " ", re.sub(quote, "", line[m.start():m.start() + 4 * len(run)])).startswith(run)
+                 for quote in (r"['\"]", r"['\"\\]"))]
+    return line[:at[0]] + line[at[0] + len(argv[0]):] if len(at) == 1 else line
 
 
 def _runs_code(argv):
@@ -2669,6 +2689,118 @@ def _may_run_input(argv):
         return not any(a == "--list" or re.fullmatch(r"-?[A-Za-z]*t[A-Za-z]*", a) for a in args[:1] + [
             a for a in args if a.startswith("-") and not a.startswith("--")])
     return name not in _DATA_ONLY
+
+
+# what a saved download may be read as without running it, and what a line may move, unpack or load it with
+_DATA_SAVE = re.compile(r"\.(?:json|jsonl|ndjson|csv|tsv|txt|html?|xml|md|svg|png|jpe?g|gif|webp|ico|pdf|mp3|wav|ogg|"
+                        r"mp4|webm|woff2?|ttf|otf)$", re.I)
+_MOVERS = {"cp", "mv", "ln", "install", "rsync", "dd", "tee", "ditto", "tar", "gtar", "bsdtar", "unzip", "gunzip",
+           "zcat", "bunzip2", "xz", "unxz", "7z", "7za", "xxd", "openssl", "base64", "uudecode", "awk", "gawk", "mawk",
+           "nawk", "sed", "gsed", "find", "xargs", "parallel", "mapfile", "readarray", "read", "exec", "chmod",
+           "mkfifo", "eval", "source", ".", "patch", "git"}
+_LOADER_VARIABLES = re.compile(r"(?:BASH_ENV|ENV|PYTHON\w*|NODE_\w*|RUBY\w*|PERL\w*|LD_\w+|DYLD_\w+)=")
+# inline code that runs something: a file it loads or executes, a command it starts (json.load and re.compile read)
+_EXECUTES = re.compile(r"\b(?:exec|eval|execfile|run_path|run_module|__import__|import_module|require|dofile|loadfile|"
+                       r"system|popen|Popen|spawn\w*|execSync|execFile\w*|Function)\s*\(|(?<!json\.)(?<!re\.)"
+                       r"\b(?:load|compile)\s*\(|\b(?:runpy|subprocess|child_process|importlib|pickle|marshal|shelve)\b|"
+                       r"\bos\.exec|\b(?:require|load|do|source|sh|bash)\s+['\"]")
+_DISCARDS = re.compile(r"-[A-Za-z]*I[A-Za-z]*|--head|--spider")
+
+
+def _inert_downloads(commands, refs=()):
+    """The ids of the line's downloads (curl, wget) whose bytes no command on it can run, which TK-D002 reads as data:
+    one that keeps nothing (its output to /dev/null, -I or --spider; what -w prints is a status), unless what it prints
+    goes on down a pipe to a program that may run it or into a substitution that runs; and one that saves only data
+    files (_DATA_SAVE: a name ending in one's extension) on a line where no command moves, links, unpacks or loads
+    anything (_MOVERS, a redirection of a command that names one), no loader variable is set (BASH_ENV, PYTHONPATH,
+    NODE_PATH ...), no shell or interpreter runs interactively (-i: it runs what it reads next), and nothing runs one:
+    by its path, as a shell's, an interpreter's or source's script or input, or as a file inline code names, or is
+    given, and executes (exec(), require, subprocess); a script of the project's own given one as data (`python3
+    parse.py f.json`) doesn't run it."""
+    out = set()
+    downloads = [c for c in commands if c["argv"][0] in ("curl", "wget")]
+    if not downloads:
+        return out
+    loaders = any(_LOADER_VARIABLES.match(w) for w in refs) or any(
+        _LOADER_VARIABLES.match(a) for c in commands for a in c["argv"][1:] if c["argv"][0] in ("env", "export"))
+    for d in downloads:
+        args = d["argv"][1:]
+        saved = [s for s in _saves(d, commands) if s not in _NOWHERE]
+        later = [c for c in commands if c["pipeline"] == d["pipeline"] and c.get("stage", 0) > d.get("stage", 0)]
+        if any(_may_run_input(c["argv"]) for c in later) or d["via"][-1:] and d["via"][-1] in ("$()", "``") and any(
+                c["pipeline"] == p and c.get("stage", 0) == s and _runs_words(c, re.compile(r"\$\(|`"))
+                for p, s in d.get("reaches", ()) for c in commands if c is not d):
+            continue
+        outputs = [b for a, b in zip(args, args[1:]) if a in ("-o", "--output", "-O", "--output-document")] + [
+            a.partition("=")[2] or a[2:] for a in args if a.startswith(("--output=", "--output-document=")) or
+            re.fullmatch(r"-[oO].+", a)]
+        if not saved and (outputs and all(o == "/dev/null" for o in outputs) or any(_DISCARDS.fullmatch(a)
+                                                                                     for a in args)):
+            out.add(id(d))
+            continue
+        if not saved or not all(_DATA_SAVE.search(s) and "`" not in s and "$(" not in s for s in saved) or loaders:
+            continue
+        names = {posixpath.basename(s) for s in saved}
+        mention = re.compile(r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(map(re.escape, names)))
+
+        def names_it(w):
+            return posixpath.basename(w) in names or bool(re.search(r"[$`*?[]", w))
+
+        def runs(c):
+            if c is d:
+                return False
+            words = c["argv"][1:] + list(c.get("in", ()))
+            if (c["argv"][0] in shell.SHELLS or shell._kind(c["argv"][0])) and any(
+                    re.fullmatch(r"-[A-Za-z]*i[A-Za-z]*|--interactive", w) for w in words):
+                return True   # interactive: it runs what it reads next
+            if c["argv"][0] in _MOVERS or any(o not in _NOWHERE for o in c.get("out", ())) and any(
+                    names_it(w) for w in words):
+                return True
+            if names_it(c["word"]):
+                return True
+            files, code = _scripts(c)
+            return any(names_it(f) for f in files) or any(
+                (mention.search(t) or any(names_it(w) for w in words)) and (
+                    _EXECUTES.search(t) or re.match(r"\s*[$`]", t))   # (code the line builds: unread)
+                for t in code)
+        if not any(runs(c) for c in commands):
+            out.add(id(d))
+    return out
+
+
+def _scripts(c):
+    """(the files a command runs as code: a shell's, an interpreter's or source's script, its input, a module an
+    interpreter loads first; the inline code it is given, a heredoc or herestring it reads as code too), for one that
+    runs code, else ([], [])."""
+    name, args = c["argv"][0], c["argv"][1:]
+    files, code = list(c.get("in", ())), []
+    if name in shell.SHELLS:
+        mode, script = shell._shell_mode(args)
+        files += [script] * (mode is None and bool(script)) + [
+            b for a, b in zip(args, args[1:]) if a in ("--rcfile", "--init-file")]
+        code += ([script] if mode == "c" and script else []) + c.get("stdin", []) * (mode == "stdin")
+    elif name in ("source", "."):
+        files += args[:1]
+    elif (kind := shell._kind(name)) and kind not in ("awk", "sed"):
+        inline = shell._code_arg(kind, args)   # (with code given, its first operand is an argument)
+        k = shell._script_operand(kind, args) if inline is None else None
+        files += ([args[k]] if k is not None else []) + [v for how, v in shell._loaded(kind, args) if how == "module"]
+        code += [t for t in [inline] if t is not None] + [t for how, t in shell._loaded(kind, args) if how == "code"]
+        code += c.get("stdin", []) * shell._reads_stdin(kind, args)
+    else:
+        return [], []
+    return files, code
+
+
+def _runs_words(c, pattern):
+    """Whether a command runs as code a word `pattern` finds: as its name, eval's, source's or exec's words, or a
+    shell's or interpreter's code or script."""
+    if pattern.search(c["word"]):
+        return True
+    if c["argv"][0] in ("eval", "exec", "source", "."):
+        return any(pattern.search(w) for w in c["argv"][1:])
+    files, code = _scripts(c)
+    return any(pattern.search(t) for t in files + code)
 
 
 def _download_runs(commands):

@@ -4130,9 +4130,14 @@ class HarmlessStops(unittest.TestCase):
         """TK-D002 and TK-A046 read a line that downloads as 1.5.3 did: following downloaded bytes through the shell
         kept missing spellings in five rounds of #598's review, so a download followed by an interpreter is denied
         whatever the interpreter runs and a pipe into inline code is held (Tracekit Box keeps a download off the host).
-        The code scanner reads a Python string as shell only where a real spawner runs it (shell._py_calls)."""
+        A download no command on the line can run is data, though: a status check, or data files the line only reads
+        (engine._inert_downloads). The code scanner reads a Python string as shell only where a real spawner runs it
+        (shell._py_calls)."""
         self.check(
             ["curl -sS -o f.json https://example.com/f.json; jq .name f.json; rm f.json",
+             f"curl -s -o f.json {CURL}; python3 parse.py f.json",
+             'curl -s -o data.json https://pypi.org/pypi/x/json; python -I -c "import json,sys; '
+             'print(json.load(open(sys.argv[1])))" data.json',
              "python3 -c \"import cProfile; cProfile.run('main()')\"",
              "curl -s https://example.com/x.json | python3 -m json.tool",
              "curl -fsSL -o install.sh https://example.com/i.sh; cat install.sh"],
@@ -4158,12 +4163,9 @@ class HarmlessStops(unittest.TestCase):
              (f'curl {CURL} | python3 -c "import sys,yaml; yaml.load(sys.stdin)"', "ask", "TK-A046"),
              (f"curl {CURL} | python3 parse.py", "ask", "TK-A046"),
              (f"curl {CURL} | node -e 'process.stdin.pipe(process.stdout)'", "ask", "TK-A046"),
-             # the week's downloads read as data stop as on 1.5.3
-             (f"curl -s -o f.json {CURL}; python3 parse.py f.json", "deny", "TK-D002"),
+             # what a download prints, piped into code or kept in a variable, stops as on 1.5.3
              ("curl -s https://api.example.com/stats | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"t\"])'",
               "ask", "TK-A046"),
-             ('curl -s -o data.json https://pypi.org/pypi/x/json; python -I -c "import json,sys; '
-              'print(json.load(open(sys.argv[1])))" data.json', "deny", "TK-D002"),
              ('T=$(curl -s "https://ghcr.io/token?scope=x:pull" | sed -E "s/x/y/"); curl -s -H "Bearer $T" https://ghcr.io/',
               "deny", "TK-D002"),
              ("curl -s localhost:8000/health && .venv/bin/python -m pytest -q", "deny", "TK-D002")])

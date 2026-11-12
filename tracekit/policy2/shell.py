@@ -1019,7 +1019,7 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     ctx["cut"] += ctx["always_cut"]
     active = False
     for step in reversed(ctx["steps"]):
-        if not ctx["command_names_mutable"] and not active:
+        if not ctx["command_names_mutable"] and (not active or _data_write(step, ctx["cmds"])):
             ctx["cut"] += step["marks"]
             step["cut"] = bool(step["marks"])
         active |= not step["inert"]
@@ -1360,6 +1360,41 @@ def _sed_prints(script):
     """Whether a sed script only picks and prints lines: with its /pattern/ addresses left out, nothing but line
     numbers, ranges, braces and the commands that read, write and run nothing."""
     return bool(re.fullmatch(r"[\s\d,$~!;{}+pPlqQnNdDhHgGxz=]*", re.sub(r"/(?:[^/\\\n]|\\.)*/[IM]{0,2}", "", script)))
+
+
+# files whose text is data: notes, logs and data formats, and anything in a memory, notes or reports folder
+_DATA_FILE = re.compile(r"\.(?:md|markdown|txt|text|log|json|jsonl|ndjson|csv|tsv)$|(?:^|/)(?:memory|notes|reports?)/",
+                        re.I)
+
+
+def _data_write(step, cmds):
+    """Whether a step that only copies text into files (cat, tee, echo or printf: `data`) writes data a line can't run
+    whatever runs after it: every file it writes is a data file (_DATA_FILE), the text goes on down no pipe, and no
+    command on the line runs one of those files: by its path, as a shell's, an interpreter's, source's or eval's word
+    or input, after chmod, or as what a reader of it pipes into one of those."""
+    to = step.get("to")
+    if not to or step.get("piped_on") or not all(_DATA_FILE.search(t) and not t.startswith("/dev/") for t in to):
+        return False
+    names = {posixpath.basename(t) for t in to}
+
+    def named(c):   # (a word the line builds, or a pattern, may name it)
+        return any(posixpath.basename(w) in names or re.search(r"[$`*?[]", w)
+                   for w in c["argv"][1:] + list(c.get("in", ())))
+
+    def runs(c):   # (sed and awk only from a script file: -f)
+        kind = _kind(c["argv"][0])
+        return c["argv"][0] in SHELLS or kind not in (None, "sed", "awk") or kind and any(
+            re.fullmatch(r"-[a-zA-Z]*f|--file(=.*)?", a) for a in c["argv"][1:]) or c["argv"][0] in (
+            "source", ".", "eval", "exec", "chmod", "xargs", "parallel", "env", "nohup", "sudo", "doas")
+    readers = {(c["pipeline"], c.get("stage", 0)) for c in cmds if c is not step.get("writer") and named(c)}
+    for c in cmds:
+        if c is step.get("writer"):
+            continue
+        if posixpath.basename(c["word"]) in names or re.search(r"[$`*?[]", c["word"]) or runs(c) and named(c) or \
+                runs(c) and any(
+                p == c["pipeline"] and s < c.get("stage", 0) for p, s in readers):
+            return False
+    return True
 
 
 def data_words(argv):
@@ -2728,6 +2763,8 @@ class _Parser:
                 return
             self.out.append("|")
             self.gap()
+            if self.ctx["steps"]:   # what that stage writes goes on to the next (_data_write)
+                self.ctx["steps"][-1]["piped_on"] = True
 
     def simple(self, pid, piped=False, stage=0):
         words, globs, names, strings, docs, idx, spans, here, exps = [], [], [], [], [], [], [], [], []
@@ -2888,8 +2925,9 @@ class _Parser:
                     if m.group(2) in ("&>", "&>>") or m.group(1) in ("", "1") and m.group(2) in (">", ">>", ">|", ">&"):
                         stdout_redirect = True
                         # stdout, the last one: into a file a literal names, not a descriptor, a device or a variable
-                        to_file = writes and not target[2] and not target[3] and \
-                            (target[0].startswith("/") or not self.cwd_changed) and \
+                        # (a data file's name is one wherever the line is and whatever its folder: _data_write)
+                        to_file = writes and not target[2] and (not target[3] or _DATA_FILE.search(target[0])) and \
+                            (target[0].startswith("/") or not self.cwd_changed or _DATA_FILE.search(target[0])) and \
                             (target[0] == "/dev/null" or not re.search(r"(^|/)(dev|proc)/", target[0])) and \
                             not (self.ctx.get("persistent_target") and self.ctx["persistent_target"](target[0]))
                 continue
@@ -3077,8 +3115,13 @@ class _Parser:
         # (and its heredoc, read_heredocs) are data, which the code leaves out.
         # lean: a later, separate call can still consume a file whose copied text this call cut; that later call is
         # evaluated as its own policy input.
-        data = to_file and bool(words) and words[0] in ("cat", "tee", "echo", "printf") and \
-            not _redefined(self.ctx["redefined"], words[0])
+        # (tee also when it copies a heredoc or herestring into data files with no redirection, none of them a
+        # persistent target: what it prints on is read unless the pipeline goes on, `piped_on`)
+        persistent = self.ctx.get("persistent_target") or (lambda t: False)
+        copies = [a for a in words[1:] if not a.startswith("-")] if words[:1] == ["tee"] else []
+        data = (to_file or bool(strings or docs) and bool(copies) and all(
+            _DATA_FILE.search(a) and not persistent(a) for a in copies)) and bool(words) and \
+            words[0] in ("cat", "tee", "echo", "printf") and not _redefined(self.ctx["redefined"], words[0])
         # bash drops a word made only of expansions when they expand to nothing (an unset $X), joins an empty one into
         # the rest of its word ($X-rf is -rf), and under nullglob drops a pattern that matches nothing: read the command
         # in each of word()'s readings, and again without the patterns (self.cut). Its commands are also the ones that
@@ -3199,6 +3242,9 @@ class _Parser:
         step = {"inert": (data and not dynamic) or
                          (inert and not (stdin_redirect or docs or strings or loop_header or dynamic)),
                 "marks": [(a, b) for _, a, b in marks] if not self.via else []}
+        if data:   # the files it writes and its command, for a data file's text (_data_write)
+            step["to"] = [n for n, _ in into] + [a for a in words[1:] if words[0] == "tee" and not a.startswith("-")]
+            step["writer"] = cmds[0] if cmds else None
         if git_stdin_message:
             step["inert"] = False
             for cmd in cmds:
