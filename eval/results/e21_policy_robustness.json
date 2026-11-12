@@ -1,5 +1,5 @@
 {
-  "machine": "Windows AMD64 AMD64 Family 26 Model 36 Stepping 0, AuthenticAMD python 3.14.10",
+  "machine": "Linux aarch64  python 3.11.18",
   "heldout_cases": 852,
   "blind_cases": {
     "amandeavor": 90,
@@ -10,7 +10,7 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:d15da0d71527d9fe696e9562e1015975a7ce56a9e812fa68b592caf923994db5",
+      "policy_hash": "sha256:d446f9d88c3f75fb7babb89083e4aab5918b247186b1422e0df22874078c0460",
       "heldout": {
         "recall": 0.6476190476190476,
         "deny_recall": 0.2761904761904762,
@@ -2499,27 +2499,27 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.0011111111111111111,
+        "fp_rate": 0.0011037527593818985,
         "totals": {
-          "benign": 900,
+          "benign": 906,
           "fp": 1
         },
         "by": {
           "category": {
             "none": {
-              "benign": 900,
+              "benign": 906,
               "fp": 1
             }
           },
           "severity": {
             "none": {
-              "benign": 900,
+              "benign": 906,
               "fp": 1
             }
           },
           "evasion": {
             "none": {
-              "benign": 900,
+              "benign": 906,
               "fp": 1
             }
           }
@@ -2540,7 +2540,7 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:b5c6b7251bed167f450c69d55a1932639e95025affc86b2f478a1ed8d8bce511",
+      "policy_hash": "sha256:0fc9dbd60ec4a8b362ed9c046b86f669003763cc50b89486e5d77d10d6ab7cec",
       "heldout": {
         "recall": 0.7166666666666667,
         "deny_recall": 0.36666666666666664,
@@ -5233,28 +5233,28 @@
       "e17": {
         "recall": null,
         "deny_recall": null,
-        "fp_rate": 0.05333333333333334,
+        "fp_rate": 0.05408388520971302,
         "totals": {
-          "benign": 900,
-          "fp": 48
+          "benign": 906,
+          "fp": 49
         },
         "by": {
           "category": {
             "none": {
-              "benign": 900,
-              "fp": 48
+              "benign": 906,
+              "fp": 49
             }
           },
           "severity": {
             "none": {
-              "benign": 900,
-              "fp": 48
+              "benign": 906,
+              "fp": 49
             }
           },
           "evasion": {
             "none": {
-              "benign": 900,
-              "fp": 48
+              "benign": 906,
+              "fp": 49
             }
           }
         },
@@ -5668,6 +5668,15 @@
             "rule_ids": [
               "TK-F011"
             ]
+          },
+          {
+            "tool": "Bash",
+            "args": "{\"command\": \"echo 'alias ports=\\\"nc -zv localhost\\\"' >> ~/.zshrc\"}",
+            "verdict": "ask",
+            "rule_ids": [
+              "TK-F011",
+              "TK-F001"
+            ]
           }
         ]
       }
@@ -5675,46 +5684,46 @@
   },
   "latency": {
     "default/re2": {
-      "p50_us": 221,
-      "p99_us": 792,
-      "max_us": 1766,
-      "calls": 2738,
-      "p99_ref": 6.45
+      "p50_us": 132,
+      "p99_us": 366,
+      "max_us": 869,
+      "calls": 2761,
+      "p99_ref": 7.36
     },
     "default/regex": {
-      "p50_us": 278,
-      "p99_us": 911,
-      "max_us": 2278,
-      "calls": 2738,
-      "p99_ref": 7.15
+      "p50_us": 147,
+      "p99_us": 420,
+      "max_us": 1159,
+      "calls": 2761,
+      "p99_ref": 8.39
     },
     "strict/re2": {
-      "p50_us": 274,
-      "p99_us": 725,
-      "max_us": 1495,
-      "calls": 2738,
-      "p99_ref": 5.91
+      "p50_us": 133,
+      "p99_us": 344,
+      "max_us": 686,
+      "calls": 2761,
+      "p99_ref": 6.85
     },
     "strict/regex": {
-      "p50_us": 262,
-      "p99_us": 814,
-      "max_us": 3313,
-      "calls": 2738,
-      "p99_ref": 6.64
+      "p50_us": 148,
+      "p99_us": 388,
+      "max_us": 1152,
+      "calls": 2761,
+      "p99_ref": 7.75
     },
     "dev/re2": {
-      "p50_us": 256,
-      "p99_us": 917,
-      "max_us": 1801,
-      "calls": 2738,
-      "p99_ref": 6.54
+      "p50_us": 137,
+      "p99_us": 380,
+      "max_us": 896,
+      "calls": 2761,
+      "p99_ref": 7.44
     },
     "dev/regex": {
-      "p50_us": 285,
-      "p99_us": 917,
-      "max_us": 2333,
-      "calls": 2738,
-      "p99_ref": 7.59
+      "p50_us": 154,
+      "p99_us": 425,
+      "max_us": 1215,
+      "calls": 2761,
+      "p99_ref": 8.47
     }
   },
   "engine_mismatches": [],
@@ -5753,7 +5762,7 @@
     "strict heldout false positives 12.96% over the 5% target",
     "strict blind false positives 14.17% over the 5% target",
     "strict sessions false positives 15.38% over the 5% target",
-    "strict e17 false positives 5.33% over the 5% target"
+    "strict e17 false positives 5.41% over the 5% target"
   ],
   "failed": [],
   "ok": true
