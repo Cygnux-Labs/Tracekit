@@ -207,6 +207,30 @@ class Mapping(HarnessCase):
     def test_crush(self):
         self.check("crush")
 
+    def test_cline(self):
+        self.check("cline")
+
+    def test_cline_results_and_task_events_answer_with_no_cancel(self):
+        # the VS Code extension 4.1.26's PostToolUse and TaskComplete as recorded (userId redacted, taskId the case's):
+        # no call id, and its result String()-ed
+        pre = cases("cline")[3]["payload"]
+        self.assertEqual(self.hook("cline", pre, "PreToolUse")[0], 0)
+        base = {"clineVersion": "4.1.26", "taskId": pre["taskId"], "workspaceRoots": ["/tmp/clinework"],
+                "userId": "redacted", "model": {"provider": "unknown", "slug": "unknown"}}
+        post = dict(base, hookName="PostToolUse", timestamp="1794403395665", postToolUse={
+            "toolName": "run_commands", "parameters": {"commands": "[\"echo captured-by-tracekit\"]"},
+            "result": "[object Object]", "success": True, "executionTimeMs": 541})
+        done = dict(base, hookName="TaskComplete", timestamp="1794403397702", taskComplete={"taskMetadata": {
+            "taskId": pre["taskId"], "ulid": "", "initialTask": "", "result": "done"}})
+        self.assertIsNone(agent_hooks.normalise("cline", {"hook_event_name": "PostToolUse", "postToolUse": {
+            **post["postToolUse"], "result": "[object Object],[object Object]"}})["tool_response"])   # a list's String()
+        for ev, payload in (("PostToolUse", post), ("TaskComplete", done),
+                            ("UserPromptSubmit", {"taskId": pre["taskId"], "userPromptSubmit": {"prompt": "go"}})):
+            with self.subTest(event=ev):
+                self.assertEqual(self.hook("cline", payload, ev)[:2], (0, "{}"))
+        code, out, err = self.hook("cline", "not json", "PreToolUse")   # a payload it can't read: cancelled
+        self.assertEqual((code, json.loads(out)["cancel"]), (0, True), err)
+
     def test_devin(self):
         self.check("devin")
 
@@ -572,6 +596,22 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]), (CODEX_DENY, "deny"))
         self.assertIn("TK-D001", err)
 
+    def test_a_codex_shell_command_that_isnt_text_is_held(self):
+        """The PR #754 review: an argv with an item that isn't a string (Codex sends none) reaches the signer as a list,
+        which its shell parser can't read: held (TK-SHELL-PARSE), never allowed, as the v1 hook denies it. An argv of
+        strings it reads as one (a force push is denied)."""
+        push = ["git", "push", "--force", "origin", "main"]
+        for i, (name, argv, rule) in enumerate((("shell", push + [None], "TK-SHELL-PARSE"),
+                                                ("shell", ["rm", "-rf", "/", 1], "TK-SHELL-PARSE"),
+                                                ("Bash", push, "TK-D003"))):
+            with self.subTest(name=name, argv=argv):
+                code, out, err = self.hook("codex", {"session_id": "s", "hook_event_name": "PreToolUse",
+                                                     "tool_name": name, "tool_use_id": f"a{i}",
+                                                     "tool_input": {"command": argv}})
+                self.assertEqual((code, json.loads(out)["hookSpecificOutput"]["permissionDecision"]),
+                                 (CODEX_DENY, "deny"), err)
+                self.assertIn(rule, err)
+
     def test_droid_patch_decides_every_file_including_a_move_destination(self):
         patch = ("*** Begin Patch\n*** Add File: notes.txt\n+hi\n*** Update File: src/a.py\n"
                  "*** Move to: {}\n@@\n-x\n+y\n*** End Patch")
@@ -772,6 +812,18 @@ class Installer(unittest.TestCase):
                         self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
                         self.assertFalse(os.path.exists(path))   # uninstall removes the plugin's files
                         continue
+                    if harness == "cline":   # one hook file per event, each running the v2 hook with its event
+                        folder = os.path.dirname(path)
+                        for ev in agent_hooks.CLINE_EVENTS:
+                            with open(os.path.join(folder, ev + os.path.splitext(path)[1]), encoding="utf-8") as f:
+                                self.assertEqual(agent_hooks.cline_argv(f.read()),
+                                                 install._dev_hook_argv(harness_hooks.__name__, "entry", (harness, ev)))
+                        again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
+                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
+                        code, out = self.cli("uninstall", "--agent", harness, "--project")
+                        self.assertEqual((code, out), (0, f"Tracekit v2 hooks removed from {path}" + chr(10)))
+                        self.assertEqual(os.listdir(folder), [])
+                        continue
                     with open(path) as f:
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
@@ -890,8 +942,9 @@ class Installer(unittest.TestCase):
         gone, old = os.path.join(d, "gone", "python"), install._blocking
         for python in (None, gone):   # dev mode (this interpreter, moved), system mode (OPT_PYTHON)
             # OpenCode: no shell; agy answers at exit 0 in JSON (test_antigravity_installed_commands_answer_in_json_…)
+            # Cline's hook files answer a cancel themselves (test_a_cline_hook_file_cancels_a_call_whose_hook_...)
             for harness in ("claude", *(h for h in agent_hooks.HARNESSES
-                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity"))):
+                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity", "cline"))):
                 path = os.path.join(d, str(bool(python)), harness, "hooks.json")
 
                 def init():
