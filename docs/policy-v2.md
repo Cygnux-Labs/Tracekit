@@ -35,7 +35,7 @@ Rule ids the signer adds itself:
 |---|---|---|
 | `TK-ARGS-INVALID` | deny | the raw arguments are not strict JSON ([format v2](format-v2.md#1-canonical-json)); the Python client sends parsed arguments a frame can't carry (a lone surrogate) as raw text, so they get this signed deny too |
 | `TK-A2A-NAME` | deny | an `a2a` call (the A2A gateway or `run.transfer`) names a sender, receiver, projector, modality, weights hash, skill or part kind that is not printable ASCII without spaces. The signer refuses spelling a rule could miss; signed arguments retain the original spelling, while the response has a fixed reason and remedy that never repeats it. |
-| `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies). A policy with `oversize: ask` (the laptop default, `dev.yaml`) holds it instead of denying: what the policy can't read waits for a person. The decision's `reasons` (and the `decide` response's `reason`) name each such subject by its rule and field (`TK-S002's subject (the whole arguments)`) and say what to do: split the call into calls under 64 KiB (write a large file in parts), or, where it is held, have a person approve it |
+| `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies). A policy with `oversize: ask` (the laptop default, `dev.yaml`) holds it instead of denying: what the policy can't read waits for a person. `oversize: deny` (or leaving the key out) keeps the rule's own section, so a pack that extends `dev.yaml` can set it to get the deny back. The decision's `reasons` (and the `decide` response's `reason`) name each such subject by its rule and field (`TK-S002's subject (the whole arguments)`) and say what to do: split the call into calls under 64 KiB (write a large file in parts), or, where it is held, have a person approve it |
 | `TK-ENGINE-ERROR` | deny | the policy engine itself failed on the call's arguments (a bug): the call is denied and recorded, the decision's `reasons` (and the `decide` response's `reason`) name the error's type and the signer logs its traceback. Arguments nested too deeply to check are refused (`invalid_request`), not decided |
 | `TK-SHELL-PARSE` | `on_parse_error` (ask) | a shell command can't be parsed, or what it runs can't be read from the line |
 | `TK-SQL-PARSE` | ask | no SQL dialect can read the statement (an unclosed literal or comment), or it is not text |
@@ -57,6 +57,7 @@ description: what this policy is for
 extends: coding.yaml            # optional: a relative path, or a list of them; the compiled policy names parents by hash
 unknown_tools: ask              # allow (default), flag, ask or deny
 on_parse_error: ask             # ask (default) or deny: TK-SHELL-PARSE's verdict, a shell command the parser can't read
+oversize: ask                   # ask holds a call over 64 KiB for a person; deny (or left out) keeps the rule's section
 tools:                          # tool name or glob (fnmatch) -> class
   Bash: shell
   'mcp__*': mcp
@@ -116,6 +117,12 @@ cloud and communication packs' rules don't yet, so their calls get the reason al
 (`TK-SHELL-PARSE`: an unclosed quote, a command name from a variable, a script piped into a shell). Use it where no
 person answers holds; expect more denials of ordinary commands that build a name at run time. It decides only
 `TK-SHELL-PARSE`; `TK-SQL-PARSE` always asks.
+
+`oversize: ask` holds a call whose subject is over 64 KiB for a person (`TK-OVERSIZE`) instead of denying it; the
+laptop default, `dev.yaml`, sets it. `oversize: deny` (or leaving the key out) keeps the rule's own section: a flag
+rule flags, a deny rule denies, and a shell command over 64 KiB denies, as on `server.yaml` and `strict.yaml`. A pack
+inherits `oversize` through `extends`, and a child's value overrides its parent's, so a pack built on `dev.yaml` can
+set `oversize: deny` to get the deny back. Any other value is a lint error.
 
 Lint also rejects unknown keys, a `field` the rule's class doesn't have, and a class rule no tool maps to ("can never
 fire"). It warns (`tracekit policy lint`, which loads the policy all the same) on a tool mapped to `unknown`: that is
