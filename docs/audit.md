@@ -78,11 +78,12 @@ was read already (a resumed or forked session's file repeats the calls it copied
 
 Cursor's reader reads the agent transcripts Cursor writes for each chat, of its IDE's agent and of the `cursor-agent`
 CLI: `<project>/agent-transcripts/<id>/<id>.jsonl` under its folder (an older build's flat `<id>.jsonl`, and a
-subagent's file in `<id>/subagents/`, which counts under `<id>`). Each line is a JSON object; a `role: assistant`
-line's message may contain `tool_use` blocks, whose names are mapped as Cursor's Tracekit hook maps them (`Shell` is
-decided as `Bash`). A line has no time, no id and no tool result: with `--since`, a file last written before the
-window is skipped and one written in it counts whole, and a call can't be told from a copy of it, so each line counts.
-The IDE's chat database (`state.vscdb`) isn't read.
+subagent's file in `<id>/subagents/`, which counts under `<id>`). A ROOT can also be one project's folder or its
+`agent-transcripts` folder. Each line is a JSON object; a `role: assistant` line's message may contain `tool_use`
+blocks, whose names are mapped as Cursor's Tracekit hook maps them (`Shell` is decided as `Bash`). A line has no time,
+no id and no tool result: with `--since`, a file last written before the window is skipped and one written in it
+counts whole, and a call can't be told from a copy of it, so each line counts. The IDE's chat database (`state.vscdb`)
+isn't read.
 
 Each reader follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
 

@@ -455,10 +455,6 @@ class TestAudit(unittest.TestCase):
             "Tool calls: 1   allow 0, flag 0, ask 0, deny 1"])
         self.assertNotIn("s1", page)
 
-
-if __name__ == "__main__":
-    unittest.main()
-
     def test_cursor_shell_is_decided_as_bash(self):
         """#716: a Cursor tool's name is mapped as its hook maps it."""
         args = {"command": "rm -rf /", "description": "clean"}
@@ -499,3 +495,32 @@ if __name__ == "__main__":
         self.assertEqual(code, 0, err)
         report = json.loads(out)
         self.assertEqual((report["skipped_malformed"], report["counts"]["allow"]), (1, 1))
+
+    def test_cursor_root_can_be_a_project_or_its_transcripts_folder(self):
+        """#755 review: a project's folder, or its agent-transcripts folder, reads what the projects folder reads."""
+        project = self.root / "C-src-app"
+        _write_jsonl(project / "agent-transcripts" / "c1" / "c1.jsonl", [_cursor_call("Shell", {"command": "ls"})])
+        _write_jsonl(project / "agent-transcripts" / "old.jsonl", [_cursor_call("Shell", {"command": "ls"})])
+        for root in (self.root, project, project / "agent-transcripts"):
+            with self.subTest(root=root.name):
+                report = audit.audit(str(root), agent="cursor")
+                self.assertEqual(sorted(c["session"] for c in report["calls"]), ["c1", "old"])
+
+    def test_with_no_root_cursors_folder_is_read(self):
+        home = self.root / "home"
+        folder = home / ".cursor" / "projects"
+        _write_jsonl(folder / "p" / "agent-transcripts" / "c1" / "c1.jsonl",
+                     [_cursor_call("Shell", {"command": "rm -rf /"})])
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, _ = _run("--json")
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["agents"], {"cursor": {"folder": str(folder), "calls": 1, "sessions": 1}})
+        call = report["calls"][0]
+        self.assertEqual((call["agent"], call["session"], call["tool"], call["verdict"]),
+                         ("cursor", "c1", "Bash", "deny"))
+
+
+if __name__ == "__main__":
+    unittest.main()

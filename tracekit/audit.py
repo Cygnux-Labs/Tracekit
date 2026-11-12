@@ -141,13 +141,21 @@ def cursor_root():
 
 
 def _cursor(root: str, since_ts: float, unreadable: list):
-    """Cursor's reader: (None, session, tool, args) for each tool use in the agent transcripts under root
-    (<project>/agent-transcripts/<id>/<id>.jsonl, an older build's flat <id>.jsonl, a subagent's in
-    <id>/subagents/, which counts under <id>), None for a line that isn't JSON. A line has no time and no id: a file
+    """Cursor's reader: (None, session, tool, args) for each tool use in the agent transcripts under root, which is
+    the projects folder, one project's folder or its agent-transcripts folder (<project>/agent-transcripts/<id>/
+    <id>.jsonl, an older build's flat <id>.jsonl, a subagent's in <id>/subagents/, which counts under <id>), None for
+    a line that isn't JSON. A line has no time and no id: a file
     last written before since_ts is skipped and one written since counts whole, and every line counts, copies too."""
     real = os.path.realpath(root)
+    # root may be the projects folder, one project's folder, or that project's agent-transcripts folder
+    if os.path.basename(real) == "agent-transcripts":
+        above = ["", "agent-transcripts"]
+    elif os.path.isdir(os.path.join(real, "agent-transcripts")):
+        above = [""]
+    else:
+        above = []
     for path, _ in _iter_transcripts(root, unreadable):
-        folders = os.path.relpath(path, real).split(os.sep)
+        folders = above + os.path.relpath(path, real).split(os.sep)
         if len(folders) < 3 or folders[1] != "agent-transcripts":
             continue
         f, err = _safe_open(path)
