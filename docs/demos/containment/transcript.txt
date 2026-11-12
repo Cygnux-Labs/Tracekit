@@ -46,7 +46,7 @@ the agent: the upload was rejected
 Bash 'ls': allow
   ran
 
-$ tracekit verify 5b5184e1c6c35e251b2580fce77744df.tkb --trust trust.json
+$ tracekit verify 5b5184e1c6c35e251b2580fce77744df.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/c58bbf9527f62d41a874ec221320d01d at tree size 16, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required

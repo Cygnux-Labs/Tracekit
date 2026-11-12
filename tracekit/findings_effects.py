@@ -334,7 +334,7 @@ def _x206(fx, out, cov, late):
         else:
             c206["not_checkable"][status] = c206["not_checkable"].get(status, 0) + 1
         shown[seq] = {"call": call, "how": how, "status": status}
-    if not fx.observed:
+    if not fx.observed and fx.run.ran:   # a run with no calls (a box run's are Box's doors) has none to count
         c206["not_checkable"]["no_sensor"] = len(fx.run.ran)
     for (why, binary, call), seqs in groups.items():
         c = fx.calls.get(call)

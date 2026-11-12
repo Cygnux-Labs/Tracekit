@@ -12,6 +12,7 @@ Using 1.4.x? Its viewer, as it was then, is on [Viewer 1.4](viewer-1.4.md).
 | `tracekit view --ledger [HOME]`, `tracekit view --bundle FILE` | the v1 ledger (`tracekitd`), or a v1 bundle once it verifies; loopback only |
 | `tracekit view --config signer.yaml` with `view.logs` | every log of a central deployment ([below](#central-viewer)) |
 | `tracekit report` (`--dev`, `--config signer.yaml`, `--data-dir DIR`) | not a page: a week of the signer's store as plain text or JSON ([below](#weekly-report)) |
+| `tracekit tips` (`--dev`, `--data-dir DIR`) | not a page: the TIPS page's tips as plain text or JSON ([below](#tracekit-tips)) |
 
 `tracekit observe` and `tracekit why serve` still work as before and print one line pointing here. A single bundle's
 self-contained `replay.html` stays a file you open without a server.
@@ -29,6 +30,7 @@ The header holds the pages, the command box, and on a run's page that run's view
 | **PERMISSIONS** | every decision that was not a plain allow, and what came of it: blocked, ran flagged, approved, rejected, expired or not answered, who answered and when |
 | **HORIZON** | where the agents went, around a black hole: the project, this machine and the outside world ([below](#horizon)) |
 | **INFLUENCE** | with why logs: what content reached which tools across every run ([below](#influence)) |
+| **TIPS** | what each step of your coding agents cost and how to cut it: three tips, each with its evidence, saving and fix ([below](#tips)) |
 
 ![RUNS: each run with its state, calls, blocked, held, flagged, gaps and verdict, newest first; below, the why log the viewer built for each](viewer/1.5/runs.png)
 
@@ -63,6 +65,9 @@ computer's setting), light or dark, kept in this browser.
 The address bar follows what is open (`#run=…&view=graph&seq=42`, `#page=permissions`), so a link opens the same run,
 view and record, and Back and Forward step through what you opened. Links from before keep working: `#run=…` opens the
 run's page, and the old view names (`view=timeline` is CALLS with the why log's events) map to the new places.
+`#approval=apr-…` opens the call that approval held, on its run's page; `tracekit view --approval apr-…` prints the
+link that ends with it (`tracekit approvals show` names that command). A held call whose records the page doesn't
+have yet (it shows the newest ones) opens nothing: open its run from RUNS.
 
 ## Tour
 
@@ -118,10 +123,12 @@ there; its records load when you open it.
 Under each run: calls, **blocked** (red: the policy
 denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
 call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded
-under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `TO ANSWER`) in STATUS, `SESS` the run's start and
-end. A row marked `ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `FINDING`s
+under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `TO ANSWER`) in STATUS, `RUN` the run's start and
+end, `NOTE` a record of something else the run did (a state write, a message sent). The signer's own records (`LOG`:
+content it read for the viewer, its keys) are left out of **All**; **Tracekit's own** lists them. A row marked
+`ANALYSIS` is the viewer's own work, not a record: `VERIFY` (the verifier's report) and the `CHECK` findings
 of its analysis have no seq and no hash, and replay skips them; a row marked `WHY` comes from a why log. A findings
-run's signed findings (`tracekit analyze --v2`) are `FINDING` rows of that run: each says who wrote it (the identity the
+run's signed findings (`tracekit analyze --v2`) are `CHECK` rows of that run: each says who wrote it (the identity the
 signer measured for the findings run) and the reviewer the analyzer names (its own claim); `tracekit verify` says
 whether that author is independent of the analysed run or self-asserted. The tape renders the newest 600 rows; **SHOW
 OLDER** at its end renders more. Times are your browser's local time; the clock names the zone. The header's `CHAIN ✓ N
@@ -339,6 +346,70 @@ confirmed it says "caused".
   200 that matter most: a confirmed cause, then those before stopped calls, then the most cited). Each is named by
   where it was read: its run, record and time, with **OPEN** for that record.
 
+### TIPS
+
+**TIPS** reads the last 7 days and says what each step of your coding agents cost and how to cut it. Each tip is a
+card: one plain statement; its evidence, a chart drawn to scale or a table; what it would have saved in dollars and
+time, an estimate, with **THE ARITHMETIC** one click away; and the fix, with **COPY** where it is a command or a line
+to paste.
+
+| Tip | Evidence | Fix |
+|---|---|---|
+| 1 · CONTEXT | every step sends the whole context again: each main session's context at every step as it ran, and replayed on the same growth compacting at a lower point (the largest of 100k to 500k tokens that keeps 80% of the best saving), each replayed step keeping its real cache behaviour (a rebuild after idle time, or a call with no cache, re-pays its whole replayed context; a context that shrinks by less than half shrinks the replay's by the same share); the right axis is what that much context cost a step, at the session's own average | Claude Code: `/compact` at each task boundary and at that point. Another agent: trim or summarise the history it sends there, and turn on prompt caching first when most of it goes uncached |
+| 2 · CACHE | each wait that outlived the prompt cache on a timeline, with what the step after it paid to write its whole context again; the waits by cause; subagent steps by the wait before them, and how many rebuilt. Each cache write records whether it lasts 5 minutes or 1 hour, counted from the start of the request that last read or wrote it, so a wait runs from one request's start to the next's. A wait for a person (an answered hold, a question) or an idle one is drawn but not counted, nor is the rewrite after a compaction; polling instead still pays for what the step adds | a line for `AGENTS.md`: keep each blocking call under the cache's lifetime less 30 s and poll in bounded loops, with the lifetimes the writes showed |
+| 3 · HOLDS NOBODY ANSWERED | held calls answered and not (the agent's retry of a held call counted with it, as PERMISSIONS and the run review count them), in the main session and in subagents, how long they blocked the agent, and the rules behind the ones nobody answered | when they waited: remove `TRACEKIT_APPROVAL_WAIT` from the `env` block of the Claude Code settings that set it (`~/.claude/settings.json` or `$CLAUDE_CONFIG_DIR/settings.json`, the project's `.claude/settings.json` or `.claude/settings.local.json`; **COPY** gives the `jq` edit of the first), unset it in the agent's shell, then restart the agent; otherwise the rule's remedy and `tracekit approvals list` |
+
+Token counts come from signed records where they carry them (a `model.exchange` response's `usage`: the LLM gateway's,
+an SDK integration's). Claude Code's transcript tailer records no usage, so for Claude Code the viewer reads its
+transcripts, read-only, as `tracekit audit` reads them: `--transcripts DIR`, by default with the dev store
+`$CLAUDE_CONFIG_DIR/projects` or `~/.claude/projects`. A signed step the transcripts also hold counts once, from the
+transcripts: it is matched step by step, by a tool_use id or by identical token counts within 5 minutes of one
+transcript message no other step matched (the gateway signs each exchange under an id of its own, and a message
+without tool calls has no tool_use id). The page's first line says how many signed steps that was, and the time span
+of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7
+days. Holds come only from signed records; a transcript adds how long each blocked the agent and
+whether it ran in a subagent. Each card names every source it mixes, and the page's first line says what it read; the
+tips list sessions from every project under the transcripts folder. Dollars are Anthropic's list prices, dated in
+`tracekit/tips.py`: a subscription bills none of them, but the same tokens fill its usage limit. The sessions of a model with
+no price are left out, with a note naming it. A tip without enough data says so and why. The page is worked out again at most
+once a minute, and at once on **READ AGAIN**. Like the verdicts, the tips are operator-side, not evidence. Its limits
+are in [limits](limits.md#viewer).
+
+#### tracekit tips
+
+`tracekit tips` (experimental) prints the same three tips without the viewer, for a terminal or an agent. It reads
+the dev signer's store (or `--data-dir DIR`'s, without transcripts, as `tracekit view --data-dir` reads it) and Claude
+Code's transcripts, read-only, with no network and no model. It checks each run with a record in the window with the
+verifier first, as the viewer does, so a busy week takes a minute or two; a run that doesn't verify is left out and
+counted. Unlike the page, it reads every run in the window, not only the viewer's newest 50,000 rows.
+
+```bash
+tracekit tips                  # the last 7 days
+tracekit tips --since 24h      # 7d, 24h, 30m, or an ISO date or time (UTC unless it says)
+tracekit tips --json           # the TIPS page's data as one JSON object, for agents and scripts
+```
+
+```text
+TIP 1 · CONTEXT · from Claude Code's transcripts (read-only)
+Compact at about 500k tokens, not at 696k
+  Every step sends the whole context again. session s1's median step carried 339k tokens of it:
+  $0.12 before it did anything.
+  Would have saved: about $0.76 (5% of these sessions' input side), an estimate. Time: not measured.
+  Fix: Run /compact with a one-line focus at each task boundary (a PR merged, a release tagged), and
+  at about 500k tokens; start a new session for unrelated work.
+    /compact keep the open task, its files and the decisions made
+```
+
+Each tip prints its title, its evidence, what it would have saved (dollars where the model has a price, and time) and
+the fix, or why it has none; with nothing in the window, one line says what it read. `--json` prints what `/api/tips`
+serves: `window` (`[since, now]`, seconds since the epoch), `prices` (the price table's date), `root` (the transcripts
+folder, or null), `sources` (what was read: `signed` records, steps and holds, `transcripts` files and steps) and
+`tips`, one object per tip in the order above. Each tip has `id` (`context`, `cache` or `holds`) and `ok`; one
+without enough data has `why`, one with it has `title`, `line` (its evidence), `from` (its sources), `saving` (`usd`
+and `minutes`, each null when not measured; the context tip adds `pct`), `math` (the arithmetic, one step a line) and
+`fix` (`text` and `copy`, the command or line to paste, or null; null when there is nothing to fix), with the chart's
+and tables' data under the tip's own keys. A run that didn't verify is said on stderr.
+
 ### A v1 bundle
 
 ![A v1 bundle verified and shown: its tape with a blocked curl upload of .env selected, its rules and flags in the detail panel](viewer/1.5/bundle.png)
@@ -405,6 +476,7 @@ instead; `?token=` on an `/api/` path is refused (401), so the token never sits 
 | `/api/stream?from=N` | `text/event-stream`: one `data:` line per record from index `N` on, as they are recorded |
 | `/api/rows?tenant=T&run=R` | `{rows}`: one run's rows from its bundle as verified (exported from the store, verified, then translated), for a run whose records left the live view (the page asks for it when you select such a run); checked again only once the run's own records grow, refused (404) once the viewer's own re-check fails the run, and answered 503 with `Retry-After` while two other runs are being checked (only a check reads the store; a run the viewer hasn't verified yet is 404); an OIDC session reads its tenant's runs only |
 | `/api/why/workspace`, `/api/why/runs/<id>` | the why logs, with `--why` ([below](#why)) |
+| `/api/tips` | the TIPS page ([above](#tips)): what was read, the window, the price table's date and the three tips; the token only, never an OIDC session (it reads local transcripts and every tenant's runs), worked out again at most once a minute, or now with `?fresh=1` |
 
 The run pages and their API (`/runs`, `/api/runs`, `/api/run`, `/api/bundle`) are the central viewer's, served only
 with `view.logs` ([below](#pages-and-api)).
@@ -527,7 +599,8 @@ can't be checked, as `tracekit verify` does.
 - **`--share`** prints the report's counts alone, to post as a [field report](field-reports.md): the window's length
   in days, the version, whether the store and how many runs verify, the runs that verify by agent, the calls by
   decision, the holds by outcome (and how many retries it counted with their held calls), the number of gaps, and
-  each denied or flagged rule with its count. An agent name or rule id that isn't Tracekit's own is counted as
+  each denied or flagged rule with its count, and each rule's holds with how many were approved (by a person or the
+  run's own user) and how many never approved were rejected or expired (from the signed approval records). An agent name or rule id that isn't Tracekit's own is counted as
   `other` or `custom rule` ([field reports](field-reports.md#what-is-shared-and-what-isnt)). No source, tenant, run
   id, identity, time, call or rule description; it reads no content, so it adds no `content.accessed` record.
 

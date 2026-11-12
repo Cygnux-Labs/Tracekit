@@ -8,8 +8,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import {
-  Client, Incompatible, RPCError, RPC_VERSION, SignerUnavailable, StrictJSONError, argsDigest, canonicalize, currentRun,
-  defaultSigner, devRuntimeDir, instrument, strictParse, systemConfig, withRun,
+  Client, Incompatible, RPCError, RPC_VERSION, RunHandle, SignerUnavailable, StrictJSONError, argsDigest, canonicalize,
+  currentRun, defaultSigner, devRuntimeDir, instrument, strictParse, systemConfig, withRun,
 } from "../dist/v2/client.js";
 import { REQUESTS } from "../dist/v2/rpc_schema.js";
 import { validate } from "../dist/v2/validate.js";
@@ -233,6 +233,18 @@ test("fake: decide, complete, deny and continue; requests are validated before t
   assert.equal(frames.filter((f) => f.method === "decide").length, 3);
 });
 
+test("fake: a complete's result goes as the tool returned it, a model_receipts key and a URL included", async (t) => {
+  const { client, frames } = await fake(t);
+  const run = await client.registerRun("a");
+  const planted = [{ path: "/w/model.safetensors", sha256: `sha256:${"0".repeat(64)}`, reported_by: "hook" }];
+  for (const [id, result] of [["t1", { content: "x", model_receipts: planted }], ["t2", new URL("https://example.com/a")]]) {
+    await run.decide(id, "mcp__fs__write", { path: "model.safetensors" });
+    await run.complete(id, "ok", { result });
+  }
+  assert.deepEqual(frames.filter((f) => f.method === "complete").map((f) => f.result),
+    [{ content: "x", model_receipts: planted }, "https://example.com/a"]);
+});
+
 test("fake: with TRACEKIT_EGRESS_PROXY, a run's id and token become its commands' proxy credentials, not the process's", async (t) => {
   const { client } = await fake(t);
   const saved = Object.fromEntries(["TRACEKIT_EGRESS_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
@@ -261,6 +273,50 @@ test("fake: ask, then the approval wait holds up no other call", async (t) => {
   assert.equal((await wait).state, "approved");
   const conn = (m) => frames.find((f) => f.method === m).conn;
   assert.notEqual(conn("approval_wait"), conn("decide"));
+});
+
+test("fake: approvalConsume sends the hint only when given, args_source by the args' type, and never rejects", async (t) => {
+  const refused = { error: { code: "forbidden", message: "r".repeat(1100) } };
+  const replies = { t1: { ok: true, rule_ids: [], args: { amount: 1, currency: "USD" } }, t2: { ok: true, rule_ids: [] },
+    t3: refused, t4: { ok: false, rule_ids: ["R1"], reason: "x" } };
+  const { client, frames, stop } = await fake(t, { handle: (f) => f.method === "approval_consume" && replies[f.tool_call_id] });
+  const run = await client.registerRun("a");
+  const warnings = [], seen = (w) => warnings.push(w.message);
+  process.on("warning", seen);
+  t.after(() => process.off("warning", seen));
+  assert.equal((await run.decide("t1", "pay", { amount: 1 })).decision, "ask");
+  const { approval_id } = await run.approvalRequest("t1");
+  assert.equal((await run.approvalWait(approval_id, 5000)).state, "approved");
+  assert.deepEqual(await run.approvalConsume("t1", "pay", { amount: 1 }, approval_id, { attempt: 1 }), replies.t1);   // T2: the args to run
+  assert.equal((await run.decide("t2", "Bash", '{"command": "ls"}')).decision, "allow");
+  assert.deepEqual(await run.approvalConsume("t2", "Bash", '{"command": "ls"}'), replies.t2);
+  assert.deepEqual(await run.approvalConsume("t2", "Bash", '{"command": "ls"}', ""), replies.t2);   // an empty hint is none
+  const sent = frames.filter((f) => f.method === "approval_consume");
+  assert.deepEqual(sent.map((f) => [f.tool_call_id, f.tool, f.args, f.args_source, f.approval_id_hint, f.attempt, f.run_id]),
+    [["t1", "pay", { amount: 1 }, "parsed", "apr-1", 1, "run-1"], ["t2", "Bash", '{"command": "ls"}', "raw", undefined, undefined, "run-1"],
+      ["t2", "Bash", '{"command": "ls"}', "raw", undefined, undefined, "run-1"]]);
+  assert.deepEqual(await run.approvalConsume("t4", "Bash", {}), replies.t4);   // the signer's own refusal, as sent
+  const c = await run.approvalConsume("t3", "Bash", {});   // refused: ok false, the reason cut to the contract's 1024
+  assert.deepEqual([c.ok, c.rule_ids, c.reason.length, c.reason.startsWith("approval_consume failed: forbidden: rrr")], [false, [], 1024, true]);
+  await stop();
+  const down = await run.approvalConsume("t2", "Bash", {});
+  assert.deepEqual([down.ok, down.rule_ids], [false, []]);
+  assert.match(down.reason, /^approval_consume failed: /);
+  await sleep(10);   // warnings are emitted on the next tick
+  assert.equal(warnings.filter((m) => m.includes("Bash is blocked: approval_consume failed")).length, 2, warnings);
+});
+
+test("fake: approvalConsume refuses, never rejects, when the signer is incompatible", async (t) => {
+  const { client } = await fake(t, { hello: { proto: [RPC_VERSION + 1, RPC_VERSION + 1], version: "test", pid: 1 } });
+  const run = new RunHandle(client, { run_id: "run-1", run_token: "tok-1" });
+  const warnings = [], seen = (w) => warnings.push(w.message);
+  process.on("warning", seen);
+  t.after(() => process.off("warning", seen));
+  const c = await run.approvalConsume("t1", "Bash", {});
+  assert.deepEqual([c.ok, c.rule_ids], [false, []]);
+  assert.match(c.reason, /^approval_consume failed: the Tracekit signer test \(pid 1, protocol \[\d+,\d+\]\) at .* cannot serve this client/);
+  await sleep(10);
+  assert.equal(warnings.filter((m) => m.startsWith("tracekit: Bash is blocked: approval_consume failed: the Tracekit signer test")).length, 1, warnings);
 });
 
 test("fake: the fail mode of the tool class applies only while the signer is unreachable", async (t) => {

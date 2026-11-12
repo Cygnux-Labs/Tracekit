@@ -26,7 +26,7 @@ try:
 except ImportError:
     grp = pwd = None
 
-from .core import b64e, read_json, read_text
+from .core import read_json, read_text
 from . import client, harness_helper
 from .deploy import files
 from .wiki import wiki_url
@@ -102,11 +102,15 @@ SYS_USER_DARWIN = "_tracekit"  # macOS system accounts are underscore-prefixed
 V2_USER, V2_USER_DARWIN = "tracekit-signer", "_tracekit_signer"
 V2_DATA = "/var/lib/tracekit-signer"   # keys and log: 0700, owned by the signer's user
 V2_CONFIG = "/etc/tracekit/signer.yaml"
+V2_NO_WITNESS = "/etc/tracekit/no-witness"   # `init --v2 --no-witness`, kept by later inits until --public-witness
 V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
 # the transcript tailer (tracekit.tailer): its own user, which reads the agent's transcripts through an ACL; the agent
 # starts it through sudo, and the signer lets its uid make only the calls of TAILER_METHODS
 V2_TAILER, V2_TAILER_DARWIN = "tracekit-tailer", "_tracekit_tailer"
 TAILER_SUDOERS = "/etc/sudoers.d/tracekit-tailer"
+DEV_MODE_LINE = ("Dev mode records; it does not guard. The agent runs as you and can reach the key. To guard, run the "
+                 f"signer as another user (system mode: {wiki_url('docs/deploy.md')}) or the agent in Tracekit Box, "
+                 "a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).")
 TAILER_METHODS = ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]
 V2_RUN = {"linux": "/run/tracekit-signer", "darwin": "/Library/Application Support/tracekit-signer"}   # the socket's dir
 V2_UNIT_TEXT = """[Unit]
@@ -145,7 +149,18 @@ Restart=on-failure
 [Install]
 WantedBy=multi-user.target
 """
-# its own unit, so a stopped or crashed observer leaves the agent's traffic blocked, never unobserved ($$: systemd's $)
+# its own unit, so a stopped or crashed observer leaves the agent's traffic blocked, never unobserved ($$: systemd's $);
+# DNS to loopback is refused too: a local stub (127.0.0.53) would resolve, and so carry out, any name the agent asks.
+# Start and reload alike rebuild the rule under a hold, a reject of the agent's uid at the top of OUTPUT, removed once
+# the rule is whole and kept if building it fails.
+FIREWALL_HOLD = "-m owner --uid-owner {uid} -m comment --comment tracekit-egress-hold -j REJECT"
+FIREWALL_APPLY = """/bin/sh -c 'for t in iptables ip6tables; do $$t -I OUTPUT """ + FIREWALL_HOLD + """ && \
+{{ $$t -N TRACEKIT-EGRESS 2>/dev/null; $$t -F TRACEKIT-EGRESS; }} && \
+$$t -A TRACEKIT-EGRESS -p udp --dport 53 -j REJECT && $$t -A TRACEKIT-EGRESS -p tcp --dport 53 -j REJECT && \
+$$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT && \
+{{ $$t -C OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS 2>/dev/null || \
+$$t -I OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; }} || exit 1; \
+while $$t -D OUTPUT """ + FIREWALL_HOLD + """ 2>/dev/null; do :; done; done'"""
 FIREWALL_UNIT_TEXT = """[Unit]
 Description=Tracekit: {agent}'s outside traffic only through the egress observer
 Before=network-pre.target
@@ -153,11 +168,10 @@ Before=network-pre.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/bin/sh -c 'for t in iptables ip6tables; do $$t -N TRACEKIT-EGRESS 2>/dev/null; $$t -F TRACEKIT-EGRESS && \
-$$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT && \
-{{ $$t -C OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS 2>/dev/null || \
-$$t -I OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; }} || exit 1; done'
+ExecStart=""" + FIREWALL_APPLY + """
+ExecReload=""" + FIREWALL_APPLY + """
 ExecStop=/bin/sh -c 'for t in iptables ip6tables; do $$t -D OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; \
+while $$t -D OUTPUT """ + FIREWALL_HOLD + """ 2>/dev/null; do :; done; \
 $$t -F TRACEKIT-EGRESS; $$t -X TRACEKIT-EGRESS; done; true'
 
 [Install]
@@ -200,6 +214,8 @@ def _install_helper(name, signer, sig, sock, darwin):
         _write_root_file(os.path.join(SYSTEMD_DIR, name + suffix), text.encode())
     subprocess.run(["systemctl", "daemon-reload"], check=False)
     subprocess.run(["systemctl", "enable", "--now", name + ".socket"], check=False)
+    # a helper already running keeps the replaced venv's code until restarted; a stopped one starts from its socket
+    subprocess.run(["systemctl", "try-restart", name + ".service"], check=False)
 
 
 def launchd_plist(label, user, python, module, home, extra_args=()):
@@ -312,11 +328,16 @@ def _dev_hook_argv(module, func, args):
         installed = False
     if installed:
         return [sys.executable, "-I", "-m", module, *args]
-    # base64: a path or branch name can hold any quote or shell character
-    code = (f"import base64,sys; r=base64.b64decode('{b64e(ROOT.encode('utf-8'))}').decode('utf-8'); "
-            "sys.path.insert(0, r); ")
-    call = f"raise SystemExit({func}({', '.join(map(repr, args))}))"
+    # The tree, its branch and the hook's arguments, in plain text. On POSIX they go after the code as arguments the
+    # shell gets single-quoted (_dev_hook_command). On Windows the harness's shell (Git Bash for Claude Code,
+    # PowerShell, cmd.exe) would expand them there, so they go into the double-quoted code as Python literals with
+    # every character those shells read in double quotes written as an escape (_literal). The code's own strings take
+    # the quote each form leaves alone: ' inside Windows' double quotes, " inside POSIX's single quotes
+    nt = os.name == "nt"
+    q = "'" if nt else '"'
     branch = _branch(ROOT)
+    tree, was = (_literal(ROOT), branch and _literal(branch)) if nt else ("sys.argv[1]", "sys.argv[2]")
+    code = f"import sys; r = {tree}; sys.path.insert(0, r); "
     if branch:
         # lean: the hooks still run the working tree, so a branch switch there still breaks them and this only says
         # what happened; run them from a copy init makes if switching branches under them keeps happening
@@ -324,19 +345,33 @@ def _dev_hook_argv(module, func, args):
         # command without them; carry them here if those installs from a working tree hit this
         init = "tracekit init --dev" + (" --v2" if module in V2_HOOKS else "") + (
             "" if module in ("tracekit.hook", V2_HOOK) else f" --agent {args[0]}")
-        # exec: a try statement can't follow `;` on one line, and the command must stay one line (Windows); git that
-        # can't run (not on the hook's PATH) gives the plain traceback
-        code += (f"import os,shlex,subprocess; w=base64.b64decode('{b64e(branch.encode('utf-8'))}').decode('utf-8'); "
-                 "exec('''def h(t,e,b):\\n try: n=subprocess.run(['git','-C',r,'symbolic-ref','-q','--short','HEAD'],"
-                 "capture_output=True,text=True,env={k:v for k,v in os.environ.items() if not k.startswith('GIT_')})"
-                 ".stdout.strip() or 'a detached HEAD'\\n except OSError: return sys.__excepthook__(t,e,b)\\n "
-                 "print(f'tracekit: the hook runs Tracekit from the working tree {r}, which cannot import it now "
-                 "({t.__name__}: {e}): it is on {n} there, and was on {w} when the hooks were installed. Check out {w} "
-                 "there again (git -C {shlex.quote(r)} checkout {shlex.quote(w)}) if a branch switch broke it, or run "
-                 f"{init} again from a Tracekit installed outside a working tree (pip install, not pip install -e)', "
-                 "file=sys.stderr)'''); sys.excepthook=h; ")
-        call = "sys.excepthook=sys.__excepthook__; " + call
-    return [sys.executable, "-I", "-c", f"{code}from {module} import {func}; {call}"]
+        # a lambda: a try statement can't follow `;`, and the command stays one line (Windows); with no git on the
+        # hook's PATH, the plain traceback
+        code += (f"import os, shlex, shutil, subprocess; w = {was}; "
+                 f"n = lambda: subprocess.run([{q}git{q}, {q}-C{q}, r, {q}symbolic-ref{q}, {q}-q{q}, {q}--short{q}, "
+                 f"{q}HEAD{q}], capture_output=True, text=True, env={{k: v for k, v in os.environ.items() if not "
+                 f"k.startswith({q}GIT_{q})}}).stdout.strip() or {q}a detached HEAD{q}; "
+                 f"sys.excepthook = lambda t, e, b: print(f{q}tracekit: the hook runs Tracekit from the working tree "
+                 "{r}, which cannot import it now ({t.__name__}: {e}): it is on {n()} there, and was on {w} when the "
+                 "hooks were installed. Check out {w} there again (git -C {shlex.quote(r)} checkout {shlex.quote(w)}) "
+                 f"if a branch switch broke it, or run {init} again from a Tracekit installed outside a working tree "
+                 f"(pip install, not pip install -e){q}, file=sys.stderr) if shutil.which({q}git{q}) else "
+                 "sys.__excepthook__(t, e, b); ")
+    call = (f"raise SystemExit({func}({', '.join(map(_literal, args))}))" if nt else
+            f"raise SystemExit({func}(*sys.argv[{3 if branch else 2}:]))")
+    if branch:
+        call = "sys.excepthook = sys.__excepthook__; " + call
+    return [sys.executable, "-I", "-c", f"{code}from {module} import {func}; {call}",
+            *([] if nt else [ROOT, *([branch] if branch else []), *args])]
+
+
+def _literal(text):
+    """`text` as a single-quoted Python literal that reads the same through Git Bash's, PowerShell's and cmd.exe's
+    double quotes: letters, digits and . _ - : / , + = @ and a space as they are, every other character (a quote,
+    $, `, %, !, \\, &, a newline) as its \\x, \\u or \\U escape, whose backslash none of them reads."""
+    return "'" + "".join(c if c.isascii() and (c.isalnum() or c in "._-:/,+=@ ") else
+                         f"\\x{ord(c):02x}" if ord(c) < 0x100 else f"\\u{ord(c):04x}" if ord(c) < 0x10000 else
+                         f"\\U{ord(c):08x}" for c in text) + "'"
 
 
 def _branch(root):
@@ -359,7 +394,9 @@ def _dev_hook_command(module, func, args):
     py = f'"{argv[0]}"' if os.name == "nt" else shlex.quote(argv[0])
     if argv[2] == "-m":
         return " ".join([py, *argv[1:]])
-    return f'{py} -I -c "{argv[3]}"' if os.name == "nt" else f"{py} -I -c {shlex.quote(argv[3])}"
+    if os.name == "nt":   # the values are in the code (_dev_hook_argv): nothing after it for a shell to read
+        return f'{py} -I -c "{argv[3]}"'
+    return f"{py} -I -c {' '.join(map(shlex.quote, argv[3:]))}"
 
 
 def _hook_version(group):
@@ -666,6 +703,14 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
     _thinking(s, thinking, uninstall)
     if dry_run:
         return None
+    if raw is None and not uninstall:   # init made this file: uninstall deletes it again when nothing else is in it
+        s[CREATED_MARKER] = True
+    elif uninstall and s.pop(CREATED_MARKER, None) and not s:
+        files.remove(d, name)
+        if replaced:
+            print(f"Tracekit {' and '.join(sorted(replaced))} hooks removed from {settings_path}, and the file with "
+                  "them: init made it, and nothing else is in it")
+        return None
     if raw is not None:
         if _parse_settings(raw, settings_path) == s:
             return s.get(THINKING)
@@ -680,6 +725,7 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
 
 THINKING = "showThinkingSummaries"   # Claude Code keeps the model's thinking summaries in its transcript
 THINKING_MARKER = "_tracekit_thinking"   # init turned THINKING on, so uninstall turns it off again
+CREATED_MARKER = "_tracekit_created"   # init made the settings file
 
 
 def _thinking(s, on, uninstall):
@@ -1238,25 +1284,29 @@ def _root_only(path):
     return None
 
 
-def _install_source():
+def _install_source(init):
     """Check, before init changes anything, that it runs a root-owned Python and installs Tracekit from a source the
-    agent's user cannot modify. Returns the pip requirement for an installed release, or None for this source checkout."""
+    agent's user cannot modify; `init` is the command its hints name (`init --v2 --user <agent-user>`). Returns the pip
+    requirement for an installed release, or None for this source checkout."""
+    from . import __version__
     from .harness_helper import trusted_file
+    # a clone of this release needs no pip in the system Python, which may refuse it (PEP 668); docs/deploy.md's route
+    src = f"/usr/local/src/tracekit-{__version__}"   # one per release: the next one's clone doesn't meet this one's
+    clone = (f"sudo git clone --depth 1 --branch v{__version__} https://github.com/Cygnux-Labs/Tracekit {src}, then "
+             f"cd {src} && sudo /usr/bin/python3 -m tracekit {init}")
     for f in (sys.executable, os.path.dirname(os.__file__)):
         bad = trusted_file(f)
         if bad:
             raise SystemExit(f"the Python running init could be modified by a non-root user ({bad}). Run init with a "
-                             "root-owned Python, e.g. sudo /usr/bin/python3 -m tracekit init")
+                             f"root-owned Python from a root-owned clone, e.g. {clone}")
     if not os.path.isfile(os.path.join(ROOT, "pyproject.toml")):
-        from . import __version__
         # lean: trusts PyPI over TLS for the exact version; hash pinning comes with signed release artifacts (M3-15)
         return (["--pre"] if any(c.isalpha() for c in __version__) else []) + [f"tracekit-ai=={__version__}"]
     # lean: one stat per file and ancestor; fine for a checkout of a few thousand files
     bad = trusted_file(ROOT) or _first_problem(ROOT, trusted_file, skip=(".git",))
     if bad:
         raise SystemExit(f"the source checkout could be modified by a non-root user ({bad}). Clone into a root-owned "
-                         "directory, e.g. sudo git clone https://github.com/Cygnux-Labs/Tracekit /usr/local/src/Tracekit, "
-                         "then cd /usr/local/src/Tracekit && sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
+                         f"directory, e.g. {clone}")
     return None
 
 
@@ -1275,7 +1325,10 @@ def _install_venv(requirement, extra=""):
             tmp = tempfile.mkdtemp()
             requirement = [os.path.join(tmp, "Tracekit")]
             shutil.copytree(ROOT, requirement[0], ignore=shutil.ignore_patterns(".git"))
-        subprocess.run([sys.executable, "-m", "venv", "--clear", new], check=True)
+        # the base interpreter: before Python 3.11 a venv built by a venv's python links to that python, which the
+        # swap below replaces (init run from /opt/tracekit/bin/python would leave OPT's python linking to itself)
+        subprocess.run([os.path.realpath(sys.executable), "-m", "venv", "--clear", "--prompt", "tracekit", new],
+                       check=True)
         name, eq, version = requirement[-1].partition("==")
         subprocess.run([new_python, "-m", "pip", "install", "--quiet", "--no-cache-dir", *requirement[:-1],
                         name + extra + eq + version], check=True)
@@ -1284,6 +1337,13 @@ def _install_venv(requirement, extra=""):
         os.umask(old)
         if tmp:
             shutil.rmtree(tmp, ignore_errors=True)
+    for entry in os.scandir(os.path.join(new, "bin")):   # pip's scripts and activate name the build path; they run from OPT
+        if entry.is_file(follow_symlinks=False):
+            with open(entry.path, "rb") as f:
+                text = f.read()
+            if new.encode() in text:
+                with open(entry.path, "wb") as f:
+                    f.write(text.replace(new.encode(), OPT.encode()))
     for dirpath, dirnames, filenames in os.walk(new):
         for p in [dirpath] + [os.path.join(dirpath, n) for n in dirnames + filenames]:
             os.lchown(p, 0, 0)
@@ -1394,13 +1454,15 @@ def _system_user(name, home, darwin):
     return pwd.getpwnam(name)
 
 
-def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), public_witness=False, egress_uid=None):
+def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), public_witness=None, egress_uid=None):
     """signer.yaml of v2 system mode. The agent's uid gets its own tenant (named after it), and so does the approver's,
     who alone may answer its approvals; every other local user lands in tenant `local`. The tailer's uid may make only
     the TAILER_METHODS calls. With harnesses (resolve_harness entries), the agent's runs must come from one of them.
-    public_witness: the public witness cosigns the logs (`witnesses: [public]`). egress_uid: the egress observer's,
-    in the agent's tenant, granted observe_effect only.
+    public_witness: the public witness cosigns the logs (`witnesses: [public]`); None: once it is configured.
+    egress_uid: the egress observer's, in the agent's tenant, granted observe_effect only.
     Scalars are JSON-quoted, which the built-in YAML subset reads back exactly."""
+    from . import public_witness as pw
+    public_witness = pw.configured() if public_witness is None else public_witness
     q = json.dumps
     tenant, me, approver = q(agent.pw_name), q(f"uid:{agent.pw_uid}"), q(f"uid:{approver_uid}")
     binding = ["harness_binding:", f"  helper: {q(V2_HELPER_SOCKET)}", f"  required: [{me}]", "  harnesses:"] + [
@@ -1480,13 +1542,30 @@ def v2_plist(user):
         "StandardErrorPath": os.path.join(V2_DATA, "signer.log")})
 
 
+def system_witness(public_witness):
+    """Whether system mode's signer.yaml lists the public witness, for init_system_v2's `public_witness`: True clears an
+    earlier --no-witness, False records it in V2_NO_WITNESS, and None keeps what that records (off), else the default
+    (v2_signer_yaml's None: once the witness is configured)."""
+    if public_witness is False:
+        _write_root_file(V2_NO_WITNESS, b"no-witness\n")
+    elif public_witness:
+        try:
+            os.remove(V2_NO_WITNESS)
+        except FileNotFoundError:
+            pass
+    elif os.path.exists(V2_NO_WITNESS):
+        return False
+    return public_witness
+
+
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
-                   experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=False,
+                   experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=None,
                    egress=False, thinking=True, managed=False, managed_only=False):
     """`tracekit init --v2 --user AGENT` as root: the v2 signer service as its own user, from the root-owned venv, with
     the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
     different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
-    which the harness helper attests. public_witness (`--public-witness`): the public witness cosigns the signer's logs.
+    which the harness helper attests. public_witness: the public witness cosigns the signer's logs: True
+    (`--public-witness`) or fail while it is not configured, None (the default) once it is, False (`--no-witness`) never.
     egress (`--egress`, Linux): the agent's outside traffic only through a local egress observer (docs/egress.md).
     thinking: turn Claude Code's thinking summaries (install_hooks), or Codex's reasoning summaries
     (agent_hooks.codex_reasoning), on for AGENT unless its settings set them. managed (`--managed`, Claude Code only):
@@ -1525,7 +1604,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # init takes the recorded managed file's hooks out after it writes the new ones: one it can't edit stops it now
     if recorded in MANAGED_SETTINGS.values() and os.path.exists(recorded):
         install_managed(None, True, recorded, uninstall=True, dry_run=True)
-    requirement = _install_source()
+    requirement = _install_source("init --v2 --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
     for path, mode in ((V2_DATA, 0o700),) + (((run_dir, 0o755),) if darwin else ()):
@@ -1544,12 +1623,12 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     # the tailer reads Claude Code transcripts only
     why = (_tailer_acl(owner, tailer.pw_name, darwin) or _tailer_sudo(owner, tailer)) if agent == "claude" else None
     if why:
-        print(f"transcript tailer: {why}. No tailer is set up, so each run of {target_user}'s sessions records a "
-              "tailer_lost gap instead of their tool uses and prompts")
+        print(f"transcript tailer: {why}. No tailer is set up, so each of {target_user}'s Claude Code sessions "
+              "records a tailer_lost gap instead of its transcript")
     sock = os.path.join(run_dir, "signer.sock")
     observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
     _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
-                                                public_witness, observer and observer.pw_uid).encode())
+                                                system_witness(public_witness), observer and observer.pw_uid).encode())
     proxy = {"HTTPS_PROXY": f"http://{EGRESS_LISTEN}", "HTTP_PROXY": f"http://{EGRESS_LISTEN}"} if egress else {}
     if egress:   # attribution by the agent's uid, read from /proc: no token in the proxy URL
         _write_root_file(EGRESS_CONFIG, (f"# written by `tracekit init --v2 --egress`\nlisten: {json.dumps(EGRESS_LISTEN)}"
@@ -1583,7 +1662,11 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                    (EGRESS_FIREWALL, FIREWALL_UNIT_TEXT.format(agent=target_user, uid=owner.pw_uid))):
                     _write_root_file(os.path.join(SYSTEMD_DIR, unit + ".service"), text.encode())
                 subprocess.run(["systemctl", "daemon-reload"], check=False)
-                if subprocess.run(["systemctl", "enable", "--now", V2_EGRESS, EGRESS_FIREWALL], check=False).returncode:
+                # not enable --now, which leaves an active firewall unit's earlier rule in place: a reload rebuilds it
+                # under its hold, never unblocked (a restart's stop would drop it for a moment)
+                if [subprocess.run(["systemctl", *cmd], check=False).returncode for cmd in (
+                        ["enable", V2_EGRESS, EGRESS_FIREWALL], ["restart", V2_EGRESS],
+                        ["reload-or-restart", EGRESS_FIREWALL])] != [0, 0, 0]:
                     failed.append(f"could not start {V2_EGRESS} or {EGRESS_FIREWALL} (iptables with the owner match is "
                                   f"needed): see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then "
                                   f"{target_user}'s network is reported only")
@@ -1628,6 +1711,9 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                             **({} if hooks else {"no_hooks": True})},   # doctor: the choice it is
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
+    if not harnesses:
+        print(f"note: harness binding is off, so any process of {target_user} can start runs or write into "
+              "the agent's runs. To bind runs to the agent's CLI on Linux, run init again with --harness [NAME=]PATH.")
     if failed:
         raise ServiceError("; ".join(failed))
     return sock, settings
@@ -1716,7 +1802,7 @@ def uninstall_system_v2(purge=False):
         removed += [client.SYSTEM_CONFIG, OPT]
     removed += [V2_CONFIG, TAILER_SUDOERS, EGRESS_CONFIG]
     if purge:
-        removed.append(V2_DATA)
+        removed += [V2_DATA, V2_NO_WITNESS]
     for p in removed:
         if os.path.isdir(p) and not os.path.islink(p):
             shutil.rmtree(p)
@@ -1744,7 +1830,7 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     darwin = _require_system(experimental_macos)
     checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
     owner = _agent_user(target_user, allow_privileged)
-    requirement = _install_source()
+    requirement = _install_source("init --user <agent-user>" + (" --experimental-macos" if darwin else ""))
     user = SYS_USER_DARWIN if darwin else SYS_USER
     try:
         pwd.getpwnam(user)
@@ -1861,7 +1947,9 @@ def status():
                              "content_capture": pol.get("content_capture", "hashed"), "reasoning_capture": pol.get("reasoning_capture", False)}
         except Exception as e:
             out["policy"] = {"error": str(e)}
-    out["hooks"] = _installed_hooks()
+    from .doctor import _dev_harnesses   # the other coding agents' v2 hooks, as doctor finds them
+    out["hooks"] = _installed_hooks() + [{"settings": p, "agent": h, "versions": ["v2"]}
+                                         for h, p in sorted(_dev_harnesses().items())]
     out["capture_sources"] = ["hook"] + (["proxy"] if cfg.get("proxy") else []) + \
         (["transcript"] if (out["policy"] or {}).get("reasoning_capture") else [])
     if cfg.get("proxy_url"):
@@ -1887,7 +1975,7 @@ def _installed_hooks():
             try:
                 s = read_json(p)
                 hooks.append({"settings": p, **_hook_summary(s)})
-            except ValueError:
+            except (ValueError, AttributeError, TypeError, OSError):   # not JSON, not a settings object, or no read access
                 hooks.append({"settings": p, "error": "unreadable"})
     for p in MANAGED_SETTINGS.values():
         if os.path.exists(p):
@@ -1895,7 +1983,7 @@ def _installed_hooks():
                 s = read_json(p)
                 hooks.append({"settings": p, "managed": True, **_hook_summary(s),
                               "allowManagedHooksOnly": bool(s.get("allowManagedHooksOnly"))})
-            except (ValueError, OSError):
+            except (ValueError, AttributeError, TypeError, OSError):
                 hooks.append({"settings": p, "managed": True, "error": "unreadable"})
     return hooks
 

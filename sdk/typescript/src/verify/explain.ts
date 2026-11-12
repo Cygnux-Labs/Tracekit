@@ -3,7 +3,8 @@
  * mean, what to do next, a line per check on what it means (docs/verdicts.md, shortened), and a summary of the bundle's
  * runs. The report itself is the CLI's, unchanged: this module only reads it. No DOM, so Node tests it.
  */
-import { type Check, EXIT_FAIL, EXIT_OK, type Report, VERSION, clean, formatReport, runFiles } from "./index.js";
+import { type Check, EXIT_FAIL, EXIT_OK, NOT_RATED, type Report, VERSION, clean, formatReport, runFiles }
+  from "./index.js";
 
 type J = any;
 export type Names = { bundle: string; trust: string | null };
@@ -18,8 +19,8 @@ const TRUST_FILE = "the sender's trust file: a small .json that names their sign
 
 /** The report as `tracekit verify --json` prints it (cli.ts prints this). */
 export const asJson = (rep: Report, code: number) => ({ exit_code: code, checks: rep.checks, failures: rep.failures,
-  warnings: rep.warnings, integrity: rep.integrity, assurance: rep.assurance, notes: rep.notes,
-  ...rep.findings ? { findings: rep.findings } : {} });
+  warnings: rep.warnings, integrity: rep.integrity, assurance: code === EXIT_FAIL ? NOT_RATED : rep.assurance,
+  notes: rep.notes, ...rep.findings ? { findings: rep.findings } : {} });
 
 /** The report as `tracekit verify` prints it, then its exit code. */
 export const asText = (rep: Report, code: number) => formatReport(rep) + `\nExit code ${code}`
@@ -249,6 +250,8 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
   "break-glass approvals": { warn: "Approvals given under the break-glass role, with who and why." },
   "not interpreted": { warn: "Records carry an extension this verifier doesn't read. They verified like every other "
     + "record." },
+  "verifier minimum": { warn: "The bundle's manifest, which isn't signed, asks for an older verifier than its records "
+    + "need: an older verifier may have claimed more than they show. This one read every record." },
   "gateway amendments": {
     pass: "Requests the LLM gateway changed so the provider shows its reasoning; each record commits to the request "
       + "as sent.",
@@ -260,6 +263,21 @@ export const MEANING: Record<string, Partial<Record<Check["status"], string>>> =
       + "OpenShell's report.",
     warn: "A record carries an OpenShell policy change where or how the signer never writes one. The record verified "
       + "like every other.",
+  },
+  "boxed agent": {
+    pass: "Runs of a Tracekit Box box and of its agent: proof against the agent in that box only, whose box never held "
+      + "the signing key. The records are the agent's own account; the box's doors are what held it.",
+    warn: "A record carries a box label where or how the signer never writes one: nothing is claimed about the key. "
+      + "The record verified like every other.",
+  },
+  "intent grants": {
+    pass: "Payments people allowed the run's agent once, within limits, who allowed them, and the calls each grant let "
+      + "run, each re-checked against its grant and its running totals.",
+    warn: "A grant, revocation or released call is recorded where or how the signer never writes one. The records "
+      + "verified like every other.",
+    fail: "The signer recorded a call as released by a grant that doesn't allow it (another tool, other fields, over a "
+      + "limit, totals that don't add up), by no grant the bundle holds, or by a grant whose record a signer never "
+      + "writes.",
   },
   "constraints": {
     pass: "What the person's request said not to do, added while the run was open, and the calls it held.",

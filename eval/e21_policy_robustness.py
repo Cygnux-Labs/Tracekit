@@ -19,9 +19,9 @@ Two profiles: `default` (server.yaml, what E17 measures) and `strict` (strict.ya
     busy or throttled machine slows alike.
 (e) No-regression gates against the first run, recorded in eval/results/e21_policy_robustness.json and kept by later
     runs: per profile, held-out recall doesn't drop and the false-positive rate of each benign set (held-out, sessions,
-    E17, blind) doesn't rise; p99_ref stays within 25% of the first run's on the same machine (re-measured once before
-    failing; another machine is not compared). False positives over 2% (default) or 5% (strict) are reported as over
-    target.
+    E17, blind) doesn't rise; p99_ref stays under its recorded cap on the same machine (re-measured once before
+    failing; another machine is not compared): 25% over the first run's, or a cap recorded again since, as the comment
+    above the gates says. False positives over 2% (default) or 5% (strict) are reported as over target.
 Exit 0 only when every gate holds and both engines decide every call the same. `--record` writes the gates anew."""
 import collections
 import glob
@@ -164,6 +164,13 @@ def run(record=False):
     for e in (Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], x) for x in ("re2", "regex")):
         out["latency"][f"dev/{e.engine.split('@')[0]}"] = latency(e, calls)
     old = None if record or not os.path.exists(RESULTS) else json.load(open(RESULTS, encoding="utf-8")).get("gates")
+    # The recorded max_p99_ref of strict and dev (re2 and regex) was re-baselined on 2026-11-08: that day's security
+    # reading of shell lines added the cost on purpose. Each cap is 5% over the highest p99_ref measured across its
+    # runs: strict/re2 7.1 (runs 6.42 and 6.75), dev/regex 7.63 (runs 7.1 to 7.27); the others 5% over one run.
+    # Default's is still the first run's. dev/regex was re-recorded on 2026-11-11, the same way: 8.25, 5% over the
+    # highest of seven runs at #605's head (7.62 to 7.86), as the dev pack carries the server parts' rules since #605:
+    # a deliberate cost of about 5% against main on the fallback engine (the larger pack about 12% slower, the engine's
+    # own changes faster). The results file's latency rows stay main's recorded ones, as E21 records no new baseline.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},

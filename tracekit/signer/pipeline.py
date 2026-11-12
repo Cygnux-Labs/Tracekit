@@ -92,7 +92,8 @@ def approval(tenant, run_id, data, ts):
     (`escalation`: by whom and why); an answer adds `answered` (by, kind) and `answer` (its self_approved and person,
     when the record has them); an agent's approval adds `kind` agent and the times it may be consumed between
     (`not_before`, `consume_by`), and a revoke `revoked` (by whom); an answer or a revoke sets `answer_seq` (its
-    record's run_seq); one a later call of the same arguments consumed adds `used_by` (ran)."""
+    record's run_seq); one a later call of the same arguments consumed adds `used_by` (ran); one a root PCM grant was
+    minted from adds `granted`."""
     b = data["binding"]
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
@@ -254,6 +255,24 @@ def constraint_state(e):
     return [e["data"]["kind"], salt_label(e), e["data"].get("object_commitment"), e["run_seq"]]
 
 
+def grant_state(set_, run, e):
+    """Follow record `e` of `run` in its intent grants (docs/intent-grants.md), `run["grants"]`: grant id -> {grant,
+    tools, limits, used, revoked, self_approved, description?}. An `intent.grant` record adds one, an `intent.revoked` record
+    ends it, and a decision a grant released (`ext.grant`) sets its totals. `set_`: as agent_state's."""
+    typ, d, x = e["type"], e["data"], (e.get("ext") or {}).get("grant")
+    gs = run.get("grants") or {}
+    if typ == "ext" and d.get("name") == "intent.grant":
+        # a grant without `tools` (before grants named them) covers no tool: it releases nothing
+        set_(run, "grants", {**gs, d["id"]: {"grant": d["grant"], "tools": d.get("tools", []), "limits": d["limits"],
+                                             "used": d["used"],
+                                             "revoked": False, "self_approved": d["self_approved"],
+                                             **({"description": d["description"]} if "description" in d else {})}})
+    elif typ == "ext" and d.get("name") == "intent.revoked" and d.get("id") in gs:
+        set_(gs[d["id"]], "revoked", True)
+    elif typ == "policy.decision" and isinstance(x, dict) and x.get("id") in gs:
+        set_(gs[x["id"]], "used", x["used"])
+
+
 def writer(identity, req):
     """Who writes a stream: the caller, and whether through a gateway (a request with `caller`)."""
     return subject(identity) + (" through a gateway" if "caller" in req else "")
@@ -327,6 +346,7 @@ class Tx:
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
         agent_state(self.set, log, run, e)
         contain_state(self.set, log, run, e, self.pop)
+        grant_state(self.set, run, e)
         for t, d in incidents:   # first, as detect.backtest feeds them; an enforced incident is the responder's to write
             if t == "incident.opened" and d["mode"] == "enforce" and log.respond:
                 log.respond(self, run, e, d)
@@ -340,12 +360,12 @@ class Tx:
 
     def event(self, run, req, typ, data, digests=None, **top):
         """A client event call: skipped client_seq values first become a signer-written gap, and make the run's
-        provenance index partial."""
+        provenance index partial. An event given its `ts` gives its gap the same, so no ts goes back."""
         stream, cseq, gap = req["stream"], req["client_seq"], skipped(run, req)
         if gap:
             self.emit(run, "capture.gap", {"kind": "client_counter_gap", "reason": gap,
                                            "missed_events": cseq - last_seq(run, stream) - 1},
-                      source="signer", stream=stream)
+                      source="signer", stream=stream, **({"ts": top["ts"]} if "ts" in top else {}))
             degrade(self, run.get("prov"), "partial", gap + LOST)
         self.set(run["streams"], stream, cseq)
         seq = self.emit(run, typ, data, digests=digests, request_id=req["request_id"], stream=stream, client_seq=cseq,
@@ -543,7 +563,7 @@ class RecordLog:
             if "span_id" in e:   # an imported record: its span and type are written once per run
                 run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
-                run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                run["owner"], run["source"] = detect.recorded_owner(e), e["source"]
                 run["registered"] = e["ts"]
                 run["principal"] = e.get("principal")
                 run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
@@ -551,6 +571,8 @@ class RecordLog:
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 if "session" in e["data"]:
                     run["session"] = e["data"]["session"]
+                if "box" in (e.get("ext") or {}):   # the box label (SignerService._register_run)
+                    run["box"] = e["ext"]["box"]
                 if {"replay_of", "analyzes"} & e["data"].keys():
                     run["replay"] = True
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
@@ -616,9 +638,12 @@ class RecordLog:
                 if e["type"] == "approval.consumed" and used != [a["tool_call_id"], a["attempt"]]:   # a later call's
                     a["used_by"] = [*used, (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)
                     index[(e["tenant"], e["run_id"], *used)] = e["data"]["approval_id"]
+            elif e["type"] == "ext" and e["data"].get("name") == "pcm.grant" and e["data"].get("approval_id"):
+                approvals[e["data"]["approval_id"]]["granted"] = True   # Service._pcm_grant: one grant per approval
             if not run["final"]:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
+                grant_state(dict.__setitem__, run, e)
         self.log_id = self.log_id or secrets.token_hex(16)
         self.agent, self.contain = agent, contain
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys

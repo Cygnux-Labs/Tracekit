@@ -79,10 +79,10 @@ def run(name):
 
 
 def verify(folder, bundle="run.tkb"):
-    """`tracekit verify` of `bundle` in `folder` against its trust.json, as verify.txt holds it."""
-    p = subprocess.run([sys.executable, "-m", "tracekit", "verify", bundle, "--trust", "trust.json"], cwd=folder,
-                       capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=PYTHONPATH))
-    return f"$ tracekit verify run.tkb --trust trust.json\n{p.stdout}{p.stderr}"
+    """`tracekit verify --detail` of `bundle` in `folder` against its trust.json, as verify.txt holds it."""
+    p = subprocess.run([sys.executable, "-m", "tracekit", "verify", bundle, "--trust", "trust.json", "--detail"],
+                       cwd=folder, capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=PYTHONPATH))
+    return f"$ tracekit verify run.tkb --trust trust.json --detail\n{p.stdout}{p.stderr}"
 
 
 def verdicts(report):

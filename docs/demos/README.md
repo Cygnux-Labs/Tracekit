@@ -9,8 +9,8 @@ terminal and `tracekit verify` on each bundle; the GIF above is an 85 s highligh
 
 Recorded runs of Tracekit's main use cases, offline: mock models, scripted approvals, and every "outside" host on
 this machine. Each folder holds what the scenario is (`README.md`), the terminal session (`transcript.txt`), the run's
-bundle (`run.tkb`), the trust config that pins its signer's key (`trust.json`) and the `tracekit verify` report
-(`verify.txt`); the why demo has only the first two (its log is hash-chained, not signed).
+bundle (`run.tkb`), the trust config that pins its signer's key (`trust.json`) and the `tracekit verify --detail`
+report (`verify.txt`); the why demo has only the first two (its log is hash-chained, not signed).
 
 In story order: what the agent did, how it is controlled, the proof, and why it happened.
 

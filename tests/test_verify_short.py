@@ -1,0 +1,359 @@
+"""The short result `tracekit verify` prints by default (#592), in plain ASCII: a verified bundle's recorded actions and
+whether it is proof against the agent, which only a key something outside the bundle vouches for can show; a tampered
+or broken bundle's first broken record in plain words; signed gaps said as such. `--detail` prints the full report as
+before and `--json` is unchanged."""
+import base64
+import contextlib
+import glob
+import hashlib
+import io
+import json
+import os
+import shutil
+import tempfile
+import unittest
+from unittest import mock
+
+import pytest
+
+import test_bundle_v2 as tb
+from factories import ev, make_signer, rewrite_bundle, run_start, tool_call
+from tracekit import bundle, cli, policy
+from tracekit.bundle_v2 import export
+from tracekit.format import checkpoint
+from tracekit.verify import protection, summary, v2
+from tracekit.wiki import wiki_url
+
+DEV = ("NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could have rewritten the "
+       f"record.\nTo make it proof, keep the key away from the agent: {wiki_url('docs/deploy.md')}\n")
+UNANCHORED = "NOT SHOWN: nothing outside the bundle vouches for the signing key. Pin it with --key, or use a witness.\n"
+NOT_ANCHORED = ("NOT ANCHORED: no independent witness or anchor cosigned the log, so whoever holds the signing key could "
+                f"rewrite it unseen ({wiki_url('docs/witnesses.md')}).")
+MISMATCH = (f"the witness's ({tb.WITNESS}) cosignature doesn't match this log: the log was changed after the witness saw "
+            "it, or the cosignature is damaged")
+ANCHORED = (f"ANCHORED: an independent witness ({tb.WITNESS}) cosigned this log at size 5, so a later rewrite would fail "
+            "this check.")   # a bundle()'s log: the key's epoch, the run's start, two calls and its end
+
+
+def verify(*argv):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        code = cli.main(["verify", *argv])
+    out = out.getvalue()
+    assert "--detail" in argv or out.isascii(), out   # the short result is plain ASCII; the full report is unchanged
+    return code, out
+
+
+class V2(tb.Case):
+    @property
+    def fingerprint(self):
+        with open(self.trust, encoding="utf-8") as f:
+            key = json.load(f)["logs"][0]
+        return hashlib.sha256(checkpoint.parse_vkey(key)[3]).hexdigest()
+
+    def bundle(self, isolation, witnesses=((tb.WITNESS, tb.WIT_SECRET),), edit_run=None, extra=(), calls=("t1", "t2")):
+        """A closed run of `calls` decided calls, then `extra` records ((type, data, fields)), exported."""
+        name = f"s{len(os.listdir(self.d))}"
+        log = self.log(name)
+        log.epoch(tb.KEY1)
+        log.add("run.registered", {"agent": {"name": "agent"}, "signer_isolation": isolation,
+                                   "identity": {"scheme": "uid", "subject": "1", "attested": True}})
+        for t in calls:
+            log.add("policy.decision", {"tool_use_id": t, "decision": "allow", "rule_ids": []}, tool_call_id=t,
+                    source="sdk")
+        for type_, data, fields in extra:
+            log.add(type_, data, **fields)
+        log.final()
+        out = os.path.join(self.d, f"{name}.tkb")
+        export(log.store, "acme", "run-a", log.note(witnesses=witnesses), out)
+        return self.mutate(out, edit_run=edit_run) if edit_run else out
+
+    def test_a_signer_out_of_the_agents_reach_is_proof_against_it(self):
+        self.assertEqual(verify(self.bundle("separate-user"), "--trust", self.trust), (0, (
+            "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after signing.\n"
+            "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).\n"
+            f"{ANCHORED}\nPinned log key SHA-256 fingerprint: {self.fingerprint}.\n")))
+
+    def test_without_a_witness_it_says_who_could_still_rewrite_it(self):
+        code, out = verify(self.bundle("remote", witnesses=()), "--trust", self.write_trust(0, name="t0.json"))
+        self.assertEqual((code, out.splitlines()[1:]), (0, [
+            "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (remote).", NOT_ANCHORED,
+            f"Pinned log key SHA-256 fingerprint: {self.fingerprint}."]))
+
+    def test_a_self_approval_leaves_a_witnessed_log_anchored(self):
+        """A self-approval makes the assurance dev; the log is no less cosigned, so it is not called NOT ANCHORED."""
+        rep, code = v2.verify(self.bundle("separate-user"), self.trust)
+        self.assertTrue(rep.assurance.startswith("witnessed;"), rep.assurance)
+        out = io.StringIO()
+        summary(rep, code, rep.integrity, "dev" + rep.assurance[len("witnessed"):] + "; approvals: self", out)
+        self.assertEqual(out.getvalue().splitlines()[1:], [
+            "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach (separate-user).",
+            "But a held call was approved by the agent's own user, so that approval proves nothing.", ANCHORED,
+            f"Pinned log key SHA-256 fingerprint: {self.fingerprint}."])
+
+    def test_a_dev_bundle_no_witness_cosigned_says_so_without_repeating_who_could_rewrite_it(self):
+        code, out = verify(self.bundle("same-user", witnesses=()), "--trust", self.write_trust(0, name="t0.json"))
+        self.assertEqual((code, out.splitlines()[1:]), (0, DEV.splitlines() + [
+            f"NOT ANCHORED: no independent witness or anchor cosigned the log ({wiki_url('docs/witnesses.md')}).",
+            f"Pinned log key SHA-256 fingerprint: {self.fingerprint}."]))
+
+    def test_fewer_independent_witnesses_than_the_trust_file_requires_says_what_is_missing(self):
+        """Two cosignatures meet a quorum of two, but one is the operator's own witness."""
+        both = ((tb.WITNESS, tb.WIT_SECRET), (tb.OPERATOR, tb.OP_SECRET))
+        code, out = verify(self.bundle("separate-user", witnesses=both), "--trust", self.write_trust(2, name="t2.json"))
+        self.assertEqual((code, out.splitlines()[2]), (0, f"NOT ANCHORED: 1 independent witness ({tb.WITNESS}) cosigned "
+                                                          f"the log; your trust file requires 2 ({wiki_url('docs/witnesses.md')})."))
+
+    def test_the_fingerprint_is_of_the_key_that_signed_the_checkpoint(self):
+        """With another key of the log's origin pinned first, the line named that one."""
+        with open(self.trust, encoding="utf-8") as f:
+            trust = json.load(f)
+        trust["logs"].insert(0, checkpoint.vkey(tb.ORIGIN, checkpoint.ED25519, tb.pub(tb.KEY2)))
+        both = os.path.join(self.d, "two-keys.json")
+        with open(both, "w", encoding="utf-8") as f:
+            json.dump(trust, f)
+        out = verify(self.bundle("separate-user"), "--trust", both)[1]
+        self.assertTrue(out.endswith(f"Pinned log key SHA-256 fingerprint: {self.fingerprint}.\n"), out)
+
+    @pytest.mark.unverified_bundles
+    def test_a_damaged_cosignature_of_an_honest_log_is_not_called_a_rewrite_alone(self):
+        """It read "cosigned a different version of this log: it was changed after the witness saw it" for any
+        cosignature that failed, so whoever handled the bundle could make an honest log read as rewritten."""
+        honest = self.bundle("separate-user")
+
+        def damaged(change):
+            def edit(files, _manifest):
+                name = json.loads(files["proofs/records.json"])["checkpoint"]
+                text, line = files[name].decode().rsplit("\n", 2)[:2]
+                dash, who, blob = line.split(" ")
+                files[name] = f"{text}\n{dash} {who} {base64.b64encode(change(base64.b64decode(blob))).decode()}\n".encode()
+            out = os.path.join(self.d, f"damaged{len(os.listdir(self.d))}.tkb")
+            rewrite_bundle(honest, out, edit)
+            return verify(out, "--trust", self.trust)[1].splitlines()[0]
+        self.assertEqual(damaged(lambda raw: raw[:-1] + bytes([raw[-1] ^ 1])), f"FAILED: {MISMATCH}.")   # a bit
+        self.assertEqual(damaged(lambda raw: raw[:4] + bytes(8) + raw[12:]), f"FAILED: {MISMATCH}.")   # its time
+        self.assertEqual(damaged(lambda raw: raw[:4] + raw[12:]),   # no time: 64 bytes
+                         f"FAILED: the witness's ({tb.WITNESS}) cosignature is malformed.")
+
+    def test_the_report_says_a_witness_named_witness_once_and_nothing_else_changes(self):
+        rep = mock.Mock(integrity="FAILED", assurance="none", findings=None, checks=[
+            {"check": "checkpoint", "status": "fail", "problems": [],
+             "detail": f"bad cosignature from pinned witness {name}"}
+            for name in ("witness.example.org/w1", "witnesses.example.org/w1", "witness2.example/w1")] + [
+            {"check": "run chain", "status": "pass", "detail": "agent a witness witnessed it", "problems": []}])
+        out = io.StringIO()
+        v2.print_report(rep, 1, out)
+        self.assertEqual(out.getvalue().splitlines()[:4], [
+            "[FAIL] checkpoint — bad cosignature from pinned witness.example.org/w1",
+            "[FAIL] checkpoint — bad cosignature from pinned witness witnesses.example.org/w1",
+            "[FAIL] checkpoint — bad cosignature from pinned witness witness2.example/w1",
+            "[PASS] run chain — agent a witness witnessed it"])
+
+    @pytest.mark.unverified_bundles
+    def test_a_witness_cosignature_of_another_version_says_the_log_changed_after_the_witness_saw_it(self):
+        """The key holder rewrote the log and kept the witness's cosignature of the version it saw."""
+        log = self.log("rewritten")
+        log.epoch(tb.KEY1)
+        log.add("run.registered", {"agent": {"name": "agent"}, "signer_isolation": "separate-user",
+                                   "identity": {"scheme": "uid", "subject": "1", "attested": True}})
+        log.final()
+        size = log.store.tree.size
+        text = checkpoint.body(tb.ORIGIN, size, log.store.tree.root_at(size))
+        seen = checkpoint.body(tb.ORIGIN, size, log.store.tree.root_at(size - 1))   # what the witness cosigned
+        out = os.path.join(self.d, "rewritten.tkb")
+        export(log.store, "acme", "run-a", text + "\n" + checkpoint.sign(text, tb.ORIGIN, tb.LOG_SECRET)
+               + tb.cosign(seen, tb.WITNESS, tb.WIT_SECRET, 1760000000), out)
+        self.assertEqual(verify(out, "--trust", self.trust), (1, f"FAILED: {MISMATCH}.\nAdd --detail to see each check.\n"))
+        # the check's own words: a witness named witness.… is said once in the report, and --json keeps them as checked
+        self.assertIn(f"[FAIL] checkpoint — bad cosignature from pinned {tb.WITNESS}\n",
+                      verify(out, "--trust", self.trust, "--detail")[1])
+        self.assertEqual([c["detail"] for c in json.loads(verify(out, "--trust", self.trust, "--json")[1])["checks"]
+                          if c["check"] == "checkpoint"], [f"bad cosignature from pinned witness {tb.WITNESS}"])
+
+    def test_a_dev_bundle_is_not_proof_against_the_agent_however_it_was_witnessed(self):
+        self.assertEqual(verify(self.bundle("same-user"), "--trust", self.trust),
+                         (0, "VERIFIED: 2 tool calls in 4 signed records, none changed, removed or added after "
+                             f"signing.\n{DEV}{ANCHORED}\nPinned log key SHA-256 fingerprint: {self.fingerprint}.\n"))
+
+    def test_a_run_with_no_tool_call_says_so_and_counts_its_signed_records(self):
+        """A new user's first run with nothing recorded read only "VERIFIED: 3 signed records", as if calls were in
+        them; the exit code and --json stay as they were."""
+        bundle = self.bundle("same-user", calls=())
+        self.assertEqual(verify(bundle, "--trust", self.trust)[1].splitlines()[0],
+                         "VERIFIED: no tool calls recorded; 2 signed records, none changed, removed or added after "
+                         "signing.")
+        code, out = verify(bundle, "--trust", self.trust, "--json")
+        self.assertEqual((code, json.loads(out)["integrity"]), (0, "VERIFIED"))
+
+    def test_an_isolation_the_signer_could_not_tell_shows_nothing(self):
+        code, out = verify(self.bundle("unknown"), "--trust", self.trust)
+        self.assertEqual(out.splitlines()[1], "NOT SHOWN: the signer did not record that the signing key was out of "
+                                              "the agent's reach (isolation: unknown).")
+        self.assertNotIn("PROOF AGAINST", out)
+
+    def test_signed_gaps_are_said_plainly(self):
+        out = tb.gaps_bundle(self.log("gaps"), os.path.join(self.d, "gaps.tkb"))
+        code, said = verify(out, "--trust", self.trust)
+        self.assertEqual((code, said.splitlines()[0]), (0, (
+            "VERIFIED WITH GAPS: 1 tool call in 6 signed records, none changed after signing; 2 signed gaps (things "
+            "Tracekit knows it missed).")))
+        self.assertIn("NOT SHOWN: the signer did not record that the signing key was out of the agent's reach "
+                      "(isolation: not recorded).", said)
+
+    def test_a_call_that_ran_against_policy_is_recorded_not_missed(self):
+        ran = self.bundle("same-user", extra=[("capture.gap", {"kind": "executed_against_policy",
+                                                                "reason": "t2 ran against a deny"},
+                                               {"tool_call_id": "t2"})])
+        self.assertEqual(verify(ran, "--trust", self.trust)[1].splitlines()[0],
+                         "VERIFIED: 2 tool calls in 5 signed records, none changed after signing; 1 policy mismatch "
+                         "recorded (see --detail).")
+
+    def test_a_run_sets_tenant_level_gaps_are_counted_by_what_they_are(self):
+        """The golden run-set's one tenant-level gap is degraded_unanchored (no witness for a while): nothing missed, a
+        note. Read as a kind the signer missed, or one against its decision, the same leaf counts as such."""
+        golden = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "v2")
+        argv = (os.path.join(golden, "run-set.tkb"), "--trust", os.path.join(golden, "trust.json"))
+        code, out = verify(*argv)
+        self.assertEqual((code, out.splitlines()[0]), (0, "VERIFIED: 2 tool calls in 13 signed records, none changed "
+                                                          "after signing."))
+        self.assertIn("\nNote: for a while no witness anchored the log; the signer ran without one.\n", out)
+        self.assertNotIn("gap (", out)
+        with mock.patch.object(v2, "INFO_GAPS", v2.INFO_GAPS - {"degraded_unanchored"}):
+            self.assertEqual(verify(*argv)[1].splitlines()[0], "VERIFIED WITH GAPS: 2 tool calls in 13 signed records, "
+                                                               "none changed after signing; 1 signed gap (things "
+                                                               "Tracekit knows it missed).")
+        with mock.patch.object(v2, "INFO_GAPS", v2.INFO_GAPS - {"degraded_unanchored"}), \
+                mock.patch.object(v2, "AGAINST", ("degraded_unanchored",)):
+            self.assertEqual(verify(*argv)[1].splitlines()[0], "VERIFIED: 2 tool calls in 13 signed records, none "
+                                                               "changed after signing; 1 policy mismatch recorded (see "
+                                                               "--detail).")
+
+    def test_a_tampered_bundle_says_where_it_breaks(self):
+        changed = self.bundle("same-user", edit_run=lambda rs: rs[2]["event"]["data"].update(input={"command": "ls"}))
+        self.assertEqual(verify(changed, "--trust", self.trust), (1, (
+            "TAMPERED at event 3: its content was changed after it was signed.\nAdd --detail to see each check.\n")))
+        removed = self.bundle("same-user", edit_run=lambda rs: rs.pop(2))
+        self.assertEqual(verify(removed, "--trust", self.trust)[1].splitlines()[0],
+                         "TAMPERED at event 4: the record before it is missing, extra or out of order.")
+
+    @pytest.mark.unverified_bundles
+    def test_an_invalid_event_is_one_short_line(self):
+        bad = self.bundle("same-user", extra=[("policy.decision", {"tool_use_id": "t", "decision": "maybe",
+                                                                   "rule_ids": []}, {})])
+        code, out = verify(bad, "--trust", self.trust)
+        self.assertEqual((code, out.splitlines()[0]), (1, "FAILED at event 4: it is not a valid event at "
+                                                          "event.data.decision (--detail shows the rule)."))
+        self.assertIn("not in [", verify(bad, "--trust", self.trust, "--detail")[1])   # the rule, under --detail
+
+    def test_detail_prints_the_full_report_and_json_is_unchanged(self):
+        for edit in (None, lambda rs: rs[2]["event"]["data"].update(name="Write")):
+            path = self.bundle("same-user", edit_run=edit)
+            rep, code = v2.verify(path, self.trust)
+            full = io.StringIO()
+            v2.print_report(rep, code, full)
+            self.assertEqual(verify(path, "--trust", self.trust, "--detail"), (code, full.getvalue()))
+            js = json.loads(verify(path, "--trust", self.trust, "--json")[1])
+            self.assertEqual((js["exit_code"], js["checks"], js["integrity"]), (code, rep.checks, rep.integrity))
+
+
+class Negative(unittest.TestCase):
+    """The golden negative corpus, one defect per bundle: each says what is wrong in one plain ASCII line, never
+    VERIFIED, and one a newer verifier must check gives the commands that do."""
+
+    def test_every_defect_reads_plainly(self):
+        neg = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "negative")
+        want = {"record-deleted.tkb": "TAMPERED at event 7: the record before it is missing, extra or out of order.",
+                "record-edited.tkb": "TAMPERED at event 5: its content was changed after it was signed.",
+                "proofs-tree-size.tkb": "FAILED: its checkpoint does not match a log key your trust file pins, or the "
+                                        "bundle's own proofs.",
+                "witness-none.tkb": "FAILED: fewer witnesses cosigned it than your trust file requires.",
+                "run-empty.tkb": "FAILED: the bundle is malformed, so it could not be fully checked.",
+                "zip-no-manifest.tkb": "UNUSABLE BUNDLE: cannot read bundle: the bundle file is damaged: no "
+                                       "manifest.json.",
+                "manifest-newer-verifier.tkb": "UNVERIFIABLE (needs tracekit >= 99.0).\n  uvx --from "
+                                               "\"tracekit-ai>=99.0\" tracekit verify "}
+        for path in sorted(glob.glob(os.path.join(neg, "*.tkb"))):
+            name = os.path.basename(path)
+            with self.subTest(name):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    code = cli.main(["verify", path, "--trust", os.path.join(neg, "trust.json")])
+                said = out.getvalue()
+                self.assertTrue(said.isascii(), said)
+                if code:
+                    self.assertNotIn("VERIFIED", said)
+                    self.assertNotIn("PROOF", said)
+                if name in want:
+                    self.assertTrue(said.startswith(want[name]), said)
+
+
+class V1(unittest.TestCase):
+    """v1 bundles from an in-process signer: the agent's own user (dev), or another user's (separate-user)."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+
+    def export(self, peer_uid=None):
+        home = os.path.join(self.d, f"home{len(os.listdir(self.d))}")
+        s, (pol, raw) = make_signer(home, checkpoint_every=1000), policy.load()
+        for n, e in enumerate([run_start("r1", pol), tool_call("t1", "pytest -q"), ev("run.end", {"reason": "done"})]):
+            self.assertTrue(s.handle({"op": "append", "cseq": n, "event": e,
+                                      **({"attach": {"policy": raw}} if n == 0 else {})}, peer_uid)["ok"])
+        out = os.path.join(home, "run.tkb")
+        bundle.export(home, out)
+        return out, os.path.join(home, "ledger", "signer.pub")
+
+    def test_a_dev_bundle_is_not_proof_against_the_agent(self):
+        out, key = self.export()
+        code, said = verify(out, "--key", key)
+        n = bundle.verify(out, trusted_key=key)[0].events
+        first, warned, rest = said.split("\n", 2)
+        self.assertEqual((code, first, rest), (0, f"VERIFIED: 1 tool call in {n} signed records, none changed after "
+                                                  "signing.", DEV))
+        self.assertTrue(warned.startswith("Warnings: signing key, ") and warned.endswith(". Add --detail to read them."),
+                        warned)
+
+    @unittest.skipUnless(hasattr(os, "getuid"), "the v1 signer stamps isolation from the peer's uid; Windows has none")
+    def test_another_users_signer_is_proof_only_with_its_key_pinned(self):
+        out, key = self.export(peer_uid=os.getuid() + 1)   # the signer stamps the agent's user as not its own
+        code, pinned = verify(out, "--key", key)
+        self.assertEqual(code, 0, pinned)
+        self.assertTrue(pinned.endswith("\nPROOF AGAINST THE AGENT: the signing key was out of the agent's reach "
+                                        "(separate-user).\n"), pinned)
+        code, unpinned = verify(out)   # the bundle's own word about its signer: nothing outside it vouches for that
+        self.assertEqual(code, 0, unpinned)
+        self.assertTrue(unpinned.startswith("VERIFIED BUT UNANCHORED: ") and unpinned.endswith("\n" + UNANCHORED),
+                        unpinned)
+        self.assertNotIn("PROOF AGAINST", unpinned)
+
+    def test_mixed_isolation_shows_the_weakest(self):
+        anchored = type("Rep", (), {"isolation": {}, "checks": []})()
+        for assurance, want in (
+                ("signer_isolation=remote, separate-user (stamped by the signer since 0.3.0; earlier bundles: "
+                 "client-reported)", "PROOF AGAINST THE AGENT: the signing key was out of the agent's reach "
+                                     "(separate-user)."),
+                ("signer_isolation=None, separate-user (stamped by the signer since 0.3.0; earlier bundles: "
+                 "client-reported)", "NOT SHOWN: the signer did not record that the signing key was out of the "
+                                     "agent's reach (isolation: not recorded).")):
+            with self.subTest(assurance):
+                self.assertEqual(protection(anchored, assurance, False)[0], want)
+
+    def test_a_tampered_bundle_says_where_it_breaks(self):
+        out, key = self.export()
+        seq = []
+
+        def edit(files, _manifest):   # the recorded command rewritten, as `tracekit demo` does
+            records = [json.loads(line) for line in files["records.jsonl"].decode().splitlines()]
+            call = next(r["event"] for r in records if r["event"]["type"] == "tool.call")
+            call["data"]["input"]["command"]["value"] = "echo tests skipped"
+            seq.append(call["seq"])
+            files["records.jsonl"] = "".join(json.dumps(r) + "\n" for r in records).encode()
+        bad = os.path.join(self.d, "tampered.tkb")
+        rewrite_bundle(out, bad, edit)
+        self.assertEqual(verify(bad, "--key", key), (1, f"TAMPERED at event {seq[0]}: its content was changed after it "
+                                                        "was signed.\nAdd --detail to see each check.\n"))
+
+
+if __name__ == "__main__":
+    unittest.main()

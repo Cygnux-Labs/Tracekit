@@ -13,9 +13,12 @@
  * gets as the tool's error result, and the session goes on. `ask` holds the call in the hook until a person decides in
  * the signer, for at most APPROVAL_WAIT_MS, below the hook's own timeout (HOOK_TIMEOUT_S, set on the matcher); a call
  * not approved by then is blocked. An approval with a T2 executor runs the signer's copy of the arguments (the hook's
- * `updatedInput`). PostToolUse and PostToolUseFailure complete the call; SessionEnd closes the run. The tools of an MCP
- * server named SERVER (`tracekit-executor`), whose handlers call a tool executor, are left to the executor.
- * The tools run in the CLI subprocess, so the signer's coding packs apply to them.
+ * `updatedInput`). PostToolUse and PostToolUseFailure complete the call; SessionEnd closes the run. The tools of the
+ * MCP server under SERVER (`tracekit-executor`), whose handlers call a tool executor, are left to the executor, by
+ * the exact names of the `executorActions` the app hands the hooks, when the `mcpServers` it also hands them (those it
+ * gives `query()`) hold that server in-process (`type: "sdk"`, from createSdkMcpServer): the CLI connects it in place
+ * of a project .mcp.json server of the same name, and the hooks gate every other tool. The tools run in the CLI
+ * subprocess, so the signer's coding packs apply to them.
  */
 import { randomUUID } from "node:crypto";
 import { RPCError, SignerUnavailable, type Frame, type RunHandle } from "../client.js";
@@ -28,14 +31,21 @@ export const APPROVAL_WAIT_MS = 540_000; // below HOOK_TIMEOUT_S, so the hook an
 
 const deny = (why: string) => ({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: why } });
 
-/** The `hooks` option of `query()`. To add hooks of your own, extend the lists. */
-export function tracekitHooks(run: RunHandle) {
+/** The `hooks` option of `query()`. `mcpServers`: the option given `query()`, when it holds a tool executor's server
+ * under SERVER; `executorActions`: the actions that server serves (executorActions()). To add hooks of your own,
+ * extend the lists. */
+export function tracekitHooks(run: RunHandle, { mcpServers, executorActions = [] }:
+  { mcpServers?: Record<string, any>; executorActions?: { name: string }[] } = {}) {
   const gate = new Gate(run);
+  // the exact tool names of the app's in-process executor server: what the CLI routes to it, never a tool of a server
+  // a project file names (a key like `tracekit-executor__x` included)
+  const executor = (tool: string) => mcpServers?.[SERVER]?.type === "sdk" && mcpServers[SERVER].instance != null
+    && executorActions.some((a) => tool === `mcp__${SERVER}__${a.name}`);
 
   async function pre(inp: any, toolUseID?: string) {
     const id = inp.tool_use_id ?? toolUseID;
     if (!id) return deny(BLOCKED + "the hook got no tool_use_id");   // never defaulted: a result could not be bound to its decision
-    if (String(inp.tool_name ?? "").startsWith(`mcp__${SERVER}__`)) return {};   // the executor decides and records it (T2)
+    if (executor(String(inp.tool_name ?? ""))) return {};   // the executor decides and records it (T2)
     const why = await gate.admit(id, inp.tool_name ?? "?", inp.tool_input, { waitMs: APPROVAL_WAIT_MS });
     if (why !== null) return deny(why);
     const input = gate.input(id, inp.tool_input);

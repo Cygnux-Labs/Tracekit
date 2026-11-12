@@ -12,7 +12,7 @@ tracekit analyze --last              # detectors on the latest run; new findings
 tracekit analyze --run R --dry-run   # print only
 tracekit analyze --all --json        # every run, machine-readable; exit code 4 if anything high or critical
 tracekit export --run R -o r.tkb     # the bundle carries findings:R with the run
-tracekit verify r.tkb                # [PASS] findings cite intact evidence
+tracekit verify r.tkb --detail       # [PASS] findings cite intact evidence
 tracekit-sql "SELECT rule, severity, title FROM findings WHERE run_id='R'"   # contrib/query
 ```
 
@@ -68,6 +68,7 @@ signer (`review_finding`) into a findings run of its own about the run, as the i
 tracekit analyze --v2                          # the dev signer's latest run, signed
 tracekit analyze --v2 --run R --store /var/lib/tracekit-signer
 tracekit analyze --v2 --run R --bundle r.tkb --trust trust.json   # records from a bundle that verifies
+tracekit analyze --v2 --run BOX --bundle set.tkb --trust trust.json   # a Tracekit Box box run, with its agent's runs
 tracekit analyze --v2 --open --json            # a run still open: partial, machine-readable
 tracekit analyze --v2 --dry-run                # print, sign nothing
 tracekit export --v2 --run R --with-findings -o r.tkb   # the run and its findings runs, for `tracekit verify`
@@ -116,6 +117,7 @@ The rules, each with the title a signed finding carries and what it means in pla
 | TK-X114 | Network use denied, but it ran | the agent said it stayed offline, but it used the network |
 | TK-X120 | Risky action not mentioned | a risky command (a force push, a recursive delete, a publish, sudo) ran and the agent never mentioned it |
 | TK-X211 | Sent, deleted or installed without saying so | the agent sent data off the machine, deleted files it didn't create, or added a package, and never told the person |
+| TK-X212 | Agent's account and the box's doors disagree | what a boxed agent recorded of its own calls doesn't match what Tracekit Box saw cross the box's doors (a connection, a file written back) |
 
 The first line is the answer; then each finding in plain words; record numbers last:
 
@@ -156,6 +158,7 @@ In detail, each rule's severity, what it checks and when it is not checkable (th
 | TK-X210 | the reviewer model's; warn only | with `--review`: a [reviewer model](#the-reviewer-model-tk-x210) read the run and flagged it | `no_content`, `budget`, `no_answer`, `malformed`, `no_findings_run` |
 | TK-X206 | high | an effect with no action: a process, connection or file write a kernel sensor saw that no call explains, or that names a call it doesn't fit (a call the run never ran, outside that call's window, or of a tool that doesn't cause it: a process named by a Read call) | `no_sensor`, `agent_process`, `hook_like`, `call_unfinished` |
 | TK-X207 | medium | an action with no effect: a call that returned ok without what it should have caused in its window (a Bash command's programs, and curl's or wget's connection; a fetch tool's connection; a write tool's file where the sensor selects writes) | `no_sensor`, `no_content`, `sensor_paths`, `relative_path`, `kind_not_recorded`, `hook_binary` |
+| TK-X212 | high; medium for a fetch with no connection | of a [Tracekit Box](#boxes-what-tracekit-box-saw-tk-x212) box run, against its agent channel's runs: a connection, or a file of the box's patch, that no call of the agent's explains (`door_unexplained`); a fetch the agent said returned ok with no connection to its host through the door (`no_door_event`); one whose every connection the door refused (`door_refused`). Run on the box run, whose own calls (Box's doors) no other check reads | `no_agent_runs`, `no_agent_account`, `agent_run`, `no_agent_run`, `model_host`, `host_command`, `background`, `call_unfinished`, `untimed_refusal`, `apply_dir`, `no_path`, `shell_ran`, `no_content`, `no_url`, `reused`, `box_refusal`, `no_outcome`, `budget` |
 
 Terms, as the output uses them:
 
@@ -216,6 +219,21 @@ Not checkable is never a pass. Each reason, and the change that makes it checkab
 | `sensor_paths` | which files the sensor's policy selects is not in the run | `--sensor-skip DIR` per directory it leaves out; `--sensor-skip ''` when it selects every write |
 | `kind_not_recorded` | the sensor recorded no effect of this kind in the run: its policy may not select them | the sample TracingPolicy or Falco rules |
 | `hook_binary` | the only processes that could be the command's ran the same program as Tracekit's hooks (a shell or Python) | Codex: keep `CODEX_TOOL_CALL_ID` in the sensor, so a command's processes name their call |
+| `no_agent_runs` | no run of the box's agent channel is in what was analysed (TK-X212): its runs weren't given (a bundle of the box run alone, the viewer, a run-set short of them, a box still running), Box refused a registration on the channel, or the box ran without it | analyse the box run from a run-set bundle (`tracekit export --v2 --run-set`) or the signer's store; start the box with its agent channel on |
+| `no_agent_account` | the box run is final and ran with its agent channel on, what was analysed holds every run of the box's tenant (the signer's store, or a run-set bundle from registry 0 with no run still open, whose range holds the box run's own registration: a run-set bundles only final runs, and may carry its selected run from outside its range), Box refused no `register_run` on the channel (`tkbox.channel`; a count of refusals it folded may hold one), and the agent registered none: it kept no account at all. The summary line says `NO AGENT ACCOUNT`. Anything short of that is `no_agent_runs` | treat every door event as unexplained and review them by hand (`tracekit view`, `tkbox events`) |
+| `agent_run` | the run is a box's agent run: its box run holds the doors | analyse the box run (this run's `parent_run`) |
+| `no_agent_run` | a door event while no agent run of the box was open: before its hooks started, or after it closed its run (which it can do early) | review those door records by hand (`tracekit view`, `tkbox events`) |
+| `model_host` | a connection to a model API host: the harness's own model calls | none; Box records each model call (`tkbox.model.call`) |
+| `host_command` | a command Box started from the host was running (a connection) or ran (a file), other than the one command an agent run began in | run host commands before the agent starts, or in a box of their own |
+| `background` | a shell call earlier in the run may have left a process running, as the policy engine's shell parser reads its command (bash's quoting, heredocs, comments, wrappers, `sh -c` strings): `run_in_background`, a command it sends to the background (`cmd &`, `(cmd &)`, `a && b &`, `{ cmd; } &`, `while …; done &`, `bash -c 'cmd &'`), or one that detaches by itself or runs one later (setsid, disown, coproc, `tmux … -d`, `screen -d…`, systemd-run, at, batch). `nohup cmd` alone runs in the foreground; a line the parser can't read counts | review that call's command |
+| `untimed_refusal` | a connection Box refused itself, or the record of one Box lost (`tkbox.egress`, `tkbox.gap`): it comes later with no time of its own, so no call can be placed against it | read the box's events (`tkbox events`) |
+| `apply_dir` | the file was applied to another directory than the box's workspace, or may have been applied to one under it (`tkbox apply --dir`) | apply to the box's workspace |
+| `no_path` | a write call of the agent's names no path | review the box's patch (`tkbox diff`) against the agent's calls |
+| `shell_ran` | a shell, MCP or other call that writes files without naming them ran | review the box's patch (`tkbox diff`) against the agent's commands |
+| `no_url` | the fetch's URL, or the host of a door record it would match, isn't known (no content kept, or no URL Box sees) | the content vault and `content_read` |
+| `reused` | a connection the fetch matches crossed the door before it, and Box didn't refuse it: a kept-alive connection or the tool's cache may have served the fetch | none: a fetch with a connection of its own is checked |
+| `box_refusal` | Box refused a connection to that host itself (or lost such a record): those records come later, with no time of their own | read the box's events for that host (`tkbox events`) |
+| `no_outcome` | a connection to that host in the fetch's window has no recorded outcome | read the box run's `tkbox.gap` records |
 
 ### The reviewer model (TK-X210)
 
@@ -298,6 +316,63 @@ When an effect reached the signer before its own sensor time, the sensor's clock
 later than the import's one-second flush, the sensor's clock may be behind. Either way each finding is labelled
 `clock_skew` with the `--clock-skew` that covers it.
 
+### Boxes: what Tracekit Box saw (TK-X212)
+
+A coding agent in a [Tracekit Box](https://github.com/Cygnux-Labs/Tracekit-box) box with its agent channel on records
+its own calls through its hooks into runs of its own, each a child of the box's run with the box's `ext.box` label.
+Those records are the agent's own account: it can skip or forge them. The box's run holds what Box's daemon decided
+on the host, outside the agent's reach: a `WebFetch` decision for each connection out of the box
+(`<scheme>://<host>:<port>`, before it is dialled; refused when the decision is deny or its result isn't ok), a
+`Write` decision for each file of the box's patch written back at `tkbox apply`, a `Bash` decision for each command
+Box started from the host, and `tkbox.*` records (the workspace, model calls, Box's own refusals, lost records).
+TK-X212 compares the two. Run it on the box run, from a run-set bundle or the signer's store, which hold the agent's
+runs too:
+
+```bash
+tracekit export --v2 --run-set --config signer.yaml -o set.tkb
+tracekit analyze --v2 --run BOX --bundle set.tkb --trust trust.json
+tracekit analyze --v2 --run BOX --store DATA_DIR
+```
+
+All runs' records carry the signer's clock, so a call's window is its decision to `--effect-grace` (2 s) after its
+result, with no skew. A fetch matches a connection to its URL's host, a leading `www.` aside (Claude Code's WebFetch
+follows a redirect that only adds or drops it, on the same protocol and port), on its URL's port, and on 443 too for
+plain `http` to port 80 (WebFetch upgrades it to https). The URL is read as Node reads a web URL (a backslash as a
+slash, any slashes after `https:`), and its host as Node sends it (an internationalised name in punycode, a number
+form such as `0x5db8d822` as a dotted address; a name ending in a number that is no address is no URL). Each rule is
+conservative: what can't be told is counted not checkable, never a finding.
+
+1. **A connection no call explains** (high, `door_unexplained`). Explained when it was decided in the window of a
+   call whose tool may connect: a shell, an MCP or unknown tool, a fetch it matches, or a fetch whose arguments
+   aren't known (a fetch of a URL Box never sees explains nothing). Not checkable: a connection to a model API host
+   (`model_host`), one while no agent run was open (`no_agent_run`), one only a call with no result could explain
+   (`call_unfinished`), one in the window of a command Box started (`host_command`; not the one command an agent run
+   began in: when two commands span that start, either may be the agent's, and both count), one after a shell call
+   of an open run that may have left a process running (`background`), and every refusal Box made itself
+   (`untimed_refusal`: it has no time of its own).
+2. **A file of the box's patch no call explains** (high, `door_unexplained`): it is `/workspace/<path>` in the box,
+   and no write call of the agent's that didn't fail named it. Not checkable: applied to another directory than the
+   box's workspace, or perhaps to one under it (`apply_dir`: a path the agent wrote ends the patch's path), a write
+   call whose arguments aren't known (`no_content`) or that names no path (`no_path`), a shell, MCP or other call that
+   writes files without naming them ran (`shell_ran`), a command Box started ran (`host_command`).
+3. **A fetch with no connection** (medium, `no_door_event`): the agent's fetch tool returned ok, and no connection it
+   matches crossed the door from the box's start to `--effect-grace` after its result. Not checkable: a connection it
+   matches before the fetch that Box didn't refuse (`reused`: a kept-alive connection or the tool's cache may have
+   served it), a refusal of that host Box made itself after the fetch began (`box_refusal`), an unknown URL or door
+   host (`no_url`).
+4. **A fetch the door refused** (high, `door_refused`): the agent's fetch tool returned ok, Box refused every
+   connection it matches in its window, and none before it could have served it (else `reused`). Not checkable: one
+   of them has no recorded outcome (`no_outcome`).
+
+A finding is signed about the box run: it cites the box run's door records (for a fetch with no connection, the box
+run's first record after the window: no record before it is a connection to that host), and names the agent's run
+and records in what it prints. A box run's own calls are Box's doors, so the checks of an agent's calls (TK-X201 to
+TK-X208, TK-X211 and v1's text checks) skip them. Analysed on its own, an agent run counts its calls `agent_run`. A box run with no agent runs
+beside it counts its door events `no_agent_runs`, or `no_agent_account` when the box run is final, its channel was
+on, the source holds every run of the tenant (the store, or a run-set from registry 0 with no run open) and Box refused
+no `register_run`: the agent registered none, and the summary line says `NO AGENT ACCOUNT`. What it can't see:
+[limits](limits.md#tracekit-box-experimental).
+
 ### The `--json` shape
 
 Stable from this release; new keys may be added:
@@ -357,7 +432,7 @@ agent's own user, so dev findings read `self-asserted`; for findings an auditor 
 
 An agent can read its own run the same way: `tracekit analyze --v2 --run $RUN --json --dry-run` as an identity with
 `content_read`. When the signer holds one of its calls for a [live constraint](policy-v2.md#live-constraints), the
-decision's `reason` says which and what to do: `the person's request in this run said not to modify billing.py; ask the
+decision's `reason` says which and what to do: `the person's request in this run said not to modify "billing.py"; ask the
 person` (its `rule_ids` hold `TK-CONSTRAINT`). `findings[].verdict` and `shown.details` say what to explain or undo; `coverage.verdict.checks` and
 `shown.calls[id].checks` say which of its actions couldn't be checked, and the table above says what makes them
 checkable. Findings are an opinion about a run, never part of its integrity: before relying on another agent's work,
