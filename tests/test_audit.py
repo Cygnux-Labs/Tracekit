@@ -345,7 +345,8 @@ class TestAudit(unittest.TestCase):
             "Tool calls: 5   allow 1, flag 1, ask 2, deny 1",
             "Calls by decision and rule (one call can match several rules):",
             "  deny TK-D004 1", "  deny TK-F003 1 (also matched, not why)", "  ask TK-A001 1",
-            "  ask TK-SHELL-PARSE 1 (not placed)", "  flag TK-F003 1"])
+            "  ask TK-SHELL-PARSE 1 (not placed)", "  flag TK-F003 1",
+            "  ask TK-SHELL-PARSE quote 1"])
         self.assertEqual(audit.share(audit.audit(str(self.root))).splitlines()[0],
                          f"Tracekit {__version__} field report (tracekit audit --share): every transcript")
         code, out, _ = _run(str(self.root), "--since", "7d", "--share")
@@ -370,6 +371,26 @@ class TestAudit(unittest.TestCase):
         text = audit.format_report(audit.audit(str(self.root)), every=True)
         self.assertNotIn("\x1b", text)
         self.assertIn("\\u001b", text)
+
+    def test_shell_parse_holds_say_their_cause(self):
+        """#745: a TK-SHELL-PARSE hold keeps the engine's cause: on the call's record (so --json has it), counted
+        by cause under the by-rule line of the text report with the cause's reason, and counted by cause name in
+        --share, where the name alone leaves the machine."""
+        path = self.root / "calls.jsonl"
+        _write_jsonl(path, [_line("Bash", {"command": "echo 'open"}),
+                            _line("Bash", {"command": "bash < script.sh"})])
+        report = audit.audit(calls=str(path))
+        self.assertEqual([c.get("unread") for c in report["calls"]], ["quote", "input"])
+        self.assertEqual(report["unread_causes"], {"quote": 1, "input": 1})
+        code, out, _ = _run("--calls", str(path), "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual([c.get("unread") for c in json.loads(out)["calls"]], ["quote", "input"])
+        text = audit.format_report(report)
+        self.assertIn("    quote: 1  (a quote on the line is never closed)", text)
+        self.assertIn("    input: 1  (a shell or interpreter runs code from a pipe, a file or its input)", text)
+        page = audit.share(report)
+        self.assertIn("  ask TK-SHELL-PARSE quote 1", page)
+        self.assertIn("  ask TK-SHELL-PARSE input 1", page)
 
     def test_a_calls_file_is_decided_as_transcripts_are(self):
         """#714: a calls file any agent's log can be turned into: a line without tool and args is malformed, --since

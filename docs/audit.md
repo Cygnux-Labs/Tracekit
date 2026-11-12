@@ -58,7 +58,10 @@ denied and held calls (--all for every call):
 - `--share` prints the counts alone, to post as a [field report](field-reports.md): the window's length, the number
   of sessions, the calls by decision, and each rule by the decision of the calls it matched, marked `also matched,
   not why` when the rule's section isn't that decision and `not placed` for an engine check. A rule id that isn't
-  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description.
+  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description. A TK-SHELL-PARSE
+  hold also gives its cause's count on its own line (e.g. `ask TK-SHELL-PARSE quote 2`): the lines hold only how
+  many calls the policy couldn't read for each cause in the engine's fixed list of cause names (`quote`, `input`,
+  `name`, …), never the command itself.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 
