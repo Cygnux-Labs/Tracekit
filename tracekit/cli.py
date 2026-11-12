@@ -287,7 +287,7 @@ def _parser():
                        description="Every command, grouped by what it is for, and the features that are not commands "
                                    "of their own; `tracekit help COMMAND` shows that command's options.")
     p.add_argument("command", nargs="?", help="a command's name")
-    p = sub.add_parser("init", help="install the signer and Claude Code hooks")
+    p = sub.add_parser("init", help="install the signer and a coding agent's hooks (--agent; default Claude Code)")
     p.add_argument("--remote", metavar="URL", help="agent on another machine: with --v2, send to this signer's HTTPS "
                                                    f"transport; without, to the deprecated ingest gateway ({wiki_url('docs/remote-ingest.md')})")
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN without "
