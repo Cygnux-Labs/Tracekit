@@ -72,6 +72,11 @@ ENGINE_REASONS = {"TK-A2A-NAME": {
                            "body": {"reason": "it updates a git ref through GitHub's API with a body the policy can't "
                                               "read (a file, input or variable), which may force it",
                                     "remedy": "Give the update's fields on the line (-f sha=…), without force."},
+                           "output": {"reason": "a download writes a file the policy can't name (a variable, a pattern, a "
+                                                "config file, a URL list, a name the server picks, a recursive fetch, an "
+                                                "option the policy doesn't know)",
+                                      "remedy": "Name the file it writes plainly (-o file), with options the policy "
+                                                "knows."},
                            "budget": {"reason": "the line is too long or too complex for the policy to read all of it",
                                       "remedy": "Split it into shorter calls, or write repeated commands as a loop."},
                            "syntax": {"reason": "the line uses shell syntax the policy doesn't read",

@@ -1022,6 +1022,12 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     if again is not None:
         again[5]["more"] |= ctx["more"]   # (what this reading read decided how the line is read again)
         return again
+    # a download that writes a file the line can't name (download_writes, _unnamed_write) may write any: held
+    for c in ctx["cmds"]:
+        if c["argv"][0] in ("curl", "wget"):
+            writes, unnamed = download_writes(c["argv"])
+            if unnamed or any(_unnamed_write(w, ctx) for w in writes):
+                c["opaque"], c["unread"] = True, "output"
     ctx["cut"] += ctx["always_cut"]
     active = False
     for step in reversed(ctx["steps"]):
@@ -1150,6 +1156,180 @@ def _unread_query(args):
                                opt in ("-F", "--field") and v.startswith("@")):
             return True
     return False
+
+
+# curl's options (8.x), long names: those that take a value (an --expand- one too, as its option), the flags (a --no-
+# one is its flag), and its short letters as long ones; the options whose value is a file it writes. A long option the
+# table doesn't hold, or one curl may read as a prefix of another, is one the reader can't place (download_writes)
+_CURL_VALUED = frozenset((
+    "abstract-unix-socket alt-svc aws-sigv4 cacert capath cert cert-type ciphers config connect-timeout connect-to "
+    "continue-at cookie cookie-jar create-file-mode crlfile curves data data-ascii data-binary data-raw data-urlencode "
+    "delegation dns-interface dns-ipv4-addr dns-ipv6-addr dns-servers doh-url dump-header ech egd-file engine "
+    "etag-compare etag-save expect100-timeout form form-string ftp-account ftp-alternative-to-user ftp-method "
+    "ftp-port ftp-ssl-ccc-mode happy-eyeballs-timeout-ms haproxy-clientip header help hostpubmd5 hostpubsha256 hsts "
+    "interface ip-tos ipfs-gateway json keepalive-cnt keepalive-time key key-type knownhosts krb libcurl limit-rate "
+    "local-port login-options mail-auth mail-from mail-rcpt max-filesize max-redirs max-time netrc-file noproxy "
+    "oauth2-bearer output output-dir parallel-max parallel-max-host pass pinnedpubkey preproxy proto proto-default "
+    "proto-redir proxy proxy-cacert proxy-capath proxy-cert proxy-cert-type proxy-ciphers proxy-crlfile "
+    "proxy-header proxy-key proxy-key-type proxy-pass proxy-pinnedpubkey proxy-service-name proxy-tls13-ciphers "
+    "proxy-tlsauthtype proxy-tlspassword proxy-tlsuser proxy-user proxy1.0 pubkey quote random-file range rate "
+    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name sigalgs "
+    "socks4 socks4a socks5 socks5-gssapi-service socks5-hostname speed-limit speed-time ssl-sessions stderr "
+    "telnet-option tftp-blksize time-cond tls-max tls13-ciphers tlsauthtype tlspassword tlsuser trace trace-ascii "
+    "trace-config unix-socket upload-file upload-flags url url-query user user-agent variable vlan-priority "
+    "write-out").split())
+_CURL_BARE = frozenset((
+    "anyauth append basic ca-native cert-status compressed compressed-ssh create-dirs crlf digest disable "
+    "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure fail fail-early "
+    "fail-with-body false-start follow form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
+    "ftp-ssl-control get globoff haproxy-protocol head http0.9 http1.0 http1.1 http2 http2-prior-knowledge http3 "
+    "http3-only ignore-content-length include insecure ipv4 ipv6 junk-session-cookies list-only location "
+    "location-trusted mail-rcpt-allowfails manual metalink mptcp negotiate netrc netrc-optional next no-alpn "
+    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb out-null parallel "
+    "parallel-immediate path-as-is post301 post302 post303 progress-bar proxy-anyauth proxy-basic proxy-ca-native "
+    "proxy-digest proxy-http2 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
+    "proxy-ssl-auto-client-cert proxy-tlsv1 proxytunnel raw remote-header-name remote-name remote-name-all "
+    "remote-time remove-on-error retry-all-errors retry-connrefused sasl-ir show-error show-headers silent "
+    "skip-existing socks5-basic socks5-gssapi socks5-gssapi-nec ssl ssl-allow-beast ssl-auto-client-cert "
+    "ssl-no-revoke ssl-reqd ssl-revoke-best-effort sslv2 sslv3 styled-output suppress-connect-headers tcp-fastopen "
+    "tcp-nodelay tftp-no-options tlsv1 tlsv1.0 tlsv1.1 tlsv1.2 tlsv1.3 tr-encoding trace-ids trace-time use-ascii "
+    "verbose version xattr").split())
+_CURL_SHORT = {
+    "0": "http1.0", "1": "tlsv1", "2": "sslv2", "3": "sslv3", "4": "ipv4", "6": "ipv6", ":": "next", "#": "progress-bar",
+    "a": "append", "A": "user-agent", "B": "use-ascii", "b": "cookie", "c": "cookie-jar", "C": "continue-at",
+    "d": "data", "D": "dump-header", "e": "referer", "E": "cert", "f": "fail", "F": "form", "g": "globoff",
+    "G": "get", "h": "help", "H": "header", "i": "include", "I": "head", "j": "junk-session-cookies",
+    "J": "remote-header-name", "k": "insecure", "K": "config", "l": "list-only", "L": "location", "m": "max-time",
+    "M": "manual", "n": "netrc", "N": "no-buffer", "o": "output", "O": "remote-name", "p": "proxytunnel",
+    "P": "ftp-port", "q": "disable", "Q": "quote", "r": "range", "R": "remote-time", "s": "silent", "S": "show-error",
+    "t": "telnet-option", "T": "upload-file", "u": "user", "U": "proxy-user", "v": "verbose", "V": "version",
+    "w": "write-out", "x": "proxy", "X": "request", "y": "speed-time", "Y": "speed-limit", "z": "time-cond",
+    "Z": "parallel"}
+_CURL_WRITES = {"dump-header", "cookie-jar", "etag-save", "libcurl", "trace", "trace-ascii", "stderr",
+                "hsts", "alt-svc", "ssl-sessions"}
+# wget's (GNU 1.21), as getopt_long reads them: a long option by any unique prefix, with its value after `=` or as
+# the next word; the short letters as long ones (-nd, -nH, -nc, -np, -nv are -n with a letter); the options whose value
+# is a file it writes, and those that make it write files the reader can't name (a URL list, a wgetrc command or file,
+# a name the server picks, a recursive fetch, host and path folders)
+_WGET_VALUED = frozenset((
+    "output-file append-output execute config input-file base bind-address bind-dns-address dns-servers tries "
+    "retry-on-http-error output-document backups quota limit-rate wait waitretry timeout dns-timeout "
+    "connect-timeout read-timeout user password use-askpass local-encoding remote-encoding directory-prefix "
+    "cut-dirs default-page http-user http-password header compression max-redirect proxy-user proxy-password "
+    "referer save-cookies load-cookies post-data post-file method body-data body-file secure-protocol certificate "
+    "certificate-type private-key private-key-type ca-certificate ca-directory crl-file pinnedpubkey random-file "
+    "egd-file ciphers hsts-file ftp-user ftp-password level accept reject accept-regex reject-regex regex-type "
+    "domains exclude-domains include-directories exclude-directories user-agent restrict-file-names "
+    "prefer-family progress report-speed rejected-log warc-file warc-header warc-max-size warc-dedup "
+    "warc-tempdir follow-tags ignore-tags start-pos").split())
+_WGET_BARE = frozenset((
+    "version help background debug quiet verbose no-verbose server-response spider continue timestamping "
+    "no-clobber show-progress inet4-only inet6-only no-check-certificate check-certificate ignore-case "
+    "keep-session-cookies no-cookies ignore-length no-cache no-proxy no-dns-cache no-glob no-netrc no-iri iri "
+    "unlink https-only no-hsts hsts auth-no-challenge content-on-error retry-connrefused retry-on-host-error "
+    "no-http-keep-alive save-headers trust-server-names content-disposition adjust-extension convert-links "
+    "convert-file-only backup-converted mirror page-requisites strict-comments follow-ftp span-hosts relative "
+    "no-parent no-directories force-directories no-host-directories protocol-directories recursive xattr "
+    "no-config retr-symlinks preserve-permissions no-remove-listing passive-ftp no-passive-ftp ftps-implicit "
+    "ftps-resume-ssl ftps-clear-data-connection ftps-fallback-to-ftp delete-after force-html "
+    "input-metalink metalink-over-http enable-feature no-warc-compression no-warc-digests no-warc-keep-log "
+    "warc-cdx").split())
+_WGET_SHORT = {
+    "o": "output-file", "a": "append-output", "e": "execute", "i": "input-file", "B": "base", "t": "tries",
+    "O": "output-document", "Q": "quota", "w": "wait", "T": "timeout", "P": "directory-prefix", "l": "level",
+    "A": "accept", "R": "reject", "D": "domains", "I": "include-directories", "X": "exclude-directories",
+    "U": "user-agent", "V": "version", "h": "help", "b": "background", "d": "debug", "q": "quiet", "v": "verbose",
+    "S": "server-response", "N": "timestamping", "c": "continue", "x": "force-directories", "r": "recursive",
+    "m": "mirror", "p": "page-requisites", "k": "convert-links", "K": "backup-converted", "E": "adjust-extension",
+    "H": "span-hosts", "L": "relative", "F": "force-html", "4": "inet4-only", "6": "inet6-only"}
+_WGET_N = {"d": "no-directories", "H": "no-host-directories", "c": "no-clobber", "p": "no-parent", "v": "no-verbose"}
+_WGET_WRITES = {"output-document", "output-file", "append-output", "save-cookies", "hsts-file", "rejected-log",
+                "warc-file"}
+_WGET_UNNAMED = {"execute", "config", "input-file", "trust-server-names", "content-disposition", "recursive",
+                 "mirror", "page-requisites", "force-directories", "protocol-directories", "level", "base"}
+
+
+def _url_basename(url, query=False):
+    """The name a URL's path ends in (wget's with its query, which it keeps in the name)."""
+    parts = urllib.parse.urlsplit(url if "://" in url else "//" + url)
+    return posixpath.basename(parts.path) + ("?" + parts.query if query and parts.query else "")
+
+
+def download_writes(argv):
+    """(the files a curl or wget command writes, as its words name them; whether it may write a file the reader can't
+    name), read on an allow-list of each program's options: one the table doesn't hold is unplaceable, and so is a
+    config file (-K, --config, wget's -e), a list of URLs, a name the server picks (-J, --content-disposition), a
+    recursive fetch or host folders. curl writes each -o, each URL's name with -O or --remote-name-all (in
+    --output-dir), and the headers, cookies, trace, error output and caches its options name; wget its -O, or else each
+    URL's name (in -P), and its log, cookies and caches. Stdout (`-`) and /dev/null are no file."""
+    curl, args = argv[0] == "curl", argv[1:]
+    valued, flags, short = (_CURL_VALUED, _CURL_BARE, _CURL_SHORT) if curl else (_WGET_VALUED, _WGET_BARE, _WGET_SHORT)
+    given, urls, unread, i = [], [], False, 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            urls += args[i:]
+            break
+        if a.startswith("--"):
+            name, eq, value = a[2:].partition("=")
+            if curl:
+                name, eq, value = a[2:], "", ""   # (curl takes no `=`: the whole word names the option)
+                base = name[7:] if name.startswith("expand-") else name[3:] if name.startswith("no-") else name
+                if name not in valued and name not in flags and base in valued | flags:
+                    name = base if base in flags else name if name in valued else base
+            elif name not in valued and name not in flags:   # getopt_long: a unique prefix
+                hits = [o for o in valued | flags if o.startswith(name)]
+                name = hits[0] if len(hits) == 1 else name
+            if name in valued:
+                if not eq:
+                    value, i = (args[i], i + 1) if i < len(args) else ("", i)
+                given.append((name, value))
+            elif name in flags and not eq:
+                given.append((name, None))
+            else:
+                unread = True
+        elif a.startswith("-") and len(a) > 1:
+            if not curl and a[1] == "n" and len(a) == 3 and a[2] in _WGET_N:
+                given.append((_WGET_N[a[2]], None))
+                continue
+            for j in range(1, len(a)):
+                name = short.get(a[j])
+                if name is None:
+                    unread = True
+                    break
+                if name in valued:
+                    value = a[j + 1:]
+                    if not value:
+                        value, i = (args[i], i + 1) if i < len(args) else ("", i)
+                    given.append((name, value))
+                    break
+                given.append((name, None))
+        else:
+            urls.append(a)
+    names = {n for n, _ in given}
+    writes = [v for n, v in given if n in (_CURL_WRITES if curl else _WGET_WRITES)]
+    urls += [v for n, v in given if n == "url"]
+    if curl:
+        folder = next((v for n, v in reversed(given) if n == "output-dir"), "")
+        named = [v for n, v in given if n == "output"]
+        if names & {"remote-name", "remote-name-all"}:
+            named += [_url_basename(u) for u in urls]
+        writes += [posixpath.join(folder, w) if folder and w not in ("-", "/dev/null") else w for w in named]
+        unread |= bool(names & {"config", "remote-header-name"})
+    else:
+        folder = next((v for n, v in reversed(given) if n == "directory-prefix"), "")
+        if "output-document" not in names and "spider" not in names:
+            writes += [posixpath.join(folder, n) if folder else n for n in (_url_basename(u, True) for u in urls)]
+        unread |= bool(names & _WGET_UNNAMED)
+    return [w for w in writes if w not in ("-", "/dev/null", "")], unread
+
+
+def _unnamed_write(path, ctx):
+    """Whether a file a download writes is named in a way the line can't tell: a substitution, a pattern, curl's #1
+    (a glob's part) or {{name}} (its variable), or a variable the line gives no value."""
+    return bool(re.search(r"\$\(|`|[*?[]|#\d|\{\{", path)) or any(
+        n not in ctx["given"] for n in re.findall(r"\$\{?([A-Za-z_]\w*|\d)", path))
 
 
 def _unread_body(name, args):

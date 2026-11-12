@@ -1759,7 +1759,8 @@ def _effects(parsed):
     path resolved (_normal) and casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
     sed -i, perl -i and ruby -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i: each name
     its -name tests, under each start path), awk's
-    print > "file", zip -m's sources, and one of those that git, docker, podman, kubectl or parallel runs from its words
+    print > "file", zip -m's sources, each file a download writes (shell.download_writes: one it can't name holds the
+    line as unread), and one of those that git, docker, podman, kubectl or parallel runs from its words
     (git rm). When a command writes files the line names only at run time or inside code it runs (_opaque), or the
     parser can't read what one runs (its `opaque`: `| sh`, `fish -c`, a name an expansion builds) and a writer's name
     reaches it (_reaches_unread), every word on the line and each herestring and heredoc text is one it may write, as
@@ -1987,13 +1988,13 @@ def _awk_outputs(args):
     return out
 
 
-# programs that write the file an option names (sort -o, iconv -o, gpg -o, openssl -out, wget -O, curl -o) or one of
+# programs that write the file an option names (sort -o, iconv -o, gpg -o, openssl -out; a download's: download_writes)
+# or one of
 # their operands: uniq's second, xxd -r's second, sponge's, patch's (the file it patches, in its -d folder), ed's and
 # ex's, and vim's, vi's or nvim's unless read-only (-R, -M; a script, -c, + or --headless edits them unseen, and a
 # terminal's keys in one); the options of theirs that take a value, which is no operand
 _OUTPUT_OPTION = {"sort": ("-o", "--output"), "iconv": ("-o", "--output"), "gpg": ("-o", "--output"),
-                  "gpg2": ("-o", "--output"), "openssl": ("-out",), "wget": ("-O", "--output-document"),
-                  "curl": ("-o", "--output"), "patch": ("-o", "--output")}
+                  "gpg2": ("-o", "--output"), "openssl": ("-out",), "patch": ("-o", "--output")}
 _OUTPUT_OPERAND = {"uniq": 1, "xxd": 1, "sponge": 0, "patch": 0, "ed": 0, "red": 0, "ex": 0, "vim": 0, "vi": 0,
                    "nvim": 0}
 _VALUED = {"patch": ("-i", "--input", "-p", "--strip", "-d", "--directory", "-D", "--ifdef", "-F", "--fuzz", "-r",
@@ -2235,6 +2236,8 @@ def _command_effects(commands):
                 if program in args:
                     out.extend("WRITE_TARGET:" + a for a in args[args.index(program) + 1:]
                                if not a.startswith("-") and "=" not in a)
+        elif exe in ("curl", "wget"):   # each file a download writes, by all its options (shell.download_writes)
+            out.extend("WRITE_TARGET:" + path for path in shell.download_writes([exe, *args])[0])
         elif exe in _OUTPUT_OPTION or exe in _OUTPUT_OPERAND:
             out.extend("WRITE_TARGET:" + path for path in _outputs(exe, args))
         elif exe in ("sqlite3", "sqlite"):

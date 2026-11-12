@@ -223,7 +223,13 @@ The shell field `effects` is each file the commands write, as `WRITE_TARGET:path
 `shred`, `truncate`, `tee`, `cp`, `mv`, `install`, `ln`, `dd of=`, `sed -i` and `perl -i` name (`mv` deletes its
 sources; `cp`, `mv`, `install` and `ln` into a directory, `-t`'s or one that ends in `/`, also write each source's name
 there), also when `git`, `docker`, `podman`, `kubectl` or `parallel` runs one from its own words (`git rm`,
-`docker exec c rm`); what awk's `print > "file"` writes; and for a `find`, what its `-exec` commands write and, when it
+`docker exec c rm`); what awk's `print > "file"` writes; each file a download writes, read by all of `curl`'s or
+`wget`'s options (curl's `-o` in any cluster, `-so`, each URL's name with `-O` or `--remote-name-all` in its
+`--output-dir`, its header, cookie, trace, error and cache files; wget's `-O`, each URL's name in its `-P` folder,
+its log and cookie files; wget's options by any unique prefix), a download whose file the line can't name (a variable
+it gives no value, a substitution, a pattern, curl's `#1` or `{{name}}`, a config file, a URL list, a name the server
+picks, a recursive fetch, an option the reader doesn't know) held as unread (`TK-SHELL-PARSE`); and for a `find`, what
+its `-exec` commands write and, when it
 has `-delete` or an `-exec` that deletes or writes each file it finds (`-exec rm`, `-exec sed -i … {}`), its start
 paths (also after `--`), the paths its `-path`, `-ipath`, `-wholename`, `-iwholename`, `-regex`, `-iregex` and
 `-files0-from` name, and the log or history names among its tests. In a call with a writer that gets its files at run

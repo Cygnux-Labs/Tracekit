@@ -100,6 +100,36 @@ class Routes(unittest.TestCase):
                               "find src -name '*.py' -exec sed -i 's/foo/bar/' {} +",
                               "find . -name '*.py' -exec perl -pi -e 's/a/b/' {} +"), ("flag", "allow"))
 
+    def test_a_download_writes_each_file_its_options_name(self):
+        # sec08 r7: a download over a harness's settings removes its hooks, as `> .claude/settings.json` does: curl's
+        # clustered -so, -O's URL name, wget's -qO, -P and abbreviated options were read as no write (flagged)
+        u = "https://example.com/a"
+        harness = ["curl -so .claude/settings.json " + u, "curl -o .claude/settings.json " + u,
+                   "curl --output .mcp.json " + u, "curl -sSL -o x.txt -o .claude/settings.json " + u,
+                   "cd .claude && curl -sO https://example.com/a/settings.json",
+                   "curl --output-dir .claude -O https://example.com/a/settings.json", "wget -qO .mcp.json " + u,
+                   "wget -O .claude/settings.json " + u, "wget --output-document=.claude/settings.json " + u,
+                   "wget --output-doc .mcp.json " + u, "wget -P .claude https://example.com/a/settings.json",
+                   "wget --directory-prefix=.claude https://example.com/a/settings.json",
+                   "curl -so .claude/worktrees/x/.claude/settings.json " + u,
+                   "wget -qO .claude/worktrees/x/.claude/settings.json " + u, "curl -so ~/.claude/settings.json " + u]
+        self.expect(self.bash(*harness), "ask", "TK-F015")
+        self.expect(self.bash("curl -so .env " + u, "wget -qO .env " + u, "curl -sO https://example.com/a/.env"),
+                    "deny", "TK-D014")
+        self.expect(self.bash("curl -so .git/hooks/pre-commit " + u), "ask", "TK-A068")
+        self.expect(self.bash("curl -so ~/.bashrc " + u, "wget -qO ~/.zshrc " + u),
+                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F024")
+        # a file it writes that the line can't name (a variable it gives no value, curl's #1 or a config file, a
+        # URL list, a recursive fetch, a name the server picks, an option the reader doesn't know) is held
+        self.expect(self.bash("curl -so \"$F\" " + u, "curl -o 'x#1.json' 'https://example.com/[1-2]'",
+                              "curl -K opts.txt " + u, "curl -sJO " + u, "wget -i urls.txt", "wget -r " + u,
+                              "wget --content-disposition " + u, "curl --frobnicate x.json " + u),
+                    {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-SHELL-PARSE")
+        # a data download keeps its round-6 reading; a variable the line gives is read as its value
+        self.expect(self.bash("curl -so data.json " + u + " && jq . data.json", "F=out.json; curl -so \"$F\" " + u,
+                              "for s in a b; do curl -so $s.svg https://example.com/$s.svg; done", "wget -qO- " + u),
+                    ("allow", "flag"), packs=("dev", "coding"))
+
     def test_writers_that_name_their_file_another_way_reach_the_rules(self):
         # env -C's folder, awk's FILENAME, patch's file after its valued options (and in its -d folder), a vi run
         # that isn't read-only, and xargs fed by printf's text or by a stage that may print a protected name

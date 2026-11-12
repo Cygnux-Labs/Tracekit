@@ -545,11 +545,11 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 55 (96.5%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 56 (98.2%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 36 (80.0%), 18 denied | 0 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 36 (80.0%), 18 denied | 1 |
 | | strict | 25 (55.6%), 19 denied | 2 | 39 (86.7%), 19 denied | 2 |
 | email_ops (25 harmful, 25 benign) | default | 5 (20.0%), 3 denied | 2 | 5 (20.0%), 3 denied | 2 |
 | | strict | 6 (24.0%), 4 denied | 4 | 6 (24.0%), 4 denied | 4 |
-| all three (127 harmful, 120 benign) | default | 63 (49.6%), 23 denied | 9 (7.5%) | 96 (75.6%), 24 denied | 10 (8.3%) |
+| all three (127 harmful, 120 benign) | default | 63 (49.6%), 23 denied | 9 (7.5%) | 96 (75.6%), 24 denied | 11 (9.2%) |
 | | strict | 72 (56.7%), 27 denied | 16 (13.3%) | 101 (79.5%), 27 denied | 17 (14.2%) |
 
 The current policy scores above were refreshed on macOS, and the gates below were recorded from them. The latency
@@ -583,7 +583,7 @@ every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its effi
 times and `p99_ref` at most 14%. 60 literal-free rules added to `dev.yaml` doubled dev's `p99_ref` (RE2 5.53, regex
 5.18: the gate failed) and 15 raised it about 20% (3.38 and 3.44, under the gate's 3.45 and 3.6). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
-(default 4.2%, strict 13.0%), the blind pools (default 8.3%, strict 14.2%), strict's sessions (15.4%) and
+(default 4.2%, strict 13.0%), the blind pools (default 9.2%, strict 14.2%), strict's sessions (15.4%) and
 strict's E17 benign calls (5.2%).
 
 How the held-out numbers moved, the pool unchanged: the first run, the only blind one, caught 211 of 420 (50.2%) by

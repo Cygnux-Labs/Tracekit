@@ -3047,13 +3047,17 @@ class CodingPack(unittest.TestCase):
             "ssh host 'git push --force'", "echo a\ngit push -f", 'git push --repo="x\ny" origin --force',
             "git push -fo ci.skip origin")])
         for command in ("git push origin main && ls -f", "git push origin main\nrm -rf build",
-                        "git push origin main\nnpm test -- --m", "git push origin main && wget --mirror https://x.example",
+                        "git push origin main\nnpm test -- --m", "git push origin main && echo --mirror",
                         'git commit -m "git push --force broke main"', "git push -of origin feat",
                         "git push origin main && gh pr create --body \"$(cat <<'EOF'\n+3 -f\nEOF\n)\"",
                         "git push x; " * 1400):
             with self.subTest(command=command[:60]):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), d)
+        # a mirror fetch's --mirror is no push's either; it writes files the line can't name, so it is held (sec08 r7)
+        d = self.e.decide("Bash", {"command": "git push origin main && wget --mirror https://x.example"})
+        self.assertNotIn("TK-D003", d["rule_ids"])
+        self.assertEqual(d["verdict"], "ask", d)
 
     def test_git_global_options_with_a_separate_value_come_before_the_subcommand(self):
         # the global-option prefix read `--work-tree .` as an option and a stray word: the push was allowed
