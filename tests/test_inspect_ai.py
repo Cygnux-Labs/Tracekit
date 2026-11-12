@@ -3,6 +3,7 @@ FakeSigner: only a call the signer allows (or a person approves while it waits) 
 the rest, and every call that ran is completed with its result or its error, and no other is."""
 import asyncio
 import importlib.util
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -87,6 +88,17 @@ if HAVE:
 
 @unittest.skipUnless(HAVE, "inspect-ai not installed")
 class Approver(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Inspect's first eval in a process loads its tool-calling path inside the sample (seconds on a loaded runner,
+        # spent from a test's time limit): one eval with a tool call, and no Tracekit, takes it first
+        log_dir = tempfile.TemporaryDirectory()
+        cls.addClassCleanup(log_dir.cleanup)
+        outs = [ModelOutput.for_tool_call("mockllm/model", "echo", {"text": "warm"}, tool_call_id="warm-1"),
+                ModelOutput.from_content("mockllm/model", "done")]
+        eval(Task(dataset=[Sample(input="go")], solver=[use_tools([echo()]), generate()]),
+             model=get_model("mockllm/model", custom_outputs=outs), display="none", log_dir=log_dir.name)
+
     def setUp(self):
         ac.RAN.clear()
         self.addCleanup(ti._allowed.clear)
@@ -150,7 +162,7 @@ class Approver(unittest.TestCase):
         self.serve()
         [msg] = self.sample([("pay", {"to": "acct-42", "cents": 1500})])
         self.assertEqual((ac.RAN, msg.error.type), ([], "approval"))
-        self.assertIn("held by Tracekit policy (R-PAY) and not approved: requested", msg.error.message)
+        self.assertIn("held by Tracekit policy and not approved: requested; R-PAY", msg.error.message)
         self.assertEqual(self.recorded("tool.result"), [])
 
     def test_a_signer_error_refuses_the_call(self):
