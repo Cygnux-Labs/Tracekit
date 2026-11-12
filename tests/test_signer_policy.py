@@ -1086,10 +1086,12 @@ class CodingPack(unittest.TestCase):
         dist = "/usr/lib/python3/dist-packages/src.pth"
         held_fs = [("Write", {"file_path": site, "content": "x"}),
                    ("Write", {"file_path": dist, "content": "x"}),
+                   ("Write", {"file_path": "/w/SITE-PACKAGES/src.pth", "content": "x"}),
                    ("Edit", {"file_path": site, "old_string": "a", "new_string": "b"})]
         held_shell = [f"cp src.pth {site}",
                       f"echo /src > {site}",
-                      f"cp src.pth {dist}"]
+                      f"cp src.pth {dist}",
+                      "cp src.pth /w/Dist-Packages/src.pth"]
         for pack, engine, e in self.every_pack():
             for tool, args in held_fs:
                 with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
