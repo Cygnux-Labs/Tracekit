@@ -89,7 +89,7 @@ answers each request with one JSON response and keeps no session; it serves `ini
   untrusted observed input (`mcp:<upstream>/tools`, `/resources`, `/prompts`): the model reads the descriptions the
   upstream wrote. A tool named `prompt:...` is neither listed nor called: it would be decided as a prompt.
 - An upstream that fails during a tools/call or prompts/get answers an error saying the call may have run, and the
-  call completes as an error.
+  call completes as an error. One that went away and can't be opened again answers that nothing was sent to it.
 
 The upstreams' credentials never reach the agent or the signer: the agent's own headers are never forwarded, and each
 `env` and `headers` value is cut from the decoded string values of everything the gateway answers or records (never
@@ -106,6 +106,11 @@ gateway, for the identity it decided the call for, alone; a run closed mid-call 
   ([Kubernetes](deploy-kubernetes.md#custody)).
 - Tools, resources and prompts are listed up to 100 pages from each upstream; past that,
   the whole listing fails with an error naming the upstream.
+- One tools/list, resources/list or prompts/list has 600 s for all the upstreams and their pages together, listed one
+  after another, so a slow upstream leaves less time for those after it; past that the listing fails with an error
+  naming the upstream it was waiting for. Opening a new session to an upstream that went away has 600 s of its own,
+  not capped by what is left of the listing's (the time it takes still counts against the listing), and fails naming
+  the upstream. A tools/call, prompts/get or resources/read has 600 s of its own.
 - A resource is read through the upstream that listed it: list resources before reading one; a URI from a resource
   template isn't routed.
 - No server-initiated messages: sampling, elicitation, subscriptions and progress notifications from an upstream don't

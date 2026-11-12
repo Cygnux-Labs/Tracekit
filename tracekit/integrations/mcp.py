@@ -13,19 +13,28 @@ the refusal as its text (`get_prompt` raises `RuntimeError`), and the run goes o
 up to `approval_wait_s` for a person to decide in the signer; with `approval_wait_s=0` the call is refused instead.
 Every call that is not denied is sent only after the signer's `approval_consume` agrees, with the arguments it returns
 for an approval with a T2 executor. Multi-round input-required calls (MCP 2.3) with a `request_state` under an allowed
-decision are decided and completed once across rounds; rounds without `request_state`, or whose decision required human
-approval, are decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
-propagates unchanged and completes as an error. `list_tools`, `list_resources` and `list_prompts` are recorded as
-untrusted observed input (`mcp:<server>/tools`, `/resources`, `/prompts`) and returned once recorded. A list the
-signer cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a
-refusal is withheld either way. Only those calls made through the wrapped session are seen.
+decision are decided and completed once across rounds: a round continues the call its own asyncio task left waiting (as
+mcp's Client.call_tool drives them), so concurrent calls never share one, whatever `request_state` the server returns.
+A waiting call whose task calls a tool or gets a prompt on the session first, or ends, is never completed: the
+signer's decided_not_completed gap at run close. Rounds without `request_state`, or whose decision isn't `allow` (a
+flag or an ask), are decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
+propagates unchanged and completes as an error.
+`list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`mcp:<server>/tools`,
+`/resources`, `/prompts`; a page over half a signer frame as its digest) and returned once recorded. A list the signer
+cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a refusal is
+withheld either way. The list mcp itself asks for inside `call_tool` (to check a result against the tool's output
+schema) never reaches the model and isn't recorded. Only those calls made through the wrapped session are seen.
 """
+import asyncio
+import functools
 import re
 import uuid
 import warnings
+import weakref
 
 from mcp.types import CallToolResult, TextContent
 
+from tracekit.autowire import DECIDED_UPSTREAM
 from tracekit.format.canon import event_hash
 from tracekit.integrations.held import HeldCalls
 from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
@@ -46,8 +55,8 @@ class TracekitSession(HeldCalls):
         `server`: the server's name, else the session's server_info."""
         super().__init__(signer, run, approval_wait_s)
         self._session, self._server = session, server
-        # lean: abandoned multi-round calls stay in _pending for the session's life; at run close they become decided_not_completed
-        self._pending = {}
+        # the asyncio task -> the multi-round call it left waiting for its next round
+        self._pending = weakref.WeakKeyDictionary()
 
     def __getattr__(self, name):
         return getattr(self._session, name)
@@ -81,12 +90,21 @@ class TracekitSession(HeldCalls):
             warnings.warn(_UNNAMED, stacklevel=4)   # list_* -> _list -> warn: the caller's line, as _call's warning
         try:
             await self._rpc("observe", source=f"mcp:{server}/{kind}", trust="untrusted",
-                            value=out.model_dump(mode="json", by_alias=True, exclude_none=True))
+                            value=result_field(True, out.model_dump(mode="json", by_alias=True, exclude_none=True)))
         except SignerUnavailable as e:   # unreachable: the run's fail mode for this class, as _gate
             if not fail_open(self.fail_modes, self.CLASS):
                 raise
             warnings.warn(f"tracekit: MCP {kind} list not recorded: {e}", stacklevel=2)
         return out
+
+    async def _send(self, method, *a, **kw):
+        """The session's `method`. mcp's call_tool lists the tools itself to check a result against the tool's output
+        schema: that list never reaches the model, so instrument()'s session lets it through unrecorded."""
+        upstream = DECIDED_UPSTREAM.set(True)
+        try:
+            return await getattr(self._session, method)(*a, **kw)
+        finally:
+            DECIDED_UPSTREAM.reset(upstream)
 
     async def _call(self, method, prefix, name, arguments, *a, **kw):
         raw, server = self._server_name()
@@ -95,10 +113,12 @@ class TracekitSession(HeldCalls):
         tool = f"mcp:{server}/{prefix}{name}"
         args = arguments or {}
         caller_args_digest = event_hash({"tool": tool, "args": args})
-        req_state = kw.get("request_state")
-        key = (tool, caller_args_digest, req_state) if req_state is not None else None
-        if key is not None and key in self._pending:
-            call_id, req, d, args = self._pending.pop(key)
+        task = asyncio.current_task()
+        # a call this task left waiting and doesn't continue now is never completed: its caller may have seen an
+        # exception (mcp's elicitation callback, its round cap), so it ends as the signer's decided_not_completed gap
+        held = self._pending.pop(task, None)
+        if held is not None and held[0] == (tool, caller_args_digest, kw.get("request_state")):
+            _, call_id, req, d, args = held
             try:
                 c = await self._rpc("approval_consume", tool_call_id=call_id, tool=tool, args_source="parsed", args=args)
             except (RPCError, SignerUnavailable) as e:
@@ -121,7 +141,7 @@ class TracekitSession(HeldCalls):
                 return CallToolResult(content=[TextContent(type="text", text=BLOCKED + why)], isError=True)
             req = None if d is None else {"tool_call_id": call_id, "decision_id": d["decision_id"],
                                           "args_digest": event_hash({"tool": tool, "args": args})}
-        send = getattr(self._session, method)
+        send = functools.partial(self._send, method)
         if d is None:   # the signer unreachable and the run fails open: the call runs unrecorded
             return await send(name, arguments, *a, **kw)
         try:
@@ -135,7 +155,7 @@ class TracekitSession(HeldCalls):
             if input_requests:
                 try:
                     await self._rpc("observe", source=f"mcp:{server}/input_required", trust="untrusted",
-                                    value=input_requests)
+                                    value=result_field(True, input_requests))
                 except SignerUnavailable as e:
                     if not fail_open(self.fail_modes, self.CLASS):
                         await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
@@ -145,9 +165,8 @@ class TracekitSession(HeldCalls):
                     await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
                     raise
             next_state = getattr(out, "request_state", None)
-            key = (tool, caller_args_digest, next_state) if next_state is not None else None
-            if key is not None and d.get("decision") == "allow" and key not in self._pending:
-                self._pending[key] = (call_id, req, d, args)
+            if next_state is not None and d.get("decision") == "allow":
+                self._pending[task] = ((tool, caller_args_digest, next_state), call_id, req, d, args)
             else:
                 await self._complete(call_id, req, status="ok",
                                      result=result_field(d.get("send_result"), dump))
