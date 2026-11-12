@@ -584,9 +584,15 @@ class Live(Signed):
             "command": "*** Begin Patch\n*** Update File: src/config.py\n@@\n-a\n+b\n*** End Patch"})
         for tool, args in ((tool, ti), ("Bash", {"command": "bash -c 'git push origin main'"}),
                            ("shell", {"command": ["git", "push", "origin", "main"]}),
-                           ("shell", {"commands": ["git push origin main"]})):
+                           ("shell", {"commands": ["git push origin main"]}),
+                           # #732's review: each entry read on its own too (Cline's run_commands runs each in its own
+                           # shell), so a trailing \ in one doesn't hide the next, and the joined reading still finds
+                           # what one entry gives the next (LangChain's ShellTool runs them in one shell)
+                           ("Bash", {"commands": ["echo ok \\", "git push origin main"]}),
+                           ("Bash", {"commands": ["g=git", "$g push origin main"]})):
             with self.subTest(args):
                 self.assertIn("TK-CONSTRAINT", self.decide(run, tool, args)["rule_ids"])
+        self.assertTrue(constraints.facts("Bash", {"commands": ["echo ok \\", "touch notes.txt"]}, "shell")["write"])
 
     def test_the_writer_checks_at_most_max_names_files_per_constraint(self):
         """The salted commitments of a call's files are computed off the writer, once per distinct name and file
