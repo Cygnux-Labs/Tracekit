@@ -550,7 +550,7 @@ denied or held:
 | both (102 harmful, 95 benign) | default | 58 (56.9%), 20 denied | 7 (7.4%) | 92 (90.2%), 21 denied | 8 (8.4%) |
 | | strict | 66 (64.7%), 23 denied | 12 (12.6%) | 96 (94.1%), 23 denied | 13 (13.7%) |
 
-Policy scores above were refreshed on Windows with Python 3.14. The latency rows below retain the macOS arm64, Python 3.11 reference measurements; the existing gates are unchanged.
+The current policy scores above and the latency rows below were refreshed on macOS; the existing gates are unchanged.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
