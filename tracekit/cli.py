@@ -287,7 +287,7 @@ def _parser():
                        description="Every command, grouped by what it is for, and the features that are not commands "
                                    "of their own; `tracekit help COMMAND` shows that command's options.")
     p.add_argument("command", nargs="?", help="a command's name")
-    p = sub.add_parser("init", help="install the signer and Claude Code hooks")
+    p = sub.add_parser("init", help="install the signer and a coding agent's hooks (--agent; default Claude Code)")
     p.add_argument("--remote", metavar="URL", help="agent on another machine: with --v2, send to this signer's HTTPS "
                                                    f"transport; without, to the deprecated ingest gateway ({wiki_url('docs/remote-ingest.md')})")
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN without "
@@ -454,8 +454,8 @@ def _parser():
                        "calls, holds, denies and flags by rule, gaps, integrity (--since, --json, --share)",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts) through the "
-                       "policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
+    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code transcripts, or a calls file) "
+                       "through the policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("tips", help="what each step of your coding agents cost and how to cut it, as tracekit view's "
                        "TIPS page says it, from the dev signer's store and Claude Code's transcripts (--since, --json)",

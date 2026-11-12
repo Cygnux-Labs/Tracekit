@@ -107,7 +107,9 @@ class Compile(unittest.TestCase):
             self.assertIn(needle, text)
 
     def test_lint_refuses_an_id_the_engine_or_the_signer_gives_a_decision(self):
-        # a flag rule named TK-CONSTRAINT kept a broken live constraint from holding the call (the signer saw the id)
+        # a flag rule named TK-CONSTRAINT kept a broken live constraint from holding the call (the signer saw the id);
+        # TK-HOOK-BLOCKED is tracekit audit's (#730): a pack rule with that id would mix up audit's reason for it
+        self.assertIn("TK-HOOK-BLOCKED", pc.RESERVED_IDS)
         for rid in sorted(pc.RESERVED_IDS) + ["TK-APPROVAL-EXPIRED"]:
             with self.subTest(rid=rid):
                 self.assertIn(f"flag rule {rid}: the engine or the signer gives a decision this id itself",
