@@ -75,8 +75,7 @@ calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The mess
 - **deny**: the tool does not run. The model gets an error ToolMessage, `Tool call blocked by policy: <reason or rule
   ids>`, and the agent run goes on.
 - **ask**: the middleware opens an approval and pauses the run with LangGraph `interrupt()`. The interrupt payload is
-  `{"tracekit": {"approval_id", "tool_call_id", "tool", "rule_ids", "approvals"}}` (`approvals`: those four for each
-  call that waits, the first one included). A person approves or rejects in the signer;
+  `{"tracekit": {"approval_id", "tool_call_id", "tool", "rule_ids"}}`. A person approves or rejects in the signer;
   then the app resumes the thread:
 
   ```python
@@ -87,26 +86,6 @@ calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The mess
   The signer, not the saved state, decides: the call runs only if that approval was granted for this exact call and
   these exact args, and was not used before. Otherwise the call is denied as above. The `approval_id` in the resume
   value is only a hint; leaving it out does not skip the check.
-
-  LangGraph pairs resume values with a node's `interrupt()` calls by their order, and runs the node again from its
-  start on each resume. So an `ask` pauses first in every pass of its node, answered or not, and a tool that calls
-  `interrupt()` itself (a confirmation) pauses after it and gets the person's own answer. A call whose tool paused the
-  run after its approval was consumed goes on when the run resumes, under that one consume.
-
-  A `tracekit_tool_node` (or a `ToolNode` that `tracekit.instrument()` wired) runs every call of a model message in
-  one node. So when a message has several calls, all of them are decided before any runs, and when any asks, the run
-  pauses once, before any call runs: the payload names the first approval, and `approvals` lists every one, so a
-  person can answer them all before the resume. On resume each call that was allowed or approved runs once; one
-  rejected or still unanswered is denied (`TK-APPROVAL-REQUESTED` names the approval to grant; once it is granted,
-  the model's retry pauses on it once more and runs on the resume). When a tool of the message then pauses the run itself, the calls that already ended aren't decided,
-  asked, run or recorded again on the next resume: the gate gives back their result, refusal or exception. A call to a
-  tool executor's tool is the executor's to decide and isn't decided with the others. (`create_agent` gives each call
-  a task of its own.)
-
-  The gate keeps those calls in memory. Resumed in another process after a tool's own pause (a durable checkpointer,
-  after a restart), they are decided again: one that asked is denied as already used (`TK-APPROVAL-CONSUMED`), even
-  if it ran before the pause, and one allowed runs again. The tool that paused still gets its answer
-  ([limits](../limits.md#approvals)).
 
 Exceptions raised by the tool are recorded and re-raised unchanged.
 

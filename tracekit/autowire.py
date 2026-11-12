@@ -199,15 +199,14 @@ def _openai_agents(run):
 def _langgraph(run):
     from langgraph.prebuilt.tool_node import ToolNode
 
-    from .integrations.langchain import TracekitMiddleware, pass_afunc, pass_func, pausing, with_fallbacks
+    from .integrations.langchain import TracekitMiddleware, pausing, with_fallbacks
     gate = TracekitMiddleware(run.client, run.run_id, run.run_token, run.registered.get("fail_modes"))
     init = ToolNode.__init__
 
     @functools.wraps(init)
     def gated(self, tools, *a, wrap_tool_call=None, awrap_tool_call=None, **kw):
         w, aw = wrap_tool_call, awrap_tool_call
-        wired = not isinstance(getattr(w, "__self__", None), TracekitMiddleware)   # tracekit_tool_node gates already
-        if wired:
+        if not isinstance(getattr(w, "__self__", None), TracekitMiddleware):   # tracekit_tool_node gates already
             wrap_tool_call = gate.wrap_tool_call if w is None else (
                 lambda req, h: w(req, lambda r: gate.wrap_tool_call(r, h)))
             # no async wrapper of its own: ToolNode runs the sync one, gate included, for async calls too
@@ -216,10 +215,7 @@ def _langgraph(run):
             if "handle_tool_errors" in kw:   # an ask pauses whatever the node's error handling
                 kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
         init(self, tools, *a, wrap_tool_call=wrap_tool_call, awrap_tool_call=awrap_tool_call, **kw)
-        if wired:
-            self._tracekit = gate, wrap_tool_call   # the gate decides each pass's calls together (pass_func)
     ToolNode.__init__ = gated
-    ToolNode._func, ToolNode._afunc = pass_func, pass_afunc
     ToolNode.with_fallbacks = with_fallbacks   # and through the fallbacks the node is wrapped in
 
 
