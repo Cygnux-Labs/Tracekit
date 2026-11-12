@@ -161,9 +161,11 @@ once it is approved. `tool_input` is the tool's Action (with its class name unde
 `file_editor` (or a gemini-preset file tool) with no path or an `apply_patch` with no file header is denied in the hook.
 **`task` and `delegate` are denied in the hook**: they run a sub-agent with no hooks, so its calls would go undecided
 and unrecorded. **The terminal is interactive** (bash in tmux): text typed into the command running (`is_input: true`),
-a key name (`UP`, `TAB`, `ENTER`, `C-r`, which it sends as keystrokes) and a line left open (a trailing `\`) run with
-what came before or comes after them, so the hook marks each `typed` and the policy holds it for a person
-(`TK-SHELL-PARSE`), as it holds an unclosed quote or heredoc; a whole command is decided as before. **In the CLI, a working
+a key name (`UP`, `TAB`, `ENTER`, `C-r`, which it sends as keystrokes), a command with a control character in it
+(tmux types it as a key: `^U` erases the line before it, `\r` is an Enter) and a line left open (a trailing `\`) run
+with what came before or comes after them, so the hook marks each `typed` and the policy holds it for a person
+(`TK-SHELL-PARSE`), as it holds an unclosed quote or heredoc; a whole command is decided as before. The v1 hook can't
+hold, so it denies them: use `--v2` with OpenHands. **In the CLI, a working
 directory's `.openhands/hooks.json` replaces the user's**: `HookConfig.load` reads only the first of the two that
 exists (the working directory is `$OPENHANDS_WORK_DIR` when set), so a repo with its own file runs no Tracekit hook
 (`D-OPENHANDS-PROJECT` warns; `init` merges into a `hooks.json` in whichever of OpenHands' three forms it is written;

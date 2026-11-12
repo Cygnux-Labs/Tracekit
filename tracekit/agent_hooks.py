@@ -361,8 +361,11 @@ def tool(harness, name, ti):
             # the terminal is interactive (bash in tmux): text typed into the command running, a key, and a line left
             # open run with what comes before or after them, which this call alone doesn't show; the engine holds a
             # call marked `typed` (TK-SHELL-PARSE), and holds an unclosed quote or heredoc as a line it can't read
+            # tmux types a command as keys, so a control character in it is one too: ^U erases what came before it on
+            # the line, \r is an Enter (`echo hi\x15git push --force` runs the push): read as Devin's exec is (TYPED)
             c = ti["command"]
-            if ti.get("is_input") is True or OPENHANDS_KEYS.fullmatch(c.strip().upper()) or OPENHANDS_OPEN_LINE.search(c):
+            if ti.get("is_input") is True or OPENHANDS_KEYS.fullmatch(c.strip().upper()) or \
+                    OPENHANDS_OPEN_LINE.search(c) or TYPED["exec"].search(c):
                 ti["typed"] = True
         if name == "apply_patch":   # Codex's patch format
             files = [f.strip() for f in PATCH_FILE.findall(str(ti.get("patch") or ""))]
@@ -1020,6 +1023,12 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         _reply(harness, stdout, True, "", is_pre)
         return 0
     reason = (_blocked(harness, p, raw) or _not_text(q)) if is_pre else None
+    if reason is None and is_pre and harness == "openhands" and (q.get("tool_input") or {}).get("typed") is True:
+        # the v2 engine holds a call marked typed for a person (TK-SHELL-PARSE); the v1 policy doesn't read the mark
+        reason = ("Blocked by Tracekit: this OpenHands terminal call is text typed into a command already running, a key "
+                  "or a line left open, which runs with what came before or comes after it, and Tracekit's v1 hook "
+                  "can't hold it for a person. Send the whole command in one call, or use the v2 hook "
+                  "(tracekit init --dev --v2 --agent openhands), which holds it for approval.")
     err = Tee(stderr)
     if reason is not None:   # a call the hook can't decide as it runs: denied before the pipeline
         print(reason, file=err)
