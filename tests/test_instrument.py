@@ -98,6 +98,21 @@ class TestOpenRun(DevSigner):
         self.assertIn("it finishes when the session ends", codex_line)
         self.assertNotIn("`/exit` in Claude Code", codex_line)
 
+    def test_last_open_explains_an_agent_whose_hooks_get_no_session_end(self):
+        """OpenCode's and Kilo's plugin and goose's and Antigravity's hooks install no session-end event: their run
+        never finished "when the session ends", as `tracekit last` said. A Cline run is one task."""
+        agents = ("opencode", "kilo", "goose", "antigravity")
+        self.sh("-c", "import os; from tracekit.sdk.client import Client\n"
+                      f"for a in {agents + ('cline',)!r}: Client().run(a).decide('c1', 'Bash', {{'command': 'ls'}})\n"
+                      "os._exit(0)")
+        lines = self.sh("-m", "tracekit", "last", code=1).stderr.splitlines()
+        for agent in agents:
+            line = next(line for line in lines if f"({agent})" in line)
+            self.assertIn(f"still open: Tracekit's {agent} hooks get no session end, so it finishes after the signer's "
+                          "idle timeout", line)
+        self.assertIn("still open: it finishes when the Cline task completes",
+                      next(line for line in lines if "(cline)" in line))
+
 
 class TestThreeSteps(DevSigner):
     def test_each_framework(self):
