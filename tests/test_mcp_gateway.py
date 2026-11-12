@@ -1,6 +1,8 @@
 """The MCP gateway (tracekit/mcp_gateway.py): an MCP client connects over Streamable HTTP; the gateway proxies an
 in-process upstream MCP server, deciding and recording through an in-process v2 signer as source gateway (tier T2)."""
 import asyncio
+import concurrent.futures
+import contextlib
 import http.client
 import json
 import os
@@ -368,16 +370,131 @@ class McpGateway(unittest.TestCase):
                                      ("mcp:up/prompts", "untrusted")])
 
     def test_repeated_cursor_is_an_error(self):
-        """A cursor returned twice raises an error naming the upstream with advice."""
+        """A cursor returned twice raises an error naming the upstream and what it did (it named the 100-page cap,
+        which the listing never reached)."""
         async def on_list_tools(ctx, params):
             return mcp_types.ListToolsResult(tools=[], next_cursor="same-forever")
         self._swap_upstream(LowServer("bad", on_list_tools=on_list_tools))
         with self.assertRaises(Exception) as e:
             self.agent(lambda c: c.list_tools())
-        self.assertIn("upstream 'up': tools/list returned a repeated cursor; "
-                      "the gateway lists at most 100 pages per upstream; "
-                      "give the upstream larger pages or fix its cursor",
+        self.assertIn("upstream 'up': tools/list page 2 returned a cursor an earlier page had returned, so the listing "
+                      "would never end; fix the upstream's cursor", messages(e.exception))
+        self.assertNotIn("100 pages", messages(e.exception))
+
+    def test_a_listing_past_its_shared_budget_names_the_upstream(self):
+        """One listing has UPSTREAM_TIMEOUT_S for every upstream and page; past it the agent read "upstream error:
+        TimeoutError: ; the gateway connects to an upstream that went away again on the next call"."""
+        async def on_list_tools(ctx, params):
+            await asyncio.sleep(1)
+            return mcp_types.ListToolsResult(tools=[])
+        self._swap_upstream(LowServer("slow", on_list_tools=on_list_tools))
+        with mock.patch.object(mcp_gateway, "UPSTREAM_TIMEOUT_S", 0.3), self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.list_tools())
+        self.assertIn("upstream 'up': tools/list timed out (one listing has 0.3 s for every upstream and page)",
                       messages(e.exception))
+
+    def test_a_timeout_the_upstream_call_raises_is_not_the_listings(self):
+        """Only the listing's own time running out names its budget. A TimeoutError raised inside the upstream call (a
+        socket's, anyio's fail_after) or by the reconnect's wait read "tools/list timed out (one listing has 600 s for
+        every upstream and page)"; it keeps the upstream error and its advice."""
+        ups = self.srv.mcp["upstreams"]
+        advice = "; the gateway connects to an upstream that went away again on the next call"
+
+        def listing_error(*patches):
+            with contextlib.ExitStack() as stack, self.assertRaises(Exception) as e:
+                for p in patches:
+                    stack.enter_context(p)
+                self.agent(lambda c: c.list_tools())
+            self.assertNotIn("one listing has", messages(e.exception))
+            return messages(e.exception)
+        self.assertIn("upstream error: TimeoutError: read timed out" + advice, listing_error(
+            mock.patch.object(ups.clients["up"], "list_tools", new_callable=mock.AsyncMock,
+                              side_effect=TimeoutError("read timed out"))))
+        self.assertIn("upstream error: upstream 'up' gave no session in 600 s; nothing was sent to it",
+                      listing_error(   # the reconnect's wait for a session
+                          mock.patch.object(mcp_gateway, "_closed", return_value=True),
+                          mock.patch.object(ups, "_open", side_effect=mcp_gateway.Unreachable(
+                              "upstream 'up' gave no session in 600 s"))))
+
+    def test_a_call_to_an_upstream_that_cant_be_opened_was_not_sent(self):
+        """A tools/call whose upstream went away and can't be opened again says nothing was sent, not that it may
+        have run, and completes as an error."""
+        ups = self.srv.mcp["upstreams"]
+        with mock.patch.object(mcp_gateway, "_closed", return_value=True), \
+                mock.patch.object(ups, "_open", side_effect=mcp_gateway.Unreachable(
+                    "upstream 'up' couldn't be opened: ConnectionRefusedError: refused")), \
+                self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.call_tool("up__echo", {"text": "hi"}))
+        self.assertIn("upstream error: upstream 'up' couldn't be opened: ConnectionRefusedError: refused; nothing was "
+                      "sent to it", messages(e.exception))
+        self.assertNotIn("may have run", messages(e.exception))
+        self.assertEqual(RAN, [])
+        [r] = [e for e in self.events() if e["type"] == "tool.result"]
+        self.assertFalse(r["data"]["ok"])
+
+    def test_a_call_that_ends_as_its_wait_runs_out_gives_its_own_answer(self):
+        """An upstream answering between the wait running out and the check gives that answer, not the wait's empty
+        TimeoutError; a TimeoutError the call raised itself is raised as it was."""
+        ups = self.srv.mcp["upstreams"]
+
+        class Late(concurrent.futures.Future):   # the wait runs out, and the answer is there at once
+            def result(self, timeout=None):
+                if timeout is not None:
+                    raise concurrent.futures.TimeoutError()
+                return super().result()
+
+        def run(outcome):
+            def submit(coro, loop):
+                coro.close()
+                fut = Late()
+                if isinstance(outcome, BaseException):
+                    fut.set_exception(outcome)
+                else:
+                    fut.set_result(outcome)
+                return fut
+
+            async def nothing():
+                pass
+            with mock.patch.object(mcp_gateway.asyncio, "run_coroutine_threadsafe", submit):
+                return ups._run(nothing(), timeout=1)
+        self.assertEqual("listed", run("listed"))
+        with self.assertRaisesRegex(TimeoutError, "read timed out"):
+            run(TimeoutError("read timed out"))
+
+        class Ending(Late):   # not done when checked, and already finishing when cancelled
+            def done(self):
+                return False
+
+            def cancel(self):
+                return False
+        Late = Ending
+        self.assertEqual("listed", run("listed"))
+
+    def test_a_reconnect_that_gets_no_session_names_the_upstream(self):
+        """The reconnect's wait for a session names the upstream, and gives up the attempt so the next call opens a
+        new one."""
+        ups = self.srv.mcp["upstreams"]
+
+        class Never:   # an upstream whose session never opens
+            def __init__(self, target):
+                pass
+
+            async def __aenter__(self):
+                await asyncio.Event().wait()
+
+            async def __aexit__(self, *exc):
+                return False
+        held = ups._held["up"]
+        try:
+            with mock.patch("mcp.Client", Never), mock.patch.object(mcp_gateway, "UPSTREAM_TIMEOUT_S", 0.2), \
+                    self.assertRaisesRegex(mcp_gateway.Unreachable, r"^upstream 'up' gave no session in 0.2 s$"):
+                ups._open("up")
+            attempt = ups._held["up"]
+            with contextlib.suppress(concurrent.futures.CancelledError, concurrent.futures.TimeoutError):
+                attempt.result(5)
+            self.assertTrue(attempt.cancelled())
+        finally:
+            ups._held["up"] = held   # the open session this test left alone
 
     def test_page_bound_error_forgets_page1_resources(self):
         """Hitting the page cap on resources/list returns an error and remembers nothing."""
