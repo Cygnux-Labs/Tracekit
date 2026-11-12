@@ -272,3 +272,13 @@
 {"tool": "Bash", "args": {"command": "env | grep PATH"}, "expect": "allow", "note": "environment read locally"}
 {"tool": "Bash", "args": {"command": "env | sort > env.txt"}, "expect": "allow", "note": "environment written locally"}
 {"tool": "Bash", "args": {"command": "printenv HOME | tee home.txt"}, "expect": "allow", "note": "one variable written locally"}
+{"tool": "Bash", "args": {"command": "echo 'export PATH=$PATH:~/bin' >> ~/.bashrc"}, "expect": "allow", "note": "an ordinary startup-file edit stays as it is (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'alias ll=ls' >> ~/.bashrc"}, "expect": "allow", "note": "an alias in bashrc stays as it is (#750)"}
+{"tool": "Bash", "args": {"command": "crontab -l"}, "expect": "allow", "note": "listing the user's crontab (#750)"}
+{"tool": "Bash", "args": {"command": "chmod 755 ./build.sh"}, "expect": "allow", "note": "an ordinary executable mode (#750)"}
+{"tool": "Bash", "args": {"command": "chmod u+x deploy.sh"}, "expect": "allow", "note": "an ordinary executable mode by symbol (#750)"}
+{"tool": "Bash", "args": {"command": "id -u"}, "expect": "allow", "note": "the current user id (#750)"}
+{"tool": "Bash", "args": {"command": "groups"}, "expect": "allow", "note": "the current user's groups (#750)"}
+{"tool": "Bash", "args": {"command": "cat /etc/passwd"}, "expect": "allow", "note": "reading the password file (#750)"}
+{"tool": "Bash", "args": {"command": "usermod -L dev"}, "expect": "allow", "note": "locking an account without a group change (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'socat is great' >> notes.md"}, "expect": "allow", "note": "a network tool's name in an ordinary file (#750)"}
