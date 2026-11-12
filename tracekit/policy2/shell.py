@@ -29,7 +29,6 @@ out of the command, only the top level's is cut).
 import ast
 import base64
 import collections
-import fnmatch
 import itertools
 import json
 import math
@@ -1606,20 +1605,62 @@ GLOB_NAMES = (".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profi
 _PATTERN_SYNTAX = re.compile(r"[*?]|\[[^]]*\]")
 
 
+# a bracket expression's POSIX classes, as a regular expression's class reads them
+_POSIX_CLASSES = {"alpha": "a-zA-Z", "digit": "0-9", "alnum": "a-zA-Z0-9", "upper": "A-Z", "lower": "a-z",
+                  "xdigit": "0-9A-Fa-f", "space": " \\t\\n\\r\\f\\v", "blank": " \\t", "word": "\\w",
+                  "punct": re.escape("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"), "graph": "!-~", "print": " -~",
+                  "cntrl": "\\x00-\\x1f\\x7f"}
+
+
+def _glob_rx(part):
+    """One component of a pathname pattern as a regular expression bash's matching agrees with: `*`, `?`, and a
+    bracket expression with `!` or `^` negating it, ranges and POSIX classes (`[[:alpha:]]`)."""
+    out, i = [], 0
+    while i < len(part):
+        c = part[i]
+        j = i + 1
+        if c == "[":
+            neg = part[j:j + 1] in ("!", "^")
+            j += neg
+            body = ["\\]"] * (part[j:j + 1] == "]")
+            j += part[j:j + 1] == "]"
+            while j < len(part) and part[j] != "]":
+                end = part.find(":]", j) if part.startswith("[:", j) else -1
+                if end > 0:
+                    body.append(_POSIX_CLASSES.get(part[j + 2:end], ""))
+                    j = end + 2
+                elif part[j + 1:j + 2] == "-" and part[j + 2:j + 3] not in ("", "]"):   # a range, if it is one
+                    body.append(re.escape(part[j]) + "-" + re.escape(part[j + 2]) if part[j] <= part[j + 2] else "")
+                    j += 3
+                else:
+                    body.append(re.escape(part[j]))
+                    j += 1
+            if j < len(part):
+                out.append("[" + "^" * neg + "".join(body) + "]" if any(body) else "(?!)" * (not neg) or ".")
+                i = j + 1
+                continue
+        out.append(".*" if c == "*" else "." if c == "?" else re.escape(c))
+        i += 1
+    try:
+        return re.compile("".join(out), re.S)
+    except re.error:   # a class no regular expression reads: it names nothing here
+        return re.compile("(?!)")
+
+
 def _unglob(text):
-    """The names a pathname pattern may make: those its bracket expressions can make (_brackets), and each name of
-    GLOB_NAMES a component with two characters of its own matches (`.bashr?` is .bashrc; bash matches a leading dot
-    only with a dot, so `*rc` isn't .bashrc), read in that component's place; [] when it makes none it can list.
+    """The names a pathname pattern may make: those its bracket expressions can make (_brackets), and with each of
+    its components that has two characters of its own read as each name of GLOB_NAMES it matches, all at once
+    (`~/.ss?/conf?g` is ~/.ssh/config; bash matches a leading dot only with a dot, so `*rc` isn't .bashrc), at most
+    64 of them; [] when it makes none it can list.
     lean: a pattern of fewer characters of its own (`~/.ssh/*`), or one that stands for a name outside GLOB_NAMES, is
     no name here; list more names when a rule protects them"""
     made = _brackets(text)
     named = []
     for t in made or [text]:
         parts = t.split("/")
-        for i, p in enumerate(parts):
-            if _PATTERN_SYNTAX.search(p) and len(_PATTERN_SYNTAX.sub("", p)) > 1:
-                named += ["/".join(parts[:i] + [n] + parts[i + 1:]) for n in GLOB_NAMES
-                          if (p[0] == "." or n[0] != ".") and fnmatch.fnmatchcase(n, p)]
+        choices = [[p] + [n for n in GLOB_NAMES if (p[0] == "." or n[0] != ".") and _glob_rx(p).fullmatch(n)]
+                   if _PATTERN_SYNTAX.search(p) and len(_PATTERN_SYNTAX.sub("", p)) > 1 else [p] for p in parts]
+        named += ["/".join(c) for c in itertools.islice(itertools.product(*choices), 1, 64)]
     return list(dict.fromkeys(made + named))
 
 

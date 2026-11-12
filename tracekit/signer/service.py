@@ -469,7 +469,9 @@ def load_policy(path=DEFAULT_POLICY, backend=None):
 # rules protect (a credentials file, a startup file, a Git hook, a harness's settings) is read where its own class,
 # unknown, reaches none of them
 FILE_TOOLS = {"write_file": "Write", "patch": "Edit", "read_file": "Read", "search_files": "Grep"}
-PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.+)$", re.M)
+# a V4A patch's file headers as Hermes Agent's parser reads them (tools/patch_parser.py: `***`, any blanks, Add, Update
+# or Delete File:, and Move File: a -> b, which names both) and as Codex's (Move to:), any blanks before them too
+PATCH_FILE = re.compile(r"^\s*\*\*\*\s*(?:(?:Add|Update|Delete|Move)\s+File|Move\s+to)\s*:(.+)$", re.M)
 
 
 def _as_file_tool(tool, args):
@@ -478,7 +480,7 @@ def _as_file_tool(tool, args):
     files = [v for k in classes.PATH_KEYS if isinstance(v := args.get(k), str)]
     files += [f for f in args["paths"] if isinstance(f, str)] if isinstance(args.get("paths"), list) else []
     if tool == "patch" and isinstance(args.get("patch"), str):
-        files += [f.strip() for f in PATCH_FILE.findall(args["patch"])]
+        files += [f.strip() for h in PATCH_FILE.findall(args["patch"]) for f in [h, *h.split("->")]]
     return {**args, "paths": list(dict.fromkeys(files))}
 
 
@@ -515,10 +517,12 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         if tool in FILE_TOOLS and cls == "unknown":
             d = _stricter(d, policy.decide(FILE_TOOLS[tool], _as_file_tool(tool, args), untrusted=untrusted))
         # text typed into a running process (Hermes Agent's process_manage write or submit) is also decided as the
-        # shell line it is, where that process is a shell
-        if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
-                isinstance(args.get("data"), str):
-            d = _stricter(d, policy.decide("Bash", {"command": args["data"]}, untrusted=untrusted))
+        # shell line it is, where that process is a shell, and as the line the process reads it into (`typed_line`:
+        # the unfinished text earlier calls typed, then its own)
+        if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit"):
+            for text in (args.get("data"), args.get("typed_line")):
+                if isinstance(text, str):
+                    d = _stricter(d, policy.decide("Bash", {"command": text}, untrusted=untrusted))
         mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
         if tool.startswith("mcp__") and "__" in tool[5:]:
             # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>

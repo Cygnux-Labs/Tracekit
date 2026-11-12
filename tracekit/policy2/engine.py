@@ -700,8 +700,9 @@ def _shell(args, persistent_target=None, readings=True, work=None):
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
     a list of command lines, read joined by newlines and each on its own: the OpenAI Agents SDK's ShellTool runs each
     in a process of its own and LangChain's joins them with `;`, so an entry that leaves a quote, a heredoc or a line
-    continuation open doesn't swallow the next. Anything else, or more than one of them, raises ParseError (with the
-    commands the readings that parsed read, `cmds`)."""
+    continuation open doesn't swallow the next. The joined reading stands as it is; an entry that can't be read on its
+    own adds the commands read before it stopped, and where the joined one can't be read, its ParseError carries every
+    entry's commands (`cmds`). Anything else, or more than one of them, raises ParseError."""
     present = [k for k in classes.SHELL_KEYS if args.get(k) is not None]
     if len(present) > 1:
         raise shell.ParseError(f"more than one command field: {present}")
@@ -710,19 +711,21 @@ def _shell(args, persistent_target=None, readings=True, work=None):
     if isinstance(value, str):
         return shell.analyse(value, persistent_target, readings, work)
     if strings and present == ["commands"]:
-        found, failed = [], None
-        for line in ["\n".join(value)] + (value if len(value) > 1 else []):
+        entries = []   # each entry's reading, or the commands read before it stopped
+        for line in value if len(value) > 1 else []:
             try:
-                found.append(shell.analyse(line, persistent_target, readings, work))
+                entries.append(shell.analyse(line, persistent_target, readings, work))
             except shell.ParseError as e:
-                failed = failed or e
-        if failed:
-            failed.cmds = [c for reading in found for c in reading[0]] + list(getattr(failed, "cmds", ()))
-            raise failed
+                entries.append((list(getattr(e, "cmds", ())), [], [], [], []))
+        try:
+            found = [shell.analyse("\n".join(value), persistent_target, readings, work)] + entries
+        except shell.ParseError as e:
+            e.cmds = list(getattr(e, "cmds", ())) + [c for reading in entries for c in reading[0]]
+            raise
         if len(found) == 1:
             return found[0]
-        learned = {**found[0][5], "more": any(r[5]["more"] for r in found),
-                   "unresolved": set().union(*(r[5].get("unresolved", ()) for r in found))}
+        learned = {**found[0][5], "more": any(r[5]["more"] for r in found if len(r) > 5),
+                   "unresolved": set().union(*(r[5].get("unresolved", ()) for r in found if len(r) > 5))}
         learned.pop("effects", None)
         return (*([x for r in found for x in r[k]] for k in range(5)), learned)
     if strings:
@@ -781,39 +784,103 @@ _SOURCE_VARIABLES["NPM_CONFIG_REGISTRY"] = "registry.npmjs.org"
 _PIP = re.compile(r"pip[0-9.]*")
 
 
-# the agent harnesses' CLIs (a hook or plugin of Tracekit's runs in their settings), and what starts one with settings
-# the line chooses: a variable naming a home or a settings folder or file (HOME, XDG_CONFIG_HOME, CLAUDE_CONFIG_DIR,
-# CODEX_HOME, HERMES_HOME, OPENCODE_CONFIG, OPENHANDS_WORK_DIR), env clearing or unsetting variables, a long option
-# that loads settings (--settings, --setting-sources, --config, --profile), and codex's -c and -p and hermes's -p
+# the agent harnesses' CLIs (a hook or plugin of Tracekit's runs in their settings), also under the name a package
+# runner or an interpreter runs them by (npx @anthropic-ai/claude-code runs claude-code; node …/@openai/codex/…;
+# python -m hermes_cli.main; hermes-agent)
 _HARNESS_CLIS = frozenset(("claude", "codex", "gemini", "qwen", "opencode", "kilo", "kilocode", "goose", "droid", "agy",
                            "antigravity", "crush", "devin", "hermes", "cline", "openhands", "cursor-agent"))
-_SETTINGS_VARIABLE = re.compile(r"HOME|XDG_\w*|\w*(?:_HOME|CONFIG|SETTING|PROFILE|_DIR)\w*", re.I)
-_SETTINGS_OPTION = re.compile(r"--[A-Za-z-]*(?:setting|config|profile)[A-Za-z-]*(?:=[\w\W]*)?")
+_HARNESS_NAMES = {"claude-code": "claude", "gemini-cli": "gemini", "qwen-code": "qwen", "opencode-ai": "opencode",
+                  "hermes-agent": "hermes", "hermes-acp": "hermes", "hermes_cli": "hermes",
+                  "openhands-ai": "openhands"}
+_HARNESS_PACKAGE = re.compile(r"(?:^|/)(?:@anthropic-ai/(claude-code)|@openai/(codex)|@google/(gemini-cli)|"
+                              r"@qwen-code/(qwen-code)|(opencode-ai)|@kilocode/(cli)|(cline)|(hermes-agent))(?:/|$)")
+_JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
+# what makes a harness read settings other than the person's, or none: HOME, XDG_CONFIG_HOME and each harness's own
+# home, config or settings variable (CLAUDE_CONFIG_DIR, CODEX_HOME, HERMES_HOME, OPENCODE_CONFIG, OPENHANDS_WORK_DIR,
+# CLAUDE_CODE_SIMPLE, as --bare sets it); an option that loads other settings or none (claude --settings,
+# --setting-sources and --bare; --config, --profile; codex's -p, and its -c only for a key of its hooks, notify,
+# sandbox, approvals or profiles: -c model_reasoning_effort=high is no such key); hermes's -p
+_SETTINGS_VARIABLE = re.compile(r"HOME|USERPROFILE|XDG_CONFIG_HOME|(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|KILOCODE|"
+                                r"GOOSE|FACTORY|DROID|ANTIGRAVITY|AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR)_\w*"
+                                r"(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN)\w*", re.I)
+_SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|profile)(?:=[\w\W]*)?|--bare")
 _SETTINGS_SHORT = {"codex": ("-c", "-p"), "hermes": ("-p",)}
-_SETS_ENV = (["env"], ["export"], ["declare"], ["typeset"])
+_SETTINGS_KEY = re.compile(r"(?:^|[._])(?:hooks?|notify|sandbox|approvals?|profiles?)(?:[._]|$)", re.I)
+# the builtins that set a variable from their words (read's names, printf -v's, an assignment word)
+_SETS_VARIABLE = ("env", "export", "declare", "typeset", "local", "readonly", "read", "printf", "mapfile",
+                  "readarray")
+
+
+def _harness(argv):
+    """The harness CLI (_HARNESS_CLIS) an argv starts, by its name, a package's (npx, bunx, pnpm dlx run one by it),
+    a script under a harness package a JavaScript runtime runs, or a module python -m runs; else None."""
+    name = _program(argv)
+    name = _HARNESS_NAMES.get(name, name)
+    if name in _HARNESS_CLIS:
+        return name
+    if name in _JS_RUNTIMES:
+        script = next((a for a in argv[1:] if not a.startswith("-")), "")
+        m = _HARNESS_PACKAGE.search(script.replace("\\", "/"))
+        found = m and next(g for g in m.groups() if g)
+        return found and _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
+    if _PYTHON_EXE.fullmatch(name):
+        module = _python_module(argv[1:])[:1]
+        return "hermes" if module and module[0].split(".")[0] == "hermes_cli" else None
+    return None
+
+
+def _set_names(commands, refs):
+    """The variables a line sets, in any way bash sets one: an assignment word (`X=`, `X+=`, before a command or alone,
+    through env, export, declare, typeset, local or readonly), read's names, printf -v's and mapfile's."""
+    words = [w for w in refs if re.match(r"[A-Za-z_]\w*\+?=", w)]
+    for c in commands:
+        argv = c["argv"]
+        if argv[0] not in _SETS_VARIABLE:
+            continue
+        if argv[0] == "printf":
+            words += [b for a, b in zip(argv, argv[1:]) if a == "-v"]
+        elif argv[0] in ("read", "mapfile", "readarray"):
+            words += [a for a, before in zip(argv[1:], argv) if not a.startswith("-") and before not in (
+                "-p", "-d", "-n", "-N", "-t", "-u", "-i", "-C", "-c", "-O", "-s")]
+        else:
+            words += [a for a in argv[1:] if "=" in a]
+    return {w.split("=", 1)[0].removesuffix("+") for w in words}
 
 
 def _harness_launches(commands, refs=()):
-    """`LAUNCH:<harness> <why>` for each harness CLI (_HARNESS_CLIS) the line starts with settings it chooses: a
-    variable the line sets (before a command, through env, export, declare or typeset) that names a home or settings
-    (_SETTINGS_VARIABLE), env -i or -u, or a settings option on its own words; such a run reads no settings of the
-    person's, the hooks that record it among them.
+    """`LAUNCH:<harness> <why>` for each harness CLI (_harness) the line starts with settings it chooses: a home or
+    settings variable the line sets (_SETTINGS_VARIABLE, _set_names), an env that runs it clearing variables (-i) or
+    unsetting one of those (-u), a settings option among its words (_SETTINGS_OPTION, _SETTINGS_SHORT; codex's -c
+    for a key of _SETTINGS_KEY), words xargs gives it from its input, or a word built at run time (`$(echo
+    --settings)`, which may be an option); such a run reads none of the person's settings, the hooks that record it
+    among them.
     lean: a variable set anywhere on the line counts for every harness on it; read it per command if that holds a run
     a person needs"""
-    words = list(refs) + [a for c in commands if c["argv"][:1] in _SETS_ENV for a in c["argv"][1:]]
-    named = [n for n, eq, _ in (w.partition("=") for w in words) if eq and _SETTINGS_VARIABLE.fullmatch(n)]
-    cleared = any(c["argv"][:1] == ["env"] and any(re.fullmatch(r"-[A-Za-z]*[iu][A-Za-z]*|--(ignore-environment|unset)"
-                                                                 r"(=[\w\W]*)?|-", a) for a in c["argv"][1:])
-                  for c in commands)
+    named = sorted(n for n in _set_names(commands, refs) if _SETTINGS_VARIABLE.fullmatch(n))
     out = []
     for command in commands:
-        exe = _program(command["argv"])
-        if exe not in _HARNESS_CLIS:
+        argv = command["argv"]
+        at = next((i for i, w in enumerate(argv[1:], 1) if _harness([w])), None) if argv[0] == "env" else None
+        if at:   # env's own words, before the harness it runs
+            own = argv[1:at]
+            unset = [b for a, b in zip(own, own[1:]) if a in ("-u", "--unset")] + [
+                a.partition("=")[2] or a[2:] for a in own if a.startswith(("--unset=", "-u")) and len(a) > 2]
+            if any(re.fullmatch(r"-[A-Za-z]*i[A-Za-z]*|--ignore-environment|-", a) for a in own) or any(
+                    _SETTINGS_VARIABLE.fullmatch(n) for n in unset):
+                out.append(f"LAUNCH:{_harness([argv[at]])} env clears its settings")
+        exe = _harness(argv)
+        if not exe:
             continue
-        args = command["argv"][1:]
-        options = [a for a in args if _SETTINGS_OPTION.fullmatch(a) or any(a.startswith(o) for o in _SETTINGS_SHORT.get(
-            exe, ()))]
-        why = [f"variable {n}" for n in named] + ["env clears variables"] * cleared + [f"option {o}" for o in options]
+        args = argv[1:]
+        options = [a for i, a in enumerate(args) if _SETTINGS_OPTION.fullmatch(a) and not (
+            exe == "codex" and a.startswith("--config") and not _SETTINGS_KEY.search(
+                (a.partition("=")[2] or (args[i + 1] if i + 1 < len(args) else "")).partition("=")[0]))]
+        short = _SETTINGS_SHORT.get(exe, ())
+        options += [a for i, a in enumerate(args) if a[:2] in short and not (exe == "codex" and a[:2] == "-c" and not
+                    _SETTINGS_KEY.search((a[2:] or (args[i + 1] if i + 1 < len(args) else "")).partition("=")[0]))]
+        why = [f"variable {n}" for n in named] + [f"option {o}" for o in options]
+        why += ["arguments from xargs's input"] * (command.get("via", [])[-1:] == ["xargs"])
+        why += [f"a word built at run time {w[:40]}" for w in args if re.search(r"\$\(|`", w)]
         out += [f"LAUNCH:{exe} {w}" for w in why]
     return list(dict.fromkeys(out))
 
@@ -1440,6 +1507,17 @@ def _write_effects(parsed):
         # #421); follow the names into the writer if that holds real reads
         tags += ["MAY_WRITE:" + w for c in parsed[0] for w in c["argv"][1:] + c["stdin"]]
         tags += ["MAY_WRITE:" + line for line in parsed[1] if unread]
+    # a relative target a command after a cd writes is also read in the folder the cd entered, resolved (`cd ~/.hermes
+    # && sed -i … config.yaml`)
+    base = ""
+    for c in parsed[0]:
+        if c["argv"][0] in ("cd", "pushd"):
+            to = next((a for a in c["argv"][1:] if not a.startswith("-")), "~")
+            base = to if to.startswith(("/", "~", "$")) or not base else posixpath.join(base, to)
+        elif base:
+            tags += [k + ":" + _normal(base.rstrip("/") + "/" + path) for k, _, path in (t.partition(":") for t in [
+                "WRITE_TARGET:" + o for o in c.get("out", ())] + _command_effects([c]))
+                     if k != "MAY_WRITE" and path[:1] not in ("/", "~", "$", "")]
     tags += [k + ":" + n for k, _, path in (t.partition(":") for t in tags)
              if k != "MAY_WRITE" and (n := _normal(path)) != path]
     # a pattern under ~ is also each folder of an agent's it may match (`rm -rf ~/.cla*` deletes ~/.claude)
@@ -1533,8 +1611,131 @@ def _zip_moves(args):
     return False
 
 
+# the folders a find's `**` may stand for that the rules protect, so a protected name it tests is read in each
+# (`find ~ -name config` finds ~/.ssh/config)
+_FIND_FOLDERS = (".ssh", ".aws", ".git", ".claude", ".codex", ".gemini", ".hermes", ".config")
+
+
+def _find_files(args):
+    """The files a find's arguments find, as the rules read paths: under each start path (after its options: -L, -H,
+    BSD's -E, -x …, and `--`; `.` when none), each name its -name or -iname tests (`./**/.env`; a protected name of
+    shell.GLOB_NAMES it is or a pattern may make also in each of _FIND_FOLDERS, `~/.ssh/config`; under a .git
+    folder, also in its hooks: `.git/hooks/pre-commit`), else
+    the start path and all under it; what its path tests and -files0-from name (`-path '*/x/*'`; -delete implies
+    -depth, under which -prune doesn't keep find out of a folder); and the log and history names among its tests. A
+    name test that is negated (`! -name`, `-not -name`) or pruned names no file it finds."""
+    starts = []
+    for arg in args:
+        if re.fullmatch(r"-[A-Za-z]|-O[0-9]*|--", arg):
+            continue
+        if arg.startswith("-") or arg in ("!", "("):
+            break
+        starts.append(arg)
+    # each name test's value that finds files: neither negated (before its test) nor pruned (after it)
+    kept = [i for i in range(1, len(args)) if args[i + 1:i + 2] != ["-prune"]]
+    tested = [args[i] for i in kept if args[i - 1] in ("-name", "-iname") and args[max(i - 2, 0):i - 1] not in
+              (["!"], ["-not"])]
+    # each protected name a name or pattern stands for (`*.py` and `.DS_Store` stand for none: read as they are)
+    names = [n for t in tested for n in [t, *shell._unglob(t)] if n in shell.GLOB_NAMES]
+    paths = [p for i in range(1, len(args)) if args[i - 1] in ("-path", "-ipath", "-wholename", "-iwholename",
+                                                                 "-regex", "-iregex", "-files0-from")
+             for p in [args[i], *shell._unglob(args[i])]]
+    starts = starts or ["."]
+    # a name found in a .git folder may be one of its hooks (`find .git -name pre-commit`)
+    hooks = [f"{s.rstrip('/')}/hooks/{t}" for s in starts if s.rstrip("/").endswith(".git") for t in tested]
+    found = [f"{s.rstrip('/')}/**/{t}" for s in starts for t in tested] + hooks + [
+        f"{s.rstrip('/')}/{d}/{n}" for s in starts for n in names for d in _FIND_FOLDERS] + [
+        f"{s.rstrip('/')}/{n}" for s in starts for n in names] if tested else [s.rstrip("/") + "/**" for s in starts]
+    return list(dict.fromkeys(starts + found + paths + [args[i] for i in kept if _log_or_history(args[i])]))
+
+
+# an awk program's output redirection: > or >> and the expression it writes to, up to a `;`, `}`, newline or `|`
+_AWK_OUTPUT = re.compile(r'>>?\s*(\([^()\n]*\)|(?:"[^"\n]*"|[A-Za-z_]\w*)(?:[ \t]+(?:"[^"\n]*"|[A-Za-z_]\w*))*)')
+_AWK_ASSIGN = re.compile(r'\b([A-Za-z_]\w*)\s*=\s*"([^"\n]*)"')
+
+
+def _awk_outputs(args):
+    """The files an awk program prints to (print or printf > or >>): a string, a variable the command line (-v) or
+    the program gives a string, or a concatenation of those in parentheses (`> (".e" "nv")`, `-v f=.env … > f`)."""
+    program = shell._awk_program(args) or ""
+    given = dict(_AWK_ASSIGN.findall(program))
+    given.update(a.partition("=")[::2] for a, prev in zip(args, [""] + args) if prev in ("-v", "--assign") and "=" in a)
+    out = []
+    for target in _AWK_OUTPUT.findall(program):
+        parts = re.findall(r'"([^"\n]*)"|([A-Za-z_]\w*)', target)
+        if parts and all(text or name in given for text, name in parts):
+            out.append("".join(text or given[name] for text, name in parts))
+    return out
+
+
+# programs that write the file an option names (sort -o, iconv -o, gpg -o, openssl -out, wget -O, curl -o) or one of
+# their operands: uniq's second, xxd -r's second, sponge's, patch's (the file it patches), ed's and ex's, and vim's,
+# vi's or nvim's in Ex mode (-e, -es, -E: a script edits the files)
+_OUTPUT_OPTION = {"sort": ("-o", "--output"), "iconv": ("-o", "--output"), "gpg": ("-o", "--output"),
+                  "gpg2": ("-o", "--output"), "openssl": ("-out",), "wget": ("-O", "--output-document"),
+                  "curl": ("-o", "--output"), "patch": ("-o", "--output")}
+_OUTPUT_OPERAND = {"uniq": 1, "xxd": 1, "sponge": 0, "patch": 0, "ed": 0, "red": 0, "ex": 0, "vim": 0, "vi": 0,
+                   "nvim": 0}
+
+
+def _outputs(exe, args):
+    """The files `exe ARGS` writes, by _OUTPUT_OPTION and _OUTPUT_OPERAND (a word after an option counts as its
+    value, so an operand is only a word no option before it takes)."""
+    options = _OUTPUT_OPTION.get(exe, ())
+    out = [b for a, b in zip(args, args[1:]) if a in options] + [
+        a.partition("=")[2] if a.startswith("--") else a[len(o):] for a in args for o in options
+        if a.startswith(o) and a != o and (a[len(o)] == "=" if a.startswith("--") else len(o) == 2)]
+    if exe in _OUTPUT_OPERAND and (exe not in ("vim", "vi", "nvim") or any(re.fullmatch(r"-[sE]*[eE]s?", a)
+                                                                           for a in args)) and (
+            exe != "xxd" or any(re.fullmatch(r"-[a-z]*r[a-z]*", a) for a in args)):
+        operands = [a for a, before in zip(args, [""] + args) if not a.startswith(("-", "+")) and
+                    before not in options and not (exe in ("vim", "vi", "nvim", "ex") and before in ("-c", "-S", "-u"))]
+        out += operands[_OUTPUT_OPERAND[exe]:][:None if exe in ("ed", "red", "ex", "vim", "vi", "nvim") else 1]
+    return out
+
+
+# the in-place editors (GNU sed as gsed, a versioned perl or ruby: perl5.34), and the switches each reads in a cluster
+# before its in-place one: sed's flags (then -e, -f or -l take the rest), perl's and ruby's flags, those that take
+# digits and go on (-l, -0, ruby's -W and -T), and those that take the rest as their value (-e, -I, -M …)
+_EDITOR = re.compile(r"(?:g(?=sed))?(sed|perl|ruby)[0-9.]*")
+_IN_PLACE_FLAGS = {"sed": ("nrsuzEb", ""), "perl": ("acnpsStTuUvwWX", "l0"), "ruby": ("acdlnpsSvwyh", "0WT")}
+
+
+def _in_place(editor, arg):
+    """Whether `arg` makes sed, perl or ruby edit its files in place: -i or BSD sed's -I alone or after flags in a
+    cluster (`sed -Ei`, `perl -spi`, `perl -lpi`, `ruby -Wpi`), or a prefix of sed's --in-place (`--in`)."""
+    if editor is None:
+        return False
+    if arg.startswith("--"):
+        flag = arg.partition("=")[0]
+        return editor == "sed" and len(flag) > 2 and "--in-place".startswith(flag)
+    flags, digits = _IN_PLACE_FLAGS[editor]
+    i = 1
+    while arg[:1] == "-" and i < len(arg):
+        c = arg[i]
+        if c == "i" or c == "I" and editor == "sed":
+            return True
+        if c in digits:
+            i += 1
+            while i < len(arg) and arg[i].isdigit():
+                i += 1
+        elif c in flags:
+            i += 1
+        else:
+            return False
+    return False
+
+
 def _command_effects(commands):
     out = []
+    # what each pipeline's find, echo or printf prints, for a writer xargs runs there: it writes or deletes each name
+    # (`find . -name .env | xargs sed -i …`, `echo .env | xargs …`)
+    prints = {}
+    for c in commands if any(c.get("via", [])[-1:] == ["xargs"] for c in commands) else ():
+        prog = _program(c["argv"])
+        if prog in ("find", "echo", "printf"):
+            prints.setdefault(c.get("pipeline"), []).extend(
+                _find_files(c["argv"][1:]) if prog == "find" else [w for w in c["argv"][1:] if not w.startswith("-")])
     for command in commands:
         argv = command["argv"]
         if not argv:
@@ -1552,6 +1753,11 @@ def _command_effects(commands):
                 elif a.startswith("-o") and not a.startswith("--"):
                     out.append("WRITE_TARGET:" + (a[2:].removeprefix("=") or w))
             continue
+        printed = prints.get(command.get("pipeline"), []) if command.get("via", [])[-1:] == ["xargs"] else []
+        if printed:
+            out.extend(kind + ":" + path for t in _command_effects([{"argv": argv + ["{}"]}])
+                       for kind, _, target in [t.partition(":")] if target == "{}" and kind != "MAY_WRITE"
+                       for path in printed)
         if exe == "find":
             # what its -exec runs write (the parser doesn't emit them when a container runs the find: `docker exec c
             # find . -exec rm x \;`); -delete or an -exec rm (unlink, shred, truncate, mv {}) deletes each file found,
@@ -1559,33 +1765,15 @@ def _command_effects(commands):
             # `+`, so a find it runs (through git or a container) has no run of its own: the recursion stays shallow
             runs = _command_effects([{"argv": [run[0].casefold()] + run[1:]} for run in shell._find_execs(args)])
             out.extend(runs)
+            # the file its -fprint, -fprint0, -fprintf or -fls writes its list into
+            out.extend("WRITE_TARGET:" + b for a, b in zip(args, args[1:]) if a in ("-fprint", "-fprint0", "-fprintf",
+                                                                                  "-fls"))
             found = {t.partition(":")[0] for t in runs if t.partition(":")[2] == "{}"}
             if "-delete" in args or any(a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args)
                                         and args[i + 1].rsplit("/", 1)[-1].casefold() in (
-                                            "rm", "unlink", "shred", "truncate") for i, a in enumerate(args)):
+                                            "rm", "unlink", "shred") for i, a in enumerate(args)):
                 found.add("DELETE_TARGET")
-            if not found:
-                continue
-            # its start paths (after its options: -L, -H, BSD's -E, -x …, and `--`), what its path tests and
-            # -files0-from name (`-path '*/x/*'`; -delete implies -depth, under which -prune doesn't keep find out of a
-            # folder), and the log and history names among its tests (`-name .bash_history`) but those `-prune` leaves out
-            paths = []
-            for arg in args:
-                if re.fullmatch(r"-[A-Za-z]|-O[0-9]*|--", arg):
-                    continue
-                if arg.startswith("-"):
-                    break
-                paths.append(arg)
-            paths += [args[i + 1] for i in range(len(args) - 1) if args[i] in (
-                "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex", "-files0-from")]
-            pruned = {i for i in range(len(args)) if args[i + 1:i + 2] == ["-prune"]}
-            # and each name its -name or -iname tests, under each start path (`find . -name .env -exec sed -i …`
-            # writes ./**/.env), as the rules read a file's name
-            paths += [p.rstrip("/") + "/**/" + args[i + 1] for p in paths[:] or ["."] for i in range(len(args) - 1)
-                      if args[i] in ("-name", "-iname") and i + 1 not in pruned]
-            paths += [a for i, a in enumerate(args) if i not in pruned and _log_or_history(a)]
-            kind = "DELETE_TARGET" if "DELETE_TARGET" in found else "WRITE_TARGET"
-            out.extend(kind + ":" + path for path in dict.fromkeys(paths))
+            out.extend(kind + ":" + path for kind in sorted(found) for path in _find_files(args))
         elif exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
             valued = ("-s", "--size", "-r", "--reference") if exe == "truncate" else (
                 "-t", "--target-directory", "-m", "--mode", "-o", "--owner", "-g", "--group", "-S", "--suffix")
@@ -1634,20 +1822,22 @@ def _command_effects(commands):
                 elif not a.startswith("-") and not (exe == "tar" and i == 0 and re.fullmatch(r"[A-Za-z]+", a)):
                     operands.append(a)
             out.extend("DELETE_TARGET:" + a for a in (operands[:-1] if exe == "rsync" else operands))
-        # ruby's -i, -p, -n and -e are perl's
-        elif exe in ("sed", "perl", "ruby") and any(re.match(r"-[nrsuzE]*i|--in-place" if exe == "sed" else
-                                                             r"-[0-9alnpw]*i", a) for a in args):
-            if exe == "sed":   # the operands after the script: the first one unless -e, -f or their long forms give it
-                files, script_seen, skip = [], False, False
+        elif (editor := _EDITOR.fullmatch(exe)) and any(_in_place(editor.group(1), a) for a in args):
+            if editor.group(1) == "sed":   # the operands after the script: the first unless -e, -f or theirs give it
+                files, script_seen, skip, suffix = [], False, False, False
                 for arg in args:
+                    after_in_place, suffix = suffix, False
                     if skip:
                         skip, script_seen = False, True
+                    elif after_in_place and (arg == "" or re.fullmatch(r"\.[\w.~-]*", arg)):   # BSD's -i '' or .bak
+                        continue
                     elif arg in ("--expression", "--file") or re.fullmatch(r"-[A-Za-z]*[ef]", arg):
                         skip = True
                     elif arg.startswith(("--expression=", "--file=")) or re.match(r"-[A-Za-z]*[ef].", arg) and \
                             not arg.startswith("--"):
                         script_seen = True
                     elif arg.startswith("-"):
+                        suffix = bool(re.fullmatch(r"-[A-Za-z]*[iI]", arg))
                         continue
                     elif script_seen:
                         files.append(arg)
@@ -1686,8 +1876,16 @@ def _command_effects(commands):
                 elif not arg.startswith("-"):
                     operands.append(arg)
             out.extend("DELETE_TARGET:" + path for path in operands[1:])
-        elif exe in ("awk", "gawk", "mawk", "nawk"):   # print or printf > "file" in its program
-            out.extend("WRITE_TARGET:" + path for path in re.findall(r'>>?\s*"([^"\n]+)"', shell._awk_program(args) or ""))
+        elif exe in ("awk", "gawk", "mawk", "nawk"):
+            out.extend("WRITE_TARGET:" + path for path in _awk_outputs(args))
+            if any(a in ("-iinplace", "--include=inplace") or a == "inplace" and b in ("-i", "--include")
+                   for a, b in zip(args, [""] + args)):   # gawk's inplace extension writes every file it reads
+                program = shell._awk_program(args)
+                if program in args:
+                    out.extend("WRITE_TARGET:" + a for a in args[args.index(program) + 1:]
+                               if not a.startswith("-") and "=" not in a)
+        elif exe in _OUTPUT_OPTION or exe in _OUTPUT_OPERAND:
+            out.extend("WRITE_TARGET:" + path for path in _outputs(exe, args))
         elif exe in ("sqlite3", "sqlite"):
             # every operand (the database among them), when its SQL (the operands and a heredoc or herestring) writes
             # outside literals and comments, or can't be read

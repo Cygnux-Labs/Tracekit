@@ -267,7 +267,8 @@ def sql_read(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
                     break
             out.append("''" if c == "'" else '""')
             i = j + 1
-        elif c == "$" and dollar and _DOLLAR.match(stmt, i) and not re.match(r"[\w$]", stmt[i - 1:i]):
+        # a $ inside an identifier (`a$b`; `€$a$`: a byte past ASCII is an identifier's to PostgreSQL) opens no quote
+        elif c == "$" and dollar and _DOLLAR.match(stmt, i) and not re.match(r"[\w$\x80-\U0010ffff]", stmt[i - 1:i]):
             tag = _DOLLAR.match(stmt, i).group(0)
             end = stmt.find(tag, i + len(tag))
             if end < 0:

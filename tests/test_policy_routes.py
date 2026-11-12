@@ -5,9 +5,13 @@ for loop's brace words, a harness's own settings commands and a harness started 
 SQL comments and dollar quotes as PostgreSQL and MySQL lex them, and text typed into a live shell."""
 import asyncio
 import importlib.util
+import io
 import json
 import os
+import shutil
+import tempfile
 import unittest
+from unittest import mock
 
 from tracekit import agent_hooks, constraints
 from tracekit.integrations import hermes
@@ -25,11 +29,13 @@ PUSH = "git push --fo" + "rce origin main"
 class Routes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.engines = {(n, b): Engine(pc.build(os.path.join(PACKS, n + ".yaml"))[0], b) for n in NAMES for b in BACKENDS}
+        cls.engines = {(n, b): Engine(pc.build(os.path.join(PACKS, n + ".yaml"))[0], b)
+                       for n in NAMES for b in BACKENDS}
 
     def expect(self, cases, want, rule=None, packs=NAMES):
-        """Each call's verdict on each named pack (`want`: one verdict, or {pack: verdict}) through the signer's own
-        reading (service.evaluate), with `rule` among its rule ids where it isn't allowed."""
+        """Each call's verdict on each named pack (`want`: one verdict, a tuple of those allowed, or {pack:
+        verdict}) through the signer's own reading (service.evaluate), with `rule` among its rule ids where it isn't
+        allowed."""
         for tool, args in cases:
             for (name, backend), e in self.engines.items():
                 if name not in packs:
@@ -37,7 +43,7 @@ class Routes(unittest.TestCase):
                 w = want[name] if isinstance(want, dict) else want
                 with self.subTest(pack=name, engine=backend, tool=tool, args=str(args)[:90]):
                     d = svc.evaluate(e, tool, args)[0]
-                    self.assertEqual(d["verdict"], w, d)
+                    self.assertIn(d["verdict"], w if isinstance(w, tuple) else (w,), d)
                     if rule and w != "allow":
                         self.assertIn(rule, d["rule_ids"], d)
 
@@ -73,6 +79,32 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("echo x > .git/hook?/pre-commit"), "ask", "TK-A068")
         self.expect(self.bash("cp ~/.ssh/id_* /tmp/"), held, "TK-D014")
 
+    def test_every_in_place_switch_find_and_output_writer_reaches_the_rules(self):
+        self.expect(self.bash(
+            "sed -I '' 's/a/b/' .env", "sed -bi 's/a/b/' .env", "sed --in 's/a/b/' .env", "gsed -i 's/a/b/' .env",
+            "perl -spi -e 's/a/b/' .env", "perl -Wpi -e 's/a/b/' .env", "perl -lpi -e 's/a/b/' .env",
+            "perl5.34 -pi -e 's/a/b/' .env", "ruby -spi -e '1' .env", "ruby -W0 -i -pe '1' .env",
+            "awk -v f=.env '{print > f}' x", "awk '{print > (\".e\" \"nv\")}' x", "awk '{print > \".e\" \"nv\"}' x",
+            "gawk -i inplace '{gsub(/a/,\"b\")}1' .env", "find . -name '.en?' -exec sed -i 's/a/b/' {} +",
+            "find . -name .env -exec truncate -s0 {} +", "find . -name .env | xargs sed -i 's/a/b/'",
+            "echo .env | xargs sed -i 's/a/b/'", "cd ~/.ssh && sed -i 's/a/b/' authorized_keys",
+            "sort -o .env .env", "uniq x .env", "ex -sc '%s/a/b/|x' .env", "vim -es -c '%s/a/b/' -c wq .env",
+            "xxd -r x .env", "find . -name .env -fprint .env"), "deny", "TK-D014")
+        self.expect(self.bash("find .git/hooks -type f -exec sed -i 's/a/b/' {} +",
+                              "find .git -name pre-commit -exec sed -i 's/a/b/' {} +"), "ask", "TK-A068")
+        self.expect(self.bash("cd ~/.hermes && sed -i 's/a/b/' config.yaml"), "ask", "TK-F015")
+        # a negated or pruned test finds no file: what the find edits is everything else
+        self.expect(self.bash("find . -type f ! -name .env -exec sed -i 's/a/b/' {} +",
+                              "find . -type f -not -name '*.env' -exec sed -i 's/a/b/' {} +",
+                              "find src -name '*.py' -exec sed -i 's/foo/bar/' {} +",
+                              "find . -name '*.py' -exec perl -pi -e 's/a/b/' {} +"), ("flag", "allow"))
+
+    def test_a_pattern_is_read_part_by_part_and_with_negated_and_posix_brackets(self):
+        held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
+        self.expect(self.bash("sed -i 's/a/b/' ~/.ss?/conf?g", "echo x > .e[^x]v", "echo x > .e[!x]v",
+                              "echo x > .e[[:alpha:]]v"), held, "TK-D014")
+        self.expect(self.bash("echo x > .git/hook[^x]/pre-commit"), "ask", "TK-A068")
+
     def test_ordinary_writes_and_patterns_stay_unheld(self):
         self.expect(self.bash("sed -i 's/foo/bar/g' src/app.py", "sed -i 's/a/b/' *.py", "echo x > out.txt",
                               "perl -pi -e 's/a/b/' src/*.rs", "cp config.example config.local"), "allow")
@@ -92,8 +124,10 @@ class Routes(unittest.TestCase):
 
     # --- a harness's own settings commands and a harness started with settings the agent chose
     def test_a_harness_settings_command_is_held(self):
-        self.expect(self.bash("hermes plugins disable tracekit", "hermes -p work plugins remove tracekit"), "ask",
-                    "TK-A054")
+        self.expect(self.bash("hermes plugins disable tracekit", "hermes -p work plugins remove tracekit",
+                              "hermes plugins disable $(echo tracekit)", "echo tracekit | xargs hermes plugins disable",
+                              "python -m hermes_cli.main plugins disable tracekit",
+                              "hermes-agent plugins disable tracekit"), "ask", "TK-A054")
         self.expect([("terminal", {"command": c}) for c in ("hermes config set approvals.mode off",
                                                             "hermes config edit", "hermes profile use other")],
                     "ask", "TK-A069")
@@ -110,6 +144,27 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("claude -p 'fix the tests'", "codex exec 'fix it'", "gemini -p x", "hermes chat -q x",
                               "HOME=/tmp/h npm test", "claude --version"), "allow")
 
+    def test_a_harness_is_read_through_launchers_assignments_and_built_words(self):
+        self.expect(self.bash(
+            "npx @anthropic-ai/claude-code -p x --settings s.json", "bunx @anthropic-ai/claude-code --bare -p x",
+            "pnpm dlx @openai/codex -c hooks=false exec y", "node ~/.npm/node_modules/@anthropic-ai/claude-code/cli.js "
+            "--settings s.json -p x", "HERMES_HOME=/tmp/h python -m hermes_cli.main chat -q x",
+            "HOME=/tmp/h hermes-agent -q x", "HOME+=/x claude -p x", "read HOME <<< /tmp/h; claude -p x",
+            "printf -v HOME %s /tmp/h; claude -p x", "readonly HOME=/tmp/h; claude -p x",
+            "claude -p x $(echo --settings) s.json", "echo --settings s.json | xargs claude -p x", "claude --bare -p x",
+            "CLAUDE_CODE_SIMPLE=1 claude -p x", "codex exec -c sandbox_workspace_write.network_access=true x",
+            "codex --profile other exec x", "env -u CODEX_HOME codex exec x"), "ask", "TK-A070")
+
+    def test_options_and_variables_that_leave_a_harness_its_hooks_are_not_held(self):
+        # its model, effort or MCP servers, or another tool's settings, change no hook, plugin, approval or sandbox
+        self.expect(self.bash(
+            "codex exec -c model_reasoning_effort=high 'fix it'", "claude -p --strict-mcp-config 'hi'",
+            "claude -p x --mcp-config mcp.json", "AWS_PROFILE=bedrock claude -p x",
+            "KUBECONFIG=~/.kube/dev codex exec x",
+            "JAVA_HOME=/opt/jdk claude -p x", "NVM_DIR=~/.nvm claude -p x", "HF_HOME=/data/hf codex exec x",
+            "CARGO_TARGET_DIR=/tmp/t codex exec x", "env FOO=1 claude -p x", "claude -p x --plugin-dir ./plugins"),
+            "allow")
+
     def test_hermes_settings_files_are_the_harness_settings(self):
         self.expect([("Write", {"file_path": "/home/u/.hermes/config.yaml", "content": "x"})], "ask", "TK-F009")
         self.expect(self.bash("echo x >> ~/.hermes/config.yaml", "mv ~/.hermes/plugins/tracekit /tmp/",
@@ -118,6 +173,11 @@ class Routes(unittest.TestCase):
     # --- an unmapped file tool, read as the file tool it is
     def test_an_unmapped_file_tool_is_also_decided_as_the_file_tool_it_is(self):
         patch = "*** Begin Patch\n*** Update File: ~/.ssh/config\n@@\n-a\n+b\n*** End Patch"
+        # each header Hermes's V4A parser reads: any blanks around its words, Add, Update, Delete, Move File: a -> b
+        for header in ("***Add File: .env", "*** Update  File: ~/.ssh/config", "***\tDelete File: .env",
+                       "*** Move File: run.sh -> ~/.ssh/authorized_keys"):
+            self.expect([("patch", {"mode": "patch", "patch": f"*** Begin Patch\n{header}\n+x\n*** End Patch"})],
+                        "deny", "TK-D005")
         self.expect([("write_file", {"path": "/home/u/.hermes/config.yaml", "content": "x"}),
                      ("patch", {"path": ".git/hooks/pre-commit", "old_string": "a", "new_string": "b"})], "ask")
         self.expect([("write_file", {"path": ".env", "content": "x"}), ("patch", {"mode": "patch", "patch": patch}),
@@ -134,9 +194,17 @@ class Routes(unittest.TestCase):
                     {"dev": "flag", "coding": "flag", "server": "ask", "strict": "ask"})
 
     # --- a commands list, entry by entry
+    def test_a_joined_commands_list_that_reads_stands_beside_its_entries(self):
+        # an entry that can't be read on its own (a heredoc across entries) leaves the joined reading as it is
+        self.expect([("shell", {"commands": ["cat <<EOF > .env", "X=1", "EOF"]}),
+                     ("shell", {"commands": ["cat > .env <<EOF", "X=1", "EOF"]})], "deny", "TK-D010")
+        self.expect([("shell", {"commands": ["cat <<EOF > notes.txt", "hello", "EOF"]}),
+                     ("shell", {"commands": ["git commit -m 'multi", "line message'"]})], "allow")
+
     def test_each_entry_of_a_commands_list_is_read_on_its_own(self):
         # the OpenAI Agents SDK's ShellTool runs each entry in its own process, LangChain's joins them with `;`
-        self.expect([("shell", {"commands": ["echo ok \\", "sudo id"]}), ("shell", {"commands": ["echo 'x", "sudo id", "'"]}),
+        self.expect([("shell", {"commands": ["echo ok \\", "sudo id"]}),
+                     ("shell", {"commands": ["echo 'x", "sudo id", "'"]}),
                      ("terminal", {"commands": ["cat <<EOF", "sudo id", "EOF"]})], "deny", "TK-D001")
         self.assertTrue(constraints.shell({"commands": ["echo ok \\", "git push origin main"]})["push"])
         self.expect([("shell", {"commands": ["ls", "git status"]})], "allow")
@@ -151,6 +219,10 @@ class Routes(unittest.TestCase):
         self.assertIn("DROP", classes.sql_code(f"--\x7f\"\n# '\n{D}\n# \"'", *my))
         self.assertIn("DROP", classes.sql_code(f"--\x01'\n{D};\n-- '", *my))
         self.assertNotIn("DROP", classes.sql_code(f"--x '\n{D}\n'", *my) or "")   # --x is no comment there
+        # a $ after an identifier's byte past ASCII (€, a no-break space) is part of it, not a dollar quote's start
+        for ident in ("€", "x€", "\xa0"):
+            stmt = f"SELECT 1 AS {ident}$a$, $q$[$q$, 1 # 2; {D}; SELECT $q$]$q$ -- $a$"
+            self.assertIn("DROP", classes.sql_code(stmt, *pg))
         held = {"dev": "deny", "server": "deny", "strict": "deny"}
         self.expect([("mcp:postgres/query", {"sql": f"/* /*/ ' */ */ {D}; -- '"}),
                      ("mcp:supabase/execute_sql", {"query": f"/* /*/ ' */ */ {D}; -- '"}),
@@ -160,39 +232,98 @@ class Routes(unittest.TestCase):
 
 class TypedText(unittest.TestCase):
     """Text typed into a live terminal (Devin's write_to_process, Codex's write_stdin, agy's send_input, Hermes's
-    process_manage) that leaves its line unfinished is joined to the next call's by the shell: `git \\` then
-    `push --force origin main` ran the push in an interactive bash, as `git ` with no newline did."""
+    process_manage) that the shell hasn't finished reading is joined to the next call's: `git ` with no newline, or
+    `git \\`, then `push --force origin main` ran the push in an interactive bash, and a quote opened in one call
+    swallowed the next. Each call is decided as the line the terminal reads it into."""
 
-    def blocked(self, harness, name, ti):
+    def setUp(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        patcher = mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": home})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.e = svc.load_policy()
+
+    def call(self, harness, text, session="s"):
+        """One call as the hooks run it: blocked in the hook (its reason), else the signer's verdict on the line;
+        what stays unfinished is kept when it runs (an ask counts as approved)."""
         if harness == "antigravity":
-            raw = json.dumps({"hook_event_name": "PreToolUse", "toolCall": {"name": name, "args": ti}})
-            return agent_hooks._blocked(harness, {}, raw)
-        p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": name, "tool_input": ti}
-        return agent_hooks._blocked(harness, p, json.dumps(p))
+            name, ti = "manage_task", {"Action": "send_input", "Input": text, "TaskId": "t"}
+            p, raw = {"tool_name": name}, json.dumps({"hook_event_name": "PreToolUse",
+                                                      "toolCall": {"name": name, "args": ti}})
+        else:
+            name, ti = ("write_to_process", {"shell_id": "main", "input": text}) if harness == "devin" else (
+                "write_stdin", {"session_id": 1, "chars": text})
+            p = {"session_id": session, "hook_event_name": "PreToolUse", "tool_name": name, "tool_input": ti}
+            raw = json.dumps(p)
+        tool, args = agent_hooks.tool(harness, name, dict(ti))
+        q = {"session_id": session, "tool_name": tool, "tool_input": args}
+        typed = agent_hooks.typed_line(harness, p, q)
+        q["tool_input"]["command"] = typed[1]
+        why = agent_hooks._blocked(harness, p, raw, typed[1])
+        if why:
+            return why
+        verdict = svc.evaluate(self.e, tool, q["tool_input"])[0]["verdict"]
+        if verdict != "deny":
+            agent_hooks.keep_typed(*typed)
+        return verdict
 
-    def typed(self, text):
-        return [("devin", "write_to_process", {"shell_id": "main", "input": text}),
-                ("codex", "write_stdin", {"session_id": 1, "chars": text}),
-                ("antigravity", "manage_task", {"Action": "send_input", "Input": text, "TaskId": "t"})]
+    def test_a_line_typed_in_parts_is_decided_whole(self):
+        for harness in ("codex", "devin", "antigravity"):
+            for parts in (["git ", "push --fo" + "rce origin main\n"], ["git \\\n", "push --fo" + "rce origin main\n"],
+                          ["echo '\n", "' ; sudo id ; echo '\n"], ["echo $(\n", "sudo id)\n"]):
+                with self.subTest(harness=harness, parts=parts):
+                    first = self.call(harness, parts[0], session=f"{harness}{parts}")
+                    self.assertIn(first, ("allow", "ask"))
+                    self.assertEqual(self.call(harness, parts[1], session=f"{harness}{parts}"), "deny")
+        # a line that ended is read alone again, and a ^C drops what was typed before it
+        self.assertEqual(self.call("codex", "ls\n", "t"), "allow")
+        self.assertEqual(self.call("codex", "sudo", "u"), "deny")
+        self.assertEqual(agent_hooks.unfinished("sudo \x03ls"), "ls")
 
-    def test_an_unfinished_line_or_a_control_character_is_blocked(self):
-        for text, why in (("git \\\n", "doesn't finish"), ("git ", "doesn't finish"), ("q", "doesn't finish"),
-                          (f"echo ok\x15{PUSH}\n", "control character"), ("gix\x7ft status\n", "control character"),
-                          ("ech\t hi\n", "control character")):
-            for harness, name, ti in self.typed(text):
-                with self.subTest(harness=harness, text=text):
-                    self.assertIn(why, self.blocked(harness, name, ti) or "")
-        self.assertIn("doesn't finish", hermes._typed("process_manage", {"action": "write", "data": "git "}) or "")
+    def test_keys_typed_without_a_newline_wait_for_their_line(self):
+        for harness in ("codex", "antigravity", "devin"):
+            for key in ("q", "y", "git pu"):
+                with self.subTest(harness=harness, key=key):
+                    self.assertEqual(self.call(harness, key, session=f"{harness}{key}"), "allow")
+        for harness in ("codex", "antigravity"):
+            for key in ("\x1b", "\t", "\x1b[A", "\x03", "\x04"):
+                with self.subTest(harness=harness, key=key):
+                    self.assertEqual(self.call(harness, key, session=f"{harness}{key!r}"), "allow")
+        # the line a key ends up in is read whole: an arrow, a tab or a line kill in it is blocked
+        for harness in ("codex", "antigravity"):
+            self.assertEqual(self.call(harness, "\x1b[A", session=f"k{harness}"), "allow")
+            self.assertIn("control character", self.call(harness, "\n", session=f"k{harness}"))
+            self.assertIn("control character", self.call(harness, f"echo ok\x15{PUSH}\n", session=f"j{harness}"))
+        # Devin's keys are read as they are typed, as before: a control character, ^C and ^D too
+        for key in ("\x1b", "\t", "\x03", "\x04"):
+            self.assertIn("control character", self.call("devin", key, session=f"d{key!r}"))
 
-    def test_whole_lines_an_interrupt_and_an_end_of_input_go_to_the_signer(self):
-        for text in ("ls -la\n", "y\r\n", "echo a\\\\\n", "\x03", "\x04", ""):
-            for harness, name, ti in self.typed(text)[not text:]:   # (Devin's empty input names no text)
-                with self.subTest(harness=harness, text=text):
-                    self.assertIsNone(self.blocked(harness, name, ti))
-        self.assertIsNone(hermes._typed("process_manage", {"action": "submit", "data": "git "}))   # submit adds \n
-        # \r ends a typed line, so each line is decided
-        tool, args = agent_hooks.tool("codex", "write_stdin", {"session_id": 1, "chars": f"echo ok\r{PUSH}\r"})
-        self.assertEqual(svc.load_policy().decide(tool, args)["verdict"], "deny")
+    def test_a_live_shell_whose_home_or_harness_settings_change_is_blocked(self):
+        for harness in ("codex", "devin"):
+            for line in ("export HOME=/tmp/h\n", "CLAUDE_CONFIG_DIR=/tmp/c\n", "read HOME <<< /tmp/h\n"):
+                with self.subTest(harness=harness, line=line):
+                    self.assertIn("sets or replays state", self.call(harness, line, session=f"{harness}{line}"))
+
+    def test_hermes_text_typed_into_a_process_is_read_as_its_line(self):
+        reason, line = hermes._typed("process_manage", {"action": "write", "data": "push --fo" + "rce origin main\n"},
+                                     "git ")
+        self.assertIsNone(reason)
+        d = svc.evaluate(self.e, "process_manage", {"action": "write", "data": "push", "typed_line": line})[0]
+        self.assertEqual(d["verdict"], "deny")
+        self.assertEqual(hermes._typed("process_manage", {"action": "write", "data": "q"})[0], None)
+        self.assertIn("control character", hermes._typed("process_manage", {"action": "submit", "data": "\x1b[A"})[0])
+
+    def test_the_hook_decides_the_joined_line(self):
+        from tracekit.integrations import claude_code, harness_hooks
+        seen = []
+        decide = mock.Mock(side_effect=lambda q: seen.append(q["tool_input"]["command"]) or 0)
+        with mock.patch.object(claude_code, "handle", decide):
+            for chars in ("git ", "push origin main\n"):
+                p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
+                     "tool_use_id": "c" + chars[:1], "tool_input": {"session_id": 1, "chars": chars}}
+                harness_hooks.run("codex", json.dumps(p), stdout=io.StringIO(), stderr=io.StringIO())
+        self.assertEqual(seen, ["git ", "git push origin main\n"])
 
 
 class OpenCodePaths(unittest.TestCase):

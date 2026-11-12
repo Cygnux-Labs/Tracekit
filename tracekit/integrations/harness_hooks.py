@@ -67,7 +67,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         return agent_hooks._exit(harness, 2 if pre else 0, pre)
     p = dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {}
     is_pre = p.get("hook_event_name") in agent_hooks.PRE or (harness == "goose" and p.get("event") in agent_hooks.PRE)
-    err, q = agent_hooks.Tee(stderr), None
+    err, q, typed = agent_hooks.Tee(stderr), None, None
     try:
         q = agent_hooks.normalise(harness, p)
         if q is not None or p.get("hook_event_name") in agent_hooks.CURSOR_SAID:
@@ -75,7 +75,10 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
             with warnings.catch_warnings():   # a version skew is told once per session (claude_code.handle) instead
                 warnings.filterwarnings("ignore", claude_code.SKEW)
                 said_since(harness, p, stderr)
-        reason = agent_hooks._blocked(harness, p, raw) if q is not None and is_pre else None
+        typed = agent_hooks.typed_line(harness, p, q) if q is not None and is_pre else None
+        if typed:   # decided as the line the terminal reads it into
+            q["tool_input"]["command"] = typed[1]
+        reason = agent_hooks._blocked(harness, p, raw, typed and typed[1]) if q is not None and is_pre else None
         if q is None:   # an event Tracekit does not record
             code = 0
         elif reason is not None:   # a call the hook can't decide as it runs: denied before the signer
@@ -92,6 +95,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     if code and harness in agent_hooks.PAIRED and is_pre and q and q.get("tool_use_id"):   # a blocked call gets no post-tool
         with contextlib.suppress(Exception):   # bookkeeping: never in the way of the answer
             agent_hooks._paired_ids(harness, q["session_id"], None, None, "pre", drop=q["tool_use_id"])
+    if typed and not code:
+        agent_hooks.keep_typed(*typed)
     agent_hooks._reply(harness, stdout, code == 0, err.getvalue().strip(), is_pre)
     return agent_hooks._exit(harness, code, is_pre)
 
