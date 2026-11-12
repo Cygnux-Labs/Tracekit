@@ -282,3 +282,9 @@
 {"tool": "Bash", "args": {"command": "cat /etc/passwd"}, "expect": "allow", "note": "reading the password file (#750)"}
 {"tool": "Bash", "args": {"command": "usermod -L dev"}, "expect": "allow", "note": "locking an account without a group change (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'socat is great' >> notes.md"}, "expect": "allow", "note": "a network tool's name in an ordinary file (#750)"}
+{"tool": "Bash", "args": {"command": "chmod u-s x"}, "expect": "allow", "note": "removing the setuid bit (#750)"}
+{"tool": "Bash", "args": {"command": "chmod 1777 x"}, "expect": "allow", "note": "the sticky bit alone (#750)"}
+{"tool": "Bash", "args": {"command": "gpasswd -d dev sudo"}, "expect": "allow", "note": "removing a user from sudo (#750)"}
+{"tool": "Bash", "args": {"command": "usermod -u 1001 dev"}, "expect": "allow", "note": "changing a login's uid to an ordinary one (#750)"}
+{"tool": "Bash", "args": {"command": "cat /etc/cron.daily/logrotate"}, "expect": "allow", "note": "reading a cron script (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'alias ports=\"nc -zv localhost\"' >> ~/.zshrc"}, "expect": "allow", "note": "an nc alias without -e in zshrc (#750)"}
