@@ -1096,11 +1096,13 @@ class CursorTools(unittest.TestCase):
                 self.assertEqual(policy.evaluate(v1, mapped, args, "/w")["decision"], "allow")   # main's v1 decision
 
     def test_a_long_run_of_spaces_takes_linear_time(self):
-        # the review of #767: trimming with a regex took 4.65 s on a line of 40,000 spaces (OpenCode's too)
-        line = " " * 40_000 + "x"
+        # the review of #767: trimming with a regex took 4.65 s on a line of 40,000 spaces (OpenCode's and Cline's too)
+        line = "a" + " " * 40_000 + "b"
         start = time.process_time()
         agent_hooks.tool("cursor", "ApplyPatch", {"patch": f"*** Begin Patch\n*** Update File: a.py\n{line}\n*** End Patch"})
-        agent_hooks.tool("opencode", "apply_patch", {"patchText": f"*** Begin Patch\n*** Update File: a.py{line}\n"})
+        agent_hooks.tool("opencode", "apply_patch", {"patchText": f"*** Begin Patch\n*** Update File: {line}\n"})
+        agent_hooks.tool("cline", "apply_patch", {"input": f"*** Begin Patch\n*** Update File: {line}\n*** End Patch"})
+        agent_hooks.tool("cline", "run_commands", {"commands": ["cat <<EOF", line, "EOF"]})
         self.assertLess(time.process_time() - start, 1.0)
 
 

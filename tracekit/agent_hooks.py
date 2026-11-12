@@ -384,16 +384,19 @@ def tool(harness, name, ti):
             return "mcp__cursor__" + re.sub(r"[^A-Za-z0-9_-]+", "_", name[4:]), ti
         if name == "ApplyPatch":   # every file a patch header names, in whichever argument holds it, as Cursor reads it:
             # a {"patch": ...} in JSON unwrapped, \r and \r\n read as \n, each line trimmed as JavaScript trims it
-            texts = list(_strings(ti))
+            texts, unread = list(_strings(ti)), False
             for s in texts[:]:
                 if s.strip(JS_SPACE).startswith("{"):
-                    with contextlib.suppress(ValueError, RecursionError):
+                    try:
                         j = json.loads(s.strip(JS_SPACE))
-                        if isinstance(j, dict) and list(j) == ["patch"] and isinstance(j["patch"], str):
-                            texts.append(j["patch"])
+                    except (ValueError, RecursionError):   # JSON Python can't read, though JavaScript may: the patch
+                        unread = True                       # isn't read at all, and stays an unknown tool
+                        break
+                    if isinstance(j, dict) and list(j) == ["patch"] and isinstance(j["patch"], str):
+                        texts.append(j["patch"])
             lines = "\n".join(x.strip(JS_SPACE) for x in re.sub(r"\r\n?", "\n", "\n".join(texts)).split("\n"))
             files = [f for f in (g.strip(JS_SPACE) for g in PATCH_FILE.findall(lines)) if f]
-            if files:
+            if files and not unread:
                 ti["paths"], ti["file_path"] = files, files[0]
                 return "Edit", ti
         edit = CURSOR_EDITS.get(name)
