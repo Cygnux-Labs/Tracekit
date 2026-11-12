@@ -657,10 +657,10 @@ are `.github/workflows/*`, `.github/actions/**/action.yml` or `action.yaml` (com
 flags such as `-sd`, `--data*`, `--form*`, `--json` and `--post-data`;
 the argument itself must contain `$VAR`, `${VAR}`, `${env.X}`, `$(SECRET)`, `${{ secrets.X }}`,
 `${{ secrets['X'] }}` or `${{ toJSON(secrets) }}`. A secret on stdin from `echo`, `printf` or
-`printenv` (optionally piped through `base64`) is held with a `-d`/`--data*` `@-` upload. Credentials
+`printenv` (optionally piped through `base64`) is held with a `-d`/`--data*` `@-` upload, or a `curl -T -` / `curl --upload-file -` stdin upload. Credentials
 only in authentication options or the URL are not treated as uploaded secret data, and public `$GITHUB_SHA`
-does not count as a secret. Direct `-T`/`--upload-file` and `--post-file` arguments are file paths, so a secret
-variable used as a filename is not matched; stdin through those options is also outside this rule. It sees commands
+does not count as a secret. A local-file path in `-T`/`--upload-file` or `--post-file` is not read and is not evidence
+of a secret upload. Only `curl -T -` / `curl --upload-file -` with a recognized secret on stdin is held. It sees commands
 later in a block and after `;`/`&&`, `sudo`, `env A=1` and
 absolute program paths. The 128-character spans prevent a pattern from reaching into another command.
 It does not parse shell/YAML, expand variables, interpret scripts, or read generated workflows; see
