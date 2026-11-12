@@ -26,9 +26,11 @@ retry of the same call after a person approved it ([approve, then retry](#approv
 3. An approver answers from another terminal:
 
    ```sh
-   tracekit approvals list                 # pending and recent approvals you may see
-   tracekit approvals show apr-…           # the signer's copy of the arguments, in full
-   tracekit approvals list --json          # all pages as one JSON array; [] when empty
+   tracekit approvals list                 # those you may see: waiting ones first, newest first, with what each runs
+   tracekit approvals list --all           # the expired ones too
+   tracekit approvals show apr-…           # why, what to do instead, the answer commands, the arguments in full
+   tracekit view --approval apr-…          # the link that opens the held call in the viewer
+   tracekit approvals list --json          # all pages as one JSON array, every approval; [] when empty
    tracekit approvals show apr-… --json    # redacted arguments decoded in one JSON object, no pager
    tracekit approvals approve apr-… --reason "checked the target"
    tracekit approvals reject apr-…
@@ -116,7 +118,7 @@ them, so the record is the call that was approved, description included; Claude 
 it, the same command with only its caption reworded (the hook returns no `updatedInput`, which could change how Claude
 Code asks you). One of them rejected: the signer keeps no copy of a rejected call's arguments and doesn't say which
 answer came last, so the retry is decided as the model sent it and held, and the first reason after `Why:` in its block
-(`[tracekit] held for approval …`) is `a person rejected this command (with another description) as apr-…`, adding
+(`[tracekit] HELD, nothing ran: apr-…`) is `a person rejected this command (with another description) as apr-…`, adding
 `, and it was approved (with another description) as apr-…` when one was. Each `(with another description)` is left
 out where that wording is the retry's own, and a retry exactly as rejected, never approved, gets the signer's own
 reason (`a person rejected this exact call …`). One the hook can't read (a signer whose `authorize` doesn't grant it
@@ -127,6 +129,13 @@ approval still unanswered, expired or used, and the retry is decided as the mode
 unchanged: the hook only chooses which arguments the retry is decided with, and the signer still checks them against
 the approval. So a retry exactly as approved, description included, runs under that approval even when another
 wording of the command was rejected: the person approved that call. It runs once; the approval is used up then.
+
+## Approve calls like this one: grants
+
+For a held payment, `tracekit approvals approve ID --grant --payee … --max '200 USDC' --total '500 USDC' --for 1h`
+approves the call and grants the run more payments like it, within those limits: they run without a stop, and
+anything outside them is held with the reason. `tracekit approvals show ID` says how a grant reads the call. See
+[intent grants](intent-grants.md).
 
 ## Tiers: T1 and T2 executors
 
@@ -473,6 +482,27 @@ signer signs `approval.abandoned` and the approval can never be consumed. The co
 blocked keeps its approval `requested`, for the agent's [retry](#approve-then-retry). While an approval is pending, the run's idle
 timeout is paused. The signer's copy of the arguments is deleted once the approval is consumed, rejected, expired or
 abandoned.
+
+## How much oversight is real
+
+An approval nobody reads is no oversight. `tracekit report` shows, under Holds, what the signed approval records say
+about the window it covers:
+
+- holds a day (under a day of records, the count over the window, not a rate scaled up from it);
+- the share of held calls a person approved, rejected, or left with no answer (expired, abandoned or still waiting).
+  An answer from an [agent approver](#agent-approvers) is model output, and one the run's own user gave to its own
+  call (the only kind a dev signer takes: the agent runs as that user), approved or rejected, is no check by another
+  person. Both are counted apart and never as a person's;
+- the median and 90th-percentile time from hold to a person's first answer;
+- approvals answered in under 2 seconds, which were likely not read.
+
+With 20 or more approvals by a person and no rejection, it adds one line: approvals may not be read. Run
+`tracekit audit` to find the calls that keep being held, and decide whether they should be allowed, denied or narrowed
+by a rule.
+
+`tracekit audit` replays transcripts, which hold no signed approvals, so it can't say who answered. It shows only the
+held calls a day (or the count over the window when it is under a day), as a replay against today's policy, and points
+to `tracekit report` for the answers. `--json` carries the same numbers (`holds.oversight` in the report, `holds_a_day` in the audit).
 
 ## Where this is tested
 

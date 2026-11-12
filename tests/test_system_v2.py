@@ -8,13 +8,15 @@ import os
 import plistlib
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import types
 import unittest
 from unittest import mock
 
 from test_system_install import as_root_on_linux
-from tracekit import agent_hooks, install
+from tracekit import __version__, agent_hooks, install
 from tracekit.sdk import client as sdk_client
 from tracekit.signer import service
 
@@ -123,6 +125,25 @@ class InitRefusals(unittest.TestCase):
                 install.init_system_v2("agent", approver="admin")
         self.assertIn("needs root", str(cm.exception))
 
+    def test_an_untrusted_python_or_checkout_names_v2_inits_command(self):
+        """The clone route the refusal gives runs v2 init, not v1's (#464)."""
+        names = {AGENT.pw_name: AGENT, "admin": types.SimpleNamespace(pw_uid=501, pw_name="admin")}
+        src = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, src, True)
+        open(os.path.join(src, "pyproject.toml"), "w").close()
+        for untrusted in (sys.executable, src):
+            with self.subTest(untrusted=untrusted), as_root_on_linux(), mock.patch.object(install, "ROOT", src), \
+                    mock.patch.object(install.pwd, "getpwnam", lambda n: names[n]), \
+                    mock.patch.object(install, "_privileges", return_value=[]), \
+                    mock.patch.object(install.client, "system_config", return_value=None), \
+                    mock.patch("tracekit.harness_helper.trusted_file",
+                               lambda p, bad=untrusted: f"{p} is mine" if p == bad else None):
+                with self.assertRaises(SystemExit) as cm:
+                    install.init_system_v2(AGENT.pw_name, approver="admin")
+                self.assertIn(f"{untrusted} is mine", str(cm.exception))
+                self.assertIn(f"cd /usr/local/src/tracekit-{__version__} && sudo /usr/bin/python3 -m tracekit init --v2 "
+                              "--user <agent-user>", str(cm.exception))
+
 
 @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
 class InstallAndUninstall(unittest.TestCase):
@@ -151,7 +172,16 @@ class InstallAndUninstall(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             sys_cfg = self.init_v2(sudo_why="no sudo rule: visudo refused it")
         self.assertNotIn("tailer", sys_cfg.call_args.args[0])
-        self.assertIn("each run of agent's sessions records a tailer_lost gap", out.getvalue())
+        # #464: only the Claude Code hook records that gap, and it stands for the transcript, not the tool uses
+        self.assertIn("each of agent's Claude Code sessions records a tailer_lost gap instead of its transcript",
+                      out.getvalue())
+
+    def test_init_says_when_harness_binding_is_off(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.init_v2()
+        self.assertIn("harness binding is off", out.getvalue())
+        self.assertIn("--harness [NAME=]PATH", out.getvalue())
 
     def test_init_wires_signer_service_and_hook(self):
         self.init_v2()
@@ -173,6 +203,26 @@ class InstallAndUninstall(unittest.TestCase):
         cmds = [c.args[0] for c in self.run.call_args_list]
         self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
                         cmds.index(["systemctl", "restart", "tracekit-signer"]))
+
+    def test_init_restarts_a_running_helper_so_an_upgrade_runs_the_new_venv(self):
+        """#463: `enable --now` leaves a helper that is already running on the replaced venv's code; a stopped one
+        starts from its socket, so only a running one is restarted."""
+        with mock.patch.object(install, "resolve_harness", return_value={"name": "claude", "exe": "/usr/local/bin/claude"}):
+            self.init_v2(harnesses=["claude=/usr/local/bin/claude"])
+        cmds = [c.args[0] for c in self.run.call_args_list]
+        self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
+                        cmds.index(["systemctl", "try-restart", install.V2_HELPER + ".service"]))
+
+    def test_macos_init_restarts_the_helper_too(self):
+        """docs/deploy.md's upgrade steps leave the helper to init on macOS as well: launchd's helper is booted out
+        and bootstrapped again, so it runs the new venv."""
+        run = mock.Mock(return_value=mock.Mock(returncode=0))
+        with mock.patch.object(install, "LAUNCHD_DIR", self.d), mock.patch.object(install.subprocess, "run", run):
+            install._install_helper(install.V2_HELPER, install.V2_UNIT, self.me, install.V2_HELPER_SOCKET, True)
+        plist = os.path.join(self.d, install.HELPER_LABEL + ".plist")
+        self.assertIn(plist, self.written)
+        self.assertEqual([c.args[0] for c in run.call_args_list],
+                         [["launchctl", "bootout", "system", plist], ["launchctl", "bootstrap", "system", plist]])
 
     def init_v2(self, sudo_why=None, harnesses=()):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
@@ -283,8 +333,23 @@ class InstallAndUninstall(unittest.TestCase):
         wall = self.written[os.path.join(self.d, install.EGRESS_FIREWALL + ".service")].decode()
         self.assertIn(f"$$t -I OUTPUT -m owner --uid-owner {AGENT.pw_uid} -j TRACEKIT-EGRESS", wall)
         self.assertIn("$$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT", wall)
-        self.assertIn(["systemctl", "enable", "--now", install.V2_EGRESS, install.EGRESS_FIREWALL],
-                      [c.args[0] for c in run.call_args_list])
+        for proto in ("udp", "tcp"):   # DNS to a loopback stub is refused before loopback is let through (#588)
+            self.assertLess(wall.index(f"$$t -A TRACEKIT-EGRESS -p {proto} --dport 53 -j REJECT"),
+                            wall.index("$$t -A TRACEKIT-EGRESS -o lo -j RETURN"))
+        # an active firewall unit from an earlier install gets the current rule, rebuilt under its hold (#588)
+        lines = dict(line.split("=", 1) for line in wall.splitlines() if line.startswith("Exec"))
+        self.assertEqual(lines["ExecReload"], lines["ExecStart"])
+        hold = install.FIREWALL_HOLD.format(uid=AGENT.pw_uid)
+        steps = [f"-I OUTPUT {hold} && ", "-F TRACEKIT-EGRESS", "-A TRACEKIT-EGRESS -j REJECT",
+                 f"-I OUTPUT -m owner --uid-owner {AGENT.pw_uid} -j TRACEKIT-EGRESS", f"-D OUTPUT {hold}"]
+        at = [lines["ExecStart"].index(s) for s in steps]
+        self.assertEqual(at, sorted(at))
+        self.assertIn(f"-D OUTPUT {hold}", lines["ExecStop"])
+        cmds = [c.args[0] for c in run.call_args_list]
+        self.assertIn(["systemctl", "enable", install.V2_EGRESS, install.EGRESS_FIREWALL], cmds)
+        self.assertIn(["systemctl", "restart", install.V2_EGRESS], cmds)
+        self.assertIn(["systemctl", "reload-or-restart", install.EGRESS_FIREWALL], cmds)
+        self.assertFalse([c for c in cmds if c[:2] == ["systemctl", "restart"] and install.EGRESS_FIREWALL in c])
         proxy = {"HTTPS_PROXY": "http://127.0.0.1:3128", "HTTP_PROXY": "http://127.0.0.1:3128"}
         self.assertEqual(hooks.call_args.kwargs["signer"], {"TRACEKIT_SIGNER": sock, **proxy})
         sc = sys_cfg.call_args.args[0]
@@ -381,6 +446,8 @@ class InstallAndUninstall(unittest.TestCase):
                 json.dump(admin, f)
 
     def read(self, path):
+        if not os.path.exists(path):   # init made it, and taking Tracekit's hooks out left nothing: deleted
+            return {}
         with open(path) as f:
             return json.load(f)
 
@@ -520,7 +587,7 @@ class InstallAndUninstall(unittest.TestCase):
                 _, _, sc, _ = self.init_real({})
                 sc["hooks"]["user"] = "alice" if "project" in kw else "agent"
                 out = self.init_real(sc, **kw)[3]
-                self.assertIn(f"Tracekit v2 hooks removed from {self.user}\n", out)
+                self.assertIn(f"Tracekit v2 hooks removed from {self.user}", out)
                 self.assertEqual(install._hook_summary(self.read(self.user))["versions"], [])
 
     def test_uninstall_takes_tracekits_hooks_out_of_the_managed_settings_the_config_forgot(self):
@@ -597,6 +664,74 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertIn(["userdel", install.V2_TAILER], cmds)
 
 
+REACH = r"""
+import json, socket
+def reach(kind, family, host, port):
+    srv = socket.socket(family, kind)
+    srv.bind((host, port))
+    c = socket.socket(family, kind)
+    c.settimeout(1)
+    srv.settimeout(1)
+    try:
+        if kind == socket.SOCK_STREAM:
+            srv.listen()
+            c.connect((host, port))
+            return True
+        c.connect((host, port))
+        c.send(b"q")
+        return srv.recv(8) == b"q"
+    except OSError:
+        return False
+four, six = socket.AF_INET, socket.AF_INET6
+print(json.dumps({f"{k} {h}:{p}": reach(socket.SOCK_DGRAM if k == "udp" else socket.SOCK_STREAM, f, h, p)
+                  for k, f, h, p in [("udp", four, "127.0.0.53", 53), ("tcp", four, "127.0.0.53", 53),
+                                     ("udp", six, "::1", 53), ("udp", four, "127.0.0.1", 5353),
+                                     ("tcp", four, "127.0.0.1", 3128)]}))
+"""
+
+
+@unittest.skipUnless(sys.platform.startswith("linux") and all(map(shutil.which, ("unshare", "ip", "iptables",
+                                                                                  "ip6tables"))),
+                     "Linux with unshare, ip and iptables: the firewall unit's rule applied in a network namespace")
+class EgressFirewallLive(unittest.TestCase):
+    """The firewall unit's own ExecStart, then its ExecReload, run as uid 0 (the agent here) in a new network namespace
+    (and a new user namespace unless run as root): loopback is reachable, DNS to a loopback stub is not, and the chain is
+    only ever rebuilt behind the hold (#588)."""
+
+    def test_the_agent_reaches_loopback_but_not_a_dns_stub(self):
+        env = dict(os.environ, PATH=os.environ.get("PATH", "") + ":/usr/sbin:/sbin")
+        ns = ["unshare", "-n" if os.geteuid() == 0 else "-rn", "/bin/sh", "-c"]
+        if subprocess.run(ns + ["iptables -L -n && ip6tables -L -n"], env=env, capture_output=True).returncode:
+            self.skipTest("this kernel or host does not allow iptables in an unprivileged network namespace")
+        unit = install.FIREWALL_UNIT_TEXT.format(agent="agent", uid=0)
+        sh = {k: v.removeprefix("/bin/sh -c '").removesuffix("'").replace("$$", "$")
+              for k, v in (line.split("=", 1) for line in unit.splitlines() if line.startswith("Exec"))}
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for name in ("iptables", "ip6tables"):   # each records OUTPUT as it is when the chain is flushed
+            real = shutil.which(name, path=env["PATH"])
+            with open(os.path.join(d, name), "w", encoding="utf-8") as f:
+                f.write(f'#!/bin/sh\ncase " $* " in *" -F TRACEKIT-EGRESS "*) {real} -S OUTPUT >> {d}/flush;; esac\n'
+                        f'exec {real} "$@"\n')
+            os.chmod(os.path.join(d, name), 0o755)
+        out = subprocess.run(ns + ['ip link set lo up && export PATH="$3:$PATH" && /bin/sh -c "$1" && /bin/sh -c "$2" '
+                                   '&& iptables -S OUTPUT > "$3/after" && ip6tables -S OUTPUT >> "$3/after" '
+                                   '&& exec "$4" -I -c "$5"', "sh", sh["ExecStart"], sh["ExecReload"], d,
+                                   sys.executable, REACH], env=env, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(json.loads(out.stdout), {"udp 127.0.0.53:53": False, "tcp 127.0.0.53:53": False,
+                                                  "udp ::1:53": False, "udp 127.0.0.1:5353": True,
+                                                  "tcp 127.0.0.1:3128": True})
+        with open(os.path.join(d, "flush"), encoding="utf-8") as f:
+            at_flush = [[r for r in s.splitlines() if r.startswith("-A")] for s in f.read().split("-P OUTPUT")[1:]]
+        self.assertEqual(len(at_flush), 4)   # start and reload, IPv4 and IPv6
+        self.assertTrue(all("tracekit-egress-hold" in rules[0] for rules in at_flush), at_flush)
+        with open(os.path.join(d, "after"), encoding="utf-8") as f:
+            after = f.read()
+        self.assertNotIn("tracekit-egress-hold", after)
+        self.assertEqual(after.count("-j TRACEKIT-EGRESS"), 2)
+
+
 @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
 class TailerAccess(unittest.TestCase):
     """The tailer's read access to the agent's transcripts, as commands (mocked): setfacl on Linux, chmod +a on macOS."""
@@ -640,8 +775,7 @@ class HookEnv(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(json.load(f)["env"], {"TRACEKIT_SIGNER": "/run/s.sock"})
         install.install_hooks(path, uninstall=True, signer="/run/s.sock")
-        with open(path) as f:
-            self.assertNotIn("env", json.load(f))
+        self.assertFalse(os.path.exists(path))   # install_hooks made it: no env, and no file
         with open(path, "w") as f:
             json.dump({"env": {"TRACEKIT_SIGNER": "/mine.sock"}}, f)
         install.install_hooks(path, uninstall=True, signer="/run/s.sock")
@@ -751,6 +885,17 @@ class CliUninstall(unittest.TestCase):
                 ". Removing a dev setup (init --dev) needs no root: tracekit uninstall takes its hooks out and tracekit "
                 "down stops its signer"), str(cm.exception))
             self.assertNotIn("init --dev for", str(cm.exception))
+
+
+class CliHelp(unittest.TestCase):
+    def test_no_hooks_says_what_it_does(self):
+        """#464: `tracekit init --help` listed --no-hooks, the documented setup for an SDK agent or the Claude Code
+        plugin, with no description."""
+        from tracekit import cli
+        with contextlib.redirect_stdout(io.StringIO()) as out, self.assertRaises(SystemExit):
+            cli.main(["init", "--help"])
+        self.assertIn("install no agent hooks (an SDK agent, or the Claude Code plugin's own hooks)",
+                      " ".join(out.getvalue().split()))
 
 
 class CliManaged(unittest.TestCase):

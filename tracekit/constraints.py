@@ -70,6 +70,7 @@ from .findings import WRITE_TOOLS
 from .policy2.classes import PATH_KEYS, SHELL_KEYS
 from .policy2.engine import _shell as _parse
 from .policy2.shell import ParseError
+from .signer.rpc_schema import quoted
 
 OBJECT_KINDS = ("keep_away", "only_change")
 MAX_TEXT = 1 << 16   # lean: characters of one text the grammar reads; past it, cut
@@ -229,6 +230,14 @@ FORMATTERS = {"prettier": ("--write", "-w"), "gofmt": ("-w",), "eslint": ("--fix
               "autopep8": ("-i", "--in-place")}   # rewrite their files in place with one of these flags
 UNREAD = frozenset("$`*?[{")   # a word with one of these (a variable, a glob, a substitution) is no path
 FIND_NAMES = ("-name", "-iname", "-path", "-ipath", "-wholename")   # what find -delete or -exec acts on
+# the short flag (in a cluster too: cp -vt) by which these commands put their paths in another directory, as do the
+# long ones below and their prefixes (env --ch)
+ELSEWHERE = {"cp": "t", "mv": "t", "install": "t", "ln": "t", "git": "C", "env": "C", "make": "C", "tar": "C",
+             "sudo": "D"}
+ELSEWHERE_LONG = ("--target-directory", "--directory", "--chdir")
+# commands that run theirs on another host, in another root, or in another mount namespace or sandbox
+ELSEWHERE_RUNS = frozenset(("ssh", "chroot", "nsenter", "unshare", "firejail"))
+LATER_RUNS = frozenset(("systemd-run", "at", "batch"))   # commands that run theirs after the line returns
 NET_COMMANDS = frozenset(("curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "telnet", "ftp",
                           "http", "https"))
 NET_GIT = frozenset(("push", "pull", "fetch", "clone", "ls-remote"))
@@ -756,28 +765,59 @@ def lifts(kind, mention, is_object):
     return bool(words & LIFT[kind] or kind == "read_only" and names)
 
 
+def _elsewhere(name, rest):
+    """Whether command `name` with arguments `rest` runs its own elsewhere (ELSEWHERE_RUNS), or names a directory its
+    paths are in or go to: its ELSEWHERE short flag, in a cluster too (cp -vt), or a long option of ELSEWHERE_LONG or
+    any prefix of one, as GNU takes them (env --ch=sub)."""
+    if name in ELSEWHERE_RUNS:
+        return True
+    for w in rest if name in ELSEWHERE else ():
+        opt = w.split("=", 1)[0]
+        if w[:1] == "-" and w[1:2] != "-" and ELSEWHERE[name] in w or len(opt) > 2 and opt[:2] == "--" and any(
+                long.startswith(opt) for long in ELSEWHERE_LONG):
+            return True
+    return False
+
+
+def _forks(rest):
+    """Whether setsid's options (`rest` up to its command) hold -f (alone or in a cluster: -cf), --fork or a prefix of
+    it: setsid then returns at once, its command still running."""
+    for w in rest:
+        if w[:1] != "-":
+            return False
+        if w[1:2] != "-" and "f" in w or len(w) > 2 and "--fork".startswith(w):
+            return True
+    return False
+
+
 def shell(cmd):
     """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs": those
-    of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory, "push": a git push,
-    "network": a command that reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell
-    call's arguments (`command` or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine
-    reads them (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included).
+    of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory (cd, pushd, popd, git
+    --work-tree), "elsewhere": a command's paths are in another directory, root or host (_elsewhere), "later": a
+    command runs its own after the line returns (LATER_RUNS, setsid -f), "push": a git push, "network": a command that
+    reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell call's arguments (`command`
+    or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine reads them
+    (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included).
     lean: redirections, the arguments of tee/touch/mkdir/rm/rmdir/truncate/shred/unlink and of formatters that write
     in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
     ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
     after `--`, and the -name of a find that deletes or runs a command; a word with a variable, a glob, braces or a
-    command substitution is no path; a line the parser can't read (`case`, over its size) does nothing, and the
+    command substitution is no path; a line the parser can't read (`coproc`, over its size) does nothing, and the
     policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
-    out = {"paths": [], "dirs": [], "cd": False, "push": False, "network": False, "writes": False}
+    out = {"paths": [], "dirs": [], "cd": False, "elsewhere": False, "later": False, "push": False, "network": False,
+           "writes": False}
     try:
-        cmds, _, _, written, _ = _parse(cmd if isinstance(cmd, dict) else
-                                        {"command": cmd if isinstance(cmd, str) else ""})
+        cmds, _, _, written = _parse(cmd if isinstance(cmd, dict) else
+                                     {"command": cmd if isinstance(cmd, str) else ""})[:4]
     except ParseError:
         return out
     for c in cmds:
         name, rest = c["argv"][0], c["argv"][1:]
         args = [w for w in rest if not w.startswith("-")]
-        out["cd"] = out["cd"] or name in ("cd", "pushd")
+        out["cd"] = out["cd"] or name in ("cd", "pushd", "popd") or name == "git" and any(
+            w.split("=", 1)[0] == "--work-tree" for w in rest)
+        out["elsewhere"] = out["elsewhere"] or _elsewhere(name, rest)
+        out["later"] = out["later"] or name in LATER_RUNS or name == "setsid" and _forks(rest)
         mode = WRITERS.get(name)
         if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
                                            for w in rest):
@@ -847,10 +887,11 @@ def breaks(kind, f, is_object):
 def held(kind, name):
     """What the agent is told when a live constraint holds its call (`name`: from breaks(), out of its own
     arguments; for "many", the most files of one call the signer checks; for "full", the most file constraints a run
-    takes)."""
-    return {"keep_away": f"the person's request in this run said not to modify {name}",
-            "only_change": f"the person's request in this run said to change only certain files, and {name} is not "
-                           "one of them",
+    takes). A file or directory name is quoted, so no line of its starts a line of the reason: only_change's is any the
+    agent wrote, keep_away's the object constraint_add took, which the agent's own identity may add."""
+    return {"keep_away": f"the person's request in this run said not to modify {quoted(name, 512)}",
+            "only_change": f"the person's request in this run said to change only certain files, and "
+                           f"{quoted(name, 512)} is not one of them",
             "read_only": "the person's request in this run said to make no changes (read-only)",
             "no_push": "the person's request in this run said not to push",
             "no_network": "the person's request in this run said not to use the network",

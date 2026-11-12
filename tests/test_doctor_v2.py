@@ -3,6 +3,7 @@ setup detection, --json and the exit codes. The v1 doctor's own tests are in tes
 import base64
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -17,7 +18,8 @@ import types
 import unittest
 from unittest import mock
 
-from tracekit import __version__, agent_hooks, cli, client, doctor, install
+from tracekit import __version__, agent_hooks, cli, client, crypto, doctor, install, public_witness
+from tracekit.format import checkpoint
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
 
@@ -192,6 +194,25 @@ class CodingAgentHooks(unittest.TestCase):
         got = next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=claude)
                    if r["id"] == "D-HOOKS-TIMEOUT")
         self.assertEqual(got["detail"], "PreToolUse timeout 600 s; " + run.format(540, "s", 480, "s"))
+
+    def test_a_settings_file_that_isnt_an_object_is_fixed_before_init(self):
+        """The 1.6.0 review: for a settings.json that isn't a JSON object, doctor's fix was init alone, which refuses
+        such a file and leaves it as it is."""
+        claude = os.path.join(self.d, "settings.json")
+        with open(claude, "w") as f:
+            f.write("[1, 2]")
+        got = next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=claude)
+                   if r["id"] == "D-HOOKS-PRESENT")
+        self.assertEqual((got["status"], got["fix"]), ("warn", f"make {claude} a JSON object (move it aside, or fix "
+                                                               "it), then tracekit init --dev --v2"))
+        # the review of #673: one doctor can't read (its mode) was told to become a JSON object too
+        with open(claude, "w") as f:
+            f.write("{}")
+        with mock.patch.object(doctor, "_json", side_effect=PermissionError(13, "Permission denied")):
+            got = next(r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=claude)
+                       if r["id"] == "D-HOOKS-PRESENT")
+        self.assertEqual((got["detail"], got["fix"]), (f"{claude}: [Errno 13] Permission denied", f"make {claude} "
+                                                       "readable (move it aside, or fix it), then tracekit init --dev --v2"))
 
     def test_only_v2_tracekit_commands_are_checked_even_in_a_shared_group(self):
         from tracekit import agent_hooks
@@ -637,13 +658,28 @@ class AntigravityHooks(unittest.TestCase):
 class DevFresh(unittest.TestCase):
     def test_a_dev_signer_that_never_started_gets_dev_advice(self):
         """On a fresh home doctor said "run doctor as root" for the missing keys and "add a witness in signer.yaml" at
-        assurance "local", none of which fits a dev signer: it has no keys until `tracekit up` and takes no witnesses."""
+        assurance "local", none of which fits a dev signer: it has no keys until `tracekit up` and takes no witnesses.
+        QA of 1.6.0: its keys check warned `cannot inspect …/keys: No such file or directory` while the checks beside
+        it said what they check was not made yet."""
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev")}
-        self.assertEqual(got["D-KEYS-MODE"]["fix"], "start the dev signer: tracekit up")
+        self.assertEqual({k: got["D-KEYS-MODE"][k] for k in ("status", "detail", "fix")},
+                         {"status": "info", "fix": "", "detail": f"{os.path.join(d, 'keys')}: not made yet, checked "
+                          "after the dev signer's first start (an agent's first call, or tracekit up)"})
+        os.mkdir(os.path.join(d, "store"))   # it ran, and its keys are gone since: a fault, not "not made yet"
+        keys = next(r for r in doctor.v2_checks({"data_dir": d}, "dev") if r["id"] == "D-KEYS-MODE")
+        self.assertEqual({k: keys[k] for k in ("status", "fix")},
+                         {"status": "warn", "fix": "start the dev signer: tracekit up"})
+        # the reason is the OS's own words (Windows: "The system cannot find the path specified")
+        self.assertTrue(keys["detail"].startswith(f"cannot inspect {os.path.join(d, 'keys')}: "), keys["detail"])
         self.assertIn("assurance stays dev", got["D-WITNESS-CONFIGURED"]["detail"])
-        self.assertIn("the dev signer takes no witnesses", got["D-WITNESS-CONFIGURED"]["fix"])
+        self.assertIn("the dev signer uses the public witness, which isn't deployed yet: nothing to do until a release "
+                      "names it; to anchor now", got["D-WITNESS-CONFIGURED"]["fix"])
+        open(os.path.join(d, "no-witness"), "w").close()
+        self.assertEqual(doctor.v2_checks({"data_dir": d}, "dev")[[r["id"] for r in got.values()].index(
+            "D-WITNESS-CONFIGURED")]["fix"], "--no-witness turned the dev signer's witness off: tracekit init --dev --v2 "
+                                             "--public-witness turns it back on")
 
     def test_keys_it_cannot_read_name_the_doctor_command_root_can_run(self):
         """System-mode init puts no `tracekit` command on root's PATH, so the fix `sudo tracekit doctor` found none."""
@@ -659,6 +695,35 @@ class DevFresh(unittest.TestCase):
         for cfg, level in (({}, "dev"), ({"anchors": {"rekor": {"url": "https://rekor.example"}}}, "local")):
             got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d, **cfg})}
             self.assertIn(f"assurance stays {level}", got["D-WITNESS-CONFIGURED"]["detail"])
+
+
+class WitnessFresh(unittest.TestCase):
+    def test_a_witness_a_moment_behind_is_not_stale_and_one_record_is_one(self):
+        """After every start doctor warned "1 records behind": the signer had not sent the witness its new note yet."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.makedirs(os.path.join(d, "store"))
+        note = os.path.join(d, "store", "checkpoint.note")
+        with open(note, "w", encoding="utf-8") as f:
+            f.write(f"example.org/log\n1\n{base64.b64encode(bytes(32)).decode()}\n\n— example.org/log AAAAAAAA\n")
+        w = {"url": "https://w.example", "vkey": checkpoint.vkey("w.example/w1", checkpoint.COSIGNATURE, b"\1" * 32),
+             "class": "public"}
+
+        def fresh(age):
+            os.utime(note, (time.time() - age,) * 2)
+            return next(r for r in doctor.v2_checks({"data_dir": d, "witnesses": [w]}, "dev")
+                        if r["id"] == "D-WITNESS-FRESH")
+        row = fresh(5)
+        self.assertEqual((row["status"], row["detail"]), ("ok", "w.example/w1 is 1 record behind, as for a moment after "
+                                                                "each checkpoint (a problem only after 300 s)"))
+        row = fresh(600)
+        self.assertEqual((row["status"], row["detail"]), ("warn", "w.example/w1 is 1 record behind"))
+
+
+def dev_key_fingerprint():
+    """The SHA-256 of the dev log key init made, which the signer will use."""
+    with open(os.path.join(autospawn.data_dir(), "keys", "log.key"), "rb") as f:
+        return hashlib.sha256(crypto.public_from_secret(f.read())).hexdigest()
 
 
 class NoHooksChosen(unittest.TestCase):
@@ -680,7 +745,9 @@ class NoHooksChosen(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
                                           "LOCALAPPDATA": os.path.join(home, "data")}), \
                 mock.patch.object(client, "system_config", return_value=None):
-            self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, "v2 hooks: not installed\n"))
+            self.assertEqual(run("init", "--dev", "--v2", "--no-hooks"), (0, (
+                f"v2 hooks: not installed\n{install.DEV_MODE_LINE}\n"
+                f"log key SHA-256 fingerprint: {dev_key_fingerprint()}\n{public_witness.NOT_CONFIGURED}\n")))
             code, out = run("doctor", "--json")
             rows = {r["id"]: r for r in json.loads(out)}
             self.assertEqual((code, rows["D-HOOKS-PRESENT"]), (0, {
@@ -715,8 +782,23 @@ class NoHooksChosen(unittest.TestCase):
                 self.assertEqual(cli.main(["init", "--dev", "--v2"]), 0)
             self.assertTrue(install._v2_hooks_in(settings))
             with contextlib.redirect_stdout(io.StringIO()) as out:
-                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks"]), 0)
-            self.assertEqual(out.getvalue(), f"Tracekit v2 hooks removed from {settings}\nv2 hooks: not installed\n")
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks", "--no-witness"]), 0)
+            self.assertEqual(out.getvalue(), f"Tracekit v2 hooks removed from {settings}, and the file with them: init "
+                                             f"made it, and nothing else is in it\nv2 hooks: not installed\n"
+                                             f"{install.DEV_MODE_LINE}\nlog key SHA-256 fingerprint: "
+                                             f"{dev_key_fingerprint()}\n{public_witness.LOST}\n")
+            marker = os.path.join(autospawn.data_dir(), "no-witness")
+            self.assertTrue(os.path.isfile(marker))
+            # every later init keeps the opt-out and says so, whatever else it sets up; only --public-witness undoes it
+            for argv in (["--no-hooks"], ["--agent", "codex", "--no-hooks"], ["--agent", "codex", "--project", "--no-hooks"]):
+                with self.subTest(argv), contextlib.redirect_stdout(io.StringIO()) as out:
+                    self.assertEqual(cli.main(["init", "--dev", "--v2", *argv]), 0)
+                    self.assertTrue(os.path.isfile(marker))
+                    self.assertTrue(out.getvalue().endswith(f"{public_witness.LOST}\n"), out.getvalue())
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--no-hooks", "--public-witness"]), 0)
+            self.assertFalse(os.path.exists(marker))
+            self.assertTrue(out.getvalue().endswith(f"{public_witness.NOT_CONFIGURED}\n"), out.getvalue())
             self.assertFalse(install._v2_hooks_in(settings))
             self.assertEqual(client.client_config(), {"no_hooks": True})
 
@@ -738,6 +820,73 @@ class NoHooksChosen(unittest.TestCase):
             self.assertEqual((got["status"], got["detail"]), want)
 
 
+class FirstDay(unittest.TestCase):
+    """A new user's healthy dev setup got three warnings: no hooks where there is no Claude Code, no witness (the dev
+    signer's default, the public witness, isn't named until a release does), and the dev profile's own process
+    boundary. Only the last is a warning now, and a healthy run ends saying so."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def rows(self, **kw):
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev", **kw)}
+
+    def test_no_claude_code_and_no_witness_are_info_in_dev(self):
+        nowhere = os.path.join(self.d, "no-claude", "settings.json")
+        with mock.patch.object(doctor.shutil, "which", return_value=None), \
+                mock.patch.object(install, "user_settings", return_value=nowhere):
+            got = self.rows(settings=nowhere)
+        self.assertEqual((got["D-HOOKS-PRESENT"]["status"], got["D-HOOKS-PRESENT"]["fix"]),
+                         ("info", "once Claude Code is installed: tracekit init --dev --v2"))
+        self.assertTrue(got["D-HOOKS-PRESENT"]["detail"].startswith("no Claude Code here (no claude on PATH, no "))
+        self.assertEqual(got["D-WITNESS-CONFIGURED"]["status"], "info")
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/local/bin/claude"):   # Claude Code, no hooks
+            self.assertEqual(self.rows(settings=nowhere)["D-HOOKS-PRESENT"]["status"], "warn")
+        prod = {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d})}
+        self.assertEqual(prod["D-WITNESS-CONFIGURED"]["status"], "fail")   # production: unchanged
+
+    def test_what_the_first_start_makes_is_info_until_then(self):
+        """Review of #628: right after `init --dev --v2` (its log key only, no store) doctor warned "start the signer
+        once" three times, so it never ended with `dev setup OK` as the Claude Code quickstart says. Before the dev
+        signer's first start they are info and say when they're checked; once it has a store, warnings again."""
+        os.makedirs(os.path.join(self.d, "keys"), 0o700)
+        with open(os.path.join(self.d, "keys", "log.key"), "wb") as f:   # as init makes it
+            f.write(b"k" * 32)
+        first = ("D-CONTENT-VAULT", "D-KEYS-DISTINCT", "D-KEY-HYGIENE")
+        from tracekit.signer import service
+        cfg = {"data_dir": self.d, "content": service.dev_content()["content"]}   # the dev signer's vault: on
+
+        def rows():
+            return {r["id"]: r for r in doctor.v2_checks(cfg, "dev", settings=os.path.join(self.d, "none"))}
+        got = rows()
+        self.assertEqual([got[i]["status"] for i in first], ["info"] * 3)
+        for i in first:
+            self.assertTrue(got[i]["detail"].endswith("checked after the dev signer's first start (an agent's first "
+                                                      "call, or tracekit up)"), got[i])
+        os.makedirs(os.path.join(self.d, "store"))   # it started once
+        got = rows()
+        self.assertEqual([got[i]["status"] for i in first], ["warn"] * 3)
+
+    def test_a_healthy_dev_run_ends_with_one_ok_line(self):
+        ok = [doctor.result("D-PROCESS-BOUNDARY", doctor.WARN, install.DEV_MODE_LINE, "system mode"),
+              doctor.result("D-WITNESS-CONFIGURED", doctor.INFO, "no witnesses", "a signer.yaml"),
+              doctor.result("D-KEYS-MODE", doctor.OK, "8 keys")]
+
+        def run(rows, *argv):
+            out = io.StringIO()
+            with mock.patch.object(doctor, "collect", return_value=rows), contextlib.redirect_stdout(out):
+                self.assertEqual(doctor.main(*argv), 0)
+            return out.getvalue().splitlines()
+        lines = run(ok)
+        self.assertEqual(lines[-1], "dev setup OK: everything checks out for dev mode, which records but does not "
+                                    "guard (D-PROCESS-BOUNDARY)")
+        self.assertIn("info  no witnesses  (D-WITNESS-CONFIGURED)", lines)
+        self.assertFalse(any(x.startswith("dev setup OK") for x in run(
+            ok + [doctor.result("D-HOOKS-EVENT", doctor.WARN, "unwrapped", "re-run init")])))
+        self.assertIsInstance(json.loads("\n".join(run(ok, None, True))), list)   # --json: the rows alone
+
+
 class Reinit(unittest.TestCase):
     def test_the_reinit_fix_runs_on_this_platform(self):
         """On macOS init refuses system mode without --experimental-macos, which the fix left out."""
@@ -748,10 +897,25 @@ class Reinit(unittest.TestCase):
         and on a dev host with no /opt (D-PROCESS-BOUNDARY), and the version from doctor's own Python; with Tracekit
         only in /opt's venv the system Python's `-I` form found no module. Init from a root-owned clone works on every
         Python and with or without /opt, as the plugin and CI run it."""
-        self.assertIn("from a root-owned clone of the release (docs/deploy.md#laptop-system-mode), "
-                      "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>", doctor.REINIT)
+        self.assertIn("from a root-owned clone of the release (https://github.com/Cygnux-Labs/Tracekit/wiki/"
+                      f"Deploy#laptop-system-mode), sudo {shlex.quote(doctor._PY)} -m tracekit init --v2 --user "
+                      "<agent-user>", doctor.REINIT)
         self.assertNotIn("/opt/tracekit", doctor.REINIT)
         self.assertNotIn(" -I ", doctor.REINIT)   # -I leaves the clone out of the import path
+
+    def test_the_reinit_fix_names_the_wiki_and_a_python_init_accepts(self):
+        """A new user saw docs/deploy.md, a path in a checkout they don't have, and /usr/bin/python3, which a container
+        may not have: the fix names the wiki, and doctor's own Python when only root can change it (init refuses any
+        other), else the system one."""
+        def reinit(python, trusted):
+            with mock.patch.object(sys, "executable", python), \
+                    mock.patch("tracekit.harness_helper.trusted_file", return_value=None if trusted else "not root's"):
+                return importlib.reload(doctor)._PY
+        self.addCleanup(importlib.reload, doctor)
+        self.assertEqual(reinit("/usr/local/bin/python3", True), "/usr/local/bin/python3")
+        self.assertEqual(reinit("/home/me/.venv/bin/python", False), "/usr/bin/python3")
+        self.assertEqual(reinit(install.OPT_PYTHON, True), "/usr/bin/python3")   # 3.9, 3.10: init fails there
+        self.assertNotIn("docs/deploy.md", doctor.REINIT)
 
 
 class K8s(unittest.TestCase):
@@ -1636,9 +1800,11 @@ class DevProfile(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         os.chmod(d, 0o700)
-        got = {r["id"]: r["status"] for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none"))}
+        with mock.patch.object(doctor.shutil, "which", return_value="/usr/local/bin/claude"):   # Claude Code is here
+            got = {r["id"]: r["status"] for r in doctor.v2_checks({"data_dir": d}, "dev",
+                                                                   settings=os.path.join(d, "none"))}
         self.assertEqual(got["D-PROCESS-BOUNDARY"], "warn")
-        self.assertEqual(got["D-WITNESS-CONFIGURED"], "warn")
+        self.assertEqual(got["D-WITNESS-CONFIGURED"], "info")   # none: the public witness, its default, isn't named
         self.assertEqual(got["D-HOOKS-PRESENT"], "warn")
         self.assertEqual(got["D-DURABILITY"], "ok")
         self.assertNotIn("D-AGENT-PRIV", got)

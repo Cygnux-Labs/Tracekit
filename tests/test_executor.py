@@ -456,21 +456,72 @@ class Executor(unittest.TestCase):
         self.assertEqual([t for t, _ in got if t.startswith("reconcile.")], ["reconcile.fabricated"])
         self.assertEqual([tcid for t, tcid in got if t == "policy.decision"], ["call-sync", "call-async", *own])
 
+    def sdk_servers(self):
+        """The app's mcp_servers: the executor's in-process server under SERVER, its tools on the instance."""
+        with mock.patch("claude_agent_sdk.create_sdk_mcp_server", lambda name, tools: {
+                "type": "sdk", "name": name, "instance": types.SimpleNamespace(tools=tools)}):
+            return {executor_tools.SERVER: executor_tools.claude_agent_sdk(list(self.actions().values()))}
+
     @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
     def test_the_claude_agent_sdk_hooks_leave_executor_tools_to_the_executor(self):
         from tracekit.integrations.claude_agent_sdk import tracekit_hooks
-        [pre] = tracekit_hooks(InProcess(self.s, AGENT), self.run)["PreToolUse"][0].hooks
+        servers = {executor_tools.SERVER: executor_tools.claude_agent_sdk(list(self.actions().values()))}   # the SDK's
+        [pre] = tracekit_hooks(InProcess(self.s, AGENT), self.run, servers)["PreToolUse"][0].hooks
         inp = {"tool_name": "mcp__tracekit-executor__refund", "tool_use_id": "tu-1", "tool_input": PAID}
         self.assertEqual(asyncio.run(pre(inp, "tu-1", None)), {})
         self.assertNotIn("policy.decision", [e["type"] for e in self.events()])
 
     @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
+    def test_the_claude_agent_sdk_hooks_gate_a_server_of_that_name_the_app_did_not_build(self):
+        """A project .mcp.json can add a server keyed tracekit-executor, which the CLI loads when the app has none of
+        its own (CLI 2.1.294); its tools are decided like any other tool (#588)."""
+        from tracekit.integrations.claude_agent_sdk import tracekit_hooks
+        project = {executor_tools.SERVER: {"type": "stdio", "command": "/tmp/not-the-executor"}}
+        other_sdk = {executor_tools.SERVER: {"type": "sdk", "name": executor_tools.SERVER,
+                                             "instance": types.SimpleNamespace()}}
+        refund = "mcp__tracekit-executor__refund"
+        # with the app's own executor server too: a project server keyed `tracekit-executor__refund` or
+        # `tracekit-executor_` names tools that start like the executor's, and only its exact names are skipped
+        cases = [(s, refund) for s in (None, {}, project, other_sdk)] + [
+            (self.sdk_servers(), t) for t in ("mcp__tracekit-executor__refund__shell", "mcp__tracekit-executor___x",
+                                              "mcp__tracekit-executor__refundx")]
+        for i, (servers, tool) in enumerate(cases):
+            [pre] = tracekit_hooks(InProcess(self.s, AGENT), self.run, servers)["PreToolUse"][0].hooks
+            asyncio.run(pre({"tool_name": tool, "tool_use_id": f"tu-{i}", "tool_input": PAID}, f"tu-{i}", None))
+        got = {e["tool_call_id"]: e for e in self.events() if e["type"] == "policy.decision"}
+        self.assertEqual(sorted(got), [f"tu-{i}" for i in range(len(cases))])
+        for i, (_, tool) in enumerate(cases):   # the hook's own decision, not left to an executor that never sees it
+            self.assertEqual((got[f"tu-{i}"]["source"], got[f"tu-{i}"]["data"]["tool"]), ("sdk", tool))
+
+    @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
+    def test_instrument_hands_each_options_its_own_executor_server(self):
+        """tracekit.instrument()'s hooks leave the executor's tools to it in options that hold its server, and only
+        there; options built again (dataclasses.replace) get them once (#588)."""
+        import dataclasses
+        from claude_agent_sdk import ClaudeAgentOptions
+        from tracekit import autowire
+        self.addCleanup(setattr, ClaudeAgentOptions, "__init__", ClaudeAgentOptions.__init__)
+        autowire._claude_agent_sdk(types.SimpleNamespace(client=InProcess(self.s, AGENT), registered=self.run))
+        with_ex = ClaudeAgentOptions(mcp_servers=self.sdk_servers())
+        without = ClaudeAgentOptions()
+        for opts in (dataclasses.replace(with_ex), dataclasses.replace(without),
+                     dataclasses.replace(with_ex, mcp_servers={})):
+            self.assertEqual([len(opts.hooks[e]) for e in ("PreToolUse", "PostToolUse")], [1, 1])
+        moved = dataclasses.replace(with_ex, mcp_servers={})
+        for opts, tid in ((with_ex, "tu-ex"), (without, "tu-none"), (moved, "tu-moved")):
+            [pre] = opts.hooks["PreToolUse"][0].hooks
+            asyncio.run(pre({"tool_name": "mcp__tracekit-executor__refund", "tool_use_id": tid, "tool_input": PAID},
+                            tid, None))
+        self.assertEqual({e["tool_call_id"] for e in self.events() if e["type"] == "policy.decision"},
+                         {"tu-none", "tu-moved"})
+
+    @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
     def test_an_executor_call_the_model_asked_for_under_the_claude_agent_sdk_reconciles(self):
         from claude_agent_sdk import AssistantMessage, TextBlock, ToolUseBlock
         from tracekit.integrations.claude_agent_sdk import tracekit_hooks, tracekit_said
-        [pre] = tracekit_hooks(InProcess(self.s, AGENT), self.run)["PreToolUse"][0].hooks
-        with mock.patch("claude_agent_sdk.create_sdk_mcp_server", lambda name, tools: tools):
-            [refund] = [t for t in executor_tools.claude_agent_sdk(list(self.actions().values())) if t.name == "refund"]
+        servers = self.sdk_servers()
+        [pre] = tracekit_hooks(InProcess(self.s, AGENT), self.run, servers)["PreToolUse"][0].hooks
+        [refund] = [t for t in servers[executor_tools.SERVER]["instance"].tools if t.name == "refund"]
         name = f"mcp__{executor_tools.SERVER}__refund"
         asyncio.run(tracekit_said(InProcess(self.s, AGENT), self.run)(AssistantMessage(
             content=[TextBlock("refunding"), ToolUseBlock(id="toolu_1", name=name, input=PAID)], model="claude-x")))
@@ -483,8 +534,7 @@ class Executor(unittest.TestCase):
 
     @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
     def test_a_claude_agent_sdk_server(self):
-        with mock.patch("claude_agent_sdk.create_sdk_mcp_server", lambda name, tools: tools):
-            tools = {t.name: t for t in executor_tools.claude_agent_sdk(list(self.actions().values()))}
+        tools = {t.name: t for t in self.sdk_servers()[executor_tools.SERVER]["instance"].tools}
         out = asyncio.run(tools["refund"].handler(PAID))
         self.assertEqual(json.loads(out["content"][0]["text"])["status"], 201)
         self.assertTrue(asyncio.run(tools["wipe"].handler(PAID))["is_error"])

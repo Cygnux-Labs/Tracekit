@@ -32,7 +32,7 @@ Another agent: record its calls with the SDK's run handle ([custom agent](quicks
 
 | Agent | Status | Guide |
 |---|---|---|
-| Claude Code hooks (`tracekit init --dev --v2`) | Stable | [quickstart](quickstart-v2.md) |
+| Claude Code hooks (`tracekit init --dev --v2`) | Stable | [quickstart](quickstarts/claude-code.md) |
 | The Claude Code plugin | Experimental | [plugin](../plugin/README.md) |
 | Codex CLI, Cursor, Gemini CLI, OpenCode | Experimental | [coding agents](coding-agents.md) |
 | goose (`tracekit init --dev --v2 --agent goose`) | Experimental | [coding agents](coding-agents.md#on-the-v2-signer) |

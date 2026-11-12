@@ -2,6 +2,215 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.6.0 (2026-11-09) — intent grants for payments, a policy that reads what a command really does, a plain verify result that says ANCHORED or NOT ANCHORED, Devin and Kilo Code
+
+A feature release. A person can approve a held payment once and let more payments like it run within limits they set
+(intent grants, experimental), and `tracekit verify` re-checks each payment a grant released. `tracekit verify` prints a
+short, plain result and says whether an independent witness anchored the log. Anchoring by default is built in, but the
+public witness isn't deployed yet, so nothing is anchored by default in this release. The coding pack reads what a
+command does before it stops it, and now holds reading Kubernetes and Vault secrets, deleting CI pipelines, resetting a
+database and writing or publishing model weights. `tracekit demo --server` runs a scripted agent through hard cases
+under the server pack. Devin gets hooks, Kilo Code gets Tracekit's OpenCode plugin, the coding-agent hooks record
+receipts of the model weights a call writes, and the viewer and `tracekit tips` show what each step costs. Format v2
+gains four ext names (a bundle with a grant the run's own user issued needs a 1.6 verifier), and the signer protocol
+goes from 20 to 22, so upgrade the signer first: a 1.6 client or hook refuses a 1.5 signer.
+
+
+### Added
+- **Intent grants for payments** (experimental, #642). A person approves a held payment once and grants the run more
+  payments like it: the payees, the most for one payment, a total, optionally a count, for up to 24 hours.
+  `tracekit approvals show ID` says how a grant reads the held call and prints a command with limits to edit;
+  `tracekit approvals approve ID --grant --payee A --max '200 USDC' --total '500 USDC' --for 1h` issues the grant, then
+  approves the call. `tracekit grant add`, `grant list` and `grant revoke` work directly, and from code the signer's
+  `grant_issue`, `grant_list` and `grant_revoke`. A payment inside the grant runs, signed as `flag` with `TK-GRANT`;
+  one outside it is held with the bound it breaks. Only rules that opt in can be released (`TK-A044` in the coding
+  pack, `TK-M001` and `TK-M002` in the server packs), and a grant reads only the amount, currency, payee, `description`
+  and `note`: any other argument holds the call. A grant covers one run and the tools it names, and can't be passed
+  on. `TK-D012` denies every `tracekit grant` and `approvals approve --grant` the agent runs. `tracekit verify` and the
+  TypeScript verifier re-check every released payment and running total from the bundle, in an `intent grants` line,
+  and the viewer marks those payments `WITHIN GRANT`. signer.yaml `grants` caps what a person may grant, per currency.
+  E23: of 30 payments, a person is asked 7 times instead of 30, none outside the limits runs, and 25 of 25 attack
+  calls are held. A grant is signed for its own purpose, so it isn't PCM authority in a message; a grant the run's own
+  user issues counts as a self-approval (`dev` assurance), and a bundle with one needs a 1.6.0 verifier; a release
+  records the instant its grant was checked (#674). See [intent grants](docs/intent-grants.md).
+- **Anchoring by default, once the public witness is deployed** (#625). The dev signer and `tracekit init --v2` use
+  the Cygnux public witness by default once `tracekit/public_witness.py` names its deployment. It isn't deployed yet
+  (its URL and key are empty), so nothing is anchored by default, and init, `up --wait` and doctor say so.
+  `--no-witness` opts out and stays out across later inits until `--public-witness`. init prints the log key's
+  fingerprint, `verify` prints ANCHORED or NOT ANCHORED, and each run's review in the viewer has an ANCHORING line.
+  [What the public witness sees](docs/public-witness-privacy.md) and [how to deploy it](docs/public-witness.md) are
+  written down.
+- **Devin CLI and Devin Desktop hooks** (experimental; #584, from #576 by @n-o-t-mugen): `tracekit init --dev [--v2]
+  --agent devin`, with uninstall and doctor. Tested against payloads in the shape Devin documents, not yet in a live
+  Devin session. The hook reads Devin's arguments in any case and denies a call that sends one twice; text typed into
+  a running shell (`write_to_process`) is denied when it holds a control character, would be expanded from history,
+  or sets state a later line runs (an alias, a function, a trap, a prompt command, `source`, `PATH` or a loader
+  variable); an `exec` with nothing readable to decide is denied (#673).
+- **Kilo Code** (#551, by @khushi-git-7): `--agent kilo` installs Tracekit's OpenCode plugin where Kilo loads it. Kilo's
+  own tools that run a command or touch a file are mapped (the limits page lists the two that aren't), and
+  `notebook_execute` is blocked. Run with the Kilo CLI 7.8.18 on Linux, not yet in its VS Code extension.
+- **Model receipts** (experimental, #570): when a call writes a `.safetensors`, `.gguf`, `.pt`, `.pth` or `.ckpt` file,
+  the coding-agent hooks record its sha256 and size (and each tensor's for `.safetensors`) in the call's result.
+  `tracekit verify-model OLD NEW --bundle B --run R --trust T` checks a file against that receipt and names the tensors
+  that changed. A write the hook can't see finish (a background command, a relative path run in another directory) is
+  refused, not guessed. A receipt is the hook's report (`reported_by: hook`), and the hook runs as the agent.
+- **`tracekit feedback`** (#636) prints a pre-filled field-report link and exactly what it holds, and sends nothing.
+  `--harmless <approval-id>` fills it with one false alarm's rule ids, never the command; `--file` writes a report to
+  send as a pull request to `docs/field-reports/`. `report --share` ends with each rule's holds and what people did
+  with them, and `tracekit audit` ends with a three-line summary of the week.
+- **Oversight numbers** (#607): `tracekit report` counts holds a day, a person's approvals and rejections, the time to
+  answer and approvals answered in under 2 seconds; answers by the run's own user and by agent approvers are counted
+  apart. `audit` says how many calls a day it would have held. Dev mode says it records but doesn't guard.
+- **Tips in the viewer** (#609): a TIPS page with three cards (context growth, prompt-cache rebuilds after long waits,
+  holds nobody answered), each with its evidence, an estimated saving in dollars and time, and the fix. Claude Code's
+  token counts are read from its transcripts, read-only. **`tracekit tips`** (experimental, #654) prints the same
+  tips without the viewer, or the page's JSON with `--json`, for the runs that verify in a window (`--since`, 7 days
+  by default).
+- **`tracekit help`** (#619): `tracekit` alone or `tracekit help` lists every command, grouped by what it is for, with
+  the v1 commands under Legacy; `tracekit help NAME` is `tracekit NAME --help`.
+- **Tracekit Box's agent channel** (experimental, #603): signer.yaml `box_daemons`, and `register_run`'s `box` and
+  `channel_open` (protocol 21). The signer writes the box label (`ext.box`) itself, and the Python and TypeScript
+  verifiers print a `boxed agent` line; it is tested against a stand-in daemon, not Tracekit Box itself.
+  `tracekit analyze --v2` gains `TK-X212`, which compares a boxed agent's own account of its calls with what Box saw
+  cross its doors (#608).
+- **A conformance kit** (#617): `tests/kit` holds the golden corpus and 33 new vectors as cases scored against any
+  verifier's `--json`, and the Python, TypeScript and Go verifiers all run it. The Go verifier also gets the mutated
+  bundles the other two get (#599).
+- Policy: `TK-A049` holds deleting CI pipeline files and their `.github` and `.circleci` folders (#513, by
+  @kausthubhk); `TK-A052` and `TK-A053` hold reading a Kubernetes or Vault secret (#582, finishing #549 by
+  @shrinivas-sn); `TK-A055` holds framework commands that drop or reset a database (#555, by @nsknojj); `TK-A058` and
+  `TK-A059` hold writing a `.safetensors`, `.gguf`, `.pt`, `.pth` or `.ckpt` file through a file tool or a shell
+  command, and `TK-A060` holds publishing weights with `huggingface-cli upload`, `hf upload` or `ollama push` (#649, by
+  @coughlmao); `TK-C010` holds more ways to switch off AWS detection: CloudTrail destinations and settings, GuardDuty
+  detectors and features, archive filters, Route 53 Resolver query logs and leaving the organization (#543, by
+  @shrinivas-sn); `TK-F009` and `TK-F015` flag a write to a PowerShell profile (#567, by @ppcvote); `TK-F015` also
+  flags writes to OpenCode's and Kilo's config folders written as `$XDG_CONFIG_HOME` or `${XDG_CONFIG_HOME}` (#611, by
+  @BuildWithPranav).
+- A [Claude Code quickstart](docs/quickstarts/claude-code.md), and the LangChain, OpenAI Agents, Claude Agent SDK and
+  MCP quickstarts each start with a scripted run that needs no API key (#628).
+- TypeScript SDK: `RunHandle.approvalConsume`, as the Python client's `approval_consume` (#632, by @costajohnt).
+- MCP client: `get_prompt` on a wrapped session is decided and recorded as `mcp:<server>/prompt:<name>`, as
+  `call_tool` is, and `tracekit.instrument()` wires it too (#675, by @Mr45401).
+- A Mastra workflow example that suspends on a held call and resumes with its approval id (#621).
+- A dev container, so a first pull request can start in Codespaces (#577, by @terrecruis).
+
+### Changed
+- **Policy packs.** Coding `2026.10-v2-77` (from `2026.10-v2-56`) and server-cloud `2026.10-server-cloud-17` (from
+  `-16`); server-comms `2026.10-server-comms-10` (from `-9`) changes only to let `TK-M001` and `TK-M002` take a
+  payment grant. The other packs' files are unchanged, but dev and server extend coding (server also server-cloud and
+  server-comms) and strict extends server, so they get these changes. E17: 833 of 833 harmful calls stopped, 1 false
+  alarm in 887. E21: the server pack stops or holds 255 of 420 held-out calls (252 in 1.5.3), strict 285 (284).
+- **The coding pack reads more of what a shell command does before it decides, and holds what it can't read**
+  (#664). The shell reader follows more of bash: parameter expansions read in every way they can combine (with a cap;
+  past it the line is held), arrays, values a line gives a variable, wrappers and runners, commands inside arguments
+  and option values, interpreter one-liners' literal arguments, config files a line writes and then uses, and typed
+  keys. Each decision has one work budget, shared by every reading of the line, and a line that spends it is held
+  (`TK-SHELL-PARSE`, cause `budget`). What it still can't read is held for a person, and the limits page lists what
+  stays out of reach. A few more paths count as the actions they are: a force-update of a branch through the API,
+  deletes of a home folder by other tools, and approvals answered through a copy or wrapper of the CLI. Decisions
+  take about 400 µs at p99 on E21's default profile on a laptop; CI gates E21's latency on each runner's own
+  reference time.
+- The signer refuses to use an approval for a call that already ran (`TK-APPROVAL-UNBOUND`, #664).
+- **Signer protocol 22** (from 20; a signer still serves clients from 15, but a 1.6 client refuses a 1.5 signer): 21
+  adds Box's channel, and 22 adds `grant_issue`, `grant_list` and `grant_revoke`. **Format v2 1.6.0** adds ext
+  names: `box`, and `intent.grant`, `intent.revoked` and `grant` for intent grants. A verifier older than 1.6.0
+  verifies such a bundle with a `not interpreted` warning and claims nothing for the boxed agent or a grant's
+  payments; a bundle with a grant the run's own user issued needs 1.6.0, and an older verifier reports it UNVERIFIABLE.
+- **`tracekit verify`, `last` and `demo` print a short, plain result** (#600): VERIFIED with the tool calls and signed
+  records counted, whether it is proof against the agent, the warnings by name, signed gaps apart from policy
+  mismatches, and a failure as TAMPERED at event N. `--detail` prints the full report as before; `--json` and the exit
+  codes are unchanged. Scripts that read the text need `--detail`.
+- **`tracekit demo --server` tries the hard cases** (#652). Its scripted agent (fixed tool calls, not a model) makes
+  six calls under the server pack as shipped: `ls` is allowed; a delete of the home folder hidden in base64 is held
+  (`TK-SHELL-PARSE`) and the scripted person rejects it; a downloaded script piped to a shell is denied (`TK-D002`); a
+  read of the cloud credentials is denied (`TK-S004`); a send of `.env` to a host an untrusted web page named is held
+  (`TK-P003`) and rejected; a force-push to main is denied (`TK-D003`). The run verifies, and a copy with the
+  downloaded script's deny rewritten fails at event 8. It made three calls under the dev pack before.
+- **The coding pack reads what a command does before it stops it** (#598, for #589). `TK-D007` allows plain reads of
+  Tracekit's installed package and of `/etc/tracekit`'s client config and policy, and still denies writes, deletes,
+  runs, kills and key reads; a variable the line sets to a plain path is read as that program; a shell function the
+  line defines and calls is read where it is called (on a line that may download it is held, as before);
+  `TK-SHELL-PARSE` says why it couldn't read the line, and an unclosed quote has its own reason (#628). `audit`,
+  `report` and the viewer label it "a shell command Tracekit can't read" (#654).
+- **A stopped call says why, what to do and where to look** (#596): one message for every harness (HELD, BLOCKED or
+  NOT APPROVED, then Why, Instead, the commands to approve or refuse a hold, and what the agent should do).
+  `approvals show` adds the reason, the time left and `tracekit view --approval ID`; `approvals list` puts waiting
+  holds first, each with a one-line summary of the call, and prints the time left as `show` does (#627, by
+  @vshalpnjabi); SDK refusals carry the signer's reason and the approval id.
+- **`tracekit status` prints a short summary** (#628): the signer, its data dir and the hooks, then the dev-mode line.
+  `tracekit status --json` prints the JSON it printed before; scripts that read it need `--json`. With no v1 hooks in
+  Claude Code's settings, a v1 signer that doesn't answer reads `not running (only v1 hooks use it)` (#654).
+- `tracekit pending`, `approve` and `reject` reach the v2 signer when no v1 signer is set up, where they said `signer
+  unavailable`: `tracekit approve ID` is `tracekit approvals approve ID`, and `reject` likewise (#628, #654). An
+  unknown command prints a short message, with the closest command when one is near (`no command "tipz". Did you mean
+  "tips"?`), instead of every command (#654).
+- **First-day fixes** (#628), from a new user's walkthrough in a clean container: `doctor` reports what a dev setup
+  doesn't need (a witness, Claude Code's hooks where there is no Claude Code) as `info`, and a healthy dev run ends with
+  `dev setup OK`; `init --dev --v2` ends with the next step; `uninstall` lists what it keeps (the signer's keys and
+  signed runs) and the commands that delete them, and deletes a settings file init made when nothing else is in it;
+  `view --approval ID` starts the viewer and prints a link that opens the held call; the hook command in Claude Code's
+  settings is plain Python, not base64; `verify` says `no tool calls recorded` for a run with none.
+- Policy decisions are faster, with the same verdicts on 446,136 decisions compared (#580); the fallback engine's 1 s
+  budget covers only its regex matching, so a slow runner decides as a fast one (#629, #647).
+- v2 bundles: every zip entry is dated 1980-01-01, so an export doesn't show the exporter's time zone and the same
+  files export to the same bytes (#612). Bundles exported earlier keep their dates; re-export them to drop the dates.
+- Qwen Code on Windows runs Tracekit's hook under PowerShell and keeps a block's exit 2 (#547, by @khushi-git-7).
+- `tracekit init --help` describes `--no-hooks`, and the transcript tailer's message says the gap it records stands
+  for Claude Code's transcript, not its tool calls (#646).
+- Every CLI option and argument has help text: 19 showed none (#648, by @jay23606).
+
+### Fixed
+- **Four documented trust gaps** (#594): a project `.mcp.json` server named `tracekit-executor` is gated like any other
+  tool in the Claude Agent SDK hooks; on a pull request the GitHub Action reads trust, key and witness files from the
+  base commit and refuses ones the pull request adds; a consumed `pcm.grant` approval mints one root grant; Linux
+  system mode's egress firewall refuses the agent's DNS before it lets loopback through.
+- Cases where the verifiers differed now agree (#617): a `key.retire` is checked under its own retirement, `"v": 2.0` is
+  not a v2 record, TypeScript fails a certified key no pinned issuer signed (it said UNVERIFIABLE), and Go verifies ext
+  records, an open-only run-set, a signer run and empty pin lists. No bundle the signer writes changes.
+- A pinned witness's cosignature that doesn't match reads as the log changed after the witness saw it or a damaged
+  cosignature, and a wrong-length one as malformed, in Python and TypeScript alike (#625).
+- Viewer (#630): a retry folds into its held call only when the signer's consume says so, a result is filed under the
+  decision it signs, an unanswered hold in an open run isn't imported as refused, and every page reads at phone width.
+  WHY says a blocked call was blocked from running (#640, by @Muguett-DBY).
+- `tracekit analyze --v2` reads more test commands as test runs: pnpm, Yarn and Bun scripts run without `run`,
+  `manage.py test`, `rails test` and `rake spec`, `php artisan test`, `hatch test`, `flutter test` and `dart test`. A
+  claim after one is no longer reported as `TK-X101` (a test run claimed when none ran), and lint and build scripts
+  aren't read as tests (#631, by @laishettikarthik-tech).
+- Crush: when the hook blocks Crush's `agent` or `agentic_fetch`, its message gives the `crushrc` line that turns them
+  off first, then the `crush.json` form (#633, by @FTFaruque).
+- `tracekit status` no longer crashes on a settings file the user may not read (#654), and `doctor` no longer crashes
+  once `uninstall` has deleted the settings file (#628).
+- Linux system mode: `tracekit` and `pip` in `/opt/tracekit/bin` run after `tracekit init`; they named the
+  temporary venv's Python and exited 126 (#657).
+- `tracekit audit` decides each call as the signer does (an MCP tool by its server and name, PowerShell), so its week
+  summary no longer undercounts holds; `tips` and `feedback --harmless` name only the rules that placed a hold, not a
+  flag that also matched; `feedback` no longer starts a signer; report windows under an hour read in minutes; doctor's
+  advice for a settings file it can't read or that isn't a JSON object is true; `demo` points to v2 system mode (#673).
+- Hold messages quote what the agent chose (a grant's argument names and values, a constraint's file name), so its
+  text can't start or move a line in the stop message (#674).
+- Both verifiers warn `verifier minimum` when a bundle's manifest asks for an older verifier than its records need
+  (an edited manifest would let an older verifier claim more) (#674).
+- v2 system-mode init says when harness binding is off and how to turn it on (#665).
+- `tracekit status` names every coding agent's v2 hooks, not only Claude Code's (it said none were installed for the
+  others); replacing an older dev signer prints one plain line, not a Python warning; `verify --json` gives a failed
+  v2 bundle no assurance rating, in the Python, TypeScript and Go verifiers alike; `demo --why`'s bundles verify with
+  no warning; `graph` no longer counts rejections as self-approved; `uninstall` names the configs and backups it
+  keeps; doctor calls a dev signer's missing keys "not made yet" only before its first start (#676).
+- The plugin hook's "turn the plugin off" line names the marketplace the plugin came from, not always
+  `tracekit@tracekit` (#677, by @lyn1dev).
+- Signer image: apt upgraded for CVE-2026-109518 (#635).
+- Docs, tests and CI: CrewAI's test status in the support page (#618, by @shaw778); the Vercel AI resume example runs
+  end to end in CI (#556, from #553, and #597, which checks it refuses a loose state file; both by @realmpastai-web);
+  downloads read as data stay allowed and downloaded code stays denied (#595, by @Parveshkumar2211); Kilo Code and Qwen
+  Code follow-ups (#583); test and CI fixes after 1.5.3 (#568, #579); the nightly E22 reads the demo's kept folder
+  again, and the walkthrough shows what `verify` and `last` print today (#651); a `|` inside a code span no longer
+  splits a docs table's row, and a test checks every table row's cell count (#645, by @HarshRajSinghania).
+
+### Contributors
+@n-o-t-mugen, @khushi-git-7, @kausthubhk, @shrinivas-sn, @nsknojj, @coughlmao, @ppcvote, @BuildWithPranav,
+@costajohnt, @terrecruis, @vshalpnjabi, @Muguett-DBY, @laishettikarthik-tech, @FTFaruque, @shaw778, @realmpastai-web,
+@Parveshkumar2211, @jay23606, @HarshRajSinghania, @Mr45401 and @lyn1dev. Thank you.
+
 ## 1.5.3 (2026-11-03) — commands bash builds at run time, verifiers that read every file, and no false gaps
 
 A security release. In 1.5.2 an agent could get a call past Tracekit in four ways: the shell parser read some lines

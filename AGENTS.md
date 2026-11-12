@@ -13,7 +13,7 @@
 Tamper-evident tracing for AI agents: every tool call is recorded as an Ed25519-signed, hash-chained event by a signer
 the agent can't control, checkpointed to witnesses, gated by a policy engine, and exported as offline-verifiable `.tkb`
 bundles. Today's code (1.5) has two generations: the v1 laptop path (tracekitd, the
-JSONL ledger, Claude Code / Codex / Cursor / Gemini / OpenCode / goose / Qwen Code / Factory Droid / Antigravity / Crush hooks) and the v2 signer service for server-hosted agents (evidence
+JSONL ledger, Claude Code / Codex / Cursor / Gemini / OpenCode / Kilo Code / goose / Qwen Code / Factory Droid / Antigravity / Crush hooks) and the v2 signer service for server-hosted agents (evidence
 format v2 at 1.4, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
 observation), with Python and TypeScript SDKs and framework integrations. [HIGH CONFIDENCE — read
 `tracekit/signer/service.py`, `tracekit/signer/pipeline.py`, `tracekit/verify/v2.py`, `tracekit/daemon.py`,
@@ -34,13 +34,14 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/report.py` | `tracekit report`: a window of a signer's store on one page, built on the viewer's reader, check and review (experimental) | [HIGH CONFIDENCE] |
 | `tracekit/why/` | `tracekit why`: causal investigation and replay | [HIGH CONFIDENCE] |
 | `tracekit/pcm/` | PCM 0.1, proof-carrying messages (experimental): `__init__.py` (message, schema and grant checks, replay, `verify`), `claims.py` (claim evidence), `cli.py` (`tracekit pcm verify`, `tracekit pcm demo`), `tools.json` (the frozen tool placement table, part of the protocol); its signer RPCs (`pcm_*`, contract version 20) are in `tracekit/signer/` | [HIGH CONFIDENCE] |
+| `tracekit/grants.py` | Intent grants (experimental, docs/intent-grants.md): the `payment.send` intent, amounts, the payment reader and the caveat and limit checks the signer (`grant_*` RPCs, contract version 22; releases in `_decide`), the CLI (`tracekit grant`, `approvals approve --grant`) and the verifier (`intent grants`) share; a grant is a PCM grant as it is | [HIGH CONFIDENCE] |
 | `tracekit/findings_v2.py`, `tracekit/findings_text.py`, `tracekit/findings_effects.py`, `tracekit/parsers.py`, `tracekit/review_model.py` | `tracekit analyze --v2`: intent, reasoning and action checks (TK-X200..X204, X208) over a v2 run and its content vault, the text checks (TK-X205 and v1's say-vs-do checks) and the effect checks (TK-X206, TK-X207: kernel sensor effects joined to calls); `parsers.said()` reads what a model said before each tool use; `--review`: the reviewer model (TK-X210, warn only) | [HIGH CONFIDENCE] |
 | `tracekit/storage/`, `tracekit/identity/`, `tracekit/transport/` | v2 storage (file, Postgres), caller identities (uid, token, mTLS, k8s service account, OIDC, WebAuthn), RPC transports | [HIGH CONFIDENCE] |
 | `tracekit/daemon.py` | v1 signer daemon (tracekitd): socket, peer identity, run state, approvals, checkpoints | [HIGH CONFIDENCE] |
 | `tracekit/ledger.py` | v1 append-only JSONL ledger, file key, v1 record envelope | [HIGH CONFIDENCE] |
 | `tracekit/core.py` | Canonical JSON, hashing, v1 signature message, scrub | [HIGH CONFIDENCE] |
 | `tracekit/schema/tracekit.event.v1.json` | Frozen v1 event schema (validated by `tracekit/schema.py`) | [HIGH CONFIDENCE] |
-| `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini / OpenCode / goose / Qwen Code / Factory Droid / Antigravity / Crush hook capture | [HIGH CONFIDENCE] |
+| `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini / OpenCode / Kilo Code / goose / Qwen Code / Factory Droid / Antigravity / Crush hook capture | [HIGH CONFIDENCE] |
 | `tracekit/agent_sdk.py`, `tracekit/autotrace.py`, `tracekit/adapters/` | Python SDK, model-SDK autotrace, framework adapters | [HIGH CONFIDENCE] |
 | `tracekit/policy.py`, `tracekit/policy/` | v1 regex policy engine and its YAML rule packs | [HIGH CONFIDENCE] |
 | `tracekit/bundle.py` | v1 bundle export and the frozen v1 verifier (`tracekit/verify/v1.py` re-exports it; its `Report` is shared with v2) | [HIGH CONFIDENCE] |
@@ -49,7 +50,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/otlp.py`, `tracekit/ingest.py`, `tracekit/proxy.py` | OTLP receiver, remote ingest, Anthropic proxy | [HIGH CONFIDENCE] |
 | `sdk/typescript/` | TS SDK: the v2 client speaks the signer RPC itself (`sdk/typescript/src/v2/`); only the legacy v1 API (`sdk/typescript/src/v1.ts`) spawns `tracekit.bridge`; the independent verifier is in `sdk/typescript/src/verify/` | [HIGH CONFIDENCE] |
 | `plugin/` | Claude Code plugin (laptop on-ramp) | [HIGH CONFIDENCE] |
-| `tests/` | pytest suite (real daemons); `tests/conftest.py` (markers, env isolation), `tests/factories.py` (shared builders), `tests/golden/` (frozen verifier corpus) | [HIGH CONFIDENCE] |
+| `tests/` | pytest suite (real daemons); `tests/conftest.py` (markers, env isolation), `tests/factories.py` (shared builders), `tests/golden/` (frozen verifier corpus), `tests/kit/` (v2 conformance kit: cases with the format-v2 section deciding each, vectors, `run_kit.py` scores any verifier) | [HIGH CONFIDENCE] |
 | `eval/` | Experiments E1–E22 (`eval/e*.py`; E7 is `contrib/query/e7_sql_scale.py`; no E13 script); E8 (insider attacks, v1 and v2) gates CI on Linux; CI also runs E9, E15 and an offline `evals` job (most of `make eval`, results compared with `eval/results/`); `.github/workflows/nightly-evals.yml` runs E2, E7, E9/E16 on Postgres, full E14 and E22 | [HIGH CONFIDENCE] |
 | `docs/` | User docs; `docs/sample/` holds the shipped sample bundles | [HIGH CONFIDENCE] |
 | `paper/` | the v2 paper (`Tracekit-v2-paper.pdf`, Tracekit 1.4.1); the owner's, don't edit | [HIGH CONFIDENCE] |
@@ -87,8 +88,9 @@ There is no typecheck step.
 - `make test` takes ~15 minutes (about 4,500 tests): many start a real signer daemon and spawn hook processes. Run
   single files while iterating.
 - `agent-flow gates run` runs in the main checkout, not the worktree you call it from. In a worktree run the gates
-  there: `PYTHONPATH=$PWD make test-ts lint build test PY=<repo>/.venv/bin/python` (the venv's editable install points
-  at the main checkout, so without PYTHONPATH test subprocesses import its code).
+  there: `PATH=<repo>/.venv/bin:$PATH PYTHONPATH=$PWD make test-ts lint build test PY=<repo>/.venv/bin/python` (the
+  venv's editable install points at the main checkout, so without PYTHONPATH test subprocesses import its code; the
+  TypeScript tests run `$TRACEKIT_PYTHON`, else `python3` from PATH, which is otherwise the system's).
 - Rules in `tracekit/policy/default.yaml` match raw strings: quoted text that mentions a risky command can trip them.
 - `planning/` is local and gitignored — task specs must be copied into the issue, not referenced by path. <!-- agent-flow:ignore-refs -->
 

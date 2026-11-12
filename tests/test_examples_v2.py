@@ -3,6 +3,7 @@ demand, each with its deny, its approval and a verified bundle; and `tracekit de
 fails the tampered copy. A temp HOME and runtime dir keep them off the user's own dev signer."""
 import importlib.util
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -102,9 +103,47 @@ class DemoServer(unittest.TestCase):
                            timeout=120, cwd=ROOT)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         verified, tampered = p.stdout.split("tamper test")
+        # each scripted call's verdict and first rule under the server pack as shipped
+        self.assertIn("\n  policy: server pack\n", verified)
+        self.assertEqual(re.findall(r"': (\w+) ?(\S*)", verified),
+                         [("allow", ""), ("ask", "TK-SHELL-PARSE"), ("deny", "TK-D002"), ("deny", "TK-S004"),
+                          ("ask", "TK-P003"), ("deny", "TK-D003")])
+        self.assertEqual(len(re.findall(r"^    rejected apr-[0-9a-f]{32}: it never runs$", verified, re.M)), 2)
+        self.assertIn("\nVERIFIED: 6 tool calls in 17 signed records, none changed, removed or added after signing.\n"
+                      "NOT PROOF AGAINST THE AGENT: in this setup the agent can reach the signing key, so it could "
+                      "have rewritten the record.\n", verified)   # what dev mode means
+        self.assertNotIn("PASS", verified)
+        self.assertIn("\nTAMPERED at event 8: its content was changed after it was signed.\n", tampered)
+        self.assertRegex(tampered, r"\ndeleted .+ \(--keep keeps it\)\n$")
+
+    def test_detail_prints_every_check_and_keep_says_where_the_files_are(self):
+        p = subprocess.run([sys.executable, "-m", "tracekit", "demo", "--server", "--detail", "--keep"],
+                           capture_output=True, text=True, timeout=120, cwd=ROOT)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        verified, tampered = p.stdout.split("tamper test")
         self.assertIn("Integrity: VERIFIED.", verified)
         self.assertIn("cosigned ed25519 by witness.demo.tracekit.local", verified)
         self.assertIn("Integrity: FAILED.", tampered)
+        kept = tampered.split("\nkept ", 1)[1].split("\n")[0]
+        self.addCleanup(shutil.rmtree, kept, True)
+        kept_files = {f for f in os.listdir(kept) if f.endswith((".tkb", ".json"))}   # Windows: the signer's endpoint
+        self.assertEqual(kept_files - {"endpoint.json"}, {"run.tkb", "tampered.tkb", "trust.json"})
+        from tracekit.cli import _quote
+        self.assertIn(f"\n  verify the bundle again: tracekit verify {_quote(os.path.join(kept, 'run.tkb'))} --trust "
+                      f"{_quote(os.path.join(kept, 'trust.json'))}\n", tampered)
+        # the kept store is no dev signer's: `tracekit view --dev` does not show it, so the command that does is printed
+        self.assertIn(f"\n  see the run: tracekit view --data-dir {_quote(os.path.join(kept, 'data'))}\n", tampered)
+
+    def test_e22_reads_the_kept_dir_from_its_line_alone(self):
+        """Since the demo prints how to verify and view the kept files after "kept DIR" (#600), E22 read those lines as
+        part of the dir, and the nightly run failed."""
+        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
+        import e22_verifier_agreement as e22
+        with tempfile.TemporaryDirectory() as d:
+            corpus = e22.Corpus(d)
+            corpus.demo()
+            self.assertEqual([(c["name"], os.path.isfile(c["bundle"])) for c in corpus.cases],
+                             [("demo run", True), ("demo tampered", True)])
 
 
 if __name__ == "__main__":

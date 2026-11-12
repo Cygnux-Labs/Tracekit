@@ -324,7 +324,7 @@ func TestSemanticFailClosed(t *testing.T) {
 		return validatedRecord{ev: map[string]any{"type": typ, "data": data}}
 	}
 	for _, r := range []validatedRecord{
-		record("review", map[string]any{}), record("why.finding", map[string]any{}), record("incident.opened", map[string]any{}), record("ext", map[string]any{}),
+		record("review", map[string]any{}), record("why.finding", map[string]any{}), record("incident.opened", map[string]any{}),
 		record("approval", map[string]any{"decision": "approve", "approver_kind": "agent"}),
 	} {
 		t.Run(r.ev["type"].(string), func(t *testing.T) {
@@ -340,6 +340,13 @@ func TestSemanticFailClosed(t *testing.T) {
 			t.Fatalf("accepted %s constraint before constraint.added", decision)
 		}
 	}
+	ext := []validatedRecord{record("ext", map[string]any{"name": "acme.note"}), {ev: map[string]any{"type": "tool.call", "data": map[string]any{}, "ext": map[string]any{"acme.note": 1.0}}}}
+	if err := checkSemantics(nil, []runEvidence{{records: ext}}, nil); err != nil {
+		t.Fatalf("the non-critical ext slot refused: %v", err)
+	}
+	if got := extWarnings(nil, []runEvidence{{records: ext}}); len(got) != 1 || got[0].Check != "not interpreted" || got[0].Status != "warn" {
+		t.Fatalf("ext names not reported: %+v", got)
+	}
 	held := []validatedRecord{record("constraint.added", map[string]any{}), record("policy.decision", map[string]any{"rule_ids": []any{"TK-CONSTRAINT"}, "decision": "ask"})}
 	if err := checkSemantics(nil, []runEvidence{{records: held}}, nil); err != nil {
 		t.Fatal(err)
@@ -347,6 +354,66 @@ func TestSemanticFailClosed(t *testing.T) {
 	held[1].ev["data"].(map[string]any)["decision"] = "allow"
 	if err := checkSemantics(nil, []runEvidence{{records: held}}, nil); err == nil {
 		t.Fatal("constraint allowed rather than asked")
+	}
+}
+
+// readKit reads a file of the upstream conformance kit (tests/kit).
+func readKit(t *testing.T, name string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "tests", "kit", filepath.FromSlash(name)))
+	if os.IsNotExist(err) {
+		t.Skip("upstream conformance kit unavailable")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// The kit's vectors this verifier once refused: the non-critical ext slot (format-v2.md §9), a run-set of open runs
+// only (§9), a tenant's signer run, which holds no run.registered (§3), and trust configs with empty pin lists or
+// algorithm names it doesn't implement (§4, §10).
+func TestKitVectors(t *testing.T) {
+	for _, tc := range []struct {
+		bundle, trust, integrity, warn string
+		exit                           int
+	}{
+		{"ext.tkb", "trust.json", "VERIFIED", "not interpreted", 0},
+		{"run-set-open-only.tkb", "trust.json", "VERIFIED", "", 0},
+		{"signer-run.tkb", "trust.json", "VERIFIED TO HEAD 1 (open)", "", 0},
+		{"every-type.tkb", "trust-empty-lists.json", "VERIFIED", "", 0},
+		{"every-type.tkb", "trust-extra-alg.json", "VERIFIED", "", 0},
+		{"every-type.tkb", "trust-other-alg.json", "FAILED", "", 1},
+		{"no-registration.tkb", "trust.json", "FAILED", "", 1},
+	} {
+		t.Run(tc.bundle+" "+tc.trust, func(t *testing.T) {
+			r := VerifyBundle(readKit(t, "vectors/"+tc.bundle), readKit(t, "vectors/"+tc.trust))
+			warned := tc.warn == ""
+			for _, c := range r.Checks {
+				warned = warned || c.Check == tc.warn && c.Status == "warn"
+			}
+			if r.ExitCode != tc.exit || r.Integrity != tc.integrity || !warned {
+				t.Fatalf("%+v", r)
+			}
+		})
+	}
+}
+
+// A pin list that is not a list is a malformed trust config; an empty one pins nothing (format-v2.md §10).
+func TestTrustPinLists(t *testing.T) {
+	var trust map[string]any
+	if err := json.Unmarshal(readKit(t, "vectors/trust.json"), &trust); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		value any
+		want  string
+	}{{map[string]any{}, "trust monitors is not a list"}, {[]any{}, ""}, {[]any{"x"}, "trust feature monitors is not supported"}} {
+		trust["monitors"] = tc.value
+		raw, _ := json.Marshal(trust)
+		if _, _, _, _, err := loadTrust(raw); tc.want == "" && err != nil || tc.want != "" && (err == nil || err.Error() != tc.want) {
+			t.Fatalf("monitors %v: %v", tc.value, err)
+		}
 	}
 }
 
@@ -451,7 +518,7 @@ func TestAnchorUsesRenamedVerifiedCheckpointNote(t *testing.T) {
 	}
 	noteName := proofs["checkpoint"].(string)
 	verifiedNote := append([]byte(nil), files[noteName]...)
-	log, _, _, err := loadTrust(trust)
+	log, _, _, _, err := loadTrust(trust)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -477,7 +544,7 @@ func TestAnchorDigestBindsSelectedCheckpointBodyAndSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 	trust := readGolden(t, "v2/trust-rekor.json")
-	log, _, _, err := loadTrust(trust)
+	log, _, _, _, err := loadTrust(trust)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -771,7 +838,7 @@ func TestTrustProblemsReadAsTheReferences(t *testing.T) {
 // A quorum past any number of witnesses fits an int of 32 bits, and still fails the checkpoint.
 func TestHugeWitnessQuorumIsClampedBeforeConversion(t *testing.T) {
 	trust := []byte(strings.Replace(string(readGolden(t, "v2/trust.json")), `"witnesses_required": 1`, `"witnesses_required": 9007199254740991`, 1))
-	_, _, quorum, err := loadTrust(trust)
+	_, _, quorum, _, err := loadTrust(trust)
 	if err != nil || quorum != math.MaxInt32 {
 		t.Fatalf("quorum %d, %v", quorum, err)
 	}

@@ -419,7 +419,8 @@ agent consumes the approval, then calls `pcm_grant`. The signer refuses when:
   the grant would name no one: `a root grant needs the approval of a person signer.yaml's approvals.persons names:
   uid:990009 maps to none`;
 - `expires_at` is not within the next 24 hours;
-- the `pcm.grant` call already has its result (one grant per approval);
+- the approval already issued its grant, or the `pcm.grant` call already has its result (one grant per approval,
+  after a restart too);
 - the run is held or quarantined.
 
 Without the ask rule there is nothing to consume, so no root grant can be made.

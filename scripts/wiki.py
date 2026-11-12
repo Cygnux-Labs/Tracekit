@@ -29,6 +29,7 @@ REPO = "https://github.com/Cygnux-Labs/Tracekit"
 EXCLUDED = {
     "RELEASING.md": "the maintainers' release procedure",
     "launch-checklist.md": "the 1.0 launch's internal checklist",
+    "field-reports/": "the field reports people send as pull requests, and its README: data, not pages",
 }
 # the sidebar: docs paths in order; a glob adds the pages it matches that no earlier entry placed, sorted
 SECTIONS = [
@@ -41,16 +42,17 @@ SECTIONS = [
                       "concepts/deployment.md", "concepts/storage-and-performance.md", "concepts/integrations.md",
                       "concepts/security-model.md", "architecture.md", "why-architecture.md"]),
     ("Integrations", ["integrations.md", "adapters.md", "otel.md", "remote-ingest.md", "integrations/*.md"]),
-    ("Policy and approvals", ["policy-v2.md", "approvals.md", "pcm.md", "findings.md", "audit.md", "reasoning.md",
+    ("Policy and approvals", ["policy-v2.md", "approvals.md", "intent-grants.md", "pcm.md", "findings.md", "audit.md", "reasoning.md",
                               "incidents.md", "webhooks.md"]),
     ("Deploy and operate", ["deploy.md", "deploy-container.md", "deploy-kubernetes.md", "deploy-compose.md",
                             "identity.md", "executor.md", "a2a.md", "c2c.md", "mcp-gateway.md", "gateway.md", "egress.md", "witnesses.md",
                             "monitor.md", "issuer.md", "observability.md", "viewer.md", "horizon.md", "viewer-1.4.md",
-                            "why.md", "migration.md", "portability.md"]),
+                            "why.md", "migration.md", "portability.md", "public-witness.md"]),
     ("Verify the evidence", ["for-auditors.md", "verdicts.md", "format-v2.md", "auditor-guide.md", "sample/README.md",
                              "signing.md", "graph.md", "guarantees.md"]),
     ("Security and privacy", ["threat-model-server.md", "threat-model-laptop.md", "security-checklist.md",
-                              "review-packet.md", "privacy.md", "limits.md", "support.md"]),
+                              "review-packet.md", "privacy.md", "public-witness-privacy.md", "limits.md",
+                              "support.md"]),
     ("Compliance", ["compliance/README.md", "compliance/*.md"]),
     ("Evaluation", ["evaluation.md", "case-study-oss-agents.md", "field-reports.md"]),
     ("Use cases and demos", ["use-cases.md", "demos/README.md", "demos/*/README.md"]),
@@ -159,7 +161,12 @@ def pages(root=ROOT):
     docs = os.path.join(root, "docs")
     found = (os.path.relpath(p, docs).replace(os.sep, "/")
              for p in glob.glob(os.path.join(docs, "**", "*.md"), recursive=True))
-    return sorted(p for p in found if p not in EXCLUDED)
+    return sorted(p for p in found if not excluded(p))
+
+
+def excluded(p):
+    """Whether docs path `p` is no wiki page: EXCLUDED names it, or a folder of it (an entry ending in /)."""
+    return any(p == x or x.endswith("/") and p.startswith(x) for x in EXCLUDED)
 
 
 def build(ref, root=ROOT):

@@ -45,7 +45,7 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.integrations.executor_tools import EXECUTOR
-from tracekit.sdk.client import SignerUnavailable, VaultBody, fail_open, named_rules, result_field
+from tracekit.sdk.client import SignerUnavailable, VaultBody, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -123,7 +123,7 @@ class TracekitAgents(RunHooks):
         except RPCError as e:
             return BLOCKED + f"signer refused the call: {e}"
         if d["decision"] == "deny":
-            return BLOCKED + (named_rules(d["rule_ids"]) or "deny")
+            return BLOCKED + (refusal(d) or "deny")
         if d["decision"] == "ask" and not can_wait:
             return BLOCKED + "approval required, and this tool cannot wait for one"
         try:
@@ -137,7 +137,7 @@ class TracekitAgents(RunHooks):
         except (RPCError, SignerUnavailable) as e:   # e.g. a hint that is not an id at all
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if not c["ok"]:
-            return BLOCKED + named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")
+            return BLOCKED + refusal(c, c.get("approval_id"))
         # lean: only a FunctionTool runs the signer's copy (T2); a shell or patch tool runs the SDK's action, which the
         # gate read just before; rebuild the action from the copy if those tools get T2 approvals
         _keep(self._passed, call_id, (d, tool, c.get("args", args)))

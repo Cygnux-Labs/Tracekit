@@ -150,11 +150,11 @@ def export_and_verify(run_id, config=None):
         if os.path.exists(out):
             os.remove(out)
         tracekit("export", "--v2", "--run", run_id, *where, "-o", out)
-        p = tracekit("verify", out, "--trust", "trust.json", check=False)
+        p = tracekit("verify", out, "--trust", "trust.json", "--detail", check=False)
         if "Integrity: VERIFIED." in p.stdout or time.monotonic() > deadline:
             break
         time.sleep(0.5)
-    print(f"\n$ tracekit verify {out} --trust trust.json\n{p.stdout}{p.stderr}", end="")
+    print(f"\n$ tracekit verify {out} --trust trust.json --detail\n{p.stdout}{p.stderr}", end="")
     return p.returncode
 
 

@@ -15,6 +15,7 @@ dist/
 !docs/sample/*.tkb
 !docs/demos/*/run.tkb
 !tests/golden/v1/*.tkb
+!tests/kit/vectors/*.tkb
 .pytest_cache/
 .venv/
 venv/
@@ -24,3 +25,6 @@ _claude_snapshots/
 
 # local planning notes (not committed)
 planning/
+
+# agent-flow tool state (audit logs, gate runs) stays local
+.agent-flow/

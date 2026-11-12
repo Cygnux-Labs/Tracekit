@@ -41,7 +41,7 @@ bundle = f"{run.run_id}.tkb"
 print("\nthe signed records of both calls:")
 show(bundle, "policy.decision", "tool.result", "capture.gap")
 one_byte_changed(bundle, "tampered.tkb")
-p = tracekit("verify", "tampered.tkb", "--trust", "trust.json", check=False)
+p = tracekit("verify", "tampered.tkb", "--trust", "trust.json", "--detail", check=False)
 print("\none byte changed in a copy (the gap's tool_use_id call-2 now reads call-1):\n"
-      f"$ tracekit verify tampered.tkb --trust trust.json\n{p.stdout}{p.stderr}", end="")
+      f"$ tracekit verify tampered.tkb --trust trust.json --detail\n{p.stdout}{p.stderr}", end="")
 sys.exit(code or (p.returncode != 1))

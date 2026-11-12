@@ -14,7 +14,7 @@ import contextvars
 import uuid
 import warnings
 
-from tracekit.sdk.client import named_rules, result_field
+from tracekit.sdk.client import refusal, result_field
 
 ERRORS = ("Error executing tool:",                                   # native tool calls
           "I encountered an error while trying to use the tool.")        # the text path (its tool_usage_exception)
@@ -32,7 +32,7 @@ def hooks(run):
         try:
             tool, args = ctx.tool_name, dict(ctx.tool_input or {})
             d = run.decide(st["id"], tool, args)
-            why = named_rules(d["rule_ids"]) or d.get("reason") or d["decision"]
+            why = refusal(d) or d["decision"]
             if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
                 if d["decision"] == "allow":
                     return None
@@ -46,7 +46,7 @@ def hooks(run):
                 aid = run.call("approval_request", tool_call_id=st["id"])["approval_id"]
                 state = run.call("approval_wait", approval_id=aid, timeout_ms=WAIT_MS)["state"]
                 if state != "approved":
-                    st["blocked"] = f"Tool call held by Tracekit policy ({why}) and not approved: {state}"
+                    st["blocked"] = f"Tool call held by Tracekit policy and not approved: {state}; {refusal(d, aid)}"
                     if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
                         run.call("approval_abandon", approval_id=aid, reason="no answer within the hook's wait")
                     return False

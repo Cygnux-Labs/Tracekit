@@ -30,12 +30,14 @@ const (
 	witnessReadLimit = 512 << 20
 )
 
+// notRated is a failed bundle's assurance: a level rates only evidence that verified.
+const notRated = "not rated (the bundle failed verification)"
+
 func main() { os.Exit(run()) }
 
 // writeReport prints the report in the reference CLI's order: the check lines and the reason, then the verdict. A
 // reason the failed check lines already give is not repeated: a failed bundle's (exit 1) are its failed checks, any
-// other's is printed unless a failed check line says it. A failed bundle's assurance is not rated: a level rates only
-// evidence that verified.
+// other's is printed unless a failed check line says it. A failed bundle's assurance is notRated.
 func writeReport(w io.Writer, r report) {
 	given := false
 	for _, check := range r.Checks {
@@ -50,7 +52,7 @@ func writeReport(w io.Writer, r report) {
 	}
 	assurance := r.Assurance
 	if r.ExitCode == 1 {
-		assurance = "not rated (the bundle failed verification)"
+		assurance = notRated
 	}
 	fmt.Fprintf(w, "\nIntegrity: %s.\nAssurance: %s.\n", r.Integrity, assurance)
 }
@@ -135,6 +137,9 @@ func run() int {
 				Checks: []verifier.VerificationCheck{{Check: "trust config", Status: "fail", Detail: detail}}})
 		}
 		result = verifier.VerifyBundle(data, config)
+		if result.ExitCode == 1 { // as the reference CLI's --json gives a v2 bundle's; a v1 bundle's keeps its level
+			result.Assurance = notRated
+		}
 	} else if namesV2(data) {
 		if *key != "" || *witness != "" {
 			return fail("UNVERIFIABLE", "-key and -witness are for v1 bundles; a v2 bundle is checked against -trust")

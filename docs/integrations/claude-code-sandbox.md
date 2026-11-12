@@ -56,7 +56,11 @@ The coding pack's `TK-A003` (an `ask` rule) adds what that prompt doesn't: it ho
 the decision:
 
 ```text
-[tracekit] held for approval apr-… (TK-A003): a person lets it run with `! tracekit approvals approve apr-…`, then asks the agent to try the same call again, unchanged (to refuse it: `! tracekit approvals reject apr-…`). Agent: wait for the person's answer. Why: running a command outside Claude Code's sandbox. Have a person approve the held call, …
+[tracekit] HELD, nothing ran: apr-… (TK-A003), expires 09:27 UTC.
+Why: running a command outside Claude Code's sandbox
+Instead: Have a person approve the held call, or run the command inside the sandbox, without dangerouslyDisableSandbox.
+Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
+Agent: …
 tracekit approvals approve apr-…            # from another terminal; then ask Claude to run the same command again
 ```
 

@@ -112,7 +112,8 @@ def run_case(case):
     cwd = os.path.join(GOLDEN, case["dir"])
     env = {**os.environ, "PYTHONPATH": ROOT}
     cli = [sys.executable, "-m", "tracekit", case["command"], *case["args"]]
-    text = subprocess.run(cli, cwd=cwd, env=env, capture_output=True, text=True)
+    text = subprocess.run(cli + (["--detail"] if case["command"] == "verify" else []), cwd=cwd, env=env,
+                          capture_output=True, text=True)   # verify's Integrity and Assurance lines: --detail
     out = {"exit_code": text.returncode}
     if case["command"] == "migrate":
         out["output"] = text.stdout.splitlines()

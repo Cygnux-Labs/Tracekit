@@ -14,7 +14,7 @@ inputs:
     description: "Independent witness copy to check against, e.g. git:/path/to/clone or file:/path/witness.jsonl"
     required: false
   trust:
-    description: "Path to the verifier's pinned trust config for v2 bundles"
+    description: "Path to the verifier's pinned trust config for v2 bundles (on a pull request, one committed in its checkout is read from its base commit, as are key and witness files)"
     required: false
   strict:
     description: "Fail on warnings too (exit code 3)"
@@ -45,9 +45,9 @@ runs:
         TK_ACTION_PATH: ${{ github.action_path }}
       run: |
         if [ -n "$TK_VERSION" ]; then
-          python -m pip install "tracekit-ai==$TK_VERSION"
+          python -I -m pip install "tracekit-ai==$TK_VERSION"
         else
-          python -m pip install "$TK_ACTION_PATH"
+          python -I -m pip install "$TK_ACTION_PATH"
         fi
     - name: Verify bundle
       id: verify
@@ -59,7 +59,83 @@ runs:
         TK_TRUST: ${{ inputs.trust }}
         TK_STRICT: ${{ inputs.strict }}
         TK_REQUIRE_ANCHOR: ${{ inputs.require-anchor }}
+        TK_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        TK_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       run: |
+        # On a pull request, a trust, key or witness file in $GITHUB_WORKSPACE is the pull request's to change unless it
+        # is in another checkout there: one in the pull request's own checkout (a work tree at its merge or head commit,
+        # or with its head in it) is read from its base commit, by the path as given; a `..`, a symlink, a submodule or
+        # no checkout at all is refused.
+        from_base() {
+          [ -n "$TK_BASE_SHA" ] || { printf '%s\n' "$2"; return; }
+          python -I - "$@" <<'PY'
+        import os, subprocess, sys
+        kind, path = sys.argv[1:3]
+        base, ws = os.environ["TK_BASE_SHA"], os.environ.get("GITHUB_WORKSPACE", "")
+        why = "the pull request's author can change it"
+        def git(cwd, *a):   # a directory made to look like a bare repository is never taken for one
+            return subprocess.run(["git", "--literal-pathspecs", "-c", "safe.bareRepository=explicit", "-C", cwd, *a],
+                                  capture_output=True)
+        def refuse(msg):
+            print(f"::error::{kind} {path}: {msg}")
+            sys.exit(1)
+        if ".." in path.replace(os.sep, "/").split("/"):   # resolved after a symlink, `..` can leave the workspace
+            refuse("give the path without `..` components")
+        given = os.path.abspath(path)
+        inside = lambda p, w: p == w or p.startswith(w + os.sep)
+        root = next((w for w in (os.path.abspath(ws), os.path.realpath(ws)) if ws and inside(given, w)), "")
+        if not root and ws and inside(os.path.realpath(given), os.path.realpath(ws)):
+            refuse("it reaches $GITHUB_WORKSPACE through a symlink")
+        if not root or not os.path.lexists(given):
+            print(path)   # outside the workspace, or missing: as given
+            sys.exit()
+        p = given
+        while p != root:
+            if os.path.islink(p):
+                refuse(f"{os.path.relpath(p, root)} in $GITHUB_WORKSPACE is a symlink, which {why}")
+            p = os.path.dirname(p)
+        r = git(given if kind == "witness repository" else os.path.dirname(given), "rev-parse", "--show-toplevel",
+                "HEAD", "--show-superproject-working-tree")
+        top, head, parent = (r.stdout.decode().splitlines() + ["", "", ""])[:3]
+        if r.returncode:
+            refuse("it is in $GITHUB_WORKSPACE but in no git checkout there: keep it outside $GITHUB_WORKSPACE")
+        pr_head = os.environ.get("TK_HEAD_SHA", "")
+        commit = git(top, "cat-file", "commit", "HEAD").stdout.decode().split("\n\n", 1)[0].splitlines()
+        # the pull request's: at its merge or head commit, or one that has its head in it (a pull_request_target
+        # workflow's checkout of the merge ref; a shallow one keeps the parent lines but not the history)
+        if not (head in (os.environ.get("GITHUB_SHA"), pr_head) or pr_head and (f"parent {pr_head}" in commit
+                or git(top, "merge-base", "--is-ancestor", pr_head, "HEAD").returncode == 0)):
+            if parent:
+                refuse("it is in a submodule, which the pull request can point at other files")
+            print(path)   # another checkout in the workspace (of a trust repository, say): as given
+            sys.exit()
+        if kind == "witness repository":
+            refuse(f"it is the pull request's own checkout, and {why}: clone the witness repository into a directory "
+                   "of its own")
+        rel = os.path.relpath(os.path.join(os.path.realpath(root), os.path.relpath(given, root)), os.path.realpath(top))
+        rel = rel.replace(os.sep, "/")
+        if git(top, "cat-file", "-e", base + "^{commit}").returncode:
+            git(top, "fetch", "--no-tags", "--depth=1", "origin", base)
+        at = {rev: git(top, "ls-tree", "-z", rev, "--", rel).stdout.decode().rstrip("\0").split(None, 3)
+              for rev in ("HEAD", base)}
+        if "120000" in at["HEAD"][:1] + at[base][:1]:
+            refuse(f"it is committed as a symlink, which {why}")
+        if at[base][1:2] != ["blob"]:
+            refuse(f"it is in the pull request's checkout, where {why}, and is no file at its base commit {base[:12]}: "
+                   "add it on the base branch first, or keep it outside $GITHUB_WORKSPACE")
+        out = git(top, "cat-file", "blob", at[base][2])
+        dst = os.path.join(os.environ["RUNNER_TEMP"], "tracekit-base-" + kind)
+        with open(dst, "wb") as f:
+            f.write(out.stdout)
+        print(dst)
+        PY
+        }
+        if [ -n "$TK_TRUST" ]; then TK_TRUST=$(from_base trust "$TK_TRUST") || { echo "$TK_TRUST"; exit 1; }; fi
+        if [ -f "$TK_KEY" ]; then TK_KEY=$(from_base key "$TK_KEY") || { echo "$TK_KEY"; exit 1; }; fi
+        case "$TK_WITNESS" in
+          file:*) w=$(from_base witness "${TK_WITNESS#file:}") || { echo "$w"; exit 1; }; TK_WITNESS="file:$w" ;;
+          git:*) w=$(from_base "witness repository" "${TK_WITNESS#git:}") || { echo "$w"; exit 1; } ;;
+        esac
         args=("$TK_BUNDLE" --json)
         [ -n "$TK_KEY" ] && args+=(--key "$TK_KEY")
         [ -n "$TK_WITNESS" ] && args+=(--witness "$TK_WITNESS")
@@ -69,10 +145,10 @@ runs:
         code=0
         tracekit verify "${args[@]}" > "$report" || code=$?
         cat "$report"
-        delim="tracekit_$(python -c 'import secrets; print(secrets.token_hex(16))')"
+        delim="tracekit_$(python -I -c 'import secrets; print(secrets.token_hex(16))')"
         { echo "json<<$delim"; cat "$report"; echo "$delim"; } >> "$GITHUB_OUTPUT"
         if [ "$code" = 0 ] && [ "$TK_REQUIRE_ANCHOR" = "true" ]; then
-          [ -n "$TK_TRUST" ] || python -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(not any(c["check"] == "trust root" and c["status"] == "pass" for c in r["checks"]))' "$report" \
+          [ -n "$TK_TRUST" ] || python -I -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(not any(c["check"] == "trust root" and c["status"] == "pass" for c in r["checks"]))' "$report" \
             || { echo "::error::bundle is unanchored: pass key, witness, or v2 trust, or set require-anchor: false"; code=1; }
         fi
         exit "$code"

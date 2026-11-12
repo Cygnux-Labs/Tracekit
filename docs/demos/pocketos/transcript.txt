@@ -19,7 +19,7 @@ the agent: the call was rejected
 Bash 'git status': allow
   ran
 
-$ tracekit verify 267361c0260f138521f373c8f3d53600.tkb --trust trust.json
+$ tracekit verify 267361c0260f138521f373c8f3d53600.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/2af65fc8c95862e3c254324dceed4229 at tree size 14, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required

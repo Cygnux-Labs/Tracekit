@@ -1,4 +1,4 @@
-$ tracekit verify run.tkb --trust trust.json
+$ tracekit verify run.tkb --trust trust.json --detail
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
 [PASS] checkpoint — tracekit.local/6826710591a55c91cf18ed6d68d0087a at tree size 8, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required

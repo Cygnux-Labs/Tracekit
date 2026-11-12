@@ -20,7 +20,7 @@
                "args": {"session_id": 7, "chars": "rm -rf build\n", "command": "rm -rf build\n"}},
    "exit": 2,
    "stdout": {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                                     "permissionDecisionReason": "Blocked by tracekit policy: R-1"}}},
+                                     "permissionDecisionReason": "[tracekit] BLOCKED, nothing ran, and no one can approve it (R-1).\nAgent: tell the person what you were doing and why it was blocked. Never hide what a call runs to get past the policy: every call is signed and kept."}}},
   {"name": "apply_patch: add, update with move, delete; held and approved",
    "payload": {"session_id": "cx-1", "cwd": "/w", "hook_event_name": "PreToolUse", "tool_name": "apply_patch",
                "tool_use_id": "call_4",

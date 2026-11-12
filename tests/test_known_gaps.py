@@ -7,7 +7,6 @@ closed; remove the marker then. Anything other than an AssertionError fails the 
 
 The v2 signer closes them (except kg09): tests/test_known_gaps_v2.py.
 """
-import json
 import os
 import shutil
 import sys
@@ -20,8 +19,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import policy  # noqa: E402
-from tracekit.core import read_text  # noqa: E402
-from factories import ev, make_signer, run_start, tool_call  # noqa: E402
+from factories import ev, ledger_records, make_signer, run_start, tool_call  # noqa: E402
 
 POL = policy.load()[0]
 # only a failed assertion is the known gap; a crash is a real failure
@@ -92,7 +90,7 @@ class SignerGaps(unittest.TestCase):
         self.assertTrue(r.get("ok"), r)
 
     def events(self):
-        return [json.loads(line)["event"] for line in read_text(os.path.join(self.home, "ledger", "ledger.jsonl")).splitlines()]
+        return [r["event"] for r in ledger_records(self.home)]
 
     def flagged(self, tid):
         return [e for e in self.events() if e["type"] in ("capture.gap", "error") and e["data"].get("tool_use_id") == tid]

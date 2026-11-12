@@ -85,6 +85,21 @@ class GateCall(unittest.TestCase):
         self.assertIn("arguments the signer approved", why)
         r.complete.assert_called_once_with("c1", "error", attempt=0, error="not run: " + why)
 
+    def test_a_refusal_carries_the_signers_reason_and_the_approval_id(self):
+        """#587: a deny named its rule ids only, and a hold that did not run named neither its approval nor why."""
+        for decision, state, said in (("deny", None, "Tool call blocked by Tracekit policy: PAY: moving money. Instead: "
+                                                     "Check the payee."),
+                                      ("ask", "rejected", "Tool call held by Tracekit policy and not approved: "
+                                                          "rejected; PAY (approval apr-1): moving money. Instead: Check "
+                                                          "the payee.")):
+            with self.subTest(decision):
+                r = run(decision)
+                r.decide.return_value = dict(r.decide.return_value, rule_ids=["PAY"],
+                                             reason="moving money. Instead: Check the payee.")
+                r.call.side_effect = lambda m, **f: {"approval_request": {"approval_id": "apr-1"},
+                                                     "approval_wait": {"state": state}}[m]
+                self.assertEqual(asyncio.run(gate_call(r, "c1", 0, "pay", {}))[1], said)
+
 
 if __name__ == "__main__":
     unittest.main()

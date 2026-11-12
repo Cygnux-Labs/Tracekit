@@ -48,6 +48,74 @@ class IsolatedCommand(unittest.TestCase):
 
 
 @unittest.skipIf(os.name == "nt", "the fail-closed wrapper is POSIX shell")
+class ClearText(unittest.TestCase):
+    """The hook command init wrote from a working tree (or a --user install) carried the tree's path and branch in
+    base64, which reads as malware to a security reviewer: they are plain, quoted arguments now, and the hook runs as
+    before from a path with spaces and quotes."""
+
+    def tree(self, name, entry="import sys\ndef _entry(event):\n    print('ran', event, sys.path[0], sys.argv[1:])\n"
+                                    "    return 0\n"):
+        """A directory `name` holding a tracekit package whose v2 hook's _entry is `entry`."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        tree = os.path.join(d, name)
+        os.makedirs(os.path.join(tree, "tracekit", "integrations"))
+        for f in ("__init__.py", os.path.join("integrations", "__init__.py")):
+            open(os.path.join(tree, "tracekit", f), "w").close()
+        with open(os.path.join(tree, "tracekit", "integrations", "claude_code.py"), "w") as f:
+            f.write(entry)
+        return tree
+
+    def test_the_command_names_its_tree_in_clear_text_and_runs_from_any_path(self):
+        """Review of #628: doctor took a `"` off the end of every word of a POSIX command, so a tree whose name ends
+        in one was misread."""
+        from tracekit import doctor
+        for name in ("it's a \"tree\" $HOME", 'ends in a quote "'):
+            tree = self.tree(name)
+            with self.subTest(tree=tree), mock.patch.object(install, "ROOT", tree), \
+                    mock.patch("importlib.util.find_spec", return_value=None):
+                cmd = install._hook_command(install.V2_HOOK, args=("PreToolUse",))
+                self.assertNotIn("base64", cmd)
+                self.assertIn("from tracekit.integrations.claude_code import _entry", cmd)
+                p = subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True, timeout=60)
+                self.assertEqual((p.returncode, p.stdout.strip()),
+                                 (0, f"ran PreToolUse {tree} {[tree, 'PreToolUse']}"), p.stderr)
+                self.assertEqual(doctor._probe_target(doctor._hook_argv(cmd)), (sys.executable, tree))   # D-VERSIONS
+
+    HOSTILE = "C:\\Users\\O'Brien $(id) `id` %PATH% !x &calc \"q\"\\Tracekit"
+
+    def windows(self, tree, branch):
+        """The hook command init writes on Windows for `tree` on `branch`, and doctor's reading of its tree."""
+        from tracekit import doctor
+        with mock.patch.object(install.os, "name", "nt"), mock.patch.object(install, "ROOT", tree), \
+                mock.patch.object(install, "_branch", return_value=branch), \
+                mock.patch("importlib.util.find_spec", return_value=None):
+            cmd = install._hook_command(install.V2_HOOK, args=("PreToolUse",))
+            return cmd, doctor._probe_target(doctor._hook_argv(cmd))[1]
+
+    def test_on_windows_no_shell_expands_the_tree_or_branch_in_the_command(self):
+        """Review of #628: the Windows command passed the tree, branch and event as arguments quoted for the C runtime,
+        which Claude Code's Git Bash (Codex's PowerShell, Droid's cmd.exe) read as shell text: C:\\Users\\me lost its
+        backslashes, O'Brien broke the line, and a branch fix&calc or f$(id) ran a command. They are literals inside
+        the code now, every character a shell reads in double quotes escaped; here under bash, as Git Bash runs it."""
+        branch = "fix&calc$(id)`id`%PATH%'q\"!x"
+        tree = self.tree(self.HOSTILE)
+        cmd, read = self.windows(tree, branch)
+        self.assertEqual(read, tree)   # doctor reads the tree back from the code
+        self.assertNotIn("base64", cmd)
+        p = subprocess.run(["bash", "-c", cmd], input="{}", capture_output=True, text=True, timeout=60)
+        self.assertEqual((p.returncode, p.stdout.strip()), (0, f"ran PreToolUse {tree} []"), p.stderr)
+        self.assertNotIn("uid=", p.stdout + p.stderr)
+        broken = self.tree(self.HOSTILE, "from tracekit import a_name_this_branch_removed\n")
+        p = subprocess.run(["bash", "-c", self.windows(broken, branch)[0]], input="{}", capture_output=True,
+                           text=True, timeout=60)
+        self.assertEqual(p.returncode, 1)
+        self.assertIn(f"the working tree {broken}, which cannot import it now", p.stderr)
+        self.assertIn(f"was on {branch} when the hooks were installed", p.stderr)
+        self.assertNotIn("uid=", p.stdout + p.stderr)
+
+
+@unittest.skipIf(os.name == "nt", "the fail-closed wrapper is POSIX shell")
 class WorkingTree(unittest.TestCase):
     """A dev hook imports Tracekit from the working tree init ran in (#427): a branch switch or rebase there that
     leaves code which won't import says which tree, what it is on now and what to run, and still blocks the call."""
@@ -214,7 +282,7 @@ class PluginShim(unittest.TestCase):
             code, err = self.hook(event)
             self.assertEqual(code, 1, event)
             self.assertIn("NOT recorded", err.splitlines()[0])   # the line Claude Code shows
-            self.assertIn("Ask the person to set it up: pip install tracekit-ai==1.5.3 && tracekit init --dev --v2 --no-hooks", err)
+            self.assertIn("Ask the person to set it up: pip install tracekit-ai==1.6.0 && tracekit init --dev --v2 --no-hooks", err)
 
     def set_up_tracekit(self):
         """What `tracekit init --dev --v2` and the dev signer leave behind: the dev signer's data dir."""
@@ -227,11 +295,39 @@ class PluginShim(unittest.TestCase):
         code, err = self.hook("PreToolUse")
         self.assertEqual(code, 2)
         self.assertIn("call was blocked", err)
-        self.assertIn("/plugin disable tracekit@tracekit", err)
+        self.assertIn("turn the plugin off in /plugin", err)   # no CLAUDE_PLUGIN_ROOT: the key isn't known
         for event in ("UserPromptSubmit", "Stop", "SubagentStop", "SessionStart"):   # 2 would erase or loop these
             code, err = self.hook(event)
             self.assertEqual(code, 1, event)
             self.assertIn(f"this {event} event was NOT recorded", err.splitlines()[0])
+
+    def test_the_disable_command_names_the_marketplace_the_plugin_came_from(self):
+        """Claude Code installs a marketplace plugin at <plugins root>/cache/<marketplace>/<plugin>/<version>."""
+        self.set_up_tracekit()
+        for root, key in (("/home/u/.claude/plugins/cache/buildwithclaude/tracekit/1.5.3",
+                           "tracekit@buildwithclaude"),
+                          ("/home/u/.claude/plugins/cache/buildwithclaude/tracekit/1.5.3/",
+                           "tracekit@buildwithclaude"),
+                          ("/home/u/.claude/plugins/cache/tracekit/tracekit/1.5.3", "tracekit@tracekit"),
+                          ("/home/u/My Plugins/cache/buildwithclaude/tracekit/1.5.3", "tracekit@buildwithclaude")):
+            with self.subTest(root=root):
+                code, err = self.hook("PreToolUse", CLAUDE_PLUGIN_ROOT=root)
+                self.assertEqual(code, 2, err)
+                self.assertEqual(err.count("/plugin disable "), 1, err)
+                self.assertIn(f"/plugin disable {key}\n", err)
+                self.assertNotIn("turn the plugin off in /plugin", err)
+
+    def test_no_disable_command_when_the_plugins_key_is_not_known(self):
+        """No CLAUDE_PLUGIN_ROOT, a --plugin-dir or local-marketplace plugin (which loads in place), a claude.ai-synced
+        one, or a cache path with no version: none of them names a key here."""
+        self.set_up_tracekit()
+        for env in ({}, {"CLAUDE_PLUGIN_ROOT": "/home/u/.claude/plugins/marketplaces/tracekit/plugin"},
+                    {"CLAUDE_PLUGIN_ROOT": "/home/u/.claude/plugins/cache/buildwithclaude/tracekit"}):
+            with self.subTest(**env):
+                code, err = self.hook("PreToolUse", **env)
+                self.assertEqual(code, 2, err)
+                self.assertIn("turn the plugin off in /plugin", err)
+                self.assertNotIn("/plugin disable", err)
 
     def test_a_tracekit_python_that_is_gone_counts_as_set_up(self):
         self.assertEqual(self.hook(TRACEKIT_PYTHON=os.path.join(self.d, "gone", "python"))[0], 2)
@@ -259,7 +355,7 @@ class PluginShim(unittest.TestCase):
             self.assertEqual(code, want, (event, err))
             self.assertIn("tracekit 1.0.0", err.splitlines()[0])
             self.assertIn("is older than 1.2", err)
-            self.assertIn("Ask the person to run: pip install tracekit-ai==1.5.3 && tracekit init --dev --v2 --no-hooks", err)
+            self.assertIn("Ask the person to run: pip install tracekit-ai==1.6.0 && tracekit init --dev --v2 --no-hooks", err)
             self.assertNotIn("Traceback", err)
 
     def test_a_tracekit_whose_hook_does_not_import_blocks_tool_calls(self):

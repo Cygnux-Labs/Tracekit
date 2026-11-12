@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from differential_golden import cases, go_args, python_command, invoke, compare
+from differential_golden import cases, go_args, python_command, invoke, compare, compare_ts
 
 
 class Discovery(unittest.TestCase):
@@ -87,6 +87,7 @@ class Discovery(unittest.TestCase):
             (root / "tracekit" / "__init__.py").write_text("")
             (pkg / "__init__.py").write_text("")
             (pkg / "v2.py").write_text(
+                "EXIT_FAIL, NOT_RATED = 1, 'not rated (the bundle failed verification)'\n"
                 "class Report:\n"
                 "    integrity = 'UNUSABLE BUNDLE'\n"
                 "    assurance = 'not evaluated'\n"
@@ -105,6 +106,16 @@ class Discovery(unittest.TestCase):
                                    "integrity": "UNUSABLE BUNDLE",
                                    "assurance": "not evaluated",
                                    "warning_checks": [], "failed_checks": []})
+
+    def test_v2_reference_does_not_rate_a_failed_bundle(self):
+        """As the reference CLI's --json gives it, and the TypeScript and Go verifiers: a level rates only evidence that
+        verified (release QA of 1.6.0)."""
+        import os
+        negative = Path(__file__).resolve().parents[3] / "tests" / "golden" / "negative"
+        command = python_command("negative", [str(negative / "record-edited.tkb"), "--trust", str(negative / "trust.json")])
+        got = invoke(command, Path.cwd(), os.environ.copy())
+        self.assertEqual((got["exit_code"], got["integrity"], got["assurance"]),
+                         (1, "FAILED", "not rated (the bundle failed verification)"))
 
     def test_invoke_compares_warning_and_failure_check_names(self):
         import os
@@ -148,6 +159,19 @@ class Discovery(unittest.TestCase):
         self.assertFalse(compare(python, {**go, "warning_checks": ["keys"]}, "v2")[0])   # a warning Python lacks
         # v1 is compared whole: Go's v1 verifier reports every check it performs, failed or not
         self.assertFalse(compare({**python, "warning_checks": []}, go, "v1")[0])
+
+    def test_typescript_matches_whole_or_names_an_add_on(self):
+        python = {"exit_code": 0, "integrity": "VERIFIED", "assurance": "witnessed",
+                  "warning_checks": ["fail-open classes"], "failed_checks": []}
+        self.assertEqual(compare_ts(python, dict(python)), (True, False))
+        # the TypeScript verifier runs every check the reference does: these are not exempt as Go's are
+        self.assertEqual(compare_ts(python, {**python, "warning_checks": []}), (False, False))
+        self.assertEqual(compare_ts(python, {**python, "assurance": "dev"}), (False, False))
+        add_on = {"exit_code": 2, "integrity": "UNVERIFIABLE (not checked by this verifier: rekor anchor)",
+                  "assurance": "none", "warning_checks": [], "failed_checks": []}
+        self.assertEqual(compare_ts(python, add_on), (True, True))
+        self.assertEqual(compare_ts(python, {**add_on, "integrity": "UNVERIFIABLE (needs tracekit >= 9.0)"}),
+                         (False, False))
 
     def test_non_json_invocation_is_reported_as_error(self):
         import os

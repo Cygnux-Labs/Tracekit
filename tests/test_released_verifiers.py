@@ -31,7 +31,8 @@ from tracekit.signer import service as svc
 from tracekit.verify import v2
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0", "v1.4.0", "v1.4.1", "v1.4.2", "v1.5.0", "v1.5.1", "v1.5.2", "v1.5.3"]   # add each release's tag
+RELEASED = ["v1.2.0", "v1.2.3", "v1.3.0", "v1.4.0", "v1.4.1", "v1.4.2", "v1.5.0", "v1.5.1", "v1.5.2", "v1.5.3",
+            "v1.6.0"]   # add each release's tag
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
 OPENSHELL = CallerIdentity("mtls", "spiffe://acme/openshell", True)   # a configured gateway
 VERIFY = ("import json, sys, tracekit\nfrom tracekit.verify import v2\nrep, code = v2.verify(sys.argv[1], sys.argv[2])\n"
@@ -54,7 +55,10 @@ class Released(Signed):
     def setUp(self):
         self.dir = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
         self.addCleanup(shutil.rmtree, self.dir, True)
-        self.s = svc.SignerService(os.path.join(self.dir, "data"), grace_s=0, fsck_every_s=0, observe_grace_s=0,
+        # the coding pack: the default holds every A2A message (the server core's TK-S011) since #604, and a2a_run's
+        # message must go through
+        coding = svc.load_policy(os.path.join(os.path.dirname(svc.DEFAULT_POLICY), "coding.yaml"))
+        self.s = svc.SignerService(os.path.join(self.dir, "data"), coding, grace_s=0, fsck_every_s=0, observe_grace_s=0,
                                    analyzers=[f"uid:{ANALYZER.subject}"], gateways=[f"mtls:{OPENSHELL.subject}"],
                                    authorize={f"{SENSOR.scheme}:{SENSOR.subject}": ["observe_effect"],
                                               f"mtls:{OPENSHELL.subject}": sorted(svc.DEFAULT_GRANTS
@@ -135,6 +139,18 @@ class Released(Signed):
         run.close()
         return {"run_id": run.run_id}
 
+    def self_grant_run(self):
+        """A run whose own user issued it an intent grant (no approvals section: the dev signer's rule), a self-approval
+        a verifier before 1.6.0 can't see."""
+        run = self.register(ME)
+        self.assertTrue(self.call(ME, "grant_issue", run_id=run["run_id"], intent="payment.send", tools=["send_money"],
+                                  caveats=[{"field": "currency", "op": "==", "value": "USDC"},
+                                           {"field": "payee", "op": "==", "value": "0x" + "a1" * 20}],
+                                  limits=[{"op": "sum", "field": "amount", "max": 10 ** 6}],
+                                  expires_at=svc._iso(time.time() + 3600))["self_approved"])
+        self.call(ME, "close_run", **run)
+        return run
+
     def test_released_verifiers_read_todays_bundles(self):
         run = self.agent_run()
         cases = {"an agent run": (self.export(run), "1.2.0")}
@@ -151,6 +167,8 @@ class Released(Signed):
         cases["OpenShell blocked a connection, then lost events"] = (self.export(self.openshell_run()), "1.4.0")
         cases["an A2A gateway call"] = (self.export(self.a2a_run()), "1.2.0")
         cases["a C2C transfer"] = (self.export(self.transfer_run()), "1.2.0")
+        # its assurance is dev in 1.6 (approvals: self): an older verifier says it can't verify it, never witnessed
+        cases["a grant the run's own user issued"] = (self.export(self.self_grant_run()), "1.6.0")
         log = Log(os.path.join(self.dir, "ext"))
         self.addCleanup(log.store.close)
         cases["an ext field and record"] = ((ext_bundle(log, os.path.join(self.dir, "ext.tkb")),

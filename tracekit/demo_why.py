@@ -133,8 +133,9 @@ def main(keep=False):
             out = bundles[ev["agent"]] = os.path.join(d, f"{ev['agent']}.tkb")
             export_final(os.path.join(d, "data", "store"), ev["tracekit"]["run_id"], witness, out)
             rep, code = v2.verify(out, trust)
-            codes.append(code)
-            print(f"  {ev['agent']:<10} {out}: integrity {rep.integrity}, exit {code}")
+            codes.append(code or rep.warnings)   # "all of it holds": verified, and no line warned
+            print(f"  {ev['agent']:<10} {out}: integrity {rep.integrity}, exit {code}"
+                  + (f", warnings: {', '.join(rep.warnings)}" if rep.warnings else ""))
         c = cause["tracekit"]
         signed, _, _ = import_v2.bundle_records(bundles[cause["agent"]], trust)   # only a bundle that verifies
         found = any(r["hash"] == c["hash"] and r["event"]["seq"] == c["seq"] for r in signed.get(c["run_id"], []))

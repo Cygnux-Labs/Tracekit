@@ -1,6 +1,13 @@
-"""The signer RPC contract, version 20: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 22: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 20 adds proof-carrying messages (experimental):
+Frozen: a change to any schema here is a new RPC_VERSION. Version 22 adds intent grants (docs/intent-grants.md):
+`grant_issue` (a person approves a kind of costly call once, within limits, for one run), `grant_list` and
+`grant_revoke`. Version 21 adds Tracekit Box's agent channel (experimental):
+register_run's `box` (a `box_daemons` identity's box run: its id, image digest and allowlist names, which the signer
+writes as the run's `ext.box` with the engine from its own config) and `channel_open` (the daemon names its open box
+run on a connection of its own, which from then on is the box's identity, `box:<uid>/<box id>`), and review_finding's
+rule TK-X212 (a box's door events against its agent's own account). Version 20 adds
+proof-carrying messages (experimental):
 `pcm_sign`, `pcm_grant`, `pcm_delegate` and `pcm_evidence`. Version 19 adds `review_finding` (a signed finding of
 `tracekit analyze --v2`, in a findings run), `constraint_add` (a live constraint the person's request states; its
 response's `refused` past the run's cap), model_event's `amended` (the fields an LLM gateway changed in a request),
@@ -25,12 +32,13 @@ with `conflict`, and the same id from another identity is a different request.
 Per-run calls carry the `run_token` that `register_run` returned. Event calls carry `stream` and `client_seq`
 (one counter per client process); a skipped value becomes a signer-written gap record, a reused one is refused.
 """
+import json
 from typing import Protocol
 
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 20
+RPC_VERSION = 22
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -76,6 +84,17 @@ DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
+# in a deny's or an ask's `reason` (decide), what follows it is the rules' remedies: what to do instead
+INSTEAD = ". Instead: "
+
+
+def quoted(v, n=64):
+    """Text the agent chose (an argument's name or value, a tool's or a file's name) as a reason quotes it: JSON (ASCII,
+    so no line break) cut to `n` characters, its ". Instead:" escaped, so it never starts or moves a line of what a
+    client makes of the reason (INSTEAD)."""
+    return json.dumps(v)[:n].replace(INSTEAD.rstrip(), INSTEAD.rstrip()[:-1] + "\\u003a")
+
+
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:[^\n]+" + _END)   # scheme:subject
 HOST = _str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END)   # a host name or IP address, lower case
 TS = _str(27, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z" + _END)
@@ -90,6 +109,11 @@ PERSON = _obj(["subject", "person"], subject=_str(256, minLength=1), person=_str
 # a WebAuthn assertion (identity.webauthn) over webauthn.challenge(approval_id, binding_digest, decision)
 PASSKEY = _obj(["credential_id", "client_data_json", "authenticator_data", "signature"], credential_id=B64URL,
                client_data_json=B64URL, authenticator_data=B64URL, signature=B64URL)
+# a Tracekit Box box, as its daemon describes it (register_run `box`): its id, image digest and allowlist entries (a
+# preset's or a host pattern's name), and `channel` when its agent channel is on
+BOX = _obj(["id", "image_digest", "allow"], id=ID, image_digest=DIGEST, channel={"const": "agent"},
+           allow={"type": "array", "maxItems": 256,
+                  "items": _str(261, minLength=1, pattern=r"^[A-Za-z0-9.*:\[\]_-]+" + _END)})
 
 _RUN = dict(request_id=ID, run_id=ID, run_token=TOKEN)
 _EVENT = dict(_RUN, stream=ID, client_seq=SEQ)
@@ -173,7 +197,8 @@ FINDING_TITLES = {COVERAGE: "Check coverage", "TK-X201": "Action with no reasoni
                   "TK-X104": "Install claimed, none ran", "TK-X111": "Push denied, but it ran",
                   "TK-X112": "Deletion denied, but it ran", "TK-X113": "File changes denied, but files changed",
                   "TK-X114": "Network use denied, but it ran", "TK-X120": "Risky action not mentioned",
-                  "TK-X211": "Sent, deleted or installed without saying so"}
+                  "TK-X211": "Sent, deleted or installed without saying so",
+                  "TK-X212": "Agent's account and the box's doors disagree"}
 _CHECKS = [r for r in FINDING_TITLES if r != COVERAGE]
 _CHECKED = _obj(["checked", "found"], checked=SEQ, found=SEQ, not_checkable={"type": "array", "maxItems": 16,
                 "items": _obj(["reason", "n"], reason=_str(32, minLength=1, pattern=r"^[a-z][a-z_]*" + _END), n=SEQ)})
@@ -253,6 +278,19 @@ PCM_BODY = _obj(["from", "to", "intent"], to=_obj(["agent"], agent=IDENTITY),
 PCM_MESSAGE = _obj(["pcm", "id", "ts", "nonce", "sig", *PCM_BODY["required"]], **PCM_BODY["properties"],
                    pcm={"type": "integer", "const": 0}, id=HEX16, ts=TS, nonce=HEX16, sig=_PCM_SIG)
 
+# intent grants (docs/intent-grants.md): an intent's name, a grant's short id, and its limits (totals over every call
+# that uses it: a sum of a field or a count of calls)
+INTENT = _str(64, pattern=r"^[a-z][a-z0-9_.-]{0,63}" + _END)
+GRANT_ID = _str(18, pattern=r"^g-[0-9a-f]{16}" + _END)
+_LIMITS = {"type": "array", "minItems": 1, "maxItems": 4, "items": _obj(
+    ["op", "max"], op={"enum": ["sum", "count"]}, field=_str(64, pattern=r"^[a-z][a-z0-9_]*" + _END),
+    max={"type": "integer", "minimum": 1, "maximum": MAX_SAFE_INT})}
+_TOOLS = {"type": "array", "maxItems": 16, "items": _str(256, minLength=1)}   # the tools whose calls a grant covers
+_GRANT_VIEW = _obj(["grant_id", "run_id", "grant", "tools", "limits", "used", "state", "self_approved"],
+                   grant_id=GRANT_ID, run_id=ID, grant=PCM_GRANT, tools=_TOOLS, limits=_LIMITS, used={"type": "array", "maxItems": 4, "items": SEQ},
+                   state={"enum": ["live", "revoked", "expired", "used_up"]}, self_approved={"type": "boolean"},
+                   description=_str(512))
+
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
                          tenant=ID, principal=_str(256),   # app-asserted; recorded as not attested
@@ -265,6 +303,7 @@ REQUESTS = {
                          parent=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
                          # a gateway registering the run of a client it serves: counted in its open runs for that client
                          caller=IDENTITY,
+                         box=BOX,   # a box_daemons identity's box run (version 21)
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT, caller=IDENTITY,
@@ -427,6 +466,16 @@ REQUESTS = {
                          subject=IDENTITY, caveats=_CAVEATS, expires_at=TS, delegable={"type": "boolean"}),
     "pcm_evidence": _obj(["run_id", "run_token", "run_seqs"], run_id=ID, run_token=TOKEN,
                          run_seqs={"type": "array", "minItems": 1, "maxItems": 16, "items": SEQ}),
+    # a box_daemons identity names its open box run (version 21): every later frame of this connection is the box's
+    "channel_open": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
+    # intent grants (version 22, docs/intent-grants.md): a person (who may answer the run's approvals) grants the run's
+    # agent a kind of costly call of `tools` within caveats and limits until expires_at; with approval_id, the held
+    # call it is issued from is its first use, and its tool one of the grant's. Listed and revoked by those who may see the run
+    "grant_issue": _obj(["request_id", "run_id", "intent", "caveats", "limits", "expires_at"], request_id=ID, run_id=ID,
+                        approval_id=ID, intent=INTENT, caveats=_CAVEATS, limits=_LIMITS, expires_at=TS,
+                        description=_str(512), tools=_TOOLS),
+    "grant_list": _obj([], run_id=ID),
+    "grant_revoke": _obj(["request_id", "grant_id"], request_id=ID, grant_id=GRANT_ID, reason=REASON),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -547,6 +596,13 @@ RESPONSES = {
                              ["run_seq", "event", "hash", "proof"], run_seq=SEQ,
                              **{k: _PCM_RECORD["properties"][k] for k in ("event", "hash", "proof", "salt")})},
                          pending={"type": "array", "maxItems": 16, "items": SEQ}),
+    "channel_open": _obj(["identity"], identity=IDENTITY),   # the box's: box:<uid>/<box id>
+    # used: its totals so far, one per limit (the held call it was issued from counts)
+    "grant_issue": _obj(["grant_id", "grant", "tools", "used", "self_approved", "run_seq"], grant_id=GRANT_ID,
+                        grant=PCM_GRANT, tools=_TOOLS, used={"type": "array", "maxItems": 4, "items": SEQ},
+                        self_approved={"type": "boolean"}, run_seq=SEQ),
+    "grant_list": _obj(["grants"], grants={"type": "array", "maxItems": 1000, "items": _GRANT_VIEW}),
+    "grant_revoke": _obj(["grant_id", "run_id", "run_seq"], grant_id=GRANT_ID, run_id=ID, run_seq=SEQ),
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -622,3 +678,7 @@ class SignerAPI(Protocol):
     def pcm_grant(self, req: dict) -> dict: ...
     def pcm_delegate(self, req: dict) -> dict: ...
     def pcm_evidence(self, req: dict) -> dict: ...
+    def channel_open(self, req: dict) -> dict: ...
+    def grant_issue(self, req: dict) -> dict: ...
+    def grant_list(self, req: dict) -> dict: ...
+    def grant_revoke(self, req: dict) -> dict: ...

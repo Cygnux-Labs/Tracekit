@@ -16,6 +16,7 @@ Normative test vectors:
 | `tests/vectors/slh_dsa_note.json` | a hybrid checkpoint note: Ed25519 and SLH-DSA-SHA2-128s lines, keys, key ids |
 | `tests/golden/v2/` | bundles (closed, open, approval, run-set) with `trust.json` and the expected report |
 | `tests/golden/negative/` | one bundle per rejection, with the expected report in `expected.json` |
+| `tests/kit/` | the conformance kit: every golden v2 bundle and more vectors as cases (exit code, verdict, assurance level, first failed check, the section that decides it); `run_kit.py` scores any verifier against it |
 
 Every worked example on this page is checked against the code by `tests/test_format_doc_vectors.py`.
 
@@ -97,7 +98,8 @@ its record hash is that of `"seq": 1`. It adds to v1:
 `source` is `hook`, `proxy`, `transcript`, `signer`, `sdk`, `gateway`, `migrated` or `import`. Gap and tamper records
 (`capture.gap`, `trace.tamper`) are written only with `source: signer`; the `kind`s are listed in the schema's
 `capture_gap` and `trace_tamper` definitions. A gap marked `tenant_level: true` (`witness_failed`, `witness_late`,
-`clock_skew`, `degraded_unanchored`, and rollback tamper records) concerns every tenant (§7).
+`clock_skew`, `degraded_unanchored`, and rollback tamper records) concerns every tenant (§7). A run `tracekit/signer`
+(the signer's own, or a tenant's) holds only signer records and has no `run.registered`.
 
 Lifecycle records: `run.registered` (agent, the caller identity, `signer_isolation` and `fail_modes` from the signer's
 own measurement and config, and with harness binding the `harness{name, exe, pid, start_time, attested}` process the
@@ -321,8 +323,9 @@ domain tag `"t"`:
 JCS({alg, kid, log_id, seq, prev_hash, tenant, run_id, run_seq, run_prev_hash, hash, "t": "tracekit.record.v2"})
 ```
 
-Each signature purpose has its own tag, so a signature made for one purpose never verifies as another. Only `record`
-is used today; the others are reserved:
+Each signature purpose has its own tag, so a signature made for one purpose never verifies as another. `record`,
+`cert` and `retire` (a record key's certificate and its revocation), `pcm`, `pcm-grant` and `intent-grant` are used
+today; `checkpoint`, `approval` and `export` are reserved:
 
 ```text
 {"t":"tracekit.record.v2"}
@@ -333,10 +336,13 @@ is used today; the others are reserved:
 {"t":"tracekit.export.v2"}
 {"t":"pcm.message.v0"}
 {"t":"pcm.grant.v0"}
+{"t":"tracekit.intent-grant.v2"}
 ```
 
 `pcm` and `pcm-grant` are PCM 0.1 (proof-carrying messages) messages and grants, experimental, signed by the log key.
 Their tags are PCM's own, not `tracekit.*`, because PCM is an open protocol that other implementations sign too.
+`intent-grant` is an [intent grant](intent-grants.md#the-grant): PCM's grant format, signed by the log key under its
+own tag, so it never passes as a PCM grant.
 
 Worked example: the first record of `tests/vectors/sig_v2.jsonl` (`record-signer-epoch`) has the signature message
 
@@ -537,7 +543,8 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 - each entry's data is exactly its stated size and matches its CRC-32.
 
 `tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file), and refuses a bundle past the
-zip limits above, which no verifier would read.
+zip limits above, which no verifier would read. It dates every entry 1980-01-01 00:00, so a bundle shows nothing of the
+exporter's clock or time zone and the same files export to the same bytes; verifiers don't read entry dates.
 
 **A run in parts** (from 1.4.0). A run whose records fit 64 MiB is one file, `runs/<id>.jsonl`, as before. A longer
 one is written as `runs/<id>.part-0001.jsonl`, `runs/<id>.part-0002.jsonl`, ...: the run's file cut between records,
@@ -572,6 +579,7 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
+| 1.6.0 | — | — | `ext` `self_approved`: `true` (an `intent.grant` the run's own user issued: a self-approval, which makes the assurance `dev`) | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
@@ -583,7 +591,11 @@ lists the commands that verify the bundle (§11 step 2). The open definitions ar
 for `review.cites`: a 1.3 verifier given a signed finding under a manifest edited down to 1.3.0 passes its record's
 schema and checks neither its citations nor its author, and prints no `Findings:` line. What it prints stays true, the
 records being signed and included as any; the findings are left out, unchecked, so verify a bundle with signed
-findings with 1.4.0 or later.
+findings with 1.4.0 or later. The same holds for 1.6.0's `ext` `self_approved: true`, which an older verifier reads as
+an ext record it doesn't interpret, so it doesn't lower the assurance to `dev` either. Since the manifest is never
+signed, a 1.6 verifier recomputes what the records and layout need (`needs`, as export does) and, when the manifest
+asks for less, warns `verifier minimum`, naming the records that need more (`raised_by`): an older verifier given that
+bundle may have claimed more than its records show.
 
 **Criticality.** From 1.4.0, an addition an older verifier can leave unread goes in the non-critical slot rather than
 a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
@@ -606,6 +618,13 @@ a new critical row, so a verifier from 1.4.0 on keeps verifying later bundles:
   sent either way); a verifier that reads it adds a `gateway amendments` line.
 - `openshell.policy` is non-critical: it is OpenShell's report of its own configuration, beside every record a
   verifier reads; without it every line stays true, and a verifier that reads it adds an `openshell policy` line.
+- `box` is non-critical: a box channel's run records `signer_isolation: unknown`, so a verifier that doesn't read the
+  label claims nothing for it; one that reads it adds a `boxed agent` line, which narrows what the run proves (against
+  the boxed agent only) and never widens it.
+- `intent.grant`, `intent.revoked` and `grant` are non-critical: a payment a grant released is a `flag` decision
+  either way, so a verifier that doesn't read them says the call ran without a stop, which is true; one that reads them
+  adds an `intent grants` line that re-checks each release against its grant ([intent grants](intent-grants.md)), and
+  fails the verification when the signer released a payment its own grant holds.
 - `review.cites` and `effect.observed.sensor` stay critical: a verifier that passed over a signed finding's citations
   would label it `imported`, a false line; and a sensor's effects are records of what the agent's own processes did,
   in its run, which a verifier must read to verify that run. So does `capture.gap.sensor`: a 1.3 verifier counts every
@@ -664,7 +683,8 @@ line and verdict is in [verdicts](verdicts.md).
    (`rekor anchor`).
 5. **Keys.** Walk `keys/records.jsonl` in increasing seq: each must be a `signer.epoch` or `key.retire` record included
    in the checkpointed tree; each declared key's `kid` and `alg` must match its SPKI; each record must verify (§4)
-   under the keys valid at its seq; a `key.retire` must name a declared key and sets its `last_seq`. All records must
+   under the keys valid at its seq; a `key.retire` must name a declared key and sets its `last_seq`, before its own
+   signature is checked (signed by the key it retires, after that `last_seq`, it fails). All records must
    share the first key record's `log_id`. A key with `cert` is declared only if its certificate verifies under a
    pinned issuer, for that key and `log_id`, in the issuer's cosigned issuance log ([issuer.md](issuer.md)).
 6. **Runs.** A bundle holds exactly one run, one run with its findings and replay runs (`--with-findings`), or any
@@ -725,7 +745,31 @@ line and verdict is in [verdicts](verdicts.md).
     policy`, passing with `OpenShell changed the sandbox policy or configuration n time(s) (<change>: <count>, ... the
     first 8 in code-point order), as OpenShell reported it`, a warning listing the records (the first 20) that carry it
     other than as an `ext` record of source `signer` with a `change` of `[a-z0-9_.-]{1,64}` and a non-empty
-    `observer`.
+    `observer`. `intent.grant`, `intent.revoked` and `grant` (1.6.0), read together with every `policy.decision`
+    whose `rule_ids` name `TK-GRANT`: `intent grants`, failing, listing the records (the first 20), where a released
+    payment (a `flag` with `TK-GRANT`) names no grant the bundle holds earlier in its run, or one whose record fails
+    the grant rules below, or breaks its grant: its fields aren't whole numbers of the intent's, its tool isn't one
+    the grant covers, its grant was revoked or expired before it or its fields break a caveat or a limit, its totals
+    aren't the previous plus its own as whole numbers, or its tier isn't the record's; and where a decision names
+    `TK-GRANT` without `ext.grant`. A warning, listing the records, where a grant isn't a person's PCM grant for its own
+    run and tenant, never passed on, its `id` its hash's, naming 1 to 16 tools, valid for its intent in a currency with
+    a known unit with an expiry within 24 h of its `ts`, and its first totals those of no call or of the held call it
+    came from; a revocation names no grant live earlier in its run; or an `ext.grant` isn't on a `flag` with
+    `TK-GRANT`. Else it passes with the grants, who issued them, and the payments released at T2 and T1.
+    `box` (1.6.0): `boxed agent`, a warning listing the records (the first 20) when any record carries it
+    other than on a `run.registered` whose `data.identity.scheme` is `uid`, as an object with exactly `id`
+    (`[A-Za-z0-9._:-]{1,128}`), `image_digest` (`sha256:` and 64 hex digits), `allow` (a list of strings), `engine`
+    (`firecracker`, read as `micro-VM`) and optionally `channel` (`agent`). Else only the labels on the first record of
+    a run the bundle holds count (a run-set's records of other runs carry theirs too; with none of the bundle's, no
+    line), passing with `PROOF AGAINST THE BOXED
+    AGENT (micro-VM): the signing key was outside its box for this run.` (`these n runs` for more than one) and the
+    lines: what the records are (one run with `parent_run`, its agent's: `This run's records are the agent's own
+    account of its calls; the box's doors (its connections and file writes) are the record of what it could do.`; one
+    without, the box's own: `This run's records are the box's doors (its connections and file writes), as the Box daemon
+    recorded them.`; several: `In these runs, the agent's records are its own account of its calls; the box's doors
+    (its connections and file writes) are the record of what it could do.`), `Before you run anything the box wrote,
+    review it: code you run on this machine can reach the key.`, and `anchored by <name> (<class>) at <time>` per
+    pinned cosignature, oldest first.
 11. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED` (every check this verifier implements
     passed), `VERIFIED TO HEAD n (open)` for one open
     run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,
@@ -759,8 +803,10 @@ tell a later v1 record from a genuine one; only this check reports it.
 
 The TypeScript verifier does not implement SLH-DSA (§6, Web Crypto has none), Rekor anchors (§8) or record-key
 certificates ([issuer.md](issuer.md)), nor `tracekit why` findings (a bundle with a `why.finding` or a replay run): a
-bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`, exit 2, never `VERIFIED`. It checks
-signed findings (`reviews`, and the `Findings:` line) and live constraints (`constraints`) as the reference does. It
+bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`, exit 2, never `VERIFIED` (a
+certified key under a trust config that pins no issuer fails `keys`, as in the reference: no pinned issuer signed
+it). It checks signed findings (`reviews`, and the `Findings:` line) and live constraints (`constraints`) as the
+reference does. It
 takes no monitor reports, revocations or v1 ledger. Both verifiers implement the non-critical slot and the upgrade
 lines alike (§9, §11); the browser page reports exactly what the TypeScript CLI does. For evidence, check the page you
 open against the release first: `gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`
@@ -781,3 +827,10 @@ python -m pytest tests/test_ts_verifier.py       # skipped without Node >= 20.12
 record hashes and signature messages, the Ed25519 acceptance rules, checkpoint notes and key ids) and the worked examples
 on this page, then reach the reference's integrity, assurance and exit code on the differential corpus: the golden
 bundles with their `trust.json`, and the bundles `tests/test_ts_verifier.py` builds.
+
+**The kit.** `tests/kit/cases.json` holds every golden v2 bundle and the bundles of `tests/kit/vectors` as cases,
+`{input, trust, exit, verdict, level, failed_check, decided_by}`, with no report text compared; `python
+tests/kit/run_kit.py --cmd '<verifier> ... {bundle} ... {trust} ...'` scores a verifier whose JSON report has
+`exit_code`, `integrity`, `assurance` and `checks`. A case marked `addon` may be answered `UNVERIFIABLE` by a
+verifier without that add-on; one marked `proposed` holds a rule this page doesn't state yet, which `decided_by`
+names.

@@ -1,0 +1,1296 @@
+{
+ "format": "tracekit.bundle.v2",
+ "spec": "docs/format-v2.md",
+ "files": {
+  "../sdk/typescript/src/verify/sample/sample-tampered.tkb": "3d859a130c114862d4b7fde6176a588c28898180cbaffb6dac05021a6db815a7",
+  "../sdk/typescript/src/verify/sample/sample.tkb": "066455e63cf8667d11d944f74b95ab8c3c697093c0fd98e2a789ddaf600205f3",
+  "../sdk/typescript/src/verify/sample/sample.trust.json": "6c86658c88b8076cf3a9f6d6e06e42d6ca9eab7f8b0298d3eb8be6bf806ba2ed",
+  "golden/negative/checkpoint-body-edited.tkb": "5b69e6ef7955d869f2d70fd42021fa68240da372e1a41e825a4e21c0378d98dd",
+  "golden/negative/checkpoint-wrong-origin.tkb": "35c02d6c18d66fe28ee03e06bcdcb262da07a6a96f78779d57335109b137def8",
+  "golden/negative/extra-trust-file.tkb": "7f7af1c8a3c359320dd0b3fee365a5edd95ec0f49c09e8d725a854f6b76f476c",
+  "golden/negative/findings-run-twice.tkb": "9d86cfd8f70a02f8fa8684e7d136c19d2ffee91b2284137e704f700f2ad6add0",
+  "golden/negative/json-manifest-duplicate-key.tkb": "a989a2d11df1d94b865cfef93d18bbe532280c7f873affa93ff55d9a4c5507e5",
+  "golden/negative/json-manifest-too-deep.tkb": "88b01509cfc58d6ca3e80695d23ab60310b05bb4c8fc46951d7010b3546c4527",
+  "golden/negative/json-no-final-newline.tkb": "aba095faa37af2a8bf7c2f1e18f2c568d54153149ae7e03b6e4c79a00417f052",
+  "golden/negative/json-record-duplicate-key.tkb": "6dde1f6996968dd9035e7a771982201d8c155f1a1eee7727ff9f909793474949",
+  "golden/negative/json-record-too-deep.tkb": "b22d87a245ab392b20fc9ad04cfe895bf21ecff4df4ea6882373c64892bb63d6",
+  "golden/negative/key-used-after-retire.tkb": "8e35fa28db97555aae2fe76c3b2ddcdbe45b25b2608383b4bd9d71737db8c0e7",
+  "golden/negative/keys-dropped.tkb": "2d92ac099ccfffc76e2784ac6a85f4d45b97e1a6baa1f85580a8916ce5fc0424",
+  "golden/negative/manifest-format-v1.tkb": "87677ea31a7c16c740a4ebf42b0ca73a2190fb58c17b4a7d1d6eee37b938a833",
+  "golden/negative/manifest-newer-verifier.tkb": "18dd9b9a0647d386f10d5d01003a05f754a00a249e7ae54f83659f5e128b89c4",
+  "golden/negative/manifest-unlisted-file.tkb": "9963f6a0aeecb8c6eee7b9fbc711819d2bb0e11697aea501e287dffae4089ff8",
+  "golden/negative/manifest-wrong-hash.tkb": "6db588dde1fab652b0490a19eb05806c6487144e3f629a68c9100286cc9c026f",
+  "golden/negative/policy-misnamed.tkb": "2a538ca13efbb88e97bbf1b7a97884aa3f149695c0267acc42260eb086807ea4",
+  "golden/negative/proofs-inclusion-altered.tkb": "64b59e793db08c710d7767379c63920cd53fc8a31b8e7b10a0e33ac7c49fa367",
+  "golden/negative/proofs-tree-size.tkb": "599a6330f848ebdc8e4bf23c88312a3bfeeaa8d6a3bb7e41c93dd9a1bdcd5e60",
+  "golden/negative/record-alg-confusion.tkb": "2ca38a101c37818059ec030a9672ad880aa3981de54d9abead196f50bb6e16ac",
+  "golden/negative/record-bad-signature.tkb": "222c2834252ac4f1c84cf8341906019179333270829238b79c75acb126badc65",
+  "golden/negative/record-deleted.tkb": "368d799cc6b86d5a7cabad37cff7a54ff50dd2a16b92916b3e4988122e10eaf2",
+  "golden/negative/record-edited.tkb": "8c3626014dd8c409510d585ea30a25aa80d886bf3ade7bd565ece024b5a9f9da",
+  "golden/negative/record-schema-invalid.tkb": "215cd32e289e5790c40d7f05c98f8cdbd957b88282debc30593e908191e121c9",
+  "golden/negative/record-spliced.tkb": "97e8f047166242f7d0adc7fed6feb31d19721c6fc730b204034ae6a6eb68772c",
+  "golden/negative/record-swapped.tkb": "c59eb86e542e5a7ee5440e9a64716248b6880b506dcceb48fedf0c2dff6e2e6c",
+  "golden/negative/record-truncated.tkb": "f48e2b731876adb3b9c83a597bd31f274de698215aa34c828b75eb5dfd7a836b",
+  "golden/negative/run-closing-without-final.tkb": "4e574a19c120a8253c55b3a354339b38f00ab1ca377ed5ceb63bba4f07263b38",
+  "golden/negative/run-empty.tkb": "c6e9255413e578f039d605e34fcd58c8f96c8c5b30e09cab060401c037fe0fc6",
+  "golden/negative/run-rebuilt.tkb": "75bab2cd30d7f0e58a507c00bee5d7d5e69030e1e335c19ff6205135413319da",
+  "golden/negative/run-record-after-final.tkb": "88cc694ccddb54fa42b2881c67deec2d1f86e6956acf2b35eb86b596aae71d56",
+  "golden/negative/run-second-run.tkb": "8f7398817444d196ce37918464664aceccf2491ddbe451b62fd9c8a51af7beb5",
+  "golden/negative/run-set-float-bound.tkb": "0ed2a956336f93ca554f277c761c45aa1ab6883473bf805306a3323bb1d738fe",
+  "golden/negative/run-set-foreign-run.tkb": "26ecca52a68cd63bfeec460ae2e2671cd6fc70bed2ae4ff37278989a743f497a",
+  "golden/negative/run-set-records-extra.tkb": "f3cad2bec2f51fc4ddfddada8d9243305d44ae5d04911906aa53ec1e907f4f98",
+  "golden/negative/run-set-records-reordered.tkb": "819dba346678d4bbdc8f79636fd78b7df783e77bd8afc63a459ca9a2a426a08c",
+  "golden/negative/run-set-registry-uncosigned.tkb": "66838d8a2c2bb6e8ee3ad1d70d8cd21d6c415bd6a5310ae14b3a6b2e91c3d1e2",
+  "golden/negative/run-set-run-twice.tkb": "0f63beaa30c43717336efba16d3670b2d576754be1c3db7eb893647b142e9527",
+  "golden/negative/trust.json": "090951d638b56562abb560215bbf164f4d6cc7630227b97d7cf036050c012883",
+  "golden/negative/witness-none.tkb": "8148aa341b08808513350e71eedb40d14d8e0b5d89455fe7e8f090d3a099b20d",
+  "golden/negative/witness-unpinned-only.tkb": "0efd3ea1b5e73b45b054ad74ff3b96c474b38a8947217706dc49523bed5d0117",
+  "golden/negative/zip-absolute.tkb": "c1acffa56f496499743743ce880ea929718c09838ea4eb63fd6c0b94d1c1d434",
+  "golden/negative/zip-archive-comment.tkb": "6643ffce781f106f86427fb9d48eb3b2eab3658b07e50a62b736027ec803dc2b",
+  "golden/negative/zip-bzip2.tkb": "2d4d5562061a900da24b5549df0b7d7b412c85ad53e4087aa6ede5119272b318",
+  "golden/negative/zip-duplicate.tkb": "7c2fa9efe582c136444afa6011d6005f93976a5784eead280002a2ca9b79fa12",
+  "golden/negative/zip-extra-field.tkb": "e7bd3ab69c6657fc1d15b1b0d3244be1efebc60f073203097bddcfe1d50f61f1",
+  "golden/negative/zip-flags.tkb": "b512150666b9c581bbed5b05f4e9edcfe29e44a07fdd8f0f6138ff3978c75e76",
+  "golden/negative/zip-no-manifest.tkb": "937aaaf7513d42561a594c1852808cd5f5d4609f104d9c03d277ed18139f43a9",
+  "golden/negative/zip-oversized.tkb": "15786f16ead8666fcc66d52ffa05ce41736c9cd59f219c437bb1d187a84011ce",
+  "golden/negative/zip-prefix.tkb": "7d57d8f2e2173ce51a296e34ae773e17bc2ddc90be060c070a26972e6f90e605",
+  "golden/negative/zip-symlink.tkb": "6b1cb7a7301dae6d0784e7a4cda7843abbf93cc06912db7bc7fc2077b6f79a67",
+  "golden/negative/zip-traversal.tkb": "be78ee569482f9630afb9aeacef79518c23b67b2ea2b5073cc21920a46b76320",
+  "golden/negative/zip-two-directories.tkb": "7b66b0c74fcd31ab985c25e5c741e29c2114c3b949295dd2fd15dd349849026c",
+  "golden/parts/parts-duplicate.tkb": "bdf94b77750c156a05e106b02a9336e4a5bd39e95930a50e7d5fd967008fd549",
+  "golden/parts/parts-extra.tkb": "a801177fab8dad9bfb298d7168bf49510712def864747494368c317f65906866",
+  "golden/parts/parts-gap.tkb": "88beb2e0aeb28d13e049fc0b59d482929c524e72d7a958e3fbf16d8f7184bbe6",
+  "golden/parts/parts-last-missing.tkb": "5570fc66e0be4177b3994d12215e50e05d7d18302a9d786d8e952f580e3b02b4",
+  "golden/parts/parts-out-of-order.tkb": "336d2745d0c070605de7444a7dcf4c8e8e24a90a75638aa7b6f326954c4f9cc0",
+  "golden/parts/parts-oversized.tkb": "0660b8a83668941219a692167019450101aa467bfa36491f67f40046929af5c0",
+  "golden/parts/parts-two-layouts.tkb": "ed57fc7b0e88b68cf132f3abd229376d0f4253d3f2506a948c25424c9901b30b",
+  "golden/parts/parts.tkb": "653c4e9783ddb934be04db691ce381a6cb9298a1f8656605ca4b95472010a1e4",
+  "golden/parts/trust.json": "b0c81d58854284eaca0e2cec37846b53fd0beecb37f541ef2176566a7f1302de",
+  "golden/v2/approval.tkb": "e5df2efa6bd2752c14230de455154b4ef5c4293a02da78c77d43c720b6fb94b4",
+  "golden/v2/closed.tkb": "fb9c9169bc24a82e81a5e7526b3ffd7ec5453454f0330100fd123971bea6b790",
+  "golden/v2/open.tkb": "9f428387c61b0a5ea5dfdb991a6b7c4ede6cb722fb781a451a6c136dc1013218",
+  "golden/v2/run-set.tkb": "cc426b4c9beaa7aab13284b3dc07ed9b99eda24e2b9eb52f2c931b7a595ea6ed",
+  "golden/v2/trust-rekor.json": "c5ee64ae6b6405a077512826dbe3e56aa595b5369b5a815f497ddd34b2f88d6a",
+  "golden/v2/trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699",
+  "kit/vectors/a-signature-in-non-canonical-base64.tkb": "ace93af22162d21fc637e5562c84e2b53706f07505ed8026ca2d1a3dcd670c0b",
+  "kit/vectors/agent-approval.tkb": "33b05cfd78dad2fd12eaf22c88cfeebd32c77b210c18c3d9e73b2543535cbd20",
+  "kit/vectors/an-inclusion-proof-node-in-non-canonical-base64.tkb": "932fd32cc5fdb9235b0ca83ac4275b03c1193c830931d3658e71711ada79ce49",
+  "kit/vectors/certified-key.tkb": "76c543c7d7cb77357974a451df22802683b29ecd6ab9dbabe6fa8faaa2625858",
+  "kit/vectors/every-type.tkb": "bf26a8d07fa4ebe0490429c700b9d0314887db7f7ad278c8acc03d5a9f73d8bf",
+  "kit/vectors/ext.tkb": "323743b93439dd22b8cc45ac7b288b51443de323f0bfdef54005e3bfb15545e9",
+  "kit/vectors/format-1.4.tkb": "5754f08bb9028ded70e281fef6189b1f5d698de2c2c64d2b86b48f8a6f06209b",
+  "kit/vectors/incident.tkb": "f34636b7db176277214751359f902511214794bbc89e282bb8394192638cc4f4",
+  "kit/vectors/min-version-1.4.1.tkb": "04ec6b1f7e5e72f1420c9170cb1646d4b5ecc7df59a74ad14d7b4d298bd879d1",
+  "kit/vectors/min-version-lowered.tkb": "05434546afb5a3946c0485c2fa07481721cb6a9a3ac890b73994b154f32394ea",
+  "kit/vectors/no-registration.tkb": "1e88f879ac25bd5789ee7d4c572792d9b3a51367448cc79b2e83cd08632d7915",
+  "kit/vectors/no-witness.tkb": "9df46f7365294296913912bd866f8e7e20b667bba342fdbc51cbd1a06d96e2b0",
+  "kit/vectors/open-error-data.tkb": "c400c3545b048aef7f852dcb439ec22883b3557a5c23b01d9aa9e7ccc727e6a6",
+  "kit/vectors/open-review-data.tkb": "c42ed4f1263d0e4bfdf64f87968b321acd76bb690f38be19a8ef27a90773a405",
+  "kit/vectors/open-review-verdict.tkb": "778f56721414dffa4b26856c0e0f60f93ce9a8ed29da6711327369644d3613dd",
+  "kit/vectors/open-run-start-agent.tkb": "522a68f06050064a2a566eb8d6eb03e0b1c82752593ce931db4f19bbd2c9f06b",
+  "kit/vectors/open-tamper-after.tkb": "3f04daad25e340141003dec1c5f659267c059e20ad2bf636663699c51e9428dc",
+  "kit/vectors/open-tamper-before.tkb": "1f7866ca6dafdc640ee99df302a4082c3df9dd8992226c6930c823cb1914cff1",
+  "kit/vectors/operator-witness.tkb": "7e2b63e120f9bcab3ca3a67298570d44a6458911db52b5b4ac24a69b716dcd73",
+  "kit/vectors/retire-self-signed.tkb": "c33f9ed5549c282c2f5fddb0ac8177497e44b4621890371a1f1e735a77db89f5",
+  "kit/vectors/review-outside-findings-run.tkb": "ce516ebc20da616e35560775bbf86a1cac8ef16cad20e82e67b8ae3d553a2d8e",
+  "kit/vectors/rotated.tkb": "d2c0a1877a943d67206f753e1cfd0f33e4698699602450681df002ae88a37a7c",
+  "kit/vectors/run-seq-written-0.tkb": "85a6cacbf2346cc88fb4154e20a1d6dbc5fd171f01f559b9550d73d3bb5eba9f",
+  "kit/vectors/run-set-open-only.tkb": "e61809464ed089a0f749735c5fd7db4343e28ccf9f5652b1695b6a30f8a0e6ad",
+  "kit/vectors/signature-s-plus-l.tkb": "9be85507ea5c6b888dee292c426eda0509a3d519b0be3d84e976918265ac7464",
+  "kit/vectors/signer-run.tkb": "57f724ec696e3fc69b8d398e4c291236ccb374e8f1b723bab827aecedc4d402c",
+  "kit/vectors/tree-size-written-4-0.tkb": "3d9b4d9b331642d691a7738b4fbff6a059ecb78c00aa1d7fdc27f73825765595",
+  "kit/vectors/trust-dev.json": "444d7d3092218f1a421ff58162cf72e1dff3bd72a511d4bd02748e7e82502b66",
+  "kit/vectors/trust-empty-lists.json": "2ac85a66488da7cbc2c9b69570a632964c2ab295353badc39752d23707b6fcaa",
+  "kit/vectors/trust-extra-alg.json": "763c87a01b841f4aa710c3a7f00ff6335669b303fc91a31cdf427af4943fbf18",
+  "kit/vectors/trust-issuer.json": "85f21c05ee39114c3ff342d93014e5629869de1fbfb3e4cd25cae5156ec29145",
+  "kit/vectors/trust-other-alg.json": "d24aadaee508480b7c2f258bbae19b4839ebaa9f680fcbccd4cb07673b8ad244",
+  "kit/vectors/trust-two-logs.json": "830edf08998c5e9844de6f799ef3c26f4180d2c239567a462d39bef14791c93e",
+  "kit/vectors/trust.json": "b0c81d58854284eaca0e2cec37846b53fd0beecb37f541ef2176566a7f1302de",
+  "kit/vectors/v-float.tkb": "85a7dc87f46994a42c41510e438d2ff72f34ab723a6a6e12ea0a841d466943bd"
+ },
+ "cases": [
+  {
+   "name": "v2 closed run, witnessed",
+   "input": "golden/v2/closed.tkb",
+   "trust": "golden/v2/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§11 step 11"
+  },
+  {
+   "name": "v2 closed run, Rekor anchor pinned",
+   "input": "golden/v2/closed.tkb",
+   "trust": "golden/v2/trust-rekor.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§8, §11 step 4",
+   "addon": "rekor anchor"
+  },
+  {
+   "name": "v2 open run",
+   "input": "golden/v2/open.tkb",
+   "trust": "golden/v2/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED TO HEAD 2",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§11 step 11 (a run without its run.final reads open)"
+  },
+  {
+   "name": "v2 self-approved run",
+   "input": "golden/v2/approval.tkb",
+   "trust": "golden/v2/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "dev",
+   "failed_check": null,
+   "decided_by": "§11 step 11 (a self-approval makes the assurance dev)"
+  },
+  {
+   "name": "v2 run-set",
+   "input": "golden/v2/run-set.tkb",
+   "trust": "golden/v2/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "dev",
+   "failed_check": null,
+   "decided_by": "§7, §11 step 7 (the registry notes cap the assurance)"
+  },
+  {
+   "name": "zip traversal",
+   "input": "golden/negative/zip-traversal.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "absolute entry name",
+   "input": "golden/negative/zip-absolute.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "duplicate entry",
+   "input": "golden/negative/zip-duplicate.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "symlink entry",
+   "input": "golden/negative/zip-symlink.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "oversized entry",
+   "input": "golden/negative/zip-oversized.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "no manifest",
+   "input": "golden/negative/zip-no-manifest.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "bytes before the first entry",
+   "input": "golden/negative/zip-prefix.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "archive comment",
+   "input": "golden/negative/zip-archive-comment.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "entry with an extra field",
+   "input": "golden/negative/zip-extra-field.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "entry with a general-purpose flag",
+   "input": "golden/negative/zip-flags.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "entry compressed with bzip2",
+   "input": "golden/negative/zip-bzip2.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "manifest nested deeper than 128",
+   "input": "golden/negative/json-manifest-too-deep.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§1 (strict JSON), §11 step 2"
+  },
+  {
+   "name": "record file line nested deeper than 128",
+   "input": "golden/negative/json-record-too-deep.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "bundle structure"
+   ],
+   "decided_by": "§1, §9"
+  },
+  {
+   "name": "non-strict JSON manifest (duplicate key)",
+   "input": "golden/negative/json-manifest-duplicate-key.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§1 (strict JSON), §11 step 2"
+  },
+  {
+   "name": "non-strict JSON record (duplicate key)",
+   "input": "golden/negative/json-record-duplicate-key.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "bundle structure"
+   ],
+   "decided_by": "§1, §9"
+  },
+  {
+   "name": "run file without its final newline",
+   "input": "golden/negative/json-no-final-newline.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "bundle structure"
+   ],
+   "decided_by": "§9 (JSON lines), §11"
+  },
+  {
+   "name": "empty run file",
+   "input": "golden/negative/run-empty.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "bundle structure"
+   ],
+   "decided_by": "§9 (JSON lines), §11"
+  },
+  {
+   "name": "format is not v2",
+   "input": "golden/negative/manifest-format-v1.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§11 step 2"
+  },
+  {
+   "name": "needs a newer verifier",
+   "input": "golden/negative/manifest-newer-verifier.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNVERIFIABLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (verifier_min_version), §11 step 2",
+   "needs": "99.0"
+  },
+  {
+   "name": "file not in the manifest",
+   "input": "golden/negative/manifest-unlisted-file.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "manifest"
+   ],
+   "decided_by": "§9, §11 step 3"
+  },
+  {
+   "name": "a trust config and a script in the bundle",
+   "input": "golden/negative/extra-trust-file.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "manifest"
+   ],
+   "decided_by": "§9 (no code and no trust configuration in a bundle)"
+  },
+  {
+   "name": "manifest hash wrong",
+   "input": "golden/negative/manifest-wrong-hash.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "manifest"
+   ],
+   "decided_by": "§9, §11 step 3"
+  },
+  {
+   "name": "edited record",
+   "input": "golden/negative/record-edited.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures"
+   ],
+   "decided_by": "§4, §11 step 6"
+  },
+  {
+   "name": "deleted record",
+   "input": "golden/negative/record-deleted.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run chain"
+   ],
+   "decided_by": "§11 step 6"
+  },
+  {
+   "name": "swapped records",
+   "input": "golden/negative/record-swapped.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run chain"
+   ],
+   "decided_by": "§11 step 6"
+  },
+  {
+   "name": "record from another run spliced in",
+   "input": "golden/negative/record-spliced.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run chain"
+   ],
+   "decided_by": "§11 step 6"
+  },
+  {
+   "name": "run.final cut off",
+   "input": "golden/negative/record-truncated.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "inclusion"
+   ],
+   "decided_by": "§5, §11 step 6"
+  },
+  {
+   "name": "signature algorithm swapped",
+   "input": "golden/negative/record-alg-confusion.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures"
+   ],
+   "decided_by": "§4 (algorithms)"
+  },
+  {
+   "name": "another record's signature",
+   "input": "golden/negative/record-bad-signature.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures"
+   ],
+   "decided_by": "§4, §11 step 6"
+  },
+  {
+   "name": "signer.epoch dropped",
+   "input": "golden/negative/keys-dropped.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "keys",
+    "signatures"
+   ],
+   "decided_by": "§4 (key epochs and positional retirement), §11 step 5"
+  },
+  {
+   "name": "two runs without a run-set",
+   "input": "golden/negative/run-second-run.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "bundle structure"
+   ],
+   "decided_by": "§11 step 6 (one run, with its findings, or a run-set)"
+  },
+  {
+   "name": "policy snapshot under another name",
+   "input": "golden/negative/policy-misnamed.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "policy snapshot"
+   ],
+   "decided_by": "§11 step 9"
+  },
+  {
+   "name": "checkpoint body edited",
+   "input": "golden/negative/checkpoint-body-edited.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "checkpoint"
+   ],
+   "decided_by": "§6, §11 step 4"
+  },
+  {
+   "name": "proofs name another tree size",
+   "input": "golden/negative/proofs-tree-size.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "checkpoint"
+   ],
+   "decided_by": "§6, §11 step 4"
+  },
+  {
+   "name": "inclusion proof altered",
+   "input": "golden/negative/proofs-inclusion-altered.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "inclusion"
+   ],
+   "decided_by": "§5, §11 step 6"
+  },
+  {
+   "name": "run rebuilt with the real key under the real checkpoint",
+   "input": "golden/negative/run-rebuilt.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run chain",
+    "inclusion"
+   ],
+   "decided_by": "§11 step 6"
+  },
+  {
+   "name": "two central directories, one reached by a zip64 locator",
+   "input": "golden/negative/zip-two-directories.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "record after run.final",
+   "input": "golden/negative/run-record-after-final.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run chain"
+   ],
+   "decided_by": "§11 step 6"
+  },
+  {
+   "name": "run.closing without run.final (claimed closed)",
+   "input": "golden/negative/run-closing-without-final.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED TO HEAD 3",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (a run reads open until its run.final), §11 step 11"
+  },
+  {
+   "name": "key used after its key.retire",
+   "input": "golden/negative/key-used-after-retire.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures"
+   ],
+   "decided_by": "§4 (key epochs and positional retirement)"
+  },
+  {
+   "name": "schema-invalid event",
+   "input": "golden/negative/record-schema-invalid.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures",
+    "run chain"
+   ],
+   "decided_by": "§3, §11 step 6"
+  },
+  {
+   "name": "checkpoint of another origin",
+   "input": "golden/negative/checkpoint-wrong-origin.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "checkpoint"
+   ],
+   "decided_by": "§6, §11 step 4"
+  },
+  {
+   "name": "cosigned only by an unpinned witness",
+   "input": "golden/negative/witness-unpinned-only.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "witness quorum"
+   ],
+   "decided_by": "§10, §11 step 4"
+  },
+  {
+   "name": "no cosignature",
+   "input": "golden/negative/witness-none.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "witness quorum"
+   ],
+   "decided_by": "§10, §11 step 4"
+  },
+  {
+   "name": "run-set whose registry note no witness cosigned",
+   "input": "golden/negative/run-set-registry-uncosigned.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run-set"
+   ],
+   "decided_by": "§7, §11 step 7"
+  },
+  {
+   "name": "run-set bundled with a run of another tenant",
+   "input": "golden/negative/run-set-foreign-run.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run-set"
+   ],
+   "decided_by": "§7, §11 step 7"
+  },
+  {
+   "name": "run-set whose range ends in a float token",
+   "input": "golden/negative/run-set-float-bound.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run-set"
+   ],
+   "decided_by": "§7 (from and to are integer tokens)"
+  },
+  {
+   "name": "run-set with a run's file twice",
+   "input": "golden/negative/run-set-run-twice.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run chain"
+   ],
+   "decided_by": "§11 step 6 (no two runs share a tenant and run_id)"
+  },
+  {
+   "name": "run-set with a record no leaf points to (a forged ext record)",
+   "input": "golden/negative/run-set-records-extra.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run-set"
+   ],
+   "decided_by": "§7, §11 step 7"
+  },
+  {
+   "name": "run-set with its records out of leaf order",
+   "input": "golden/negative/run-set-records-reordered.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run-set"
+   ],
+   "decided_by": "§7, §11 step 7"
+  },
+  {
+   "name": "findings run's file twice",
+   "input": "golden/negative/findings-run-twice.tkb",
+   "trust": "golden/negative/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run chain"
+   ],
+   "decided_by": "§11 step 6 (no two runs share a tenant and run_id)"
+  },
+  {
+   "name": "a closed run in three parts",
+   "input": "golden/parts/parts.tkb",
+   "trust": "golden/parts/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§11 step 11"
+  },
+  {
+   "name": "the last part missing",
+   "input": "golden/parts/parts-last-missing.tkb",
+   "trust": "golden/parts/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "inclusion"
+   ],
+   "decided_by": "§5, §11 step 6"
+  },
+  {
+   "name": "a part missing between two",
+   "input": "golden/parts/parts-gap.tkb",
+   "trust": "golden/parts/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run parts",
+    "run chain"
+   ],
+   "decided_by": "§9 (a run in parts)"
+  },
+  {
+   "name": "two parts' records swapped",
+   "input": "golden/parts/parts-out-of-order.tkb",
+   "trust": "golden/parts/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run parts",
+    "run chain",
+    "inclusion"
+   ],
+   "decided_by": "§9 (a run in parts)"
+  },
+  {
+   "name": "an extra part after the last",
+   "input": "golden/parts/parts-extra.tkb",
+   "trust": "golden/parts/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run parts",
+    "run chain",
+    "inclusion"
+   ],
+   "decided_by": "§9 (a run in parts)"
+  },
+  {
+   "name": "a part twice, under a second spelling of its number",
+   "input": "golden/parts/parts-duplicate.tkb",
+   "trust": "golden/parts/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run parts",
+    "run chain",
+    "inclusion"
+   ],
+   "decided_by": "§9 (a run in parts)"
+  },
+  {
+   "name": "the run in one file and in parts",
+   "input": "golden/parts/parts-two-layouts.tkb",
+   "trust": "golden/parts/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run parts",
+    "run chain"
+   ],
+   "decided_by": "§9 (a run in parts)"
+  },
+  {
+   "name": "a part over the 64 MiB limit",
+   "input": "golden/parts/parts-oversized.tkb",
+   "trust": "golden/parts/trust.json",
+   "exit": 2,
+   "verdict": "UNUSABLE BUNDLE",
+   "level": null,
+   "failed_check": [
+    "bundle readable"
+   ],
+   "decided_by": "§9 (zip layout and limits), §11 step 2"
+  },
+  {
+   "name": "the browser page's sample",
+   "input": "../sdk/typescript/src/verify/sample/sample.tkb",
+   "trust": "../sdk/typescript/src/verify/sample/sample.trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "dev",
+   "failed_check": null,
+   "decided_by": "§11 step 11"
+  },
+  {
+   "name": "the browser page's tampered sample",
+   "input": "../sdk/typescript/src/verify/sample/sample-tampered.tkb",
+   "trust": "../sdk/typescript/src/verify/sample/sample.trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures"
+   ],
+   "decided_by": "§4, §11 step 6"
+  },
+  {
+   "name": "every event type of a run, one closed run",
+   "input": "kit/vectors/every-type.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3, §11 step 6"
+  },
+  {
+   "name": "no cosignature, none required",
+   "input": "kit/vectors/no-witness.tkb",
+   "trust": "kit/vectors/trust-dev.json",
+   "exit": 0,
+   "verdict": "VERIFIED TO HEAD 1",
+   "level": "dev",
+   "failed_check": null,
+   "decided_by": "§10, §11 step 11"
+  },
+  {
+   "name": "cosigned by an operator witness only",
+   "input": "kit/vectors/operator-witness.tkb",
+   "trust": "kit/vectors/trust-dev.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "local",
+   "failed_check": null,
+   "decided_by": "§10 (classes), §11 step 11"
+  },
+  {
+   "name": "a rotated record key",
+   "input": "kit/vectors/rotated.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§4 (key epochs and positional retirement), §11 step 5"
+  },
+  {
+   "name": "a key.retire signed by the key it retires, after that key's last_seq",
+   "input": "kit/vectors/retire-self-signed.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "keys"
+   ],
+   "decided_by": "§4 (a record is valid only under a key valid at its own seq)"
+  },
+  {
+   "name": "a record whose S is not below L",
+   "input": "kit/vectors/signature-s-plus-l.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures"
+   ],
+   "decided_by": "§4 (algorithms: S < L)"
+  },
+  {
+   "name": "a tenant's signer run as the bundle's run",
+   "input": "kit/vectors/signer-run.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED TO HEAD 1",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (a tenant's signer records are in its run tracekit/signer, which has no run.registered)"
+  },
+  {
+   "name": "a format 1.4 bundle",
+   "input": "kit/vectors/format-1.4.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (version table)"
+  },
+  {
+   "name": "its verifier_min_version lowered to 1.0.0",
+   "input": "kit/vectors/min-version-lowered.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (the manifest is never trusted: what a verifier checks follows from the records)"
+  },
+  {
+   "name": "its verifier_min_version raised to 1.4.1, a version no row has",
+   "input": "kit/vectors/min-version-1.4.1.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§11 step 2 (not above the version of the format the verifier implements)",
+   "needs": "1.4.1"
+  },
+  {
+   "name": "an ext field and an ext record no verifier interprets",
+   "input": "kit/vectors/ext.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (criticality: a name not interpreted is a warning; the integrity stays VERIFIED)"
+  },
+  {
+   "name": "an unknown field in an open definition (error-data)",
+   "input": "kit/vectors/open-error-data.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (open definitions)"
+  },
+  {
+   "name": "an unknown field in an open definition (run-start-agent)",
+   "input": "kit/vectors/open-run-start-agent.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (open definitions)"
+  },
+  {
+   "name": "an unknown field in an open definition (tamper-before)",
+   "input": "kit/vectors/open-tamper-before.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (open definitions)"
+  },
+  {
+   "name": "an unknown field in an open definition (tamper-after)",
+   "input": "kit/vectors/open-tamper-after.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (open definitions)"
+  },
+  {
+   "name": "an unknown field in an open definition (review-data)",
+   "input": "kit/vectors/open-review-data.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (open definitions), §11 step 8",
+   "addon": "signed findings"
+  },
+  {
+   "name": "an unknown field in an open definition (review-verdict)",
+   "input": "kit/vectors/open-review-verdict.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (open definitions), §11 step 8",
+   "addon": "signed findings"
+  },
+  {
+   "name": "an incident record",
+   "input": "kit/vectors/incident.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§3 (containment), §11 step 9",
+   "addon": "containment"
+  },
+  {
+   "name": "an agent's approval",
+   "input": "kit/vectors/agent-approval.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§11 step 9 (approvals by agents: without the policy snapshot, a warning)",
+   "addon": "agent approvals"
+  },
+  {
+   "name": "a signed finding outside a findings run",
+   "input": "kit/vectors/review-outside-findings-run.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "reviews"
+   ],
+   "decided_by": "§11 step 8 (a review with cites must be in a findings run)",
+   "addon": "signed findings"
+  },
+  {
+   "name": "a certified record key, no issuer pinned",
+   "input": "kit/vectors/certified-key.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "keys"
+   ],
+   "decided_by": "§11 step 5 (a key with cert is declared only if its certificate verifies under a pinned issuer)"
+  },
+  {
+   "name": "a certified record key, its issuer pinned",
+   "input": "kit/vectors/certified-key.tkb",
+   "trust": "kit/vectors/trust-issuer.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§11 step 5, docs/issuer.md",
+   "addon": "record-key certificates"
+  },
+  {
+   "name": "a run-set of open runs only, no run selected",
+   "input": "kit/vectors/run-set-open-only.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§9 (a run-set bundles the runs final in its range and the selected run, if any)"
+  },
+  {
+   "name": "a trust config: empty-lists",
+   "input": "kit/vectors/every-type.tkb",
+   "trust": "kit/vectors/trust-empty-lists.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§10 (optional lists, none pinned)"
+  },
+  {
+   "name": "a trust config: extra-alg",
+   "input": "kit/vectors/every-type.tkb",
+   "trust": "kit/vectors/trust-extra-alg.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§4 (algorithms: a pinned allow-list), §10"
+  },
+  {
+   "name": "a trust config: two-logs",
+   "input": "kit/vectors/every-type.tkb",
+   "trust": "kit/vectors/trust-two-logs.json",
+   "exit": 0,
+   "verdict": "VERIFIED",
+   "level": "witnessed",
+   "failed_check": null,
+   "decided_by": "§6 (a note needs a pinned log key named after its origin), §10"
+  },
+  {
+   "name": "a trust config whose only algorithm is not the records'",
+   "input": "kit/vectors/every-type.tkb",
+   "trust": "kit/vectors/trust-other-alg.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "keys",
+    "signatures"
+   ],
+   "decided_by": "§4 (algorithms), §10"
+  },
+  {
+   "name": "v written 2.0",
+   "input": "kit/vectors/v-float.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures",
+    "bundle structure"
+   ],
+   "decided_by": "§4 (v is the integer 2), §3 (integer: a token without fraction or exponent)"
+  },
+  {
+   "name": "tree_size written 4.0",
+   "input": "kit/vectors/tree-size-written-4-0.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "checkpoint",
+    "bundle structure"
+   ],
+   "decided_by": "proposed: integer tokens and canonical base64 in every bundle file (§1, §6, §7 do so for JSON, notes and run-set bounds)",
+   "proposed": true
+  },
+  {
+   "name": "run_seq written -0",
+   "input": "kit/vectors/run-seq-written-0.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "bundle structure",
+    "signatures",
+    "run chain"
+   ],
+   "decided_by": "proposed: integer tokens and canonical base64 in every bundle file (§1, §6, §7 do so for JSON, notes and run-set bounds)",
+   "proposed": true
+  },
+  {
+   "name": "a signature in non-canonical base64",
+   "input": "kit/vectors/a-signature-in-non-canonical-base64.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "signatures"
+   ],
+   "decided_by": "proposed: integer tokens and canonical base64 in every bundle file (§1, §6, §7 do so for JSON, notes and run-set bounds)",
+   "proposed": true
+  },
+  {
+   "name": "an inclusion proof node in non-canonical base64",
+   "input": "kit/vectors/an-inclusion-proof-node-in-non-canonical-base64.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "keys",
+    "inclusion",
+    "run-set"
+   ],
+   "decided_by": "proposed: integer tokens and canonical base64 in every bundle file (§1, §6, §7 do so for JSON, notes and run-set bounds)",
+   "proposed": true
+  },
+  {
+   "name": "an agent run with no run.registered",
+   "input": "kit/vectors/no-registration.tkb",
+   "trust": "kit/vectors/trust.json",
+   "exit": 1,
+   "verdict": "FAILED",
+   "level": null,
+   "failed_check": [
+    "run chain"
+   ],
+   "decided_by": "proposed: a run other than the signer's own starts with its run.registered (§3 lifecycle)",
+   "proposed": true
+  }
+ ],
+ "primitives": [
+  {
+   "input": "vectors/jcs.jsonl",
+   "decided_by": "§1",
+   "pins": "canonical JSON: input, canonical bytes, SHA-256"
+  },
+  {
+   "input": "vectors/sig_v2.jsonl",
+   "decided_by": "§4",
+   "pins": "records (event, signature message, signed record) and the Ed25519 acceptance rules"
+  },
+  {
+   "input": "vectors/c2sp_checkpoint.json",
+   "decided_by": "§6",
+   "pins": "a checkpoint note, its log signature and a witness cosignature"
+  },
+  {
+   "input": "vectors/slh_dsa_note.json",
+   "decided_by": "§6 (hybrid checkpoint signature)",
+   "addon": "SLH-DSA",
+   "pins": "a hybrid checkpoint note: Ed25519 and SLH-DSA-SHA2-128s lines, keys, key ids"
+  }
+ ]
+}

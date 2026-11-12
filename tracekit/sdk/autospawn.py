@@ -27,7 +27,6 @@ import subprocess
 import sys
 import threading
 import time
-import warnings
 
 from tracekit import __version__
 from tracekit.client import SYSTEM_CONFIG
@@ -119,6 +118,26 @@ def _theirs(d):
     if not isinstance(ep, dict) or not _held(os.path.join(d, LOCK)):
         return False
     return not _ours(ep["data_dir"]) if "data_dir" in ep else not _held(os.path.join(data_dir(), "store", "lock"))
+
+
+def own_runtime_dirs():
+    """(the runtime dirs that exist and provably hold this HOME's dev signer's files, the per-user one when it exists
+    and that can't be told), for `tracekit uninstall`. Provably: this data dir's own sibling (_side, named after it),
+    and the per-user one when it is inside this HOME or the endpoint.json in it names this data dir. Two HOMEs share
+    the per-user one elsewhere ($XDG_RUNTIME_DIR/tracekit, macOS's /tmp/tk-<uid>), and a stopped signer may leave no
+    endpoint.json: then it is the second, unless its endpoint.json names another HOME's data dir."""
+    try:
+        d = runtime_dir(create=False)
+    except (OSError, SignerUnavailable):
+        return [], None
+    try:
+        with open(os.path.join(d, ENDPOINT)) as f:
+            named = json.load(f)["data_dir"]
+    except (OSError, ValueError, KeyError, TypeError):   # none (no signer runs there now) or unreadable
+        named = None
+    mine = os.path.realpath(d).startswith(os.path.realpath(os.path.expanduser("~")) + os.sep) or \
+        named is not None and _ours(named)
+    return [x for x in [d] * mine + [_side(d)] if os.path.isdir(x)], d if not mine and named is None else None
 
 
 def signer_dir(create=True):
@@ -257,8 +276,8 @@ def _ensure(d, wait, timeout):
             if not _starts_ours(d):
                 raise Incompatible(f"{e}. `{sys.executable} -m tracekit` runs an older Tracekit than this process "
                                    "imports: install this version") from None
-            warnings.warn(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout, d, show_log=False)}) to "
-                          f"start this one's ({__version__})", stacklevel=3)
+            print(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout, d, show_log=False)}) "
+                  f"to start this one's ({__version__})", file=sys.stderr)
             conn = None
         if conn:
             return conn
@@ -364,8 +383,8 @@ def status():
         # (a runtime dir refused for its owner or mode keeps that error)
         unstarted = dev and not isinstance(e, Incompatible) and (
             isinstance(e, FileNotFoundError) or path is not None and not os.path.exists(path))
-        return {"socket": path, "running": isinstance(e, Incompatible),
+        return {"socket": path, "dev": dev, "running": isinstance(e, Incompatible),
                 "error": "not started: the dev signer starts at an agent's first call, or with `tracekit up`"
                 if unstarted else str(e)}
     sock.close()
-    return {"socket": path, "running": True, **hello}
+    return {"socket": path, "dev": dev, "running": True, **hello}

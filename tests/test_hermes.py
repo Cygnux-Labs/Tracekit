@@ -243,7 +243,8 @@ class Plugin(unittest.TestCase):
         self.client.approval_decide({"approval_id": aid, "decision": "reject"})
         t.join(30)
         self.assertEqual((out[0][1], ac.RAN), (False, []))
-        self.assertIn("held by Tracekit policy (R-PAY) and not approved: rejected", json.loads(out[0][0])["error"])
+        self.assertIn(f"held by Tracekit policy and not approved: rejected; R-PAY (approval {aid})",
+                      json.loads(out[0][0])["error"])
         self.assertEqual(self.events("tool.result"), [])
 
     def test_a_t2_approval_of_other_arguments_blocks_the_call(self):
@@ -264,7 +265,8 @@ class Plugin(unittest.TestCase):
                 with mock.patch.object(hermes, "MARGIN_S", 1.5):
                     seen, ran = self.hermes.call("pay", PAY, f"call-{len(self.events('approval.abandoned'))}")
                 self.assertFalse(ran)
-                self.assertIn("not approved: requested", json.loads(seen)["error"])   # not Hermes's timeout
+                # not Hermes's timeout; #587: with the approval id
+                self.assertIn("not approved: requested; R-PAY (approval apr-", json.loads(seen)["error"])
                 self.config.update({"plugins": {"hook_callback_timeout": 60}, "timeouts": {}})
         self.assertEqual(len(self.events("approval.abandoned")), 2)
 

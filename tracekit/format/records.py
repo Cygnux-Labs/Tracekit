@@ -44,7 +44,8 @@ def verify_record(record, keys, algs, signature_known=False):
     """Raise RecordError unless `record` is a v2 record signed by one of `keys` (SPKI DER) with an algorithm from
     `algs`, the verifier's pinned allow-list, that is also the key's own algorithm. `signature_known`: the caller saw
     this record's signature hold before (record_digest): its hash, algorithm and key are checked, the signature is not."""
-    if (not isinstance(record, dict) or set(record) != KEYS or record["v"] != 2 or not isinstance(record["event"], dict)
+    if (not isinstance(record, dict) or set(record) != KEYS or type(record["v"]) is not int or record["v"] != 2
+            or not isinstance(record["event"], dict)
             or not all(isinstance(record[k], str) for k in ("hash", "alg", "kid", "sig"))):
         raise RecordError("not a v2 record")
     try:

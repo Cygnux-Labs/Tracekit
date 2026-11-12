@@ -252,6 +252,29 @@ class CallOutcomes(unittest.TestCase):
         self.assertTrue(sensitive["file:" + again].endswith("under TK-A022 ask (SIGNED); alice approved it (SIGNED)"))
         self.assertEqual((files["file:" + flaky]["reported"], files["file:" + flaky]["asked"]), (1, 1))
 
+    def test_a_rejection_by_the_runs_own_identity_is_not_counted_self_approved(self):
+        """QA of 1.6.0: GRAPH_REPORT.md said `uid:501: 2 reject, no wait recorded, 2 self-approved`."""
+        records = [rec(0, "run.registered", {"agent": {"name": "a"}})]
+        for i, (tcid, decision) in enumerate((("t1", "reject"), ("t2", "reject"), ("t3", "approve"))):
+            seq, did, aid, rules = 1 + 3 * i, f"d{i}", f"apr-{i}", ["TK-A022"]
+            records += [rec(seq, "policy.decision", {"tool_use_id": tcid, "decision_id": did, "tool": "Write",
+                                                     "decision": "ask", "rule_ids": rules}),
+                        rec(seq + 1, "approval.request", {"approval_id": aid, "decision_id": did, "rule_ids": rules,
+                                                          "binding": {"tool_call_id": tcid, "tool": "Write"}}),
+                        rec(seq + 2, "approval", {"tool_use_id": tcid, "approval_id": aid, "decision": decision,
+                                                  "approver": "uid:501", "self_approved": True})]
+        g = Graph(None, "grade")
+        graph._add_run(g, records, True, {1: {"file_path": "/etc/sudoers"}})
+        doc = {"schema_version": graph.SCHEMA_VERSION, "tracekit": "test", "content": True, "graphify": None,
+               "sources": [], "nodes": list(g.nodes.values()), "edges": g.edges}
+        sections = {s["id"]: s["items"] for s in graph.highlights(doc)["sections"]}
+        me = sections["approvals"][0]
+        self.assertEqual((me["text"], me["self_approved"]), ("uid:501: 1 approve, 2 reject, no wait recorded, "
+                                                             "1 self-approved (the approver is the run's own identity)",
+                                                             1))
+        [held] = sections["sensitive"]
+        self.assertTrue(held["text"].endswith("; uid:501 rejected it (SIGNED)"), held["text"])
+
 
 class QueryInput(unittest.TestCase):
     def test_rejects_a_non_tracekit_graph(self):
@@ -887,7 +910,7 @@ class EndToEnd(unittest.TestCase):
                         tool_use_id="b1")[0] == 2
         held = {"command": 'echo "open'}   # the dev pack can't parse it: a person must approve
         code, line = cls.hook("PreToolUse", tool_name="Bash", tool_input=held, tool_use_id="b2")
-        assert code == 2 and "held for approval" in line, line
+        assert code == 2 and "HELD, nothing ran:" in line, line
         cls.client.approval_decide({"approval_id": line.split()[4], "decision": "approve"})
         # the agent sends the same call again: it runs under the approval
         assert cls.hook("PreToolUse", tool_name="Bash", tool_input=held, tool_use_id="b3") == (0, "")
@@ -1231,10 +1254,11 @@ class EndToEnd(unittest.TestCase):
         self.assertIn(f"- {service._dev_identity()}: 1 approve, no wait recorded, 1 self-approved", sec[titles[4]])
         self.assertIn(f"- aws\\_access\\_key: in 1 run, held by Bash \\(allow\\) in run {self.mail} \\(1 SIGNED, 1 UNVERIFIED\\)",
                       sec[titles[5]])
-        self.assertIn(f"TK-X202 \\(medium\\): Edit of a file not mentioned before: about send\\_email \\(flag\\) in run "
+        # the default holds the server pack's email rules since #604: send_email is an email call, asked for here
+        self.assertIn(f"TK-X202 \\(medium\\): Edit of a file not mentioned before: about send\\_email \\(ask\\) in run "
                       f"{self.mail} \\(1 SIGNED\\)", sec[titles[6]])
         [chain] = [x for x in sec[titles[7]].splitlines() if x.startswith(f"- untrusted web:page in run {self.mail} ")]
-        self.assertIn("web:page -argument to \\(email\\), untrusted \\(SIGNED\\)-\\> send\\_email \\(flag\\)", chain)
+        self.assertIn("web:page -argument to \\(email\\), untrusted \\(SIGNED\\)-\\> send\\_email \\(ask\\)", chain)
         self.assertNotIn("asked to write", chain)
         self.assertIn(f"run {self.findings} analyses run {self.mail} \\(SIGNED\\)", sec[titles[7]])
         self.assertIn("4 sources \\(1 failed verification\\), 7 runs, ", self.report)

@@ -33,6 +33,15 @@ function glob(pat: string): RegExp {
 
 type Fired = [string, string[], string, { kind: string; id: string }, [string, number][]];
 
+/** The owner of the run whose run.registered is `e`: the identity it records, but box:<uid>/<box id> for a run of a
+ * Tracekit Box box's agent channel (ext.box with parent_run), whose record names the daemon (tracekit/signer/detect.py
+ * recorded_owner). */
+function recordedOwner(e: J): string {
+  const i = e.data.identity, ext = e.ext, box = typeof ext === "object" && ext !== null ? ext.box : undefined;
+  return typeof box === "object" && box !== null && !Array.isArray(box) && typeof box.id === "string"
+    && Object.hasOwn(e.data, "parent_run") ? `box:${i.subject}/${box.id}` : `${i.scheme}:${i.subject}`;
+}
+
 export class Detector {
   label = new Map<string, string>();
   untrusted = new Set<string>();
@@ -97,7 +106,7 @@ export class Detector {
     const typ = e.type, d = e.data, rk = `${e.tenant}\0${e.run_id}`, t = ts(e.ts), fired: Fired[] = [];
     const run = det.runs.get(rk) ?? null;
     if (typ === "run.registered") {
-      det.runs.set(rk, { session: d.session ?? e.run_id, owner: `${d.identity.scheme}:${d.identity.subject}`,
+      det.runs.set(rk, { session: d.session ?? e.run_id, owner: recordedOwner(e),
         principal: e.principal_attested ? e.principal ?? null : null, pending: new Map(), n: new Map(),
         capped: new Map(), minute: [0, 0, false] });
     } else if (typ === "run.final") {

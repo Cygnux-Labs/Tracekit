@@ -83,13 +83,14 @@ def go_args(args):
 # The CLI hands a bundle whose manifest names another format to v1, and
 # refuses --trust for it without JSON. The repository's test_golden.py deliberately
 # invokes v2.verify() directly for the negative and multipart corpus. Invoke
-# the same reference entrypoint, in a separate process, for all v2 cases.
+# the same reference entrypoint, in a separate process, for all v2 cases, with
+# the assurance as the CLI's --json gives it: a failed bundle (exit 1) isn't rated.
 PYTHON_V2 = """import json
 import sys
 from tracekit.verify import v2
 report, code = v2.verify(sys.argv[1], sys.argv[2])
 print(json.dumps({"exit_code": code, "integrity": report.integrity,
-                  "assurance": report.assurance,
+                  "assurance": v2.NOT_RATED if code == v2.EXIT_FAIL else report.assurance,
                   "checks": [{"check": c["check"], "status": c["status"]}
                              for c in getattr(report, "checks", [])]}))
 sys.exit(code)
@@ -171,11 +172,26 @@ def compare(python, go, section):
     return verdict and not any(unexpected.values()), gaps, unexpected
 
 
+ADD_ON = "UNVERIFIABLE (not checked by this verifier: "
+
+
+def compare_ts(python, ts):
+    """(match, add-on): the TypeScript verifier runs every check the reference does, so the same verdict and the same
+    warning and failed check names; or, on evidence it doesn't implement (format-v2.md §13: SLH-DSA, Rekor anchors,
+    record-key certificates, tracekit why findings), UNVERIFIABLE naming it, exit 2, whatever the reference says."""
+    if ts["exit_code"] == 2 and ts["integrity"].startswith(ADD_ON):
+        return True, True
+    return all(python[k] == ts[k] for k in ("exit_code", "integrity", "assurance", "warning_checks",
+                                            "failed_checks")), False
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3],
                         help="upstream Tracekit checkout root")
     parser.add_argument("--report", type=Path, help="JSON report destination")
+    parser.add_argument("--ts", type=Path, help="the built TypeScript CLI (sdk/typescript/bin/tracekit.mjs): a third "
+                                                "verifier on the v2 cases, held to the reference's verdict and checks")
     args = parser.parse_args()
     root = args.root.resolve()
     golden = root / "tests" / "golden"
@@ -196,22 +212,30 @@ def main():
                 row["go"] = invoke([str(binary), *go_args(python_args)], root, env)
                 row["match"], row["known_gaps"], row["unexpected_checks"] = compare(
                     row["python"], row["go"], section)
+                if args.ts and section != "v1":   # the TypeScript verifier reads v2 bundles only
+                    trust = python_args[python_args.index("--trust") + 1]
+                    row["ts"] = invoke(["node", str(args.ts), "verify", python_args[0], "--trust", trust, "--json"],
+                                       root, env)
+                    ts_match, row["ts_add_on"] = compare_ts(row["python"], row["ts"])
+                    row["match"] = row["match"] and ts_match
             except (OSError, subprocess.SubprocessError, ValueError, RuntimeError) as exc:
                 row["error"] = str(exc)
                 row["match"] = False
             rows.append(row)
-            print(("PASS" if row["match"] else "FAIL") + " " + row["bundle"] + " — " + name)
+            print(("PASS" if row["match"] else "FAIL") + " " + row["bundle"] + " — " + name
+                  + (" (TypeScript: UNVERIFIABLE, an add-on)" if row.get("ts_add_on") else ""))
     failures = [r for r in rows if not r["match"]]
     report = {"definition": "exact verdict tuple, and warning/fail check names outside the version-scoped verdict-only "
                             "checks; on a v2 bundle that fails, Go's one failed check is one of Python's (no fixtures "
-                            "excluded)",
+                            "excluded)" + ("; TypeScript (v2 cases): the same verdict and check names, or UNVERIFIABLE "
+                                           "naming an add-on it doesn't implement" if args.ts else ""),
               "cases": len(rows), "matches": len(rows) - len(failures), "mismatches": len(failures),
               "results": rows}
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"{len(rows)-len(failures)}/{len(rows)} golden cases matched: verdicts, and check names outside the "
-          "verdict-only checks")
+          "verdict-only checks" + (" (Python, Go and TypeScript)" if args.ts else ""))
     return 1 if failures else 0
 
 

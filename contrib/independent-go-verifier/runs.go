@@ -18,6 +18,9 @@ type runEvidence struct {
 
 var runFilePattern = regexp.MustCompile(`^runs/([0-9a-f]{32})(?:\.part-([0-9]{4}))?\.jsonl$`)
 
+// signerRun is the run_id of each tenant's signer records (format-v2.md §3).
+const signerRun = "tracekit/signer"
+
 // collectRuns identifies each run once and joins its numbered parts in order.
 // A group has either one .jsonl file or parts numbered 0001, 0002, ... .
 // Validated record-chain continuity across part boundaries is checked later.
@@ -46,11 +49,12 @@ func collectRuns(files map[string][]byte) (map[string][][]byte, error) {
 		groups[parts[1]] = append(groups[parts[1]], entry{number, name})
 	}
 	if len(groups) == 0 {
-		check := "bundle structure" // a bundle holds a run, unless a run-set's registry says which it holds
+		// a bundle holds a run, unless it is a run-set's: then the runs final in its range and the selected one, if
+		// any (format-v2.md §9), none when no run is final there and none is selected
 		if _, ok := files["registry/run-set.json"]; ok {
-			check = "run-set"
+			return map[string][][]byte{}, nil
 		}
-		return nil, failure{check, errors.New("no run files")}
+		return nil, failure{"bundle structure", errors.New("no run files")}
 	}
 	result := make(map[string][][]byte)
 	for id, entries := range groups {
@@ -129,7 +133,8 @@ func checkRunEvidence(files map[string][]byte, keys map[string]recordedKey, logI
 				return nil, 0, failure{"signatures", errors.New("run log_id mismatch")}
 			}
 			if i == 0 {
-				if rec.ev["type"] != "run.registered" {
+				// the signer's own run of a tenant holds signer records and no run.registered (format-v2.md §3)
+				if rec.ev["type"] != "run.registered" && id != signerRun {
 					return chainBroken(errors.New("run must start with run.registered"))
 				}
 				digest := sha256.Sum256([]byte(tenant + "/" + id))

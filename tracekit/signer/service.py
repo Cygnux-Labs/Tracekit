@@ -58,6 +58,8 @@ signer.yaml:
                                              # recorded source gateway (tier T2, naming the gateway in `via`); a
                                              # call a gateway decided takes its later steps from it alone (_hold)
     gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
+    box_daemons: {"uid:1001": firecracker}   # Tracekit Box daemons (uid: the Unix socket) -> their engine: their box
+                                             # runs (register_run `box`) and boxes' agent channels (below)
     posture: {network: enforced, tool_calls: enforced}   # the deployment as the operator asserts it (run.registered
                                              # records it with gateway_mandatory, never attested): the agent reaches
                                              # the outside only through the egress proxy, and acts only through the
@@ -85,7 +87,8 @@ signer.yaml:
                                              # serve_records: true adds the record entries a monitor of the record
                                              # log reads (every tenant's records: keep that port private)
     witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness);
-                                             # `- public`: the public witness (tracekit.public_witness)
+                                             # `- public`: the public witness (tracekit.public_witness), which
+                                             # `tracekit init --v2` lists unless --no-witness
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
     anchors: {rekor: {signing_config: sigstage-signing_config.json, trusted_root: sigstage-trusted_root.json,
@@ -123,8 +126,11 @@ signer.yaml:
       harnesses: {claude: /usr/local/bin/claude}   # name -> root-owned executable, or {exe, script} for an interpreter
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
-checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint.
-A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`, `add_checkpoint` and `latest`), and
+checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint,
+for up to WITNESS_START_S (the dev signer: DEV_WITNESS_START_S, within the time a client waits for it to start). A log a
+witness doesn't know yet registers there (its log key, proved by its signed empty checkpoint): the key's first checkpoint.
+data_dir/witnessed.json, written at every start, maps each configured witness to the size it holds (0: none yet; null:
+no answer), {} with none. A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`, `add_checkpoint` and `latest`), and
 `latest` raises when it is unreachable. A local log behind the witnessed one is a rollback: a signed `trace.tamper{rollback}`, then client writes are refused until it is
 acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the signer runs. The store opens from its
 latest snapshot (written every SNAPSHOT_RECORDS records and on close) and replays only the records after it.
@@ -247,6 +253,16 @@ list, show and resolve incidents, hold, quarantine and resume runs, pause the re
 a resolve or resume needs a person who is not the runs' owner, principal or requester. The state is rebuilt from the
 records (pipeline.contain_state). Incident records reach webhooks through a durable outbox (webhook.Outbox).
 
+Tracekit Box (docs/limits.md#tracekit-box-experimental; Box's docs/agent-channel.md): a `box_daemons` identity
+registers a box's run with `box` (and no `parent`), which run.registered records as a signer-written `ext.box` {id,
+image_digest, allow, engine (from box_daemons, never a request), channel}; no request carries `ext`. `channel_open` on
+a connection of the daemon's own, naming that run while it is open, makes the connection's later frames
+(transport.Bound) the box's identity `box:<uid>/<box id>`: in the box run's tenant, granted CHANNEL_METHODS only, the
+owner (quotas, request ids, cooldowns, approvals it sees) of each run it registers, each a child of the box run (no
+`parent` taken) carrying its ext.box. Such a run's run.registered names the daemon's identity, as the transport
+established it (the format's identity schemes are closed), and isolation unknown; replay gives a labelled run with
+parent_run the box's owner. No config entry names a `box:` identity; suspending the daemon stops its channels too.
+
 Principal (04-design §2.2): register_run's `principal` is app-asserted (principal_attested: false); its
 `principal_token`, an end user's token that the `oidc` issuers (http.oidc) verify, records that user's person id with
 principal_attested: true. The token itself is never recorded.
@@ -313,6 +329,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, provenance, \
     public_witness, yamlmini
+from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -332,13 +349,13 @@ from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog
                                       cooldown_key, degrade, epoch, final_run, owner, person_only_keys, ran, salt_label,
                                       skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
-from tracekit.signer.rpc_schema import REQUESTS, RPCError
+from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
-from tracekit.transport import answering_hello, hello
+from tracekit.transport import Bound, answering_hello, hello
 from tracekit.wiki import wiki_url
 
 DEFAULT_POLICY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs", "dev.yaml")
@@ -351,6 +368,9 @@ LIST_PAGE = 100
 T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decided, ran and completed for its client
 TICK_S = 1.0
 WITNESS_START_S = 30.0   # start-up: how long the witnesses, asked at once, have to say how far they cosigned
+DEV_WITNESS_START_S = 2.0   # the dev signer's: a client waits 10 s for it to start (autospawn.ensure)
+WITNESSED = "witnessed.json"   # in data_dir, at every start: each configured witness -> the size it holds, or null
+NO_WITNESS = "no-witness"   # in the dev data dir: `--no-witness` (init --dev --v2, up) until init --public-witness
 CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
@@ -375,11 +395,17 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
                "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s",
-               "verify_tool_results"}
+               "verify_tool_results", "box_daemons", "grants"}
 # signer.yaml sections whose features are experimental (docs/support.md)
 EXPERIMENTAL_KEYS = ("http", "storage", "tenants", "multi_tenant_apps", "gateways", "witnesses", "anchors", "record_key",
                      "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions", "verify_tool_results",
-                     "importers")
+                     "importers", "box_daemons")
+# lean: Box's one engine; add the next one here and in the verifiers' ENGINES when Box has it
+ENGINES = ("firecracker",)
+# what a box's agent channel may call (its coding agent's hooks and transcript tailer), whatever the config grants
+CHANNEL_METHODS = frozenset({"register_run", "decide", "complete", "observe", "model_event", "state_write",
+                             "approval_request", "approval_wait", "approval_consume", "approval_get",
+                             "approval_abandon", "constraint_add", "close_run", "tailer_lost", "status"})
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn", "agents", "ttl_s",
                  "agent_consume_s", "agent_timeout_s"}
 # agent approvers (docs/approvals.md#agent-approvers): what an identity in approvals.agents may call, given an authorize
@@ -409,13 +435,14 @@ DEFAULT_GRANTS = frozenset({
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
-    "pcm_evidence"})
+    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
-# heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's
+# heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's;
+# channel_open: a box_daemons identity's alone, whatever `authorize` lists
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
-                           "approval_agents", "tailer_heartbeat", "observe_effect"}) | OPERATOR
+                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open"}) | OPERATOR
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
 CONTENT_SWEEP_S = 3600.0
@@ -446,7 +473,74 @@ def _stricter(a, b):
         d["nondeterministic"] = True
     if a.get("oversize") or b.get("oversize"):
         d["oversize"] = list(dict.fromkeys(a.get("oversize", []) + b.get("oversize", [])))
+    if a.get("unread") or b.get("unread"):
+        d["unread"] = a.get("unread") or b.get("unread")
     return d
+
+
+def evaluate(policy, tool, args, hint=None, untrusted=None):
+    """Engine `policy`'s reading of a call as the signer decides it (tracekit audit replays it): (policy decision,
+    hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells one it does
+    (Engine.listed) is also decided as that one; the stricter decision stands, with both readings' rule ids. A class
+    hint that disagrees with the policy's class gets the stricter of the two decisions; detection sees
+    the rules of both, so a mismatch can't hide a step. A tool the policy maps whose own reading is at least as
+    strict as the hint's (an MCP adapter's generic `mcp` against the deployment's `sql`) is no disagreement worth a
+    gap. An error of the engine itself on these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`:
+    its type), logged with its traceback, never an exception that drops the connection and lets the call run
+    unrecorded; a RecursionError is the request's nesting, which call() refuses."""
+    try:
+        d, cls = policy.decide(tool, args, untrusted=untrusted), policy.tool_class(tool)
+        # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
+        # one when two listed names share it
+        for listed in policy.listed(tool):
+            d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
+        mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
+        if tool.startswith("mcp__") and "__" in tool[5:]:
+            # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
+            # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
+            # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
+            server, _, name = tool[5:].partition("__")
+            mcps = [f"mcp:{server}/{name}"]
+        elif tool.startswith("mcp__"):
+            # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
+            # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
+            # tool, as before it was named an MCP one (the server packs hold it)
+            # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
+            rest = tool[5:]
+            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
+            d = _stricter(d, policy.decide(tool, args, "unknown", untrusted))
+        elif tool == "PowerShell":
+            # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
+            # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
+            # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
+            b = policy.decide("Bash", args, untrusted=untrusted)
+            if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in policy.rules):
+                d = _stricter(d, b)
+        for mcp in mcps:
+            if mcp != tool:
+                d = _stricter(d, policy.decide(mcp, args, untrusted=untrusted))
+            # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
+            # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
+            # be dodged by naming the call an MCP one
+            bare, of = mcp.split("/", 1)[1], policy.tool_class(mcp)
+            for name in [bare] + policy.listed(bare):
+                d = _stricter(d, policy.decide(
+                    name, args, None if policy.tool_class(name) != "unknown" else of, untrusted))
+        if hint is None or hint == cls:
+            return d, False, d["rule_ids"]
+        h = policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
+        strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
+        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
+    except RecursionError:
+        raise
+    except Exception as e:
+        # the type and frames only: an exception message can carry argument text, which the signer otherwise
+        # keeps committed or encrypted; %r keeps an agent-supplied tool name on one log line
+        logging.getLogger(__name__).error("tracekit policy: the engine failed (%s) on a %r call\n%s", type(e).__name__,
+                                          tool[:256], "".join(traceback.format_tb(e.__traceback__)))
+        d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": policy.policy_hash,
+             "engine": policy.engine, "error": type(e).__name__}
+        return d, False, d["rule_ids"]
 
 
 def _iso(ts):
@@ -548,13 +642,18 @@ def _snapshot_key(keys):
 
 def _secret(path, make, size=32):
     """The `size`-byte secret in `path`, created (0600) on first use. Called under the storage lock, so never by two
-    signers. A file of another size stops the start: a key is never used cut short."""
+    signers (dev init makes keys/log.key outside it, so one made meanwhile is used). A file of another size stops the
+    start: a key is never used cut short."""
     try:
         with open(path, "rb") as f:
             data = f.read()
     except FileNotFoundError:
         data = make()
-        _write_new(path, data)
+        try:
+            _write_new(path, data)
+        except FileExistsError:   # made meanwhile, whole (linked once written): `tracekit init --dev --v2`'s log key
+            with open(path, "rb") as f:
+                data = f.read()
     if len(data) != size:
         raise ValueError(f"{path} holds {len(data)} bytes, not a {size}-byte key: restore it from a backup")
     logkey.mlock(data)
@@ -705,12 +804,13 @@ class SignerService:
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
                  content=None, gateway_wait_s=GATEWAY_WAIT_S, suspensions=None, posture=None,
-                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None):
+                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None, box_daemons=None,
+                 witness_start_s=None, grants=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
         in data_dir/store. `origin` names the log in its checkpoints, `contact` its operator in the logs list.
-        `witnesses` cosign its notes (see the module docstring).
+        `witnesses` cosign its notes (see the module docstring); at start they have `witness_start_s` to answer.
         `multi_tenant_apps`, `migrators`, `analyzers` and `importers` are identities ("scheme:subject"); `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
@@ -729,7 +829,14 @@ class SignerService:
         `webhooks`: the `webhook` config section as webhook.load gives it ({url, events, secret, format?}).
         `content`: the `content` config section (the content vault; see the module docstring), or None (off).
         `suspensions`: the shared suspension list's path (default data_dir/suspensions.json).
-        `posture` ({network, tool_calls}), `observe_grace_s` and `verify_tool_results`: see the config keys."""
+        `posture` ({network, tool_calls}), `observe_grace_s` and `verify_tool_results`: see the config keys.
+        `box_daemons`: Tracekit Box daemon identity (uid:<n>) -> its engine (see the module docstring)."""
+        self.box_daemons = dict(box_daemons or {})
+        self.grant_ceilings = grantlib.ceilings(grants)   # signer.yaml's grants section: {intent: {currency: max}}
+        if not all(isinstance(k, str) and re.fullmatch(r"uid:[0-9]+", k) and v in ENGINES
+                   for k, v in self.box_daemons.items()):
+            raise ValueError("box_daemons maps a Tracekit Box daemon's uid (uid:<n>: it connects over the Unix socket) "
+                             f"to its engine, one of {', '.join(ENGINES)}")
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -784,6 +891,12 @@ class SignerService:
                 and isinstance(hb.get("helper", ""), str) and isinstance(hb.get("required", []), list)):
             raise ValueError("harness_binding takes helper (a socket path), required (identities) and harnesses "
                              "(name -> an absolute executable path, or {exe, script})")
+        named = [*(tenants or ()), *(authorize or ()), *gateways, *multi_tenant_apps, *migrators, *analyzers,
+                 *importers, *hb.get("required", ()),
+                 *(k for t in ("approvers", "break_glass", "persons", "agents") for k in (approvals or {}).get(t, ()))]
+        if any(str(k).startswith("box:") for k in named):
+            raise ValueError("a box: identity is a box's agent channel, which gets only the channel's methods "
+                             "(channel_open): no other config entry names one")
         try:
             self._decision_keys = {k: crypto.spki(base64.b64decode(v, validate=True))
                                    for k, v in (decision_keys or {}).items()}
@@ -965,7 +1078,8 @@ class SignerService:
                 if self.log.approvals.get(aid, {}).get("state") not in LIVE:
                     self._drop_args(aid)
             self._check_notes(acknowledge_rollback)
-            self._check_witnesses(witnesses, acknowledge_rollback)
+            self._check_witnesses(witnesses, acknowledge_rollback,
+                                  WITNESS_START_S if witness_start_s is None else witness_start_s)
         except BaseException:
             self.log.close()
             for w in self._webhooks:
@@ -1050,31 +1164,35 @@ class SignerService:
                                acknowledged, f"the local {path} log ({local} leaves) does not extend its stored "
                                              f"checkpoint ({size}): rolled back")
 
-    def _check_witnesses(self, witnesses, acknowledged):
-        if not witnesses:
-            return
-        text, heads = checkpoint.body(self.origin, 0, merkle.root([])), []
+    def _check_witnesses(self, witnesses, acknowledged, wait_s):
+        text, heads, asks = checkpoint.body(self.origin, 0, merkle.root([])), [], []
         try:
-            empty = self._note(text, self.origin)
+            empty = self._note(text, self.origin) if witnesses else None
         except Exception:   # the log key can't sign now (KMS down): no witness can be asked, as when none answers
-            witnesses = ()
+            empty = None
 
         def ask(w):
             try:
-                heads.append(w.latest(empty, self.vkey))
+                heads.append((w.name, w.latest(empty, self.vkey)))
             except Exception:   # unreachable or unreadable: counted as no answer
                 pass
-        asks = [threading.Thread(target=ask, args=(w,), name="tracekit-witness-start", daemon=True) for w in witnesses]
+        if empty is not None:
+            asks = [threading.Thread(target=ask, args=(w,), name="tracekit-witness-start", daemon=True)
+                    for w in witnesses]
         for t in asks:
             t.start()
-        end = time.monotonic() + WITNESS_START_S
+        end = time.monotonic() + wait_s
         for t in asks:   # one that has not answered by then counts as no answer
             t.join(max(0.0, end - time.monotonic()))
-        heads = list(heads)
+        heads = list(heads)   # a late answer goes to the list the threads hold, not this copy
+        held = {name: h[0] for name, h in heads}
+        files.write_json(os.path.join(self.data_dir, WITNESSED), {w.name: held.get(w.name) for w in witnesses}, 0o644)
+        if not witnesses:
+            return
         if not heads:
             self.log.write(lambda tx: tx.gap("degraded_unanchored", "no configured witness answered at startup"))
             return
-        size, root = max(heads, key=lambda h: h[0])
+        size, root = max((h for _, h in heads), key=lambda h: h[0])
         local = self.log.storage.tail_state()
         if local["tree_size"] >= size:
             return
@@ -1099,6 +1217,8 @@ class SignerService:
             self._grant(identity, CONTENT_READ if method == "content_get" else method)
             if method not in OPERATOR or not self._in(self._break_glass, identity):   # break-glass can always unsuspend
                 self._check_suspended(identity)
+            if identity.scheme == "box":   # a box's channel stops with its daemon
+                self._check_suspended(identity.claims["daemon"])
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
                 raise RPCError("invalid_request", "; ".join(errs))
@@ -1125,6 +1245,10 @@ class SignerService:
         granted = {m for g in found for m in g}
         if not found and not self._is_agent(identity):   # unconfigured: a uid or the dev token (scoped by DevToken)
             granted = DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
+        if identity.scheme == "box":   # a box's agent channel, whatever the config says
+            granted = CHANNEL_METHODS
+        elif method == "channel_open":   # a Box daemon's, never an authorize grant
+            granted = {method} if subject(identity) in self.box_daemons else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
 
@@ -1714,6 +1838,9 @@ class SignerService:
         if key not in self.log.runs:
             raise RPCError("unknown_run", req["run_id"])
         self.tokens.verify(req["run_token"], tenant, req["run_id"], identity)
+        run = self.log.runs[key]   # a box's channel: only its own box run's runs (another box run may reuse the box id)
+        if identity.scheme == "box" and not run["final"] and run.get("session") != identity.claims["run"]:
+            raise RPCError("run_token_invalid", "run token belongs to another box run's channel")
         if gw is None:
             self._check_harness(identity, key)
             if key in self._beats and self._tailer(identity):   # any call of a watched run's tailer shows it alive
@@ -1778,7 +1905,10 @@ class SignerService:
         agent-eligible approvals of its tenant."""
         if self._is_agent(identity):
             return bool((a.get("agent") or {}).get("eligible")) and a["run_key"][0] == self._tenant_of(identity)
-        if owner(identity) == self.log.runs[a["run_key"]]["owner"] or self._in(self._break_glass, identity):
+        run = self.log.runs[a["run_key"]]
+        if identity.scheme == "box":   # a box's agent channel sees its own box run's runs' approvals only
+            return owner(identity) == run["owner"] and run.get("session") == identity.claims["run"]
+        if owner(identity) == run["owner"] or self._in(self._break_glass, identity):
             return True
         return (self.approvals is None or self._in(self._approvers, identity)
                 or any(ON_BEHALF in (lookup(self.authorize, k) or ()) for k in keys(identity))) and \
@@ -1909,77 +2039,22 @@ class SignerService:
         return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
     def _evaluate(self, tool, args, hint, untrusted=None):
-        """(policy decision, hint disagreed, the rule ids of both readings). A name `tools:` doesn't list that spells
-        one it does (Engine.listed) is also decided as that one; the stricter decision stands, with both readings' rule
-        ids. A class hint that disagrees with the policy's class gets the stricter of the two decisions; detection sees
-        the rules of both, so a mismatch can't hide a step. A tool the policy maps whose own reading is at least as
-        strict as the hint's (an MCP adapter's generic `mcp` against the deployment's `sql`) is no disagreement worth a
-        gap. An error of the engine itself on these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`:
-        its type), logged with its traceback, never an exception that drops the connection and lets the call run
-        unrecorded; a RecursionError is the request's nesting, which call() refuses."""
-        try:
-            d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
-            # a framework's spelling of a tool the policy lists (CrewAI's `bash`) is also checked as that tool, as each
-            # one when two listed names share it
-            for listed in self.policy.listed(tool):
-                d = _stricter(d, self.policy.decide(listed, args, untrusted=untrusted))
-            mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
-            if tool.startswith("mcp__") and "__" in tool[5:]:
-                # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>
-                # (split at the first `__`, as classes.extract reads it), so the server packs' mappings and rules
-                # (mcp:postgres/query as sql, mcp:fetch/fetch as http) reach it
-                server, _, name = tool[5:].partition("__")
-                mcps = [f"mcp:{server}/{name}"]
-            elif tool.startswith("mcp__"):
-                # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
-                # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
-                # tool, as before it was named an MCP one (the server packs hold it)
-                # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
-                rest = tool[5:]
-                mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
-                d = _stricter(d, self.policy.decide(tool, args, "unknown", untrusted))
-            elif tool == "PowerShell":
-                # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
-                # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
-                # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
-                b = self.policy.decide("Bash", args, untrusted=untrusted)
-                if any(sec != "flag" and r["id"] in b["rule_ids"] for sec, r, *_ in self.policy.rules):
-                    d = _stricter(d, b)
-            for mcp in mcps:
-                if mcp != tool:
-                    d = _stricter(d, self.policy.decide(mcp, args, untrusted=untrusted))
-                # an MCP tool is also checked under its bare name (the name the model may know it by) and each listed
-                # name it spells, in its own class if the policy maps it, else the MCP call's: a rule on that name can't
-                # be dodged by naming the call an MCP one
-                bare, of = mcp.split("/", 1)[1], self.policy.tool_class(mcp)
-                for name in [bare] + self.policy.listed(bare):
-                    d = _stricter(d, self.policy.decide(
-                        name, args, None if self.policy.tool_class(name) != "unknown" else of, untrusted))
-            if hint is None or hint == cls:
-                return d, False, d["rule_ids"]
-            h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-            strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
-            return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
-        except RecursionError:
-            raise
-        except Exception as e:
-            # the type and frames only: an exception message can carry argument text, which the signer otherwise
-            # keeps committed or encrypted; %r keeps an agent-supplied tool name on one log line
-            logging.getLogger(__name__).error("tracekit policy: the engine failed (%s) on a %r call\n%s", type(e).__name__,
-                                              tool[:256], "".join(traceback.format_tb(e.__traceback__)))
-            d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": self.policy.policy_hash,
-                 "engine": self.policy.engine, "error": type(e).__name__}
-            return d, False, d["rule_ids"]
+        return evaluate(self.policy, tool, args, hint, untrusted)
 
-    def _reasons(self, ids):
-        """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then their
-        remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its fixed
-        ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520). A flag
-        rule gives none: a flagged call runs, so its label is no reason it was denied or held."""
-        by = {**policy_compile.ENGINE_REASONS, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
+    def _reasons(self, ids, unread=None):
+        """The reasons of the deny and ask rules among `ids` that give one, in their order, joined by "; ", then after
+        INSTEAD their remedies (what to do instead), each once (at most 1024 chars); an id the engine gives itself, its
+        fixed ENGINE_REASONS, after the pack's (a harness that cuts the message keeps the call's own risk first, #520),
+        for TK-SHELL-PARSE its cause's (`unread`: the engine decision's). A flag rule gives none: a flagged call runs,
+        so its label is no reason it was denied or held."""
+        engine_reasons = {**policy_compile.ENGINE_REASONS}
+        if cause := engine_reasons["TK-SHELL-PARSE"]["causes"].get(unread):
+            engine_reasons["TK-SHELL-PARSE"] = cause
+        by = {**engine_reasons, **{r["id"]: r for sec, r, *_ in self.policy.rules if sec != "flag"}}
         rules = sorted((by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and i in by), key=lambda r: "id" not in r)
         why = "; ".join(r.get("reason") or r["label"] for r in rules if r.get("reason") or r.get("label"))
-        return ". ".join(filter(None, [why, " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))]))[:1024]
+        instead = " ".join(dict.fromkeys(r["remedy"] for r in rules if "remedy" in r))
+        return (why + INSTEAD * bool(why and instead) + instead)[:1024]
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""
@@ -2007,7 +2082,7 @@ class SignerService:
         spend = {}
         if reason is None:
             try:
-                deadline = time.monotonic() + engine.REGEX_TIMEOUT_S
+                deadline = [engine.REGEX_TIMEOUT_S]
                 failed = [c for r in rules for c, ok in self.policy.bounds(r, args, deadline) if not ok]
             except TimeoutError:
                 failed = ["a bound's pattern ran out of time"]
@@ -2191,8 +2266,8 @@ class SignerService:
 
     def _tenant_of(self, identity):
         """The identity's tenant: `tenants`, else the tenant its named token was issued for (or its OIDC issuer's
-        tenant claim), else the default."""
-        token = identity.claims.get("tenant") if identity.scheme in ("token", "oidc") else None
+        tenant claim, or a box channel's box run's), else the default."""
+        token = identity.claims.get("tenant") if identity.scheme in ("token", "oidc", "box") else None
         return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token or self.tenant
 
     def _certified(self, tenant):
@@ -2562,9 +2637,15 @@ class SignerService:
     def _register_run(self, identity, req):
         sub = subject(identity)
         for field, allowed in (("tenant", self.multi_tenant_apps), ("source", self.migrators),
-                               ("analyzes", self.analyzers), ("replay_of", self.analyzers)):
+                               ("analyzes", self.analyzers), ("replay_of", self.analyzers), ("box", self.box_daemons)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
+        boxed = identity.scheme == "box"   # a box's agent channel: each run it registers is a child of its box run
+        if boxed and "parent" in req:
+            raise RPCError("forbidden", "a box's agent channel registers each run as a child of its box run: send no "
+                                        "`parent`")
+        if "box" in req and "parent" in req:   # a labelled run with parent_run is a channel's (pipeline replay)
+            raise RPCError("invalid_request", "a box run has no `parent`")
         if ("replay_of" in req) != ("investigation" in req):
             raise RPCError("invalid_request", "a replay run names both `replay_of` and `investigation`")
         harness = None
@@ -2587,8 +2668,8 @@ class SignerService:
         run_id = req.get("run_id") or self.id_prefix + secrets.token_hex(16)
         if not run_id.startswith(self.id_prefix):
             raise RPCError("invalid_request", f"this signer's run ids start with {self.id_prefix!r}")
-        parent = req.get("parent")
-        if parent:   # the caller holds the parent run's token, for a run of the same tenant
+        parent = {"run_id": identity.claims["run"]} if boxed else req.get("parent")
+        if parent and not boxed:   # the caller holds the parent run's token, for a run of the same tenant
             try:
                 self.tokens.verify(parent["run_token"], tenant, parent["run_id"], identity)
             except RPCError as e:
@@ -2620,6 +2701,8 @@ class SignerService:
             up = parent and self.log.runs.get((tenant, parent["run_id"]))
             if parent and not up:
                 raise RPCError("unknown_run", f"{parent['run_id']}: register the child run on its parent's signer")
+            if boxed and up["closed"]:
+                raise RPCError("run_closed", f"box run {parent['run_id']} is closed: its box is stopping")
             if up and up["final"]:
                 raise RPCError("run_closed", f"parent run {parent['run_id']} is final: start the child run from an "
                                              "open run, or without `parent`")
@@ -2657,8 +2740,11 @@ class SignerService:
             if principal is not None:
                 out["principal"] = top["principal"] = principal
                 tx.set(run, "principal", principal)
-            data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
-                    "identity": _recorded(identity)}
+            # a box channel's run records the identity its transport established, the daemon's (a closed format field),
+            # and its box in ext.box; its isolation is unknown, whatever this signer's own: no general claim covers it
+            data = {"agent": req["agent"], "fail_modes": self.fail_modes,
+                    "signer_isolation": "unknown" if boxed else self.isolation or self._isolation(identity),
+                    "identity": _recorded(identity.claims["daemon"] if boxed else identity)}
             data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
             if up:
                 data.update(parent_run=parent["run_id"], session=run["session"])
@@ -2668,6 +2754,11 @@ class SignerService:
                 data["posture"] = {**self.posture, "attested": False}
             if imported:
                 data["fidelity"], top["tier"] = "none", "T3"
+            # the box label: the daemon's account of its box with the engine its config names, or its box run's
+            label = dict(req["box"], engine=self.box_daemons[sub]) if "box" in req else up.get("box") if boxed else None
+            if label:
+                tx.set(run, "box", label)
+                top["ext"] = {"box": label}
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             # evasion: a new run of a held owner and principal, or of a held parent run, starts held
             now = _iso(time.time())
@@ -2735,9 +2826,14 @@ class SignerService:
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
-        # rule_ids say only TK-OVERSIZE: name the subjects it stands for
-        reasons = [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
-                    + ", ".join(ruled[0]["oversize"]))[:4096]] if ruled and ruled[0].get("oversize") else []
+        # rule_ids say only TK-OVERSIZE: name the subjects it stands for, and what to do (a held call waits for a person)
+        reasons = []
+        if ruled and ruled[0].get("oversize"):
+            kib = engine.MAX_SUBJECT // 1024
+            remedy = f"Split it into calls under {kib} KiB each (write a large file in parts)" + (
+                ", or have a person approve it." if ruled[0]["verdict"] == "ask" else ".")
+            reasons = [f"TK-OVERSIZE: over {kib} KiB, so never matched: "
+                       + ", ".join(ruled[0]["oversize"])[:600] + INSTEAD + remedy]
         if ruled and ruled[0].get("nondeterministic"):   # the rule it was matching when time ran out is no match
             reasons.append(f"nondeterministic: the fallback regex engine ran out of its {engine.REGEX_TIMEOUT_S:g} s on "
                            "these arguments, so the call is denied; the rule it was matching then is among the rule ids "
@@ -2787,8 +2883,19 @@ class SignerService:
             held = f and verdict != "deny" and self._constrained(run, f)   # tighten only: never lowered
             if held:
                 verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"] * ("TK-CONSTRAINT" not in rule_ids)
-            if unreadable and verdict in ("allow", "flag"):
+            now = _iso(time.time())   # the instant a grant is checked at, which a release's record carries
+            granted, grant_why = self._grant_release(key, run, tool, holder[0], rule_ids, args, digest, gw, now) \
+                if verdict == "ask" else (None, None)
+            if granted:
+                verdict, rule_ids = "flag", rule_ids + ["TK-GRANT"]
+            if unreadable and verdict in ("allow", "flag"):   # what a grant released too: every operator limit holds
+                if granted:
+                    rule_ids = [i for i in rule_ids if i != "TK-GRANT"]
+                    granted, grant_why = None, (f"grant {granted['id']}: an operator's sum limit can't read this call, "
+                                                "so a person decides")
                 verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
+            if grant_why:   # signed with the decision: what the grant released, or exactly why it held the call
+                data["reasons"] = [grant_why[:4096]]
             if sums:
                 data["detect"] = {**data.get("detect", {}), **sums}
             names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
@@ -2796,9 +2903,11 @@ class SignerService:
             l2 = {n: event_hash({"tool": n, "args": args}) for n in names} if digest and len(names) > 1 else \
                 digest if seen is args else event_hash({"tool": tool, "args": seen})
 
-            def record(did, verdict, rule_ids, again=False):
+            def record(did, verdict, rule_ids, again=False, ext=None):
                 """Write decision `did`, as the run's hold or quarantine leaves it, and make it the call's; `again`: the
-                call's second decision, written by the signer after the first fired a hold or quarantine."""
+                call's second decision, written by the signer after the first fired a hold or quarantine; `ext`: the
+                record's ext field (`grant`: what an intent grant released, its ts the instant the grant was checked at,
+                which the verifiers compare its expiry with)."""
                 verdict, rule_ids, iid = self._contained(run, verdict, rule_ids)
                 commitment = self._commit(did, digest) if digest else None
                 d = dict(data, decision_id=did, nonce=secrets.token_hex(16), decision=verdict, rule_ids=rule_ids,
@@ -2815,15 +2924,18 @@ class SignerService:
                 tx.set(run["calls"], tcid, call)
                 tx.set(run["decisions"], did, call)
                 kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
-                          **top)
+                          **top, **({"ext": ext, "ts": now} if ext else {}))
                 seq = tx.emit(run, "policy.decision", d, **kw) if again else \
                     tx.event(run, req, "policy.decision", d, **kw)
                 written.append((seq, commitment))
                 return seq, d
-            seq, d = record(did, verdict, rule_ids)
+            seq, d = record(did, verdict, rule_ids, ext=granted and {"grant": granted})
             if d["decision"] in ("allow", "flag") and (run.get("held") or run.get("quarantined")):
                 tx.pop(run["decisions"], did)   # the call fired a hold or quarantine: it never runs on this decision
-                seq, d = record("dec-" + secrets.token_hex(16), d["decision"], d["rule_ids"], again=True)
+                if granted:   # the hold or quarantine stops what the grant released: its spend stays counted
+                    data.pop("reasons", None)
+                seq, d = record("dec-" + secrets.token_hex(16), d["decision"],
+                                [i for i in d["rule_ids"] if i != "TK-GRANT"], again=True)
             if isinstance(host, str) and d["decision"] != "deny" and run.get("rec") is not None:   # explains its traffic
                 # lean: hosts are memory and snapshot state; after a restart with no snapshot since, the run's earlier
                 # http calls no longer explain an observed host (an unexplained_effect warning)
@@ -2840,9 +2952,12 @@ class SignerService:
                    **({"reason": "; ".join(big["reasons"])[:1024]} if big else {})}
             said_no = d["decision"] == "ask" and self._said_no(key, tool, holder[0], digest)
             if d["decision"] in ("deny", "ask") and not big and (why := "; ".join(x for x in (
-                    said_no, held if "TK-CONSTRAINT" in d["rule_ids"] else None, self._reasons(d["rule_ids"]))
+                    said_no, held if "TK-CONSTRAINT" in d["rule_ids"] else None, None if granted else grant_why,
+                    self._reasons(d["rule_ids"], ruled and ruled[0].get("unread")))
                     if x)[:1024]):
                 out["reason"] = why   # what the client tells the model or the person, after the rule ids
+            elif granted and d["decision"] == "flag":
+                out["reason"] = grant_why[:1024]   # what the grant released, and what it has left
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index
@@ -3014,6 +3129,9 @@ class SignerService:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
         if len(subject(identity)) > 256:   # each of its records names it in full (`via`)
             raise RPCError("forbidden", f"{subject(identity)[:64]}...: a gateway's identity is at most 256 characters")
+        if req["caller"].startswith("box:"):
+            raise RPCError("forbidden", "a box's agent channel calls on its own connection only, never through a "
+                                        "gateway")
         gw, identity = identity, CallerIdentity(*req["caller"].split(":", 1), True)
         self._grant(identity, method)
         self._check_suspended(identity)
@@ -3473,7 +3591,7 @@ class SignerService:
         shown = loads_strict(copy["args"]) if copy["args_source"] == "raw" else copy["args"]
         rules = self._agent_rules(a["agent"]["rules"])
         try:
-            deadline = time.monotonic() + engine.REGEX_TIMEOUT_S
+            deadline = [engine.REGEX_TIMEOUT_S]
             conditions = [{"rule": r["id"], "condition": c[:1024], "passed": ok}
                           for r in rules for c, ok in self.policy.bounds(r, real, deadline)]
         except TimeoutError:
@@ -3630,6 +3748,10 @@ class SignerService:
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":
                 why = "TK-APPROVAL-" + a["state"].upper(), f"not approved (state={a['state']})"
+            elif {a["decision_id"], call and call.get("decision_id")} & {r[0] for r in run["results"].get(tcid, ())}:
+                # the call it was asked for, or this one, has a result already: it ran before anyone approved it, so
+                # the approval can't stand for it now (_reusable refuses a retry the same)
+                why = "TK-APPROVAL-UNBOUND", f"approval {aid} was used up: the call it was asked for ran anyway"
             elif a["expires_at"] <= _iso(time.time()) or a.get("consume_by", "~") <= _iso(time.time()):
                 why = "TK-APPROVAL-EXPIRED", "the approval expired"
             elif a.get("not_before", "") > _iso(time.time()):
@@ -4162,13 +4284,13 @@ class SignerService:
 
     def _pcm_write(self, identity, method, req, key, data, out, check=None):
         """`out` with the run_seq of ext record `data` (digests and ids, never args) in run `key`; refused in a
-        held or quarantined run (no new authority leaves it while a person looks), or when `check(run)` raises on the
-        writer."""
+        held or quarantined run (no new authority leaves it while a person looks), or when `check(tx, run)` raises on
+        the writer."""
         def fn(tx, run):
             if run.get("quarantined") or run.get("held"):
                 raise RPCError("forbidden", self._why_contained(run))
             if check:
-                check(run)
+                check(tx, run)
             return {**out, "run_seq": tx.emit(run, "ext", data, request_id=req["request_id"])}
         return self.log.submit(identity, method, req, fn, key)
 
@@ -4189,7 +4311,7 @@ class SignerService:
     def _pcm_grant(self, identity, req):
         """A root grant of exactly the args of the run's `pcm.grant` call, from its consumed approval: by a person
         approvals.persons names, not self-approved, by neither the run's agent nor the grant's subject, before the call
-        completes; it expires within MAX_GRANT_S."""
+        completes, once per approval; it expires within MAX_GRANT_S."""
         key, agent = self._pcm_agent(identity, req)
         if self.approvals is None:   # without it any identity of the run's tenant may answer, and none is a person
             raise RPCError("forbidden", "a root grant needs signer.yaml's approvals, which names the people who answer")
@@ -4215,10 +4337,9 @@ class SignerService:
             if not answer.get("person"):
                 raise RPCError("forbidden", "a root grant needs the approval of a person signer.yaml's "
                                             f"approvals.persons names: {a['answered']['by'][:256]} maps to none")
-            # lean: until the call completes, each pcm_grant mints another grant of this approval (the same but for
-            # ts); record the grants per approval if that matters
-            if ran(a)[2] not in run["decisions"]:   # its tool.result is written
-                raise RPCError("forbidden", "the pcm.grant call completed: this approval already issued its grant")
+            if a.get("granted") or ran(a)[2] not in run["decisions"]:   # its grant or its tool.result is written
+                raise RPCError("forbidden", "this approval already issued its grant, or its pcm.grant call completed: "
+                                            "one grant per approval")
             return aid, a
         rid = (identity.scheme, identity.subject, req["request_id"])
         # read on the writer, so the grant is signed off it; the writer checks it all again (a retry: its cached grant)
@@ -4231,9 +4352,11 @@ class SignerService:
             "subject": args["subject"], "intent": args["intent"], "caveats": args.get("caveats", []),
             "expires_at": args["expires_at"], "delegable": args["delegable"], "parent": None})
 
-        def check(run):
-            if approved(run)[0] != aid:
+        def check(tx, run):
+            now_aid, now_a = approved(run)
+            if now_aid != aid:
                 raise RPCError("unavailable", "the approval changed while its grant was signed: ask again")
+            tx.set(now_a, "granted", True)   # in the write of its pcm.grant record: one grant per approval
         return self._pcm_write(identity, "pcm_grant", req, key, {
             "name": "pcm.grant", "grant": grant and event_hash(grant), "subject": args["subject"],
             "intent": args["intent"], "approval_id": aid}, {"grant": grant}, check)
@@ -4245,7 +4368,7 @@ class SignerService:
         parent, caveats, now = req["parent"], req.get("caveats", []), _iso(time.time())
         # lean: this signer's own grants only, and no approval, as a child only narrows; accept other pinned signers'
         # and gate delegation with the a2a policy class when the A2A gateway enforces PCM
-        if e := pcm.check_sig(parent, "pcm-grant", {"logs": [self.vkey]}):
+        if e := pcm.check_grant_sig(parent, {"logs": [self.vkey]}):
             raise RPCError("invalid_request", f"parent: {e}")
         if parent["issuer"]["tenant"] != key[0]:
             raise RPCError("forbidden", f"the grant was issued in tenant {parent['issuer']['tenant']}, not {key[0]}")
@@ -4297,6 +4420,192 @@ class SignerService:
                 raise RPCError("unavailable", f"storage read failed: {x}") from None
             return {"checkpoint": note, "records": records, "pending": pending}
         return self.log.write(read)
+
+    def _grant_intent(self, rule_ids):
+        """The intent every rule of `rule_ids` (flags aside) opts into with `approval: {grant: <intent>}`, or None:
+        a call held by any other rule, or by an id the signer or engine gives itself (TK-HOLD, TK-CONSTRAINT,
+        TK-SHELL-PARSE, ...), is never a grant's to release."""
+        by, flags = {}, set()
+        for sec, r, *_ in self.policy.rules:
+            if sec == "flag":
+                flags.add(r["id"])
+            elif (r.get("approval") or {}).get("grant"):
+                by[r["id"]] = r["approval"]["grant"]
+        intents = {by.get(i) for i in rule_ids if i not in flags}
+        return next(iter(intents)) if len(intents) == 1 and None not in intents else None
+
+    def _approved_twin(self, key, tool, via, rule_ids, digest):
+        """(on the writer) Whether a person already approved this very call in run `key` (an approval of the same tool
+        and arguments, by the same caller, under this policy, for these rules, not consumed or expired): the agent's
+        retry then runs on that approval (_reusable), and no grant counts it again."""
+        # lean: scans the signer's live approvals, as _reusable does
+        now = _iso(time.time())
+        return any(a["run_key"] == key and a["state"] == "approved" and a["tool"] == tool and a.get("via") == via
+                   and a["policy_hash"] == self.policy.policy_hash and set(rule_ids) <= set(a["rule_ids"])
+                   and a["expires_at"] > now and self._opens(a["commitment"], a["label"], digest)
+                   for a in list(self.log.approvals.values()))
+
+    def _grant_release(self, key, run, tool, via, rule_ids, args, digest, gw, now):
+        """(on the writer) What run `key`'s intent grants make of call `tool` with `args`, which the policy held (`ask`)
+        by `rule_ids`, at ISO time `now` (the release's record's ts, so the verifiers check its expiry at the same
+        instant): ({id, fields, used, tier}, what it released, in words) when a grant releases it; (None, exactly why
+        not) when the rules opt into an intent the run has grants for and none has room or can read the call; (None,
+        None) when no grant applies: the rules don't all opt into one intent, the run has no grants, it is held or
+        quarantined, or a person already approved this very call (_approved_twin). `tier`: T2 when an executor or
+        gateway decided the call and runs it, else T1, the arguments the harness reported."""
+        intent = self._grant_intent(rule_ids)
+        if not intent or digest is None or not run.get("grants") or run.get("held") or run.get("quarantined") \
+                or self._approved_twin(key, tool, via, rule_ids, digest):
+            return None, None
+        gid, fields, used, why = grantlib.decide(run["grants"], intent, tool, args, now)
+        if gid is None:
+            return None, why
+        cur = fields["currency"]
+        return ({"id": gid, "fields": fields, "used": used, "tier": "T2" if gw else "T1"},
+                f"within grant {gid}: {grantlib.show(fields['amount'], cur)} to {fields['payee']}; "
+                + grantlib.left({**run["grants"][gid], "used": used}))
+
+    def _granter(self, identity, key):
+        """(the person, self_approved) when `identity` may issue a grant for run `key`: as it may answer the run's
+        approvals (_answer). With signer.yaml's approvals, an approver of the tenant who is not the run's owner, its
+        principal or the same person (unless self_approval: allow); without them (the dev signer), any identity of the
+        run's tenant, labelled self_approved when it is the run's own user, which the agent can be. Never an agent
+        approver (`call` refuses them), and never in a held, quarantined or ending run."""
+        run = self.log.runs.get(key)
+        if run is None or run["final"] or not self._may_see(identity, {"run_key": key}):
+            raise RPCError("unknown_run", key[1])
+        if run["closed"]:
+            raise RPCError("run_closed", f"run {key[1]} is ending: a grant is for a run that is still open")
+        if run.get("held") or run.get("quarantined"):
+            raise RPCError("forbidden", self._why_contained(run))
+        sub, own = subject(identity), owner(identity)
+        who = person(identity) or self._persons.get(sub)
+        owner_person, principal = run.get("people", (None, None))
+        if who and who == principal:
+            raise RPCError("forbidden", f"{sub[:256]} is the run's principal and may not issue its grants")
+        same = self._self_approval({"run_key": key, "requester": run["owner"]}, sub, own, *([who] if who else ())) \
+            or bool(who) and who == owner_person
+        if self.approvals is not None:
+            if same and self.approvals.get("self_approval") != "allow":
+                raise RPCError("forbidden", f"{sub[:256]} may not issue a grant for its own run: issue it as an identity "
+                                            "signer.yaml's approvals.approvers lists")
+            if not same and not self._in(self._approvers, identity):
+                raise RPCError("forbidden", f"{sub[:256]} is not an approver: signer.yaml's approvals.approvers lists "
+                                            "who may issue grants")
+        return who, same
+
+    def _grant_issue(self, identity, req):
+        """A grant for run `run_id` (docs/intent-grants.md): a PCM grant of `intent` to the run's agent (its owner),
+        within `caveats`, up to `limits` over every call that uses it, until `expires_at` (24 h at most; grantlib's
+        problems, and signer.yaml's ceiling), signed into the run as an `intent.grant` record. Issued as _granter
+        allows. With `approval_id`: a pending approval of the run, of a call whose rules opt into the intent and whose
+        arguments are within the grant; that call is the grant's first use, counted in its totals (its approval then
+        runs it, and the agent's retry of it on that approval counts nothing more)."""
+        key = (self._tenant_of(identity), req["run_id"])
+        who, same = self._granter(identity, key)
+        run, now, intent = self.log.runs[key], _iso(time.time()), req["intent"]
+
+        def norm(c):   # caveats as calls are read: a currency in upper case, an EVM address in lower case
+            f = {"currency": lambda v: v.upper() if isinstance(v, str) else v, "payee": grantlib.payee}.get(c["field"])
+            v = c["value"]
+            return dict(c, value=([f(x) for x in v] if isinstance(v, list) else f(v)) if f else v)
+        caveats = [norm(c) for c in req.get("caveats", [])]
+        aid, first = req.get("approval_id"), None
+        held = aid and self._visible(identity, aid)
+        # the tools whose calls it covers: those named, and the held call's it is issued from
+        tools = list(dict.fromkeys(req.get("tools", []) + ([held["tool"]] if held else [])))
+        problems = grantlib.problems(intent, caveats, req["limits"], req["expires_at"], now, self.grant_ceilings, tools)
+        if problems:
+            raise RPCError("invalid_request", "; ".join(problems))
+        grant = {"pcm_grant": 0, "ts": now, "issuer": {
+            "kind": "person", "id": subject(identity), "run": key[1], "tenant": key[0],
+            **({"approval_id": aid} if aid else {}), **({"person": who} if who else {})},
+            "subject": run["owner"], "intent": grantlib.ref(intent), "caveats": caveats,
+            "expires_at": req["expires_at"], "delegable": False, "parent": None}
+        used = grantlib.zero(req["limits"])
+        if aid:   # its first use: the held call it is issued from
+            a = held
+            if a["run_key"] != key or a["state"] != "requested":
+                raise RPCError("invalid_request", f"{aid} is not a pending approval of run {key[1]}")
+            if self._grant_intent(a["rule_ids"]) != intent:
+                raise RPCError("forbidden", f"{a['tool_call_id'][:128]} is held by {', '.join(a['rule_ids'])}, not "
+                                            f"only by rules a {intent} grant releases: approve it on its own")
+            copy = self._unseal(aid) or {}   # the real arguments where kept (exec_args), else the shown copy
+            args = copy.get("exec_args", copy.get("args"))
+            try:
+                args = loads_strict(args) if copy.get("args_source") == "raw" and isinstance(args, str) else args
+            except StrictJSONError:
+                args = None
+            fields, why = grantlib.read(intent, args)
+            used, out = grantlib.check({"grant": grant, "limits": req["limits"], "used": used}, fields, now) \
+                if fields else (None, why)
+            if used is None:
+                raise RPCError("invalid_request", f"the held call is outside this grant ({out}): approve or reject it "
+                                                  "on its own, and grant the calls after it with tracekit grant add")
+            first = {"approval_id": aid, "tool_call_id": a["tool_call_id"], "fields": fields}
+        self.quotas.take_event(identity)
+        grant = self._pcm_signed("intent-grant", grant)   # never a PCM grant: no receiver can check its limits
+        gid = grantlib.grant_id(grant)
+        data = {"name": "intent.grant", "id": gid, "grant": grant, "tools": tools, "limits": req["limits"], "used": used,
+                "self_approved": same, **({"first": first} if first else {}),
+                **({"description": req["description"]} if req.get("description") else {})}
+
+        def fn(tx, run):
+            if run["closed"] or run["final"]:
+                raise RPCError("run_closed", f"run {key[1]} is ending: a grant is for a run that is still open")
+            if run.get("held") or run.get("quarantined"):
+                raise RPCError("forbidden", self._why_contained(run))
+            if aid and self.log.approvals[aid]["state"] != "requested":
+                raise RPCError("approval_not_pending", self.log.approvals[aid]["state"])
+            return {"grant_id": gid, "grant": grant, "tools": tools, "used": used, "self_approved": same,
+                    "run_seq": tx.emit(run, "ext", data, source="signer", request_id=req["request_id"])}
+        return self.log.submit(identity, "grant_issue", req, fn, key)
+
+    def _grant_list(self, identity, req):
+        """The grants of the open runs `identity` may see (one run with `run_id`), each with its totals and whether it
+        may still release a call (live, revoked, expired or used_up)."""
+        now, out = _iso(time.time()), []
+        for key in list(self.log.live):
+            run = self.log.runs.get(key)
+            if run is None or not run.get("grants") or req.get("run_id", key[1]) != key[1] \
+                    or not self._may_see(identity, {"run_key": key}):
+                continue
+            out += [{"grant_id": gid, "run_id": key[1], "state": grantlib.state(e, now),
+                     **{k: e[k] for k in ("grant", "tools", "limits", "used", "self_approved", "description")
+                        if k in e}}
+                    for gid, e in list(run["grants"].items())]
+        return {"grants": out[:1000]}
+
+    def _grant_revoke(self, identity, req):
+        """End grant `grant_id` of an open run `identity` may see: an `intent.revoked` record, after which every call it
+        would have released is held again. Revoking only narrows what the agent may do, so the run's own user may too."""
+        gid = req["grant_id"]
+        key = next((k for k in list(self.log.live) if gid in ((self.log.runs.get(k) or {}).get("grants") or {})), None)
+        if key is None or not self._may_see(identity, {"run_key": key}):
+            raise RPCError("invalid_request", f"no grant {gid} in an open run you may see")
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            if run["grants"][gid]["revoked"]:
+                raise RPCError("invalid_request", f"grant {gid} is already revoked")
+            seq = tx.emit(run, "ext", {"name": "intent.revoked", "id": gid, "by": subject(identity),
+                                       **({"reason": req["reason"]} if req.get("reason") else {})},
+                          source="signer", request_id=req["request_id"])
+            return {"grant_id": gid, "run_id": key[1], "run_seq": seq}
+        return self.log.submit(identity, "grant_revoke", req, fn, key)
+
+    def _channel_open(self, identity, req):
+        """A box_daemons identity names its own open box run: the rest of this connection is the box's agent channel,
+        box:<uid>/<the box id the run's label holds> (transport.Bound), in the box run's tenant."""
+        key = self._authorize(identity, req)   # the daemon's token for the run: the run is its own
+        run = self.log.runs[key]
+        if run["closed"]:
+            raise RPCError("run_closed", f"{key[1]}: a box's channel opens only while its box run is open")
+        if not run.get("box"):
+            raise RPCError("invalid_request", f"{key[1]} is not a box run: register it with `box`")
+        box = CallerIdentity("box", f"{identity.subject}/{run['box']['id']}", True,
+                             {"tenant": key[0], "run": key[1], "daemon": identity})
+        return Bound({"identity": subject(box)}, box)
 
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},
@@ -4750,7 +5059,38 @@ def signer_config(path=None, data_dir=None):
     if data_dir:
         return {"data_dir": data_dir_at(data_dir)}
     from tracekit.sdk.autospawn import SOCK, signer_dir
-    return {"data_dir": dev_data_dir(create=False), "socket": os.path.join(signer_dir(), SOCK)}
+    d = dev_data_dir(create=False)
+    return {"data_dir": d, "socket": os.path.join(signer_dir(), SOCK), "witnesses": dev_witnesses(d)}
+
+
+def dev_witnesses(data_dir=None):
+    """The configured public witness for the dev signer, unless this data dir opted out."""
+    from tracekit import public_witness
+    data_dir = data_dir or dev_data_dir(create=False)
+    return [public_witness.entry()] if public_witness.configured() and not os.path.exists(os.path.join(data_dir, NO_WITNESS)) else []
+
+
+def set_dev_witness(disabled, data_dir=None):
+    """Set or clear the dev signer's persistent witness opt-out marker."""
+    data_dir = data_dir or dev_data_dir()
+    marker = os.path.join(data_dir, NO_WITNESS)
+    if disabled:
+        with open(marker, "w", encoding="ascii") as f:
+            f.write("no-witness\n")
+    else:
+        try:
+            os.unlink(marker)
+        except FileNotFoundError:
+            pass
+
+
+def open_dev():
+    """Construct the same-user signer with its default public witness and short startup allowance."""
+    data_dir = dev_data_dir()
+    return SignerService(data_dir, isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
+                         witnesses=[TlogWitness(w["url"], w["vkey"]) for w in dev_witnesses(data_dir)],
+                         witness_start_s=DEV_WITNESS_START_S,
+                         grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
 
 
 def data_dir_at(path):
@@ -4828,7 +5168,8 @@ def open_service(cfg, **kw):
                          route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
                          content=cfg.get("content"), gateway_wait_s=float(cfg.get("gateway_wait_s", GATEWAY_WAIT_S)),
                          posture=cfg.get("posture"), observe_grace_s=float(cfg.get("observe_grace_s", OBSERVE_GRACE_S)),
-                         verify_tool_results=cfg.get("verify_tool_results"),
+                         verify_tool_results=cfg.get("verify_tool_results"), box_daemons=cfg.get("box_daemons"),
+                         grants=cfg.get("grants"),
                          **kw)
 
 
@@ -4982,8 +5323,7 @@ def _serve_dev():
     logkey.harden()
 
     def open_handler():   # the user may sign findings about their own runs: they read self-asserted (docs/verdicts.md)
-        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0, analyzers=[_dev_identity()],
-                                grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
+        service = open_dev()
         return service.handle_frame, service.close
     stacks = None
     if hasattr(signal, "SIGUSR1"):
@@ -5264,6 +5604,9 @@ def main(argv=None):
         if extra:
             print(f"tracekit: the signer's {', '.join(extra)} setting(s) are experimental: they work and are tested, "
                   f"but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
+        named = public_witness.named_origin(cfg)
+        if named:
+            print(f"tracekit: warning: {named}", file=sys.stderr)
     try:
         service = open_service(cfg)
     except BlockingIOError as e:

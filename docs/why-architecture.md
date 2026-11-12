@@ -87,7 +87,7 @@ Nodes are `input`, `decision`, `action` and `message` events. Edges:
 | `invoked` | observed | decision D asked for action A |
 | `sent` | observed | decision D produced the message M |
 | `same-content` | observed | an input has the exact hash of something produced earlier in the run, such as a file one agent wrote and another read |
-| `content-overlap` | inferred | at least 3 shared word 5-grams and overlap ≥ 0.3 (`|A∩B| / min(|A|,|B|)`), with no observed path already linking the two |
+| `content-overlap` | inferred | at least 3 shared word 5-grams and overlap ≥ 0.3 (`\|A∩B\| / min(\|A\|,\|B\|)`), with no observed path already linking the two |
 | `causal` | tested | a saved test removed X and the target changed (or did not) |
 
 Observed context edges also carry `reuse`: the share of the input's 5-grams that reappear in the decision's output. It hints at which inputs the model drew on. It is not evidence of cause.

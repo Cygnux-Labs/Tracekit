@@ -143,7 +143,7 @@ class DevSignerEndToEnd(unittest.TestCase):
             again = Client()
             self.addCleanup(again.close)
             self.assertEqual(self.one_run(again), pid)
-            self.assertEqual(json.loads(self.cli("status"))["signer_v2"]["socket"], os.path.join(short, autospawn.SOCK))
+            self.assertEqual(json.loads(self.cli("status", "--json"))["signer_v2"]["socket"], os.path.join(short, autospawn.SOCK))
         self.assertNotEqual(autospawn.runtime_dir(), short)   # another dir's is never this one
         near = "/tmp/" + "s" * (103 - len("/tmp/") - len("/" + autospawn.SOCK))   # its socket path fits, a side dir's not
         self.assertEqual(autospawn._short(near), near)
@@ -297,7 +297,9 @@ class DevSignerEndToEnd(unittest.TestCase):
         with open(trust) as f:
             self.assertEqual(json.load(f), {"logs": [vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0})
         self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", out)
-        self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust))
+        self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust, "--detail"))
+        said = self.cli("verify", out, "--trust", trust)
+        self.assertTrue(said.startswith("VERIFIED: ") and "\nNOT PROOF AGAINST THE AGENT: " in said, said)
         self.assertTrue(self.held())   # the signer kept running throughout
 
     def test_export_says_what_it_wrote_and_the_commands_it_gives_verify_it(self):
@@ -320,7 +322,7 @@ class DevSignerEndToEnd(unittest.TestCase):
                                r"trust\.json\n$")
         trust, verify = [shlex.split(x)[1:] for x in said.splitlines() if x.startswith("  tracekit ")]
         self.cli(*trust)
-        self.assertIn("Integrity: VERIFIED.", self.cli(*verify))
+        self.assertRegex(self.cli(*verify), r"^VERIFIED: (\d+ tool calls? in |no tool calls recorded; )?\d+ signed records, none changed")
         info = json.loads(self.cli("export", "--v2", "--run", run.run_id, "-o", "again.tkb", "--json"))
         self.assertEqual((info["bundle"], info["verifier_min_version"] in said), ("again.tkb", True))
 
@@ -383,12 +385,17 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.cli("export", "--v2", "--run", run.run_id, "--dev", "--with-findings", "-o", bundle)
         report = io.StringIO()
         with contextlib.redirect_stdout(report):
-            self.assertEqual(cli.main(["verify", bundle, "--trust", trust]), 0)
+            self.assertEqual(cli.main(["verify", bundle, "--trust", trust, "--detail"]), 0)
         text = report.getvalue()
         self.assertIn("[WARN] reviews — 2 review(s): 2 self-asserted", text)
         self.assertIn("\nIntegrity: VERIFIED.\nAssurance: dev;", text)
         self.assertTrue(text.endswith("Findings: 1 finding(s) (1 medium) and 1 coverage review(s); 2 self-asserted "
                                       "(an opinion of the run, not its integrity).\n"), text[-300:])
+        short = io.StringIO()
+        with contextlib.redirect_stdout(short):
+            self.assertEqual(cli.main(["verify", bundle, "--trust", trust]), 0)
+        self.assertIn("\nFindings: 1 finding(s) (1 medium) and 1 coverage review(s); 2 self-asserted (an opinion of "
+                      "the run, not its integrity).\nWarnings: ", short.getvalue())
 
     def test_idle_exit(self):
         os.environ["TRACEKIT_DEV_IDLE"] = "1"
@@ -431,6 +438,31 @@ class SpawnAndStatus(unittest.TestCase):
         env.start()
         self.addCleanup(env.stop)
         os.environ.pop("TRACEKIT_SIGNER", None)
+
+    def test_uninstall_names_only_this_homes_runtime_dirs(self):
+        """A first-day run of `tracekit uninstall` from a second HOME named the per-user runtime dir another HOME's
+        live signer used, in the `rm -rf` it prints. Review of #628: one with no endpoint.json (its signer stopped)
+        was named too, though two HOMEs share it. It names only dirs provably this HOME's (its own sibling, one inside
+        HOME, one whose endpoint.json names this data dir), and says when the per-user one can't be told."""
+        home = os.path.join(self.dir, "home")
+        os.makedirs(home)
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data")}):
+            self.assertEqual(autospawn.own_runtime_dirs(), ([], None))   # none made yet
+            os.makedirs(self.run_dir, 0o700)
+            self.assertEqual(autospawn.own_runtime_dirs(), ([], self.run_dir))   # shared, and no endpoint: can't tell
+            for named, want in ((autospawn.data_dir(), ([self.run_dir], None)),
+                                (os.path.join(self.dir, "another-home-data"), ([], None))):
+                with open(os.path.join(self.run_dir, autospawn.ENDPOINT), "w") as f:
+                    json.dump({"data_dir": named}, f)
+                self.assertEqual(autospawn.own_runtime_dirs(), want)
+            side = autospawn._side(self.run_dir)
+            os.makedirs(side, 0o700)
+            self.addCleanup(shutil.rmtree, side, True)
+            self.assertEqual(autospawn.own_runtime_dirs(), ([side], None))
+            inside = os.path.join(home, "run")   # macOS's ~/Library/Application Support/tracekit/run: this HOME's
+            os.makedirs(inside, 0o700)
+            with mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": inside}):
+                self.assertEqual(autospawn.own_runtime_dirs(), ([inside], None))
 
     def test_signer_starts_in_the_private_runtime_dir_with_cwd_off_sys_path(self):
         os.makedirs(self.run_dir, 0o700)
@@ -493,7 +525,7 @@ class SpawnAndStatus(unittest.TestCase):
 
     def test_status_creates_nothing(self):
         with contextlib.redirect_stdout(io.StringIO()) as out:
-            self.assertEqual(cli.main(["status"]), 0)
+            self.assertEqual(cli.main(["status", "--json"]), 0)
         self.assertFalse(json.loads(out.getvalue())["signer_v2"]["running"])
         self.assertFalse(os.path.exists(self.run_dir))
 
@@ -568,7 +600,7 @@ class DevSignerOverTcp(unittest.TestCase):
         out, trust = os.path.join(self.dir, "run.tkb"), os.path.join(self.dir, "trust.json")
         DevSignerEndToEnd.cli(self, "export", "--v2", "--run", run.run_id, "-o", out)   # nudges the signer over TCP
         DevSignerEndToEnd.cli(self, "signer", "trust", "-o", trust)
-        self.assertIn("Integrity: VERIFIED", DevSignerEndToEnd.cli(self, "verify", out, "--trust", trust))
+        self.assertIn("Integrity: VERIFIED", DevSignerEndToEnd.cli(self, "verify", out, "--trust", trust, "--detail"))
         endpoint = os.path.join(self.run_dir, autospawn.ENDPOINT)
         with open(endpoint) as f:
             self.assertEqual(json.load(f)["pid"], c.hello["pid"])

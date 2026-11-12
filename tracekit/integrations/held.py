@@ -14,7 +14,7 @@ import time
 import uuid
 import warnings
 
-from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules
+from tracekit.sdk.client import SignerUnavailable, fail_open, refusal
 from tracekit.signer.rpc_schema import RPCError
 
 
@@ -50,10 +50,10 @@ class HeldCalls:
             return f"signer refused the call: {e}", None, args
         hint = None
         if d["decision"] == "deny":
-            return named_rules(d["rule_ids"]) or "deny", d, args
+            return refusal(d) or "deny", d, args
         if d["decision"] == "ask":
             if self.wait_s <= 0:
-                return f"{', '.join(d['rule_ids'])}: approval required, and this caller cannot wait for one", d, args
+                return f"approval required, and this caller cannot wait for one: {refusal(d)}", d, args
             request = asyncio.ensure_future(self._rpc("approval_request", tool_call_id=call_id))
             try:
                 hint = (await asyncio.shield(request))["approval_id"]   # a cancel lets it finish, to withdraw it
@@ -74,15 +74,14 @@ class HeldCalls:
                 await self._abandon(hint, "the caller stopped waiting for the approval")
                 raise
             if state == "requested" and escalated:   # people answer it: left for them, as a retry then runs
-                return (f"{', '.join(d['rule_ids'])}: an agent approver escalated the call to people and no one "
-                        f"answered within {self.wait_s:g} s, so it did not run; once a person approves it, try "
-                        "again"), d, args
+                return (f"an agent approver escalated the call to people and no one answered within {self.wait_s:g} "
+                        f"s, so it did not run; once a person approves it, try again: {refusal(d, hint)}"), d, args
             if state == "requested":
                 await self._abandon(hint, f"no answer within the caller's {self.wait_s:g} s wait")
-                return (f"{', '.join(d['rule_ids'])}: no one approved the call within {self.wait_s:g} s, so it did not "
-                        "run and its approval was withdrawn; ask a person to approve it, then try again"), d, args
+                return (f"no one approved the call within {self.wait_s:g} s, so it did not run and its approval was "
+                        f"withdrawn; ask a person to approve it, then try again: {refusal(d, hint)}"), d, args
             if state != "approved":
-                return f"{', '.join(d['rule_ids'])}: approval {state}", d, args
+                return f"approval {state}; {refusal(d, hint)}", d, args
         # every call, allowed or approved: approval_consume is the signer's last word before it runs
         try:
             c = await self._rpc("approval_consume", tool_call_id=call_id, tool=tool, args_source="parsed", args=args,
@@ -90,7 +89,7 @@ class HeldCalls:
         except (RPCError, SignerUnavailable) as e:
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if not c["ok"]:
-            return named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), d, args
+            return refusal(c), d, args
         return None, d, c.get("args", args)
 
     async def _abandon(self, approval_id, reason):

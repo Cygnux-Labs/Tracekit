@@ -877,7 +877,8 @@ class Bounded(unittest.TestCase):
         out = findings_v2.analyze(recs, content, budget_s=-1)
         self.assertEqual(out["findings"], [])
         checks = out["coverage"]["verdict"]["checks"]
-        per_call = [r for r in findings_v2.CHECKS if r not in ("TK-X206", "TK-X207", "TK-X208")]   # no results here
+        # no results here for TK-X206..X208, and no box for TK-X212
+        per_call = [r for r in findings_v2.CHECKS if r not in ("TK-X206", "TK-X207", "TK-X208", "TK-X212")]
         self.assertEqual({r: checks[r]["not_checkable"] for r in per_call},
                          dict.fromkeys(per_call, [{"reason": "budget", "n": 50}]))
         self.assertEqual(checks["TK-X208"]["not_checkable"], [{"reason": "budget", "n": 1}])
