@@ -69,7 +69,7 @@ The socket accepts `status`, `append`, `checkpoint` (adds a checkpoint, nothing 
 4. on `run.start`, replaces `os_user` with the caller's user from `SO_PEERCRED` and sets `os_user_attested: true`;
 5. checks the per-run, per-stream client counter and writes `capture.gap` on a jump, a regression, events before `run.start` or after `run.end`;
 6. stores any attached policy under its hash, after checking it matches the hash the event claims (`run.start.policy.hash`, or `policy.decision.policy_hash` when the policy changed mid-run); a decision naming a policy that was never recorded gets a `capture.gap` (`policy_unrecorded`);
-7. compares the attached transcript mark with the previous one and writes `trace.tamper` on deletion, truncation or edits;
+7. compares the attached transcript mark with the previous one and writes `trace.tamper` on deletion, truncation or edits; the marks are compared in the order their reads finished (the hook's `read_at`), so parallel hooks that report out of order are not a truncation;
 8. appends under an exclusive lock, fsyncs, and checkpoints every N records and at `run.end`.
 
 **It cannot tell a real event from a well-formed fake.** Anything that can write to the socket as the agent's user can submit plausible events and they will be signed. Ordering, counters and schema checks catch sloppy forgeries; independent capture paths (proxy vs hook cross-check) are what catch careful ones.

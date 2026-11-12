@@ -180,8 +180,11 @@ def save_ack(path, length):
 
 
 def transcript_mark(path):
-    """{path, length, hash, prefix_length, prefix_hash} for the transcript as it is now.
+    """{path, length, hash, prefix_length, prefix_hash, read_at} for the transcript as it is now.
     prefix_* covers the first N bytes, where N is the length the signer last acknowledged.
+    read_at is the moment the read hit EOF: the signer orders marks by when they were read, not by when they
+    arrive, so a hook that read the file before another one did is not taken for a truncation when it reports
+    later (parallel hooks of one session).
     The file is streamed once, so a multi-hundred-MB transcript costs time, not memory."""
     ack = _load_acks().get(path)
     if not isinstance(ack, int) or isinstance(ack, bool) or ack < 0:
@@ -190,7 +193,7 @@ def transcript_mark(path):
         f = open(path, "rb")
     except FileNotFoundError:
         return {"path": path, "length": 0, "hash": "sha256:" + hashlib.sha256(b"").hexdigest(), "missing": True,
-                "prefix_length": ack, "prefix_hash": None}
+                "prefix_length": ack, "prefix_hash": None, "read_at": time.time()}
     except OSError:
         return None
     full, prefix, total, prefix_hash = hashlib.sha256(), hashlib.sha256(), 0, None
@@ -211,7 +214,7 @@ def transcript_mark(path):
     if ack is not None and prefix_hash is None:  # the file is shorter than what was acknowledged
         prefix_hash = "sha256:" + prefix.hexdigest()
     return {"path": path, "length": total, "hash": "sha256:" + full.hexdigest(), "prefix_length": ack,
-            "prefix_hash": prefix_hash}
+            "prefix_hash": prefix_hash, "read_at": time.time()}
 
 
 # ---------- C8: approvals ----------

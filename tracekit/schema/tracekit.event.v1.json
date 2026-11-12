@@ -137,6 +137,10 @@
           ],
           "description": "Hash of the first prefix_length bytes as read now."
         },
+        "read_at": {
+          "type": "number",
+          "description": "When this read hit EOF (epoch seconds). The signer orders marks by it, so a hook that read the transcript before another one did is not recorded as a truncation when it reports later."
+        },
         "missing": {
           "type": "boolean"
         }
