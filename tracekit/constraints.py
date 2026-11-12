@@ -246,7 +246,8 @@ INSTALLERS = frozenset(("pip", "pip3", "npm", "yarn", "pnpm", "cargo", "gem", "g
 INSTALL = frozenset(("install", "i", "add", "get"))
 GIT_WRITES = frozenset(("commit", "push", "reset", "checkout", "merge", "rebase", "apply", "am", "rm", "mv", "restore",
                         "clean", "stash", "switch", "cherry-pick", "revert"))
-NET_TOOLS = frozenset(("WebFetch", "WebSearch", "web_fetch", "web_search"))
+# tools that reach the network; CodeBuddy Code's LibraryUpload sends a file there
+NET_TOOLS = frozenset(("WebFetch", "WebSearch", "web_fetch", "web_search", "LibraryUpload"))
 READ_TOOLS = frozenset(("Read", "Grep", "Glob", "LS", "read_file", "list_files", "list_directory"))
 
 
