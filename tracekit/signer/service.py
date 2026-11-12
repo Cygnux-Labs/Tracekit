@@ -543,8 +543,8 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
             rest = tool[5:]
             mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
             d = _stricter(d, policy.decide(tool, args, "unknown", untrusted))
-        elif tool == "PowerShell":
-            # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
+        elif tool.casefold() == "powershell":
+            # Claude Code's PowerShell tool (in any case) is an unknown tool (held on the server packs), and is also read as a
             # shell line, which counts only where a deny or ask rule of the pack matches it: PowerShell's own
             # syntax, which bash can't read, isn't held for that alone (TK-SHELL-PARSE is no pack rule)
             b = policy.decide("Bash", args, untrusted=untrusted)

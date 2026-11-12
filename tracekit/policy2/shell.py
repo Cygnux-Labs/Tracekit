@@ -1773,6 +1773,23 @@ def _takes(a, opts, flags):
     return (1, 2)
 
 
+def _gh_order(args):
+    """The order of gh's words as cobra reads them, as indexes into `args`: gh takes its options anywhere, so options
+    before its command (`gh -X PUT api …`, `gh -R o/r pr merge 1`) are read after the words that name it and its
+    first arguments (`gh api … -X PUT`, `gh pr merge 1 -R o/r`). Before it, cobra reads an option with no `=` (but
+    --help and --version) as taking the next word."""
+    i, lead = 0, []
+    while i < len(args) and args[i].startswith("-") and args[i] != "--":
+        takes = "=" not in args[i] and args[i] not in ("-h", "--help", "--version") and (
+            args[i].startswith("--") or len(args[i]) == 2)
+        lead += [i, i + 1][:1 + takes]
+        i += 1 + takes
+    if i >= len(args) or args[i] == "--":
+        return list(range(len(args)))
+    j = next((k for k in range(i, len(args)) if args[k].startswith("-")), len(args))
+    return list(range(i, j)) + [k for k in lead if k < len(args)] + list(range(j, len(args)))
+
+
 def _unwrap(name, args):
     """What a wrapper, or a runner's subcommand (args[0]: `uv run`), may run: each command, one at a time, the reading
     as flags first. An option neither its table nor WRAPPER_FLAGS names may take a value (`strace --user bob cmd`), so
@@ -2253,6 +2270,7 @@ class _Parser:
         # what follows it. Each known one maps to the literals it may hold ([]: not known; IFS: bash's default, which
         # no assignment gives back)
         self.known, self.blocks = {"PWD": [], "IFS": []}, []
+        self.opened = []   # per block, where in ctx["cmds"] its commands start
         self.list_start = self.closed = 0   # list(): the and-or list being read, a block's opening a pipeline closed
         self.called = False   # simple(): the command calls a function (_Parser.call)
         self.said = {}   # (pipeline, stage) -> the text that stage prints, when the line gives it (simple)
@@ -2437,13 +2455,24 @@ class _Parser:
     def leave(self):
         self.ctx["depth"] -= 1
 
+    def open_block(self, block):
+        self.blocks.append(block)
+        self.opened.append(len(self.ctx["cmds"]))
+
     def close_block(self):
         """The innermost block ends: what it made known is forgotten, and where its and-or list began goes back to
-        list() (a block sent to the background runs from its opening)."""
+        list() (a block sent to the background runs from its opening). -> where in ctx["cmds"] its commands start."""
         _, names, opened = self.blocks.pop()
         for name in names:
             self.known.pop(name, None)
         self.closed = min(self.closed, opened)
+        return self.opened.pop()
+
+    def reach(self, start, pid, stage):
+        """The commands from ctx["cmds"][start] on print into the pipeline stage (pid, stage) (`reaches`): a block's
+        or subshell's that stage is, or a substitution's in a word of it."""
+        for c in self.ctx["cmds"][start:]:
+            c.setdefault("reaches", []).append((pid, stage))
 
     def nested(self, text, via, args=()):
         # a new shell sets $PWD and IFS; a trap runs later, where $IFS still splits as it does here; a script given
@@ -2575,7 +2604,7 @@ class _Parser:
         self.gap()
         if (self.word() or (None, None))[1] != "in":
             raise ParseError("case without in")
-        self.blocks.append(("case", [], self.list_start))
+        self.open_block(("case", [], self.list_start))
         while True:
             self.gap()
             if _ESAC.match(self.s, self.i):
@@ -2594,8 +2623,9 @@ class _Parser:
                     break
             self.list("esac")
             self.i += next((len(op) for op in (";;&", ";;", ";&") if self.at(op)), 0)
-        self.close_block()
+        start = self.close_block()
         self.leave()
+        return start
 
     def define(self, name, at):
         """A function definition: `name() BODY` or `function name [()] BODY`, BODY a { } or ( ) group, read to its end
@@ -2897,15 +2927,15 @@ class _Parser:
                 if text in ("while", "until"):   # its condition and body run again after the body's later commands
                     self.known = self.stable()
                 if text in ("if", "while", "until", "{"):
-                    self.blocks.append((text, [], self.list_start))
+                    self.open_block((text, [], self.list_start))
                 elif text in ("fi", "done", "}") and self.blocks and self.blocks[-1][0] != "case":   # case() ends its own
-                    self.close_block()
+                    self.reach(self.close_block(), pid, stage)
                 continue
             if not words and raw == text and text in ("for", "select"):
                 loop_header = text   # the loop words are not run; `do` starts the body
                 continue
             if not words and raw == text and text == "case":
-                self.case()
+                self.reach(self.case(), pid, stage)
                 continue
             if not words and raw == text and text in ("function", "coproc"):
                 raise ParseError(f"{text} is not supported")
@@ -3228,6 +3258,10 @@ class _Parser:
         for c in cmds:
             c["stdin"] += strings
             c["out"], c["in"], c["stage"] = outs, ins, stage
+        own = {id(c) for c in cmds}   # what its substitutions and subshells run prints into it
+        for c in self.ctx["cmds"][first:]:
+            if id(c) not in own:
+                c.setdefault("reaches", []).append((pid, stage))
         if (stdin_redirect or strings or docs) and "exec" in words[:1] + [c["argv"][0] for c in cmds]:
             self.ctx["stdin_moved"] = True   # what reads the shell's stdin after it reads that (_reads_only)
         shell = _stdin_shell(cmds)
@@ -3313,7 +3347,7 @@ class _Parser:
                 self.ctx["joined_values"].add(name)
             for word in (rest[1:] if rest[:1] == ["in"] else [None]) if name in _CODE_VARIABLES else ():
                 self.code_variable(name, word, self.via)   # (None: a word or reply the parser can't read)
-            self.blocks.append((kind, [name], self.list_start))
+            self.open_block((kind, [name], self.list_start))
             return
         # a function's or script's arguments may move or be replaced (set and shift through command or builtin too)
         for a in [words, *(c["argv"] for c in cmds)]:
@@ -3648,6 +3682,11 @@ class _Parser:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
             name, args = _lower_name(argv[0].rsplit("/", 1)[-1] or argv[0]), argv[1:]
+            if name == "gh" and args[:1] and args[0].startswith("-"):   # options before its command, as cobra reads them
+                order = _gh_order(args)
+                argv, unreadable = [argv[0]] + [args[i] for i in order], [unreadable[0]] + [unreadable[i + 1]
+                                                                                           for i in order]
+                args = argv[1:]
             if _function_variable(argv[0]):   # a word bash can't assign, which a program it runs may import, as env's
                 raise ParseError("a function given through the environment is not supported")
             # xargs -I{} inserting its input into a script or a command name: what runs comes from stdin

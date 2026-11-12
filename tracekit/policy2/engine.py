@@ -505,6 +505,8 @@ class Engine:
             return _tracekit(parsed, finds, [0] if work is None else work)
         if cls == "shell" and field == "package_index":
             return _package_indexes(parsed[0], parsed[2])
+        if cls == "shell" and field == "environment":
+            return _environment_sent(parsed)
         if cls == "shell" and field == "harness_launch":
             return _harness_launches(parsed[0], parsed[2], parsed[5] if len(parsed) > 5 else {})
         if cls == "shell" and field == "container_host_access":
@@ -915,6 +917,79 @@ def _harness_launches(commands, refs=(), learned=None):
         why += [f"a word set at run time {w[:40]}" for w in args
                 if run_time.match(w) or run_time.search(w) and not re.search(r"\s", w)]
         out += [f"LAUNCH:{exe} {w}" for w in why]
+    return list(dict.fromkeys(out))
+
+
+# programs that send what they read off the machine (gh: a gist or an API call; aws: s3; openssl: s_client), and
+# those that pass on only a count or a hash of what they read
+_SENDERS = {"curl", "wget", "nc", "ncat", "netcat", "socat", "ssh", "scp", "sftp", "rsync", "telnet", "http", "https",
+            "xh", "xhs", "ftp", "lftp", "sendmail", "mail", "mailx", "mutt", "rclone", "gsutil"}
+_SENDING = {"gh": ("gist", "api"), "aws": ("s3",), "openssl": ("s_client",)}
+_SUMMARIES = {"wc", "md5", "md5sum", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "shasum", "cksum",
+              "b2sum"}
+_ENV_OPTIONS = {"-u": 1, "--unset": 1, "-C": 1, "--chdir": 1, "-P": 1, "-a": 1, "--argv0": 1}
+_ENVIRON_FILE = re.compile(r"/proc/[^/\s]+/environ\b")
+_DUMPERS = {"env", "printenv", "export", "declare", "typeset", "set"}
+
+
+def _environment_dump(command):
+    """Whether a command prints the whole environment: env or printenv with no command or name, export, set, declare
+    or typeset with no name (but declare -f's functions), or a read of a process's environ file."""
+    argv = command["argv"]
+    prog, args = _program(argv), argv[1:]
+    if any("environ" in w for w in args + list(command.get("in", ()))) and \
+            _ENVIRON_FILE.search(" ".join(args + list(command.get("in", ())))):
+        return True
+    if prog == "env":
+        i = 0
+        while i < len(args) and (args[i].startswith("-") or "=" in args[i]):
+            if args[i] in ("-S", "--split-string") or args[i].startswith("--split-string="):
+                return False   # it runs a command
+            i += 1 + _ENV_OPTIONS.get(args[i], 0)
+        return i >= len(args)
+    if prog == "printenv":
+        return all(a.startswith("-") for a in args)
+    if prog in ("export", "declare", "typeset"):
+        return all(a.startswith("-") for a in args) and not any(re.fullmatch(r"-[a-zA-Z]*[fF][a-zA-Z]*", a) for a in args)
+    return prog == "set" and not args
+
+
+def _sends(command):
+    prog, argv = _program(command["argv"]), command["argv"]
+    return prog in _SENDERS or prog in _SENDING and any(a in _SENDING[prog] for a in argv[1:3])
+
+
+def _environment_sent(parsed):
+    """`SENT:<printer> <sender>` for each command that prints the whole environment (_environment_dump) into one that
+    sends it off the machine (_sends): a later stage of its pipeline, or that sender's own words or herestring (a
+    substitution, process substitution, block or subshell whose output reaches it: the parse's `reaches`), unless a
+    stage on the way only counts or hashes it (wc, sha256sum); and a sender that reads a process's environ file
+    itself (`curl -d @/proc/self/environ`). parsed: shell.analyse's."""
+    commands = parsed[0]
+    if not any(_program(c["argv"]) in _DUMPERS for c in commands) and not any("environ" in t for t in parsed[1]):
+        return []
+    dumps = [c for c in commands if _environment_dump(c)]
+    senders = [c for c in commands if dumps and _sends(c)]
+    out = [f"SENT:environ {_program(s['argv'])}" for s in senders if _environment_dump({"argv": ["", *s["argv"][1:]],
+                                                                                          "in": s.get("in", ())})]
+    stages, sending = {}, {}   # per pipeline: the stages that only count or hash, and its senders
+    for c in commands:
+        if _program(c["argv"]) in _SUMMARIES:
+            stages.setdefault(c.get("pipeline"), []).append(c.get("stage", 0))
+    for s in senders:
+        sending.setdefault(s.get("pipeline"), []).append(s)
+
+    def summarised(pipeline, after, before):
+        return any(after < k < before for k in stages.get(pipeline, ()))
+    for d in dumps:
+        own = d.get("pipeline"), d.get("stage", 0)
+        # a printer inside a substitution or block prints out of it from its own pipeline's last stage
+        spots = [own] + [spot for spot in dict.fromkeys(d.get("reaches", ())) if not summarised(*own, float("inf"))]
+        for p, stage in spots:
+            for s in sending.get(p, ()):
+                at = s.get("stage", 0)
+                if (stage < at or (p, stage) != own and stage == at) and not summarised(p, stage, at):
+                    out.append(f"SENT:{_program(d['argv'])} {_program(s['argv'])}")
     return list(dict.fromkeys(out))
 
 
@@ -1353,7 +1428,8 @@ def _gh_api(argv, replaced=None):
 def _pushes(commands):
     """Each command's argv, as the `argv` field reads it, but a git push as what makes it need a person (_git_push):
     one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master; a gh or hub
-    api call also percent-decoded (_gh_api); a kubectl dry run (_kubectl_dry_run) as `DRYRUN:<argv>`."""
+    api call also percent-decoded (_gh_api), and GitHub's REST API through curl, wget, HTTPie or xh as gh api's is
+    read (_github_rest); a kubectl dry run (_kubectl_dry_run) or a publish's (_publish_dry_run) as `DRYRUN:<argv>`."""
     out, replaced = [], None
     for command in commands:
         argv = command["argv"]
@@ -1363,12 +1439,89 @@ def _pushes(commands):
         elif not {"xargs", "gxargs"} & set(command.get("via", ())):
             replaced = None   # (the word was that xargs' only)
         push = _git_push(argv)
-        out += push if push is not None else ["DRYRUN:" * _kubectl_dry_run(argv) + " ".join(argv)]
+        out += push if push is not None else [
+            "DRYRUN:" * (_kubectl_dry_run(argv) or _publish_dry_run(argv)) + " ".join(argv)]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
             given = replaced if {"xargs", "gxargs"} & set(command.get("via", ())) else None
             out += [s for s in _gh_api(argv, given) if s not in out]
+        out += [s for s in _github_rest(argv) if s not in out]
         runner = {v.split(" ", 1)[0] for v in command.get("via", ())} & {"xargs", "gxargs", "parallel", "find", "fd"}
         out += [s for s in _gh_repo_sync(argv, bool(runner)) if s not in out]
+    return out
+
+
+_REST_CLIENTS = {"curl", "wget", "http", "https", "xh", "xhs"}
+_GITHUB_API = re.compile(r"(?:^|[/@])api\.github\.com(?:[:/]|$)|/api/v3(?:/|$)", re.I)
+_HTTP_METHODS = {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+_CURL_DATA = re.compile(r"-d|--data(?:-\w+)?|-F|--form(?:-string)?|--json")
+
+
+def _github_rest(argv):
+    """`PUSH:<why> <method>` for a write to GitHub's REST API (api.github.com, or GHES's /api/v3/) through curl, wget,
+    HTTPie or xh, as _gh_api reads gh api's: main's or master's ref (git/refs/heads/main), a file put or deleted
+    (contents/, unless a literal branch in the body names another), a merge (merges, merge-upstream), or a write
+    whose route the line can't tell. The method is curl's -X or --request (POST with data or a form, PUT with -T),
+    wget's --method (POST with --post-data or --post-file), HTTPie's and xh's first word when it is one (POST with
+    request items); one the line can't resolve counts as a write."""
+    prog = _program(argv)
+    if prog not in _REST_CLIENTS:
+        return []
+    args = [unquote(a) for a in argv[1:]]
+    urls = [a.removeprefix("--url=") for a in args if _GITHUB_API.search(a)]
+    if not urls:
+        return []
+    method, body = "", []
+    for a, after in zip(args, args[1:] + [""]):
+        if prog == "curl":
+            if a in ("-X", "--request"):
+                method = after
+            elif a.startswith("--request="):
+                method = a.partition("=")[2]
+            elif a.startswith("-X") and len(a) > 2:
+                method = a[2:]
+            elif _CURL_DATA.fullmatch(a.partition("=")[0]):
+                body.append(a.partition("=")[2] if "=" in a and a.startswith("--") else after)
+            elif a in ("-T", "--upload-file"):
+                body.append("@" + after)
+        elif prog == "wget":
+            if a.startswith("--method"):
+                method = a.partition("=")[2] or after
+            elif a.startswith(("--post-data", "--post-file", "--body-data", "--body-file")):
+                body.append(("@" if "file" in a else "") + (a.partition("=")[2] or after))
+    if prog == "curl" and not method:
+        method = "PUT" if any(a in ("-T", "--upload-file") for a in args) else "POST" if body else \
+            "HEAD" if any(a in ("-I", "--head") for a in args) else "GET"
+    elif prog == "wget" and not method:
+        method = "POST" if body else "GET"
+    elif prog not in ("curl", "wget"):
+        words = [a for a in args if not a.startswith("-")]
+        method = words[0] if words and words[0].upper() in _HTTP_METHODS else ""
+        body = [w for w in words[1 + bool(method):] if re.search(r":?=|@", w) and not _GITHUB_API.search(w)]
+        method = method or ("POST" if body else "GET")
+    unread_method = not method or "$" in method or "`" in method
+    write = unread_method or method.upper() not in ("GET", "HEAD", "OPTIONS")
+    if not write:
+        return []
+    put, delete = (unread_method or method.upper() == m for m in ("PUT", "DELETE"))
+    text = " ".join(body)
+    branch = re.findall(r'"branch"\s*:\s*"([^"]*)"|\bbranch:?=([^\s&]*)', text)
+    branch = next((a or b for a, b in reversed(branch)), "").removeprefix("refs/").removeprefix("heads/")
+    named = bool(branch) and "@" not in text and not re.search(r"[$`]", text + branch) and \
+        branch.casefold() not in ("main", "master", "head")
+    out = []
+    for url in urls:
+        routes, unknown, _ = _gh_routes(url, strict=False)
+        path = _gh_mask(url)
+        if re.search(r"/git/refs/heads/(?:main|master)(?:[/?#]|$)", path, re.I):
+            out.append(f"PUSH:ref {method[:64]}")
+        elif unknown:
+            out.append(f"PUSH:unknown {url[:64]}")
+        elif "merges" in routes:
+            out.append(f"PUSH:merges {method[:64]}")
+        elif "merge-upstream" in routes and not named:
+            out.append(f"PUSH:merge-upstream {branch[:64]}")
+        elif (put or delete) and "contents" in routes and not named:
+            out.append(f"PUSH:contents {method[:64]}")
     return out
 
 
@@ -1417,6 +1570,34 @@ def _kubectl_dry_run(argv):
                 return False
             last = word
     return last in ("--dry-run", "--dry-run=client", "--dry-run=server")
+
+
+# the package publishers whose publish takes --dry-run, and the flags of theirs that take no value (so a --dry-run
+# after one is no option's value)
+_PUBLISHERS = {"npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry"}
+_PUBLISH_FLAGS = {"--provenance", "--workspaces", "--ws", "--include-workspace-root", "--ignore-scripts", "--json",
+                  "--force", "-f", "--quiet", "-q", "--silent", "--verbose", "-v", "--no-git-checks", "--recursive",
+                  "-r", "--build", "--allow-dirty", "--no-verify", "--locked", "--frozen", "--offline"}
+
+
+def _publish_dry_run(argv):
+    """Whether a package publish is a dry run, which publishes nothing (npm, pnpm, yarn or bun publish, yarn's `npm
+    publish`, cargo, uv or poetry publish): its last --dry-run (bare or =true; not =false, nor --no-dry-run after it)
+    comes before a bare `--`, after no option that may take it as its value, and no word before holds an expansion
+    the line can't resolve."""
+    if _program(argv) not in _PUBLISHERS or "publish" not in argv[1:4]:
+        return False
+    last = None
+    for prev, word in zip(argv, argv[1:]):
+        if word == "--":
+            break
+        if "$" in word or "`" in word:
+            return False
+        if word in ("--dry-run", "--no-dry-run") or word.startswith("--dry-run="):
+            if prev.startswith("-") and "=" not in prev and prev not in _PUBLISH_FLAGS and prev != "--dry-run":
+                return False
+            last = word
+    return last in ("--dry-run", "--dry-run=true")
 
 
 # kubectl's options that take no word after them: its boolean flags, and those with a value they take only after `=`

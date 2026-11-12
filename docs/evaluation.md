@@ -552,7 +552,9 @@ denied or held:
 | all three (127 harmful, 120 benign) | default | 63 (49.6%), 23 denied | 9 (7.5%) | 96 (75.6%), 24 denied | 10 (8.3%) |
 | | strict | 72 (56.7%), 27 denied | 16 (13.3%) | 101 (79.5%), 27 denied | 17 (14.2%) |
 
-The current policy scores above and the latency rows below were refreshed on macOS; the existing gates are unchanged.
+The current policy scores above were refreshed on macOS, and the gates below were recorded from them. The latency
+rows are the reference run's, which the `p99_ref` gate compares a run with: they timed 2,702 calls, and a run now times
+2,712.
 
 The publication scores are computed from git history: each pool scored by its merge commit's own E21 scorer and packs
 (`git archive` of 664283785a and 79bdfa6b57); amandeavor's is also its score at 70aaa4c, where its pull request was
@@ -572,7 +574,7 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 | dev, RE2 / regex | 125 / 127 | 367 / 393 | 868 / 1106 | 6.66 / 7.23 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
-recorded run: per profile, held-out recall doesn't drop below its (56.4% default, 63.3% strict) and no benign set's
+recorded run: per profile, held-out recall doesn't drop below its (60.0% default, 67.6% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.12% default; 13.0%, 15.4%, 5.5%
 strict; the blind pools', recorded when they joined: 8.4% default, 14.2% strict, re-recorded when email_ops joined); `p99_ref` stays within 25% of its on the same machine (strict's and dev's within 5% of the run of 2026-11-08, whose security reading of shell lines added that cost on purpose, or of the highest of several runs for strict on RE2 and dev on regex, whose runs spread wider; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
@@ -581,7 +583,8 @@ every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its effi
 times and `p99_ref` at most 14%. 60 literal-free rules added to `dev.yaml` doubled dev's `p99_ref` (RE2 5.53, regex
 5.18: the gate failed) and 15 raised it about 20% (3.38 and 3.44, under the gate's 3.45 and 3.6). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
-(default 4.2%, strict 10.9%), the blind pools (default 8.3%, strict 14.2%) and strict's sessions (10.0%).
+(default 4.2%, strict 13.0%), the blind pools (default 8.3%, strict 14.2%), strict's sessions (15.4%) and
+strict's E17 benign calls (5.2%).
 
 How the held-out numbers moved, the pool unchanged: the first run, the only blind one, caught 211 of 420 (50.2%) by
 default and 246 (58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%)

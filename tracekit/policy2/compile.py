@@ -104,7 +104,7 @@ BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
 MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line", "code", "effects", "package_index", "container_host_access",
-                     "tracekit", "push", "harness_launch"},
+                     "tracekit", "push", "harness_launch", "environment"},
            "fs": {"path", "op", "content_digest"},
            "http": {"method", "url", "host", "internal", "sends_to", "link"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
@@ -405,8 +405,8 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
-    if pol.get("oversize", "ask") != "ask":   # (left out, TK-OVERSIZE takes its rule's section)
-        errors.append(f"{path}: oversize must be ask")
+    if pol.get("oversize", "deny") not in ("ask", "deny"):   # (deny, or left out: TK-OVERSIZE takes its rule's section)
+        errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):

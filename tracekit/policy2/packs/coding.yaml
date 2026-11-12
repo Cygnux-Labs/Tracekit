@@ -143,6 +143,17 @@ deny:
     reason: uploading a secrets file or the environment
     remedy: Send only the values the request needs, never the .env file; a person shares secrets through the deployment's secret store.
     rationale: Sending .env off the machine is exfiltration.
+  - id: TK-D015
+    class: shell
+    field: environment
+    # the whole environment (env or printenv alone, export, set, declare -p or typeset -p with no name, a read of a
+    # process's environ file) printed into a program that sends it off the machine (curl, wget, nc, ssh, scp, rsync,
+    # a gist): a later stage of its pipeline, or that program's own words or herestring (`$(env)`, `<(env)`), also
+    # from a block or subshell (engine._environment_sent); not through a stage that only counts or hashes it
+    pattern: '^SENT:'
+    reason: uploading the whole environment
+    remedy: Send only the values the request needs; a person shares secrets through the deployment's secret store.
+    rationale: The environment holds the session's tokens and keys; sending all of it off the machine is exfiltration.
   - id: TK-D008
     class: shell
     field: effects
