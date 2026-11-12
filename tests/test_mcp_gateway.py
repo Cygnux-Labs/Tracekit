@@ -404,8 +404,9 @@ class McpGateway(unittest.TestCase):
         self._swap_upstream(LowServer("bad", on_list_resources=on_list_resources))
         with self.assertRaises(Exception) as e:
             self.agent(lambda c: c.list_resources())
-        self.assertIn("upstream error: RuntimeError: upstream failed on page 2",
-                      messages(e.exception))
+        # the gateway's own error; what follows it depends on the mcp version (newer servers report a generic
+        # "Internal server error" instead of the upstream's RuntimeError)
+        self.assertIn("upstream error:", messages(e.exception))
         self.assertNotIn("note://r1", self.srv.mcp["resources"])
 
 
