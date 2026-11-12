@@ -42,9 +42,8 @@ denied and held calls (--all for every call):
   `opencode`, ...). With `--calls`, each call is decided as that agent's Tracekit hook would decide it: a call the hook
   denies before it maps it (Kilo's `notebook_execute`, goose's Code Mode, Crush's `agent` and `agentic_fetch`, a Devin
   call missing the argument it is decided on) is a deny by `TK-HOOK-BLOCKED`; the others are mapped as the hook maps
-  them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep), or
-  whose shell command is no text once mapped (a Codex argv with an item that isn't a string), counts as malformed.
-  Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
+  them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
+  as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
   `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT. An agent with no reader (every agent but
   `claude`) needs `--calls FILE`, and `--agent claude` a ROOT or `--calls FILE`: without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
@@ -104,7 +103,9 @@ jq -c '{time: .ts, tool: .tool, args: .input}' agent.log | tracekit audit --call
 - After the disclaimer and the policy, the `read:` line: each agent read, with its folder, calls and sessions.
 - Then how many calls in how many sessions, and how many Tracekit would have denied, held, flagged and allowed.
 - Counts per verdict (`deny`, `ask` / held, `flag`, `allow`). A call the policy engine fails on counts as a deny
-  (`TK-ENGINE-ERROR`), as the signer would decide it.
+  (`TK-ENGINE-ERROR`), as the signer would decide it. A shell command that is neither text nor an argv of strings
+  (an argv with an item that isn't a string, say), with any `--agent` or none, is held (`TK-SHELL-PARSE`), as the
+  signer holds it.
 - Counts per rule id, most first, each with what the rule is (its `reason` or `label`, or the viewer's words for the
   engine's own rules).
 - The session and timestamp of each denied or held call (every call with `--all`), and its redacted text with

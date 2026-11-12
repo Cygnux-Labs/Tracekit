@@ -76,9 +76,9 @@ def _not_regular(path: str) -> str | None:
         mode = os.stat(path).st_mode
     except OSError:   # missing (the open's own error says so), or a symlink to nothing
         return "a symlink, which audit doesn't follow" if os.path.islink(path) else None
-    return ("a directory" if stat.S_ISDIR(mode) else "a pipe (as <(...) gives); send it to --calls -"
-            if stat.S_ISFIFO(mode) else "a symlink, which audit doesn't follow" if os.path.islink(path)
-            else "not a regular file")
+    return ("a pipe (as <(...) gives); send it to --calls -" if stat.S_ISFIFO(mode) else
+            "a symlink, which audit doesn't follow" if os.path.islink(path) else
+            "a directory" if stat.S_ISDIR(mode) else "not a regular file")
 
 
 def _iter_transcripts(root: str, unreadable: list):
@@ -154,6 +154,12 @@ READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set,
                       _claude_code)}
 
 
+def _agent(name: str | None) -> str | None:
+    """An agent's name as init --agent takes it: claude-code is the name Claude Code's reader had before it took
+    init's (claude)."""
+    return "claude" if name == "claude-code" else name
+
+
 def _no_reader(agent: str) -> str:
     """What to do with an agent's sessions when no reader reads them: a ROOT can't help."""
     return f"no reader for {agent}'s sessions yet; turn them into a calls file and use --calls FILE --agent {agent}"
@@ -200,6 +206,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         raise ValueError(f"--since {since[:40]!r} is not in the past")
     engine = load_policy(policy_path or DEFAULT_POLICY)
     unreadable: list[dict] = []
+    agent = _agent(agent)
     hook = agent if calls is not None and agent in AGENT_NAMES else None   # map a calls file's names as its hook does
     if calls is not None:
         if calls == "-":
@@ -247,11 +254,8 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 except RecursionError:   # nested past what the mapping takes, as json.loads counts such a line
                     skipped_malformed += 1
                     continue
-                if not blocked and tool == "Bash" and not isinstance(args.get("command"), (str, type(None))):
-                    skipped_malformed += 1   # a shell command no agent sends, as text or an argv of strings (Codex's)
-                    continue
             try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its bare name,
-                # PowerShell also as a shell line
+                # PowerShell also as a shell line; a shell command its parser can't read is held (TK-SHELL-PARSE)
                 decision = {"verdict": "deny", "rule_ids": ["TK-HOOK-BLOCKED"]} if blocked else \
                     evaluate(engine, tool, args)[0]
             except RecursionError:   # nesting the signer refuses (it denies an engine error itself)
@@ -391,10 +395,9 @@ def main(argv=None):
                                                                           READERS.items()) + ")")
     ap.add_argument("--calls", metavar="FILE", help="read the calls from FILE (- for stdin) instead: one JSON object "
                     'a line, {"tool": ..., "args": {...}}, with "time" and "session" if known')
-    # claude-code: the name the reader had before it took init's (claude)
-    ap.add_argument("--agent", type=lambda n: "claude" if n == "claude-code" else n,
-                    choices=sorted({*READERS, *AGENT_NAMES}), help="with --calls, map each call's tool names as that "
-                    "agent's hook does (its name as init --agent takes it); with ROOT, read it with that agent's reader")
+    ap.add_argument("--agent", type=_agent, choices=sorted({*READERS, *AGENT_NAMES}), help="with --calls, map each "
+                    "call's tool names as that agent's hook does (its name as init --agent takes it); with ROOT, read "
+                    "it with that agent's reader")
     ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
     ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
     ap.add_argument("--show", action="store_true", help="also print each call, with secrets redacted")

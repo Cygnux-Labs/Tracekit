@@ -40,6 +40,17 @@ class VersionSourceTest(unittest.TestCase):
         self.assertEqual(re.findall(r"\bVersion (\S+?);", readme), [__version__])
         self.assertEqual(re.findall(r"uses: Cygnux-Labs/Tracekit@v([^\s`]+)", readme), [__version__])
 
+    def test_hermes_plugin_takes_this_version(self):
+        """The Hermes plugin's tracekit-ai bound admits this version: a release raises it by hand (docs/RELEASING.md),
+        else the plugin refuses to install beside the release."""
+        from tracekit import __version__
+        with open(os.path.join(ROOT, "integrations", "hermes", "plugin.yaml"), encoding="utf-8") as f:
+            (low, high), = re.findall(r'"tracekit-ai>=([\d.]+),<([\d.]+)"', f.read())
+
+        def release(v):   # 1.7.0rc1 -> (1, 7, 0)
+            return tuple(int(n) for n in re.match(r"\d+(\.\d+)*", v).group().split("."))
+        self.assertTrue(release(low) <= release(__version__) < release(high), (__version__, low, high))
+
     def test_semver_mapping(self):
         self.assertEqual(_semver("0.2.0rc1"), "0.2.0-rc.1")
         self.assertEqual(_semver("1.0.0a2"), "1.0.0-alpha.2")

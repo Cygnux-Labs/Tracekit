@@ -401,24 +401,34 @@ class TestAudit(unittest.TestCase):
             cli.main(["audit", "--help"])
         self.assertRegex(out.getvalue(), r"--agent \{[a-z,]*\bclaude\b")   # one name in the help: init's
         self.assertNotIn("claude-code", out.getvalue())
+        # audit() itself takes the old name too (the PR #754 review): it read no ROOT, and a calls file's agent kept it
+        self.assertEqual(audit.audit(str(self.root), agent="claude-code")["agents"],
+                         {"claude": {"folder": str(self.root), "calls": 1, "sessions": 1}})
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "ls"})])
+        report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="claude-code")
+        self.assertEqual((list(report["agents"]), [c["agent"] for c in report["calls"]]), (["claude"], ["claude"]))
 
-    def test_a_shell_command_no_agent_sends_is_malformed(self):
-        """The 1.7.0 review: --agent codex crashed (TypeError) on an argv with an item that isn't a string. Such a
-        line counts as malformed, as a line the mapping can't take does; so does a shell command that is no text for
-        the agents whose shell tools take text."""
-        argvs = [["ls", 1], ["ls", None], ["ls", ["-la"]], [["ls"]], ["ls", 10 ** 30], ["bash", "-lc", 1]]
-        _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"command": a}) for a in argvs]
-                     + [_line("shell", {"command": ["bash", "-lc", "ls -la"]})])
-        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "codex", "--json")
-        self.assertEqual(code, 0, err)
-        report = json.loads(out)
-        self.assertEqual((report["skipped_malformed"], [c["tool"] for c in report["calls"]]), (len(argvs), ["Bash"]))
-        for agent, tool in (("gemini", "run_shell_command"), ("opencode", "bash"), ("goose", "shell")):
-            with self.subTest(agent=agent):
-                _write_jsonl(self.root / "calls.jsonl", [_line(tool, {"command": 1}), _line(tool, {"command": {}}),
-                                                         _line(tool, {"command": "ls"})])
-                report = audit.audit(calls=str(self.root / "calls.jsonl"), agent=agent)
-                self.assertEqual((report["skipped_malformed"], len(report["calls"])), (2, 1))
+    def test_a_shell_command_no_agent_sends_is_held_as_the_signer_holds_it(self):
+        """The 1.7.0 review: --agent codex crashed (TypeError) on an argv with an item that isn't a string; then such a
+        line was skipped as malformed with --agent and held without it. The signer holds a shell command its parser
+        can't read (TK-SHELL-PARSE), whichever agent sent it: so does audit, with any --agent or none."""
+        bad = [["ls", 1], ["ls", None], ["ls", ["-la"]], [["ls"]], ["ls", 10 ** 30], ["bash", "-lc", 1], 1, {}]
+        for agent, tool in ((None, "Bash"), ("claude", "Bash"), ("codex", "shell"), ("codex", "Bash"),
+                            ("gemini", "run_shell_command"), ("opencode", "bash"), ("goose", "shell")):
+            with self.subTest(agent=agent, tool=tool):
+                _write_jsonl(self.root / "calls.jsonl", [_line(tool, {"command": c}) for c in bad]
+                             + [_line(tool, {"command": "ls -la"})])
+                code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--json", "--show",
+                                      *(["--agent", agent] if agent else []))
+                self.assertEqual(code, 0, err)
+                report = json.loads(out)
+                self.assertEqual(report["skipped_malformed"], 0)
+                self.assertEqual([(c["tool"], c["verdict"], "TK-SHELL-PARSE" in c["rule_ids"])
+                                  for c in report["calls"]],
+                                 [("Bash", "ask", True)] * len(bad) + [("Bash", "allow", False)])
+        _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"command": ["bash", "-lc", "ls -la"]})])   # Codex's
+        report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="codex")
+        self.assertEqual([(c["tool"], c["verdict"]) for c in report["calls"]], [("Bash", "allow")])
 
     def test_kilo_generate_image_without_a_path_is_decided(self):
         """The 1.7.0 review's fuzzing: --agent kilo crashed (KeyError) on a generate_image with an image and no path;
@@ -479,6 +489,8 @@ class TestAudit(unittest.TestCase):
         try:
             (self.root / "link.jsonl").symlink_to(self.root / "missing.jsonl")
             cases.append((str(self.root / "link.jsonl"), "link.jsonl is a symlink, which audit doesn't follow"))
+            (self.root / "dir-link").symlink_to(self.root, target_is_directory=True)   # not "a directory" (PR #754)
+            cases.append((str(self.root / "dir-link"), "dir-link is a symlink, which audit doesn't follow"))
         except OSError:   # Windows without the privilege
             pass
         for path, said in cases:
