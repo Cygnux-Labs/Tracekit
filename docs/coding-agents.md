@@ -174,7 +174,7 @@ set, and blocks a call whose hook outlives its timeout). A hook blocks a call wi
 call; a v1 dev hook that can't run lets it run, unrecorded, unless `TRACEKIT_FAIL_CLOSED=1` is set. On Windows
 nothing wraps it, and CodeBuddy runs it under Git Bash, or PowerShell when it finds none. CodeBuddy lets the last
 hook's `permissionDecision` stand, so a PreToolUse hook that runs after Tracekit's and answers `allow` runs a call
-Tracekit denied: `tracekit doctor` names a settings file with one (`D-HOOKS-EVENT`). These formats
+Tracekit denied: `tracekit doctor` names a settings file with one (`D-HOOKS-ORDER`). These formats
 come from CodeBuddy Code 2.183.0's bundled code and the hooks Tencent's LoopForge writes for it; the payloads in
 `tests/data/harness/codebuddy.json` are derived from that code, not recorded in a live session
 ([limits](limits.md#signer-and-capture)).

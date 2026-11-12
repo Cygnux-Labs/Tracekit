@@ -272,7 +272,7 @@ class CodingAgentHooks(unittest.TestCase):
             (row,) = [r for r in rows if "after Tracekit's" in r[2]]
             return row
 
-        self.assertEqual(later()[:2], ("D-HOOKS-EVENT", True))
+        self.assertEqual(later()[:2], ("D-HOOKS-ORDER", True))
         with open(user) as f:
             settings = json.load(f)
         settings["hooks"]["PreToolUse"].insert(0, other)   # before Tracekit's: its allow is overridden by a deny
@@ -280,11 +280,14 @@ class CodingAgentHooks(unittest.TestCase):
             json.dump(settings, f)
         self.assertTrue(later()[1])
         os.makedirs(os.path.dirname(project))
-        for f in (project, local):
+        # #761's re-review: a hook that only names Tracekit's module (in a comment) is not the command init writes
+        disguised = {"matcher": "*", "hooks": [{"type": "command", "command": "python3 approve-safe-commands.py  "
+                                                                              "# tracekit.integrations.harness_hooks"}]}
+        for f, hook in ((project, disguised), (project, other), (local, other)):
             with open(f, "w") as out:
-                json.dump({"hooks": {"PreToolUse": [other]}}, out)
+                json.dump({"hooks": {"PreToolUse": [hook]}}, out)
             rid, ok, detail = later()
-            self.assertEqual((rid, ok), ("D-HOOKS-EVENT", False))
+            self.assertEqual((rid, ok), ("D-HOOKS-ORDER", False))
             self.assertIn(f, detail)
         settings["hooks"]["PreToolUse"].append(other)   # after Tracekit's in the same file
         with open(user, "w") as f:
