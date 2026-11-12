@@ -1125,14 +1125,22 @@ class CodeBuddyTools(unittest.TestCase):
 
     def test_an_upload_is_decided_on_the_file_it_sends(self):
         # #757's review: LibraryUpload sends its file off the machine, so it keeps its name (the packs decide it as an
-        # upload, tests/test_signer_policy.py) and its file is the one under `path`, a file: URI read as the file it
-        # names, never a decoy file_path beside it
-        for path, want in (("/home/u/.ssh/id_rsa", "/home/u/.ssh/id_rsa"), ("file:///w/.env", "/w/.env"),
-                           ("FILE:/w/%2Eenv", "/w/.env"), ("file:///C:/Users/u/a%20b.txt", "/C:/Users/u/a b.txt"),
-                           (None, None)):
+        # upload, tests/test_signer_policy.py) and its file is the one under `path`, never a decoy file_path beside it.
+        # CodeBuddy parses no URL (PathUtils.resolveFilePathToWorkDir): it takes `file://`, else `file:`, off the front
+        # (in that case only), then opens `~/` in the home folder and a relative path in its cwd (`@x` as itself, else
+        # as x), decoding nothing: every form it may open is decided (`paths`), and a decoded one too
+        for path, want, forms in (
+                ("/home/u/.ssh/id_rsa", "/home/u/.ssh/id_rsa", None), ("file:///w/.env", "/w/.env", None),
+                ("file://.env", ".env", None), ("file://.aws/credentials", ".aws/credentials", None),
+                ("file:@.ssh/config", "@.ssh/config", ["@.ssh/config", ".ssh/config"]),
+                ("file:///w/#/../.env", "/w/#/../.env", None), ("file:///w/?/../.env", "/w/?/../.env", None),
+                ("file:/w/%2Eenv", "/w/%2Eenv", ["/w/%2Eenv", "/w/.env"]), ("file:~/.ssh/id_rsa", "~/.ssh/id_rsa", None),
+                ("file:@%2Essh/id_rsa", "@%2Essh/id_rsa", ["@%2Essh/id_rsa", "%2Essh/id_rsa", "@.ssh/id_rsa", ".ssh/id_rsa"]),
+                ("FILE:/w/.env", "FILE:/w/.env", None), (None, None, None)):
             with self.subTest(path=path):
-                tool, args = agent_hooks.tool("codebuddy", "LibraryUpload", {"path": path, "file_path": "/w/a.txt"})
-                self.assertEqual((tool, args["file_path"]), ("LibraryUpload", want))
+                tool, args = agent_hooks.tool("codebuddy", "LibraryUpload", {"path": path, "file_path": "/w/a.txt",
+                                                                             "paths": ["/w/a.txt"]})
+                self.assertEqual((tool, args["file_path"], args.get("paths")), ("LibraryUpload", want, forms))
         self.assertTrue(constraints.facts("LibraryUpload", {"path": "/w/a.txt"}, "fs")["network"])   # no_network holds it
 
     def test_a_deferred_tool_is_decided_as_the_call_it_runs(self):
@@ -1748,6 +1756,15 @@ class Installer(unittest.TestCase):
                 self.assertEqual(agent_hooks.config_path("codebuddy"), want)
                 self.assertEqual(agent_hooks.config_path("codebuddy", d), path)
                 self.assertEqual(agent_hooks.config_path("codebuddy", home=d), path)
+        # a project's: $CODEBUDDY_PROJECT_CONFIG_DIR's when it is set to more than blanks (absolute, or in the project),
+        # as CodeBuddy reads it (PathUtils.getProjectHomeDirFor); the user's doesn't move with it (#761's review)
+        for value, want in ((" ", path), (os.path.join(d, "pc"), os.path.join(d, "pc", "settings.json")),
+                            ("cfg", os.path.join(d, "cfg", "settings.json"))):
+            with self.subTest(CODEBUDDY_PROJECT_CONFIG_DIR=value):
+                patch_env(self, HOME=d, USERPROFILE=d, CODEBUDDY_CONFIG_DIR=None, CODEBUDDY_PROJECT_CONFIG_DIR=value)
+                self.assertEqual(agent_hooks.config_path("codebuddy", d), want)
+                self.assertEqual(agent_hooks.config_path("codebuddy"), path)
+        patch_env(self, CODEBUDDY_PROJECT_CONFIG_DIR=None)
         os.makedirs(os.path.dirname(path))
         mine = {"permissions": {"allow": ["Bash(ls)"]}, "hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [
             {"type": "command", "command": "python3 approve-safe-commands.py", "timeout": 5}]}]}}

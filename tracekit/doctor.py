@@ -671,6 +671,13 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             f"{harness} hooks in {path}: the pre-tool hook has no {key}: {json.dumps(block)}, so {harness} runs a call "
             "whose hook can't run, undecided and unrecorded" if lets_past else
             f"each {harness} hook command in {path} names its event", fix, bad=WARN)
+        if harness == "codebuddy":
+            later = _codebuddy_later(home)
+            add("D-HOOKS-EVENT", not later,
+                f"a CodeBuddy Code PreToolUse hook in {' and '.join(later)} runs after Tracekit's, and CodeBuddy takes "
+                "the last hook's permissionDecision: its allow runs a call Tracekit denied" if later else
+                "no other CodeBuddy Code PreToolUse hook runs after Tracekit's",
+                "have no hook that runs after Tracekit's answer permissionDecision allow, or remove it", bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
         # a timeout the hook doesn't set: agy's and Crush's own default is 30 s
         default = 30 if harness in ("antigravity", "crush") else 60
@@ -679,6 +686,29 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
                 f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
+
+
+def _codebuddy_later(home=None):
+    """The settings files with a CodeBuddy Code PreToolUse hook that runs after Tracekit's. CodeBuddy runs the user's
+    settings' hooks (`home`: the agent user's home), then the project's .codebuddy/settings.json and
+    settings.local.json (doctor's working directory's), each in its order, and the last permissionDecision stands.
+    lean: a plugin's, a skill's or an SDK host's hooks, which run later too, aren't read (docs/limits.md)"""
+    from . import agent_hooks
+    project = agent_hooks.config_path("codebuddy", os.getcwd())
+    files = [agent_hooks.config_path("codebuddy", home=home) if home else agent_hooks.config_path("codebuddy"),
+             project, os.path.join(os.path.dirname(project), "settings.local.json")]
+    ours, later = False, []
+    for f in dict.fromkeys(files):
+        try:
+            hooks = [h for g in _json(f)["hooks"]["PreToolUse"] for h in g["hooks"]]
+        except (OSError, ValueError, LookupError, TypeError):   # no file, no hooks, or not CodeBuddy's shape
+            continue
+        for h in hooks:
+            mine = isinstance(h, dict) and agent_hooks._version(h.get("command")) is not None
+            if ours and not mine and f not in later:
+                later.append(f)
+            ours = ours or mine
+    return later
 
 
 def _text(path):

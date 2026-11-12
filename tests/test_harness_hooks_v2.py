@@ -225,6 +225,32 @@ class Mapping(HarnessCase):
                          [{"source": "codebuddy-code:UserPromptSubmit", "trust": "trusted"}])
         self.assertTrue(run["closed"])
 
+    def test_codebuddy_a_held_deferred_call_is_recorded_as_not_run(self):
+        """#761's review: a deferred call the policy holds can't run. The wrapper's PreToolUse waits for the approval
+        and consumes it; the deferred tool's own, under the same call id, finds it used and is blocked, so CodeBuddy
+        answers the wrapper with an error result ({content, error}). That result completes the call as an error, never
+        as a call that ran (docs/limits.md)."""
+        self.decision = "ask"
+        base = {"session_id": "cb-held", "transcript_path": None, "cwd": "/w"}
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionStart", "source": "startup"})[0], 0)
+        wrapper = ("DeferExecuteTool", {"toolName": "Monitor", "params": json.dumps({"command": "tail -f build.log"})})
+        deferred = ("Monitor", {"command": "tail -f build.log"})
+        self.approve_when_asked()
+        answers = []
+        for name, ti in (wrapper, deferred):
+            answers.append(self.hook("codebuddy", {**base, "hook_event_name": "PreToolUse", "tool_name": name,
+                                                   "tool_input": ti, "call_id": "call_h1", "tool_use_id": "call_h1"}))
+        self.assertEqual([a[0] for a in answers], [0, 2])
+        self.assertIn("NOT APPROVED", json.loads(answers[1][1])["hookSpecificOutput"]["permissionDecisionReason"])
+        blocked = f"PreToolUse:Monitor hook blocked this tool call: {answers[1][2].strip()}"
+        self.hook("codebuddy", {**base, "hook_event_name": "PostToolUse", "tool_name": wrapper[0], "tool_input": wrapper[1],
+                                "call_id": "call_h1", "tool_use_id": "call_h1",
+                                "tool_response": {"content": f'Error executing tool "Monitor": {blocked}', "error": blocked}})
+        run = next(r for r in self.signer._runs.values() if any(
+            e["type"] == "policy.decision" and e["data"]["tool_call_id"] == "call_h1" for e in r["events"]))
+        self.assertEqual([(e["data"]["tool_call_id"], e["data"]["status"]) for e in run["events"]
+                          if e["type"] == "tool.result"], [("call_h1", "error")])
+
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
         # header and a webfetch with no url are denied in the hook, with no decide request sent
@@ -319,6 +345,17 @@ class Mapping(HarnessCase):
                                              "transcript_path": "/tmp/droid.jsonl", "tool_name": "Execute",
                                              "tool_input": {"command": "ls"}})
         self.assertEqual(code, 0)
+
+    def test_codebuddy_does_not_read_its_transcript(self):
+        """#761's review: CodeBuddy Code's transcript (OpenAI Agents SDK items) is no format said_since reads: it is
+        hashed at each hook, never parsed as Gemini CLI's or Codex's."""
+        with mock.patch.object(harness_hooks, "_read", side_effect=AssertionError("CodeBuddy transcript was read")), \
+                mock.patch.object(claude_code, "_state", wraps=claude_code._state) as state:
+            code, _, err = self.hook("codebuddy", {"session_id": "cb-transcript", "hook_event_name": "PreToolUse",
+                                                   "transcript_path": "/tmp/cb.jsonl", "tool_name": "Bash",
+                                                   "tool_input": {"command": "ls"}, "call_id": "c1", "tool_use_id": "c1"})
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("said", [c.args[-1] for c in state.call_args_list])
 
     def test_droid_missing_session_or_malformed_payload_blocks_the_call(self):
         code, out, err = self.hook("droid", {"hook_event_name": "PreToolUse", "tool_name": "Execute",

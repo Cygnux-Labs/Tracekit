@@ -140,11 +140,10 @@ deny:
     # path form as the file rules read it: the files TK-D006 and TK-D011 deny sending from the shell. A .env file (any
     # name with `.env` as a word, as TK-D006 reads it), the .ssh folder or a file in it, a private key (id_rsa,
     # id_ed25519, id_ecdsa, id_dsa, and a name going on from one: id_rsa_work), the .aws folder or its credentials,
-    # .netrc, and a cluster, Docker, gcloud or Git credential file; a public key (.pub) may go, as there.
-    # lean: a key's file name is read for 64 characters after its id_<type>, so each of many id_ in one long name
-    # scans a bounded stretch and the fallback engine stays linear; a longer name is not read as a key's
-    pattern: '\.env\b|(^|/)\.ssh(/|$)|id_(rsa|ed25519|ecdsa|dsa)[^/]{0,64}$|(^|/)\.aws/?$|\.aws/credentials|\.netrc|(^|/)\.kube/config$|(^|/)\.docker/config\.json$|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|(^|/)\.git-credentials$'
-    unless: '(^|/)\.ssh/[^/]{0,255}\.pub$|id_(rsa|ed25519|ecdsa|dsa)[^/]{0,64}\.pub$'
+    # .netrc, and a cluster, Docker, gcloud or Git credential file; a public key (.pub) may go, as there. A key's file
+    # name is read up to NAME_MAX (255) after its id_<type>, which keeps the fallback engine linear
+    pattern: '\.env\b|(^|/)\.ssh(/|$)|id_(rsa|ed25519|ecdsa|dsa)[^/]{0,255}$|(^|/)\.aws/?$|\.aws/credentials|\.netrc|(^|/)\.kube/config$|(^|/)\.docker/config\.json$|gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|(^|/)\.git-credentials$'
+    unless: '(^|/)\.ssh/[^/]{0,255}\.pub$|id_(rsa|ed25519|ecdsa|dsa)[^/]{0,255}\.pub$'
     reason: uploading a secrets file
     remedy: Upload only the files the task needs, never a credentials file; a person shares secrets through the deployment's secret store.
     rationale: The upload tool twin of TK-D006 and TK-D011. A file an upload tool sends off the machine is as gone as one curl or scp sends.
@@ -931,7 +930,7 @@ ask:
     field: effects
     # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
     # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME and CodeBuddy Code's
-    # CODEBUDDY_CONFIG_DIR are matched by name. OpenCode's
+    # CODEBUDDY_CONFIG_DIR and CODEBUDDY_PROJECT_CONFIG_DIR are matched by name. OpenCode's
     # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
     # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
     # (.kilo, .kilocode, ~/.config/kilo, kilo.json); Cline's are ~/.cline and its hook folders, .cline/hooks,
@@ -948,7 +947,7 @@ ask:
     # only the worktree (`x/`, `x/.`, `x//`).
     # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
     # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.(?:claude|codebuddy)(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?(?:QWEN_HOME|CODEBUDDY_CONFIG_DIR)\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.(?:claude|codebuddy)(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?(?:QWEN_HOME|CODEBUDDY_CONFIG_DIR|CODEBUDDY_PROJECT_CONFIG_DIR)\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config
