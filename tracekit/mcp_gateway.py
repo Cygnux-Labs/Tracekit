@@ -191,7 +191,7 @@ class _McpGateway(_Handler):
                 while True:
                     try:
                         result = ups.call(up, call, cursor=cursor, timeout=deadline - time.monotonic())
-                    except TimeoutError:
+                    except (TimeoutError, concurrent.futures.TimeoutError):   # one class from Python 3.11, two before
                         raise _Error(-32603, f"upstream {up!r}: {kind}/list timed out (one listing has "
                                              f"{UPSTREAM_TIMEOUT_S:g} s for every upstream and page)") from None
                     items = getattr(result, kind)

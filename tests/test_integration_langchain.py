@@ -31,6 +31,7 @@ try:
     from test_contract_langchain import TOOLS, StubModel
     from tracekit import autowire
     from tracekit.format.canon import event_hash
+    from tracekit.integrations.executor_tools import EXECUTOR
     from tracekit.integrations.langchain import TracekitMiddleware, tracekit_tool_node
 except ImportError:   # optional: the dev extra installs them
     HAVE_LC = False
@@ -48,8 +49,15 @@ else:
         PAID.append(cents)
         return f"paid {cents}"
 
+    @tool("pay")
+    def confirmed_pay(to: str, cents: int) -> str:
+        """Send money once the person confirms: the tool's own pause."""
+        answer = interrupt(f"pay {cents}?")
+        PAID.append((cents, answer))
+        return f"paid {cents} after {answer}"
+
 THREAD = {"configurable": {"thread_id": "t"}}
-PAID = []   # the cents of each counted_pay that ran
+PAID = []   # the cents of each counted_pay that ran; (cents, the answer it got) for confirmed_pay
 
 
 def prompt(name, **args):
@@ -377,6 +385,102 @@ class ManyAsks(GatedNodes):
                                          ({**{f"pay-{i}": want[a](i) for i, a in enumerate(answers)},
                                            "echo": (0, False, 1, "hi", 1, None),
                                            "wipe": (0, False, 0, "R-WIPE", 0, None)}, False))
+
+
+@unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
+class ToolPauses(GatedNodes):
+    """A tool that pauses the run itself (interrupt()), beside or under an `ask`. LangGraph pairs resume values with a
+    node's interrupt() calls by their order, and runs the node again from its start on each resume. Once an approval
+    was answered the gate stopped pausing, so the tool got the approval's resume value as the person's answer and ran
+    without asking; before that, the tool asked, but its approved call was then refused as already used
+    (TK-APPROVAL-CONSUMED), and a call that ran before the tool's pause was asked for a second approval."""
+
+    def graphs(self, tools):
+        """(how, the graph): create_agent, and the gated ToolNodes (GatedNodes.nodes), each on a signer of its own"""
+        ToolNode.__init__ = self.wired
+        self.signer = FakeSigner(ac._rule)
+        self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+        yield "create_agent", create_agent(StubModel(), tools, checkpointer=InMemorySaver(), middleware=[
+            TracekitMiddleware(self.signer, self.run["run_id"], self.run["run_token"])])
+        for how, node in self.nodes(tools=tools):
+            yield how, tool_graph(node())
+
+    def answered(self, graph, mode, calls, approve):
+        """(each pause in order: "tracekit" or the tool's question; what the model read of each call; the signer's
+        approval requests and results, by call), a person approving the calls in `approve` and answering each tool's
+        question "yes: <question>"; every other approval left unanswered"""
+        go = graph.invoke if mode == "sync" else lambda v, c: asyncio.run(graph.ainvoke(v, c))
+        out, pauses = go({"messages": [HumanMessage(json.dumps(calls))]}, THREAD), []
+        while "__interrupt__" in out and len(pauses) < 10:
+            answers = {}
+            for i in out["__interrupt__"]:   # create_agent's calls are tasks of their own: they pause together
+                shown = i.value.get("tracekit") if isinstance(i.value, dict) else None
+                pauses.append("tracekit" if shown else i.value)
+                for a in shown.get("approvals", [shown]) if shown else ():
+                    if a["tool_call_id"] in approve and self.recorded("approval", a["approval_id"]) == []:
+                        self.signer.approval_decide({"request_id": a["approval_id"], "decision": "approve",
+                                                     "approval_id": a["approval_id"]})
+                answers[i.id] = {"approval_id": shown["approval_id"]} if shown else f"yes: {i.value}"
+            out = go(Command(resume=answers), THREAD)
+        seen = {m.tool_call_id: m.content for m in out["messages"] if isinstance(m, ToolMessage)}
+        return pauses, seen, {t: sorted(r["tool_call_id"] for r in self.recorded(t)) for t in ("approval.request",
+                                                                                                "tool.result")}
+
+    def recorded(self, typ, approval_id=None):
+        return [e["data"] for e in self.signer.read({"run_id": self.run["run_id"], "run_token": self.run["run_token"],
+                                                     "limit": 1000})["events"]
+                if e["type"] == typ and approval_id in (None, e["data"].get("approval_id"))]
+
+    def test_a_tool_asked_under_an_approval_gets_the_persons_own_answer(self):
+        for mode in ("sync", "async"):
+            for how, graph in self.graphs([confirmed_pay]):
+                with self.subTest(mode=mode, built=how):
+                    PAID.clear()
+                    got = self.answered(graph, mode, [{"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"}],
+                                        approve={"pay-1"})
+                    self.assertEqual(got, (["tracekit", "pay 1?"], {"pay-1": "paid 1 after yes: pay 1?"},
+                                           {"approval.request": ["pay-1"], "tool.result": ["pay-1"]}))
+                    self.assertEqual(PAID, [(1, "yes: pay 1?")])   # it ran once, with the person's answer
+
+    def test_a_tool_that_pauses_beside_asks_gets_the_answer_and_no_call_runs_or_asks_twice(self):
+        calls = [{"name": "pay", "args": {"to": "a", "cents": 0}, "id": "pay-0"},
+                 {"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay-1"},
+                 {"name": "confirm", "args": {"question": "sure?"}, "id": "confirm"},
+                 {"name": "echo", "args": {"text": "hi"}, "id": "echo"}]
+        for mode in ("sync", "async"):
+            for how, graph in self.graphs([counted_pay, confirm, TOOLS[0]]):
+                with self.subTest(mode=mode, built=how):
+                    PAID.clear()
+                    ac.RAN.clear()
+                    pauses, seen, recorded = self.answered(graph, mode, calls, approve={"pay-0"})
+                    self.assertEqual((set(pauses), pauses.count("sure?")), ({"tracekit", "sure?"}, 1))
+                    self.assertEqual({k: v.split(" (")[0] for k, v in seen.items()},
+                                     {"pay-0": "paid 0", "pay-1": "Tool call blocked by policy: TK-APPROVAL-REQUESTED",
+                                      "confirm": "yes: sure?", "echo": "hi"})
+                    self.assertEqual(recorded, {"approval.request": ["pay-0", "pay-1"],
+                                                "tool.result": ["confirm", "echo", "pay-0"]})
+                    self.assertEqual((PAID, ac.RAN), ([0], ["echo"]))   # each ran once
+
+    def test_an_executors_tool_is_left_to_the_executor(self):
+        """_pass decided an executor's call with the gate's own decision and paused for an approval the executor never
+        consumes."""
+        def send(to: str, cents: int) -> str:
+            """Send money, through the tool executor."""
+            return f"sent {cents}"
+        executed = tool("pay")(send)
+        executed.metadata = {EXECUTOR: True}
+        for mode in ("sync", "async"):
+            for how, node in self.nodes(tools=[executed, TOOLS[0]]):
+                with self.subTest(mode=mode, wired=how):
+                    graph = tool_graph(node())
+                    go = graph.invoke if mode == "sync" else lambda v, c: asyncio.run(graph.ainvoke(v, c))
+                    out = go({"messages": [HumanMessage(json.dumps([
+                        {"name": "pay", "args": {"to": "a", "cents": 1}, "id": "pay"},
+                        {"name": "echo", "args": {"text": "hi"}, "id": "echo"}]))]}, THREAD)
+                    self.assertNotIn("__interrupt__", out)
+                    self.assertEqual({m.tool_call_id: m.content for m in out["messages"]
+                                      if isinstance(m, ToolMessage)}, {"pay": "sent 1", "echo": "hi"})
+                    self.assertEqual([r["tool_call_id"] for r in self.recorded("policy.decision")], ["echo"])
 
 
 class Jittery:

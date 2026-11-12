@@ -391,6 +391,20 @@ class McpGateway(unittest.TestCase):
         self.assertIn("upstream 'up': tools/list timed out (one listing has 0.3 s for every upstream and page)",
                       messages(e.exception))
 
+    def test_a_listing_past_its_budget_names_the_upstream_before_python_3_11(self):
+        """Before 3.11 the timeout of the future a listing waits on (concurrent.futures.TimeoutError) isn't the built-in
+        TimeoutError, so the listing's own error was missed."""
+        class FutureTimeout(Exception):   # concurrent.futures.TimeoutError on Python 3.10
+            pass
+
+        def call(up, method, *a, **kw):
+            raise FutureTimeout()
+        with mock.patch("concurrent.futures.TimeoutError", FutureTimeout), \
+                mock.patch.object(self.srv.mcp["upstreams"], "call", call), self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.list_tools())
+        self.assertIn("upstream 'up': tools/list timed out (one listing has 600 s for every upstream and page)",
+                      messages(e.exception))
+
     def test_page_bound_error_forgets_page1_resources(self):
         """Hitting the page cap on resources/list returns an error and remembers nothing."""
         self._swap_upstream(paged_upstream())
