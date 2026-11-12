@@ -21,10 +21,12 @@ flag or an ask), are decided as calls of their own, and so is a round that carri
 `input_responses`), whose answers are decided and recorded with its arguments, under `input_responses`. A result with
 `isError: true` completes as an error; an exception from the session propagates unchanged and completes as an error.
 `list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`mcp:<server>/tools`,
-`/resources`, `/prompts`; a page over half a signer frame as its digest) and returned once recorded. A list the signer
-cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a refusal is
-withheld either way. The list mcp itself asks for inside `call_tool` (to check a result against the tool's output
-schema) never reaches the model and isn't recorded. Only those calls made through the wrapped session are seen.
+`/resources`, `/prompts`), a page and a round's input requests in parts the signer indexes whole (sdk.client.parts; one
+item over half a signer frame as its digest, which makes the run's provenance index partial), and returned once
+recorded. A list the signer cannot reach is withheld unless the run fails open for this class, when it is returned
+with a warning; a refusal is withheld either way. The list mcp itself asks for inside `call_tool` (to check a result
+against the tool's output schema) never reaches the model and isn't recorded. Only those calls made through the
+wrapped session are seen.
 """
 import asyncio
 import functools
@@ -38,7 +40,7 @@ from mcp.types import CallToolResult, TextContent
 from tracekit.autowire import DECIDED_UPSTREAM
 from tracekit.format.canon import event_hash
 from tracekit.integrations.held import HeldCalls
-from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
+from tracekit.sdk.client import SignerUnavailable, fail_open, parts, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -96,8 +98,9 @@ class TracekitSession(HeldCalls):
         if not raw:
             warnings.warn(_UNNAMED, stacklevel=4)   # list_* -> _list -> warn: the caller's line, as _call's warning
         try:
-            await self._rpc("observe", source=f"mcp:{server}/{kind}", trust="untrusted",
-                            value=result_field(True, out.model_dump(mode="json", by_alias=True, exclude_none=True)))
+            for part in parts(out.model_dump(mode="json", by_alias=True, exclude_none=True), kind):
+                await self._rpc("observe", source=f"mcp:{server}/{kind}", trust="untrusted",
+                                value=result_field(True, part))
         except SignerUnavailable as e:   # unreachable: the run's fail mode for this class, as _gate
             if not fail_open(self.fail_modes, self.CLASS):
                 raise
@@ -180,8 +183,9 @@ class TracekitSession(HeldCalls):
             input_requests = dump.get("inputRequests", [])
             if input_requests:
                 try:
-                    await self._rpc("observe", source=f"mcp:{server}/input_required", trust="untrusted",
-                                    value=result_field(True, input_requests))
+                    for part in parts(input_requests):
+                        await self._rpc("observe", source=f"mcp:{server}/input_required", trust="untrusted",
+                                        value=result_field(True, part))
                 except SignerUnavailable as e:
                     if not fail_open(self.fail_modes, self.CLASS):
                         await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
