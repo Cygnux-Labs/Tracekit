@@ -271,19 +271,34 @@ class Engine:
             self._names[tool_re, name] = got
         return got
 
-    def _fold_key(self, command):
+    def _fold_key(self, command, work=None):
         """(#683) The key this command's loop readings fold by, or None. A rule alive in a reading is one whose
         literals that reading holds (a prefilterless rule and one on a made subject are always alive): only the
         characters those rules read must be kept apart, since a rule that cannot fire here cannot tell two values
         apart either. Liveness is read on the substituted words as well as on the line as written (#729 class 2): a
         value spliced into a word makes a rule alive that the line without it does not — `HISTSI${s}E=0` with `Z` is
-        `HISTSIZE=0` — so the mask goes into the key and such a value never folds onto one that leaves the rule dead."""
+        `HISTSIZE=0` — so the mask goes into the key and such a value never folds onto one that leaves the rule dead.
+
+        Its work is charged to the decision's budget (`work`, shell.charge) like everything else a decision reads
+        (#729): one walk of each pattern the partition is built from, and one pass over the line for the liveness
+        scan. Past MAX_WORK the parse ends spent, and the call is held. A reading the fold skips pays nothing, which
+        is why keying a value is not charged: what it replaces is a reading, and that reading's own charge went with
+        it."""
         if self._fold_off or not isinstance(command, str):
             return None
         if self._fold is None:
-            self._fold = Partition([p for p, _l, _s, _u in self._fold_rules] +
-                                   [u for _p, _l, _s, u in self._fold_rules if u])
+            patterns = [p for p, _l, _s, _u in self._fold_rules] + [u for _p, _l, _s, u in self._fold_rules if u]
+            if work is not None:
+                # one walk of each pattern's parse tree. Not its characters: dev.yaml's 90 shell rules are 79,576 of
+                # them, 30% of MAX_WORK, and a line that must stay readable here has only ~59,000 left -- charged by
+                # characters it moved the 1,000-file loop and the 2,000-value loop from allow to ask. The patterns are
+                # the policy's, compiled once and shared by every decision this Engine makes, not the call's input:
+                # what a call can grow without bound is the line, charged below, and the values it keys.
+                shell.charge(work, len(patterns))
+            self._fold = Partition(patterns)
         low = command.lower()
+        if work is not None:   # one pass over the line: which of its literals make a rule alive here
+            shell.charge(work, len(low))
         # What a rule's literals find in the line as written is the same for every value the loop takes, so the
         # classes those rules add are OR-ed once per line: only the rules no literal of the line names are asked
         # again for each value. On the #683 line (1,000 values) asking all of them per value cost 4.07 s of a
@@ -349,7 +364,7 @@ class Engine:
                 oversize.append("the shell command")
             else:
                 parsed, unread = self._parse(args, command, work, fallback=not _hidden,
-                                             fold=Lazy(lambda: self._fold_key(command)))
+                                             fold=Lazy(lambda: self._fold_key(command, work)))
                 if _hidden and unread:   # (the parser can't read it as a command)
                     return {"verdict": "allow", "rule_ids": [], "policy_hash": self.policy_hash, "engine": self.engine,
                             "unparsed": True}
