@@ -475,7 +475,7 @@ ask:
     field: path
     # a .pth file written directly into a site-packages or dist-packages folder: Python's site module reads
     # every one at each interpreter start and runs its import lines, so it isn't a model weights file
-    pattern: '(?:^|[/\\])(?:site|dist)-packages[/\\][^/\\]*\.pth$'
+    pattern: '(?:^|[/\\])(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
     reason: writing a Python .pth file, which runs at every Python start
     remedy: Have a person approve the held call.
     rationale: A .pth file in site-packages or dist-packages runs at every Python start, so a person confirms the write.
@@ -484,7 +484,7 @@ ask:
     field: effects
     # each file a command writes (redirections, cp, mv, tee …), as TK-D008 reads them, directly in a
     # site-packages or dist-packages folder and ending in .pth; TK-A067's shell twin
-    pattern: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:site|dist)-packages[/\\][^/\\]*\.pth$'
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
     reason: writing a Python .pth file, which runs at every Python start
     remedy: Have a person approve the held call.
     rationale: A .pth file in site-packages or dist-packages runs at every Python start, so a person confirms the write.
@@ -495,7 +495,7 @@ ask:
     # model weights files (.safetensors, .gguf, .pt, .pth, .ckpt) written or edited through file tools; reads are allowed
     pattern: '\.(safetensors|gguf|pt|pth|ckpt)$'
     # a .pth directly in site-packages or dist-packages is TK-A067's, not a weights file
-    unless: '(?:^|[/\\])(?:site|dist)-packages[/\\][^/\\]*\.pth$'
+    unless: '(?:^|[/\\])(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
     reason: writing a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
@@ -506,7 +506,7 @@ ask:
     # extensions (.safetensors, .gguf, .pt, .pth, .ckpt); reads, listings and non-weights files aren't held
     pattern: '^WRITE_TARGET:[\w\W]*?\.(?:safetensors|gguf|pt|pth|ckpt)$'
     # a .pth directly in site-packages or dist-packages is TK-A068's, not a weights file
-    unless: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:site|dist)-packages[/\\][^/\\]*\.pth$'
+    unless: '^WRITE_TARGET:(?:[\w\W]*?[/\\])?(?:[Ss][Ii][Tt][Ee]|[Dd][Ii][Ss][Tt])-[Pp][Aa][Cc][Kk][Aa][Gg][Ee][Ss][/\\][^/\\]*\.pth$'
     reason: writing a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
