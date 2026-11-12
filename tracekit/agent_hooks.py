@@ -22,8 +22,9 @@ prefix hashing where the harness passes a transcript path. Only the reply to the
 Tool names are mapped onto Tracekit's policy vocabulary so the default rules apply unchanged:
 
     harness            -> Tracekit
-    Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars), Edit (paths: every file the
-                                                          patch adds, updates, deletes or moves to), mcp__s__t
+    Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars; typed text checked as Devin's
+                                                          write_to_process is), Edit (paths: every file the patch adds,
+                                                          updates, deletes or moves to), mcp__s__t
     Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t
     Gemini  run_shell_command, read_file, read_many_files, write_file, replace, glob, search_file_content,
             list_directory, web_fetch, google_web_search
@@ -40,7 +41,8 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     agy     run_command, view_file, write_to_file, replace_file_content, multi_replace_file_content, list_dir,
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
-            WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
+            WebSearch, Task, Bash (command = Input, checked as typed text) (each decided on the argument the tool
+            itself reads)
     Kilo    OpenCode's tools, names and arguments, and OpenCode's plugin; its own background_process, notebook_read,
             notebook_edit, send_file, generate_image -> Bash, Read, NotebookEdit, Read, Write (decided on their `path`;
             generate_image with an `image` as a Read of it and the `path`); notebook_execute is blocked in the hook
@@ -108,9 +110,9 @@ WEB_FETCH_URL = re.compile(r"https?://[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u20
 # a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
 CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath")
-OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
-                  "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
-                  "task": "Task", "todowrite": "TodoWrite"}
+OPENCODE_TOOLS = {"bash": "Bash", "shell": "Bash", "read": "Read", "write": "Write", "edit": "Edit",
+                  "apply_patch": "Edit", "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch",
+                  "websearch": "WebSearch", "task": "Task", "todowrite": "TodoWrite"}   # shell: OpenCode 2.x's bash
 # goose's hooks guide, Tool Input Keys: the path a tool itself reads decides, as for OpenCode (read_image reads
 # `source`, not `path`: a decoy `path` beside it must not move the decision)
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
@@ -186,6 +188,10 @@ DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
 # lean: exec's ! isn't denied (git commit -m 'fix!', wait $!): an exec Devin types into bash may expand one
 TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t\n=(])|^[ \t]*\^", re.M),
          "exec": re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")}
+# typed text that leaves its line unfinished: no \n at its end, or a backslash before its last \n. The shell keeps that
+# text and joins the next call's into its line (`git \` then `push --force origin main`), which no one call shows
+UNFINISHED = re.compile(r"[^\n]\Z|(?<!\\)(?:\\\\)*\\\n\Z")
+NO_TEXT = re.compile(r"[\x03\x04\n]*")   # only ^C, ^D or line ends: an interrupt or an end of input, no text
 # what a line typed into a running shell (write_to_process) may set or replay there that changes what a later line
 # runs, which the policy, deciding one call at a time, can't see: history replay (fc; history -s, -r or -n), an alias
 # defined, a key binding, a trap, a loaded builtin, the exec builtin (it can make the shell read commands from a file, or
@@ -356,9 +362,9 @@ def tool(harness, name, ti):
                 ti.setdefault("file_path", files[0])
                 ti["paths"] = files
             return "Edit", ti
-        if name == "write_stdin":   # keystrokes into a running exec_command session: shell input
+        if name == "write_stdin":   # keystrokes into a running exec_command session: shell input (\r ends a line)
             if isinstance(ti.get("chars"), str):
-                ti["command"] = ti["chars"]
+                ti["command"] = ti["chars"].replace("\r", "\n")
             return "Bash", ti
         if name in ("shell", "local_shell", "exec_command"):
             cmd = ti.get("command")
@@ -412,6 +418,11 @@ def tool(harness, name, ti):
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
         if name in path_arg:
             ti["file_path"] = ti.get(path_arg[name])
+            # OpenCode 2.x's read, write and edit read `path` where 1.x's read filePath: each one sent is decided, so a
+            # decoy under the other release's key never stands in for the one the tool reads
+            files = [ti[k] for k in ("filePath", "path") if isinstance(ti.get(k), str)] * (path_arg[name] == "filePath")
+            if len(set(files)) > 1:
+                ti["paths"] = list(dict.fromkeys(files + [f for f in ti.get("paths") or () if isinstance(f, str)]))
         if harness == "kilo" and name == "notebook_edit":   # v1 decides a NotebookEdit on its notebook_path
             ti["notebook_path"] = ti["file_path"]
         if harness == "kilo" and name == "generate_image":
@@ -450,7 +461,7 @@ def tool(harness, name, ti):
         # manage_task's send_input is input typed into a background run_command
         name = name.casefold() if name.casefold() in (*AGY_TOOLS, "manage_task") else name
         if name == "manage_task" and str(ti.get("Action")).casefold() == "send_input":
-            ti["command"] = ti.get("Input")
+            ti["command"] = ti["Input"].replace("\r", "\n") if isinstance(ti.get("Input"), str) else ti.get("Input")
             return "Bash", ti
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
         return AGY_TOOLS.get(name, name), ti
@@ -888,7 +899,14 @@ def _blocked(harness, p, raw=""):
     if harness == "antigravity":
         call = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("toolCall") if raw.strip() else None
         call = dict(call) if isinstance(call, _Pairs) else {}
-        return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
+        name = str(call.get("name") or "?")
+        why = _blocked_agy_args(name, call.get("args"))
+        if why is None and name.casefold() == "manage_task":   # input typed into a background run_command
+            args = call.get("args")
+            ti = tool(harness, name, dict(args) if isinstance(args, _Pairs) else args)[1]
+            if str(ti.get("Action")).casefold() == "send_input" and isinstance(ti.get("command"), str):
+                why = _typed("agy's manage_task", "send_input", ti["command"])
+        return why
     name = _named(harness, str(p.get("tool_name") or ""))
     twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
         raw.strip() else None
@@ -908,23 +926,43 @@ def _blocked(harness, p, raw=""):
                     + (" Send it as {\"command\": \"...\"}." if name == "exec" else " Devin doesn't document them: "
                        "please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so Tracekit "
                        "can read them."))
-        typed = TYPED[name].search(v) if name in TYPED else None
-        if typed and typed.group().strip(" \t") in ("!", "^"):
-            return (f"Blocked by Tracekit: Devin's write_to_process types {typed.group().strip()!r}, which interactive "
-                    "bash expands from its history (a ! before a word, a ^ starting a line), so Tracekit can't read "
-                    "the line that runs; type the command itself.")
-        state = _sets_state(v) if name == "write_to_process" and not typed else None
-        if state:
-            return (f"Blocked by Tracekit: Devin's write_to_process types {state[:64]!r}, which sets or replays state "
-                    "of the running shell (history, an alias, a function, a prompt string, a trap, a key binding, a "
-                    "builtin, a shell option, PATH or a sourced file) that changes what a later line runs, and "
-                    "Tracekit decides each call alone; type the commands themselves.")
-        if typed:
-            return (f"Blocked by Tracekit: Devin's {name} {'types' if name == 'write_to_process' else 'sends'} a "
-                    f"control character ({typed.group()!r}), which a terminal's line editor acts on (erasing, "
-                    "discarding or completing text), so Tracekit can't read the line that runs; send plain text, each "
-                    "line ending in \\n.")
+        if name in TYPED:
+            return _typed("Devin's", name, v)
+    if harness == "codex" and name == "write_stdin":
+        v = tool(harness, name, p.get("tool_input"))[1].get("command")
+        if isinstance(v, str):
+            return _typed("Codex's", name, v)
     return _blocked_tool(harness, name, raw)
+
+
+def _typed(who, name, text):
+    """The reason text typed into a live terminal (Devin's write_to_process, Codex's write_stdin, agy's send_input; and
+    a Devin exec command, should Devin type it) is denied in the hook, else None: a control character its line editor
+    acts on or a history expansion (TYPED), state it sets in the shell (_sets_state), or a line it leaves unfinished
+    (UNFINISHED). A typed ^C or ^D alone adds no text to a line: it interrupts or ends the program."""
+    typing = name != "exec"
+    if typing and NO_TEXT.fullmatch(text):
+        return None
+    typed = TYPED["write_to_process" if typing else "exec"].search(text)
+    if typed and typed.group().strip(" \t") in ("!", "^"):
+        return (f"Blocked by Tracekit: {who} {name} types {typed.group().strip()!r}, which interactive bash expands "
+                "from its history (a ! before a word, a ^ starting a line), so Tracekit can't read the line that runs; "
+                "type the command itself.")
+    state = _sets_state(text) if typing and not typed else None
+    if state:
+        return (f"Blocked by Tracekit: {who} {name} types {state[:64]!r}, which sets or replays state of the running "
+                "shell (history, an alias, a function, a prompt string, a trap, a key binding, a builtin, a shell "
+                "option, PATH or a sourced file) that changes what a later line runs, and Tracekit decides each call "
+                "alone; type the commands themselves.")
+    if typed:
+        return (f"Blocked by Tracekit: {who} {name} {'types' if typing else 'sends'} a control character "
+                f"({typed.group()!r}), which a terminal's line editor acts on (erasing, discarding or completing "
+                "text), so Tracekit can't read the line that runs; send plain text, each line ending in \\n.")
+    if typing and UNFINISHED.search(text):
+        return (f"Blocked by Tracekit: {who} {name} types a line it doesn't finish (no newline at its end, or a "
+                "backslash before it), which the shell joins to the text typed next, so Tracekit can't read the line "
+                "that runs; type whole commands, each line ending in \\n.")
+    return None
 
 
 def run(harness, raw, stdout=None, stderr=None, event=None):

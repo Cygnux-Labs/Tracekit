@@ -35,7 +35,7 @@ Every other attribute is the wrapped session's. Only calls made through the wrap
 
 | When | RPC | Sent |
 |---|---|---|
-| before the call is sent | `decide` | a fresh `tool_call_id`, the tool as `mcp:<server>/<tool>` (`mcp:<server>/prompt:<name>` for `get_prompt`), `tool_class_hint: mcp`, the arguments as given (`parsed`) |
+| before the call is sent | `decide` | a fresh `tool_call_id`, the tool as `mcp:<server>/<tool>` (`mcp:<server>/prompt:<name>` for `get_prompt`), `tool_class_hint: mcp`, the arguments as given (`parsed`); a round that answers the server's input request (mcp 2's `input_responses`) with them under `input_responses`, so the answers are decided and recorded with the call (a tool argument of that name is refused) |
 | right before it is sent | `approval_consume` | the same call and arguments, and the approval id when the call waited for one |
 | after the server answers | `complete` | `status` `ok`, or `error` for a result with `isError: true`; a `sha256:` commitment to the result (not the result), or the exception type and message |
 

@@ -472,7 +472,8 @@ class Engine:
             if not fallback:
                 return None, e.cause
             return (_plain(command, work, work[0] - start, getattr(e, "at", 0), readings, target, getattr(e, "cmds", ()))
-                    if isinstance(command, str) else _plain(canonical(command), work, 0, 0, readings, target)), e.cause
+                    if isinstance(command, str) else _plain(canonical(command), work, 0, 0, readings, target,
+                                                            getattr(e, "cmds", ()))), e.cause
 
     @staticmethod
     def _subjects(cls, field, args, fields, parsed, split=False, finds=None, work=None, tool=""):
@@ -504,6 +505,8 @@ class Engine:
             return _tracekit(parsed, finds, [0] if work is None else work)
         if cls == "shell" and field == "package_index":
             return _package_indexes(parsed[0], parsed[2])
+        if cls == "shell" and field == "harness_launch":
+            return _harness_launches(parsed[0], parsed[2])
         if cls == "shell" and field == "container_host_access":
             return _container_host_access(parsed[0])
         if cls == "shell" and field == "push":
@@ -695,7 +698,10 @@ def joined_readings(parts):
 def _shell(args, persistent_target=None, readings=True, work=None):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
-    a list of command lines. Anything else, or more than one of them, raises ParseError."""
+    a list of command lines, read joined by newlines and each on its own: the OpenAI Agents SDK's ShellTool runs each
+    in a process of its own and LangChain's joins them with `;`, so an entry that leaves a quote, a heredoc or a line
+    continuation open doesn't swallow the next. Anything else, or more than one of them, raises ParseError (with the
+    commands the readings that parsed read, `cmds`)."""
     present = [k for k in classes.SHELL_KEYS if args.get(k) is not None]
     if len(present) > 1:
         raise shell.ParseError(f"more than one command field: {present}")
@@ -704,7 +710,21 @@ def _shell(args, persistent_target=None, readings=True, work=None):
     if isinstance(value, str):
         return shell.analyse(value, persistent_target, readings, work)
     if strings and present == ["commands"]:
-        return shell.analyse("\n".join(value), persistent_target, readings, work)
+        found, failed = [], None
+        for line in ["\n".join(value)] + (value if len(value) > 1 else []):
+            try:
+                found.append(shell.analyse(line, persistent_target, readings, work))
+            except shell.ParseError as e:
+                failed = failed or e
+        if failed:
+            failed.cmds = [c for reading in found for c in reading[0]] + list(getattr(failed, "cmds", ()))
+            raise failed
+        if len(found) == 1:
+            return found[0]
+        learned = {**found[0][5], "more": any(r[5]["more"] for r in found),
+                   "unresolved": set().union(*(r[5].get("unresolved", ()) for r in found))}
+        learned.pop("effects", None)
+        return (*([x for r in found for x in r[k]] for k in range(5)), learned)
     if strings:
         return shell.analyse_argv(value, readings, work)
     raise shell.ParseError("the command is neither a string nor a list of strings")
@@ -759,6 +779,43 @@ _SOURCE_VARIABLES["NPM_CONFIG_REGISTRY"] = "registry.npmjs.org"
 
 
 _PIP = re.compile(r"pip[0-9.]*")
+
+
+# the agent harnesses' CLIs (a hook or plugin of Tracekit's runs in their settings), and what starts one with settings
+# the line chooses: a variable naming a home or a settings folder or file (HOME, XDG_CONFIG_HOME, CLAUDE_CONFIG_DIR,
+# CODEX_HOME, HERMES_HOME, OPENCODE_CONFIG, OPENHANDS_WORK_DIR), env clearing or unsetting variables, a long option
+# that loads settings (--settings, --setting-sources, --config, --profile), and codex's -c and -p and hermes's -p
+_HARNESS_CLIS = frozenset(("claude", "codex", "gemini", "qwen", "opencode", "kilo", "kilocode", "goose", "droid", "agy",
+                           "antigravity", "crush", "devin", "hermes", "cline", "openhands", "cursor-agent"))
+_SETTINGS_VARIABLE = re.compile(r"HOME|XDG_\w*|\w*(?:_HOME|CONFIG|SETTING|PROFILE|_DIR)\w*", re.I)
+_SETTINGS_OPTION = re.compile(r"--[A-Za-z-]*(?:setting|config|profile)[A-Za-z-]*(?:=[\w\W]*)?")
+_SETTINGS_SHORT = {"codex": ("-c", "-p"), "hermes": ("-p",)}
+_SETS_ENV = (["env"], ["export"], ["declare"], ["typeset"])
+
+
+def _harness_launches(commands, refs=()):
+    """`LAUNCH:<harness> <why>` for each harness CLI (_HARNESS_CLIS) the line starts with settings it chooses: a
+    variable the line sets (before a command, through env, export, declare or typeset) that names a home or settings
+    (_SETTINGS_VARIABLE), env -i or -u, or a settings option on its own words; such a run reads no settings of the
+    person's, the hooks that record it among them.
+    lean: a variable set anywhere on the line counts for every harness on it; read it per command if that holds a run
+    a person needs"""
+    words = list(refs) + [a for c in commands if c["argv"][:1] in _SETS_ENV for a in c["argv"][1:]]
+    named = [n for n, eq, _ in (w.partition("=") for w in words) if eq and _SETTINGS_VARIABLE.fullmatch(n)]
+    cleared = any(c["argv"][:1] == ["env"] and any(re.fullmatch(r"-[A-Za-z]*[iu][A-Za-z]*|--(ignore-environment|unset)"
+                                                                 r"(=[\w\W]*)?|-", a) for a in c["argv"][1:])
+                  for c in commands)
+    out = []
+    for command in commands:
+        exe = _program(command["argv"])
+        if exe not in _HARNESS_CLIS:
+            continue
+        args = command["argv"][1:]
+        options = [a for a in args if _SETTINGS_OPTION.fullmatch(a) or any(a.startswith(o) for o in _SETTINGS_SHORT.get(
+            exe, ()))]
+        why = [f"variable {n}" for n in named] + ["env clears variables"] * cleared + [f"option {o}" for o in options]
+        out += [f"LAUNCH:{exe} {w}" for w in why]
+    return list(dict.fromkeys(out))
 
 
 def _package_indexes(commands, refs=()):
@@ -1357,7 +1414,8 @@ def _log_or_history(path):
 def _effects(parsed):
     """The files the commands write, each as WRITE_TARGET:path, and delete, as DELETE_TARGET:path, each also with the
     path resolved (_normal) and casefolded: what redirections write, and what rm, unlink, shred, truncate, tee, cp, mv, install, ln, dd,
-    sed -i and perl -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i), awk's
+    sed -i and perl -i name, find with -delete, -exec rm or an -exec that writes each file found (sed -i: each name
+    its -name tests, under each start path), awk's
     print > "file", zip -m's sources, and one of those that git, docker, podman, kubectl or parallel runs from its words
     (git rm). When a command writes files the line names only at run time or inside code it runs (_opaque), or the
     parser can't read what one runs (its `opaque`: `| sh`, `fish -c`, a name an expansion builds) and a writer's name
@@ -1521,6 +1579,10 @@ def _command_effects(commands):
             paths += [args[i + 1] for i in range(len(args) - 1) if args[i] in (
                 "-path", "-ipath", "-wholename", "-iwholename", "-regex", "-iregex", "-files0-from")]
             pruned = {i for i in range(len(args)) if args[i + 1:i + 2] == ["-prune"]}
+            # and each name its -name or -iname tests, under each start path (`find . -name .env -exec sed -i …`
+            # writes ./**/.env), as the rules read a file's name
+            paths += [p.rstrip("/") + "/**/" + args[i + 1] for p in paths[:] or ["."] for i in range(len(args) - 1)
+                      if args[i] in ("-name", "-iname") and i + 1 not in pruned]
             paths += [a for i, a in enumerate(args) if i not in pruned and _log_or_history(a)]
             kind = "DELETE_TARGET" if "DELETE_TARGET" in found else "WRITE_TARGET"
             out.extend(kind + ":" + path for path in dict.fromkeys(paths))

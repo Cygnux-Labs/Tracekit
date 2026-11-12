@@ -14,11 +14,13 @@ up to `approval_wait_s` for a person to decide in the signer; with `approval_wai
 Every call that is not denied is sent only after the signer's `approval_consume` agrees, with the arguments it returns
 for an approval with a T2 executor. Multi-round input-required calls (MCP 2.3) with a `request_state` under an allowed
 decision are decided and completed once across rounds; rounds without `request_state`, or whose decision required human
-approval, are decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
-propagates unchanged and completes as an error. `list_tools`, `list_resources` and `list_prompts` are recorded as
-untrusted observed input (`mcp:<server>/tools`, `/resources`, `/prompts`) and returned once recorded. A list the
-signer cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a
-refusal is withheld either way. Only those calls made through the wrapped session are seen.
+approval, are decided as calls of their own, and so is a round that carries answers (mcp 2's `input_responses`), whose
+answers are decided and recorded with its arguments, under `input_responses`. A result with `isError: true` completes
+as an error; an exception from the session propagates unchanged and completes as an error. `list_tools`,
+`list_resources` and `list_prompts` are recorded as untrusted observed input (`mcp:<server>/tools`, `/resources`,
+`/prompts`) and returned once recorded. A list the signer cannot reach is withheld unless the run fails open for this
+class, when it is returned with a warning; a refusal is withheld either way. Only those calls made through the wrapped
+session are seen.
 """
 import re
 import uuid
@@ -95,8 +97,12 @@ class TracekitSession(HeldCalls):
         tool = f"mcp:{server}/{prefix}{name}"
         args = arguments or {}
         caller_args_digest = event_hash({"tool": tool, "args": args})
+        # an input-required round's answers (mcp 2's input_responses: what the client answers the server's elicitation
+        # with, which can carry the effect's real parameters) are decided and recorded as the round's arguments, so a
+        # round that carries them is decided as a call of its own
+        answers, decided = kw.get("input_responses"), None
         req_state = kw.get("request_state")
-        key = (tool, caller_args_digest, req_state) if req_state is not None else None
+        key = (tool, caller_args_digest, req_state) if req_state is not None and answers is None else None
         if key is not None and key in self._pending:
             call_id, req, d, args = self._pending.pop(key)
             try:
@@ -112,6 +118,15 @@ class TracekitSession(HeldCalls):
             args = c.get("args", args)
             req["args_digest"] = event_hash({"tool": tool, "args": args})
         else:
+            if answers is not None:
+                if "input_responses" in args:
+                    why = "the call's arguments name input_responses, which its answers are decided under"
+                    if method == "get_prompt":
+                        raise RuntimeError(BLOCKED + why)
+                    return CallToolResult(content=[TextContent(type="text", text=BLOCKED + why)], isError=True)
+                args = {**args, "input_responses": {k: v.model_dump(mode="json", by_alias=True, exclude_none=True)
+                                                    if hasattr(v, "model_dump") else v for k, v in answers.items()}}
+            decided = args
             call_id = uuid.uuid4().hex
             why, d, args = await self._gate(call_id, tool, args)
             if why is not None:
@@ -124,6 +139,9 @@ class TracekitSession(HeldCalls):
         send = getattr(self._session, method)
         if d is None:   # the signer unreachable and the run fails open: the call runs unrecorded
             return await send(name, arguments, *a, **kw)
+        if answers is not None:   # sent as the signer has them (a T2 approval's copy), the answers apart
+            kw = {**kw, "input_responses": answers if args == decided else args.get("input_responses")}
+            args = {k: v for k, v in args.items() if k != "input_responses"}
         try:
             out = await send(name, args, *a, **kw)
         except Exception as e:

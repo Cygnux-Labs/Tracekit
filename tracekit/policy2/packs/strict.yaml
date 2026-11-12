@@ -6,7 +6,7 @@
 # docs/evaluation.md#e21-policy-robustness gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
-version: '2026.11-strict-10'
+version: '2026.11-strict-11'
 description: server-hosted agents where installs, pushes, network commands and environment changes wait for a person
 on_parse_error: deny
 
@@ -22,6 +22,13 @@ ask:
     class: shell
     field: command
     pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|PYTHONSTARTUP|NODE_OPTIONS|GIT_SSH_COMMAND)\+?=|\bunset\s+(ANTHROPIC_([A-Z]+_)?BASE_URL|HTTPS?_PROXY)\b|(>>?|\btee(\s+-[^\s]+){0,8}\s)\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b'
+    label: env_tamper
+    reason: changing the environment the next commands run in
+    remedy: Have a person approve the held call, or pass the setting to the one command that needs it.
+  - id: TK-F024
+    class: shell
+    field: effects
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.(?:bashrc|bash_profile|bash_login|bash_logout|profile|zshenv|zshrc|zprofile|zlogin|zlogout)$'
     label: env_tamper
     reason: changing the environment the next commands run in
     remedy: Have a person approve the held call, or pass the setting to the one command that needs it.

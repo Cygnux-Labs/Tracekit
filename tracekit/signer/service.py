@@ -464,6 +464,24 @@ def load_policy(path=DEFAULT_POLICY, backend=None):
     return Engine(pol, backend)
 
 
+# a file tool of another harness or framework (Hermes Agent's tools/file_tools.py, LangChain's FileManagementToolkit)
+# that the policy doesn't map is also decided as the file tool it is (evaluate), on every path it names: what the file
+# rules protect (a credentials file, a startup file, a Git hook, a harness's settings) is read where its own class,
+# unknown, reaches none of them
+FILE_TOOLS = {"write_file": "Write", "patch": "Edit", "read_file": "Read", "search_files": "Grep"}
+PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.+)$", re.M)
+
+
+def _as_file_tool(tool, args):
+    """A FILE_TOOLS call's arguments as its file tool reads them: `paths`, every path a path key names (Hermes reads
+    `path`, LangChain `file_path`: a decoy under the other is decided too) and each file a V4A patch's headers name."""
+    files = [v for k in classes.PATH_KEYS if isinstance(v := args.get(k), str)]
+    files += [f for f in args["paths"] if isinstance(f, str)] if isinstance(args.get("paths"), list) else []
+    if tool == "patch" and isinstance(args.get("patch"), str):
+        files += [f.strip() for f in PATCH_FILE.findall(args["patch"])]
+    return {**args, "paths": list(dict.fromkeys(files))}
+
+
 def _stricter(a, b):
     """Two readings of one call as one decision: the stricter (`a` on a tie), with both readings' rule ids and oversized
     subjects, nondeterministic if either was (a rule that ran out of time counts as matched in either)."""
@@ -494,6 +512,13 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
         # one when two listed names share it
         for listed in policy.listed(tool):
             d = _stricter(d, policy.decide(listed, args, untrusted=untrusted))
+        if tool in FILE_TOOLS and cls == "unknown":
+            d = _stricter(d, policy.decide(FILE_TOOLS[tool], _as_file_tool(tool, args), untrusted=untrusted))
+        # text typed into a running process (Hermes Agent's process_manage write or submit) is also decided as the
+        # shell line it is, where that process is a shell
+        if tool == "process_manage" and cls == "unknown" and args.get("action") in ("write", "submit") and \
+                isinstance(args.get("data"), str):
+            d = _stricter(d, policy.decide("Bash", {"command": args["data"]}, untrusted=untrusted))
         mcps = [tool] if tool.startswith("mcp:") and "/" in tool else []
         if tool.startswith("mcp__") and "__" in tool[5:]:
             # Claude Code's and the Claude Agent SDK's mcp__<server>__<tool> is also checked as mcp:<server>/<tool>

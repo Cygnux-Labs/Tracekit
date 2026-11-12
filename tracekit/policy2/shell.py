@@ -29,6 +29,7 @@ out of the command, only the top level's is cut).
 import ast
 import base64
 import collections
+import fnmatch
 import itertools
 import json
 import math
@@ -1595,7 +1596,34 @@ def _brace(word, charge, room=MAX_BRACE, depth=0):
     return [w + rest for w in words]
 
 
+# the names the shipped rules protect that a pattern may stand for (`~/.bashr?`, `authorized_key?`, `.git/hook?/x`,
+# `id_*`)
+GLOB_NAMES = (".bashrc", ".bash_profile", ".bash_login", ".bash_logout", ".profile", ".zshenv", ".zshrc", ".zprofile",
+              ".zlogin", ".zlogout", "profile", "bash.bashrc", "zshrc", "zshenv", ".env", "id_rsa", "id_ed25519",
+              "id_ecdsa", "id_dsa", "authorized_keys", "authorized_keys2", "credentials", "config", "rc", ".netrc",
+              ".git-credentials", ".pgpass", ".ssh", ".aws", ".git", "hooks", ".claude", ".codex", ".gemini", ".hermes",
+              "docker.sock")
+_PATTERN_SYNTAX = re.compile(r"[*?]|\[[^]]*\]")
+
+
 def _unglob(text):
+    """The names a pathname pattern may make: those its bracket expressions can make (_brackets), and each name of
+    GLOB_NAMES a component with two characters of its own matches (`.bashr?` is .bashrc; bash matches a leading dot
+    only with a dot, so `*rc` isn't .bashrc), read in that component's place; [] when it makes none it can list.
+    lean: a pattern of fewer characters of its own (`~/.ssh/*`), or one that stands for a name outside GLOB_NAMES, is
+    no name here; list more names when a rule protects them"""
+    made = _brackets(text)
+    named = []
+    for t in made or [text]:
+        parts = t.split("/")
+        for i, p in enumerate(parts):
+            if _PATTERN_SYNTAX.search(p) and len(_PATTERN_SYNTAX.sub("", p)) > 1:
+                named += ["/".join(parts[:i] + [n] + parts[i + 1:]) for n in GLOB_NAMES
+                          if (p[0] == "." or n[0] != ".") and fnmatch.fnmatchcase(n, p)]
+    return list(dict.fromkeys(made + named))
+
+
+def _brackets(text):
     """The names the bracket expressions of a pathname pattern can make, at most 16 (`authorized_key[s]` is
     authorized_keys, `[ab]` makes two), its other pattern characters kept; [] when it has none it can list (a negated
     set, a class such as [:alpha:], a range or a product of more)."""
@@ -2742,6 +2770,11 @@ class _Parser:
                 raise ParseError("a backslash-newline inside a redirection is not supported")   # bash reads 2\⏎> as 2>
             self.out.append(text)
             if loop_header:
+                # a word bash brace-expands is the words it makes (`for k in id_{rsa,x}`), when each is a literal
+                made = self.header_braces(raw) if g and "{" in self.bare and not re.search(r"[$`]", raw) else None
+                if made is not None:
+                    header += made
+                    continue
                 # a word whose every expansion is a variable's one known literal (word(): given) is that literal
                 header.append(None if g or re.search(r"[$`]", text) or re.search(r"[$`]", raw) and not self.given
                               else text)
@@ -4038,6 +4071,19 @@ class _Parser:
                     self.nested(code, shell["via"] + [shell["argv"][0] + " <<"])
             elif interp:
                 self.program(interp, text, " <<")
+
+    def header_braces(self, raw):
+        """The literal words bash's brace expansion makes of a loop header's word `raw`, or None when it makes none or
+        one it makes is a pattern (a later glob) or isn't readable: the loop's values are then unknown, as before."""
+        try:
+            pieces = _brace(raw, self.charge, self.ctx["brace"] + len(raw))
+        except ParseError:
+            return None
+        made = [w for w in map(self.relex, pieces or ()) if w]
+        if not made or any(g or expanded for _, _, g, expanded in made):
+            return None
+        self.ctx["brace"] -= sum(len(p) + 1 for p in pieces) - 1 - len(raw)
+        return [text for text, *_ in made]
 
     def relex(self, piece):
         """word() over one word a brace expansion or $IFS made (_brace refuses a substitution in it), or None for an

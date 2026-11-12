@@ -1359,13 +1359,14 @@ class CodingPack(unittest.TestCase):
 
     def test_a_file_tool_writing_a_login_script_or_cron_file_asks(self):
         # TK-A010 knew service managers' places only: a Write of a download-and-run line into /etc/profile.d ran at
-        # the next login unheld. A shell append to a startup file stays flagged (TK-F011), and reading one is allowed
+        # the next login unheld. A shell append to a startup file stays flagged (TK-F011, and TK-F024 for every writer),
+        # and reading one is allowed
         self.verdicts([({"file_path": p}, "TK-A010") for p in (
             "/Users/dev/.zshrc", "/home/dev/.bashrc", "/home/dev/.profile", "/Users/dev/.zprofile",
             "/etc/profile.d/00-update.sh", "/etc/profile", "/etc/cron.d/update", "/var/spool/cron/crontabs/root")],
             tool="Write")
         d = self.e.decide("Bash", {"command": "echo 'export PATH=\"$HOME/bin:$PATH\"' >> ~/.zshrc"})
-        self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-F011"]))
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-F011", "TK-F024"]))
         for tool, args in (("Read", {"file_path": "/Users/dev/.zshrc"}), ("Bash", {"command": "cat ~/.zshrc"}),
                            ("Write", {"file_path": "/repo/docs/profile.md"})):
             self.assertEqual(self.e.decide(tool, args)["verdict"], "allow", args)
@@ -5114,7 +5115,7 @@ class StrictPack(unittest.TestCase):
     def test_it_only_re_tiers_the_coding_packs_rules(self):
         coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
         mine = {r["id"]: r for r in self.pol["ask"] if r["id"] in coding}
-        self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013"])
+        self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013", "TK-F024"])
         for rid, r in mine.items():
             self.assertEqual({k: r[k] for k in ("pattern", "label") + (("field",) if "field" in r else ())},
                              {k: coding[rid][k] for k in ("pattern", "label") + (("field",) if "field" in r else ())})

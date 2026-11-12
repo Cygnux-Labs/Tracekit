@@ -194,15 +194,16 @@ def url_target(url):
 
 
 # SQL as each dialect lexes it: (backslash escapes in '' and "", $tag$ quotes, nested /* */, # comments, [ident],
-# `ident`, -- starts a comment only before a space, a CR ends a -- or # comment as a LF does: PostgreSQL's scanner and
-# SQL Server's documentation; MySQL and SQLite end one at a LF only). A statement that splits differently in two
-# dialects (a comment or literal one hides and the other runs) is matched in every reading.
+# `ident`, -- starts a comment only before a blank or a control character, a CR ends a -- or # comment as a LF does:
+# PostgreSQL's scanner and SQL Server's documentation; MySQL and SQLite end one at a LF only). A statement that splits
+# differently in two dialects (a comment or literal one hides and the other runs) is matched in every reading.
 # lean: Oracle q'[...]' quotes and MySQL's NO_BACKSLASH_ESCAPES are not modelled; add a reading if a deployment uses them
 SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False, True),
                 "mysql": (True, False, False, True, False, True, True, False),
                 "sqlite": (False, False, False, False, True, True, False, False),
                 "mssql": (False, False, True, False, True, False, False, True)}
-_DOLLAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
+# a dollar-quote tag is an identifier: PostgreSQL's scanner takes any byte past ASCII as a letter (dolq_start)
+_DOLLAR = re.compile(r"\$([A-Za-z_\x80-\U0010ffff][A-Za-z0-9_\x80-\U0010ffff]*)?\$")
 _MYSQL_RUN = re.compile(r"/\*M?!\d*")
 _SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b*]+")   # characters no dialect starts a comment, literal or quote with
 _LINE_END = {False: re.compile("\n"), True: re.compile("[\r\n]")}
@@ -223,7 +224,8 @@ def sql_read(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
     out, i, n, runs = [], 0, len(stmt), 0   # runs: MySQL /*! ... */ open, whose */ closes it as a blank
     while i < n:
         c, two = stmt[i], stmt[i:i + 2]
-        if (two == "--" and (not dash_space or stmt[i + 2:i + 3] in ("", " ", "\t", "\n", "\r", "\f", "\v"))) or \
+        # MySQL's -- needs a blank or any control character after it (sql_lex.cc: my_isspace or my_iscntrl), DEL too
+        if (two == "--" and (not dash_space or stmt[i + 2:i + 3] <= " " or stmt[i + 2:i + 3] == "\x7f")) or \
                 (c == "#" and hash_comment):
             end = _LINE_END[cr].search(stmt, i)
             i = end.start() if end else n
@@ -241,7 +243,9 @@ def sql_read(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
                     close = stmt.find("*/", j)
                     if close < 0:
                         return "".join(out), False
-                opened = stmt.find("/*", j, close) if nest else -1
+                # an opener that starts before the */ opens, even where they share the * (`/*/`): PostgreSQL's scanner
+                # reads left to right, and its xcstart takes `/*` first
+                opened = stmt.find("/*", j, close + 1) if nest else -1
                 depth, j = (depth + 1, opened + 2) if opened >= 0 else (depth - 1, close + 2)
             out.append(" ")
             i = j

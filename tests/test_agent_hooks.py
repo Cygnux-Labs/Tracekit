@@ -974,7 +974,7 @@ class DevinTools(unittest.TestCase):
                 self.assertIn("sets or replays state of the running shell", agent_hooks._blocked("devin", p, json.dumps(p))
                               or "")
         # the words as written elsewhere on a line, and ordinary typed lines
-        for text in ("y\n", "q", "ls -la\n", "git status\n", "echo alias trap fc PS1\n", "git commit -m 'trap'\n",
+        for text in ("y\n", "q\n", "ls -la\n", "git status\n", "echo alias trap fc PS1\n", "git commit -m 'trap'\n",
                      "[ a != b ]\n", "wait $!\n", "[[ ! -f x ]] && echo ok\n", "echo hi!\n", "python3 -c 'print(1)'\n",
                      "cd src\nls\n", "export FOO=bar\n", "echo\u00a0hi\n",
                      # set that changes no option (psql), and alias that defines none (a Python REPL)

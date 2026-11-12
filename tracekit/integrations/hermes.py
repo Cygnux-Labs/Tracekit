@@ -79,6 +79,18 @@ def hook_timeout_s(config, env=os.environ):
     return min(bounds) if bounds else 0.0
 
 
+def _typed(tool, args):
+    """The reason text process_manage types into a running process (write: as given; submit: with a newline) is
+    blocked before it is decided, as Codex's write_stdin is (agent_hooks._typed): a control character or history
+    expansion a shell's line editor acts on, shell state it sets, or a line it leaves unfinished, which the shell joins
+    to the next text typed. Else None."""
+    if tool != "process_manage" or not isinstance(args, dict) or args.get("action") not in ("write", "submit") or \
+            not isinstance(args.get("data"), str):
+        return None
+    from tracekit.agent_hooks import _typed as typed
+    return typed("Hermes's process_manage", args["action"], args["data"] + "\n" * (args["action"] == "submit"))
+
+
 def _block(message):
     return {"action": "block", "message": message[:4096]}
 
@@ -140,6 +152,9 @@ def hooks(token=lambda: None, timeout_s=lambda: DEFAULT_TIMEOUT_S, coerce=None):
         start, key = time.monotonic(), (session_id, tool_call_id)
         if not tool_call_id:   # never made up: the call's result could not be bound to its decision
             return _block("Tool call blocked by Tracekit: Hermes gave the call no tool_call_id to decide it under")
+        typed = _typed(tool_name, args)
+        if typed:
+            return _block(typed)
         args = copy.deepcopy(args) if isinstance(args, dict) else {}   # as decided, whatever changes Hermes's dict
         # Hermes gave up on this very call before its hook ran (a /stop while it waited behind another call's hold):
         # tool_call_ids are unique in a session (agent/turn_tool_validation.py)

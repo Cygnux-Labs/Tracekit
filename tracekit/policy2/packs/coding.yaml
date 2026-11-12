@@ -107,6 +107,18 @@ deny:
     reason: writing to a credentials file from the shell
     remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
+  - id: TK-D014
+    class: shell
+    field: effects
+    # every file a command writes (engine._effects: redirections, tee, cp, mv, install, dd of=, truncate, sed -i,
+    # perl -i, awk's print >, find -exec, and each name a pattern there may stand for), as TK-D005 reads a path, so an
+    # in-place editor reaches no credentials file TK-D010's list of writers leaves out. An .env template is exempt, as
+    # in TK-D005
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:[^/]*?(?:\.env|id_rsa|id_ed25519|id_ecdsa|authorized_keys2?)|\.env\.[A-Za-z0-9._-]+|credentials|\.aws/(?:credentials|config)|\.ssh/(?:config|rc))$'
+    unless: '^WRITE_TARGET:(?:[\w\W]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
+    reason: writing to a credentials file from the shell
+    remedy: Write a template with placeholders (.env.example) with the file-editing tool, not the shell, and read real values from the environment; a person fills in credential files.
+    rationale: TK-D010 for every way the shell writes a file, so sed -i or truncate is no second route to what TK-D005 blocks.
   - id: TK-D011
     class: shell
     field: line
@@ -288,13 +300,36 @@ ask:
     class: shell
     # each command's argv: removing or stopping Tracekit as a person would, `tracekit uninstall`, `down` or `up
     # --replace`, which stops the running signer first (also as `python -m tracekit`, as TK-D012 reads it), uninstalling
-    # its package with pip, uv (pip, tool or a project's remove), pipx or poetry, its Claude Code plugin's uninstall or
-    # disable, and a user service's stop, after any number of options. Held, not denied, so a person who means it
-    # approves it; TK-D007 denies touching the signer's files or process directly
-    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down|up( [^ ]+)*? --replace)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +)*(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^claude (-[^ ]+ +)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)( [\w\W]*?)? tracekit(@[^ ]*)?( |$)|^systemctl (-[^ ]+ +)*(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
+    # its package with pip, uv (pip, tool or a project's remove), pipx or poetry, its Claude Code plugin's or Hermes
+    # Agent plugin's uninstall or disable, and a user service's stop, after any number of options. Held, not denied, so
+    # a person who means it approves it; TK-D007 denies touching the signer's files or process directly
+    pattern: '^(tracekit|(pyw?|pypy|pythonw?)[0-9.]*t? (-[^ ]+ +([^- ][^ ]* +)?){0,8}-[A-Za-z]*m ?tracekit)(\.cli|\.__main__)?( --)? (uninstall|down|up( [^ ]+)*? --replace)( |$)|^(pip[0-9.]*|(pyw?|pypy|pythonw?)[0-9.]*t? -m pip|uv( pip| tool)?|pipx|poetry) (-[^ ]+ +)*(uninstall|remove|rm)( [\w\W]*?)? [Tt][Rr][Aa][Cc][Ee][Kk][Ii][Tt]([-_.][Aa][Ii])?( |$)|^(claude|hermes) (-[^ ]+ +([^- ][^ ]* +)?)*plugins? (-[^ ]+ +)*(uninstall|disable|remove|rm)( [\w\W]*?)? tracekit(@[^ ]*)?( |$)|^systemctl (-[^ ]+ +)*(stop|disable|kill|mask) ([\w\W]*? )?tracekit'
     reason: removing or stopping Tracekit
     remedy: Have a person approve the held call if they mean to remove or stop Tracekit; the agent's own work has no need to.
     rationale: Uninstalling Tracekit's hooks, package or plugin, or stopping its signer, ends the record of what the agent does next; a person confirms it, where a deny would leave a person working through the agent no way to.
+  - id: TK-A069
+    class: shell
+    # each command's argv: a harness's own command that changes its settings, as TK-F015 holds a write to its files:
+    # Hermes Agent's `config set`, `unset`, `edit` or `migrate` (approvals.mode, plugins.disabled, its hook timeout)
+    # and `profile use`, which makes another profile's settings the default, after any number of options
+    pattern: '^hermes (-[^ ]+ +([^- ][^ ]* +)?)*(config (-[^ ]+ +)*(set|unset|edit|migrate)|profile (-[^ ]+ +)*use)( |$)'
+    label: harness_config
+    reason: changing the agent harness's settings, hooks or plugins
+    remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
+    rationale: Hermes's settings decide which plugins run, Tracekit's among them, and what Hermes asks a person first.
+  - id: TK-A070
+    class: shell
+    field: harness_launch
+    # an agent harness's CLI started with settings the line chooses (engine._harness_launches): another HOME,
+    # XDG_CONFIG_HOME or the harness's own home or config variable, env -i or -u, or a settings option (claude
+    # --settings or --setting-sources, codex -c or -p, hermes -p, any --config or --profile). Such a run reads none of
+    # the person's settings, and so runs none of the hooks that would record it. A harness started as the person set
+    # it up runs those hooks, and isn't held
+    pattern: '^LAUNCH:'
+    label: harness_config
+    reason: starting an agent harness with settings the agent chose
+    remedy: Have a person approve the held call, or start the harness with the person's own settings, which record its calls.
+    rationale: A nested agent run under another home or settings skips Tracekit's hooks, so none of its calls would be decided or recorded.
   - id: TK-A057
     class: shell
     # each command's argv, as TK-A054 reads `tracekit uninstall` (also as `python -m tracekit[.cli]`): `tracekit
@@ -852,6 +887,16 @@ ask:
     reason: adding something that runs at every login or boot
     remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
+  - id: TK-A067
+    class: shell
+    field: effects
+    # TK-A010's places as every file a command writes (engine._effects, as TK-D014 reads them), so sed -i, perl -i
+    # and the other writers TK-A011's list leaves out are held too; a home's shell startup files are TK-F024's, as
+    # TK-F011 flags a redirection into one
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?(?:library/launch(?:agents|daemons)/|\.config/(?:systemd/user|autostart)/|etc/(?:systemd/system|init(?:\.d)?|rc\.local|xdg/autostart|profile\.d)(?:/|$)|etc/(?:cron[^/]*|profile|bash\.bashrc|bashrc|zshenv|zshrc|zprofile|zlogin|zlogout|zsh|rc[^/]*\.d)(?:/|$)|var/spool/cron(?:/|$)|(?:\.config|etc)/fish/(?:config\.fish$|conf\.d/)|(?:usr/)?lib/systemd/(?:system|user)/)'
+    reason: adding something that runs at every login or boot
+    remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
+    rationale: TK-A010 for every way the shell writes a file.
 
   # --- Git hooks: code that runs on every commit, checkout or push in the repository (a submodule's under
   # .git/modules/<name>/hooks/). lean: a submodule's name and nesting of up to eight parts, so the fallback engine
@@ -874,6 +919,15 @@ ask:
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
+  - id: TK-A068
+    class: shell
+    field: effects
+    # TK-A012's hooks folders as every file a command writes (engine._effects, as TK-D014 reads them): perl -i and
+    # the other writers TK-A013's list leaves out
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.git/(?:modules/(?:[^/]+/){1,8})?hooks/'
+    reason: writing a Git hook
+    remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
+    rationale: TK-A012 for every way the shell writes a file.
 
   # --- the agent harness's settings: held, as changing the guardrails (#604)
   - id: TK-F009
@@ -890,6 +944,7 @@ ask:
     # commands with `!` lines) under .claude/ (held, as the rest of .claude/ is); Cursor its MCP servers in
     # .cursor/mcp.json. Cline runs every hook file in Documents/Cline/Hooks (wherever Documents is), ~/.cline/hooks and
     # a workspace's .cline/hooks and .clinerules/hooks, and keeps its settings, hooksEnabled among them, in ~/.cline/.
+    # Hermes Agent keeps its config, plugins (Tracekit's too) and profiles in ~/.hermes.
     # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
     # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
     # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
@@ -899,7 +954,7 @@ ask:
     # .claude is no setting, the worktree's own .claude, .codex, .mcp.json and the rest are. The .claude branch spells
     # out what isn't `/worktrees/<name>/…` (RE2 has no lookahead): another folder, the worktrees folder or a worktree
     # itself, and a name starting with a dot
-    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline)(/|$)|(^|/)(\.clinerules/hooks|cline/hooks)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
+    pattern: '(^|/)\.(codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|hermes)(/|$)|(^|/)(\.clinerules/hooks|cline/hooks)(/|$)|(^|/)\.claude($|/([^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/]|(w(o(r(k(t(r(e(e(s)?)?)?)?)?)?)?)?)?$|worktrees/(\.|[^/]*$)))|(^|/)\.agents/(hooks\.json$|plugins(/|$))|(^|/)(\.config/goose|\.config/kilo|\.config/devin|block/goose/config|appdata/roaming/devin)(/|$)|\.cursor/(hooks|mcp)\.json|(^|/)\.claude\.json$|(^|/)(opencode|kilo)\.jsonc?$|(^|/)(crush\.json|\.crush\.json|crushrc|\.crushrc)$|(^|/)\.config/crush(/|$)|(^|/)((documents|onedrive[^/]*/[^/]+)/(windows)?powershell|windowspowershell/v1\.0|powershell/7(-preview)?|\.config/powershell)/[^/]*profile\.ps1$|managed-settings|\.mcp\.json'
     # Claude Code's memory notes (as TK-D009 reads them) are the agent's own notes, not the harness's settings
     unless: '(^|/)\.claude/projects/[^/]+/memory/[^/]+\.md$'
     label: harness_config
@@ -910,8 +965,8 @@ ask:
     class: shell
     field: effects
     # Each recognized write or delete target, including redirects and its casefolded form; a newline in the path
-    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME is matched by name. OpenCode's
-    # user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
+    # doesn't end the match. Variables are not expanded, so Qwen Code's QWEN_HOME and Hermes's HERMES_HOME are matched
+    # by name. OpenCode's user config (its plugins, Tracekit's too) is ~/.config/opencode; Crush's is ~/.config/crush, and its project or
     # home config is crush.json, .crush.json, crushrc or .crushrc; Kilo Code's are OpenCode's under its own names
     # (.kilo, .kilocode, ~/.config/kilo, kilo.json); Cline's are ~/.cline and its hook folders, .cline/hooks,
     # .clinerules/hooks and Documents/Cline/Hooks. $XDG_CONFIG_HOME/opencode and /kilo, and the folder
@@ -926,7 +981,7 @@ ask:
     # only the worktree (`x/`, `x/.`, `x//`).
     # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
     # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?QWEN_HOME\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|hermes)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.claude(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|plugins(?:[/\\]|$))|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|\.claude\.json$|\$\{?(?:QWEN|HERMES)_HOME\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config
@@ -1018,6 +1073,13 @@ flag:
     # paths, Python's startup file, git's ssh command), unsetting the model URL or a proxy, and appending to or teeing
     # into a bash or zsh startup file
     pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|PYTHONSTARTUP|NODE_OPTIONS|GIT_SSH_COMMAND)\+?=|\bunset\s+(ANTHROPIC_([A-Z]+_)?BASE_URL|HTTPS?_PROXY)\b|(>>?|\btee(\s+-[^\s]+){0,8}\s)\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b'
+    label: env_tamper
+  - id: TK-F024
+    class: shell
+    field: effects
+    # a bash or zsh startup file as every file a command writes (engine._effects, as TK-D014 reads them: sed -i, cp,
+    # a pattern that may name one), as TK-F011 reads a redirection into one; the strict pack holds it
+    pattern: '^WRITE_TARGET:(?:[\w\W]*?/)?\.(?:bashrc|bash_profile|bash_login|bash_logout|profile|zshenv|zshrc|zprofile|zlogin|zlogout)$'
     label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with
