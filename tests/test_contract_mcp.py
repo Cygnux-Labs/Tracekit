@@ -312,6 +312,19 @@ class SignerFailures(unittest.TestCase):
         self.assertEqual((out.contents[0].text, session.calls), ("body of note://inbox", 1))
         self.assertIn("not recorded", str(cm.warning))
 
+    def test_a_resource_over_half_a_frame_is_recorded_as_its_digest(self):
+        from mcp.types import ReadResourceResult, TextResourceContents
+        from tracekit.format.canon import event_hash
+
+        class Big(_StubSession):
+            async def read_resource(self, uri, *a, **kw):
+                return ReadResourceResult(contents=[TextResourceContents(uri=uri, text="x" * (1 << 20))])
+        signer = _Signer()
+        out = asyncio.run(TracekitSession(Big(), signer, self.RUN).read_resource("note://inbox"))
+        self.assertEqual(len(out.contents[0].text), 1 << 20)
+        self.assertEqual([r["value"] for r in signer.observed],
+                         [event_hash(out.model_dump(mode="json", by_alias=True, exclude_none=True))])
+
 
 class _ListingSession(_StubSession):
     """List methods return one page, the one `params.cursor` names (the first when the caller asks for none)."""
