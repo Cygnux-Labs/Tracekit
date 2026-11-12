@@ -430,6 +430,22 @@ class TestAudit(unittest.TestCase):
         report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="codex")
         self.assertEqual([(c["tool"], c["verdict"]) for c in report["calls"]], [("Bash", "allow")])
 
+    def test_a_call_cline_s_hook_cant_read_is_blocked_as_the_hook_blocks_it(self):
+        """The 1.7.0 review: one Cline call the mapping can't read (a run_commands argv with a number in it, an editor
+        with no path) stopped the whole --agent cline replay (exit 2). Its live hook blocks such a call: audit denies
+        it (TK-HOOK-BLOCKED) and replays the rest."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("run_commands", {"command": "ls"}),
+                                                 _line("run_commands", {"command": ["ls", 1]}),
+                                                 _line("editor", {"command": "view"}),
+                                                 _line("run_commands", {"command": "git status"})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "cline", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual(report["skipped_malformed"], 0)
+        self.assertEqual([(c["verdict"], c["rule_ids"]) for c in report["calls"]],
+                         [("allow", []), ("deny", ["TK-HOOK-BLOCKED"]), ("deny", ["TK-HOOK-BLOCKED"]),
+                          ("allow", [])])
+
     def test_kilo_generate_image_without_a_path_is_decided(self):
         """The 1.7.0 review's fuzzing: --agent kilo crashed (KeyError) on a generate_image with an image and no path;
         it is decided as the Read of the image."""

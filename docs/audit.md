@@ -105,7 +105,8 @@ jq -c '{time: .ts, tool: .tool, args: .input}' agent.log | tracekit audit --call
 - Counts per verdict (`deny`, `ask` / held, `flag`, `allow`). A call the policy engine fails on counts as a deny
   (`TK-ENGINE-ERROR`), as the signer would decide it. A shell command that is neither text nor an argv of strings
   (an argv with an item that isn't a string, say), with any `--agent` or none, is held (`TK-SHELL-PARSE`), as the
-  signer holds it.
+  signer holds it; with `--agent cline` or `--agent devin`, a call that agent's hook can't read is denied
+  (`TK-HOOK-BLOCKED`), as its hook blocks it before the signer sees it.
 - Counts per rule id, most first, each with what the rule is (its `reason` or `label`, or the viewer's words for the
   engine's own rules).
 - The session and timestamp of each denied or held call (every call with `--all`), and its redacted text with
