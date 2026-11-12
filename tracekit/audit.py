@@ -391,6 +391,9 @@ def share(report: dict) -> str:
     window = _days(time.time() - when(report["since"])) if report["since"] else \
         "the whole calls file" if report["calls_file"] else "every transcript"
     kind = "Claude Code" if set(report["agents"]) == {"claude"} else "coding-agent"
+    # only a cause in the engine's own table may leave the machine by name; anything else a decision
+    # carries as its unread (a path, say) is counted as other (#745)
+    causes = ENGINE_REASONS["TK-SHELL-PARSE"].get("causes", {})
     lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
              f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
@@ -399,7 +402,8 @@ def share(report: dict) -> str:
              # a TK-SHELL-PARSE hold's cause, by name alone: the names are a fixed list in the code, so no text
              # of a call leaves the machine (#745)
              *[f"  {dec} TK-SHELL-PARSE {cause} {k:,}" for (dec, cause), k in
-               sorted(collections.Counter((c["verdict"], c["unread"]) for c in report["calls"]
+               sorted(collections.Counter((c["verdict"], c["unread"] if c["unread"] in causes else "other")
+                                          for c in report["calls"]
                                           if "unread" in c and "TK-SHELL-PARSE" in c["rule_ids"]).items(),
                       key=lambda x: (-x[1], x[0]))]]
     return "\n".join(_escaped(line) for line in lines) + "\n"

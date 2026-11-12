@@ -351,6 +351,18 @@ class TestAudit(unittest.TestCase):
         self.assertIn("  ask TK-SHELL-PARSE quote 1", page)
         self.assertIn("  ask TK-SHELL-PARSE input 1", page)
 
+    def test_share_prints_an_unknown_cause_as_other(self):
+        """#745: --share is where the text leaves the machine, so a decision whose unread is not a cause in
+        the engine's table (a path, say) is counted as other there, and the string itself never appears."""
+        path = self.root / "calls.jsonl"
+        _write_jsonl(path, [_line("Bash", {"command": "echo 'open"})])
+        report = audit.audit(calls=str(path))
+        report["calls"][0]["unread"] = "/home/user/secret.sh"
+        page = audit.share(report)
+        self.assertIn("  ask TK-SHELL-PARSE other 1", page)
+        self.assertNotIn("/home/user/secret.sh", page)
+        self.assertNotIn("secret.sh", page)
+
     def test_a_calls_file_is_decided_as_transcripts_are(self):
         """#714: a calls file any agent's log can be turned into: a line without tool and args is malformed, --since
         cuts by its time, and a line without a session counts under the file's name."""
