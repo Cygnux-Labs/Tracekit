@@ -1078,6 +1078,38 @@ class CodingPack(unittest.TestCase):
                     self.assertNotIn("TK-A059", d["rule_ids"], d)
                     self.assertNotIn("TK-A060", d["rule_ids"], d)
 
+    def test_a_pth_file_in_site_packages_asks_as_a_pth_file(self):
+        """#747: a .pth written directly into a site-packages or dist-packages folder runs at every Python
+        start, so TK-A068 (file tools) and TK-A069 (shell) hold it with that reason and TK-A058 / TK-A059 no
+        longer match it — one call, one reason. A .pth anywhere else, including deeper inside a package
+        folder, keeps the model-weights reason."""
+        site = "/home/u/proj/.venv/lib/python3.11/site-packages/src.pth"
+        dist = "/usr/lib/python3/dist-packages/evil.pth"
+        held_fs = [("Write", {"file_path": site, "content": "import os\n"}),
+                   ("Write", {"file_path": dist, "content": "import os\n"}),
+                   ("Edit", {"file_path": site, "old_string": "a", "new_string": "b"})]
+        held_shell = [f"cp src.pth {site}", f"echo /src > {site}", f"cp src.pth {dist}"]
+        weights_fs = [("Write", {"file_path": "checkpoints/model.pth", "content": "w"}),
+                      ("Write", {"file_path": "/w/site-packages/pkg/model.pth", "content": "w"})]
+        weights_shell = ["cp model.pth checkpoints/model.pth", "cp src.pth dst.pth"]
+        for pack, engine, e in self.every_pack():
+            for tool, args in held_fs:
+                with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
+                    d = e.decide(tool, args)
+                    self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-A068"]), d)
+            for cmd in held_shell:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-A069"]), d)
+            for tool, args in weights_fs:
+                with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
+                    d = e.decide(tool, args)
+                    self.assertEqual(d["rule_ids"], ["TK-A058"], d)
+            for cmd in weights_shell:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertEqual(d["rule_ids"], ["TK-A059"], d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",

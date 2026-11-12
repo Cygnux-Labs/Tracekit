@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-81'
+version: '2026.11-v2-82'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -475,6 +475,8 @@ ask:
     field: path
     # model weights files (.safetensors, .gguf, .pt, .pth, .ckpt) written or edited through file tools; reads are allowed
     pattern: '\.(safetensors|gguf|pt|pth|ckpt)$'
+    # a .pth directly in site-packages or dist-packages is no weights file: TK-A068 holds it with its own reason
+    unless: '[/\\](?:site|dist)-packages[/\\][^/\\]+\.pth$'
     reason: writing a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
@@ -484,9 +486,31 @@ ask:
     # each file a command writes (redirections, cp, mv, tee …), as TK-D008 reads them, ending in model weights
     # extensions (.safetensors, .gguf, .pt, .pth, .ckpt); reads, listings and non-weights files aren't held
     pattern: '^WRITE_TARGET:[\w\W]*?\.(?:safetensors|gguf|pt|pth|ckpt)$'
+    # a .pth directly in site-packages or dist-packages is no weights file: TK-A069 holds it with its own reason
+    unless: '^WRITE_TARGET:[\w\W]*?[/\\](?:site|dist)-packages[/\\][^/\\]+\.pth$'
     reason: writing a model weights file
     remedy: Have a person approve the held call.
     rationale: Writing a model weights file changes what every user of that model gets; a person confirms it.
+  - id: TK-A068
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    # a .pth file written directly into a site-packages or dist-packages folder (#747): Python's site module
+    # reads every one at each interpreter start, adds its lines to sys.path and runs its lines that start with
+    # import. A .pth deeper inside a package folder, or anywhere else, stays TK-A058's weights file.
+    pattern: '(?:^|[/\\])(?:site|dist)-packages[/\\][^/\\]+\.pth$'
+    reason: writing a Python .pth file, which runs at every Python start
+    remedy: Have a person approve the held call.
+    rationale: A .pth file in site-packages is read at every Python start and its import lines run; a person confirms it.
+  - id: TK-A069
+    class: shell
+    field: effects
+    # the same write through the shell: each file a command writes (redirections, cp, mv, tee …) that is a
+    # .pth directly in a site-packages or dist-packages folder (#747)
+    pattern: '^WRITE_TARGET:[\w\W]*?[/\\](?:site|dist)-packages[/\\][^/\\]+\.pth$'
+    reason: writing a Python .pth file, which runs at every Python start
+    remedy: Have a person approve the held call.
+    rationale: A .pth file in site-packages is read at every Python start and its import lines run; a person confirms it.
   - id: TK-A060
     class: shell
     field: argv

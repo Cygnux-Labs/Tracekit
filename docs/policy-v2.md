@@ -702,7 +702,7 @@ The server pack's other rules hold or deny here too: privilege escalation (`TK-D
 command's options (`TK-S006`), denied; internal addresses (`TK-N001` to `TK-N003`, `TK-B001` to `TK-B003`), denied;
 something that runs at every login or boot (`TK-A010`, `TK-A011`), history or system logs cleared (`TK-A026`,
 `TK-A027`, `TK-A029`), a package manager's sources changed (`TK-A024`, `TK-A030`), Docker's host access (`TK-A022`,
-`TK-A023`), a patch applied through the shell (`TK-A034`), model weights written (`TK-A058`, `TK-A059`), a command or
+`TK-A023`), a patch applied through the shell (`TK-A034`), model weights written (`TK-A058`, `TK-A059`), a Python `.pth` file written directly into `site-packages` or `dist-packages`, which runs at every Python start (`TK-A068`, `TK-A069`), a command or
 code through an MCP tool (`TK-S010`, `TK-S012`), an A2A message (`TK-S011`), and a browser's uploads, typing and page
 JavaScript (`TK-B010` to `TK-B012`), held. Network commands and web requests, background processes, shell shadowing and
 environment changes are flagged (`TK-F001`, `TK-F002`, `TK-F007`, `TK-F008`, `TK-F010` to `TK-F014`), and so are every
