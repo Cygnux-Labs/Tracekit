@@ -344,11 +344,8 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 except RecursionError:   # nested past what the mapping takes, as json.loads counts such a line
                     skipped_malformed += 1
                     continue
-                except UnreadableCall:   # a call the mapping can't read (Cline's, goose's): its live hook blocks it
+                except UnreadableCall:   # a call the mapping can't read (Cline's; goose's, which its v2 hook blocks)
                     blocked = True
-                except ValueError:   # a bug in the mapping ends the replay: close the calls file it reads
-                    read.close()
-                    raise
             try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its bare name,
                 # PowerShell also as a shell line; a shell command its parser can't read is held (TK-SHELL-PARSE)
                 decision = {"verdict": "deny", "rule_ids": ["TK-HOOK-BLOCKED"]} if blocked else \

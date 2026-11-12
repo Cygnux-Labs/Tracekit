@@ -160,8 +160,8 @@ DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+)$)", re.M)
 
 
 class UnreadableCall(ValueError):
-    """A call a harness's mapping can't read on purpose (tool()): its hook blocks it, and tracekit audit reports it as
-    TK-HOOK-BLOCKED; any other ValueError is a bug."""
+    """A call a harness's mapping can't read on purpose (tool()): its hook blocks it (Cline's; goose's, which its v2
+    hook blocks), and tracekit audit reports it as TK-HOOK-BLOCKED; any other ValueError is a bug."""
 
 
 def _diff_names(name):
@@ -441,7 +441,7 @@ def tool(harness, name, ti):
             src = re.sub(r"[\t\n\r]", "", str(ti.get("source") or "")).strip("".join(map(chr, range(33))))
             try:
                 parts = urllib.parse.urlsplit(src.replace("\\", "/"))
-            except ValueError:   # a bracketed host that isn't one (http://[::1/cat.png)
+            except ValueError:   # urlsplit refuses it (an unclosed bracket: http://[::1/cat.png)
                 raise UnreadableCall("goose's read_image source isn't a URL Tracekit can read") from None
             if parts.scheme.lower() in ("http", "https"):
                 return "WebFetch", {**ti, "url": src.replace("\\", "/")}

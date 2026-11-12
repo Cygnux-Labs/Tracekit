@@ -604,8 +604,11 @@ class TestAudit(unittest.TestCase):
     def test_a_mapping_bug_is_not_reported_as_the_hook_blocking_the_call(self):
         """#771: only UnreadableCall is a call the hook blocks; any other ValueError from the mapping is a bug that ends
         the replay with its message (exit 2)."""
+        def bug(*_):
+            raise ValueError("a mapping bug")
+
         _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"command": "ls"})])
-        with mock.patch.object(audit, "hook_tool", side_effect=ValueError("a mapping bug")):
+        with mock.patch.object(audit, "hook_tool", side_effect=bug):
             with self.assertRaisesRegex(ValueError, "a mapping bug"):
                 audit.audit(calls=str(self.root / "calls.jsonl"), agent="goose")
             code, _, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "goose")
