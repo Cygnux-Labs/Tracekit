@@ -87,7 +87,8 @@ Support/Code/User/globalStorage` on macOS, `~/.config/Code/User/globalStorage` o
 ROOT with `--agent cline`). Each `tool_use` block of an assistant message is a call, mapped as Tracekit's Cline hook
 maps it, so every command of a `run_commands` and every file of a `read_files` is decided; a call the hook can't read
 is a deny by `TK-HOOK-BLOCKED`. A message's `ts` is its time, else the file's modification time. The task's id is its
-session. A file that isn't JSON of that shape counts as one malformed entry.
+session. A file that isn't JSON of that shape counts as one malformed entry. A call an older task wrote as XML in the
+message's text, rather than as a `tool_use` block, isn't read.
 
 The readers follow no symlink. Files and folders they can't read are counted and skipped, and so is a line that isn't
 JSON.

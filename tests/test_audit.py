@@ -484,17 +484,28 @@ class TestAudit(unittest.TestCase):
         self.assertNotEqual(report["calls"][1]["verdict"], "allow")   # its second file decides
         self.assertEqual(report["agents"], {"cline": {"folder": str(self.root), "calls": 2, "sessions": 1}})
 
-    def test_a_pre_v4_cline_task_is_read_at_its_files_time(self):
-        """#717: an extension task from before 4.0 (<id>/api_conversation_history.json, a list of messages without ts):
-        its calls take the file's modification time."""
+    def test_a_pre_v4_cline_task_is_read(self):
+        """#717: an extension task from before 4.0 (<id>/api_conversation_history.json, a list of Anthropic messages,
+        as 3.89 wrote it: its own tool names, and a ts on a message only sometimes): a call takes its message's ts, else
+        the file's modification time."""
         path = self.root / "t1" / "api_conversation_history.json"
-        _write_json(path, [{"role": "user", "content": "go"}, _cline_use("run_commands", {"commands": ["rm -rf /"]})])
+        _write_json(path, [
+            {"role": "user", "content": [{"type": "text", "text": "<task>tidy up</task>"}], "ts": _ms()},
+            {"role": "assistant", "id": "resp_1", "ts": _ms(), "content": [
+                {"type": "text", "text": "Listing the files."},
+                {"type": "tool_use", "id": "toolu_1", "name": "execute_command",
+                 "input": {"command": "ls", "requires_approval": False}}]},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_1", "content": "notes.txt"}]},
+            {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_2", "name": "read_file",
+                                               "input": {"path": "notes.txt"}}]}])
         old = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp())
         os.utime(path, (old, old))
         report = audit.audit(str(self.root), agent="cline")
-        self.assertEqual([(c["session"], c["tool"], c["verdict"]) for c in report["calls"]], [("t1", "Bash", "deny")])
-        self.assertEqual(datetime.fromisoformat(report["calls"][0]["time"]).timestamp(), old)
-        self.assertEqual(audit.audit(str(self.root), since="7d", agent="cline")["calls"], [])
+        self.assertEqual([(c["session"], c["tool"]) for c in report["calls"]],
+                         [("t1", "execute_command"), ("t1", "read_file")])
+        self.assertEqual(datetime.fromisoformat(report["calls"][1]["time"]).timestamp(), old)   # no ts: the file's
+        self.assertEqual([c["tool"] for c in audit.audit(str(self.root), since="7d", agent="cline")["calls"]],
+                         ["execute_command"])
 
     def test_since_keeps_cline_calls_by_their_ts(self):
         _write_json(self.root / "s1" / "s1.messages.json", {"messages": [
