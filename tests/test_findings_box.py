@@ -17,6 +17,7 @@ from factories import BoxScene
 from test_findings_v2 import Via
 from tracekit import bundle_v2, findings, findings_box, findings_effects, findings_v2
 from tracekit.bundle_v2 import export
+from tracekit.signer import rpc_schema
 from tracekit.storage.base import registry_tree
 from tracekit.verify import v2
 from tracekit.why.import_v2 import bundle_records
@@ -866,6 +867,17 @@ class BoxPatchTaskConstraints(Base):
         out = self.analyze()
         self.assertEqual(self.found_x204(out), [])
         self.assertEqual(self.cov_x204(out), (1, 0, {}))
+
+    def test_each_finding_can_be_signed(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Don't touch .github/"}, trust="trusted")
+        b.write(30.0, f"{PROJ}/.github/workflows/ci.yml")
+        found = self.found_x204(self.analyze())
+        self.assertEqual(len(found), 1)
+        for f, _ in found:
+            self.assertEqual(rpc_schema.validate(rpc_schema.REVIEW, {"reviewer": "t", "verdict": f["verdict"],
+                                                                     "cites": f["cites"]}), [])
 
     def test_untrusted_task_is_ignored(self):
         b = self.box

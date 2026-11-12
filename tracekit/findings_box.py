@@ -111,7 +111,7 @@ REASONS = {
     "no_outcome": ("a connection to that host in the call's window has no recorded outcome (its result was lost, or an "
                    "approval it waited on was never answered)", "read the box run's tkbox.gap records"),
     "no_task": ("no operator task was recorded for the box (tkbox.task), so the box's patch cannot be checked against it",
-                "pass the task to the box with --task or prompt"),
+                "start the box with --task"),
 }
 CALL_SIDE = frozenset(("agent_run", "no_url", "reused", "box_refusal", "no_outcome"))
 
@@ -538,12 +538,6 @@ def _check_task(run, out, cov, writes, workspace, bodies, missing):
     file_constraints = [c for c in task_constraints if c[0] in ("keep_away", "only_change", "read_only")]
     only = {obj for kind, obj in file_constraints if kind == "only_change" and obj}
 
-    if task_text and file_constraints:
-        for kind, obj in file_constraints:
-            out["shown"]["constraints"].append({
-                "kind": kind, **({"name": obj} if obj else {}), "run_seq": task_seq, "source": "request", "tier": "observer"
-            })
-
     for w in writes:
         p = _arg(w, "file_path")
         if p is None:
@@ -577,7 +571,7 @@ def _check_task(run, out, cov, writes, workspace, bodies, missing):
             what = f"the box's patch {action} {rel} after the request (record {task_seq}) said {STATED[kind].format(target_str)}"
             cites = [task_seq, w["dseq"], *([w["rseq"]] if w.get("rseq") is not None else [])]
             out["findings"].append({
-                "verdict": {"kind": "finding", "rule": "TK-X204", "severity": "high", "tier": "observer"},
+                "verdict": {"kind": "finding", "rule": "TK-X204", "severity": "high"},
                 "cites": [{"run_seq": s, "hash": run.by_seq[s]["hash"]} for s in sorted(set(cites))[:MAX_CITES]]
             })
             out["shown"]["details"].append({
