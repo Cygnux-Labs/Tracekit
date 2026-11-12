@@ -107,7 +107,9 @@ class Compile(unittest.TestCase):
             self.assertIn(needle, text)
 
     def test_lint_refuses_an_id_the_engine_or_the_signer_gives_a_decision(self):
-        # a flag rule named TK-CONSTRAINT kept a broken live constraint from holding the call (the signer saw the id)
+        # a flag rule named TK-CONSTRAINT kept a broken live constraint from holding the call (the signer saw the id);
+        # TK-HOOK-BLOCKED is tracekit audit's (#730): a pack rule with that id would mix up audit's reason for it
+        self.assertIn("TK-HOOK-BLOCKED", pc.RESERVED_IDS)
         for rid in sorted(pc.RESERVED_IDS) + ["TK-APPROVAL-EXPIRED"]:
             with self.subTest(rid=rid):
                 self.assertIn(f"flag rule {rid}: the engine or the signer gives a decision this id itself",
@@ -132,10 +134,25 @@ class Compile(unittest.TestCase):
             with self.subTest(pack=name):
                 self.assertEqual(pc.build(os.path.join(PACKS, name))[1], [])
 
-    def test_oversize_is_ask_and_inherited(self):
-        self.assertIn("oversize must be ask", "\n".join(self.errors("oversize: deny\n")))
+    def test_oversize_is_ask_or_deny_and_inherited(self):
+        self.assertIn("oversize must be ask or deny", "\n".join(self.errors("oversize: maybe\n")))
+        self.assertNotIn("oversize must be", "\n".join(self.errors("oversize: deny\n")))
         self.write("base.yaml", "oversize: ask\ntools:\n  Bash: shell\n")
         self.assertEqual(pc.build(self.write("p.yaml", "extends: base.yaml\n"))[0]["oversize"], "ask")
+        self.assertEqual(pc.build(self.write("q.yaml", "extends: base.yaml\noversize: deny\n"))[0]["oversize"], "deny")
+
+    def test_oversize_deny_on_a_pack_extending_dev_denies_a_large_write(self):
+        import shutil
+        from tracekit.policy2.engine import Engine
+        dev_path = os.path.join(PACKS, "dev.yaml")
+        big = {"file_path": "/repo/big.py", "content": "x = 1\n" * 18000}   # 108 KB
+        held = Engine(pc.build(dev_path)[0], "regex").decide("Write", big)
+        self.assertEqual((held["verdict"], held["rule_ids"]), ("ask", ["TK-OVERSIZE"]))
+        shutil.copytree(PACKS, os.path.join(self.d, "packs"))   # a relative extends must stay on one drive
+        child, errs = pc.build(self.write("c.yaml", "extends: packs/dev.yaml\noversize: deny\n"))
+        self.assertEqual(errs, [])
+        d = Engine(child, "regex").decide("Write", big)
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
 
     def test_on_parse_error_is_ask_or_deny_and_inherited(self):
         self.assertIn("on_parse_error must be ask or deny", "\n".join(self.errors("on_parse_error: flag\n")))

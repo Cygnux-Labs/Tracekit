@@ -25,7 +25,8 @@ RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rat
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
-                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT"}
+                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT",
+                "TK-HOOK-BLOCKED"}   # tracekit audit's id for a call an agent's hook denies before the policy
 # the reason and remedy the signer gives with an id the engine gives itself, as with a rule's own: fixed text, never
 # the call's
 ENGINE_REASONS = {"TK-A2A-NAME": {
@@ -404,8 +405,8 @@ def _lint(pol, path):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     if pol.get("on_parse_error", "ask") not in ("ask", "deny"):
         errors.append(f"{path}: on_parse_error must be ask or deny")
-    if pol.get("oversize", "ask") != "ask":   # (left out, TK-OVERSIZE takes its rule's section)
-        errors.append(f"{path}: oversize must be ask")
+    if pol.get("oversize", "ask") not in ("ask", "deny"):   # (left out or deny, TK-OVERSIZE takes its rule's section)
+        errors.append(f"{path}: oversize must be ask or deny")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):
