@@ -2280,6 +2280,43 @@ class CodingPack(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertIn("TK-F015" if tool == "Bash" else "TK-F009", self.e.decide(tool, args)["rule_ids"])
 
+    def test_cursor_edit_tools_are_decided_as_the_edits_they_are(self):
+        # Cursor's transcripts name its edits StrReplace, ApplyPatch and EditNotebook (an older prompt's search_replace,
+        # write, delete_file and edit_notebook; found by Purv-Kabaria in #755): they were decided as unknown tools, a
+        # flag, where an Edit or Write of the same file is held or denied
+        from tracekit import agent_hooks
+        hooks, env, src = "/home/u/.cursor/hooks.json", "/w/.env", "/w/src/app.py"
+        for path in (hooks, env, src):
+            patch = f"*** Begin Patch\n*** Update File: {path}\n@@\n-a\n+b\n*** End Patch\n"
+            edit, write = ("Edit", {"file_path": path, "old_string": "a", "new_string": "b"}), (
+                "Write", {"file_path": path, "content": "{}"})
+            cell = {"cell_idx": 0, "is_new_cell": False, "cell_language": "python", "old_string": "a", "new_string": "b"}
+            cases = ((("StrReplace", {"path": path, "old_string": "a", "new_string": "b"}), edit),
+                     (("search_replace", {"file_path": path, "old_string": "a", "new_string": "b"}), edit),
+                     (("Write", {"path": path, "contents": "{}"}), write),
+                     (("write", {"file_path": path, "contents": "{}"}), write),
+                     (("Delete", {"path": path}), ("Edit", {"file_path": path})),
+                     (("delete_file", {"target_file": path}), ("Edit", {"file_path": path})),
+                     (("ApplyPatch", {"patch": patch}), ("Edit", {"file_path": path})),
+                     # Cursor unwraps a JSON {"patch": ...} and reads a header from the line trimmed as JavaScript trims
+                     (("ApplyPatch", {"patch": json.dumps({"patch": patch})}), ("Edit", {"file_path": path})),
+                     (("ApplyPatch", {"patch": patch.replace("*** Update", "﻿ *** Update"), "path": "/w/a.txt"}),
+                      ("Edit", {"file_path": path})),
+                     (("EditNotebook", {"target_notebook": path, **cell}), ("NotebookEdit", {"notebook_path": path})),
+                     (("edit_notebook", {"target_notebook": path, **cell}), ("NotebookEdit", {"notebook_path": path})))
+            for pack, engine, e in self.every_pack():
+                for form, single in cases:
+                    with self.subTest(pack=pack, engine=engine, form=form):
+                        got, want = e.decide(*agent_hooks.tool("cursor", *form)), e.decide(*single)
+                        self.assertEqual((got["verdict"], got["rule_ids"]), (want["verdict"], want["rule_ids"]))
+                        if path == hooks:   # held as a Write of it is
+                            self.assertEqual((got["verdict"], "TK-F009" in got["rule_ids"]),
+                                             (e.decide(*write)["verdict"], True))
+                        elif path == env:
+                            self.assertEqual((got["verdict"], "TK-D005" in got["rule_ids"]), ("deny", True))
+                        else:
+                            self.assertNotIn("TK-UNKNOWN-TOOL", got["rule_ids"])
+
     def test_opencode_config_changes_are_flagged_but_reads_and_near_names_are_allowed(self):
         for tool, path in (("Write", "/repo/.opencode/commands/deploy.md"),
                            ("Write", "/repo/.opencode/plugin/tracekit.ts"),

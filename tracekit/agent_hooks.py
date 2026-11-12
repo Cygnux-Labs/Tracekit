@@ -24,7 +24,10 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     harness            -> Tracekit
     Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars), Edit (paths: every file the
                                                           patch adds, updates, deletes or moves to), mcp__s__t
-    Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t
+    Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t (its hook sends an
+            edit as a Write of the file); its transcripts' StrReplace, ApplyPatch, EditNotebook, search_replace, write,
+            delete_file, edit_notebook -> Edit, Edit (all patch file headers in paths), NotebookEdit, Edit, Write, Edit,
+            NotebookEdit
     Gemini  run_shell_command, read_file, read_many_files, write_file, replace, glob, search_file_content,
             list_directory, web_fetch, google_web_search
             -> Bash, Read, Read, Write, Edit, Glob, Grep, LS, WebFetch, WebSearch (every path a file tool reads, under
@@ -105,9 +108,14 @@ GEMINI_PATH_ARGS = ("file_path", "absolute_path", "notebook_path", "dir_path", "
 # a URL in Gemini CLI's web_fetch prompt: its scheme in any case (WHATWG URL parsing), up to a character JavaScript's
 # \s matches (the prompt is split on them)
 WEB_FETCH_URL = re.compile(r"https?://[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+", re.I)
-# a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
-CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
-CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath")
+# Cursor's hooks name a call by what it does on the computer: an edit by any of its tools reaches preToolUse as a Read and
+# then a Write of the whole file (file_path, content). Its transcripts name the model's tools (Cursor 3.29): StrReplace,
+# Write, Delete, EditNotebook, ApplyPatch, and an older prompt's search_replace, write, delete_file and edit_notebook.
+# A Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
+CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task",
+                "Edit": "Edit", "StrReplace": "Edit", "search_replace": "Edit", "write": "Write", "delete_file": "Edit",
+                "EditNotebook": "NotebookEdit", "edit_notebook": "NotebookEdit"}
+CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath", "target_notebook")
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
                   "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
                   "task": "Task", "todowrite": "TodoWrite"}
@@ -369,6 +377,21 @@ def tool(harness, name, ti):
     if harness == "cursor":
         if name.startswith("MCP:"):
             return "mcp__cursor__" + re.sub(r"[^A-Za-z0-9_-]+", "_", name[4:]), ti
+        if name == "ApplyPatch":   # every file a patch header names, in whichever argument holds it, as Cursor reads it:
+            # a {"patch": ...} in JSON unwrapped, each line trimmed as JavaScript trims it
+            texts = list(_strings(ti))
+            for s in texts[:]:
+                with contextlib.suppress(ValueError, RecursionError):
+                    j = json.loads(JS_TRIM.sub("", s))
+                    if isinstance(j, dict) and list(j) == ["patch"] and isinstance(j["patch"], str):
+                        texts.append(j["patch"])
+            lines = "\n".join(JS_TRIM.sub("", x) for x in "\n".join(texts).split("\n"))
+            ti["paths"] = files = [JS_TRIM.sub("", f) for f in PATCH_FILE.findall(lines)]
+            ti["file_path"] = files[0] if files else None
+            return "Edit", ti
+        if name in ("EditNotebook", "edit_notebook"):   # it reads target_notebook; v1 decides a NotebookEdit on its
+            # file_path and notebook_path
+            ti["file_path"] = ti["notebook_path"] = ti.get("target_notebook")
         for k in CURSOR_PATH_ARGS[1:]:
             if k in ti and "file_path" not in ti:
                 ti["file_path"] = ti[k]
