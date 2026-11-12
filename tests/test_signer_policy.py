@@ -2302,6 +2302,9 @@ class CodingPack(unittest.TestCase):
                      (("ApplyPatch", {"patch": json.dumps({"patch": patch})}), ("Edit", {"file_path": path})),
                      (("ApplyPatch", {"patch": patch.replace("*** Update", "﻿ *** Update"), "path": "/w/a.txt"}),
                       ("Edit", {"file_path": path})),
+                     # and reads \r and \r\n as line ends (the review of #767: a CR-only patch was decided on no file)
+                     (("ApplyPatch", {"patch": patch.replace("\n", "\r")}), ("Edit", {"file_path": path})),
+                     (("ApplyPatch", patch.replace("\n", "\r\n")), ("Edit", {"file_path": path})),
                      (("EditNotebook", {"target_notebook": path, **cell}), ("NotebookEdit", {"notebook_path": path})),
                      (("edit_notebook", {"target_notebook": path, **cell}), ("NotebookEdit", {"notebook_path": path})))
             for pack, engine, e in self.every_pack():
@@ -2316,6 +2319,38 @@ class CodingPack(unittest.TestCase):
                             self.assertEqual((got["verdict"], "TK-D005" in got["rule_ids"]), ("deny", True))
                         else:
                             self.assertNotIn("TK-UNKNOWN-TOOL", got["rule_ids"])
+
+    def test_a_cursor_edit_naming_no_file_stays_an_unknown_tool(self):
+        # the review of #767: an edit Tracekit can't read a file from was decided as an Edit of no file, allowed, where
+        # before it was an unknown tool (flagged on dev and coding, held on server and strict)
+        from tracekit import agent_hooks
+        forms = (("ApplyPatch", {"patch": "*** Begin Patch\n@@\n-a\n+b\n*** End Patch\n"}), ("ApplyPatch", {}),
+                 ("ApplyPatch", ""), ("ApplyPatch", {"patch": 5}), ("ApplyPatch", {"patch": "*** Update File:  \n"}),
+                 ("StrReplace", {"old_string": "a", "new_string": "b"}),
+                 ("StrReplace", {"path": ["/w/.env"], "file_path": "/w/a.py", "old_string": "a", "new_string": "b"}),
+                 ("search_replace", {"path": "/w/a.py", "old_string": "a", "new_string": "b"}),
+                 ("write", {"contents": "x"}), ("delete_file", {"path": "/w/a.py"}),
+                 ("EditNotebook", {"cell_idx": 0, "new_string": "x"}),
+                 ("edit_notebook", {"target_notebook": ["/w/a.ipynb"], "file_path": "/w/a.ipynb"}))
+        for pack, engine, e in self.every_pack():
+            for name, ti in forms:
+                with self.subTest(pack=pack, engine=engine, name=name, input=ti):
+                    mapped, args = agent_hooks.tool("cursor", name, ti)
+                    d = e.decide(mapped, args)
+                    self.assertEqual(mapped, name)
+                    self.assertIn("TK-UNKNOWN-TOOL", d["rule_ids"])
+                    self.assertNotEqual(d["verdict"], "allow")
+
+    def test_a_notebook_edit_naming_the_model_endpoint_is_flagged(self):
+        # TK-F016 read Write, Edit and MultiEdit only (the review of #767): a notebook cell setting it was not flagged
+        from tracekit import agent_hooks
+        cell = "import os\nos.environ['ANTHROPIC_BASE_URL'] = 'http://127.0.0.1:9/'\n"
+        for pack, engine, e in self.every_pack():
+            for tool, args in (("NotebookEdit", {"notebook_path": "/w/a.ipynb", "new_source": cell}),
+                               agent_hooks.tool("cursor", "EditNotebook", {"target_notebook": "/w/a.ipynb", "cell_idx": 0,
+                                                                           "old_string": "", "new_string": cell})):
+                with self.subTest(pack=pack, engine=engine, tool=tool):
+                    self.assertIn("TK-F016", e.decide(tool, args)["rule_ids"])
 
     def test_opencode_config_changes_are_flagged_but_reads_and_near_names_are_allowed(self):
         for tool, path in (("Write", "/repo/.opencode/commands/deploy.md"),

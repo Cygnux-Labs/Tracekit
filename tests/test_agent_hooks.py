@@ -1072,7 +1072,8 @@ class CursorTools(unittest.TestCase):
                             "NotebookEdit"),
                            (("edit_notebook", {"target_notebook": env}), "NotebookEdit"),
                            (("ApplyPatch", {"patch": patch, "path": decoy, "file_path": decoy}), "Edit"),
-                           (("ApplyPatch", patch), "Edit")):
+                           (("ApplyPatch", patch), "Edit"),
+                           (("ApplyPatch", {"patch": patch.replace("\n", "\r")}), "Edit")):   # the review of #767
             with self.subTest(form=form):
                 mapped, ti = agent_hooks.tool("cursor", *form)
                 self.assertEqual(mapped, tool)
@@ -1082,6 +1083,25 @@ class CursorTools(unittest.TestCase):
                 self.assertEqual((d["verdict"], "TK-D005" in d["rule_ids"]), ("deny", True), d)
         _, ti = agent_hooks.tool("cursor", "ApplyPatch", {"patch": patch})
         self.assertEqual((ti["file_path"], ti["paths"]), (decoy, [decoy, env]))
+
+    def test_one_naming_no_file_is_left_to_the_v1_policy_as_before(self):
+        # the review of #767: an edit Tracekit can't read a file from was mapped to an Edit of no file
+        from tracekit import policy
+        v1 = policy.load(policy.DEFAULT_POLICY)[0]
+        for name, ti in (("ApplyPatch", {"patch": "*** Begin Patch\n@@\n-a\n+b\n*** End Patch\n"}), ("ApplyPatch", {}),
+                         ("StrReplace", {"old_string": "a", "new_string": "b"}), ("EditNotebook", {"cell_idx": 0})):
+            with self.subTest(name=name, input=ti):
+                mapped, args = agent_hooks.tool("cursor", name, ti)
+                self.assertEqual(mapped, name)
+                self.assertEqual(policy.evaluate(v1, mapped, args, "/w")["decision"], "allow")   # main's v1 decision
+
+    def test_a_long_run_of_spaces_takes_linear_time(self):
+        # the review of #767: trimming with a regex took 4.65 s on a line of 40,000 spaces (OpenCode's too)
+        line = " " * 40_000 + "x"
+        start = time.process_time()
+        agent_hooks.tool("cursor", "ApplyPatch", {"patch": f"*** Begin Patch\n*** Update File: a.py\n{line}\n*** End Patch"})
+        agent_hooks.tool("opencode", "apply_patch", {"patchText": f"*** Begin Patch\n*** Update File: a.py{line}\n"})
+        self.assertLess(time.process_time() - start, 1.0)
 
 
 class CodexPatchHeaders(unittest.TestCase):
