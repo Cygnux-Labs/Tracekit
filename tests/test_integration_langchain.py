@@ -1,8 +1,9 @@
 """tracekit.integrations.langchain beyond the adapter contract (tests/test_contract_langchain.py): the result
 commitment, `ask` without a checkpointer, an interrupt raised inside a tool, an `ask` under each ToolNode error
-handling, and the async gate's signer calls off the event loop."""
+handling, two asks in one ToolNode, and the async gate's signer calls off the event loop."""
 import asyncio
 import json
+import threading
 import time
 import types
 import unittest
@@ -304,6 +305,50 @@ class ErrorHandling(unittest.TestCase):
                 fallback = node().with_fallbacks([RunnableLambda(handle_tool_error)], exception_key="error")
                 out = tool_graph(fallback).invoke(prompt("fail", why="boom"), THREAD)
                 self.assertIn("please fix your mistakes", tool_message(out).content)
+
+
+@unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
+class ParallelAsks(unittest.TestCase):
+    """#687: two calls of one message that both ask, in one tracekit_tool_node. LangGraph hands the node's one resume
+    value to whichever call reaches interrupt() first, so the call a person approved ran only when it got there first
+    (7 of 16 under ainvoke, 4 of 16 under invoke). Each trial here makes the other call get there first."""
+
+    def trial(self, mode):
+        """(the call the pause showed and a person approved, what the resume answered with)"""
+        ac.RAN.clear()
+        signer = FakeSigner(ac._rule)
+        graph = tool_graph(tracekit_tool_node(TOOLS, signer, signer.register_run({"request_id": "reg", "agent": {"name": "test"}})))
+        go = graph.invoke if mode == "sync" else lambda v, c: asyncio.run(graph.ainvoke(v, c))
+        calls = [{"name": "pay", "args": {"to": "a", "cents": i}, "id": f"c{i}"} for i in (1, 2)]
+        shown = go({"messages": [HumanMessage(json.dumps(calls))]}, THREAD)["__interrupt__"][0].value["tracekit"]
+        signer.approval_decide({"request_id": "ok", "approval_id": shown["approval_id"], "decision": "approve"})
+        other_paused, request = threading.Event(), signer.approval_request
+
+        def pause(value):
+            try:
+                return interrupt(value)
+            finally:
+                other_paused.set()
+
+        def approval_request(req):   # the approved call reaches the gate's interrupt() only after the other one
+            if req["tool_call_id"] == shown["tool_call_id"]:
+                other_paused.wait(5)
+            return request(req)
+        signer.approval_request = approval_request
+        with mock.patch("tracekit.integrations.langchain.interrupt", pause):
+            out = go(Command(resume={"approval_id": shown["approval_id"]}), THREAD)
+        return shown["tool_call_id"], out
+
+    def test_the_approved_call_runs_whichever_call_gets_the_resume_value(self):
+        for mode in ("sync", "async"):
+            outcomes = []
+            for _ in range(16):
+                approved, out = self.trial(mode)
+                seen = {m.tool_call_id: m.content for m in out["messages"] if isinstance(m, ToolMessage)}
+                other = ({"c1", "c2"} - {approved}).pop()
+                outcomes.append(("__interrupt__" in out, list(ac.RAN), seen.get(approved) == f"paid {approved[1]}",
+                                 seen.get(other, "").startswith("Tool call blocked by policy: TK-APPROVAL-UNBOUND")))
+            self.assertEqual(outcomes, [(False, ["pay"], True, True)] * 16, mode)
 
 
 class Jittery:

@@ -189,8 +189,11 @@ class _McpGateway(_Handler):
             for up in ups.clients:
                 cursor, n, seen, all_items = None, 0, set(), []
                 while True:
-                    result = ups.call(up, call, cursor=cursor,
-                                      timeout=deadline - time.monotonic())
+                    try:
+                        result = ups.call(up, call, cursor=cursor, timeout=deadline - time.monotonic())
+                    except TimeoutError:
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list timed out (one listing has "
+                                             f"{UPSTREAM_TIMEOUT_S:g} s for every upstream and page)") from None
                     items = getattr(result, kind)
                     if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
                         items = [t for t in items if not t.name.startswith(PROMPT)]
@@ -200,9 +203,8 @@ class _McpGateway(_Handler):
                     if cursor is None:
                         break
                     if cursor in seen:
-                        raise _Error(-32603, f"upstream {up!r}: {kind}/list returned a repeated cursor; "
-                                     f"the gateway lists at most {MAX_LIST_PAGES} pages per upstream; "
-                                     "give the upstream larger pages or fix its cursor")
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list page {n} returned a cursor an earlier "
+                                     "page had returned, so the listing would never end; fix the upstream's cursor")
                     seen.add(cursor)
                     if n >= MAX_LIST_PAGES:
                         raise _Error(-32603, f"upstream {up!r}: {kind}/list exceeded {MAX_LIST_PAGES} pages; "

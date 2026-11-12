@@ -7,7 +7,9 @@
                                                         fail_modes=run.get("fail_modes"))])
 
 `deny` replaces the call with an error ToolMessage and the run goes on. `ask` pauses the run with LangGraph
-`interrupt()`; resume it with `Command(resume={"approval_id": ...})`. Every call that is not denied runs only after the
+`interrupt()`; resume it with `Command(resume={"approval_id": ...})`. A call whose approval was answered before the
+resume doesn't pause again, so of two calls of one ToolNode that ask, the one a person approved runs on resume and the
+other, still waiting, is refused. Every call that is not denied runs only after the
 signer's `approval_consume` agrees, so an approval is checked by the signer, never by the saved state; an approval with
 a T2 executor runs the arguments the consume returns. `ask` needs a checkpointer: without one the call is denied.
 
@@ -116,9 +118,17 @@ class TracekitMiddleware(AgentMiddleware):
                 # gets the same approval back
                 apr = self.signer.approval_request({"request_id": uuid.uuid4().hex, **self.run,
                                                     "tool_call_id": call["id"], "attempt": attempt})
-                resume = interrupt({"tracekit": {"approval_id": apr["approval_id"], "tool_call_id": call["id"],
-                                                 "tool": call["name"], "rule_ids": d["rule_ids"]}})
-                hint = resume.get("approval_id") if isinstance(resume, dict) else None
+                # answered already (the re-run on resume): no pause, the consume decides. LangGraph hands a node's one
+                # resume value to whichever of its calls pauses first, so an approved call that paused might not get it.
+                # lean: three or more asks in one ToolNode: one still waiting after a resume pauses the node again, and
+                # LangGraph's re-run then refuses a call that ran (once); give each call a task of its own (Send, as
+                # create_agent does) if graphs need that
+                if apr["state"] == "requested":
+                    resume = interrupt({"tracekit": {"approval_id": apr["approval_id"], "tool_call_id": call["id"],
+                                                     "tool": call["name"], "rule_ids": d["rule_ids"]}})
+                    hint = resume.get("approval_id") if isinstance(resume, dict) else None
+                else:
+                    hint = apr["approval_id"]
             # every call, allowed or approved: the saved state can't vouch that no approval is needed
             c = self.signer.approval_consume({"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"],
                                               "attempt": attempt, "tool": call["name"], "args_source": "parsed",

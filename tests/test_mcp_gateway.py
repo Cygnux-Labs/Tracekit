@@ -368,15 +368,27 @@ class McpGateway(unittest.TestCase):
                                      ("mcp:up/prompts", "untrusted")])
 
     def test_repeated_cursor_is_an_error(self):
-        """A cursor returned twice raises an error naming the upstream with advice."""
+        """A cursor returned twice raises an error naming the upstream and what it did (it named the 100-page cap,
+        which the listing never reached)."""
         async def on_list_tools(ctx, params):
             return mcp_types.ListToolsResult(tools=[], next_cursor="same-forever")
         self._swap_upstream(LowServer("bad", on_list_tools=on_list_tools))
         with self.assertRaises(Exception) as e:
             self.agent(lambda c: c.list_tools())
-        self.assertIn("upstream 'up': tools/list returned a repeated cursor; "
-                      "the gateway lists at most 100 pages per upstream; "
-                      "give the upstream larger pages or fix its cursor",
+        self.assertIn("upstream 'up': tools/list page 2 returned a cursor an earlier page had returned, so the listing "
+                      "would never end; fix the upstream's cursor", messages(e.exception))
+        self.assertNotIn("100 pages", messages(e.exception))
+
+    def test_a_listing_past_its_shared_budget_names_the_upstream(self):
+        """One listing has UPSTREAM_TIMEOUT_S for every upstream and page; past it the agent read "upstream error:
+        TimeoutError: ; the gateway connects to an upstream that went away again on the next call"."""
+        async def on_list_tools(ctx, params):
+            await asyncio.sleep(1)
+            return mcp_types.ListToolsResult(tools=[])
+        self._swap_upstream(LowServer("slow", on_list_tools=on_list_tools))
+        with mock.patch.object(mcp_gateway, "UPSTREAM_TIMEOUT_S", 0.3), self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.list_tools())
+        self.assertIn("upstream 'up': tools/list timed out (one listing has 0.3 s for every upstream and page)",
                       messages(e.exception))
 
     def test_page_bound_error_forgets_page1_resources(self):

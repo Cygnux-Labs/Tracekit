@@ -85,7 +85,14 @@ calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The mess
   On resume LangGraph re-runs the tool node, so the middleware asks the signer again, this time naming the approval.
   The signer, not the saved state, decides: the call runs only if that approval was granted for this exact call and
   these exact args, and was not used before. Otherwise the call is denied as above. The `approval_id` in the resume
-  value is only a hint; leaving it out does not skip the check.
+  value is only a hint; leaving it out does not skip the check. A call whose approval was already answered when the
+  node re-runs doesn't pause again: the signer decides it at once.
+
+  A `tracekit_tool_node` runs every call of a model message in one node, and LangGraph gives that node one resume
+  value, to whichever call pauses first. When two calls ask, the one a person approved runs on resume and the other,
+  still waiting, is denied (`TK-APPROVAL-UNBOUND`, naming its approval): approve that one too, and the model's retry
+  runs it. With three or more, a call still waiting after a resume pauses the node again, and LangGraph's re-run then
+  denies a call that already ran once. `create_agent` gives each call a task of its own and has neither limit.
 
 Exceptions raised by the tool are recorded and re-raised unchanged.
 

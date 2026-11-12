@@ -815,3 +815,136 @@ class InputRequiredRounds(unittest.TestCase):
         self.assertEqual(out.result_type, "input_required")
         observed = [r for m, r in signer.requests if m == "observe"]
         self.assertEqual(len(observed), 0)
+
+    def _state_reusing_server(self):
+        """A server that answers every first round with the same request_state (a stateless server, or one whose state
+        only encodes progress), and finishes on the next."""
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[t.Tool(name="ask", inputSchema={"type": "object"})])
+
+        async def on_call_tool(ctx, params):
+            if params.request_state is None:
+                return t.InputRequiredResult(request_state="S", input_requests={"q": t.ElicitRequest(
+                    params=t.ElicitRequestFormParams(message="who?",
+                                                 requested_schema={"type": "object", "properties": {}}))})
+            await asyncio.sleep(0.05)   # the other call's rounds run meanwhile
+            return t.CallToolResult(content=[t.TextContent(type="text", text="done")])
+        return Server("srv", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+
+    def _wired(self):
+        """instrument()'s MCP wiring on a signer whose decisions have ids of their own and send results whole."""
+        from tracekit import autowire
+        ids = iter(range(1, 100))
+
+        class Signer(_Signer):
+            def __getattr__(self, method):
+                call = super().__getattr__(method)
+                if method == "decide":
+                    return lambda req: dict(call(req), decision_id=f"dec-{next(ids)}", send_result=True)
+                return call
+        signer = Signer()
+        autowire._mcp(mock.Mock(client=signer, registered=self.RUN))
+        return signer
+
+    @staticmethod
+    async def _elicit(ctx, params):
+        import mcp.types as t
+        return t.ElicitResult(action="accept", content={})
+
+    def test_concurrent_calls_on_a_server_that_reuses_request_state_never_share_a_decision(self):
+        """#718: B's first round, kept under the same (tool, arguments, state) as A's, completed B "ok" at round 1, and
+        B's second round was decided a third time."""
+        server, signer = self._state_reusing_server(), self._wired()
+
+        async def both():
+            async with MCPClient(server, elicitation_callback=self._elicit) as c:
+                return await asyncio.gather(c.call_tool("ask", {"k": "v"}), c.call_tool("ask", {"k": "v"}))
+        self.assertEqual([o.content[0].text for o in asyncio.run(both())], ["done", "done"])
+        decided = {r["tool_call_id"]: r for m, r in signer.requests if m == "decide"}
+        self.assertEqual(len(decided), 2)
+        completes = [r for m, r in signer.requests if m == "complete"]
+        self.assertEqual(sorted(r["tool_call_id"] for r in completes), sorted(decided))
+        for r in completes:
+            self.assertEqual((r["status"], r["result"]["content"][0]["text"]), ("ok", "done"))
+            self.assertEqual(r["decision_id"], f"dec-{list(decided).index(r['tool_call_id']) + 1}")
+
+    def test_a_call_left_between_rounds_ends_when_its_task_makes_another(self):
+        """#718: call A stops after its first round; call B, same tool, arguments and state, ran its last round under A's
+        id and decision. Now A completes with the input request it got, and B under its own decision."""
+        server, signer = self._state_reusing_server(), self._wired()
+
+        async def abandoned_then_new():
+            async with MCPClient(server, elicitation_callback=self._elicit) as c:
+                await c.session.call_tool("ask", {"k": "v"}, allow_input_required=True)   # A: round 1 only
+                return await c.call_tool("ask", {"k": "v"})                                 # B, to its end
+        self.assertEqual(asyncio.run(abandoned_then_new()).content[0].text, "done")
+        a, b = [r["tool_call_id"] for m, r in signer.requests if m == "decide"]
+        completes = [(r["tool_call_id"], r["decision_id"], r["status"]) for m, r in signer.requests if m == "complete"]
+        self.assertEqual(completes, [(a, "dec-1", "ok"), (b, "dec-2", "ok")])
+        first, last = [r["result"] for m, r in signer.requests if m == "complete"]
+        self.assertEqual((first["resultType"], last["content"][0]["text"]), ("input_required", "done"))
+
+
+@unittest.skipUnless(HAVE_MCP and hasattr(mcp.types, "InputRequiredResult"), "mcp 2.3+ with InputRequiredResult required")
+class BigLists(unittest.TestCase):
+    """#685: a tools/list over the signer's 1 MiB frame (300 tools with 40-field schemas, about 1.4 MB of JSON), on the
+    real signer, under instrument(). It was sent whole in `observe`, so the signer refused it (quota_exceeded) whatever
+    the fail mode, and a call_tool failed after the tool ran: mcp lists the tools again to check its result."""
+
+    def setUp(self):
+        from mcp.client.session import ClientSession
+        from tracekit import autowire
+        from tracekit.policy2.engine import Engine
+        from tracekit.signer.service import SignerService
+        for name in ("call_tool", "get_prompt", "list_tools", "list_resources", "list_prompts"):   # autowire patches them
+            patcher = mock.patch.object(ClientSession, name, getattr(ClientSession, name))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.service = SignerService(ac.tmpdir(self), policy=Engine({}))
+        self.addCleanup(self.service.close)
+        client = Client(ac._serve(self, self.service.handle_frame))
+        self.addCleanup(client.close)
+        self.run = client.register_run({"agent": {"name": "big"}})
+        autowire._mcp(mock.Mock(client=client, registered=self.run))
+
+    @staticmethod
+    def server():
+        from mcp.server.lowlevel import Server
+        import mcp.types as t
+        props = {f"field_{i}": {"type": "string", "description": "a field " * 8} for i in range(40)}
+
+        async def on_list_tools(ctx, params):
+            return t.ListToolsResult(tools=[t.Tool(name=f"tool_{i}", description="does a thing " * 10,
+                                                   inputSchema={"type": "object", "properties": props})
+                                            for i in range(300)])
+
+        async def on_call_tool(ctx, params):
+            return t.CallToolResult(content=[t.TextContent(type="text", text="ran " + params.name)])
+        return Server("big", on_list_tools=on_list_tools, on_call_tool=on_call_tool)
+
+    def events(self, typ):
+        return [r["event"]["data"] for r in self.service.log.storage.iter_run("default", self.run["run_id"])
+                if r["event"]["type"] == typ]
+
+    def test_a_list_over_half_a_frame_is_recorded_as_its_digest(self):
+        async def listed():
+            async with MCPClient(self.server()) as c:
+                return await c.list_tools()
+        out = asyncio.run(listed())
+        self.assertEqual(len(out.tools), 300)
+        self.assertGreater(len(out.model_dump_json()), 1 << 20)
+        [seen] = self.events("input.observed")
+        self.assertEqual((seen["source"], seen["trust"]), ("mcp:big/tools", "untrusted"))
+        self.assertLess(seen["output"]["size"], 100)   # the digest, not the page
+
+    def test_the_list_mcp_makes_inside_call_tool_is_not_recorded(self):
+        async def called():
+            async with MCPClient(self.server()) as c:   # no list first: mcp lists to check the result
+                return await c.call_tool("tool_7", {})
+        out = asyncio.run(called())
+        self.assertEqual((out.is_error, out.content[0].text), (False, "ran tool_7"))
+        self.assertEqual(self.events("input.observed"), [])
+        self.assertEqual([r["ok"] for r in self.events("tool.result")], [True])
