@@ -3098,6 +3098,23 @@ class CodingPack(unittest.TestCase):
                     "unset FOO", "sudoku --help", "sum notes.txt"):
             self.assertNotIn(self.e.decide("Bash", {"command": cmd})["verdict"], ("ask", "deny"), cmd)
 
+    def test_deleting_or_locking_a_system_folder_is_denied(self):
+        # #749: each was only flagged (TK-F003), or allowed (find, git clean); TK-D014 reads the folder as TK-D004
+        # reads a home
+        self.every_pack_verdicts([(c, "TK-D014") for c in (
+            "rm -rf /var /etc", "chmod -R 000 /", "find /srv -type f -delete", "rm -rf /etc", "rm -rf /usr/",
+            "rm -rf /etc/*", "rm -rf //etc", "rm -rf /etc/.", "rm /bin -rf", "rm --recursive /opt", "rm -rf /System",
+            "rm -rf /Library", "rm -rf /Applications", "rm -rf /private/var/", "rm -rf /c/Windows", "rm -rf 'C:\\Windows'",
+            "find /etc -delete", "find -L /usr -name '*' -delete", "git -C /etc clean -fdx", "chmod -R 777 /etc",
+            "chown -R me /usr", "chmod 000 / -R", "env X=1 rm -r /usr/", "sh -c 'rm -rf /var'",
+            'bash -c "chown -R me:me /lib"')])
+        self.not_in_every_pack("TK-D014", (
+            "rm -rf ./var/cache", "rm -rf /var/tmp/build-123", "rm -rf /tmp/x", "chmod -R 755 ./dist",
+            'chown -R "$USER" ./node_modules', "ls -la /etc", "rm -rf ./build", "chmod -R u+w .",
+            "find /var -name '*.log' -delete", "find /opt -name '*.pyc' -delete", "chown -R $(whoami) /usr/local/bin",
+            "rm -rf /etcetera", "chmod -r /etc/x", 'git commit -m "Deny rm -rf /etc"', 'grep -rn "rm -rf /usr" docs/',
+            'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"'))
+
     def test_pip_reads_an_abbreviated_index_option(self):
         """pip's option parser takes a long option's unique prefix (`--index-u URL` sets the index); the 1.5.2 sweep
         found it allowed."""

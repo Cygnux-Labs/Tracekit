@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:9d266fdb9e6ea0d47f40fa38a7422ec77fa6cdbcc1b0fbc13a257ee239b3c250",
+  "policy_hash": "sha256:30fd1e7d48543f3629c8603700408279caef592d4869a59a0c89d7b33f427108",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -60,9 +60,9 @@
       "fp": 0
     },
     "shell": {
-      "deny": 346,
-      "caught": 346,
-      "benign": 274,
+      "deny": 355,
+      "caught": 355,
+      "benign": 287,
       "fp": 0
     },
     "sql": {
@@ -864,6 +864,15 @@
     "deny/shell:344": "ask TK-A060",
     "deny/shell:345": "ask TK-A060",
     "deny/shell:346": "ask TK-A059",
+    "deny/shell:347": "deny TK-D014 TK-F003",
+    "deny/shell:348": "deny TK-D014 TK-F003",
+    "deny/shell:349": "deny TK-D014",
+    "deny/shell:350": "deny TK-D014 TK-F003",
+    "deny/shell:351": "deny TK-D014 TK-F003",
+    "deny/shell:352": "deny TK-D014 TK-F003",
+    "deny/shell:353": "deny TK-D014 TK-F003",
+    "deny/shell:354": "deny TK-D014 TK-F003",
+    "deny/shell:355": "deny TK-D014 TK-F003",
     "deny/sql:1": "deny TK-DB001 TK-A041",
     "deny/sql:2": "deny TK-DB001 TK-A041",
     "deny/sql:3": "deny TK-DB001 TK-A041",
@@ -1701,6 +1710,19 @@
     "benign/shell:272": "allow",
     "benign/shell:273": "allow",
     "benign/shell:274": "allow",
+    "benign/shell:275": "flag TK-F003",
+    "benign/shell:276": "flag TK-F003",
+    "benign/shell:277": "flag TK-F003",
+    "benign/shell:278": "flag TK-F003",
+    "benign/shell:279": "flag TK-F003",
+    "benign/shell:280": "allow",
+    "benign/shell:281": "flag TK-F003",
+    "benign/shell:282": "flag TK-F003",
+    "benign/shell:283": "allow",
+    "benign/shell:284": "flag TK-F003",
+    "benign/shell:285": "flag TK-F003",
+    "benign/shell:286": "flag TK-F003",
+    "benign/shell:287": "flag TK-F003",
     "benign/sql:1": "allow",
     "benign/sql:2": "allow",
     "benign/sql:3": "allow",
@@ -1826,6 +1848,6 @@
     "benign/sql:123": "allow"
   },
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0011235955056179776,
+  "benign_fp_rate": 0.0011074197120708748,
   "ok": true
 }
