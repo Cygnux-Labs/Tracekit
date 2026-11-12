@@ -56,7 +56,12 @@ denied and held calls (--all for every call):
 - `--share` prints the counts alone, to post as a [field report](field-reports.md): the window's length, the number
   of sessions, the calls by decision, and each rule by the decision of the calls it matched, marked `also matched,
   not why` when the rule's section isn't that decision and `not placed` for an engine check. A rule id that isn't
-  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description.
+  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description. With `--since`, it
+  also prints the calls by decision for each day of the window, 24 hours each and numbered from the window's start
+  (`Day 1`), a day with no calls too, and the calls with no time (a calls-file line without `time`) on a `No time`
+  line. A day line holds no date, weekday or hour, and the window's start isn't printed, but with the date you post
+  it, a reader can tell which days the agent ran. Without `--since` there are no day lines: day 1 would be the first
+  call's, and say how far back the transcripts go.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 
