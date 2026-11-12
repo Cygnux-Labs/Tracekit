@@ -169,6 +169,55 @@ class Mapping(HarnessCase):
     def test_crush(self):
         self.check("crush")
 
+    def test_gptme_recorded_confirmations_reach_the_signer(self):
+        for case in cases("gptme"):
+            for sample in case.get("observed", ()):
+                if sample["platform"] != "WSL2":
+                    continue
+                for event in sample["events"]:
+                    if event["event"] != "tool.confirm":
+                        continue
+                    call = event["tool_use"]
+                    with self.subTest(case=case["name"], format=sample["tool_format"]):
+                        before = len(self.sent)
+                        tid = call["call_id"] or f"gptme_{before}"
+                        payload = {"session_id": "s-gptme", "tool_use_id": tid, "tool_name": call["tool"],
+                                   "tool_input": {key: call[key] for key in ("args", "content", "kwargs")}}
+                        self.decision = case["decision"]
+                        if self.decision == "ask":
+                            self.approve_when_asked()
+                        code, out, err = self.hook("gptme", payload, "PreToolUse")
+                        self.assertEqual((code, out), (case["exit"], case["stdout"]), err)
+                        self.assertEqual(len(self.sent), before + 1)
+                        request = self.sent[-1]
+                        expected = "mcp__probe__echo" if call["tool"] == "probe.echo" else case["request"]["tool"]
+                        self.assertEqual((request["tool"], request["tool_call_id"]), (expected, tid))
+                        if expected == "Bash":
+                            self.assertEqual(request["args"]["command"], call["content"] or call["kwargs"]["command"])
+
+    def test_gptme_does_not_complete_a_denied_call_or_decide_a_read(self):
+        payload = {"session_id": "s-gptme", "tool_use_id": "shell_1", "tool_name": "shell",
+                   "tool_input": {"args": [], "content": "printf safe", "kwargs": None}}
+        self.decision = "deny"
+        self.assertEqual(self.hook("gptme", payload, "PreToolUse")[:2], (2, ""))
+        self.assertEqual(self.hook("gptme", dict(payload, tool_response="skipped"), "PostToolUse")[0], 0)
+        read = {"session_id": "s-gptme", "tool_use_id": "read_1", "tool_name": "read",
+                "tool_input": {"args": [], "content": "probe file.txt", "kwargs": None}, "tool_response": "line one"}
+        self.assertEqual(self.hook("gptme", read, "ToolObserved")[0], 0)
+        self.assertEqual(len(self.sent), 1)
+        run = self.signer._runs[claude_code._load(claude_code._state("s-gptme"))["run_id"]]
+        self.assertFalse(any(e["type"] == "tool.result" for e in run["events"]))
+        self.assertEqual([e["data"]["source"] for e in run["events"] if e["type"] == "input.observed"],
+                         ["gptme:tool:Read"])
+
+    def test_gptme_invalid_confirmation_blocks_before_deciding(self):
+        payload = {"session_id": "s-gptme", "tool_use_id": "shell_1", "tool_name": "shell",
+                   "tool_input": {"kwargs": {"command": ["not a string"]}}}
+        for body in ("[", payload, dict(payload, tool_use_id=None)):
+            with self.subTest(body=body):
+                self.assertEqual(self.hook("gptme", body, "PreToolUse")[:2], (2, ""))
+        self.assertEqual(self.sent, [])
+
     def test_devin(self):
         self.check("devin")
 
@@ -613,7 +662,7 @@ class OnTheDevPolicy(HarnessCase):
 class Installer(unittest.TestCase):
     def setUp(self):
         home = ac.tmpdir(self)
-        env = mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+        env = mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
                                            "LOCALAPPDATA": os.path.join(home, "data")})   # init makes the dev log key
         env.start()
         self.addCleanup(env.stop)
@@ -637,6 +686,18 @@ class Installer(unittest.TestCase):
                     code, out = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")
                     self.assertEqual(code, 0)
                     self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {path}", out)
+                    if harness == "gptme":
+                        bridge = agent_hooks._gptme_hook_path(path)
+                        with open(bridge, encoding="utf-8") as f:
+                            self.assertEqual(agent_hooks._version(f.read()), "v2")
+                        again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
+                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
+                        code, out = self.cli("uninstall", "--agent", harness, "--project")
+                        self.assertEqual(code, 0)
+                        self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
+                        self.assertFalse(os.path.exists(bridge))
+                        self.assertTrue(os.path.isfile(path))
+                        continue
                     if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
                             plugin = f.read()
@@ -798,7 +859,7 @@ class Installer(unittest.TestCase):
         for python in (None, gone):   # dev mode (this interpreter, moved), system mode (OPT_PYTHON)
             # OpenCode: no shell; agy answers at exit 0 in JSON (test_antigravity_installed_commands_answer_in_json_…)
             for harness in ("claude", *(h for h in agent_hooks.HARNESSES
-                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity"))):
+                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity", "gptme"))):
                 path = os.path.join(d, str(bool(python)), harness, "hooks.json")
 
                 def init():

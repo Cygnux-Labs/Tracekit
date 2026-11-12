@@ -653,6 +653,113 @@ class Harnesses(DaemonCase):
                          ["n1", "n2"])
 
 
+class GptmeTools(unittest.TestCase):
+    def test_gptme_file_arguments_use_the_path_the_tool_executes(self):
+        for raw, name in (("save", "Write"), ("append", "Edit"), ("patch", "Edit"), ("read", "Read")):
+            for args, content, kwargs in (([f"{raw} probe file.txt"] if raw != "read" else ["probe", "file.txt"], "body", None),
+                                          (None, None, {"path": "probe file.txt", ("patch" if raw == "patch" else "content"): "body"})):
+                with self.subTest(tool=raw, kwargs=kwargs):
+                    actual, args = agent_hooks.tool("gptme", raw, {"args": args, "content": content, "kwargs": kwargs})
+                    self.assertEqual(actual, name)
+                    self.assertEqual(args["file_path"], "probe file.txt")
+
+    def test_gptme_mcp_arguments_match_the_call_in_both_formats(self):
+        for content, kwargs in (('{"value": "probe"}', None), (None, {"value": "probe"})):
+            with self.subTest(kwargs=kwargs):
+                call = {"args": [] if kwargs is None else None, "content": content, "kwargs": kwargs}
+                self.assertEqual(agent_hooks.tool("gptme", "probe.echo", call),
+                                 ("mcp__probe__echo", {"value": "probe"}))
+
+    def test_gptme_plugin_pairs_only_allowed_calls_and_blocks_hook_failures(self):
+        from types import SimpleNamespace
+
+        hook = SimpleNamespace(
+            ConfirmationResult=SimpleNamespace(confirm=lambda: ("allow", ""), skip=lambda reason: ("deny", reason)),
+            HookType=SimpleNamespace(), register_hook=mock.Mock(),
+        )
+        manager = SimpleNamespace(logdir="probe")
+        imports = {
+            "gptme.hooks": hook,
+            "gptme.logmanager": SimpleNamespace(LogManager=SimpleNamespace(get_current_log=lambda: manager)),
+            "gptme.tools.base": SimpleNamespace(get_current_tool_use=lambda: None),
+        }
+        plugin = {"__name__": "gptme_bridge_test"}
+        with mock.patch.dict(sys.modules, imports):
+            exec(agent_hooks._gptme_plugin(sys.executable, True), plugin)
+        call = SimpleNamespace(tool="shell", args=[], content="printf safe", kwargs=None)
+        data = SimpleNamespace(tool_use=call, workspace=None,
+                               result_msgs=[SimpleNamespace(role="system", content="safe")])
+        original = plugin["_send"]
+        call_ids = set()
+        for statement, verdict, reason in (
+            ("pass", "allow", ""),
+            ("import sys; print('blocked', file=sys.stderr); sys.exit(2)", "deny", "blocked"),
+            ("raise RuntimeError('crashed')", "deny", "crashed"),
+            ("import time; time.sleep(5)", "deny", "timed out"),
+        ):
+            with self.subTest(statement=statement):
+                plugin["COMMAND"] = [sys.executable, "-I", "-c", statement]
+                plugin["TIMEOUT"] = 0.25 if "sleep" in statement else 600
+                plugin["_send"] = mock.Mock(wraps=original)
+                action, why = plugin["_confirm"](call, None, None)
+                self.assertEqual(action, verdict)
+                self.assertIn(reason, why)
+                plugin["_post"](data)
+                sent = [event.args for event in plugin["_send"].call_args_list]
+                self.assertEqual([event for event, _ in sent],
+                                 ["PreToolUse", "PostToolUse"] if verdict == "allow" else ["PreToolUse"])
+                tid = sent[0][1]["tool_use_id"]
+                self.assertNotIn(tid, call_ids)
+                call_ids.add(tid)
+                if verdict == "allow":
+                    self.assertEqual(tid, sent[1][1]["tool_use_id"])
+        with mock.patch("subprocess.run", side_effect=FileNotFoundError("missing interpreter")):
+            action, why = plugin["_confirm"](call, None, None)
+            self.assertEqual(action, "deny")
+            self.assertIn("missing interpreter", why)
+            plugin["_post"](data)
+        self.assertFalse(plugin["_calls"])
+
+    def test_gptme_install_preserves_an_existing_plugins_table_and_refuses_unowned_package(self):
+        from pathlib import Path
+        from tracekit.install import SettingsError
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            original = b'[plugins]\nenabled = ["other"]\n'
+            path.write_bytes(original)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                agent_hooks.install("gptme", path=str(path), v2=True)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertIn('paths = ["~/.config/gptme/plugins"]', out.getvalue())
+            bridge = Path(agent_hooks._gptme_hook_path(str(path)))
+            self.assertTrue(bridge.is_file())
+            # Imported packages can leave a bytecode directory behind.
+            (bridge.parent / "__pycache__").mkdir()
+            agent_hooks.install("gptme", path=str(path), uninstall=True)
+            self.assertFalse(bridge.exists())
+            agent_hooks.install("gptme", path=str(path))
+            self.assertTrue(bridge.is_file())
+            bridge.write_text("# another plugin", encoding="utf-8")
+            for uninstall in (False, True):
+                with self.assertRaisesRegex(SettingsError, "is not Tracekit's plugin"):
+                    agent_hooks.install("gptme", path=str(path), uninstall=uninstall)
+                self.assertEqual(bridge.read_text(encoding="utf-8"), "# another plugin")
+            self.assertEqual(path.read_bytes(), original)
+
+    def test_gptme_install_backs_up_config_before_adding_a_missing_plugins_table(self):
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            original = b'[env]\nFOO = "bar"\n'
+            path.write_bytes(original)
+            agent_hooks.install("gptme", path=str(path), v2=True)
+            self.assertEqual(list(path.parent.glob("config.toml.bak-*"))[0].read_bytes(), original)
+            self.assertEqual(path.read_bytes(), original + b'\n[plugins]\npaths = ["~/.config/gptme/plugins"]\n')
+
+
 class DroidTools(unittest.TestCase):
     def test_tools_keep_the_documented_arguments_and_mcp_names(self):
         for name, ti, mapped in (("Execute", {"command": "git status", "timeout": 20}, "Bash"),
@@ -1176,7 +1283,7 @@ class HarnessList(unittest.TestCase):
             doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append(detail), found, False, d)
         self.assertEqual(sorted(found), sorted(agent_hooks.HARNESSES))
         self.assertEqual({h for h in agent_hooks.HARNESSES if any(r.startswith(f"{h} pre-tool timeout") for r in rows)},
-                         set(agent_hooks.HARNESSES) - set(agent_hooks.PLUGIN_TOOLS))
+                         set(agent_hooks.HARNESSES) - set(agent_hooks.PLUGIN_TOOLS) - {"gptme"})
 
 
 class Installer(unittest.TestCase):
@@ -1389,7 +1496,7 @@ class Installer(unittest.TestCase):
     def test_install_merge_idempotent_uninstall(self):
         d = tempfile.mkdtemp()
         try:
-            for h in (x for x in agent_hooks.HARNESSES if x not in agent_hooks.PLUGIN_TOOLS):
+            for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "gptme")):
                 path = agent_hooks.config_path(h, d)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 mine = {"hooks": {"SessionStart" if h != "cursor" else "sessionStart": [{"hooks": [{"type": "command", "command": "echo mine"}]}
@@ -1511,7 +1618,7 @@ class Installer(unittest.TestCase):
         from tracekit.install import SettingsError
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for h in (x for x in agent_hooks.HARNESSES if x not in agent_hooks.PLUGIN_TOOLS):
+        for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "gptme")):
             ev, bad = {"cursor": "preToolUse", "codex": "PreToolUse", "gemini": "BeforeTool", "goose": "PreToolUse", "qwen": "PreToolUse",
                        "droid": "PreToolUse", "antigravity": "PreToolUse", "crush": "PreToolUse",
                        "devin": "PreToolUse"}[h], {"command": "echo mine"}
