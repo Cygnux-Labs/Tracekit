@@ -64,7 +64,7 @@ def new_run(tenant, run_id):
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
               "tails", "replay")
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
-CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "nondeterministic",
+CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
              "detect_ids", "via", "caller")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)

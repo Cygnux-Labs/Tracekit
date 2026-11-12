@@ -354,6 +354,17 @@ class TestRealSigner(unittest.TestCase):
         self.assertIsNone(self.s.approval_get({"approval_id": aid})["args"])   # purged once consumed
         self.assertEqual(os.listdir(os.path.join(self.dir, "approvals")), [])
 
+    def test_a_retry_decided_before_a_restart_consumes_the_approval_after_it(self):
+        """The snapshot kept each call without its tool, so the retry's consume raised KeyError once the signer
+        restarted from it (tests/test_signer_stateful.py found it)."""
+        aid = self.pending()
+        self.s.approval_decide({"request_id": "h", "approval_id": aid, "decision": "approve"})
+        self.s.decide({"request_id": "d2", **self.run, "stream": "s", "client_seq": 1, "tool_call_id": "tc-2",
+                       "tool": "pay", "args_source": "parsed", "args": PAY})
+        self.restart()
+        out = self.consume(tool_call_id="tc-2")
+        self.assertEqual((out["ok"], out["approval_id"]), (True, aid))
+
     def test_args_are_encrypted_at_rest(self):
         aid = self.pending()
         with open(os.path.join(self.dir, "approvals", aid), "rb") as f:
