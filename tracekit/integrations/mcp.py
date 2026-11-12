@@ -17,7 +17,7 @@ decision are decided and completed once across rounds: a round continues the cal
 mcp's Client.call_tool drives them), so concurrent calls never share one, whatever `request_state` the server returns.
 A waiting call whose task calls a tool or gets a prompt on the session first, or ends, is never completed: the
 signer's decided_not_completed gap at run close. Rounds without `request_state`, or whose decision isn't `allow` (a
-flag, or an approval a person gave), are decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
+flag or an ask), are decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
 propagates unchanged and completes as an error.
 `list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`mcp:<server>/tools`,
 `/resources`, `/prompts`; a page over half a signer frame as its digest) and returned once recorded. A list the signer

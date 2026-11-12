@@ -410,9 +410,27 @@ class McpGateway(unittest.TestCase):
         self.assertIn("upstream error: TimeoutError: read timed out" + advice, listing_error(
             mock.patch.object(ups.clients["up"], "list_tools", new_callable=mock.AsyncMock,
                               side_effect=TimeoutError("read timed out"))))
-        self.assertIn("upstream error: TimeoutError: " + advice, listing_error(   # the reconnect's wait for a session
-            mock.patch.object(mcp_gateway, "_closed", return_value=True),
-            mock.patch.object(ups, "_open", side_effect=concurrent.futures.TimeoutError())))
+        self.assertIn("upstream error: upstream 'up' gave no session in 600 s; nothing was sent to it",
+                      listing_error(   # the reconnect's wait for a session
+                          mock.patch.object(mcp_gateway, "_closed", return_value=True),
+                          mock.patch.object(ups, "_open", side_effect=mcp_gateway.Unreachable(
+                              "upstream 'up' gave no session in 600 s"))))
+
+    def test_a_call_to_an_upstream_that_cant_be_opened_was_not_sent(self):
+        """A tools/call whose upstream went away and can't be opened again says nothing was sent, not that it may
+        have run, and completes as an error."""
+        ups = self.srv.mcp["upstreams"]
+        with mock.patch.object(mcp_gateway, "_closed", return_value=True), \
+                mock.patch.object(ups, "_open", side_effect=mcp_gateway.Unreachable(
+                    "upstream 'up' couldn't be opened: ConnectionRefusedError: refused")), \
+                self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.call_tool("up__echo", {"text": "hi"}))
+        self.assertIn("upstream error: upstream 'up' couldn't be opened: ConnectionRefusedError: refused; nothing was "
+                      "sent to it", messages(e.exception))
+        self.assertNotIn("may have run", messages(e.exception))
+        self.assertEqual(RAN, [])
+        [r] = [e for e in self.events() if e["type"] == "tool.result"]
+        self.assertFalse(r["data"]["ok"])
 
     def test_a_call_that_ends_as_its_wait_runs_out_gives_its_own_answer(self):
         """An upstream answering between the wait running out and the check gives that answer, not the wait's empty
@@ -443,6 +461,15 @@ class McpGateway(unittest.TestCase):
         with self.assertRaisesRegex(TimeoutError, "read timed out"):
             run(TimeoutError("read timed out"))
 
+        class Ending(Late):   # not done when checked, and already finishing when cancelled
+            def done(self):
+                return False
+
+            def cancel(self):
+                return False
+        Late = Ending
+        self.assertEqual("listed", run("listed"))
+
     def test_a_reconnect_that_gets_no_session_names_the_upstream(self):
         """The reconnect's wait for a session names the upstream, and gives up the attempt so the next call opens a
         new one."""
@@ -460,7 +487,7 @@ class McpGateway(unittest.TestCase):
         held = ups._held["up"]
         try:
             with mock.patch("mcp.Client", Never), mock.patch.object(mcp_gateway, "UPSTREAM_TIMEOUT_S", 0.2), \
-                    self.assertRaisesRegex(TimeoutError, r"^upstream 'up' gave no session in 0.2 s$"):
+                    self.assertRaisesRegex(mcp_gateway.Unreachable, r"^upstream 'up' gave no session in 0.2 s$"):
                 ups._open("up")
             attempt = ups._held["up"]
             with contextlib.suppress(concurrent.futures.CancelledError, concurrent.futures.TimeoutError):

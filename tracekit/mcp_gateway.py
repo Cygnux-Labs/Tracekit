@@ -74,7 +74,11 @@ LISTS = {"tools/list": ("list_tools", "tools"), "prompts/list": ("list_prompts",
 
 class UpstreamTimeout(TimeoutError):
     """An upstream call that didn't answer within the time Upstreams waits for it, unlike a TimeoutError the call
-    raised itself (a socket's, anyio's fail_after, a reconnect's)."""
+    raised itself (a socket's, anyio's fail_after)."""
+
+
+class Unreachable(ConnectionError):
+    """An upstream whose session couldn't be opened (again): nothing was sent to it."""
 
 
 class Upstreams:
@@ -109,20 +113,24 @@ class Upstreams:
         self._held[name] = asyncio.run_coroutine_threadsafe(hold(ready), self.loop)
         try:
             ready.result(UPSTREAM_TIMEOUT_S)
-        except concurrent.futures.TimeoutError:
-            if ready.done():   # the connection raised a TimeoutError of its own (from Python 3.11 the same class)
-                raise
-            self._held[name].cancel()   # the next call opens a new session
-            raise TimeoutError(f"upstream {name!r} gave no session in {UPSTREAM_TIMEOUT_S:g} s") from None
+        except Exception:
+            if not ready.done():   # the wait ran out: give up this attempt, the next call opens a new session
+                self._held[name].cancel()
+                raise Unreachable(f"upstream {name!r} gave no session in {UPSTREAM_TIMEOUT_S:g} s") from None
+            e = ready.exception()
+            if e is None:   # it opened just as the wait ran out
+                return
+            raise Unreachable(f"upstream {name!r} couldn't be opened: {type(e).__name__}: {e}") from e
 
     def _run(self, coro, timeout=UPSTREAM_TIMEOUT_S):
         fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
         try:
             return fut.result(timeout)
         except concurrent.futures.TimeoutError:
-            if fut.done():   # the call raised a TimeoutError of its own (from 3.11 the same class), or just ended
+            # the call raised a TimeoutError of its own (from 3.11 the same class), or ended as the wait ran out;
+            # else cancel it, so it doesn't keep running (and holding its buffers) after its answer was given up
+            if fut.done() or not fut.cancel():
                 return fut.result()
-            fut.cancel()   # else the call keeps running (and holding its buffers) after its answer was given up
             raise UpstreamTimeout(f"no answer in {timeout:g} s") from None
 
     def call(self, name, method, *a, timeout=UPSTREAM_TIMEOUT_S, **kw):
@@ -263,7 +271,7 @@ class _McpGateway(_Handler):
             return why[1]
         try:
             out = gw["cut"](_dump(gw["upstreams"].call(up, method, name, args)))
-        except Exception as e:   # it reached the upstream: the call may have run
+        except Exception as e:   # it reached the upstream, and may have run, unless the upstream couldn't be opened
             why = _upstream_error(e, ran=True)
             gw["custody"].complete(key, tcid, d, tool, args, "error", error=gw["cut"](why)[:4096])
             raise _Error(-32603, why) from None
@@ -290,6 +298,8 @@ class _Error(Exception):
 
 
 def _upstream_error(e, ran=False):
+    if isinstance(e, Unreachable):
+        return f"upstream error: {e}; nothing was sent to it, and the gateway tries to open it again on the next call"
     return (f"upstream error: {type(e).__name__}: {e}" + ("; the call may have run: check before making it again"
                                                           if ran else "")
             + "; the gateway connects to an upstream that went away again on the next call")
