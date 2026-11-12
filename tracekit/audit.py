@@ -23,6 +23,7 @@ from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
 from .report import DECISIONS, _counts, _days, _wait, call_text, share_rules, when
+from .policy2.compile import ENGINE_REASONS
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, evaluate, load_policy
 from .view import ENGINE_RULES
 
@@ -231,6 +232,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
     by_rule: dict[str, int] = {}
+    unread_causes: collections.Counter = collections.Counter()   # TK-SHELL-PARSE holds by their cause (#745)
     # lean: every call is kept in memory (about 1 KB each, 2 KB with --json, measured on 158k calls; --show text is
     # capped at report.CALL_WIDTH); stream the report's lines instead if a real transcript folder outgrows that
     calls_out: list[dict] = []
@@ -274,6 +276,10 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 "verdict": verdict,
                 "rule_ids": decision.get("rule_ids") or [],
             }
+            if decision.get("unread"):   # why the policy couldn't read the call, when the engine says (#745)
+                rec["unread"] = decision["unread"]
+                if "TK-SHELL-PARSE" in rec["rule_ids"]:
+                    unread_causes[decision["unread"]] += 1
             if show:   # what an approver sees: redacted as the signer redacts it (.env content too)
                 rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
             calls_out.append(rec)
@@ -296,6 +302,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         "calls_file": calls_file,
         "counts": counts,
         "by_rule": by_rule,
+        "unread_causes": dict(unread_causes),
         "reasons": {**{i: ENGINE_RULES[i] for i in by_rule if i in ENGINE_RULES},   # what each rule is, as the viewer says it
                     **{r["id"]: r.get("reason") or r.get("label", "") for _, r, *_ in engine.rules if r["id"] in by_rule}},
         # the policy's section of each rule: an engine check has none
@@ -340,6 +347,11 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
         for rid, k in sorted(report["by_rule"].items(), key=lambda x: (-x[1], x[0])):
             reason = report["reasons"].get(rid, "")
             lines.append(f"  {rid}: {k}" + (f"  ({reason})" if reason else ""))
+            if rid == "TK-SHELL-PARSE":   # each hold's cause, with the cause's own reason (#745)
+                causes = ENGINE_REASONS["TK-SHELL-PARSE"].get("causes", {})
+                for cause, k in sorted(report["unread_causes"].items(), key=lambda x: (-x[1], x[0])):
+                    why = causes.get(cause, {}).get("reason") or ENGINE_REASONS["TK-SHELL-PARSE"]["reason"]
+                    lines.append(f"    {cause}: {k}  ({why})")
     lines.append("")
     lines.append(f"skipped malformed lines: {report['skipped_malformed']}")
     lines.append(f"unreadable files: {len(report['unreadable'])}")
@@ -383,7 +395,13 @@ def share(report: dict) -> str:
              f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
              "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule),
-             *share_rules(by_rule)]
+             *share_rules(by_rule),
+             # a TK-SHELL-PARSE hold's cause, by name alone: the names are a fixed list in the code, so no text
+             # of a call leaves the machine (#745)
+             *[f"  {dec} TK-SHELL-PARSE {cause} {k:,}" for (dec, cause), k in
+               sorted(collections.Counter((c["verdict"], c["unread"]) for c in report["calls"]
+                                          if "unread" in c and "TK-SHELL-PARSE" in c["rule_ids"]).items(),
+                      key=lambda x: (-x[1], x[0]))]]
     return "\n".join(_escaped(line) for line in lines) + "\n"
 
 
