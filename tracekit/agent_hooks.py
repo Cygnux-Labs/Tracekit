@@ -217,11 +217,11 @@ OPENHANDS_SUBAGENTS = ("task", "task_tool_set", "delegate")
 # what the terminal sends as keystrokes, not a command, even with is_input false (terminal/interface.py
 # SUPPORTED_SPECIAL_KEYS and parse_ctrl_key; tmux_terminal.send_keys): matched on the text stripped and upper-cased
 OPENHANDS_KEYS = re.compile(r"ENTER|TAB|BS|ESC|UP|DOWN|LEFT|RIGHT|HOME|END|PGUP|PGDN|(?:C-|CTRL[-+])[A-Z]")
-# a line bash continues on the next call: it ends in an odd number of backslashes (the terminal sends Enter after it)
 # a key typed in a terminal command: a control character, a tab too (Tab completes the word before it in interactive
 # bash: ~/.ss<TAB>authorized_keys is ~/.ssh/authorized_keys), as in TYPED["write_to_process"] but without its history
 # parts, since the terminal starts bash with `set +H`; \n ends a line, and only it
 OPENHANDS_KEY_CHAR = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+# a line bash continues on the next call: it ends in an odd number of backslashes (the terminal sends Enter after it)
 OPENHANDS_OPEN_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\$")
 OPENHANDS_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # HookConfig reads hooks.json in three forms: {"hooks": {...}}, or the event map itself with Claude Code's names, or with
@@ -367,6 +367,7 @@ def tool(harness, name, ti):
             # call marked `typed` (TK-SHELL-PARSE), and holds an unclosed quote or heredoc as a line it can't read
             # tmux types a command as keys (send_keys literal), so a control character in it is one too: ^U erases what
             # came before it on the line, \r is an Enter (`echo hi\x15git push --force` runs the push), a tab completes
+            # the word before it
             c = ti["command"]
             if ti.get("is_input") is True or OPENHANDS_KEYS.fullmatch(c.strip().upper()) or \
                     OPENHANDS_OPEN_LINE.search(c) or OPENHANDS_KEY_CHAR.search(c):
