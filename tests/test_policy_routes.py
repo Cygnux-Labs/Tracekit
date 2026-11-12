@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -16,7 +17,7 @@ from unittest import mock
 
 from tracekit import agent_hooks, constraints
 from tracekit.integrations import hermes
-from tracekit.policy2 import classes, compile as pc
+from tracekit.policy2 import classes, compile as pc, shell
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 
@@ -129,6 +130,27 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("curl -so data.json " + u + " && jq . data.json", "F=out.json; curl -so \"$F\" " + u,
                               "for s in a b; do curl -so $s.svg https://example.com/$s.svg; done", "wget -qO- " + u),
                     ("allow", "flag"), packs=("dev", "coding"))
+
+    def test_the_download_option_table_is_curls_own(self):
+        # sec08 r7: the table was written from memory. curl 8.7.1's own list (`curl --help all`) is kept beside the
+        # tests: each option there is in the table with its arity (an <arg>, or a bracketed host, takes a value) and
+        # its short letter, and one the table holds beyond it is newer than 8.7.1 (_CURL_NEWER, with its release). An
+        # option wrongly read as taking a value would swallow a following `-o FILE`
+        valued, bare, short = set(), set(), {}
+        with open(os.path.join(os.path.dirname(__file__), "data", "curl-8.7.1-help-all.txt"), encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"\s*(?:-(\S), )?--(\S+)( <[^>]*>| \[\S+)?\s", line)
+                if m:
+                    (valued if m.group(3) else bare).add(m.group(2))
+                    if m.group(1):
+                        short[m.group(1)] = m.group(2)
+        self.assertEqual((len(valued), len(bare), len(short)), (137, 121, 59))
+        newer = set(shell._CURL_NEWER)
+        self.assertEqual(set(shell._CURL_VALUED) - newer, valued)
+        self.assertEqual(set(shell._CURL_BARE) - newer, bare)
+        self.assertEqual(shell._CURL_SHORT, short)
+        self.assertEqual(newer - set(shell._CURL_VALUED) - set(shell._CURL_BARE), set())
+        self.assertFalse(newer & (valued | bare))
 
     def test_writers_that_name_their_file_another_way_reach_the_rules(self):
         # env -C's folder, awk's FILENAME, patch's file after its valued options (and in its -d folder), a vi run

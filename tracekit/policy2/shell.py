@@ -1158,22 +1158,25 @@ def _unread_query(args):
     return False
 
 
-# curl's options (8.x), long names: those that take a value (an --expand- one too, as its option), the flags (a --no-
-# one is its flag), and its short letters as long ones; the options whose value is a file it writes. A long option the
-# table doesn't hold, or one curl may read as a prefix of another, is one the reader can't place (download_writes)
+# curl's options, long names: those that take a value (an --expand- one too, as its option), the flags (a --no- one
+# is its flag), and its short letters as long ones; the options whose value is a file it writes. They are curl 8.7.1's
+# own list (`curl --help all`, kept in tests/data and compared with these) and _CURL_NEWER's, each with the release
+# that added it. A long option the tables don't hold is one the reader can't place (download_writes)
+_CURL_NEWER = {"ech": "8.8.0", "ip-tos": "8.9.0", "vlan-priority": "8.9.0", "keepalive-cnt": "8.9.0", "mptcp": "8.9.0",
+               "show-headers": "8.10.0", "skip-existing": "8.10.0", "ssl-sessions": "8.12.0", "upload-flags": "8.13.0"}
 _CURL_VALUED = frozenset((
     "abstract-unix-socket alt-svc aws-sigv4 cacert capath cert cert-type ciphers config connect-timeout connect-to "
     "continue-at cookie cookie-jar create-file-mode crlfile curves data data-ascii data-binary data-raw data-urlencode "
     "delegation dns-interface dns-ipv4-addr dns-ipv6-addr dns-servers doh-url dump-header ech egd-file engine "
     "etag-compare etag-save expect100-timeout form form-string ftp-account ftp-alternative-to-user ftp-method "
     "ftp-port ftp-ssl-ccc-mode happy-eyeballs-timeout-ms haproxy-clientip header help hostpubmd5 hostpubsha256 hsts "
-    "interface ip-tos ipfs-gateway json keepalive-cnt keepalive-time key key-type knownhosts krb libcurl limit-rate "
+    "interface ip-tos ipfs-gateway json keepalive-cnt keepalive-time key key-type krb libcurl limit-rate "
     "local-port login-options mail-auth mail-from mail-rcpt max-filesize max-redirs max-time netrc-file noproxy "
-    "oauth2-bearer output output-dir parallel-max parallel-max-host pass pinnedpubkey preproxy proto proto-default "
+    "oauth2-bearer output output-dir parallel-max pass pinnedpubkey preproxy proto proto-default "
     "proto-redir proxy proxy-cacert proxy-capath proxy-cert proxy-cert-type proxy-ciphers proxy-crlfile "
     "proxy-header proxy-key proxy-key-type proxy-pass proxy-pinnedpubkey proxy-service-name proxy-tls13-ciphers "
     "proxy-tlsauthtype proxy-tlspassword proxy-tlsuser proxy-user proxy1.0 pubkey quote random-file range rate "
-    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name sigalgs "
+    "referer request request-target resolve retry retry-delay retry-max-time sasl-authzid service-name "
     "socks4 socks4a socks5 socks5-gssapi-service socks5-hostname speed-limit speed-time ssl-sessions stderr "
     "telnet-option tftp-blksize time-cond tls-max tls13-ciphers tlsauthtype tlspassword tlsuser trace trace-ascii "
     "trace-config unix-socket upload-file upload-flags url url-query user user-agent variable vlan-priority "
@@ -1181,11 +1184,11 @@ _CURL_VALUED = frozenset((
 _CURL_BARE = frozenset((
     "anyauth append basic ca-native cert-status compressed compressed-ssh create-dirs crlf digest disable "
     "disable-eprt disable-epsv disallow-username-in-url doh-cert-status doh-insecure fail fail-early "
-    "fail-with-body false-start follow form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
+    "fail-with-body false-start form-escape ftp-create-dirs ftp-pasv ftp-pret ftp-skip-pasv-ip ftp-ssl-ccc "
     "ftp-ssl-control get globoff haproxy-protocol head http0.9 http1.0 http1.1 http2 http2-prior-knowledge http3 "
     "http3-only ignore-content-length include insecure ipv4 ipv6 junk-session-cookies list-only location "
     "location-trusted mail-rcpt-allowfails manual metalink mptcp negotiate netrc netrc-optional next no-alpn "
-    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb out-null parallel "
+    "no-buffer no-clobber no-keepalive no-npn no-progress-meter no-sessionid ntlm ntlm-wb parallel "
     "parallel-immediate path-as-is post301 post302 post303 progress-bar proxy-anyauth proxy-basic proxy-ca-native "
     "proxy-digest proxy-http2 proxy-insecure proxy-negotiate proxy-ntlm proxy-ssl-allow-beast "
     "proxy-ssl-auto-client-cert proxy-tlsv1 proxytunnel raw remote-header-name remote-name remote-name-all "
@@ -1207,10 +1210,11 @@ _CURL_SHORT = {
     "Z": "parallel"}
 _CURL_WRITES = {"dump-header", "cookie-jar", "etag-save", "libcurl", "trace", "trace-ascii", "stderr",
                 "hsts", "alt-svc", "ssl-sessions"}
-# wget's (GNU 1.21), as getopt_long reads them: a long option by any unique prefix, with its value after `=` or as
-# the next word; the short letters as long ones (-nd, -nH, -nc, -np, -nv are -n with a letter); the options whose value
-# is a file it writes, and those that make it write files the reader can't name (a URL list, a wgetrc command or file,
-# a name the server picks, a recursive fetch, host and path folders)
+# wget's, as GNU wget 1.21's manual lists them (its option index; no binary here checked them), read as getopt_long
+# reads them: a long option by any unique prefix, with its value after `=` or as the next word; the short letters as
+# long ones (-nd, -nH, -nc, -np, -nv are -n with a letter); the options whose value is a file it writes, and those
+# that make it write files the reader can't name (a URL list or metalink file, a wgetrc command or file, a name the
+# server picks, a recursive fetch, host and path folders)
 _WGET_VALUED = frozenset((
     "output-file append-output execute config input-file base bind-address bind-dns-address dns-servers tries "
     "retry-on-http-error output-document backups quota limit-rate wait waitretry timeout dns-timeout "
@@ -1221,7 +1225,7 @@ _WGET_VALUED = frozenset((
     "egd-file ciphers hsts-file ftp-user ftp-password level accept reject accept-regex reject-regex regex-type "
     "domains exclude-domains include-directories exclude-directories user-agent restrict-file-names "
     "prefer-family progress report-speed rejected-log warc-file warc-header warc-max-size warc-dedup "
-    "warc-tempdir follow-tags ignore-tags start-pos").split())
+    "warc-tempdir follow-tags ignore-tags start-pos input-metalink metalink-index preferred-location").split())
 _WGET_BARE = frozenset((
     "version help background debug quiet verbose no-verbose server-response spider continue timestamping "
     "no-clobber show-progress inet4-only inet6-only no-check-certificate check-certificate ignore-case "
@@ -1232,8 +1236,8 @@ _WGET_BARE = frozenset((
     "no-parent no-directories force-directories no-host-directories protocol-directories recursive xattr "
     "no-config retr-symlinks preserve-permissions no-remove-listing passive-ftp no-passive-ftp ftps-implicit "
     "ftps-resume-ssl ftps-clear-data-connection ftps-fallback-to-ftp delete-after force-html "
-    "input-metalink metalink-over-http enable-feature no-warc-compression no-warc-digests no-warc-keep-log "
-    "warc-cdx").split())
+    "metalink-over-http no-warc-compression no-warc-digests no-warc-keep-log warc-cdx ask-password "
+    "no-if-modified-since no-use-server-timestamps random-wait keep-badhash").split())
 _WGET_SHORT = {
     "o": "output-file", "a": "append-output", "e": "execute", "i": "input-file", "B": "base", "t": "tries",
     "O": "output-document", "Q": "quota", "w": "wait", "T": "timeout", "P": "directory-prefix", "l": "level",
@@ -1245,8 +1249,8 @@ _WGET_SHORT = {
 _WGET_N = {"d": "no-directories", "H": "no-host-directories", "c": "no-clobber", "p": "no-parent", "v": "no-verbose"}
 _WGET_WRITES = {"output-document", "output-file", "append-output", "save-cookies", "hsts-file", "rejected-log",
                 "warc-file"}
-_WGET_UNNAMED = {"execute", "config", "input-file", "trust-server-names", "content-disposition", "recursive",
-                 "mirror", "page-requisites", "force-directories", "protocol-directories", "level", "base"}
+_WGET_UNNAMED = {"execute", "config", "input-file", "input-metalink", "trust-server-names", "content-disposition",
+                 "recursive", "mirror", "page-requisites", "force-directories", "protocol-directories", "level", "base"}
 
 
 def _url_basename(url, query=False):
