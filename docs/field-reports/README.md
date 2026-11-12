@@ -10,9 +10,10 @@ say which in its `Run by` line. ([Why reports matter](../field-reports.md).)
 - **As a pull request**, so the report stays here and you show as a contributor: run
   `tracekit feedback --file report.md`, fill in its `Run by` line, copy it to
   `docs/field-reports/<github-login>-<YYYY-MM-DD>.md` in your fork, and open a pull request with `git commit -s`.
-- **As an issue or a comment**: `tracekit feedback` prints a link to the field-report form, filled in with your
-  version, OS and counts, and one optional line for anything you'd like to tell us; or paste `tracekit report --share`
-  (or `tracekit audit --share --since 7d`) as a comment on [#385](https://github.com/Cygnux-Labs/Tracekit/issues/385).
+- **As an issue**: `tracekit feedback` prints a link to the field-report form, filled in with your version, OS and
+  counts, and one optional line for anything you'd like to tell us; or paste `tracekit report --share` (or
+  `tracekit audit --share --since 7d`) into the
+  [field-report form](https://github.com/Cygnux-Labs/Tracekit/issues/new?template=field-report.yml) yourself.
 
 ## Counts only
 
