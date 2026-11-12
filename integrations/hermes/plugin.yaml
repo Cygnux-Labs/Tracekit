@@ -1,5 +1,5 @@
 name: tracekit
-version: "0.1.0"
+version: "0.2.0"
 description: "Tracekit gates and records every tool call: a Tracekit signer outside the agent decides each call before it runs (a deny blocks it, an ask waits for a person) and signs it and its outcome into a tamper-evident run you can verify offline."
 author: Cygnux Labs
 license: MIT
@@ -14,4 +14,4 @@ requires_env:
     url: https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Hermes
     secret: true
 python_dependencies:
-  - "tracekit-ai>=1.4.2,<1.7"
+  - "tracekit-ai>=1.6.0,<1.7"

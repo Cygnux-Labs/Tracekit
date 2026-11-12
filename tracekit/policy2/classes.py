@@ -200,38 +200,53 @@ def url_target(url):
 
 
 # SQL as each dialect lexes it: (backslash escapes in '' and "", $tag$ quotes, nested /* */, # comments, [ident],
-# `ident`, -- starts a comment only before a space). A statement that splits differently in two dialects (a comment
-# or literal one hides and the other runs) is matched in every reading.
+# `ident`, -- starts a comment only before a space, a CR ends a -- or # comment as a LF does: PostgreSQL's scanner and
+# SQL Server's documentation; MySQL and SQLite end one at a LF only). A statement that splits differently in two
+# dialects (a comment or literal one hides and the other runs) is matched in every reading.
 # lean: Oracle q'[...]' quotes and MySQL's NO_BACKSLASH_ESCAPES are not modelled; add a reading if a deployment uses them
-SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False),
-                "mysql": (True, False, False, True, False, True, True),
-                "sqlite": (False, False, False, False, True, True, False),
-                "mssql": (False, False, True, False, True, False, False)}
+SQL_DIALECTS = {"postgres": (False, True, True, False, False, False, False, True),
+                "mysql": (True, False, False, True, False, True, True, False),
+                "sqlite": (False, False, False, False, True, True, False, False),
+                "mssql": (False, False, True, False, True, False, False, True)}
 _DOLLAR = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)?\$")
 _MYSQL_RUN = re.compile(r"/\*M?!\d*")
-_SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b]+")   # characters no dialect starts a comment, literal or quote with
+_SQL_TEXT = re.compile(r"[^-#/'\"`\[$\x0b*]+")   # characters no dialect starts a comment, literal or quote with
+_LINE_END = {False: re.compile("\n"), True: re.compile("[\r\n]")}
 
 
-def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space):
+def sql_code(stmt, *dialect):
     """`stmt` with every comment a space, every literal or quoted identifier '' or "" and a vertical tab (whitespace to
     each dialect, not to a pattern's \\s) a space, as one dialect lexes it: what a keyword rule should see. None when a
     literal or comment is not closed (the database rejects it)."""
-    out, i, n = [], 0, len(stmt)
+    code, closed = sql_read(stmt, *dialect)
+    return code if closed else None
+
+
+def sql_read(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, dash_space, cr):
+    """(what sql_code reads of `stmt`, whether every literal and comment closed): where one doesn't, the code read
+    before it (a database may run the statements a `;` ends there, then fail). Each search starts where the last one
+    ended, so a statement is read in time linear in its length."""
+    out, i, n, runs = [], 0, len(stmt), 0   # runs: MySQL /*! ... */ open, whose */ closes it as a blank
     while i < n:
         c, two = stmt[i], stmt[i:i + 2]
         if (two == "--" and (not dash_space or stmt[i + 2:i + 3] in ("", " ", "\t", "\n", "\r", "\f", "\v"))) or \
                 (c == "#" and hash_comment):
-            j = stmt.find("\n", i)
-            i = n if j < 0 else j
+            end = _LINE_END[cr].search(stmt, i)
+            i = end.start() if end else n
             out.append(" ")
         elif hash_comment and stmt.startswith(("/*!", "/*M!"), i):   # MySQL runs what /*! ... */ holds, MariaDB /*M! too
-            i = _MYSQL_RUN.match(stmt, i).end()
+            i, runs = _MYSQL_RUN.match(stmt, i).end(), runs + 1
+            out.append(" ")
+        elif two == "*/" and runs:
+            i, runs = i + 2, runs - 1
+            out.append(" ")
         elif two == "/*":
-            depth, j = 1, i + 2
+            depth, j, close = 1, i + 2, -1
             while depth:
-                close = stmt.find("*/", j)
-                if close < 0:
-                    return None
+                if close < j:   # the */ found last is still the next one until it is read
+                    close = stmt.find("*/", j)
+                    if close < 0:
+                        return "".join(out), False
                 opened = stmt.find("/*", j, close) if nest else -1
                 depth, j = (depth + 1, opened + 2) if opened >= 0 else (depth - 1, close + 2)
             out.append(" ")
@@ -243,7 +258,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
             j = i + 1
             while True:
                 if j >= n:
-                    return None
+                    return "".join(out), False
                 if escapes and stmt[j] == "\\":
                     j += 2
                 elif stmt[j] != close:
@@ -258,7 +273,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
             tag = _DOLLAR.match(stmt, i).group(0)
             end = stmt.find(tag, i + len(tag))
             if end < 0:
-                return None
+                return "".join(out), False
             out.append("''")
             i = end + len(tag)
         elif m := _SQL_TEXT.match(stmt, i):   # a run of text, read in one step
@@ -267,7 +282,7 @@ def sql_code(stmt, backslash, dollar, nest, hash_comment, brackets, backtick, da
         else:
             out.append(" " if c == "\x0b" else c)
             i += 1
-    return "".join(out)
+    return "".join(out), True
 
 
 A2A_PARTS = ("text", "file", "data")
@@ -315,8 +330,9 @@ def _name(v):
     return v.lower() if isinstance(v, str) and A2A_NAME.fullmatch(v) else None
 
 
-def extract(cls, tool, args):
-    """{field: value} for `cls`; a missing value is left out."""
+def extract(cls, tool, args, limit=None):
+    """{field: value} for `cls`; a missing value is left out. SQL longer than `limit` characters (the engine's
+    MAX_SUBJECT) isn't lexed: its `code` is the text as written, which every rule on it takes as TK-OVERSIZE."""
     if cls == "shell":
         out = {"command": first(args, *SHELL_KEYS)}
     elif cls == "fs":
@@ -357,8 +373,8 @@ def extract(cls, tool, args):
         stmt = first(args, "sql", "query", "statement")
         text = stmt if isinstance(stmt, str) else "\n;\n".join(stmt) if isinstance(stmt, list) and all(
             isinstance(s, str) for s in stmt) else None
-        code = [] if text is None else list(dict.fromkeys(c for c in (sql_code(text, *d) for d in SQL_DIALECTS.values())
-                                                          if c is not None))
+        code = [] if text is None else [text] if limit is not None and len(text) > limit else list(dict.fromkeys(
+            c for c in (sql_code(text, *d) for d in SQL_DIALECTS.values()) if c is not None))
         out = {"statement": stmt, "db": first(args, "db", "database"), "code": code or None,
                "verb": code[0].split()[0].upper() if code and code[0].split() else None}
     elif cls == "payment":

@@ -73,9 +73,9 @@ root-owned Python 3.9+ with its `venv` module (Debian, Ubuntu: `sudo apt install
 that is not root and not in a sudo, wheel, admin, docker or similar group.
 
 Init runs from root's Python, so Tracekit must be installed there first. The package is `tracekit-ai`; `tracekit` on
-PyPI is another project. Which way depends on `/usr/bin/python3 --version`. With Python 3.11 or later, install it
-into `/opt/tracekit`, the root-owned venv that init builds anyway. Debian 12, Ubuntu 23.04 and later refuse
-`sudo pip install` (PEP 668: `error: externally-managed-environment`), but pip installs into a venv:
+PyPI is another project. Install it into `/opt/tracekit`, the root-owned venv that init builds anyway. Debian 12,
+Ubuntu 23.04 and later refuse `sudo pip install` (PEP 668: `error: externally-managed-environment`), but pip installs
+into a venv:
 
 ```bash
 sudo /usr/bin/python3 -m venv /opt/tracekit
@@ -85,9 +85,8 @@ sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --approver A
 sudo /opt/tracekit/bin/python -I -m tracekit doctor
 ```
 
-With Python 3.9 or 3.10 (Ubuntu 22.04, Debian 11, macOS's `/usr/bin/python3`), don't run init from that venv: it
-fails and leaves a broken `/opt/tracekit` (`Too many levels of symbolic links`). Run init from the system Python
-instead. These systems don't refuse `sudo pip`, so you can install Tracekit there. But that puts it and the packages
+With Python 3.9 or 3.10 (Ubuntu 22.04, Debian 11, macOS's `/usr/bin/python3`), `sudo pip` isn't refused, so you
+can also install Tracekit into the system Python and run init from there. But that puts it and the packages
 it needs (cryptography, regex, rfc8785, google-re2 on 3.10, and what they need) into the system Python, for every
 program that uses it. Where your distribution ships one of them, as Ubuntu 22.04 ships python3-cryptography 3.4.8, pip
 adds a newer copy that those programs then load instead. That can break programs written for the distribution's
@@ -157,13 +156,16 @@ dependencies); on the clone route, delete the clone.
 Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops anything you added by hand, such as
 `witnesses:` or `content:` (without `content:`, new runs keep no content), and doesn't say so. To upgrade:
 
-1. Stop the signer: `sudo systemctl stop tracekit-signer` (with `--harness` also `tracekit-harness-helper`, with
-   `--egress` also `tracekit-egress`). Until init starts it again, AGENT's tool calls are blocked.
+1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
+   `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.
+   Init restarts the harness helper and the egress observer itself, so they run the new version.
 2. Keep a copy of the config: `sudo cp /etc/tracekit/signer.yaml /root/signer.yaml.bak`.
 3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
-   the new release's tag into a new directory.
-4. Add your lines back to `/etc/tracekit/signer.yaml`, then `sudo systemctl restart tracekit-signer`, and
-   `tracekit-harness-helper` / `tracekit-egress` if you use them. A run that starts before this keeps no content.
+   the new release's tag into a new directory. On macOS, init bootstraps the signer and, with `--harness`, the helper
+   again; no separate launchd command is needed here.
+4. Add your lines back to `/etc/tracekit/signer.yaml`, then restart the signer: on Linux,
+   `sudo systemctl restart tracekit-signer`; on macOS, `sudo launchctl kickstart -k system/dev.tracekit.signer`. A run
+   that starts before this keeps no content.
 
 Export and the trust config read the signer's data dir, which only root and the signer's user can open. So AGENT
 can't export its own runs; only root can. Export as root, and name AGENT's tenant: init puts AGENT's runs in a tenant

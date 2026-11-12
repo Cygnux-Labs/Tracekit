@@ -2826,9 +2826,14 @@ class SignerService:
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
-        # rule_ids say only TK-OVERSIZE: name the subjects it stands for
-        reasons = [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
-                    + ", ".join(ruled[0]["oversize"]))[:4096]] if ruled and ruled[0].get("oversize") else []
+        # rule_ids say only TK-OVERSIZE: name the subjects it stands for, and what to do (a held call waits for a person)
+        reasons = []
+        if ruled and ruled[0].get("oversize"):
+            kib = engine.MAX_SUBJECT // 1024
+            remedy = f"Split it into calls under {kib} KiB each (write a large file in parts)" + (
+                ", or have a person approve it." if ruled[0]["verdict"] == "ask" else ".")
+            reasons = [f"TK-OVERSIZE: over {kib} KiB, so never matched: "
+                       + ", ".join(ruled[0]["oversize"])[:600] + INSTEAD + remedy]
         if ruled and ruled[0].get("nondeterministic"):   # the rule it was matching when time ran out is no match
             reasons.append(f"nondeterministic: the fallback regex engine ran out of its {engine.REGEX_TIMEOUT_S:g} s on "
                            "these arguments, so the call is denied; the rule it was matching then is among the rule ids "
