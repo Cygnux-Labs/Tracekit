@@ -25,7 +25,8 @@ RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rat
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
 # the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
 RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
-                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT"}
+                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED", "TK-A2A-NAME", "TK-GRANT",
+                "TK-HOOK-BLOCKED"}   # tracekit audit's id for a call an agent's hook denies before the policy
 # the reason and remedy the signer gives with an id the engine gives itself, as with a rule's own: fixed text, never
 # the call's
 ENGINE_REASONS = {"TK-A2A-NAME": {
