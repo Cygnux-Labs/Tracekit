@@ -662,6 +662,13 @@ def _match_pending(pend, prefix):
 
 
 def _run(a):
+    if a.cmd in ("init", "uninstall") and a.agent == "gptme":
+        if a.project:
+            print("tracekit: gptme hooks use the user's config; omit --project", file=sys.stderr)
+            return 2
+        if a.cmd == "init" and not (a.dev or a.remote):
+            print("tracekit: gptme hooks support per-user --dev installs", file=sys.stderr)
+            return 2
     if a.cmd == "init" and a.remote:
         return _init_remote(a)
     if a.cmd == "init":

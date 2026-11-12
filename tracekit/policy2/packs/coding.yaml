@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-82'
+version: '2026.11-v2-83'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -272,12 +272,25 @@ deny:
     rationale: A URL bypasses the configured package source and can install unreviewed code.
 
 ask:
-  - id: TK-A061
+  - id: TK-A063
     tool: '^ipython$'
     pattern: '^'
     reason: running Python in gptme's IPython kernel
     remedy: Have a person review and approve the Python code.
     rationale: Shell rules cannot determine the effects of code executed in the Python kernel.
+  - id: TK-A064
+    tool: '^Bash$'
+    field: gptme_tmux_input
+    pattern: '^true$'
+    reason: sending keys to an existing gptme tmux pane
+    remedy: Have a person review the input, or start a new session with the complete command.
+    rationale: Existing input and the program in the pane can change what the keys do.
+  - id: TK-A065
+    tool: '^mcp__gptme__load$'
+    pattern: '^'
+    reason: loading an MCP server through gptme
+    remedy: Have a person review and approve the server configuration.
+    rationale: Loading a server can start a subprocess or connect to a remote server.
   - id: TK-A046
     class: shell
     field: code

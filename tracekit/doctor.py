@@ -258,7 +258,7 @@ def _hook_commands(harness, path):
 
     if harness == "gptme":
         argv = _gptme_argv(path)
-        return [shlex.join([*argv, "PreToolUse"])] if argv else []
+        return [shlex.join(argv)] if argv else []
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
         return list(json.loads(m.group(1)).values()) if m else []
@@ -277,25 +277,37 @@ def _gptme_argv(path):
     return json.loads(match[1]) if match else []
 
 
+def _outside_cwd(path):
+    if not path or not os.path.isabs(path):
+        return False
+    cwd = os.path.normcase(os.path.realpath(os.getcwd()))
+    for candidate in (os.path.abspath(path), os.path.realpath(path)):
+        try:
+            if os.path.commonpath((cwd, os.path.normcase(candidate))) == cwd:
+                return False
+        except ValueError:   # Windows paths on different drives
+            pass
+    return True
+
+
 def _gptme_python():
     launcher = shutil.which("gptme")
-    if not launcher:
+    if not _outside_cwd(launcher):
         return None
     executable = "python.exe" if os.name == "nt" else "python"
     adjacent = os.path.join(os.path.dirname(os.path.realpath(launcher)), executable)
-    if os.path.isfile(adjacent):
+    if _outside_cwd(adjacent) and os.path.isfile(adjacent):
         return adjacent
-    uv = shutil.which("uv")
-    if uv and os.name == "nt":
+    uv = shutil.which("uv") if os.name == "nt" else None
+    if _outside_cwd(uv):
         try:
             tool_dir = subprocess.check_output([uv, "tool", "dir"], text=True, timeout=5).strip()
             candidate = os.path.join(tool_dir, "gptme", "Scripts", executable)
-            if os.path.isfile(candidate):
+            if _outside_cwd(candidate) and os.path.isfile(candidate):
                 return candidate
         except (OSError, subprocess.SubprocessError):
             pass
-    # lean: for launchers with no adjacent interpreter, try this environment; a separate unsupported launcher warns.
-    return sys.executable
+    return None
 
 
 _GPTME_PROBE = """
@@ -343,7 +355,7 @@ def _gptme_load_check(path):
             return False, f"gptme plugin at {bridge} differs from this Tracekit's generated files"
         python = _gptme_python()
         if not python:
-            return False, "gptme is not on PATH"
+            return False, "doctor couldn't find gptme's Python outside the working directory"
         run = subprocess.run([python, "-I", "-B", "-c", _GPTME_PROBE, bridge], capture_output=True,
                              encoding="utf-8", errors="replace", timeout=10)
         if run.returncode:

@@ -64,13 +64,15 @@ class Mapping(HarnessCase):
         super().setUp()
         # the held cases are approved while the hook waits (as Slack or the viewer would): the waiting setting
         os.environ[claude_code.WAIT_ENV] = str(claude_code.APPROVAL_WAIT_S)
-        self.decision, self.sent, mutex = "allow", [], threading.Lock()
+        self.decision, self.sent, self.observed, mutex = "allow", [], [], threading.Lock()
         self.signer = FakeSigner(lambda tool, args: (self.decision, [] if self.decision == "allow" else ["R-1"]))
 
         def handle(identity, frame):
             with mutex:
                 if frame["method"] == "decide":
                     self.sent.append({k: frame[k] for k in ("tool", "tool_call_id", "args")})
+                if frame["method"] == "observe":
+                    self.observed.append(frame["value"])
                 return getattr(self.signer, frame.pop("method"))(frame)
         os.environ["TRACEKIT_SIGNER"] = ac._serve(self, handle)
 
@@ -194,30 +196,7 @@ class Mapping(HarnessCase):
         self.assertEqual((code, json.loads(out)["cancel"]), (0, True), err)
 
     def test_gptme_recorded_confirmations_reach_the_signer(self):
-        for case in cases("gptme"):
-            for sample in case.get("observed", ()):
-                if sample["platform"] != "WSL2":
-                    continue
-                for event in sample["events"]:
-                    if event["event"] != "tool.confirm":
-                        continue
-                    call = event["tool_use"]
-                    with self.subTest(case=case["name"], format=sample["tool_format"]):
-                        before = len(self.sent)
-                        tid = call["call_id"] or f"gptme_{before}"
-                        payload = {"session_id": "s-gptme", "tool_use_id": tid, "tool_name": call["tool"],
-                                   "tool_input": {key: call[key] for key in ("args", "content", "kwargs")}}
-                        self.decision = case["decision"]
-                        if self.decision == "ask":
-                            self.approve_when_asked()
-                        code, out, err = self.hook("gptme", payload, "PreToolUse")
-                        self.assertEqual((code, out), (case["exit"], case["stdout"]), err)
-                        self.assertEqual(len(self.sent), before + 1)
-                        request = self.sent[-1]
-                        expected = "mcp__probe__echo" if call["tool"] == "probe.echo" else case["request"]["tool"]
-                        self.assertEqual((request["tool"], request["tool_call_id"]), (expected, tid))
-                        if expected == "Bash":
-                            self.assertEqual(request["args"]["command"], call["content"] or call["kwargs"]["command"])
+        self.check("gptme")
 
     def test_gptme_does_not_complete_a_denied_call_or_decide_a_read(self):
         payload = {"session_id": "s-gptme", "tool_use_id": "shell_1", "tool_name": "shell",
@@ -232,7 +211,23 @@ class Mapping(HarnessCase):
         run = self.signer._runs[claude_code._load(claude_code._state("s-gptme"))["run_id"]]
         self.assertFalse(any(e["type"] == "tool.result" for e in run["events"]))
         self.assertEqual([e["data"]["source"] for e in run["events"] if e["type"] == "input.observed"],
-                         ["gptme:tool:Read"])
+                         ["gptme:tool-undecided:Read"])
+
+    def test_gptme_expanded_prompt_is_only_an_untrusted_observation(self):
+        prompt = next(e["prompt"] for case in cases("gptme") for sample in case["observed"]
+                      for e in sample.get("session_events", ()) if e["event"] == "turn.pre" and "@notes.txt" in e["prompt"])
+        self.assertIn("Tracekit review fixture from the file.", prompt)
+        # An older generated plugin can still report the expanded turn as UserPromptSubmit.
+        for event in ("PromptObserved", "UserPromptSubmit"):
+            with self.subTest(event=event):
+                sid = "gptme-prompt-" + event
+                self.assertEqual(self.hook("gptme", {"session_id": sid, "prompt": prompt}, event)[:2], (0, ""))
+                state = claude_code._load(claude_code._state(sid))
+                self.assertFalse(state.get("constraints"))
+                run = self.signer._runs[state["run_id"]]
+                observed = [e["data"] for e in run["events"] if e["type"] == "input.observed"]
+                self.assertEqual([(d["source"], d["trust"]) for d in observed], [("gptme:prompt", "untrusted")])
+                self.assertEqual(self.observed[-1], [prompt])
 
     def test_gptme_invalid_confirmation_blocks_before_deciding(self):
         payload = {"session_id": "s-gptme", "tool_use_id": "shell_1", "tool_name": "shell",
@@ -715,26 +710,38 @@ class Installer(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             return cli.main(list(argv)), out.getvalue()
 
+    def test_gptme_rejects_project_and_system_hooks_before_installing(self):
+        for command in (
+            ("init", "--dev", "--v2", "--agent", "gptme", "--project"),
+            ("init", "--v2", "--agent", "gptme", "--user", "tracekit-test-agent"),
+            ("uninstall", "--agent", "gptme", "--project"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.cli(*command)[0], 2)
+                self.assertFalse(os.path.exists(agent_hooks.config_path("gptme")))
+
     def test_init_dev_v2_replaces_v1_and_uninstall_removes_it(self):
         d = ac.tmpdir(self)
         with mock.patch("os.getcwd", return_value=d):
             for harness in agent_hooks.HARNESSES:
                 with self.subTest(harness=harness):
-                    path = agent_hooks.config_path(harness, d)
+                    project = None if harness == "gptme" else d
+                    path = agent_hooks.config_path(harness, project)
                     with contextlib.redirect_stdout(io.StringIO()):
-                        agent_hooks.install(harness, d)   # v1
-                    code, out = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")
+                        agent_hooks.install(harness, project)   # v1
+                    scope = ("--project",) if project else ()
+                    code, out = self.cli("init", "--dev", "--v2", "--agent", harness, *scope)
                     self.assertEqual(code, 0)
                     self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {path}", out)
                     if harness == "gptme":
                         bridge = agent_hooks._gptme_hook_path(path)
                         with open(bridge, encoding="utf-8") as f:
                             self.assertEqual(agent_hooks._version(f.read()), "v2")
-                        again = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1].splitlines()
+                        again = self.cli("init", "--dev", "--v2", "--agent", harness)[1].splitlines()
                         self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
-                        code, out = self.cli("uninstall", "--agent", harness, "--project")
+                        code, out = self.cli("uninstall", "--agent", harness)
                         self.assertEqual(code, 0)
-                        self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")
+                        self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
                         self.assertFalse(os.path.exists(bridge))
                         self.assertTrue(os.path.isfile(path))
                         continue
