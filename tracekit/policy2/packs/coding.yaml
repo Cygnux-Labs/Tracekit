@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-81'
+version: '2026.11-v2-82'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -42,6 +42,10 @@ tools:
 
 # tool classes and tool names whose results are untrusted content (the signer's provenance index)
 untrusted: [http, mcp, WebFetch, WebSearch]
+  - id: TK-D006
+    class: shell
+    pattern: '\b(?:rm\b[^;&|]{0,200}\s(?:-[a-zA-Z]{0,20}[rR][a-zA-Z]{0,20}|--recursive)\b[^;&|]{0,200}\s(?:/(?:etc|usr|var|bin|sbin|lib|lib64|boot|opt|srv|System|Library|Applications)(?:/\*?|\*)?|/)(?:\s|$|;|&|\|)|find\b[^;&|]{0,200}\s(?:/(?:etc|usr|var|bin|sbin|lib|lib64|boot|opt|srv|System|Library|Applications)(?:/\*?|\*)?|/)(?:\s|$|;|&|\|)[^;&|]{0,200}-delete\b|git\s+clean\b[^;&|]{0,200}\s(?:/(?:etc|usr|var|bin|sbin|lib|lib64|boot|opt|srv|System|Library|Applications)(?:/\*?|\*)?|/)(?:\s|$|;|&|\|)|(?:chmod|chown)\b[^;&|]{0,200}\s(?:-[a-zA-Z]{0,20}R[a-zA-Z]{0,20}|--recursive)\b[^;&|]{0,200}\s(?:/(?:etc|usr|var|bin|sbin|lib|lib64|boot|opt|srv|System|Library|Applications)(?:/\*?|\*)?|/)(?:\s|$|;|&|\|)|(?:rm|find|git\s+clean|chmod|chown)\b[^;&|]{0,200}\sC:[\\/]Windows(?:[\\/]\*?|\*)?(?:\s|$|;|&|\|))'
+    remedy: 'Delete or change permissions only inside the project; a system folder is not a coding task.'
 
 deny:
   # --- shell ---
