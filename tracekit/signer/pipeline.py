@@ -523,6 +523,12 @@ class RecordLog:
                     r.setdefault("tails", {})
                     r.setdefault("results", {})   # before 1.3: results recorded since the snapshot are checked
                     r.setdefault("replay", False)   # before 1.4: set already in a findings or replay run's state
+                    calls = [c for c in (*r["calls"].values(), *r["decisions"].values()) if c and "tool" not in c]
+                    if calls:   # before 1.7 a call had no tool: its decision's record names it
+                        tools = {x["event"]["data"].get("decision_id"): x["event"]["data"].get("tool")
+                                 for x in s.iter_run(r["tenant"], r["run_id"]) if x["event"]["type"] == "policy.decision"}
+                        for c in calls:
+                            c["tool"] = tools.get(c["decision_id"])
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             agent, contain = st.get("agent", agent), st.get("contain", contain)
