@@ -13,7 +13,7 @@ import threading
 import unittest
 from unittest import mock
 
-from factories import rewrite_bundle, wait_for
+from factories import rewrite_bundle, v2rec, wait_for
 from test_view import page_js
 from test_view_ui import needs_node
 from tracekit import demo_why, view
@@ -266,7 +266,8 @@ class SignedRuntime(unittest.TestCase):
         needs_node(self)
         self.assertEqual(self.used_after("deny-then-use", lambda run: run.decide("c1", "Bash", self.DENY)), {
             "decisions": {"ask": 1, "deny": 1}, "retries": 0, "calls": [["ask", "APPROVED · RAN"], ["deny", "BLOCKED"]],
-            "perm": [["deny", "BLOCKED"], ["ask", "APPROVED · RAN"]], "ran": ["ask"], "why": [("deny", None)]})
+            "perm": [["deny", "BLOCKED"], ["ask", "APPROVED · RAN"]], "ran": ["ask"],
+            "why": [("deny", None), ("ask", "approve")]})   # the ask's result came after the deny
 
     def test_a_flag_under_an_approved_id_stays_its_own_call_when_the_approval_is_used(self):
         """As a deny: a flagged call under the approved id was folded into it when the approval was used."""
@@ -871,6 +872,42 @@ class ImportWithoutWhyLog(unittest.TestCase):
         run = load_run(import_v2.convert(recs + [gap], tempfile.mkdtemp(dir=self.dir), {}))
         high = [a["title"] for a in alerts(run, build_graph(run)) if a["severity"] == "high"]
         self.assertIn("The signer recorded a capture gap: events may be missing", high)
+
+
+class ImportOrder(unittest.TestCase):
+    """A run's records under one call id and attempt (c1, 0), built by hand, imported: (decision, status) per action."""
+
+    def rec(self, seq, typ, data, **top):
+        return v2rec(seq, typ, data, attempt=0, log_id="log", tenant="default", **top)
+
+    def decision(self, seq, did, verdict):
+        return self.rec(seq, "policy.decision", {"tool_use_id": "c1", "tool": "Bash", "decision": verdict,
+                                                 "decision_id": did, "rule_ids": [], "policy_hash": "sha256:p"})
+
+    def actions(self, *recs):
+        recs = [self.rec(0, "run.registered", {"agent": {"name": "a"}}), *recs, self.rec(len(recs) + 1, "run.final", {})]
+        with tempfile.TemporaryDirectory() as d:
+            run = load_run(import_v2.convert(recs, d, {}))
+        return [(a["policy"]["decision"], a["status"]) for a in run.of_type("action")]
+
+    def test_a_call_whose_result_comes_after_a_later_decision_under_its_id_is_kept(self):
+        """The 1.7.0 review: decide A, decide B under the same id and attempt, then A's result: A and its result were
+        dropped when B came, and the why log showed only B, never run."""
+        result = self.rec(3, "tool.result", {"tool_use_id": "c1", "decision_id": "dA", "ok": True,
+                                             "output": {"hash": "sha256:o", "size": 2}})
+        a, b = self.decision(1, "dA", "allow"), self.decision(2, "dB", "deny")
+        self.assertEqual(self.actions(a, b, result), [("deny", "blocked"), ("allow", "ok")])
+        self.assertEqual(self.actions(a, b), [("deny", "blocked")])   # A never ran: B, under its id, replaces it
+
+    def test_a_retry_folded_into_a_replaced_held_call_makes_it_the_latest_again(self):
+        """A held call, approved; a deny under its id; the agent's retry, which consumes the approval, folds into the
+        held call: that is the id's latest call again, though the deny had replaced it and it has no result yet."""
+        self.assertEqual(self.actions(
+            self.decision(1, "dH", "ask"),
+            self.rec(2, "approval.request", {"approval_id": "a1", "binding": {"tool_call_id": "c1"}}),
+            self.rec(3, "approval", {"approval_id": "a1", "decision": "approve", "approver": "p", "self_approved": False}),
+            self.decision(4, "dD", "deny"), self.decision(5, "dR", "ask"),
+            self.rec(6, "approval.consumed", {"approval_id": "a1"}, tool_call_id="c1")), [("ask", "error")])
 
 
 class DemoWhy(unittest.TestCase):
