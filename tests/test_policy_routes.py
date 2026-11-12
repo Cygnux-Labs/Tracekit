@@ -337,11 +337,13 @@ class Routes(unittest.TestCase):
 
     # --- a commands list, entry by entry
     def test_a_joined_commands_list_that_reads_stands_beside_its_entries(self):
-        # an entry that can't be read on its own (a heredoc across entries) leaves the joined reading as it is
+        # an entry that can't be read on its own (a heredoc across entries) leaves the joined reading's deny as it is,
+        # and is held as unreadable (Engine._parse) where the joined one finds nothing
         self.expect([("shell", {"commands": ["cat <<EOF > .env", "X=1", "EOF"]}),
                      ("shell", {"commands": ["cat > .env <<EOF", "X=1", "EOF"]})], "deny", "TK-D010")
         self.expect([("shell", {"commands": ["cat <<EOF > notes.txt", "hello", "EOF"]}),
-                     ("shell", {"commands": ["git commit -m 'multi", "line message'"]})], "allow")
+                     ("shell", {"commands": ["git commit -m 'multi", "line message'"]})],
+                    {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-SHELL-PARSE")
 
     def test_each_entry_of_a_commands_list_is_read_on_its_own(self):
         # the OpenAI Agents SDK's ShellTool runs each entry in its own process, LangChain's joins them with `;`
@@ -541,7 +543,7 @@ class MCPAnswers(unittest.TestCase):
         class Session:
             server_info = type("Info", (), {"name": "bank"})()
 
-            async def call_tool(self, name, arguments=None, *, input_responses=None):
+            async def call_tool(self, name, arguments=None, *, input_responses=None, request_state=None):
                 sent.append((arguments, input_responses))
                 return CallToolResult(content=[TextContent(type="text", text="done")], is_error=False)
 
@@ -565,3 +567,19 @@ class MCPAnswers(unittest.TestCase):
         out = asyncio.run(s.call_tool("transfer", {"input_responses": 1}, input_responses=answers))
         self.assertTrue(out.is_error)
         self.assertEqual(len(sent), 1)
+        # a round that resumes under its decision (request_state) goes on under it when its answers only accept, and
+        # is decided as a call of its own when they carry content
+        from tracekit.format.canon import event_hash
+        tool = "mcp:bank/transfer"
+        for answer, more in ((ElicitResult(action="accept"), 0), (ElicitResult(action="accept", content={"to": "x"}), 1)):
+            s._pending[(tool, event_hash({"tool": tool, "args": {"amount": 5}}), "st")] = (
+                "c1", {"tool_call_id": "c1", "decision_id": "d1", "args_digest": "x"}, {"decision": "allow"},
+                {"amount": 5})
+            before = len(decided)
+            out = asyncio.run(s.call_tool("transfer", {"amount": 5}, input_responses={"q1": answer},
+                                          request_state="st"))
+            self.assertFalse(out.is_error)
+            self.assertEqual(len(decided) - before, more, answer)
+            if more:
+                self.assertEqual(decided[-1]["args"]["input_responses"], {"q1": {"action": "accept",
+                                                                                 "content": {"to": "x"}}})

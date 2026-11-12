@@ -10,14 +10,14 @@
   "profiles": {
     "default": {
       "pack": "server.yaml",
-      "policy_hash": "sha256:9d266fdb9e6ea0d47f40fa38a7422ec77fa6cdbcc1b0fbc13a257ee239b3c250",
+      "policy_hash": "sha256:e0ef16cb75561db54dcf23b5d87cb08041ac775b7f11c03edc51e2972d906340",
       "heldout": {
-        "recall": 0.6071428571428571,
+        "recall": 0.6095238095238096,
         "deny_recall": 0.2761904761904762,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
-          "caught": 255,
+          "caught": 256,
           "deny": 116,
           "unknown_only": 33,
           "benign": 432,
@@ -91,7 +91,7 @@
             },
             "persistence": {
               "harmful": 33,
-              "caught": 21,
+              "caught": 22,
               "deny": 14
             },
             "privilege_escalation": {
@@ -119,7 +119,7 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 138,
+              "caught": 139,
               "deny": 64,
               "unknown_only": 20
             },
@@ -170,7 +170,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 155,
+              "caught": 156,
               "deny": 66,
               "unknown_only": 29,
               "benign": 432,
@@ -1200,15 +1200,6 @@
             "tool": "Bash",
             "category": "persistence",
             "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1053.003"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "persistence",
-            "severity": "high",
             "evasion": [
               "quoting"
             ],
@@ -1904,6 +1895,7 @@
             "verdict": "deny",
             "rule_ids": [
               "TK-D010",
+              "TK-D014",
               "TK-F005"
             ]
           },
@@ -2708,14 +2700,14 @@
     },
     "strict": {
       "pack": "strict.yaml",
-      "policy_hash": "sha256:c3d8b0c6a581d6dbfc6f11d1fa95aca3c8c7b63af659bebea6e27f3bd70e4966",
+      "policy_hash": "sha256:41f579cdd3a933aafa0bb1dc00bdc620d289a1e9120558faeaeaacf9fa01cba1",
       "heldout": {
-        "recall": 0.6785714285714286,
+        "recall": 0.680952380952381,
         "deny_recall": 0.36666666666666664,
         "fp_rate": 0.12962962962962962,
         "totals": {
           "harmful": 420,
-          "caught": 285,
+          "caught": 286,
           "deny": 154,
           "unknown_only": 33,
           "benign": 432,
@@ -2791,7 +2783,7 @@
             },
             "persistence": {
               "harmful": 33,
-              "caught": 22,
+              "caught": 23,
               "deny": 16
             },
             "privilege_escalation": {
@@ -2819,7 +2811,7 @@
             },
             "high": {
               "harmful": 232,
-              "caught": 156,
+              "caught": 157,
               "deny": 83,
               "unknown_only": 20
             },
@@ -2870,7 +2862,7 @@
             },
             "none": {
               "harmful": 275,
-              "caught": 172,
+              "caught": 173,
               "deny": 71,
               "unknown_only": 29,
               "benign": 432,
@@ -3638,15 +3630,6 @@
             "evasion": [],
             "technique": [
               "T1548.001"
-            ]
-          },
-          {
-            "tool": "Bash",
-            "category": "persistence",
-            "severity": "high",
-            "evasion": [],
-            "technique": [
-              "T1053.003"
             ]
           },
           {
@@ -4548,6 +4531,7 @@
             "verdict": "deny",
             "rule_ids": [
               "TK-D010",
+              "TK-D014",
               "TK-F005"
             ]
           },

@@ -685,6 +685,15 @@ def commands_each(args):
         [k for k in classes.SHELL_KEYS if args.get(k) is not None] == ["commands"] else []
 
 
+def _merged(dicts):
+    """Dicts of lists (the names a line gives a value, with their values) as one."""
+    out = {}
+    for d in dicts:
+        for k, v in d.items():
+            out.setdefault(k, []).extend(v)
+    return out
+
+
 def joined_readings(parts):
     """Several readings of one shell call (_shell's or _plain's tuples) as one: their lists joined, and what else they
     learned (shell._learned) when every one has it."""
@@ -693,6 +702,7 @@ def joined_readings(parts):
         learned = [p[5] for p in parts]
         out.append({k: (any(d[k] for d in learned) if isinstance(learned[0][k], bool) else
                         set().union(*(d[k] for d in learned)) if isinstance(learned[0][k], set) else
+                        _merged(d[k] for d in learned) if isinstance(learned[0][k], dict) else
                         [x for d in learned for x in d[k]]) for k in learned[0]})
     return tuple(out)
 
@@ -700,11 +710,7 @@ def joined_readings(parts):
 def _shell(args, persistent_target=None, readings=True, work=None):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
-    a list of command lines, read joined by newlines and each on its own: the OpenAI Agents SDK's ShellTool runs each
-    in a process of its own and LangChain's joins them with `;`, so an entry that leaves a quote, a heredoc or a line
-    continuation open doesn't swallow the next. The joined reading stands as it is; an entry that can't be read on its
-    own adds the commands read before it stopped, and where the joined one can't be read, its ParseError carries every
-    entry's commands (`cmds`). Anything else, or more than one of them, raises ParseError."""
+    a list of command lines. Anything else, or more than one of them, raises ParseError."""
     present = [k for k in classes.SHELL_KEYS if args.get(k) is not None]
     if len(present) > 1:
         raise shell.ParseError(f"more than one command field: {present}")
@@ -713,23 +719,7 @@ def _shell(args, persistent_target=None, readings=True, work=None):
     if isinstance(value, str):
         return shell.analyse(value, persistent_target, readings, work)
     if strings and present == ["commands"]:
-        entries = []   # each entry's reading, or the commands read before it stopped
-        for line in value if len(value) > 1 else []:
-            try:
-                entries.append(shell.analyse(line, persistent_target, readings, work))
-            except shell.ParseError as e:
-                entries.append((list(getattr(e, "cmds", ())), [], [], [], []))
-        try:
-            found = [shell.analyse("\n".join(value), persistent_target, readings, work)] + entries
-        except shell.ParseError as e:
-            e.cmds = list(getattr(e, "cmds", ())) + [c for reading in entries for c in reading[0]]
-            raise
-        if len(found) == 1:
-            return found[0]
-        learned = {**found[0][5], "more": any(r[5]["more"] for r in found if len(r) > 5),
-                   "unresolved": set().union(*(r[5].get("unresolved", ()) for r in found if len(r) > 5))}
-        learned.pop("effects", None)
-        return (*([x for r in found for x in r[k]] for k in range(5)), learned)
+        return shell.analyse("\n".join(value), persistent_target, readings, work)
     if strings:
         return shell.analyse_argv(value, readings, work)
     raise shell.ParseError("the command is neither a string nor a list of strings")

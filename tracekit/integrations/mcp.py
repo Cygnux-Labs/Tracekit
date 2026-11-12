@@ -40,6 +40,12 @@ _UNNAMED = ("MCP: the session doesn't name its server, so its calls are recorded
             "session's initialize() (mcp 1.x)")
 
 
+def _content(answer):
+    """Whether an input-required answer carries content (an elicitation's form values), not only accept or decline."""
+    dump = answer.model_dump(mode="json", by_alias=True, exclude_none=True) if hasattr(answer, "model_dump") else answer
+    return not isinstance(dump, dict) or bool(dump.get("content")) or bool(set(dump) - {"action", "_meta"})
+
+
 class TracekitSession(HeldCalls):
     CLASS = "mcp"
 
@@ -98,11 +104,13 @@ class TracekitSession(HeldCalls):
         args = arguments or {}
         caller_args_digest = event_hash({"tool": tool, "args": args})
         # an input-required round's answers (mcp 2's input_responses: what the client answers the server's elicitation
-        # with, which can carry the effect's real parameters) are decided and recorded as the round's arguments, so a
-        # round that carries them is decided as a call of its own
+        # with), where one carries content (which can be the effect's real parameters), are decided and recorded as the
+        # round's arguments, so such a round is decided as a call of its own; one that only accepts or declines goes on
+        # under the round's decision
         answers, decided = kw.get("input_responses"), None
+        carries = answers is not None and any(_content(v) for v in answers.values())
         req_state = kw.get("request_state")
-        key = (tool, caller_args_digest, req_state) if req_state is not None and answers is None else None
+        key = (tool, caller_args_digest, req_state) if req_state is not None and not carries else None
         if key is not None and key in self._pending:
             call_id, req, d, args = self._pending.pop(key)
             try:
@@ -118,7 +126,7 @@ class TracekitSession(HeldCalls):
             args = c.get("args", args)
             req["args_digest"] = event_hash({"tool": tool, "args": args})
         else:
-            if answers is not None:
+            if carries or answers is not None and req_state is None:
                 if "input_responses" in args:
                     why = "the call's arguments name input_responses, which its answers are decided under"
                     if method == "get_prompt":
@@ -126,7 +134,7 @@ class TracekitSession(HeldCalls):
                     return CallToolResult(content=[TextContent(type="text", text=BLOCKED + why)], isError=True)
                 args = {**args, "input_responses": {k: v.model_dump(mode="json", by_alias=True, exclude_none=True)
                                                     if hasattr(v, "model_dump") else v for k, v in answers.items()}}
-            decided = args
+                decided = args
             call_id = uuid.uuid4().hex
             why, d, args = await self._gate(call_id, tool, args)
             if why is not None:
@@ -139,7 +147,7 @@ class TracekitSession(HeldCalls):
         send = getattr(self._session, method)
         if d is None:   # the signer unreachable and the run fails open: the call runs unrecorded
             return await send(name, arguments, *a, **kw)
-        if answers is not None:   # sent as the signer has them (a T2 approval's copy), the answers apart
+        if decided is not None:   # sent as the signer has them (a T2 approval's copy), the answers apart
             kw = {**kw, "input_responses": answers if args == decided else args.get("input_responses")}
             args = {k: v for k, v in args.items() if k != "input_responses"}
         try:
