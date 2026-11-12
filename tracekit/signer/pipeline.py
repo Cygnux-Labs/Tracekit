@@ -610,7 +610,12 @@ class RecordLog:
                 run["constraints"] = [*(run.get("constraints") or ()), constraint_state(e)]
             elif e["type"] == "capture.gap" and e["data"].get("kind") == "constraint_refused":
                 run["constraints_full"] = True   # SignerService._constraint_add: every write is held
+            elif e["type"] == "capture.gap" and e["data"].get("kind") == "executed_against_policy" \
+                    and (run.get("ran_under") or (None,))[0] == e.get("tool_call_id"):
+                del run["ran_under"]   # the result ran without the approval: the decision that consumed it stays open
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
+                if run.get("ran_under"):   # the result before this one had no executed_against_policy gap
+                    run["decisions"].pop(run.pop("ran_under")[1], None)
                 d, out = e["data"], e["data"].get("output") or {}
                 if out.get("hash") and e.get("tool_call_id"):
                     # lean: an ok result that also carried `error` counts as comparable after a restart (no shipped
@@ -618,12 +623,17 @@ class RecordLog:
                     run["results"][e["tool_call_id"]] = run["results"].get(e["tool_call_id"], [])[1 - RESULTS_PER_CALL:] + [
                         [d["decision_id"], out["hash"], d.get("ok") is True and out.get("size") != NO_RESULT,
                          out.get("redacted") is True, None]]
-                run["decisions"].pop(e["data"]["decision_id"], None)
+                call = run["decisions"].pop(e["data"]["decision_id"], None)
                 used = (e["tool_call_id"], e.get("attempt", 0))
                 a = approvals.get(index.get((e["tenant"], e["run_id"], *used)))
-                if a and a["state"] == "consumed" and ran(a)[:2] == used:   # it ran under it (Service._complete)
-                    # lean: by call and attempt; the writer also checks the arguments against the approval's
-                    run["decisions"].pop(ran(a)[2], None)
+                if a and a["state"] == "consumed" and ran(a)[:2] == used and (call or {}).get("decision") == "ask":
+                    # Service._complete also ends the decision that consumed the approval when this result ran under
+                    # it, which only its arguments say: an ask's did unless its executed_against_policy gap follows.
+                    # lean: an allow, flag or deny of a call whose approval was consumed (a grant, a hold or a policy
+                    # change since) keeps that decision open on replay, so the run ends with a decided_not_completed
+                    # gap the writer may not have written; record in tool.result the approval it ran under if one
+                    # such run appears
+                    run["ran_under"] = (used[0], ran(a)[2])
             elif e["type"] == "approval.request":
                 a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"], e["ts"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
@@ -644,6 +654,9 @@ class RecordLog:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
                 grant_state(dict.__setitem__, run, e)
+        for run in runs.values():   # a run's last result had no executed_against_policy gap after it
+            if run.get("ran_under"):
+                run["decisions"].pop(run.pop("ran_under")[1], None)
         self.log_id = self.log_id or secrets.token_hex(16)
         self.agent, self.contain = agent, contain
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
