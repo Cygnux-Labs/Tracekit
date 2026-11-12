@@ -1566,14 +1566,31 @@ class Shell(unittest.TestCase):
 
     def test_a_loop_over_a_thousand_files_decides_within_the_parse_budget(self):
         """A loop over 1,000 file names, read once for each, took 31 ms to decide in 1.5.3 (1.5.2, which read none:
-        3.4 ms): each reading's commands were copied into a new list, and each word read a character at a time (#575)."""
+        3.4 ms): each reading's commands were copied into a new list, and each word read a character at a time (#575).
+
+        Read once per class of value (#683), the same line emits 434 readings instead of 2,002 -- and decides in
+        174 ms with no fold against 244 ms with one, measured here (Windows, CPython 3.13, `regex` backend, best of
+        five each). The fold buys readings and pays back wall time, so the time bound below stays the parse budget;
+        what it now holds as well is the readings, which is the half this test was missing: a fold that collapsed
+        nothing leaves 2,002 and fails, where before the line's verdict and its budget bound were met either way."""
         pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
         cmd = "for f in " + " ".join(f"src/m_{i}.py" for i in range(1000)) + '; do black "$f" && git add "$f"; done'
+        real, seen = shell._Parser.emit, []
+
+        def counted(self, *a, **kw):
+            seen.append(1)
+            return real(self, *a, **kw)
+
         for e in (Engine(pol), Engine(pol, "regex")):
-            start = time.perf_counter()
-            d = e.decide("Bash", {"command": cmd})
-            # ~25 ms on a laptop
-            self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), e.engine)
+            seen.clear()
+            with mock.patch.object(shell._Parser, "emit", counted):
+                start = time.perf_counter()
+                d = e.decide("Bash", {"command": cmd})
+                took = time.perf_counter() - start
+            # the budget, not a wall-clock target: this file records a runner that took 15x a laptop's time while
+            # machine_scale read 1.6, so a tighter seconds bound is a flake rather than a test
+            self.assertLess(took, PARSE_S * SLOWER * machine_scale(), e.engine)
+            self.assertLess(len(seen), 1000, (e.engine, len(seen)))
             self.assertEqual(d["verdict"], "allow")
 
     def test_redirections_to_bracket_patterns_decide_within_the_budget(self):
