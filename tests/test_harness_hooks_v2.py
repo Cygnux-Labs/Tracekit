@@ -578,7 +578,10 @@ class OnTheDevPolicy(HarnessCase):
                                         ("write", {"file_path": hooks, "contents": "{}"}),
                                         ("ApplyPatch", {"patch": patch}), ("ApplyPatch", patch),
                                         ("EditNotebook", {"target_notebook": hooks, **cell}),
-                                        ("edit_notebook", {"target_notebook": hooks, **cell}))):
+                                        ("edit_notebook", {"target_notebook": hooks, **cell}),
+                                        # Cursor reads \r as a line end (the review of #767: this patch was allowed)
+                                        ("ApplyPatch", {"patch": patch.replace("\n", "\r")}),
+                                        ("ApplyPatch", json.dumps({"patch": patch.replace("\n", "\r")})))):
             with self.subTest(tool=name, input=ti):
                 code, out, err = call(i, name, ti)
                 self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), err)
@@ -591,14 +594,20 @@ class OnTheDevPolicy(HarnessCase):
             code, out, err = call(i, name, {key: "/w/.env"})
             self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), name)
             self.assertIn("TK-D005", err)
+        # an edit naming no file Tracekit can read stays an unknown tool, as before
+        for i, (name, ti) in enumerate((("ApplyPatch", {"patch": "*** Begin Patch\n@@\n-a\n+b\n*** End Patch\n"}),
+                                        ("StrReplace", {"old_string": "a", "new_string": "b"})), 30):
+            self.assertEqual(call(i, name, ti)[0], 0, name)
         st, c = claude_code._load(claude_code._state(sid)), Client()
         self.addCleanup(c.close)
         evs = c.call("read", {"run_id": st["run_id"], "run_token": st["run_token"], "limit": 100})["events"]
         decided = {e["data"]["tool_use_id"]: (e["data"]["tool"], e["data"]["rule_ids"]) for e in evs
                    if e["type"] == "policy.decision"}
         self.assertEqual(decided["e20"], ("Edit", []))
-        self.assertEqual([decided[f"e{i}"][0] for i in range(1, 8)],
-                         ["Edit", "Edit", "Write", "Edit", "Edit", "NotebookEdit", "NotebookEdit"])
+        self.assertEqual([decided[f"e{i}"][0] for i in range(1, 10)],
+                         ["Edit", "Edit", "Write", "Edit", "Edit", "NotebookEdit", "NotebookEdit", "Edit", "Edit"])
+        self.assertEqual((decided["e30"], decided["e31"]),
+                         (("ApplyPatch", ["TK-UNKNOWN-TOOL"]), ("StrReplace", ["TK-UNKNOWN-TOOL"])))
 
     def test_a_devin_file_call_is_decided_on_every_path_its_input_names(self):
         # the review of #576: the signer decided only the first path key, so a decoy file_path beside the path Devin's
