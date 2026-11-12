@@ -7,6 +7,7 @@ import json
 import os
 import random
 import shutil
+import sys
 import tempfile
 import time
 import tracemalloc
@@ -2332,6 +2333,12 @@ class CodingPack(unittest.TestCase):
                  ("write", {"contents": "x"}), ("delete_file", {"path": "/w/a.py"}),
                  ("EditNotebook", {"cell_idx": 0, "new_string": "x"}),
                  ("edit_notebook", {"target_notebook": ["/w/a.ipynb"], "file_path": "/w/a.ipynb"}))
+        # a JSON object Python's json module can't read (nesting past its recursion limit; an integer past its digit
+        # limit, where it has one) leaves the whole patch unread, whatever headers its other arguments hold
+        inner = json.dumps("*** Begin Patch\n*** Update File: /home/u/.cursor/hooks.json\n@@\n-a\n+b\n*** End Patch\n")
+        note = "*** Begin Patch\n*** Update File: /w/src/app.py\n@@\n-a\n+b\n*** End Patch\n"
+        for first in ("[" * 5000 + "]" * 5000,) + ("1" + "0" * 5000,) * hasattr(sys, "get_int_max_str_digits"):
+            forms += (("ApplyPatch", {"patch": '{"patch": ' + first + ', "patch": ' + inner + "}", "note": note}),)
         for pack, engine, e in self.every_pack():
             for name, ti in forms:
                 with self.subTest(pack=pack, engine=engine, name=name, input=ti):
