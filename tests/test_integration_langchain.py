@@ -1,9 +1,9 @@
 """tracekit.integrations.langchain beyond the adapter contract (tests/test_contract_langchain.py): the result
 commitment, `ask` without a checkpointer, an interrupt raised inside a tool, an `ask` under each ToolNode error
-handling, two asks in one ToolNode, and the async gate's signer calls off the event loop."""
+handling, several asks in one ToolNode, and the async gate's signer calls off the event loop."""
 import asyncio
+import itertools
 import json
-import threading
 import time
 import types
 import unittest
@@ -42,7 +42,14 @@ else:
         """Ask the user, pausing the run."""
         return interrupt(question)
 
+    @tool("pay")
+    def counted_pay(to: str, cents: int) -> str:
+        """Send money."""
+        PAID.append(cents)
+        return f"paid {cents}"
+
 THREAD = {"configurable": {"thread_id": "t"}}
+PAID = []   # the cents of each counted_pay that ran
 
 
 def prompt(name, **args):
@@ -240,32 +247,37 @@ ERROR_HANDLING = {"default": {}, "True": {"handle_tool_errors": True}, "a string
                   "str, a type that isn't an exception": {"handle_tool_errors": str}}
 
 
-@unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
-class ErrorHandling(unittest.TestCase):
-    """An `ask` pauses the graph whatever the ToolNode's handle_tool_errors and inside with_fallbacks, wired by hand
-    or by instrument(); the tool's own errors are handled as configured."""
+class GatedNodes(unittest.TestCase):
+    """Gated ToolNodes, built by hand and as instrument() wires them."""
 
     def setUp(self):
-        for name in ("__init__", "with_fallbacks"):   # instrument() patches ToolNode for the process
+        for name in ("__init__", "_func", "_afunc", "with_fallbacks"):   # instrument() patches ToolNode for the process
             patcher = mock.patch.object(ToolNode, name, getattr(ToolNode, name))
             patcher.start()
             self.addCleanup(patcher.stop)
         self.wired = ToolNode.__init__
 
-    def nodes(self, **kw):
-        """(how, a function building the gated node): by hand, and a plain ToolNode as instrument() wires it, each on a
-        signer of its own"""
+    def nodes(self, tools=None, **kw):
+        """(how, a function building the gated node of `tools`, else TOOLS): by hand, and a plain ToolNode as
+        instrument() wires it, each on a signer of its own"""
+        tools = tools or TOOLS
         for how in ("by hand", "instrument()"):
             ac.RAN.clear()
             ToolNode.__init__ = self.wired
             self.signer = FakeSigner(ac._rule)
             self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
             if how == "by hand":
-                yield how, lambda: tracekit_tool_node(TOOLS, self.signer, self.run, **kw)
+                yield how, lambda: tracekit_tool_node(tools, self.signer, self.run, **kw)
             else:
                 autowire._langgraph(types.SimpleNamespace(client=self.signer, registered=self.run, **{
                     k: self.run[k] for k in ("run_id", "run_token")}))
-                yield how, lambda: ToolNode(TOOLS, **kw)
+                yield how, lambda: ToolNode(tools, **kw)
+
+
+@unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
+class ErrorHandling(GatedNodes):
+    """An `ask` pauses the graph whatever the ToolNode's handle_tool_errors and inside with_fallbacks, wired by hand
+    or by instrument(); the tool's own errors are handled as configured."""
 
     def pause_and_approve(self, graph, mode="sync"):
         run = graph.invoke if mode == "sync" else lambda v, c: asyncio.run(graph.ainvoke(v, c))
@@ -308,47 +320,63 @@ class ErrorHandling(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
-class ParallelAsks(unittest.TestCase):
-    """#687: two calls of one message that both ask, in one tracekit_tool_node. LangGraph hands the node's one resume
-    value to whichever call reaches interrupt() first, so the call a person approved ran only when it got there first
-    (7 of 16 under ainvoke, 4 of 16 under invoke). Each trial here makes the other call get there first."""
+class ManyAsks(GatedNodes):
+    """#687: a message whose calls ask, beside one allowed and one denied call, in one ToolNode. LangGraph gives the node
+    one resume value, by the order its calls reach interrupt(), and runs the node again from its start on each resume:
+    the call a person approved ran only when it got there first (7 of 16 under ainvoke, 4 of 16 under invoke), and with
+    three or more asks a call that ran was refused on the next pass, or the allowed call ran twice. Each ask is
+    approved, rejected or left waiting, answered in a different order each time, then the run resumes once."""
 
-    def trial(self, mode):
-        """(the call the pause showed and a person approved, what the resume answered with)"""
-        ac.RAN.clear()
-        signer = FakeSigner(ac._rule)
-        graph = tool_graph(tracekit_tool_node(TOOLS, signer, signer.register_run({"request_id": "reg", "agent": {"name": "test"}})))
+    def outcomes(self, node, mode, answers, order):
+        """{tool call id: (times it ran before the resume, whether the pause listed its approval, times it ran in all,
+        what the model read: its result or the rule that refused it, the results the signer recorded, the rules of its
+        recorded refusal)}, and whether the resume paused again"""
+        graph = tool_graph(node)
         go = graph.invoke if mode == "sync" else lambda v, c: asyncio.run(graph.ainvoke(v, c))
-        calls = [{"name": "pay", "args": {"to": "a", "cents": i}, "id": f"c{i}"} for i in (1, 2)]
-        shown = go({"messages": [HumanMessage(json.dumps(calls))]}, THREAD)["__interrupt__"][0].value["tracekit"]
-        signer.approval_decide({"request_id": "ok", "approval_id": shown["approval_id"], "decision": "approve"})
-        other_paused, request = threading.Event(), signer.approval_request
+        calls = [{"name": "pay", "args": {"to": "a", "cents": i}, "id": f"pay-{i}"} for i in range(len(answers))]
+        calls += [{"name": "echo", "args": {"text": "hi"}, "id": "echo"},
+                  {"name": "wipe", "args": {"path": "/"}, "id": "wipe"}]
 
-        def pause(value):
-            try:
-                return interrupt(value)
-            finally:
-                other_paused.set()
+        def ran():
+            return {c["id"]: PAID.count(c["args"]["cents"]) if c["name"] == "pay" else ac.RAN.count(c["name"])
+                    for c in calls}
+        asked = go({"messages": [HumanMessage(json.dumps(calls))]}, THREAD)["__interrupt__"][0].value["tracekit"]
+        before, listed = ran(), {a["tool_call_id"] for a in asked.get("approvals", ())}
+        approvals = {r["tool_call_id"]: r["approval_id"] for r in self.recorded("approval.request")}
+        for i in order:
+            if answers[i] != "wait":
+                self.signer.approval_decide({"request_id": f"{i}", "decision": answers[i],
+                                             "approval_id": approvals[f"pay-{i}"]})
+        out = go(Command(resume={"approval_id": asked["approval_id"]}), THREAD)
+        blocked = "Tool call blocked by policy: "
+        seen = {m.tool_call_id: m.content[len(blocked):].split(" ")[0] if m.content.startswith(blocked) else m.content
+                for m in out["messages"] if isinstance(m, ToolMessage)}
+        results = [r["tool_call_id"] for r in self.recorded("tool.result")]
+        refused = {r["tool_call_id"]: r["rule_ids"] for r in self.recorded("approval.refused")}
+        after = ran()
+        return {c["id"]: (before[c["id"]], c["id"] in listed, after[c["id"]], seen.get(c["id"]),
+                          results.count(c["id"]), refused.get(c["id"])) for c in calls}, "__interrupt__" in out
 
-        def approval_request(req):   # the approved call reaches the gate's interrupt() only after the other one
-            if req["tool_call_id"] == shown["tool_call_id"]:
-                other_paused.wait(5)
-            return request(req)
-        signer.approval_request = approval_request
-        with mock.patch("tracekit.integrations.langchain.interrupt", pause):
-            out = go(Command(resume={"approval_id": shown["approval_id"]}), THREAD)
-        return shown["tool_call_id"], out
+    def recorded(self, typ):
+        return [e["data"] for e in self.signer.read({"run_id": self.run["run_id"], "run_token": self.run["run_token"],
+                                                     "limit": 1000})["events"] if e["type"] == typ]
 
-    def test_the_approved_call_runs_whichever_call_gets_the_resume_value(self):
-        for mode in ("sync", "async"):
-            outcomes = []
-            for _ in range(16):
-                approved, out = self.trial(mode)
-                seen = {m.tool_call_id: m.content for m in out["messages"] if isinstance(m, ToolMessage)}
-                other = ({"c1", "c2"} - {approved}).pop()
-                outcomes.append(("__interrupt__" in out, list(ac.RAN), seen.get(approved) == f"paid {approved[1]}",
-                                 seen.get(other, "").startswith("Tool call blocked by policy: TK-APPROVAL-UNBOUND")))
-            self.assertEqual(outcomes, [(False, ["pay"], True, True)] * 16, mode)
+    def test_each_call_runs_once_or_is_refused_and_is_recorded_as_it_did(self):
+        want = {"approve": lambda i: (0, True, 1, f"paid {i}", 1, None),
+                "reject": lambda i: (0, True, 0, "TK-APPROVAL-REJECTED", 0, ["TK-APPROVAL-REJECTED"]),
+                "wait": lambda i: (0, True, 0, "TK-APPROVAL-REQUESTED", 0, ["TK-APPROVAL-REQUESTED"])}
+        cases = [*itertools.product(want, repeat=2), *itertools.product(want, repeat=3),
+                 *itertools.product(("approve", "wait"), repeat=5)]
+        for k, answers in enumerate(cases):
+            orders = list(itertools.permutations(range(len(answers))))
+            for mode in ("sync", "async"):
+                for how, node in self.nodes(tools=[TOOLS[0], counted_pay, TOOLS[2]]):
+                    with self.subTest(answers=answers, mode=mode, wired=how):
+                        PAID.clear()
+                        self.assertEqual(self.outcomes(node(), mode, answers, orders[k % len(orders)]),
+                                         ({**{f"pay-{i}": want[a](i) for i, a in enumerate(answers)},
+                                           "echo": (0, False, 1, "hi", 1, None),
+                                           "wipe": (0, False, 0, "R-WIPE", 0, None)}, False))
 
 
 class Jittery:

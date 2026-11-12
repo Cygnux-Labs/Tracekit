@@ -75,7 +75,8 @@ calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The mess
 - **deny**: the tool does not run. The model gets an error ToolMessage, `Tool call blocked by policy: <reason or rule
   ids>`, and the agent run goes on.
 - **ask**: the middleware opens an approval and pauses the run with LangGraph `interrupt()`. The interrupt payload is
-  `{"tracekit": {"approval_id", "tool_call_id", "tool", "rule_ids"}}`. A person approves or rejects in the signer;
+  `{"tracekit": {"approval_id", "tool_call_id", "tool", "rule_ids", "approvals"}}` (`approvals`: those four for each
+  call that waits, the first one included). A person approves or rejects in the signer;
   then the app resumes the thread:
 
   ```python
@@ -88,11 +89,13 @@ calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The mess
   value is only a hint; leaving it out does not skip the check. A call whose approval was already answered when the
   node re-runs doesn't pause again: the signer decides it at once.
 
-  A `tracekit_tool_node` runs every call of a model message in one node, and LangGraph gives that node one resume
-  value, to whichever call pauses first. When two calls ask, the one a person approved runs on resume and the other,
-  still waiting, is denied (`TK-APPROVAL-UNBOUND`, naming its approval): approve that one too, and the model's retry
-  runs it. With three or more, a call still waiting after a resume pauses the node again, and LangGraph's re-run then
-  denies a call that already ran once. `create_agent` gives each call a task of its own and has neither limit.
+  A `tracekit_tool_node` (or a `ToolNode` that `tracekit.instrument()` wired) runs every call of a model message in
+  one node, which LangGraph runs again from its start on each resume. So when a message has several calls, all of
+  them are decided before any runs, and while any approval is unanswered the run pauses once, before any call runs:
+  the payload names the first, and `approvals` lists every one, so a person can answer them all before the resume.
+  On resume each call that was allowed or approved runs once; one rejected or still unanswered is denied
+  (`TK-APPROVAL-REQUESTED` names the approval to grant, and the model's retry then runs). No call runs in a pass that
+  then pauses, so none runs twice or reads as denied after it ran. (`create_agent` gives each call a task of its own.)
 
 Exceptions raised by the tool are recorded and re-raised unchanged.
 

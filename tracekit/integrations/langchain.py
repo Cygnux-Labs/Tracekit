@@ -8,8 +8,9 @@
 
 `deny` replaces the call with an error ToolMessage and the run goes on. `ask` pauses the run with LangGraph
 `interrupt()`; resume it with `Command(resume={"approval_id": ...})`. A call whose approval was answered before the
-resume doesn't pause again, so of two calls of one ToolNode that ask, the one a person approved runs on resume and the
-other, still waiting, is refused. Every call that is not denied runs only after the
+resume doesn't pause again. A ToolNode with several calls of one message decides them all before any runs and pauses
+once while any approval is unanswered (the payload's `approvals` lists them); on resume each call allowed or approved
+runs once and one still unanswered is refused. Every call that is not denied runs only after the
 signer's `approval_consume` agrees, so an approval is checked by the signer, never by the saved state; an approval with
 a T2 executor runs the arguments the consume returns. `ask` needs a checkpointer: without one the call is denied.
 
@@ -34,6 +35,7 @@ A response that can't be recorded only warns. A `tracekit_tool_node` graph has n
 recorded by `tracekit.instrument()` or the LLM gateway.
 """
 import asyncio
+import contextvars
 import copy
 import hashlib
 import itertools
@@ -60,6 +62,9 @@ from tracekit.integrations.claude_code import _tool_class
 from tracekit.integrations.executor_tools import CALL_ID, EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
+
+# the ToolNode pass this call runs in: what TracekitMiddleware._pass decided for each of its calls
+_PASS = contextvars.ContextVar("tracekit_tool_node_pass", default=None)
 
 
 class TracekitMiddleware(AgentMiddleware):
@@ -97,42 +102,76 @@ class TracekitMiddleware(AgentMiddleware):
 
     def _gate(self, request):
         """(the error ToolMessage that replaces a refused call or None when it may run, the decision or None)"""
-        call, hint = request.tool_call, None
-        attempt = self._attempts.get(call["id"], 0)
+        call = request.tool_call
+        planned = (_PASS.get() or {}).get((call["id"], self._attempts.get(call["id"], 0)))
+        if planned is not None:   # decided with the other calls of its message (_pass)
+            blocked, d, hint = planned
+        else:
+            blocked, d, apr = self._ask(call, request.runtime.config)
+            hint = None
+            if apr is not None and apr["state"] == "requested":
+                resume = self._pause([(call, d, apr)])
+                hint = resume.get("approval_id") if isinstance(resume, dict) else None
+            elif apr is not None:   # answered already: the consume decides, with no pause
+                hint = apr["approval_id"]
+        if blocked is not None or d is None:   # refused, or the signer unreachable and the run fails open
+            return blocked, d
+        return self._consume(call, d, hint)
+
+    def _pass(self, calls, config):
+        """ToolNode runs every call of a model message in one node, which LangGraph runs again from its start on each
+        resume: a call that ran in a pass that then paused would run again, or read as refused. So a message's calls
+        are all decided before any runs, and the pass pauses once, before any runs, while an approval is unanswered.
+        On resume each call allowed or approved runs and one whose approval is still unanswered is refused, so no pass
+        that runs a call pauses. {(tool_call_id, attempt): (refusal or None, decision or None, approval id)} for _gate.
+        One call alone _gate decides by itself."""
+        asked = [(call, *self._ask(call, config)) for call in calls]
+        waiting = [(call, d, apr) for call, _, d, apr in asked if apr is not None and apr["state"] == "requested"]
+        if waiting:
+            self._pause(waiting)   # raises until the resume
+        return {(call["id"], self._attempts.get(call["id"], 0)): (blocked, d, apr and apr["approval_id"])
+                for call, blocked, d, apr in asked}
+
+    def _ask(self, call, config):
+        """(the error ToolMessage that replaces a refused call or None, the decision or None, the approval when the
+        decision asks: approval_request's answer)"""
         self.said.decided(call["id"])   # the call its recorded response left for now
         try:   # LangChain hands over JSON-decoded args, never the model's raw string
             d = self._event("decide", call, tool=call["name"], args_source="parsed", args=call["args"])
         except SignerUnavailable as e:   # the run's fail mode for the tool's class
             open_ = fail_open(self.fail_modes, _tool_class(call["name"]))
-            return (None if open_ else self._refusal(call, f"signer unavailable: {e}")), None
+            return (None if open_ else self._refusal(call, f"signer unavailable: {e}")), None, None
         except RPCError as e:
-            return self._refusal(call, f"signer refused the call: {e}"), None
+            return self._refusal(call, f"signer refused the call: {e}"), None, None
         if d["decision"] == "deny":
-            return self._refusal(call, refusal(d) or "deny"), d
+            return self._refusal(call, refusal(d) or "deny"), d, None
         d["args_digest"] = event_hash({"tool": call["name"], "args": call["args"]})
-        try:
-            if d["decision"] == "ask":
-                if request.runtime.config["configurable"].get(CONFIG_KEY_CHECKPOINTER) is None:
-                    return self._refusal(call, "approval required, and the agent has no checkpointer to wait for it"), d
-                # the signer keeps one approval per call attempt, so the re-run on resume (even in another process)
-                # gets the same approval back
-                apr = self.signer.approval_request({"request_id": uuid.uuid4().hex, **self.run,
-                                                    "tool_call_id": call["id"], "attempt": attempt})
-                # answered already (the re-run on resume): no pause, the consume decides. LangGraph hands a node's one
-                # resume value to whichever of its calls pauses first, so an approved call that paused might not get it.
-                # lean: three or more asks in one ToolNode: one still waiting after a resume pauses the node again, and
-                # LangGraph's re-run then refuses a call that ran (once); give each call a task of its own (Send, as
-                # create_agent does) if graphs need that
-                if apr["state"] == "requested":
-                    resume = interrupt({"tracekit": {"approval_id": apr["approval_id"], "tool_call_id": call["id"],
-                                                     "tool": call["name"], "rule_ids": d["rule_ids"]}})
-                    hint = resume.get("approval_id") if isinstance(resume, dict) else None
-                else:
-                    hint = apr["approval_id"]
-            # every call, allowed or approved: the saved state can't vouch that no approval is needed
+        if d["decision"] != "ask":
+            return None, d, None
+        if config["configurable"].get(CONFIG_KEY_CHECKPOINTER) is None:
+            return self._refusal(call, "approval required, and the agent has no checkpointer to wait for it"), d, None
+        try:   # the signer keeps one approval per call attempt: the re-run on resume, in any process, gets it back
+            return None, d, self.signer.approval_request({"request_id": uuid.uuid4().hex, **self.run,
+                                                          "tool_call_id": call["id"],
+                                                          "attempt": self._attempts.get(call["id"], 0)})
+        except (RPCError, SignerUnavailable) as e:
+            return self._refusal(call, str(e)), d, None
+
+    @staticmethod
+    def _pause(waiting):
+        """interrupt() for the approvals of `waiting` [(call, decision, approval)], the first named at the top: the
+        resume value."""
+        approvals = [{"approval_id": apr["approval_id"], "tool_call_id": call["id"], "tool": call["name"],
+                      "rule_ids": d["rule_ids"]} for call, d, apr in waiting]
+        return interrupt({"tracekit": {**approvals[0], "approvals": approvals}})
+
+    def _consume(self, call, d, hint):
+        """approval_consume, the signer's last word before the call runs: (the refusal or None, the decision)"""
+        try:   # every call, allowed or approved: the saved state can't vouch that no approval is needed
             c = self.signer.approval_consume({"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"],
-                                              "attempt": attempt, "tool": call["name"], "args_source": "parsed",
-                                              "args": call["args"], **({"approval_id_hint": hint} if hint else {})})
+                                              "attempt": self._attempts.get(call["id"], 0), "tool": call["name"],
+                                              "args_source": "parsed", "args": call["args"],
+                                              **({"approval_id_hint": hint} if hint else {})})
         except (RPCError, SignerUnavailable) as e:   # e.g. a hint that is not an id at all
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if c["ok"]:
@@ -306,8 +345,44 @@ def with_fallbacks(self, fallbacks, **kw):
     return _Fallbacks(runnable=self, fallbacks=fallbacks, **kw)
 
 
+def _held(node, input):
+    """(the gate that holds ToolNode `node`, this pass's calls) when the gate decides them together (two or more:
+    TracekitMiddleware._pass), else (None, None). A node whose wrapper is no longer the gate's, as in `tracekit why`'s
+    replay copy, which serves recorded results instead, isn't held."""
+    gate, wrap = getattr(node, "_tracekit", (None, None))
+    if gate is None or node._wrap_tool_call is not wrap:
+        return None, None
+    calls = node._parse_input(input)[0]
+    return (gate, calls) if len(calls) > 1 else (None, None)
+
+
+_TOOL_NODE_FUNC, _TOOL_NODE_AFUNC = ToolNode._func, ToolNode._afunc
+
+
+def pass_func(self, input, config, runtime):
+    """ToolNode._func, the calls of a held node's pass decided together first (_held); each call's gate finds its
+    decision in _PASS."""
+    gate, calls = _held(self, input)
+    token = _PASS.set(gate and gate._pass(calls, config))
+    try:
+        return _TOOL_NODE_FUNC(self, input, config, runtime)
+    finally:
+        _PASS.reset(token)
+
+
+async def pass_afunc(self, input, config, runtime):
+    """ToolNode._afunc, as pass_func; the signer calls in a worker thread."""
+    gate, calls = _held(self, input)
+    token = _PASS.set(gate and await asyncio.to_thread(gate._pass, calls, config))
+    try:
+        return await _TOOL_NODE_AFUNC(self, input, config, runtime)
+    finally:
+        _PASS.reset(token)
+
+
 class _GatedToolNode(ToolNode):
     with_fallbacks = with_fallbacks
+    _func, _afunc = pass_func, pass_afunc
 
 
 def tracekit_tool_node(tools, signer, run, **kw):
@@ -316,7 +391,10 @@ def tracekit_tool_node(tools, signer, run, **kw):
     gate = TracekitMiddleware(signer, run["run_id"], run["run_token"], run.get("fail_modes"))
     if "handle_tool_errors" in kw:
         kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
-    return _GatedToolNode(tools, wrap_tool_call=gate.wrap_tool_call, awrap_tool_call=gate.awrap_tool_call, **kw)
+    wrap = gate.wrap_tool_call
+    node = _GatedToolNode(tools, wrap_tool_call=wrap, awrap_tool_call=gate.awrap_tool_call, **kw)
+    node._tracekit = gate, wrap   # the gate holds the node while this is its wrapper (_held)
+    return node
 
 
 _SERDE = JsonPlusSerializer()
