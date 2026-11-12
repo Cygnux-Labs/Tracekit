@@ -88,6 +88,16 @@ def _iter_transcripts(root: str, unreadable: list):
             yield path, _session_from_path(os.path.relpath(path, root))
 
 
+def _tool_uses(entry: dict):
+    """(block, tool, args) for each tool_use block in a transcript line's message, as Claude Code and Cursor write it."""
+    msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    content = msg.get("content")
+    for b in content if isinstance(content, list) else []:
+        if isinstance(b, dict) and b.get("type") == "tool_use":
+            yield (b, b.get("name") if isinstance(b.get("name"), str) else "",
+                   b.get("input") if isinstance(b.get("input"), dict) else {})
+
+
 def _claude_code(root: str, since_ts: float, unreadable: list):
     """Claude Code's reader: (time, session, tool, args) for each tool use in the transcripts under root, None for a
     line that isn't JSON. A tool use whose id and call were read already (a resumed or forked session's file repeats
@@ -108,14 +118,7 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
                 at = _entry_time(entry)
                 if at is not None and at.timestamp() < since_ts:
                     continue
-                msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
-                content = msg.get("content")
-                blocks = content if isinstance(content, list) else []
-                for b in blocks:
-                    if not isinstance(b, dict) or b.get("type") != "tool_use":
-                        continue
-                    tool = b.get("name") if isinstance(b.get("name"), str) else ""
-                    args = b.get("input") if isinstance(b.get("input"), dict) else {}
+                for b, tool, args in _tool_uses(entry):
                     try:   # the same id and call: a copy (a backend may reuse an id for another call)
                         key = isinstance(b.get("id"), str) and hashlib.sha256(json.dumps(
                             [b["id"], tool, args], sort_keys=True, default=str).encode()).digest()
@@ -132,11 +135,46 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
             f.close()
 
 
+def cursor_root():
+    """Cursor's transcripts' folder, for both its IDE's agent and the cursor-agent CLI."""
+    return os.path.join(os.path.expanduser("~"), ".cursor", "projects")
+
+
+def _cursor(root: str, since_ts: float, unreadable: list):
+    """Cursor's reader: (None, session, tool, args) for each tool use in the agent transcripts under root
+    (<project>/agent-transcripts/<id>/<id>.jsonl, an older build's flat <id>.jsonl, a subagent's in
+    <id>/subagents/, which counts under <id>), None for a line that isn't JSON. A line has no time and no id: a file
+    last written before since_ts is skipped and one written since counts whole, and every line counts, copies too."""
+    real = os.path.realpath(root)
+    for path, _ in _iter_transcripts(root, unreadable):
+        folders = os.path.relpath(path, real).split(os.sep)
+        if len(folders) < 3 or folders[1] != "agent-transcripts":
+            continue
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        try:
+            if os.fstat(f.fileno()).st_mtime < since_ts:
+                continue
+            for _n, entry in transcript_entries(f, final=True):
+                if entry is None:
+                    yield None
+                elif entry.get("role") == "assistant":
+                    for _b, tool, args in _tool_uses(entry):
+                        yield None, folders[2].removesuffix(".jsonl"), tool, args
+        except OSError as e:
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+        finally:
+            f.close()
+
+
 # one entry per agent: its name, its default folder (read when audit runs, so the env var that moves it counts), where
 # that folder is as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
 # (time, session, tool, args), None for a line it counts as malformed
 READERS = {"claude-code": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
-                           _claude_code)}
+                           _claude_code),
+           "cursor": (cursor_root, "~/.cursor/projects", _cursor)}
 
 
 def _calls(f, name: str, since_ts: float, unreadable: list):
@@ -180,7 +218,6 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         raise ValueError(f"--since {since[:40]!r} is not in the past")
     engine = load_policy(policy_path or DEFAULT_POLICY)
     unreadable: list[dict] = []
-    hook = agent if calls is not None and agent in AGENT_NAMES else None   # map a calls file's names as its hook does
     if calls is not None:
         if calls == "-":
             if sys.stdin is None:   # started with stdin closed (<&-)
@@ -212,6 +249,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
 
     for name, folder, read in sources:
         start = len(calls_out)
+        hook = name if name in AGENT_NAMES else None   # map an agent's names as its hook does
         for item in read:
             if item is None:
                 skipped_malformed += 1
@@ -360,7 +398,7 @@ def share(report: dict) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code), or in a calls file any agent's log can be turned into, "
+                                 "transcripts (Claude Code, Cursor), or in a calls file any agent's log can be turned into, "
                                  "through the policy and count what it would have held or denied. Read-only, local, "
                                  "and a replay against today's policy, not a signed record.")
     ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or --agent's reader's (default: "

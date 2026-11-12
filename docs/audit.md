@@ -31,7 +31,7 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` is a Claude Code transcripts' folder (another agent's with `--agent NAME`, once that agent has a reader); a
+- `ROOT` is a Claude Code transcripts' folder (another agent's with `--agent NAME`: `cursor`'s); a
   folder that doesn't exist is an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's
   default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
@@ -43,7 +43,7 @@ denied and held calls (--all for every call):
   `TK-HOOK-BLOCKED`; the others are mapped as the hook maps them, so `run_shell_command` or `Shell` is decided as `Bash`. A line
   the mapping can't take (nested too deep) counts as malformed. Without `--agent`, names are taken as Tracekit's
   (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`, `mcp__<server>__<tool>`). With ROOT, it names the reader that reads
-  ROOT; with neither ROOT nor `--calls`, it exits 2.
+  ROOT, and its calls are mapped as with `--calls`; with neither ROOT nor `--calls`, it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -65,6 +65,7 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude-code` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `cursor` | `~/.cursor/projects` |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
 `--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`.
@@ -75,7 +76,15 @@ under that session. Each line is a JSON object; assistant messages may contain `
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
 
-It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
+Cursor's reader reads the agent transcripts Cursor writes for each chat, of its IDE's agent and of the `cursor-agent`
+CLI: `<project>/agent-transcripts/<id>/<id>.jsonl` under its folder (an older build's flat `<id>.jsonl`, and a
+subagent's file in `<id>/subagents/`, which counts under `<id>`). Each line is a JSON object; a `role: assistant`
+line's message may contain `tool_use` blocks, whose names are mapped as Cursor's Tracekit hook maps them (`Shell` is
+decided as `Bash`). A line has no time, no id and no tool result: with `--since`, a file last written before the
+window is skipped and one written in it counts whole, and a call can't be told from a copy of it, so each line counts.
+The IDE's chat database (`state.vscdb`) isn't read.
+
+Each reader follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
 
 ## Calls file
 

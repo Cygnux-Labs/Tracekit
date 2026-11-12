@@ -22,6 +22,11 @@ def _call(tool, args, days_ago=0):
             "message": {"content": [{"type": "tool_use", "name": tool, "input": args}]}}
 
 
+def _cursor_call(tool, args):
+    """An assistant line with one tool use, as Cursor writes it in an agent transcript: no id, no time (#716)."""
+    return {"role": "assistant", "message": {"content": [{"type": "tool_use", "name": tool, "input": args}]}}
+
+
 def _line(tool, args, days_ago=0, **extra):
     """A line of a calls file (#714)."""
     at = datetime.now(timezone.utc) - timedelta(days=days_ago)
@@ -453,3 +458,44 @@ class TestAudit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_cursor_shell_is_decided_as_bash(self):
+        """#716: a Cursor tool's name is mapped as its hook maps it."""
+        args = {"command": "rm -rf /", "description": "clean"}
+        _write_jsonl(self.root / "C-src-app" / "agent-transcripts" / "c1" / "c1.jsonl", [
+            {"role": "user", "message": {"content": [{"type": "text", "text": "tidy up"}]}},
+            _cursor_call("Shell", args)])
+        tool, mapped = agent_hooks.tool("cursor", "Shell", args)
+        expected = evaluate(load_policy(DEFAULT_POLICY), tool, mapped)[0]
+        call = audit.audit(str(self.root), agent="cursor")["calls"][0]
+        self.assertEqual((call["agent"], call["session"], call["tool"], call["time"], call["verdict"], call["rule_ids"]),
+                         ("cursor", "c1", "Bash", None, expected["verdict"], expected["rule_ids"]))
+        self.assertEqual(call["verdict"], "deny")
+
+    def test_cursor_subagent_and_flat_files_count_under_their_session(self):
+        transcripts = self.root / "C-src-app" / "agent-transcripts"
+        ls = _cursor_call("Shell", {"command": "ls"})
+        _write_jsonl(transcripts / "c1" / "c1.jsonl", [ls])
+        _write_jsonl(transcripts / "c1" / "subagents" / "s9.jsonl", [ls, ls])   # no ids: a copy counts too
+        _write_jsonl(transcripts / "old.jsonl", [ls])   # an older build's flat file
+        _write_jsonl(self.root / "C-src-app" / "canvases" / "x.jsonl", [ls])   # not a transcript
+        report = audit.audit(str(self.root), agent="cursor")
+        self.assertEqual(sorted(c["session"] for c in report["calls"]), ["c1", "c1", "c1", "old"])
+        self.assertEqual(report["agents"]["cursor"]["sessions"], 2)
+
+    def test_cursor_file_written_before_since_is_skipped(self):
+        transcripts = self.root / "C-src-app" / "agent-transcripts"
+        _write_jsonl(transcripts / "old" / "old.jsonl", [_cursor_call("Shell", {"command": "ls"})])
+        eight_days_ago = (datetime.now(timezone.utc) - timedelta(days=8)).timestamp()
+        os.utime(transcripts / "old" / "old.jsonl", (eight_days_ago, eight_days_ago))
+        _write_jsonl(transcripts / "new" / "new.jsonl", [_cursor_call("Shell", {"command": "ls"})] * 2)
+        report = audit.audit(str(self.root), since="7d", agent="cursor")
+        self.assertEqual([c["session"] for c in report["calls"]], ["new", "new"])   # a file in the window counts whole
+
+    def test_cursor_malformed_line_is_counted(self):
+        _write_jsonl(self.root / "C-src-app" / "agent-transcripts" / "c1" / "c1.jsonl", [
+            "{not json", _cursor_call("Shell", {"command": "ls"})])
+        code, out, err = _run(str(self.root), "--agent", "cursor", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual((report["skipped_malformed"], report["counts"]["allow"]), (1, 1))
