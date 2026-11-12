@@ -38,7 +38,7 @@ Every other attribute is the wrapped session's. Only calls made through the wrap
 | before the call is sent | `decide` | a fresh `tool_call_id`, the tool as `mcp:<server>/<tool>` (`mcp:<server>/prompt:<name>` for `get_prompt`), `tool_class_hint: mcp`, the arguments as given (`parsed`) |
 | right before it is sent | `approval_consume` | the same call and arguments, and the approval id when the call waited for one |
 | after the server answers | `complete` | `status` `ok`, or `error` for a result with `isError: true`; a `sha256:` commitment to the result (not the result), or the exception type and message |
-| after `read_resource` answers | `observe` | `source` `mcp:<server>/resource`, `trust: untrusted` and the result as `value` (recorded as its commitment and indexed for provenance; a failure to record warns and returns the result unchanged) |
+| after `read_resource` answers | `observe` | `source` `mcp:<server>/resource`, `trust: untrusted` and the result as `value` (recorded as its commitment and indexed for provenance; withheld if the signer cannot record it, unless the run fails open for `mcp` and the signer is unreachable, when it warns and returns the result; a refusal is withheld either way) |
 
 `list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`observe`, source `mcp:<server>/tools`, `/resources` or `/prompts`): the model reads the descriptions the server wrote, and the page the caller asked for is what is recorded. A page the signer cannot record is withheld, unless the run fails open for `mcp`, when an unreachable signer returns it with a warning; a refusal is withheld either way.
 

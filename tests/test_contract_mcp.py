@@ -266,19 +266,11 @@ class SignerFailures(unittest.TestCase):
         self.assertEqual((out.messages[0].content.text, signer.tools), ("hi", ["mcp:stub/prompt:triage"]))
 
     def test_read_resource_is_recorded_as_an_untrusted_observed_input(self):
-        from tracekit.signer.rpc_schema import RPCError
         session, signer = _StubSession(), _Signer()
         out = asyncio.run(TracekitSession(session, signer, self.RUN).read_resource("note://inbox"))
         self.assertEqual((out.contents[0].text, session.calls), ("body of note://inbox", 1))
         self.assertEqual([(r["source"], r["trust"], r["value"]["contents"][0]["text"]) for r in signer.observed],
                          [("mcp:stub/resource", "untrusted", "body of note://inbox")])
-
-        session = _StubSession()
-        with self.assertWarns(UserWarning):
-            out = asyncio.run(TracekitSession(
-                session, _Signer(observe=RPCError("unavailable", "storage down")),
-                self.RUN).read_resource("note://inbox"))
-        self.assertEqual((out.contents[0].text, session.calls), ("body of note://inbox", 1))
 
         from tracekit import autowire
         signer = _Signer()
@@ -291,6 +283,32 @@ class SignerFailures(unittest.TestCase):
             out = asyncio.run(_StubSession().read_resource("note://inbox"))
         self.assertEqual((out.contents[0].text, [(r["source"], r["trust"]) for r in signer.observed]),
                          ("body of note://inbox", [("mcp:stub/resource", "untrusted")]))
+
+    def test_an_unrecorded_resource_is_withheld_when_the_run_fails_closed(self):
+        """The default fail mode is closed, and a signer refusal is withheld even when the run fails open."""
+        from tracekit.sdk.client import SignerUnavailable
+        from tracekit.signer.rpc_schema import RPCError
+        session = _StubSession()
+        with self.assertRaises(SignerUnavailable):
+            asyncio.run(TracekitSession(session, _Signer(observe=SignerUnavailable("down")),
+                                        self.RUN).read_resource("note://inbox"))
+        self.assertEqual(session.calls, 1)   # fetched from the server, not returned
+        with self.assertRaises(RPCError):
+            asyncio.run(TracekitSession(_StubSession(), _Signer(observe=RPCError("unavailable", "storage down")),
+                                        self.RUN).read_resource("note://inbox"))
+        with self.assertRaises(RPCError):
+            asyncio.run(TracekitSession(_StubSession(), _Signer(observe=RPCError("unavailable", "storage down")),
+                                        {**self.RUN, "fail_modes": {"mcp": "open"}}).read_resource("note://inbox"))
+
+    def test_an_unrecorded_resource_is_returned_when_the_run_fails_open(self):
+        from tracekit.sdk.client import SignerUnavailable
+        session = _StubSession()
+        with self.assertWarns(UserWarning) as cm:
+            gate = TracekitSession(session, _Signer(observe=SignerUnavailable("down")),
+                                   {**self.RUN, "fail_modes": {"mcp": "open"}})
+            out = asyncio.run(gate.read_resource("note://inbox"))
+        self.assertEqual((out.contents[0].text, session.calls), ("body of note://inbox", 1))
+        self.assertIn("not recorded", str(cm.warning))
 
 
 class _ListingSession(_StubSession):

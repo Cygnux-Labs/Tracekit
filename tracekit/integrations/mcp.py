@@ -13,12 +13,11 @@ the refusal as its text (`get_prompt` raises `RuntimeError`), and the run goes o
 up to `approval_wait_s` for a person to decide in the signer; with `approval_wait_s=0` the call is refused instead.
 Every call that is not denied is sent only after the signer's `approval_consume` agrees, with the arguments it returns
 for an approval with a T2 executor. A result with `isError: true` completes as an error; an exception from the session
-propagates unchanged and completes as an error. `read_resource` records the result with `observe` (`source`
-`mcp:<server>/resource`, `trust` `untrusted`); if the signer cannot record it, a warning is issued and the result is
-returned unchanged. `list_tools`, `list_resources` and `list_prompts` are recorded as
-untrusted observed input (`mcp:<server>/tools`, `/resources`, `/prompts`) and returned once recorded. A list the
-signer cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a
-refusal is withheld either way. Only those calls made through the wrapped session are seen.
+propagates unchanged and completes as an error. `read_resource`, `list_tools`, `list_resources` and `list_prompts`
+are recorded with `observe` as untrusted input (`source` `mcp:<server>/resource`, `/tools`, `/resources`,
+`/prompts`) and returned once recorded. A resource or list the signer cannot reach is withheld unless the run fails
+open for this class, when it is returned with a warning; a refusal is withheld either way. Only those calls made
+through the wrapped session are seen.
 """
 import re
 import uuid
@@ -56,8 +55,8 @@ class TracekitSession(HeldCalls):
         return await self._call("get_prompt", "prompt:", name, arguments, *a, **kw)
 
     async def read_resource(self, uri, *a, **kw):
-        """Read a resource and record its result as an untrusted observed input; a failure to record warns and leaves
-        the result as it was."""
+        """Read a resource and return it once recorded as untrusted input. An unreachable signer returns it only when
+        the run fails open for this class; a refusal is withheld either way."""
         result = await self._session.read_resource(uri, *a, **kw)
         raw, server = self._server_name()
         if not raw:
@@ -65,7 +64,9 @@ class TracekitSession(HeldCalls):
         try:
             await self._rpc("observe", source=f"mcp:{server}/resource", trust="untrusted",
                             value=result.model_dump(mode="json", by_alias=True, exclude_none=True))
-        except Exception as e:
+        except SignerUnavailable as e:   # unreachable: the run's fail mode for this class, as _gate
+            if not fail_open(self.fail_modes, self.CLASS):
+                raise
             warnings.warn(f"tracekit: resource {uri} of mcp:{server} not recorded: {e}", stacklevel=2)
         return result
 
