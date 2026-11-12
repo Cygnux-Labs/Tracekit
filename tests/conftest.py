@@ -36,7 +36,7 @@ MARKERS = {
 # settings a developer's shell may carry that would change what the signer, hook or client does under test
 SHELL_ENV = ("TRACEKIT_POLICY", "TRACEKIT_SOCKET", "TRACEKIT_CLIENT_HOME", "TRACEKIT_APPROVAL_WAIT",
              "CLAUDE_CONFIG_DIR", "GEMINI_CLI_SYSTEM_SETTINGS_PATH", "GEMINI_CLI_SYSTEM_DEFAULTS_PATH", "XDG_CONFIG_HOME",
-             "CODEX_HOME")
+             "CODEX_HOME", "GEMINI_CLI_HOME")
 PROXIES = urllib.request.getproxies()
 
 # A test's servers stop when it ends, and shutdown() returns once serve_forever sees it: after up to a poll interval

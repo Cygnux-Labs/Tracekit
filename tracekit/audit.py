@@ -173,8 +173,10 @@ def _gemini(root: str, since_ts: float, unreadable: list):
     seen: set[bytes] = set()
     for path, _ in _iter_transcripts(root, unreadable, (".jsonl", ".json")):
         folder = os.path.dirname(path)
-        sub = os.path.basename(os.path.dirname(folder)) == "chats" and path.endswith(".jsonl")
-        if not sub and not (os.path.basename(folder) == "chats" and os.path.basename(path).startswith("session-")):
+        # a session first: a project folder may be named chats
+        own = os.path.basename(folder) == "chats" and os.path.basename(path).startswith("session-")
+        sub = not own and os.path.basename(os.path.dirname(folder)) == "chats" and path.endswith(".jsonl")
+        if not own and not sub:
             continue   # the project's other files (logs.json, checkpoints)
         f, err = _safe_open(path)
         if err:

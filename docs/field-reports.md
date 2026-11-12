@@ -53,11 +53,11 @@ approval then expired unused; rejected or expired counts the holds never approve
 ## Without a hook: replay past transcripts
 
 ```bash
-tracekit audit --share --since 7d      # Claude Code's transcripts in ~/.claude/projects, replayed through the policy
+tracekit audit --share --since 7d      # Claude Code's and Gemini CLI's sessions (~/.claude/projects, ~/.gemini/tmp), replayed through the policy
 ```
 
 [`tracekit audit`](audit.md) puts no hook in your agent's loop and starts no signer: it replays the tool calls in
-Claude Code's past transcripts through today's dev policy pack and counts what it would have done. Its counts are a
+Claude Code's and Gemini CLI's past sessions through today's dev policy pack and counts what it would have done. Its counts are a
 replay, not a signed record, and a floor of what the signer would hold ([limits](limits.md#audit-tracekit-audit)).
 `--share` prints the same kind of counts: the number of sessions, the calls by decision, and each rule by the decision
 of the calls it matched, marked as `report --share` marks it.

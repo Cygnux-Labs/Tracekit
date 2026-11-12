@@ -386,7 +386,6 @@ class TestAudit(unittest.TestCase):
         with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}), \
                 mock.patch.dict(audit.READERS, dict([absent])):
             os.environ.pop("CLAUDE_CONFIG_DIR", None)
-            os.environ.pop("GEMINI_CLI_HOME", None)
             code, out, _ = _run("--json")
             text = _run()[1]
         self.assertEqual(code, 0)
@@ -539,8 +538,8 @@ class TestAudit(unittest.TestCase):
         code, _, err = _run("--agent", "claude")
         self.assertEqual(code, 2)
         self.assertIn("--agent claude needs a ROOT or --calls FILE", err)
-        with self.assertRaisesRegex(ValueError, "no reader for gemini's"):   # audit() itself, a ROOT given or not
-            audit.audit(str(self.root), agent="gemini")
+        with self.assertRaisesRegex(ValueError, "no reader for opencode's"):   # audit() itself, a ROOT given or not
+            audit.audit(str(self.root), agent="opencode")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as e:
             cli.main(["audit", "--calls", "-", "--agent", "no-such-agent"])
         self.assertEqual(e.exception.code, 2)
@@ -558,6 +557,8 @@ class TestAudit(unittest.TestCase):
             _gemini_msg("m2", [("c2", "run_shell_command", {"command": "ls"})]),
             {"$patch": {"id": "m2", "toolCalls": [{"id": "c2", "result": []}]}},
             {"$set": {"lastUpdated": "2026-11-12T10:05:00Z"}},
+            # Gemini CLI's older checkpoint: the whole history in one line, holding a call no message line has
+            {"$set": {"messages": [_gemini_msg("m3", [("c3", "read_file", {"file_path": "notes.md"})])]}},
             "not json"])
         _write_jsonl(chats / "s1" / "sub1.jsonl", [
             {"sessionId": "sub1", "projectHash": "h", "kind": "subagent"},
@@ -580,6 +581,7 @@ class TestAudit(unittest.TestCase):
         for session, name, args in (("s0", "run_shell_command", {"command": "terraform destroy -auto-approve"}),
                                     ("s1", "run_shell_command", {"command": "rm -rf /"}),
                                     ("s1", "run_shell_command", {"command": "ls"}),
+                                    ("s1", "read_file", {"file_path": "notes.md"}),
                                     ("s1", "read_file", {"file_path": "README.md"})):
             tool, mapped = agent_hooks.tool("gemini", name, args)
             expected.append((session, tool, evaluate(engine, tool, mapped)[0]["verdict"]))
@@ -587,8 +589,17 @@ class TestAudit(unittest.TestCase):
         self.assertEqual([c["tool"] for c in report["calls"] if c["session"] == "s1"][:2], ["Bash", "Bash"])
         self.assertEqual((report["counts"]["deny"], report["counts"]["ask"]), (1, 1))   # rm -rf /, terraform destroy
         self.assertEqual(report["skipped_malformed"], 1)
-        self.assertEqual(report["agents"], {"gemini": {"folder": str(tmp), "calls": 4, "sessions": 2}})
+        self.assertEqual(report["agents"], {"gemini": {"folder": str(tmp), "calls": 5, "sessions": 2}})
         self.assertEqual(report["sessions"], 2)
+
+    def test_a_gemini_cli_project_named_chats_is_read_as_a_project(self):
+        """#764 review: ~/.gemini/tmp/chats/chats/session-*.jsonl was taken for a subagent's file of a session named chats."""
+        chats = self.root / "tmp" / "chats" / "chats"
+        _write_jsonl(chats / "session-2026-11-12T10-00-aaaaaaaa.jsonl", [
+            {"sessionId": "sx", "projectHash": "h"}, _gemini_msg("m1", [("c1", "read_file", {"file_path": "a"})])])
+        _write_jsonl(chats / "sx" / "sub.jsonl", [_gemini_msg("m1", [("c1", "read_file", {"file_path": "b"})])])
+        calls = audit.audit(str(self.root / "tmp"), agent="gemini")["calls"]
+        self.assertEqual(sorted((c["session"], c["tool"]) for c in calls), [("sx", "Read"), ("sx", "Read")])
 
     def test_gemini_cli_home_moves_its_folder(self):
         tmp = self._gemini_sessions()
@@ -597,7 +608,7 @@ class TestAudit(unittest.TestCase):
             os.environ.pop("CLAUDE_CONFIG_DIR", None)
             code, out, err = _run("--json")
         self.assertEqual(code, 0, err)
-        self.assertEqual(json.loads(out)["agents"], {"gemini": {"folder": str(tmp), "calls": 4, "sessions": 2}})
+        self.assertEqual(json.loads(out)["agents"], {"gemini": {"folder": str(tmp), "calls": 5, "sessions": 2}})
 
     def test_share_over_a_calls_file(self):
         _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "rm -rf /"}, session="s1")])

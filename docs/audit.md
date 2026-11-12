@@ -44,8 +44,9 @@ denied and held calls (--all for every call):
   call missing the argument it is decided on) is a deny by `TK-HOOK-BLOCKED`; the others are mapped as the hook maps
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
-  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT. An agent with no reader (every agent but
-  `claude`) needs `--calls FILE`, and `--agent claude` a ROOT or `--calls FILE`: without them it exits 2.
+  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with `--calls`. An agent with no
+  reader (every agent but `claude` or `gemini`) needs `--calls FILE`, and `--agent claude` or `gemini` a ROOT or
+  `--calls FILE`: without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -84,8 +85,13 @@ subagent's `<project>/chats/<parent session id>/<id>.jsonl`, which counts under 
 other files are not read. Tool calls are in a message's `toolCalls`, and in a `$set` line's full history; Gemini CLI
 writes a message again each time it updates, so a call counts once, by its id, as its last copy has it. A call stays
 counted after a `$rewindTo`: the conversation dropped it, but the agent made it. Each call is decided as Gemini
-CLI's Tracekit hook decides it, so `run_shell_command` is decided as `Bash`. Gemini CLI deletes sessions older than 30
-days by default (`general.sessionRetention`), so older calls can't be audited.
+CLI's Tracekit hook decides it, so `run_shell_command` is decided as `Bash`.
+
+Two kinds of Gemini CLI session aren't in the default folder. Under Gemini CLI's macOS Seatbelt sandbox
+(`SANDBOX=sandbox-exec`) its runtime state, sessions included, is in `~/.cache/.gemini/tmp` (under `$GEMINI_CLI_HOME`
+when that is set): read it with `tracekit audit ~/.cache/.gemini/tmp --agent gemini`. And Gemini CLI deletes sessions
+older than 30 days by default (`general.sessionRetention`), so older calls can't be audited: set a longer
+`general.sessionRetention.maxAge` in its settings to keep them.
 
 It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
 

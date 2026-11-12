@@ -30,7 +30,7 @@ experimental.
 | `tracekit why`: investigation, replay, signed findings | [why](why.md) |
 | `tracekit graph`: graph and report built from v2 bundles | [graph](graph.md) |
 | `tracekit report`: a week of a signer's store on one page, as text or JSON | [viewer](viewer.md#weekly-report) |
-| `tracekit audit`: Claude Code transcripts replayed through the policy, read-only and not a record | [audit](audit.md) |
+| `tracekit audit`: Claude Code and Gemini CLI sessions replayed through the policy, read-only and not a record | [audit](audit.md) |
 | `tracekit tips`: the viewer's TIPS page as text or JSON | [viewer](viewer.md#tracekit-tips) |
 | Model receipts: the coding-agent hooks' receipts of the weights files a call wrote, and `tracekit verify-model` | [coding agents](coding-agents.md#weights-files-a-call-wrote) |
 | Detection and containment: sequences and limits, holds, quarantine, suspensions, incidents, the webhook outbox | [incidents](incidents.md), [webhooks](webhooks.md) |
