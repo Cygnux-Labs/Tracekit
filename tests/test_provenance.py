@@ -18,6 +18,7 @@ from tracekit import provenance, schema   # noqa: E402
 from tracekit.bundle_v2 import export   # noqa: E402
 from tracekit.format.canon import event_hash   # noqa: E402
 from tracekit.policy2 import compile as pc   # noqa: E402
+from tracekit.sdk.client import result_field   # noqa: E402
 from tracekit.signer import pipeline, service as svc   # noqa: E402
 from tracekit.storage.base import StorageUnavailable   # noqa: E402
 from tracekit.storage.file import FileStorage   # noqa: E402
@@ -360,6 +361,24 @@ class Signer(unittest.TestCase):
                                          args_digest=event_hash({"tool": tool, "args": args}),
                                          **({} if result is None else {"result": result})))
                 self.fails_closed("partial", "tc-fetch (http_get) completed with a digest")
+
+    def test_an_untrusted_input_observed_as_a_digest_makes_the_index_partial(self):
+        """An observer sends a digest for content over half a frame (an MCP list or resource, a gateway's resource or
+        A2A event): nothing to index, so the run's index can't vouch for a value. A trusted digest leaves the index as
+        it is: values missing from the trusted side only hold more calls."""
+        # what the MCP client's read_resource sends for a resource over half a frame (result_field)
+        resource = result_field(True, {"contents": [{"uri": "mem://notes", "text": INJECTED + " x" * 300_000}]})
+        self.assertRegex(resource, r"^sha256:[0-9a-f]{64}$")
+        for i, (source, value) in enumerate([("inbox:ticket-881", event_hash({"tools": INJECTED})),
+                                             ("inbox:ticket-881", {"hash": event_hash(INJECTED), "size": 3}),
+                                             ("mcp:docs/resource", resource)]):
+            with self.subTest(source=source, value=value):
+                if i:
+                    self.new_run()
+                self.s.observe(self.req(source=source, trust="trusted", value=value))
+                self.assertEqual(self.email("tc-first", to="ops@ours.example")["decision"], "allow")
+                seq = self.s.observe(self.req(source=source, trust="untrusted", value=value))["run_seq"]
+                self.fails_closed("partial", f"observed input {seq} ({source}) is a digest")
 
     def test_events_the_signer_never_got_make_the_index_partial(self):
         """A skipped client_seq may have been an observed page or an untrusted result: from the decide that shows the

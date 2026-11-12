@@ -42,7 +42,7 @@ import weakref
 
 import rfc8785
 
-from tracekit import __version__
+from tracekit import __version__, provenance
 from tracekit.core import jsonable
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.signer import rpc_schema
@@ -504,6 +504,39 @@ def sendable(out):
         return len(canonical(out)) <= MAX_LINE // 2
     except rfc8785.CanonicalizationError:
         return False
+
+
+def parts(value, key=None):
+    """The values to observe for `value`, a list or dict of items (or a page holding one at `key`): runs of whole
+    items, each in a copy of the page, that one observe carries and the signer indexes whole: sendable, with at most
+    provenance.MAX_VALUES values (counted per item, so a part never holds more). An item too large alone is a part of
+    its own; sent as its digest (result_field) or read past MAX_VALUES, it makes the run's index partial or truncated."""
+    items = value if key is None else value.get(key)
+    if not isinstance(items, (list, dict)):
+        yield value
+        return
+    entries = [{k: v} for k, v in items.items()] if isinstance(items, dict) else [[v] for v in items]
+    put = (lambda part: part) if key is None else (lambda part: {**value, key: part})
+
+    def measure(v):   # (bytes, values) of v, (MAX_LINE, 0) when it is not canonical JSON (sent as its digest)
+        try:
+            return len(canonical(v)), len(provenance.values(v)[0])
+        except (rfc8785.CanonicalizationError, ValueError):
+            return MAX_LINE, 0
+    room = measure(put(type(items)()))
+    part, size, count = type(items)(), *room
+    for entry in entries:
+        s, n = measure(entry)
+        if part and (size + s > MAX_LINE // 2 or count + n > provenance.MAX_VALUES):
+            yield put(part)
+            part, size, count = type(items)(), *room
+        if isinstance(part, list):
+            part += entry
+        else:
+            part |= entry
+        size, count = size + s, count + n
+    if part or not entries:
+        yield put(part)
 
 
 class VaultBody:

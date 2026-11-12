@@ -293,10 +293,10 @@ the agent's own arguments). Values are read before redaction (only their HMACs a
 trusted stays trusted. `decide` answers `send_result` for an untrusted tool, so its adapter completes it with the
 result rather than a digest. `from: untrusted` rules match on the index, and every decision records which arguments
 carry untrusted-only values (field, kind, source record; never the value). The index is `partial` once an untrusted
-tool completes with a digest or no result, or a client's events skip a client_seq (a lost observe or result),
-`truncated` once a result carries more values than are read or the run's index is full, `unavailable` after a restart
-(a storage recovery keeps it), and a decision whose values take past its deadline is `timeout`; in each, `from:
-untrusted` rules fail closed: they match whenever their pattern does.
+tool completes with a digest or no result, an untrusted input is observed as a digest, or a client's events skip a
+client_seq (a lost observe or result), `truncated` once a result carries more values than are read or the run's index
+is full, `unavailable` after a restart (a storage recovery keeps it), and a decision whose values take past its
+deadline is `timeout`; in each, `from: untrusted` rules fail closed: they match whenever their pattern does.
 """
 import argparse
 import base64
@@ -641,6 +641,12 @@ def _dotenv(args):
 
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def _digested(v):
+    """Whether a result or an observed value a client sent is a digest (a `sha256:` string or a `{hash, size}`
+    reference) in place of the content: nothing the provenance index can read."""
+    return isinstance(v, str) and bool(_DIGEST.fullmatch(v)) or isinstance(v, dict) and {"hash", "size"} <= v.keys()
 
 
 def _shown(args, dotenv):
@@ -3056,9 +3062,7 @@ class SignerService:
         keys, overflow, missing = [], False, False
         if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool):
             keys, overflow = self._keys({k: req[k] for k in ("result", "error") if k in req})
-            r = req.get("result")
-            missing = req["status"] == "ok" and ("result" not in req or isinstance(r, str) and _DIGEST.fullmatch(r)
-                                                 or isinstance(r, dict) and {"hash", "size"} <= r.keys())
+            missing = req["status"] == "ok" and ("result" not in req or _digested(req["result"]))
         open_call = self.log.runs[key].get("decisions", {}).get(did)
         if not (gw and open_call and (open_call.get("via"), open_call.get("caller")) == holder):
             self.quotas.take_event(identity, gw)   # a gateway's result for its own decision: its decide paid
@@ -3131,6 +3135,9 @@ class SignerService:
             if overflow and req["trust"] == "untrusted":   # trusted values left out only make more calls held
                 degrade(tx, run.get("prov"), "truncated",
                               f"observed input {written[0]} carried more values than are read")
+            if _digested(req["value"]) and req["trust"] == "untrusted":   # its values were never sent: partial
+                degrade(tx, run.get("prov"), "partial",
+                        f"observed input {written[0]} ({req['source'][:64]}) is a digest, not its content")
             return {"run_seq": written[0]}
         res = self.log.submit(identity, "observe", req, fn, key)
         if written:

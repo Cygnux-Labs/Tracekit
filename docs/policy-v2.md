@@ -406,7 +406,7 @@ up as the host it is, without a trailing dot (`evil.example.` is `evil.example`)
 
 | State | When |
 |---|---|
-| `partial` | an untrusted tool's call completed with a digest, a `{hash, size}` reference or no result (an adapter that ignores `send_result`), or a client's events skipped a `client_seq` (`client_counter_gap`: an observe or a result the signer never got), from the decision that reveals the gap on |
+| `partial` | an untrusted tool's call completed with a digest, a `{hash, size}` reference or no result (an adapter that ignores `send_result`), an untrusted input was observed as one (content over half a frame: one MCP tool, resource or input request over 512 KiB), or a client's events skipped a `client_seq` (`client_counter_gap`: an observe or a result the signer never got), from the decision that reveals the gap on |
 | `truncated` | a result or untrusted observed input carried more values than are read (4096 values, 1 MiB of text), or the run's index reached 20000 values |
 | `unavailable` | the signer restarted: the index lives in memory only (a storage outage the signer recovers from keeps it) |
 | `timeout` | reading this call's values took past the decision's deadline (1 s) |
