@@ -68,7 +68,7 @@ import re
 
 from .findings import WRITE_TOOLS
 from .policy2.classes import PATH_KEYS, SHELL_KEYS
-from .policy2.engine import _shell as _parse
+from .policy2.engine import _shell as _parse, commands_each
 from .policy2.shell import ParseError
 from .signer.rpc_schema import quoted
 
@@ -797,7 +797,8 @@ def shell(cmd):
     command runs its own after the line returns (LATER_RUNS, setsid -f), "push": a git push, "network": a command that
     reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell call's arguments (`command`
     or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine reads them
-    (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included).
+    (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included; a `commands` list joined
+    and each entry on its own, Engine._parse: what either reading finds).
     lean: redirections, the arguments of tee/touch/mkdir/rm/rmdir/truncate/shred/unlink and of formatters that write
     in place (black, isort, rustfmt; prettier --write, gofmt -w, ruff format, ruff check --fix, ...), cp/mv/install/
     ln/rsync/scp destinations, patch's file, dd of=, sed/perl -i files, git rm/mv/restore paths and git checkout's
@@ -806,10 +807,15 @@ def shell(cmd):
     policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
     out = {"paths": [], "dirs": [], "cd": False, "elsewhere": False, "later": False, "push": False, "network": False,
            "writes": False}
-    try:
-        cmds, _, _, written = _parse(cmd if isinstance(cmd, dict) else
-                                     {"command": cmd if isinstance(cmd, str) else ""})[:4]
-    except ParseError:
+    args = cmd if isinstance(cmd, dict) else {"command": cmd if isinstance(cmd, str) else ""}
+    cmds, written, read = [], [], False
+    for a in [args, *({"command": c} for c in commands_each(args))]:
+        try:
+            found, _, _, wrote = _parse(a)[:4]
+        except ParseError:
+            continue
+        cmds, written, read = cmds + found, written + wrote, True
+    if not read:
         return out
     for c in cmds:
         name, rest = c["argv"][0], c["argv"][1:]

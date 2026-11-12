@@ -287,7 +287,7 @@ def _parser():
                        description="Every command, grouped by what it is for, and the features that are not commands "
                                    "of their own; `tracekit help COMMAND` shows that command's options.")
     p.add_argument("command", nargs="?", help="a command's name")
-    p = sub.add_parser("init", help="install the signer and Claude Code hooks")
+    p = sub.add_parser("init", help="install the signer and a coding agent's hooks (--agent; default Claude Code)")
     p.add_argument("--remote", metavar="URL", help="agent on another machine: with --v2, send to this signer's HTTPS "
                                                    f"transport; without, to the deprecated ingest gateway ({wiki_url('docs/remote-ingest.md')})")
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN without "
@@ -1373,6 +1373,12 @@ def _last(a):
         elif agent == "claude-code":
             why = ("still open: it finishes when the session ends (`/exit` in Claude Code) "
                    "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
+        elif agent in ("opencode", "kilo", "goose", "antigravity"):   # their hooks get no session end
+            why = (f"still open: Tracekit's {agent} hooks get no session end, so it finishes after the signer's idle "
+                   "timeout; tracekit last --open verifies it as it stands")
+        elif agent == "cline":   # a run is one task (agent_hooks: TaskComplete ends it)
+            why = ("still open: it finishes when the Cline task completes, or after the signer's idle timeout (a "
+                   "cancelled task sends no hook); tracekit last --open verifies it as it stands")
         elif agent in agent_hooks.AGENT_NAMES.values():
             why = ("still open: it finishes when the session ends "
                    "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
