@@ -1373,6 +1373,12 @@ def _last(a):
         elif agent == "claude-code":
             why = ("still open: it finishes when the session ends (`/exit` in Claude Code) "
                    "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
+        elif agent in ("opencode", "kilo", "goose", "antigravity"):   # their hooks get no session end
+            why = (f"still open: Tracekit's {agent} hooks get no session end, so it finishes after the signer's idle "
+                   "timeout; tracekit last --open verifies it as it stands")
+        elif agent == "cline":   # a run is one task (agent_hooks: TaskComplete ends it)
+            why = ("still open: it finishes when the Cline task completes, or after the signer's idle timeout (a "
+                   "cancelled task sends no hook); tracekit last --open verifies it as it stands")
         elif agent in agent_hooks.AGENT_NAMES.values():
             why = ("still open: it finishes when the session ends "
                    "or after the signer's idle timeout; tracekit last --open verifies it as it stands")
