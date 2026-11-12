@@ -1,6 +1,8 @@
 """The MCP gateway (tracekit/mcp_gateway.py): an MCP client connects over Streamable HTTP; the gateway proxies an
 in-process upstream MCP server, deciding and recording through an in-process v2 signer as source gateway (tier T2)."""
 import asyncio
+import concurrent.futures
+import contextlib
 import http.client
 import json
 import os
@@ -22,8 +24,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import httpx2
-    from mcp import Client
+    from mcp import Client, types as mcp_types
     from mcp.client.streamable_http import streamable_http_client
+    from mcp.server.lowlevel import Server as LowServer
     from mcp.server.mcpserver import MCPServer
 
     from tracekit import mcp_gateway
@@ -89,6 +92,52 @@ def upstream():
     def outbox() -> str:
         return "sent"
     return s
+
+
+def paged_upstream():
+    """A two-page upstream: tools, resources and prompts each span two cursor pages."""
+    tool_p1 = mcp_types.Tool(name="tool_p1", description="page 1 tool",
+                              inputSchema={"type": "object", "properties": {}})
+    tool_p2 = mcp_types.Tool(name="tool_p2", description="page 2 tool",
+                              inputSchema={"type": "object", "properties": {}})
+    res_p1 = mcp_types.Resource(uri="note://res-p1", name="res-p1", mimeType="text/plain")
+    res_p2 = mcp_types.Resource(uri="note://res-p2", name="res-p2", mimeType="text/plain")
+    prompt_p1 = mcp_types.Prompt(name="prompt_p1", description="page 1 prompt")
+    prompt_p2 = mcp_types.Prompt(name="prompt_p2", description="page 2 prompt")
+
+    async def on_list_tools(ctx, params):
+        cursor = params.cursor if params else None
+        if cursor is None:
+            return mcp_types.ListToolsResult(tools=[tool_p1], next_cursor="2")
+        return mcp_types.ListToolsResult(tools=[tool_p2])
+
+    async def on_call_tool(ctx, params):
+        return mcp_types.CallToolResult(
+            content=[mcp_types.TextContent(type="text", text=f"ran:{params.name}")])
+
+    async def on_list_resources(ctx, params):
+        cursor = params.cursor if params else None
+        if cursor is None:
+            return mcp_types.ListResourcesResult(resources=[res_p1], next_cursor="2")
+        return mcp_types.ListResourcesResult(resources=[res_p2])
+
+    async def on_read_resource(ctx, params):
+        return mcp_types.ReadResourceResult(
+            contents=[mcp_types.TextResourceContents(
+                uri=str(params.uri), text=f"content:{params.uri}", mimeType="text/plain")])
+
+    async def on_list_prompts(ctx, params):
+        cursor = params.cursor if params else None
+        if cursor is None:
+            return mcp_types.ListPromptsResult(prompts=[prompt_p1], next_cursor="2")
+        return mcp_types.ListPromptsResult(prompts=[prompt_p2])
+
+    return LowServer("paged-up",
+                     on_list_tools=on_list_tools,
+                     on_call_tool=on_call_tool,
+                     on_list_resources=on_list_resources,
+                     on_read_resource=on_read_resource,
+                     on_list_prompts=on_list_prompts)
 
 
 @unittest.skipUnless(HAVE_MCP, "mcp not installed")
@@ -269,6 +318,213 @@ class McpGateway(unittest.TestCase):
         [e] = [e for e in self.events() if e["type"] == "input.observed" and e["data"]["source"] == "mcp:up/resource"]
         self.assertEqual((e["source"], e["tier"], e["data"]["source"], e["data"]["trust"]),
                          ("gateway", "T2", "mcp:up/resource", "untrusted"))
+
+    def _swap_upstream(self, srv):
+        old = self.srv.mcp["upstreams"]
+        old.close()
+        ups = mcp_gateway.Upstreams({"up": srv})
+        self.srv.mcp["upstreams"] = ups
+        self.addCleanup(ups.close)
+
+    def test_all_three_lists_show_every_page(self):
+        """Every tool, resource and prompt from every cursor page reaches the agent."""
+        self._swap_upstream(paged_upstream())
+        async def lists(c):
+            tools = await c.list_tools()
+            resources = await c.list_resources()
+            prompts = await c.list_prompts()
+            return tools, resources, prompts
+        tools, resources, prompts = self.agent(lists)
+        self.assertSetEqual({t.name for t in tools.tools}, {"up__tool_p1", "up__tool_p2"})
+        self.assertSetEqual({str(r.uri) for r in resources.resources}, {"note://res-p1", "note://res-p2"})
+        self.assertSetEqual({p.name for p in prompts.prompts}, {"up__prompt_p1", "up__prompt_p2"})
+
+    def test_last_page_tool_is_callable(self):
+        """A tool from the second page can be called through the gateway."""
+        self._swap_upstream(paged_upstream())
+        out = self.agent(lambda c: c.call_tool("up__tool_p2", {}))
+        self.assertFalse(out.is_error)
+        self.assertIn("ran:tool_p2", out.content[0].text)
+
+    def test_last_page_resource_is_readable(self):
+        """A resource URI from the second page is remembered and can be read."""
+        self._swap_upstream(paged_upstream())
+        async def list_and_read(c):
+            await c.list_resources()
+            return await c.read_resource("note://res-p2")
+        result = self.agent(list_and_read)
+        self.assertIn("note://res-p2", result.contents[0].text)
+
+    def test_each_list_gives_one_observed_per_upstream(self):
+        """Listing across multiple pages produces one input.observed per upstream per list."""
+        self._swap_upstream(paged_upstream())
+        async def lists(c):
+            await c.list_tools()
+            await c.list_resources()
+            await c.list_prompts()
+        self.agent(lists)
+        observed = [(e["data"]["source"], e["data"]["trust"])
+                    for e in self.events() if e["type"] == "input.observed"]
+        self.assertEqual(observed, [("mcp:up/tools", "untrusted"),
+                                     ("mcp:up/resources", "untrusted"),
+                                     ("mcp:up/prompts", "untrusted")])
+
+    def test_repeated_cursor_is_an_error(self):
+        """A cursor returned twice raises an error naming the upstream and what it did (it named the 100-page cap,
+        which the listing never reached)."""
+        async def on_list_tools(ctx, params):
+            return mcp_types.ListToolsResult(tools=[], next_cursor="same-forever")
+        self._swap_upstream(LowServer("bad", on_list_tools=on_list_tools))
+        with self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.list_tools())
+        self.assertIn("upstream 'up': tools/list page 2 returned a cursor an earlier page had returned, so the listing "
+                      "would never end; fix the upstream's cursor", messages(e.exception))
+        self.assertNotIn("100 pages", messages(e.exception))
+
+    def test_a_listing_past_its_shared_budget_names_the_upstream(self):
+        """One listing has UPSTREAM_TIMEOUT_S for every upstream and page; past it the agent read "upstream error:
+        TimeoutError: ; the gateway connects to an upstream that went away again on the next call"."""
+        async def on_list_tools(ctx, params):
+            await asyncio.sleep(1)
+            return mcp_types.ListToolsResult(tools=[])
+        self._swap_upstream(LowServer("slow", on_list_tools=on_list_tools))
+        with mock.patch.object(mcp_gateway, "UPSTREAM_TIMEOUT_S", 0.3), self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.list_tools())
+        self.assertIn("upstream 'up': tools/list timed out (one listing has 0.3 s for every upstream and page)",
+                      messages(e.exception))
+
+    def test_a_timeout_the_upstream_call_raises_is_not_the_listings(self):
+        """Only the listing's own time running out names its budget. A TimeoutError raised inside the upstream call (a
+        socket's, anyio's fail_after) or by the reconnect's wait read "tools/list timed out (one listing has 600 s for
+        every upstream and page)"; it keeps the upstream error and its advice."""
+        ups = self.srv.mcp["upstreams"]
+        advice = "; the gateway connects to an upstream that went away again on the next call"
+
+        def listing_error(*patches):
+            with contextlib.ExitStack() as stack, self.assertRaises(Exception) as e:
+                for p in patches:
+                    stack.enter_context(p)
+                self.agent(lambda c: c.list_tools())
+            self.assertNotIn("one listing has", messages(e.exception))
+            return messages(e.exception)
+        self.assertIn("upstream error: TimeoutError: read timed out" + advice, listing_error(
+            mock.patch.object(ups.clients["up"], "list_tools", new_callable=mock.AsyncMock,
+                              side_effect=TimeoutError("read timed out"))))
+        self.assertIn("upstream error: upstream 'up' gave no session in 600 s; nothing was sent to it",
+                      listing_error(   # the reconnect's wait for a session
+                          mock.patch.object(mcp_gateway, "_closed", return_value=True),
+                          mock.patch.object(ups, "_open", side_effect=mcp_gateway.Unreachable(
+                              "upstream 'up' gave no session in 600 s"))))
+
+    def test_a_call_to_an_upstream_that_cant_be_opened_was_not_sent(self):
+        """A tools/call whose upstream went away and can't be opened again says nothing was sent, not that it may
+        have run, and completes as an error."""
+        ups = self.srv.mcp["upstreams"]
+        with mock.patch.object(mcp_gateway, "_closed", return_value=True), \
+                mock.patch.object(ups, "_open", side_effect=mcp_gateway.Unreachable(
+                    "upstream 'up' couldn't be opened: ConnectionRefusedError: refused")), \
+                self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.call_tool("up__echo", {"text": "hi"}))
+        self.assertIn("upstream error: upstream 'up' couldn't be opened: ConnectionRefusedError: refused; nothing was "
+                      "sent to it", messages(e.exception))
+        self.assertNotIn("may have run", messages(e.exception))
+        self.assertEqual(RAN, [])
+        [r] = [e for e in self.events() if e["type"] == "tool.result"]
+        self.assertFalse(r["data"]["ok"])
+
+    def test_a_call_that_ends_as_its_wait_runs_out_gives_its_own_answer(self):
+        """An upstream answering between the wait running out and the check gives that answer, not the wait's empty
+        TimeoutError; a TimeoutError the call raised itself is raised as it was."""
+        ups = self.srv.mcp["upstreams"]
+
+        class Late(concurrent.futures.Future):   # the wait runs out, and the answer is there at once
+            def result(self, timeout=None):
+                if timeout is not None:
+                    raise concurrent.futures.TimeoutError()
+                return super().result()
+
+        def run(outcome):
+            def submit(coro, loop):
+                coro.close()
+                fut = Late()
+                if isinstance(outcome, BaseException):
+                    fut.set_exception(outcome)
+                else:
+                    fut.set_result(outcome)
+                return fut
+
+            async def nothing():
+                pass
+            with mock.patch.object(mcp_gateway.asyncio, "run_coroutine_threadsafe", submit):
+                return ups._run(nothing(), timeout=1)
+        self.assertEqual("listed", run("listed"))
+        with self.assertRaisesRegex(TimeoutError, "read timed out"):
+            run(TimeoutError("read timed out"))
+
+        class Ending(Late):   # not done when checked, and already finishing when cancelled
+            def done(self):
+                return False
+
+            def cancel(self):
+                return False
+        Late = Ending
+        self.assertEqual("listed", run("listed"))
+
+    def test_a_reconnect_that_gets_no_session_names_the_upstream(self):
+        """The reconnect's wait for a session names the upstream, and gives up the attempt so the next call opens a
+        new one."""
+        ups = self.srv.mcp["upstreams"]
+
+        class Never:   # an upstream whose session never opens
+            def __init__(self, target):
+                pass
+
+            async def __aenter__(self):
+                await asyncio.Event().wait()
+
+            async def __aexit__(self, *exc):
+                return False
+        held = ups._held["up"]
+        try:
+            with mock.patch("mcp.Client", Never), mock.patch.object(mcp_gateway, "UPSTREAM_TIMEOUT_S", 0.2), \
+                    self.assertRaisesRegex(mcp_gateway.Unreachable, r"^upstream 'up' gave no session in 0.2 s$"):
+                ups._open("up")
+            attempt = ups._held["up"]
+            with contextlib.suppress(concurrent.futures.CancelledError, concurrent.futures.TimeoutError):
+                attempt.result(5)
+            self.assertTrue(attempt.cancelled())
+        finally:
+            ups._held["up"] = held   # the open session this test left alone
+
+    def test_page_bound_error_forgets_page1_resources(self):
+        """Hitting the page cap on resources/list returns an error and remembers nothing."""
+        self._swap_upstream(paged_upstream())
+        with mock.patch.object(mcp_gateway, "MAX_LIST_PAGES", 1):
+            with self.assertRaises(Exception) as e:
+                self.agent(lambda c: c.list_resources())
+        self.assertIn("upstream 'up': resources/list exceeded 1 pages; "
+                      "the gateway lists at most 1 pages per upstream; "
+                      "give the upstream larger pages or fix its cursor",
+                      messages(e.exception))
+        self.assertNotIn("note://res-p1", self.srv.mcp["resources"])
+
+    def test_upstream_error_on_page2_forgets_page1_resources(self):
+        """An upstream that raises on its second page returns an error and remembers nothing."""
+        async def on_list_resources(ctx, params):
+            cursor = params.cursor if params else None
+            if cursor is None:
+                return mcp_types.ListResourcesResult(
+                    resources=[mcp_types.Resource(uri="note://r1", name="r1",
+                                                  mimeType="text/plain")],
+                    next_cursor="2")
+            raise RuntimeError("upstream failed on page 2")
+        self._swap_upstream(LowServer("bad", on_list_resources=on_list_resources))
+        with self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.list_resources())
+        # the gateway's own error; what follows it depends on the mcp version (newer servers report a generic
+        # "Internal server error" instead of the upstream's RuntimeError)
+        self.assertIn("upstream error:", messages(e.exception))
+        self.assertNotIn("note://r1", self.srv.mcp["resources"])
 
 
 class RegistryListing(unittest.TestCase):
