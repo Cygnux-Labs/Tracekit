@@ -196,6 +196,35 @@ class Mapping(HarnessCase):
     def test_devin(self):
         self.check("devin")
 
+    def test_codebuddy(self):
+        self.check("codebuddy")
+
+    def test_codebuddy_records_results_failures_and_prompts_in_the_session_run(self):
+        """CodeBuddy Code sends Claude Code's payloads (its bundled code, 2.183.0): a result and a failure complete the
+        call their tool_use_id decided, and the prompt is recorded in the session's run, which SessionEnd closes."""
+        base = {"session_id": "cb-run", "transcript_path": None, "cwd": "/w"}
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionStart", "source": "startup"})[:2],
+                         (0, ""))
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "UserPromptSubmit", "prompt": "fix the tests",
+                                                 "is_internal_continuation": False})[:2], (0, ""))
+        for tid in ("call_r1", "call_r2"):
+            pre = {**base, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "make test"},
+                   "call_id": tid, "tool_use_id": tid}
+            self.assertEqual(self.hook("codebuddy", pre)[:2], (0, ""))
+        self.hook("codebuddy", {**pre, "hook_event_name": "PostToolUse", "call_id": "call_r1", "tool_use_id": "call_r1",
+                                "tool_response": {"stdout": "ok", "stderr": "", "interrupted": False}})
+        self.hook("codebuddy", {**pre, "hook_event_name": "PostToolUseFailure", "error": "exit 2",
+                                "tool_error_code": "BashExecutionError", "tool_error_name": "", "is_interrupt": False})
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionEnd", "reason": "prompt_input_exit"})[0],
+                         0)
+        run = next(r for r in self.signer._runs.values()
+                   if r["events"][0]["data"]["agent"]["name"] == "codebuddy-code")
+        done = {e["data"]["tool_call_id"]: e["data"]["status"] for e in run["events"] if e["type"] == "tool.result"}
+        self.assertEqual(done, {"call_r1": "ok", "call_r2": "error"})
+        self.assertEqual([e["data"] for e in run["events"] if e["type"] == "input.observed"],
+                         [{"source": "codebuddy-code:UserPromptSubmit", "trust": "trusted"}])
+        self.assertTrue(run["closed"])
+
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
         # header and a webfetch with no url are denied in the hook, with no decide request sent
@@ -479,6 +508,51 @@ class Mapping(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
 
 
+class CodeBuddyDeferredCalls(HarnessCase):
+    """#757's review: CodeBuddy Code's bundled code (2.183.0) sends a deferred tool's call twice under one call id,
+    the DeferExecuteTool wrapper's PreToolUse and the deferred tool's own (or, when its permission check ran the hooks,
+    the deferred tool's twice), then the deferred tool's PostToolUse and the wrapper's. Each is decided as the deferred
+    call; the decision it completes is the call's, and the signer supersedes the other: no decided_not_completed gap."""
+
+    def setUp(self):
+        super().setUp()
+        self.dir = ac.tmpdir(self)
+        self.service = SignerService(self.dir, policy=load_policy(), grace_s=0)
+        self.addCleanup(self.service.close)
+        os.environ["TRACEKIT_SIGNER"] = ac._serve(self, self.service.handle_frame)
+
+    def run_session(self, sid, pres, posts):
+        base = {"session_id": sid, "transcript_path": None, "cwd": "/w"}
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionStart", "source": "startup"})[0], 0)
+        for i, (event, name, ti) in enumerate([("PreToolUse", *p) for p in pres] + [("PostToolUse", *p) for p in posts]):
+            payload = {**base, "hook_event_name": event, "tool_name": name, "tool_input": ti, "call_id": "call_d1",
+                       "tool_use_id": "call_d1", **({"tool_response": {"stdout": "ok"}} if event == "PostToolUse" else {})}
+            self.assertEqual(self.hook("codebuddy", payload)[:2], (0, ""), (i, event, name))
+        run_id = claude_code._load(claude_code._state(sid))["run_id"]
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionEnd", "reason": "other"})[0], 0)
+        self.service.sweep(time.monotonic() + 1)
+        self.service.close()
+        with open(os.path.join(self.dir, "store", "records.jsonl"), "rb") as f:
+            return [e for e in (json.loads(line)["event"] for line in f.read().splitlines()) if e["run_id"] == run_id]
+
+    def test_a_deferred_call_decided_twice_completes_once_with_no_gap(self):
+        wrapper = ("DeferExecuteTool", {"toolName": "Monitor", "params": json.dumps({"command": "tail -f build.log"})})
+        deferred = ("Monitor", {"command": "tail -f build.log"})
+        for sid, pres in (("cb-wrapper", [wrapper, deferred]), ("cb-twice", [deferred, deferred])):
+            with self.subTest(order=sid):
+                if sid == "cb-twice":   # each order on a signer of its own
+                    self.setUp()
+                events = self.run_session(sid, pres, [deferred, wrapper])
+                decisions = [e for e in events if e["type"] == "policy.decision"]
+                self.assertEqual([(d["data"]["tool"], d["data"]["decision"]) for d in decisions],
+                                 [("Monitor", "allow")] * 2)
+                done = [e["data"] for e in events if e["type"] == "tool.result"]
+                self.assertEqual([(r["tool_use_id"], r["decision_id"]) for r in done],
+                                 [("call_d1", decisions[1]["data"]["decision_id"])])
+                self.assertEqual([e["data"]["kind"] for e in events if e["type"] == "capture.gap"], [])
+                self.assertEqual(events[-1]["type"], "run.final")
+
+
 class OnTheDevPolicy(HarnessCase):
     """The signer's default policy sees what the mapping gives it: every file of a patch, the input typed into a shell."""
 
@@ -724,12 +798,13 @@ class Installer(unittest.TestCase):
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
                     # Cursor: and what its model said; agy: its tool events only
-                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2}.get(harness, 5))
+                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "codebuddy": 6, "antigravity": 2}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
                     # through its own POSIX shell), and Devin's shell isn't documented: a path with a space keeps cmd.exe's
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin"):
+                    # CodeBuddy Code runs them under Git Bash, as Claude Code does
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "codebuddy"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)

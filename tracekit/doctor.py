@@ -348,7 +348,7 @@ def _dev_signer():
 # the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path); `~`
 # is USERPROFILE on Windows
 USER_ENV = ("USERPROFILE" if os.name == "nt" else "HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME",
-            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG")
+            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "CODEBUDDY_CONFIG_DIR")
 
 
 def _user_hook_files():
