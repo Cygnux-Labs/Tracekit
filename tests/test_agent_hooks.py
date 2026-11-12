@@ -161,6 +161,25 @@ class Harnesses(DaemonCase):
         flags = [e["data"] for e in evs if e["type"] == "policy.decision"]
         self.assertEqual([f["decision"] for f in flags], ["allow", "flag", "deny"])
 
+    def test_cursor_edit_tools_are_decided_as_edits(self):
+        # the names Cursor's transcripts give its edits (#755) were unknown tools: a StrReplace of .env was allowed
+        base = {"conversation_id": "cu-edit", "hook_event_name": "preToolUse", "cwd": self.d}
+        app, env = os.path.join(self.d, "app.py"), os.path.join(self.d, ".env")
+        code, out, err = self.hook("cursor", {**base, "tool_name": "StrReplace", "tool_use_id": "e0",
+                                              "tool_input": {"path": env, "old_string": "A=1", "new_string": "A=2"}})
+        self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), err)
+        for i, (name, ti) in enumerate((
+                ("StrReplace", {"path": app, "old_string": "a", "new_string": "b"}),
+                ("ApplyPatch", {"patch": f"*** Begin Patch\n*** Update File: {app}\n@@\n-a\n+b\n*** End Patch\n"}),
+                ("EditNotebook", {"target_notebook": os.path.join(self.d, "a.ipynb"), "cell_idx": 0,
+                                  "is_new_cell": True, "cell_language": "python", "old_string": "", "new_string": "1"})), 1):
+            code, out, err = self.hook("cursor", {**base, "tool_name": name, "tool_use_id": f"e{i}", "tool_input": ti})
+            self.assertEqual((code, json.loads(out)), (0, {"permission": "allow"}), err)
+        evs = self.events("cu-edit")
+        self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], ["Edit", "Edit", "Edit", "NotebookEdit"])
+        self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"],
+                         ["deny", "allow", "allow", "allow"])
+
     def test_qwen(self):
         base = {"session_id": "qw-1", "cwd": self.d, "model": "qwen3-coder-plus", "transcript_path": None, "permission_mode": "default",
                 "timestamp": "2026-10-25T00:00:00Z"}
@@ -1013,6 +1032,37 @@ class DevinTools(unittest.TestCase):
         self.assertEqual(ran["hook_event_name"], "PostToolUse")
         for ev in ("PermissionRequest", "Stop", "PostCompaction"):   # not recorded
             self.assertIsNone(agent_hooks.normalise("devin", {"session_id": "s", "hook_event_name": ev}), ev)
+
+
+class CursorTools(unittest.TestCase):
+    """Cursor's file tools under the names its transcripts give them (3.29.15: StrReplace, Write, Delete, EditNotebook,
+    ApplyPatch; an older prompt's search_replace, write, delete_file and edit_notebook; Purv-Kabaria in #755) are
+    decided by both policies on the file each tool reads, whatever other path key the model sent beside it."""
+
+    def test_each_is_decided_on_the_file_its_tool_reads(self):
+        from tracekit import policy
+        v1, v2 = policy.load(policy.DEFAULT_POLICY)[0], load_policy()
+        env, decoy = "/w/.env", "/w/notes.txt"
+        patch = f"*** Begin Patch\n*** Add File: {decoy}\n+hi\n*** Update File: {env}\n@@\n-A=1\n+A=2\n*** End Patch\n"
+        for form, tool in ((("StrReplace", {"path": env, "old_string": "A=1", "new_string": "A=2"}), "Edit"),
+                           (("StrReplace", {"file_path": decoy, "path": env, "old_string": "a", "new_string": "b"}), "Edit"),
+                           (("search_replace", {"file_path": env, "old_string": "A=1", "new_string": "A=2"}), "Edit"),
+                           (("write", {"file_path": env, "contents": "A=1"}), "Write"),
+                           (("delete_file", {"target_file": env}), "Edit"),
+                           (("EditNotebook", {"target_notebook": env, "file_path": decoy, "notebook_path": decoy}),
+                            "NotebookEdit"),
+                           (("edit_notebook", {"target_notebook": env}), "NotebookEdit"),
+                           (("ApplyPatch", {"patch": patch, "path": decoy, "file_path": decoy}), "Edit"),
+                           (("ApplyPatch", patch), "Edit")):
+            with self.subTest(form=form):
+                mapped, ti = agent_hooks.tool("cursor", *form)
+                self.assertEqual(mapped, tool)
+                d = policy.evaluate(v1, mapped, ti, "/w")
+                self.assertEqual((d["decision"], "TK-D005" in d["rule_ids"]), ("deny", True), d)
+                d = v2.decide(mapped, ti)
+                self.assertEqual((d["verdict"], "TK-D005" in d["rule_ids"]), ("deny", True), d)
+        _, ti = agent_hooks.tool("cursor", "ApplyPatch", {"patch": patch})
+        self.assertEqual((ti["file_path"], ti["paths"]), (decoy, [decoy, env]))
 
 
 class CodexPatchHeaders(unittest.TestCase):

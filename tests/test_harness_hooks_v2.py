@@ -542,6 +542,48 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
         self.assertIn("TK-D005", err)
 
+    def test_cursor_edit_tools_are_decided_as_the_edits_they_are(self):
+        # Cursor's transcripts name its edits StrReplace, ApplyPatch and EditNotebook (an older prompt's search_replace,
+        # write, delete_file and edit_notebook; Purv-Kabaria, #755): an edit of its hooks under those names was a flag
+        hooks, sid = "/home/u/.cursor/hooks.json", "c-edit"
+
+        def call(i, name, ti, ev="preToolUse"):
+            return self.hook("cursor", {"conversation_id": sid, "hook_event_name": ev, "tool_name": name,
+                                        "tool_use_id": f"e{i}", "tool_input": ti, "cwd": "/w"})
+        # what Cursor 3.29's hook sends for an edit by any of its tools: a Read, then a Write of the whole file, both
+        # under the model's call id
+        self.assertEqual(call(0, "Read", {"file_path": hooks})[:2], (0, json.dumps({"permission": "allow"})))
+        call(0, "Read", {"file_path": hooks}, "postToolUse")
+        patch = f"*** Begin Patch\n*** Update File: {hooks}\n@@\n-a\n+b\n*** End Patch\n"
+        cell = {"cell_idx": 0, "is_new_cell": False, "cell_language": "python", "old_string": "a", "new_string": "b"}
+        for i, (name, ti) in enumerate((("Write", {"file_path": hooks, "content": "{}"}),
+                                        ("StrReplace", {"path": hooks, "old_string": "a", "new_string": "b"}),
+                                        ("search_replace", {"file_path": hooks, "old_string": "a", "new_string": "b"}),
+                                        ("write", {"file_path": hooks, "contents": "{}"}),
+                                        ("ApplyPatch", {"patch": patch}), ("ApplyPatch", patch),
+                                        ("EditNotebook", {"target_notebook": hooks, **cell}),
+                                        ("edit_notebook", {"target_notebook": hooks, **cell}))):
+            with self.subTest(tool=name, input=ti):
+                code, out, err = call(i, name, ti)
+                self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), err)
+                self.assertIn("TK-F009", err)
+        # an ordinary edit is decided as an Edit, not as an unknown tool
+        code, out, err = call(20, "StrReplace", {"path": "/w/src/app.py", "old_string": "a", "new_string": "b"})
+        self.assertEqual((code, json.loads(out)), (0, {"permission": "allow"}), err)
+        # a delete, under either name, as strictly as before
+        for i, (name, key) in enumerate((("Delete", "path"), ("delete_file", "target_file")), 21):
+            code, out, err = call(i, name, {key: "/w/.env"})
+            self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"), name)
+            self.assertIn("TK-D005", err)
+        st, c = claude_code._load(claude_code._state(sid)), Client()
+        self.addCleanup(c.close)
+        evs = c.call("read", {"run_id": st["run_id"], "run_token": st["run_token"], "limit": 100})["events"]
+        decided = {e["data"]["tool_use_id"]: (e["data"]["tool"], e["data"]["rule_ids"]) for e in evs
+                   if e["type"] == "policy.decision"}
+        self.assertEqual(decided["e20"], ("Edit", []))
+        self.assertEqual([decided[f"e{i}"][0] for i in range(1, 8)],
+                         ["Edit", "Edit", "Write", "Edit", "Edit", "NotebookEdit", "NotebookEdit"])
+
     def test_a_devin_file_call_is_decided_on_every_path_its_input_names(self):
         # the review of #576: the signer decided only the first path key, so a decoy file_path beside the path Devin's
         # tool reads let a write of .env through

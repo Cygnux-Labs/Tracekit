@@ -878,7 +878,7 @@ ask:
   # --- the agent harness's settings: held, as changing the guardrails (#604)
   - id: TK-F009
     class: fs
-    tool: Write|Edit|MultiEdit
+    tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
     # Only the normalized path, including its casefolded form, not the file's content. Antigravity CLI's project hooks
     # are .agents/hooks.json and goose's plugins are under .agents/plugins/ (the folder's skills/ is ordinary work);
