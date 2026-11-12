@@ -899,7 +899,7 @@ ask:
     field: argv
     # chmod's setuid or setgid bit: a symbolic +s (u+s, g+s, a+s, also in a comma list such as u+x,g+s) or a numeric
     # mode of 4 digits starting with 2, 4 or 6, after chmod's options
-    pattern: '^chmod( -[^ ]+)* (?:[246][0-7]{3}|([^ ]*,)?[ugoa]*\+[rwxXt]*s)( |$)'
+    pattern: '^chmod(?: -[^ ]+){0,64} (?:[246][0-7]{3}|([^ ]*,)?[ugoa]*\+[rwxXt]*s)( |$)'
     reason: setting the setuid or setgid bit on a file
     remedy: Have a person set the bit; a program that runs as its owner or group needs a person's review.
     rationale: A setuid or setgid file runs with its owner's rights on every run; a person confirms it.
@@ -909,7 +909,7 @@ ask:
     # a write (a redirection or tee) into a bash or zsh startup file (~/.bashrc, ~/.bash_profile, ~/.profile, ~/.zshrc)
     # whose text holds a reverse shell's /dev/tcp/, nc -e, ncat -e or socat, in either order on the line; an rc edit
     # without one stays unheld
-    pattern: '(/dev/tcp/|\bnc(at)? -e|\bsocat\b)[^\n]*?(>>?\s*|\btee( -[^\s;|&]+)*\s+)[^\s;|&]*?\.(bashrc|bash_profile|profile|zshrc)\b|(>>?\s*|\btee( -[^\s;|&]+)*\s+)[^\s;|&]*?\.(bashrc|bash_profile|profile|zshrc)\b[^\n]*?(/dev/tcp/|\bnc(at)? -e|\bsocat\b)'
+    pattern: '(/dev/tcp/|\bnc(at)? -e|\bsocat\b)[^\n]*?(>>?\s*|\btee(?: [^\s;|&]+){0,8}\s+)[^\s;|&]*?\.(bashrc|bash_profile|profile|zshrc)\b|(>>?\s*|\btee(?: [^\s;|&]+){0,8}\s+)[^\s;|&]*?\.(bashrc|bash_profile|profile|zshrc)\b[^\n]*?(/dev/tcp/|\bnc(at)? -e|\bsocat\b)'
     reason: adding a network shell to a shell startup file
     remedy: Have a person add the startup line; a shell that connects out on every login is not part of the task.
     rationale: A startup file runs in every new shell, so a line that opens a connection gives a remote party access each login; a person confirms it.
