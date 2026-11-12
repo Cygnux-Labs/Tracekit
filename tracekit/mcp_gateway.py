@@ -46,6 +46,7 @@ import concurrent.futures
 import os
 import re
 import threading
+import time
 import uuid
 
 from tracekit import __version__, yamlmini
@@ -65,13 +66,14 @@ PROTOCOL = "2025-06-18"   # answered to an initialize that names no protocol ver
 UPSTREAM_TIMEOUT_S = 600
 BLOCKED = "Tool call blocked by policy: "
 MAX_RESOURCES = 10000   # resource URI -> its upstream, as listed: the most recently listed or read
+MAX_LIST_PAGES = 100    # cursor pages fetched from one upstream per tools/list, resources/list or prompts/list
 PROMPT = "prompt:"   # prompts are decided as mcp:<upstream>/prompt:<name>, so no tool name may start with it
 LISTS = {"tools/list": ("list_tools", "tools"), "prompts/list": ("list_prompts", "prompts"),
          "resources/list": ("list_resources", "resources")}
 
 
 class Upstreams:
-    """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, *a)` runs one
+    """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, ...)` runs one
     of the mcp Client's methods on it from any thread. A session that ended (a stdio upstream that exited, a remote
     one that went away) is opened again on the next call."""
 
@@ -110,12 +112,12 @@ class Upstreams:
             fut.cancel()   # else the call keeps running (and holding its buffers) after its answer was given up
             raise
 
-    def call(self, name, method, *a):
+    def call(self, name, method, *a, timeout=UPSTREAM_TIMEOUT_S, **kw):
         with self._locks[name]:
             if not self._stop.is_set() and (self._held[name].done() or _closed(self.clients[name])):
                 self._held[name].cancel()   # its session ended (the upstream exited or went away): a new one
                 self._open(name)
-        return self._run(getattr(self.clients[name], method)(*a))
+        return self._run(getattr(self.clients[name], method)(*a, **kw), timeout=timeout)
 
     def close(self):
         self.loop.call_soon_threadsafe(self._stop.set)
@@ -180,18 +182,37 @@ class _McpGateway(_Handler):
                     "serverInfo": {"name": "tracekit-mcp-gateway", "version": __version__}}
         if method == "ping":
             return {}
-        # lean: the first page of each upstream's tools, resources and prompts; follow nextCursor if one lists more
         if method in LISTS:
             call, kind = LISTS[method]
             listed = []
+            deadline = time.monotonic() + UPSTREAM_TIMEOUT_S
             for up in ups.clients:
-                items = getattr(ups.call(up, call), kind)
-                if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
-                    items = [t for t in items if not t.name.startswith(PROMPT)]
+                cursor, n, seen, all_items = None, 0, set(), []
+                while True:
+                    result = ups.call(up, call, cursor=cursor,
+                                      timeout=deadline - time.monotonic())
+                    items = getattr(result, kind)
+                    if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
+                        items = [t for t in items if not t.name.startswith(PROMPT)]
+                    all_items.extend(items)
+                    cursor = result.next_cursor
+                    n += 1
+                    if cursor is None:
+                        break
+                    if cursor in seen:
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list returned a repeated cursor; "
+                                     f"the gateway lists at most {MAX_LIST_PAGES} pages per upstream; "
+                                     "give the upstream larger pages or fix its cursor")
+                    seen.add(cursor)
+                    if n >= MAX_LIST_PAGES:
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list exceeded {MAX_LIST_PAGES} pages; "
+                                     f"the gateway lists at most {MAX_LIST_PAGES} pages per upstream; "
+                                     "give the upstream larger pages or fix its cursor")
                 if kind == "resources":
-                    for r in items:
+                    for r in all_items:
                         _remember(gw, str(r.uri), up)
-                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name) for i in items]
+                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name)
+                        for i in all_items]
                 # the model reads what the upstream wrote in them: an untrusted input
                 listed += self._observe(gw, key, up, kind, page, trusted=False)
             return {kind: listed}
