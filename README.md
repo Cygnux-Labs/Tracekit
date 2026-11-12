@@ -16,7 +16,7 @@ your customers and auditors can verify the record themselves, offline.**
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>840 of 840</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 890 (E17)</sub></td>
+<td align="center" width="25%"><h3>846 of 846</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 904 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -344,7 +344,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up, and
 | **Cross-check** (E10): a skipped hook, a made-up call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **Three verifiers, one verdict** (E22): 63 bundles, 33 of them forged, each checked by the Python CLI, the TypeScript CLI and the browser page | **All three agree on all 63**; no forgery verifies. A 50,000-call run verifies in the browser in 14 s |
 | **Overhead** (E9): signer round trip over a Unix socket | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
-| **Policy packs, known cases** (E17): 840 harmful, 890 benign calls | 840 stopped, 1 false alarm |
+| **Policy packs, known cases** (E17): 846 harmful, 904 benign calls | 846 stopped, 1 false alarm |
 | **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (255 now, with rules added after reading the pool); 18 benign held |
 
 That last row is on purpose. **Policy rules are tripwires, not a wall.** They match text, and a determined agent can

@@ -281,8 +281,8 @@ p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Resu
 
 Three offline parts, each with a signer in process; nothing is executed.
 
-- **Policy packs** (`eval/e17_policy_corpus.py`): 840 harmful and 890 benign tool calls in 11 classes
-  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 840 harmful calls are denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 890 (0.11%); the engines
+- **Policy packs** (`eval/e17_policy_corpus.py`): 846 harmful and 904 benign tool calls in 11 classes
+  (`tests/data/policy/`), written by the project, decided by `server.yaml` with both engines. All 846 harmful calls are denied or held; one benign call is held (a draft email to a list address, `TK-M003`), 1 in 904 (0.11%); the engines
   decide every call the same. It gates on every harmful call caught, at most 2% false positives and engine agreement.
 - **Detection** (`eval/e17_detection.py`): 10 scenarios for [sequences](incidents.md): a sequence split across two
   runs, a tool alias the policy doesn't map, parallel runs, a GET with a query string as egress, a denied step that
@@ -545,12 +545,12 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 55 (96.5%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 56 (98.2%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 36 (80.0%), 18 denied | 0 |
-| | strict | 25 (55.6%), 19 denied | 2 | 39 (86.7%), 19 denied | 2 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 37 (82.2%), 18 denied | 0 |
+| | strict | 25 (55.6%), 19 denied | 2 | 40 (88.9%), 19 denied | 2 |
 | email_ops (25 harmful, 25 benign) | default | 5 (20.0%), 3 denied | 2 | 5 (20.0%), 3 denied | 2 |
 | | strict | 6 (24.0%), 4 denied | 4 | 6 (24.0%), 4 denied | 4 |
-| all three (127 harmful, 120 benign) | default | 63 (49.6%), 23 denied | 9 (7.5%) | 96 (75.6%), 24 denied | 10 (8.3%) |
-| | strict | 72 (56.7%), 27 denied | 16 (13.3%) | 101 (79.5%), 27 denied | 17 (14.2%) |
+| all three (127 harmful, 120 benign) | default | 63 (49.6%), 23 denied | 9 (7.5%) | 97 (76.4%), 24 denied | 10 (8.3%) |
+| | strict | 72 (56.7%), 27 denied | 16 (13.3%) | 102 (80.3%), 27 denied | 17 (14.2%) |
 
 The current policy scores above and the latency rows below were refreshed on macOS; the existing gates are unchanged.
 
@@ -598,7 +598,7 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055` and the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) strict does not hold either: 46 of 890 (5.2%).
+`TK-A053`) strict does not hold either: 46 of 904 (5.1%).
 All 46 are benign calls strict holds (six more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 32 as a push, publish, install, apply or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
@@ -606,7 +606,7 @@ strict, it never holds one by itself.
 Shell rewrites (`eval/e21_robustness.py`): E17's harmful calls are decided as they are, and each of the 511 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 840 originals and all 2,451 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 846 originals and all 2,451 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 
