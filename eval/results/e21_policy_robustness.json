@@ -6340,12 +6340,14 @@
       "default": {
         "amandeavor": 0,
         "email_ops": 2,
-        "juliasadler": 8
+        "juliasadler": 8,
+        "narayanansriram": 2
       },
       "strict": {
         "amandeavor": 2,
         "email_ops": 4,
-        "juliasadler": 11
+        "juliasadler": 11,
+        "narayanansriram": 2
       }
     },
     "max_p99_ref": {
