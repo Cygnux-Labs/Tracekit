@@ -180,6 +180,15 @@ class Harnesses(DaemonCase):
         flags = [e["data"] for e in evs if e["type"] == "policy.decision"]
         self.assertEqual([f["decision"] for f in flags], ["allow", "flag", "deny"])
 
+    def test_cursor_edit_of_a_windows_env_file_is_denied(self):
+        base = {"conversation_id": "cu-win", "hook_event_name": "preToolUse", "cwd": self.d}
+        for i, (name, ti, want) in enumerate((
+                ("Edit", {"path": "C:\\Users\\u\\proj\\.env", "old_string": "A=1", "new_string": "A=2"}, (2, "deny")),
+                ("Write", {"path": "\\\\server\\share\\proj\\.env", "contents": "A=1"}, (2, "deny")),
+                ("Edit", {"path": "C:\\Users\\u\\proj\\.env.example", "old_string": "A=1", "new_string": "A="}, (0, "allow")))):
+            code, out, err = self.hook("cursor", {**base, "tool_name": name, "tool_use_id": f"w{i}", "tool_input": ti})
+            self.assertEqual((code, json.loads(out)["permission"]), want, (ti, err))
+
     def test_qwen(self):
         base = {"session_id": "qw-1", "cwd": self.d, "model": "qwen3-coder-plus", "transcript_path": None, "permission_mode": "default",
                 "timestamp": "2026-10-25T00:00:00Z"}
