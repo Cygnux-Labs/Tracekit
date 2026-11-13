@@ -525,11 +525,11 @@ class TestAudit(unittest.TestCase):
         old = int((datetime.now(timezone.utc) - timedelta(days=30)).timestamp())
         os.utime(path, (old, old))
         report = audit.audit(str(self.root), agent="cline")
-        self.assertEqual([(c["session"], c["tool"]) for c in report["calls"]],
-                         [("t1", "execute_command"), ("t1", "read_file")])
+        # its own names mapped as the hook maps the legacy extension's tools
+        self.assertEqual([(c["session"], c["tool"]) for c in report["calls"]], [("t1", "Bash"), ("t1", "Read")])
         self.assertEqual(datetime.fromisoformat(report["calls"][1]["time"]).timestamp(), old)   # no ts: the file's
         self.assertEqual([c["tool"] for c in audit.audit(str(self.root), since="7d", agent="cline")["calls"]],
-                         ["execute_command"])
+                         ["Bash"])
 
     def test_since_keeps_cline_calls_by_their_ts(self):
         _write_json(self.root / "s1" / "s1.messages.json", {"messages": [
