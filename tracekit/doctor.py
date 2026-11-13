@@ -144,6 +144,12 @@ def collect(config=None, issuer_key=None):
                 continue
             _codex_trust(lambda id, ok, detail, fix, bad=FAIL: rows.append(result(id, OK if ok else bad, detail, fix)),
                          path, hooks if isinstance(hooks, dict) else {}, None, WARN)
+    if "gptme" not in harnesses:
+        path = agent_hooks.config_path("gptme")
+        bridge = agent_hooks._gptme_hook_path(path)
+        if os.path.isfile(bridge) or os.path.isfile(os.path.join(os.path.dirname(bridge), "__init__.py")):
+            ok, detail = _gptme_load_check(path)
+            rows.append(result("D-GPTME-LOAD", OK if ok else WARN, detail, "tracekit init --dev --agent gptme"))
     return rows
 
 
@@ -215,6 +221,14 @@ def _dev_harnesses():
     from . import agent_hooks
     out = {}
     for harness in agent_hooks.HARNESSES:
+        if harness == "gptme":
+            path = agent_hooks.config_path(harness)
+            try:
+                if agent_hooks._version(" ".join(_gptme_argv(path))) == "v2":
+                    out[harness] = path
+            except (OSError, ValueError, TypeError):
+                pass
+            continue
         for path in (agent_hooks.config_path(harness), agent_hooks.config_path(harness, os.getcwd())):
             if harness in agent_hooks.PLUGIN_TOOLS or harness == "cline":   # a JavaScript plugin or Cline's hook
                 # files, not a JSON hook config
@@ -241,6 +255,10 @@ def _hook_commands(harness, path):
         texts = [install.agent_file(os.path.join(folder, ev + suffix)).decode("utf-8", "replace")
                  for ev in agent_hooks.CLINE_EVENTS if os.path.exists(os.path.join(folder, ev + suffix))]
         return [agent_hooks.cline_argv(t) for t in texts if agent_hooks._version(t) == "v2"]
+
+    if harness == "gptme":
+        argv = _gptme_argv(path)
+        return [shlex.join(argv)] if argv else []
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
         return list(json.loads(m.group(1)).values()) if m else []
@@ -248,6 +266,103 @@ def _hook_commands(harness, path):
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
             if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
+
+
+def _gptme_argv(path):
+    from . import agent_hooks
+    source = install.agent_file(agent_hooks._gptme_hook_path(path)).decode("utf-8")
+    if not source.startswith(agent_hooks.GPTME_MARKER + "\n"):
+        return []
+    match = re.search(r"^COMMAND = (.*)$", source, re.M)
+    return json.loads(match[1]) if match else []
+
+
+def _outside_cwd(path):
+    if not path or not os.path.isabs(path):
+        return False
+    cwd = os.path.normcase(os.path.realpath(os.getcwd()))
+    for candidate in (os.path.abspath(path), os.path.realpath(path)):
+        try:
+            if os.path.commonpath((cwd, os.path.normcase(candidate))) == cwd:
+                return False
+        except ValueError:   # Windows paths on different drives
+            pass
+    return True
+
+
+def _gptme_python():
+    launcher = shutil.which("gptme")
+    if not _outside_cwd(launcher):
+        return None
+    executable = "python.exe" if os.name == "nt" else "python"
+    adjacent = os.path.join(os.path.dirname(os.path.realpath(launcher)), executable)
+    if _outside_cwd(adjacent) and os.path.isfile(adjacent):
+        return adjacent
+    uv = shutil.which("uv") if os.name == "nt" else None
+    if _outside_cwd(uv):
+        try:
+            tool_dir = subprocess.check_output([uv, "tool", "dir"], text=True, timeout=5).strip()
+            candidate = os.path.join(tool_dir, "gptme", "Scripts", executable)
+            if _outside_cwd(candidate) and os.path.isfile(candidate):
+                return candidate
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+_GPTME_PROBE = """
+import sys
+from pathlib import Path
+from gptme.config import get_config, set_config_from_workspace
+from gptme.hooks import HookType, get_hooks
+from gptme.plugins import register_plugin_hooks
+
+bridge = Path(sys.argv[1]).resolve()
+package = bridge.parents[1]
+set_config_from_workspace(Path.cwd())
+paths, enabled = get_config().get_plugin_config()
+if not any(path.resolve() in (package.parent, package) for path in paths):
+    raise SystemExit("the installed plugin is outside gptme's configured plugin paths")
+if enabled and "tracekit" not in enabled:
+    raise SystemExit("the effective plugin allowlist excludes tracekit")
+register_plugin_hooks([package], enabled)
+for hook in get_hooks(HookType.TOOL_CONFIRM):
+    if hook.name == "tracekit.confirm" and Path(hook.func.__code__.co_filename).resolve() == bridge:
+        break
+else:
+    raise SystemExit("gptme did not register tracekit.confirm")
+"""
+
+
+def _gptme_load_check(path):
+    from . import agent_hooks
+    bridge = agent_hooks._gptme_hook_path(path)
+    try:
+        argv = _gptme_argv(path)
+        if not argv or not all(isinstance(part, str) for part in argv):
+            return False, f"cannot read the gptme bridge command at {bridge}"
+        # Check the generated files before loading the Tracekit package on its own.
+        source = install.agent_file(bridge).decode("utf-8")
+        v2 = agent_hooks._version(" ".join(argv)) == "v2"
+        expected = agent_hooks._gptme_plugin(None, v2)
+        command = "COMMAND = " + json.dumps(argv)
+        expected = re.sub(r"^COMMAND = .*$", lambda _: command, expected, count=1, flags=re.M)
+        init = (agent_hooks.GPTME_MARKER + "\n").encode()
+        hooks = os.path.dirname(bridge)
+        if (source != expected or install.agent_file(os.path.join(hooks, "__init__.py")) !=
+                init + b"from .bridge import register\n" or
+                install.agent_file(os.path.join(os.path.dirname(hooks), "__init__.py")) != init):
+            return False, f"gptme plugin at {bridge} differs from this Tracekit's generated files"
+        python = _gptme_python()
+        if not python:
+            return False, "doctor couldn't find gptme's Python outside the working directory"
+        run = subprocess.run([python, "-I", "-B", "-c", _GPTME_PROBE, bridge], capture_output=True,
+                             encoding="utf-8", errors="replace", timeout=10)
+        if run.returncode:
+            return False, (run.stderr.strip().splitlines() or ["gptme failed to load the plugin"])[-1]
+        return True, f"gptme registered Tracekit's confirmation hook from {bridge}"
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return False, f"cannot verify the gptme plugin: {e}"
 
 
 # what a hook's Python imports as tracekit: its version, its tracekit/__init__.py and that Python's user site-packages
@@ -641,6 +756,11 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
         fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
+        if harness == "gptme":
+            if not prod:
+                ok, detail = _gptme_load_check(path)
+                add("D-GPTME-LOAD", ok, detail, fix, bad=WARN)
+            continue
         if harness == "antigravity":
             _agy_runs(add, path, home or os.path.expanduser("~"), fix)
         try:
