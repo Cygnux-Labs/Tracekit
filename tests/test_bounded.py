@@ -19,7 +19,7 @@ from unittest import mock
 
 import test_signer_service as ts
 import test_ts_verifier as tv
-from factories import process_pool
+from factories import process_pool, signer_without_fsync
 from test_verify_v2_property import zipped
 
 from tracekit import merkle
