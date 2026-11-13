@@ -27,7 +27,10 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     harness            -> Tracekit
     Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars), Edit (paths: every file the
                                                           patch adds, updates, deletes or moves to), mcp__s__t
-    Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t
+    Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t (its hook sends an
+            edit as a Write of the file); its transcripts' StrReplace, ApplyPatch, EditNotebook, search_replace, write,
+            delete_file, edit_notebook -> Edit, Edit (all patch file headers in paths), NotebookEdit, Edit, Write, Edit,
+            NotebookEdit
     Gemini  run_shell_command, read_file, read_many_files, write_file, replace, glob, search_file_content,
             list_directory, web_fetch, google_web_search
             -> Bash, Read, Read, Write, Edit, Glob, Grep, LS, WebFetch, WebSearch (every path a file tool reads, under
@@ -153,9 +156,20 @@ GEMINI_PATH_ARGS = ("file_path", "absolute_path", "notebook_path", "dir_path", "
 # a URL in Gemini CLI's web_fetch prompt: its scheme in any case (WHATWG URL parsing), up to a character JavaScript's
 # \s matches (the prompt is split on them)
 WEB_FETCH_URL = re.compile(r"https?://[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+", re.I)
-# a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
+# what JavaScript's trim() takes off a string's ends: str.strip(JS_SPACE) does the same, in linear time
+JS_SPACE = "\t\n\v\f\r \u00a0\u1680" + "".join(map(chr, range(0x2000, 0x200b))) + "\u2028\u2029\u202f\u205f\u3000\ufeff"
+# Cursor's hooks name a call by what it does on the computer: an edit by any of its tools reaches preToolUse as a Read and
+# then a Write of the whole file (file_path, content).
+# A Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
-CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath")
+# Its transcripts name the model's edit tools (Cursor 3.29.15): StrReplace, EditNotebook, and an older prompt's
+# search_replace, write, delete_file and edit_notebook, each with the argument its file is in. Cursor refuses a call
+# without a string there; Tracekit then leaves the name unmapped, an unknown tool, as it does an ApplyPatch with no
+# file header, rather than decide an edit of no file
+CURSOR_EDITS = {"StrReplace": ("Edit", "path"), "search_replace": ("Edit", "file_path"), "write": ("Write", "file_path"),
+                "delete_file": ("Edit", "target_file"), "EditNotebook": ("NotebookEdit", "target_notebook"),
+                "edit_notebook": ("NotebookEdit", "target_notebook")}
+CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath", "target_notebook")
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
                   "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
                   "task": "Task", "todowrite": "TodoWrite"}
@@ -289,7 +303,6 @@ KILO_PATH_ARG = {**OPENCODE_PATH_ARG, **dict.fromkeys(("notebook_read", "noteboo
 KILO_BLOCKED = ("notebook_execute",)
 # the harnesses that load Tracekit's OpenCode plugin: their tool names and the argument each file tool reads
 PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_TOOLS, KILO_PATH_ARG)}
-JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
 # Cline's tools that run a command, read or write a file or fetch a URL (sdk/packages/core/src/extensions/tools). Its
 # PreToolUse hook sees a call before Cline checks the input against the tool's schema, which takes several shapes
 # (schemas.ts: run_commands a list, one command, {command, args} run without a shell, or cmd; read_files files, paths
@@ -331,7 +344,7 @@ def _cline_commands(v):
             m, end = CLINE_HEREDOC.search(lines[0]), 0
             if m:
                 end = next((i for i, x in enumerate(lines[1:], 1)
-                            if JS_TRIM.sub("", x) == next(filter(None, m.groups()))), 0)
+                            if x.strip(JS_SPACE) == next(filter(None, m.groups()))), 0)
             out.append("\n".join(lines[:end + 1]))
             lines = lines[end + 1:]
         if c is None:
@@ -574,16 +587,40 @@ def tool(harness, name, ti):
     if harness == "cursor":
         if name.startswith("MCP:"):
             return "mcp__cursor__" + re.sub(r"[^A-Za-z0-9_-]+", "_", name[4:]), ti
+        # Cursor doesn't document which of these its tools read: every path they name is decided, so a decoy
+        # `file_path` beside the `path` a tool reads never replaces it (read before a tool's own file is set below)
+        paths = [f for f in ti["paths"] if isinstance(f, str)] if isinstance(ti.get("paths"), list) else []
+        files = [ti[k] for k in CURSOR_PATH_ARGS if isinstance(ti.get(k), str)]
+        if name == "ApplyPatch":   # every file a patch header names, in whichever argument holds it, as Cursor reads it:
+            # a {"patch": ...} in JSON unwrapped, \r and \r\n read as \n, each line trimmed as JavaScript trims it
+            texts, unread = list(_strings(ti)), False
+            for s in texts[:]:
+                if s.strip(JS_SPACE).startswith("{"):
+                    try:
+                        j = json.loads(s.strip(JS_SPACE))
+                    except json.JSONDecodeError:   # not JSON: Cursor reads the text as it is
+                        continue
+                    except (ValueError, RecursionError):   # JSON Tracekit can't read: decided as an unknown tool, as
+                        unread = True                       # before
+                        break
+                    if isinstance(j, dict) and list(j) == ["patch"] and isinstance(j["patch"], str):
+                        texts.append(j["patch"])
+            lines = "\n".join(x.strip(JS_SPACE) for x in re.sub(r"\r\n?", "\n", "\n".join(texts)).split("\n"))
+            headers = [f for f in (g.strip(JS_SPACE) for g in PATCH_FILE.findall(lines)) if f]
+            if headers and not unread:
+                ti["paths"], ti["file_path"] = list(dict.fromkeys(headers + files + paths)), headers[0]
+                return "Edit", ti
+        edit = CURSOR_EDITS.get(name)
+        if edit and not isinstance(ti.get(edit[1]), str):   # no file to decide it on: left unmapped (CURSOR_EDITS)
+            edit = None
+        if edit and edit[0] == "NotebookEdit":   # v1 decides a NotebookEdit on its file_path and notebook_path
+            ti["file_path"] = ti["notebook_path"] = ti["target_notebook"]
         for k in CURSOR_PATH_ARGS[1:]:
             if k in ti and "file_path" not in ti:
                 ti["file_path"] = ti[k]
-        # Cursor doesn't document which of these its tools read: every path they name is decided, so a decoy
-        # `file_path` beside the `path` a tool reads never replaces it
-        paths = [f for f in ti["paths"] if isinstance(f, str)] if isinstance(ti.get("paths"), list) else []
-        files = [ti[k] for k in CURSOR_PATH_ARGS if isinstance(ti.get(k), str)]
         if any(f not in [ti["file_path"], *paths] for f in files):
             ti["paths"] = list(dict.fromkeys(files + paths))
-        return CURSOR_TOOLS.get(name, name), ti
+        return edit[0] if edit else CURSOR_TOOLS.get(name, name), ti
     if harness == "gemini" and name.startswith("mcp_"):   # mcp_<server>_<tool> (packages/core/src/tools/mcp-tool.ts)
         return "mcp__" + name[4:], ti
     if harness in ("gemini", "qwen"):
@@ -629,7 +666,7 @@ def tool(harness, name, ti):
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
-            files = [JS_TRIM.sub("", g) for f in OPENCODE_PATCH_FILE.findall(str(ti.get("patchText") or ""))
+            files = [g.strip(JS_SPACE) for f in OPENCODE_PATCH_FILE.findall(str(ti.get("patchText") or ""))
                      for g in dict.fromkeys((f, f.split(":")[0]))]
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
@@ -698,7 +735,7 @@ def tool(harness, name, ti):
             if isinstance(new, str):
                 ti["new_string"] = new
         elif name == "apply_patch":   # the patch is its `input`, or the whole input as a string
-            files = [JS_TRIM.sub("", f) for f in PATCH_FILE.findall(str(v.get("input") if one else v))]   # JS trim()
+            files = [f.strip(JS_SPACE) for f in PATCH_FILE.findall(str(v.get("input") if one else v))]   # JS trim()
             if not files or not all(files):
                 raise ValueError("Cline's apply_patch names no file")
             ti["file_path"], ti["paths"] = files[0], files
