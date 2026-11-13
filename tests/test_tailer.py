@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -66,6 +67,22 @@ class Run:
             req.update(stream="tailer", client_seq=self.seq)
             self.seq += 1
         return self.signer.call(self.identity, method, req)
+
+
+class InProcess:
+    """The hook's client, answered in process by `signer` as ME."""
+
+    def __init__(self, signer):
+        self.signer = signer
+
+    def register_run(self, req):
+        return self.call("register_run", req)
+
+    def call(self, method, req=None, **fields):
+        req = {**(req or {}), **fields}
+        if "request_id" in REQUESTS[method]["properties"]:
+            req.setdefault("request_id", uuid.uuid4().hex)
+        return self.signer.call(ME, method, req)
 
 
 class _Ending:
@@ -637,9 +654,17 @@ class HookStartsTheTailer(unittest.TestCase):
         self.client.register_run.return_value = {"run_id": "run-1", "run_token": "tok"}
         self.client.call.return_value = {"run_token": "delegated"}
 
+    def popen(self):
+        """A mock Popen whose tailers hold the run's tailer lock the hook hands them, as a running one does."""
+        def run(argv, **kw):
+            for fd in kw.get("pass_fds", ()):
+                self.addCleanup(os.close, os.dup(fd))
+            return mock.DEFAULT
+        return mock.Mock(side_effect=run)
+
     def start(self, system=None, sid="s1", path="/home/agent/t.jsonl", source="startup"):
         p = {"hook_event_name": "SessionStart", "session_id": sid, "transcript_path": path, "source": source}
-        popen = mock.Mock()
+        popen = self.popen()
         with mock.patch.object(self.cc.subprocess, "Popen", popen), \
                 mock.patch.object(self.cc, "system_config", return_value=system), \
                 contextlib.redirect_stderr(io.StringIO()):
@@ -652,9 +677,56 @@ class HookStartsTheTailer(unittest.TestCase):
         self.assertEqual(argv[1:], ["-I", "-m", "tracekit.tailer"])
         self.assertTrue(popen.call_args.kwargs["start_new_session"])
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
+        lock, log = self.cc._tailer_files(self.cc._state("s1"), "run-1")
         self.assertEqual(handle, {"run_id": "run-1", "run_token": "tok", "path": "/home/agent/t.jsonl",
-                                  "offsets": {"/home/agent/t.jsonl": 0}, "until": self.cc._state("s1")})
+                                  "offsets": {"/home/agent/t.jsonl": 0}, "until": self.cc._state("s1"),
+                                  "lock": lock, "progress": log})
         self.start().assert_not_called()   # SessionStart again (resume, clear): the run has its tailer
+
+    def test_a_tailer_stopped_more_than_restarts_times_is_not_started_again(self):
+        path = "/home/agent/t.jsonl"
+        files.write_json(self.cc._state("s1"), {"run_id": "run-1", "run_token": "tok", "stream": "x", "seq": 0,
+                                                "transcript": path, "offsets": {path: 0}, "tailer": "run-1",
+                                                "restarts": self.cc.RESTARTS})
+        lock, _ = self.cc._tailer_files(self.cc._state("s1"), "run-1")
+        open(lock, "w").close()   # its tailer held it, and is gone
+        self.start().assert_not_called()
+        method, req = self.client.call.call_args.args
+        self.assertEqual(method, "tailer_lost")
+        self.assertIn(f"it stopped {self.cc.RESTARTS + 1} times in this run and is not started again", req["reason"])
+        self.assertFalse(os.path.exists(lock))
+        self.client.call.reset_mock()
+        self.start().assert_not_called()   # told once
+        self.client.call.assert_not_called()
+
+    def test_a_tailer_process_holds_the_lock_it_was_handed_until_it_is_killed(self):
+        lock, log = self.cc._tailer_files(self.cc._state("s1"), "run-1")
+        procs, real = [], subprocess.Popen
+
+        def popen(*a, **kw):
+            procs.append(real(*a, **kw))
+            return procs[-1]
+        with mock.patch.object(self.cc.subprocess, "Popen", popen):   # closes the hook's own copy of the lock
+            self.cc._start(self.client, {}, [sys.executable, "-c", "import time; time.sleep(60)"],
+                           {"lock": lock, "progress": log}, self.cc._free(lock, create=True))
+        self.client.call.assert_not_called()   # it started
+        self.assertIsNone(self.cc._free(lock))   # held by the process
+        procs[0].kill()   # SIGKILL: nothing of its own runs
+        procs[0].wait()
+        held = self.cc._free(lock)
+        self.assertIsNotNone(held)
+        held.close()
+
+    def test_a_runs_tailer_files_are_kept_with_its_session(self):
+        files.write_json(self.cc._state("s1"), {"run_id": "run-1"})
+        old = time.time() - svc.IDLE_S - 1
+        kept, gone = self.cc._tailer_files(self.cc._state("s1"), "run-1"), self.cc._tailer_files(
+            self.cc._state("s9"), "run-9")   # s9: a session whose state is gone
+        for f in (*kept, *gone):
+            open(f, "w").close()
+            os.utime(f, (old, old))
+        self.cc._prune()
+        self.assertEqual([os.path.exists(f) for f in (*kept, *gone)], [True, True, False, False])
 
     def test_system_mode_runs_it_as_the_tailer_user_with_a_delegated_token(self):
         t = {"user": "tracekit-tailer", "uid": 999998, "python": "/opt/tracekit/bin/python"}
@@ -682,7 +754,7 @@ class HookStartsTheTailer(unittest.TestCase):
                 raise RPCError("run_closed", req["run_id"])
             return {"decision": "allow"}
         self.client.call.side_effect = call
-        popen = mock.Mock()
+        popen = self.popen()
         with mock.patch.object(self.cc.subprocess, "Popen", popen), \
                 mock.patch.object(self.cc, "system_config", return_value=None):
             self.cc._run(self.client, "s1", send="decide", tool_call_id="t", tool="Bash", args={}, args_source="parsed")
@@ -703,7 +775,7 @@ class HookStartsTheTailer(unittest.TestCase):
                 raise RPCError("run_closed", req["run_id"])
             return {"decision": "allow"}
         self.client.call.side_effect = call
-        popen = mock.Mock()
+        popen = self.popen()
         with mock.patch.object(self.cc.subprocess, "Popen", popen), \
                 mock.patch.object(self.cc, "system_config", return_value=None):
             self.cc._run(self.client, "s1", send="decide", tool_call_id="t", tool="Bash", args={}, args_source="parsed")
@@ -731,7 +803,7 @@ class HookStartsTheTailer(unittest.TestCase):
         from the transcript's first line: every earlier run's call was a hook_missing gap again (2,840 in one run)."""
         path = self.transcript(PROMPT, TOOL_USE, RESULT)
         p = {"hook_event_name": "UserPromptSubmit", "session_id": "s1", "transcript_path": path, "prompt": "go on"}
-        popen = mock.Mock()
+        popen = self.popen()
         with mock.patch.object(self.cc.subprocess, "Popen", popen), \
                 mock.patch.object(self.cc, "system_config", return_value=None):
             self.cc._handle(self.client, p, "UserPromptSubmit", "s1", None)
@@ -749,7 +821,7 @@ class HookStartsTheTailer(unittest.TestCase):
         # the prompt's first call can't reach the signer; one of its observations then registers the run
         path = self.transcript(PROMPT, TOOL_USE, RESULT)
         self.client.register_run.side_effect = [SignerUnavailable("busy"), {"run_id": "run-1", "run_token": "tok"}]
-        popen = mock.Mock()
+        popen = self.popen()
         with self.assertRaises(SignerUnavailable):
             self.prompt(path, popen)
         self.assertEqual(json.loads(popen.return_value.stdin.write.call_args.args[0])["offsets"],
@@ -757,7 +829,7 @@ class HookStartsTheTailer(unittest.TestCase):
 
     def test_a_tailer_started_again_after_a_failed_start_reads_from_where_its_run_began(self):
         path = self.transcript(PROMPT, TOOL_USE, RESULT)
-        begun, popen = os.path.getsize(path), mock.Mock()
+        begun, popen = os.path.getsize(path), self.popen()
         system = {"signer": "/run/s.sock", "tailer": {"user": "tracekit-tailer", "uid": 999998,
                                                       "python": "/opt/tracekit/bin/python"}}
         self.client.call.side_effect = RPCError("forbidden", "delegate_run refused")
@@ -780,6 +852,182 @@ class HookStartsTheTailer(unittest.TestCase):
         path = self.transcript(PROMPT, TOOL_USE, RESULT, b'{"partial')   # the session's history: earlier runs'
         handle = json.loads(self.start(path=path, source="resume").return_value.stdin.write.call_args.args[0])
         self.assertEqual(handle["offsets"], {path: os.path.getsize(path) - len(b'{"partial')})
+
+
+class Killed(BaseException):
+    """A tailer killed: it stops where it is, says nothing and cleans nothing up."""
+
+
+@unittest.skipIf(os.name == "nt", "the tailer is POSIX-only")
+class HookRestartsTheTailer(unittest.TestCase):
+    """A dev-mode run's tailer that stops is started again by the run's next hook event (claude_code._restart), against
+    an in-process signer. Each tailer runs in process on the handle the hook gave it and holds the lock descriptor the
+    hook handed it, as the tailer process does."""
+
+    def setUp(self):
+        from tracekit.integrations import claude_code
+        self.cc, self.d = claude_code, tempfile.mkdtemp(dir="/tmp")
+        self.addCleanup(shutil.rmtree, self.d, True)
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": os.path.join(self.d, "run")})
+        env.start()
+        self.addCleanup(env.stop)
+        self.signer = svc.SignerService(os.path.join(self.d, "data"), grace_s=600, fsck_every_s=0)
+        self.addCleanup(self.signer.close)
+        self.client, self.path, self.started = InProcess(self.signer), os.path.join(self.d, "s1.jsonl"), []
+
+    def write(self, *entries, path=None):
+        path = path or self.path
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "ab") as f:
+            f.write(b"".join(line(e) for e in entries))
+
+    def popen(self, argv, **kw):
+        p = mock.Mock()
+        held = [os.dup(fd) for fd in kw.get("pass_fds", ())]
+        p.stdin.write.side_effect = lambda b: self.started.append((json.loads(b), held))
+        return p
+
+    def hook(self, **fields):
+        """A hook event of session s1: SessionStart (startup) without `send`, else that call."""
+        with mock.patch.object(self.cc.subprocess, "Popen", self.popen), \
+                mock.patch.object(self.cc, "system_config", return_value=None):
+            self.cc._run(self.client, "s1", transcript=self.path, **fields)
+
+    def decide(self, tcid, tool, args):
+        self.hook(send="decide", tool_call_id=tcid, tool=tool, args=args, args_source="parsed")
+
+    def tailer(self, *steps, then=None):
+        """Run the tailer the hook started last, one step per wake, then `then` (Killed: it is killed; None: the
+        session ends)."""
+        h, held = self.started[-1]
+        steps = list(steps)
+
+        def wait():
+            if steps:
+                return steps.pop(0)()
+            if then:
+                raise then
+            os.remove(h["until"])
+        try:
+            tailer.tail(Run(self.signer, h), h["path"], os.getuid(), h.get("until"), wait, offsets=h.get("offsets"),
+                        **{k: h[k] for k in ("digests", "progress", "lock") if k in h})
+        except Killed:
+            pass
+        finally:
+            for fd in held:   # its process is gone, and its lock with it
+                os.close(fd)
+
+    def finish(self):
+        """The run's (reconcile records, tailer_lost reasons, model exchange ids) once it is final."""
+        run = Run(self.signer, self.started[0][0])
+        run.call("close_run")
+        self.signer.sweep(time.monotonic() + 3600)
+        with open(os.path.join(self.d, "data", "store", "records.jsonl"), "rb") as f:
+            events = [json.loads(x)["event"] for x in f.read().splitlines()]
+        return (sorted((e["type"], e.get("tool_call_id")) for e in events if e["type"].startswith("reconcile.")),
+                [e["data"]["reason"] for e in events if e["type"] == "capture.gap"
+                 and e["data"]["kind"] == "tailer_lost"],
+                [e["data"].get("exchange_id") for e in events if e["type"] == "model.exchange"])
+
+    def test_a_killed_tailer_is_started_again_from_where_it_stopped_after_a_signed_gap(self):
+        """In dev mode nothing watched the tailer: once it was killed (or failed before it could say why), the run's
+        hook never started another, and every call after it was a reconcile.fabricated gap (about 34,000 of 69,335 in
+        one dev store). The run's next hook event now finds its lock free, records the stop as a signed tailer_lost and
+        starts a new tailer where the first one's progress log says it got, in each transcript: nothing is read twice
+        or skipped."""
+        sub = os.path.join(self.d, "s1", "subagents", "agent-a1.jsonl")
+        wf = os.path.join(self.d, "s1", "subagents", "workflows", "wf_1-a2b", "agent-a2.jsonl")
+        self.write(PROMPT, TOOL_USE)
+        self.hook(start="startup")
+        self.decide("toolu_1", "Bash", ARGS)
+        self.tailer(lambda: self.write(RESULT), lambda: self.write(PROMPT, path=sub),
+                    lambda: self.write(PROMPT, path=wf), then=Killed)
+        sub_use = use_line("toolu_s", "Read", {"file_path": "s.txt"})
+        wf_use = use_line("toolu_w", "Read", {"file_path": "w.txt"})
+        self.write(NEXT)   # while no tailer runs: the session's model, a subagent and a workflow's agent ask for calls
+        self.write(sub_use, path=sub)
+        self.write(wf_use, path=wf)
+        self.decide("toolu_2", "Read", {"file_path": "a.txt"})   # its PreToolUse finds the tailer stopped
+        self.assertEqual(len(self.started), 2)
+        self.decide("toolu_s", "Read", {"file_path": "s.txt"})
+        self.decide("toolu_w", "Read", {"file_path": "w.txt"})
+        self.assertEqual(len(self.started), 2)   # the new tailer holds the lock
+        self.tailer()
+        found, lost, exchanges = self.finish()
+        self.assertEqual(found, [])
+        self.assertEqual(len(lost), 1)
+        self.assertIn("the transcript tailer stopped without a word (killed, or it failed before it could say why); a "
+                      "new one reads on from where it stopped (restart 1 of at most 10)", lost[0])
+        self.assertEqual(sorted(exchanges), sorted(["u-3", "msg_1", "u-3", "u-3", "msg_2", "msg_toolu_s",
+                                                    "msg_toolu_w"]))
+        h = self.started[-1][0]
+        self.assertFalse(os.path.exists(h["lock"]) or os.path.exists(h["progress"]))   # it ended for good
+
+    def test_a_transcript_the_stopped_tailer_never_reported_from_is_read_from_its_start(self):
+        """The session state's offsets are where the hook last saw the transcripts (a later run's start): a sub-agent's
+        first call, decided just before its tailer was killed, is read by the new tailer all the same."""
+        sub = os.path.join(self.d, "s1", "subagents", "agent-a1.jsonl")
+        self.write(PROMPT, TOOL_USE)
+        self.hook(start="startup")
+        self.decide("toolu_1", "Bash", ARGS)
+
+        def first_call_then_killed():
+            self.write(use_line("toolu_s", "Read", {"file_path": "s.txt"}), path=sub)
+            self.decide("toolu_s", "Read", {"file_path": "s.txt"})
+            raise Killed
+        self.tailer(first_call_then_killed)
+        self.write(NEXT)
+        self.decide("toolu_2", "Read", {"file_path": "a.txt"})
+        self.tailer()
+        found, lost, exchanges = self.finish()
+        self.assertEqual((found, len(lost)), ([], 1))
+        self.assertEqual(sorted(exchanges), ["msg_1", "msg_2", "msg_toolu_s", "u-3"])
+
+    def test_a_line_already_read_changed_while_no_tailer_ran_is_lost(self):
+        self.write(PROMPT, TOOL_USE)
+        self.hook(start="startup")
+        self.decide("toolu_1", "Bash", ARGS)
+        self.tailer(then=Killed)
+        with open(self.path, "r+b") as f:
+            data = f.read()
+            f.seek(0)
+            f.write(data.replace(b"ls -la", b"ls -lh"))
+        self.write(NEXT)
+        self.decide("toolu_2", "Read", {"file_path": "a.txt"})
+        self.tailer(lambda: self.fail("still tailing a transcript changed in place"))
+        found, lost, _ = self.finish()
+        self.assertEqual(len(lost), 2)
+        self.assertIn("a line already read changed in place while no tailer ran", lost[1])
+        self.assertEqual(found, [("reconcile.fabricated", "toolu_2")])   # its line came after the change: not read
+
+    def test_an_idle_tailer_parks_and_the_runs_next_event_starts_it_again_with_no_gap(self):
+        """A run stays open while an approval waits, and a person may answer hours later. The tailer gave up after
+        IDLE_TAILER_S with no new line ("no new transcript line for 7200s"), and every call after was a
+        reconcile.fabricated gap. It now parks, and the run's next event starts it again from where it got."""
+        self.write(PROMPT, TOOL_USE)
+        self.hook(start="startup")
+        self.decide("toolu_1", "Bash", ARGS)
+        with mock.patch.object(tailer, "IDLE_TAILER_S", -1):
+            self.tailer(lambda: None, then=AssertionError("still tailing past the idle limit"))
+        self.write(RESULT, NEXT)
+        self.decide("toolu_2", "Read", {"file_path": "a.txt"})
+        self.assertEqual(len(self.started), 2)
+        self.tailer()
+        found, lost, exchanges = self.finish()
+        self.assertEqual((found, lost), ([], []))
+        self.assertEqual(exchanges, ["u-3", "msg_1", "msg_2"])
+
+    def test_a_transcript_that_appears_after_the_idle_limit_is_read_once_the_tailer_is_started_again(self):
+        """The tailer gave up on a transcript that had not appeared after IDLE_TAILER_S ("the transcript never
+        appeared"), so a session whose first prompt came later read none of it."""
+        self.hook(start="startup")
+        with mock.patch.object(tailer, "IDLE_TAILER_S", -1):
+            self.tailer(lambda: None, then=AssertionError("still tailing past the idle limit"))
+        self.write(PROMPT, TOOL_USE)
+        self.decide("toolu_1", "Bash", ARGS)
+        self.tailer()
+        found, lost, exchanges = self.finish()
+        self.assertEqual((found, lost, exchanges), ([], [], ["u-3", "msg_1"]))
 
 
 if __name__ == "__main__":

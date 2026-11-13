@@ -1,14 +1,23 @@
 """L1 transcript tailer (04-design §6): follows one Claude Code session transcript and reports it to the signer.
 
     python -I -m tracekit.tailer   (started by the v2 hook at the run's first event; the run handle comes on stdin as
-                                    JSON: {"run_id", "run_token", "path", "until"?, "offsets"?})
+                                    JSON: {"run_id", "run_token", "path", "until"?, "offsets"?, "digests"?,
+                                    "progress"?, "lock"?})
 
 `offsets` ({path: offset}): where to start reading the session's transcripts: {path: 0} for a new session; for a later
 run (an idle close, a resumed session, a session that goes on after SessionEnd), where the hook measured them, as the
 lines before are an earlier run's.
 
 Dev mode: a detached process of the agent's own user, which exits once the hook's session state (`until`) is gone
-(SessionEnd). System mode (`tracekit init --v2`): run through sudo as the tracekit-tailer user, which reads the agent's
+(SessionEnd). It holds the run's tailer lock (`lock`, a file the hook locked and handed it as an open descriptor) for
+its life, and appends [transcript, offset, digest] to its progress log (`progress`, which the hook begins with
+{"offsets": the run's first tailer's}) after each line it reports: the offset just past that line, and the sha256 of
+the transcript's bytes before it. A hook that finds the lock free while
+the run is open starts a new tailer from there (`offsets`, with `digests` to check each transcript's bytes already read
+against): after a signed tailer_lost gap, as the tailer stopped without a word (killed, or it failed before it could
+report), or with none when it parked itself (`"parked"`, the log's last line) after IDLE_TAILER_S without a new line.
+A tailer that ends for good (the run ended, SessionEnd, or a loss it reported) removes its lock and log first.
+System mode (`tracekit init --v2`): run through sudo as the tracekit-tailer user, which reads the agent's
 ~/.claude/projects through an ACL and nothing of the signer's. It calls the signer as its own uid with a token the hook
 delegated (`delegate_run`), and signer.yaml lets that uid call only model_event, state_write, tailer_lost,
 tailer_heartbeat and status.
@@ -30,10 +39,10 @@ subagent file's name, "entry": the whole line, its cwd, isMeta, isSidechain and 
 that as its `body` when the signer keeps content (the content vault, docs/privacy.md); without the vault the text
 stays in the transcript. A rate limit (quota_exceeded with retry_after_ms) sends the line again once it has passed.
 It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
-appears or cannot be reached, and a tailer that stops after IDLE_TAILER_S without a new line, are a tailer_lost too.
-Every HEARTBEAT_S it sends `tailer_heartbeat` (another refusal, e.g. a quota, is tried again at the next); a tailer that
-is killed stops them, and the signer writes the tailer_lost gap itself (a signer that does not know the call, or a token
-not granted it, just gets none).
+appears (by SessionEnd) or cannot be reached, and a tailer with no progress log (system mode) that stops after
+IDLE_TAILER_S without a new line, are a tailer_lost too. Every HEARTBEAT_S it sends `tailer_heartbeat` (another
+refusal, e.g. a quota, is tried again at the next); a tailer that is killed stops them, and the signer writes the
+tailer_lost gap itself (a signer that does not know the call, or a token not granted it, just gets none).
 The session's subagents' transcripts (<session>/subagents/agent-*.jsonl, next to the session's, and a workflow's agents'
 in <session>/subagents/workflows/<workflow>/) are followed the same way, with the same checks, from the wake they
 appear on: a call one of them makes is decided under the session's run.
@@ -60,8 +69,8 @@ from tracekit.signer.service import HEARTBEAT_S, IDLE_S
 POLL_S = 1.0
 CHECK_S = 30   # the longest a changing transcript's bytes already read go without being hashed again
 CHEAP_S = 0.01   # a rehash that took less is done on every wake that sees the file changed
-# lean: twice the signer's default run idle timeout, so a quiet run has closed before the tailer gives up on it; ask the
-# signer for the run's state instead if signers run with a longer idle_s
+# lean: twice the signer's default run idle timeout, so a quiet run has closed before a tailer no hook resumes (system
+# mode) gives up on it; ask the signer for the run's state instead if signers run with a longer idle_s
 IDLE_TAILER_S = 2 * IDLE_S
 ENDED = ("run_closed", "unknown_run", "run_token_invalid")
 IN_EVENTS = 0x2 | 0x4 | 0x40 | 0x80 | 0x100 | 0x200   # MODIFY, ATTRIB, MOVED_FROM, MOVED_TO, CREATE, DELETE
@@ -161,7 +170,7 @@ class _Sender:
 
 def _report(send, e, sent, name="main"):
     """The model_event of one transcript entry, if it has one (`send`, a _Sender); `sent` collects tool result ids
-    between responses; `name`: the transcript it came from."""
+    between responses; `name`: the transcript it came from. -> whether it sent one."""
     msg = e.get("message") if isinstance(e.get("message"), dict) else {}
     content = msg.get("content")
     blocks = [b for b in content if isinstance(b, dict)] if isinstance(content, list) else []
@@ -178,18 +187,23 @@ def _report(send, e, sent, name="main"):
                                                   for b in uses], "tool_results_sent": list(sent)} if uses else {}))
         if uses:
             sent.clear()
-    elif e.get("type") == "user":
-        if isinstance(content, str) or any(b.get("type") == "text" for b in blocks):
-            send(provider="anthropic", model="unknown", phase="request", exchange_id=e.get("uuid"),
-                 content_digest=event_hash(read), **send.body(read))
-        sent += [b.get("tool_use_id") for b in blocks if b.get("type") == "tool_result"]
+        return True
+    if e.get("type") != "user":
+        return False
+    said = isinstance(content, str) or any(b.get("type") == "text" for b in blocks)
+    if said:
+        send(provider="anthropic", model="unknown", phase="request", exchange_id=e.get("uuid"),
+             content_digest=event_hash(read), **send.body(read))
+    sent += [b.get("tool_use_id") for b in blocks if b.get("type") == "tool_result"]
+    return said
 
 
 class _Transcript:
-    """One transcript being followed: its kept file, how far it was read, and the digest of the bytes before that."""
+    """One transcript being followed: its kept file, how far it was read, and the digest of the bytes before that
+    (`digest`: the hex sha256 those bytes must have, from a stopped tailer's progress log)."""
 
-    def __init__(self, path, name="main", off=0):
-        self.path, self.name, self.f, self.off, self.sent = path, name, None, off, []
+    def __init__(self, path, name="main", off=0, digest=None):
+        self.path, self.name, self.f, self.off, self.sent, self.digest = path, name, None, off, [], digest
         # the bytes before `off`; the ctime they were last checked at, when (monotonic), and how long that took
         self.read, self.checked, self.at, self.cost = hashlib.sha256(), None, None, 0.0
 
@@ -229,6 +243,8 @@ def _verify(t, uid, last=False):
         began = time.thread_time()   # CPU time: a busy machine (or agent) doesn't make a rehash look costly
         _sha256(t.f, t.off, t.read)   # an earlier run's lines, from here on checked as the ones it reads
         t.at, t.cost = time.monotonic(), time.thread_time() - began
+        if t.digest is not None and t.read.hexdigest() != t.digest:
+            raise Lost("a line already read changed in place while no tailer ran")
     _check(t.f, t.path, uid, t.off)
     ctime = os.fstat(t.f.fileno()).st_ctime_ns   # any write moves it, and no user can set it back
     # a ctime under a second old may not move for a change in the same clock tick: checked again once it is older
@@ -245,8 +261,9 @@ def _verify(t, uid, last=False):
     return True
 
 
-def _follow(send, t, uid):
-    """Report transcript t's new complete lines (`send`, a _Sender), once _verify has checked it. -> whether it grew."""
+def _follow(send, t, uid, note=lambda t: None):
+    """Report transcript t's new complete lines (`send`, a _Sender), once _verify has checked it; `note(t)` after each
+    line that sent a model_event. -> whether it grew."""
     if not _verify(t, uid):
         return False
     t.f.seek(t.off)
@@ -256,7 +273,7 @@ def _follow(send, t, uid):
             if e is None:
                 raise Lost(f"the line at offset {t.off} is not a JSON object")
             try:
-                _report(send, e, t.sent, t.name)
+                sent = _report(send, e, t.sent, t.name)
             except SignerUnavailable:
                 raise
             except RPCError as x:
@@ -265,10 +282,12 @@ def _follow(send, t, uid):
                 raise Lost(f"the line at offset {t.off} was refused: {x.message[:256]}") from None
             except Exception as x:   # e.g. a number canonical JSON cannot hold
                 raise Lost(f"the line at offset {t.off} is unreadable ({type(x).__name__})") from None
+            t.read.update(data[t.off - start:t.off - start + n])
             t.off += n
+            if sent:
+                note(t)
     except SignerUnavailable:   # read again from `off` on the next wake
         pass
-    t.read.update(data[:t.off - start])
     return t.off > start
 
 
@@ -294,41 +313,81 @@ def _tell(run, main, t, e):
     run.call("tailer_lost", reason=name + why, offset=t.off)
 
 
-def tail(run, path, uid, until=None, wait=None, status=None, offsets=None):
+def resume(progress):
+    """Where a stopped dev-mode tailer got, from its progress log (module docstring): ({transcript: the offset just
+    past the last line it reported, else where the run's first tailer started it}, {transcript: the hex sha256 of its
+    bytes before that offset}, whether it parked)."""
+    offsets, digests, last = {}, {}, None
+    try:
+        with open(progress, "rb") as f:
+            for raw in f:
+                try:
+                    last = json.loads(raw)
+                except ValueError:   # a line cut short when it was killed
+                    last = None
+                    continue
+                if isinstance(last, dict) and isinstance(last.get("offsets"), dict):
+                    for p, o in last["offsets"].items():
+                        if type(o) is int and o >= 0:
+                            offsets[p] = o
+                            digests.pop(p, None)
+                elif isinstance(last, list) and len(last) == 3 and isinstance(last[0], str) and \
+                        type(last[1]) is int and last[1] >= 0 and isinstance(last[2], str):
+                    offsets[last[0]], digests[last[0]] = last[1], last[2]
+    except FileNotFoundError:
+        pass
+    return offsets, digests, last == "parked"
+
+
+def tail(run, path, uid, until=None, wait=None, status=None, offsets=None, digests=None, progress=None, lock=None):
     """Follow `path`, and its subagents' transcripts, for `run` until the run ends, `until` is gone, or a transcript is
     lost (reported). `status()`: the signer's status answer, which says whether it keeps content (VaultBody);
-    `offsets` {path: offset}: where to start each (module docstring)."""
+    `offsets` {path: offset}: where to start each, and `digests` {path: hex sha256} what the bytes before must hash
+    to; `progress`, `lock`: dev mode's progress log and the run's tailer lock (module docstring)."""
     wait, grew, beat = wait or _waiter(path), time.monotonic(), -HEARTBEAT_S
     send = _Sender(run, status)
     # lean: keeps one file open per subagent transcript; close quiet ones and reopen them by (dev, inode) if sessions
     # run more subagents than the tailer's file limit
     start = {p: o for p, o in (offsets.items() if isinstance(offsets, dict) else ()) if type(o) is int and o >= 0}
-    main = cur = _Transcript(path, off=start.get(path, 0))
+    sums = {p: d for p, d in (digests.items() if isinstance(digests, dict) else ()) if isinstance(d, str)}
+    main = cur = _Transcript(path, off=start.get(path, 0), digest=sums.get(path))
     ts = {path: main}
+    log = os.open(progress, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600) if progress else None
+
+    def note(t):
+        if log is not None:
+            os.write(log, json.dumps([t.path, t.off, t.read.hexdigest()]).encode() + b"\n")
+    done = False   # it ends for good: no hook is to start it again
     try:
         while True:
-            gone, idle = until is not None and not os.path.exists(until), time.monotonic() - grew > IDLE_TAILER_S
+            gone = until is not None and not os.path.exists(until)
             cur = main
             for p in _subagents(path) if main.f is not None else ():
-                ts.setdefault(p, _Transcript(p, os.path.basename(p), start.get(p, 0)))
+                ts.setdefault(p, _Transcript(p, os.path.basename(p), start.get(p, 0), sums.get(p)))
             for cur in ts.values() if gone else ():   # the last wake checks every transcript before a line can be
                 _verify(cur, uid, True)                # refused for the run's end (SessionEnd closes it first)
             for cur in ts.values():
-                if _follow(send, cur, uid):
+                if _follow(send, cur, uid, note):
                     grew = time.monotonic()
             cur = main
-            if main.f is None and (gone or idle):
+            idle = time.monotonic() - grew > IDLE_TAILER_S
+            if main.f is None and (gone or idle and log is None):
                 raise Lost("the transcript never appeared")
+            if gone:
+                done = True
+                return
+            if idle and log is not None:   # parked: a hook starts it again from here at the session's next event
+                os.write(log, b'"parked"\n')
+                return
             if idle:
                 raise Lost(f"no new transcript line for {IDLE_TAILER_S:.0f}s: the tailer stopped")
-            if gone:
-                return
             if beat is not None and time.monotonic() - beat >= HEARTBEAT_S:
                 beat = _heartbeat(run)
             wait()
     except RPCError as e:
         if e.code not in ENDED:
             raise
+        done = True
         try:   # the run ended: a line already read that changed is still told, while the signer takes late records
             for cur in ts.values():
                 if cur.f is not None:
@@ -342,10 +401,18 @@ def tail(run, path, uid, until=None, wait=None, status=None, offsets=None):
         raise
     except Exception as e:   # Lost, or a failure of the tailer's own (a bug, a read error): never a silent stop
         _tell(run, main, cur, e)
+        done = True
     finally:
         for t in ts.values():
             if t.f is not None:
                 t.f.close()
+        if log is not None:
+            os.close(log)
+        for f in (lock, progress) if done and progress else ():
+            try:
+                os.remove(f)
+            except FileNotFoundError:   # SessionEnd removed it
+                pass
 
 
 def main():
@@ -356,7 +423,7 @@ def main():
     client = Client()
     try:
         tail(RunHandle(client, h), h["path"], uid, h.get("until"), status=lambda: client.status({}),
-             offsets=h.get("offsets"))
+             offsets=h.get("offsets"), digests=h.get("digests"), progress=h.get("progress"), lock=h.get("lock"))
     except RPCError as e:   # the run ended while the loss was being reported
         if e.code not in ENDED:
             raise
