@@ -98,14 +98,53 @@ class CopilotMapping(unittest.TestCase):
                 ("create", {"path": ".github/hooks/other.json", "file_text": "{}"}, "TK-F009"),
                 ("create", {"path": ".github/copilot/settings.local.json", "file_text": "{}"}, "TK-F009"),
                 ("bash", {"command": "echo '{\"disableAllHooks\": true}' > .github/copilot/settings.json"}, "TK-F015"),
-                ("bash", {"command": "rm ~/.copilot/hooks/tracekit.json"}, "TK-F015")):
+                ("bash", {"command": "rm ~/.copilot/hooks/tracekit.json"}, "TK-F015"),
+                # #782's review: Copilot also loads hooks from the machine's /etc/github-copilot/policy.d/*.json
+                ("create", {"path": "/etc/github-copilot/policy.d/hooks.json", "file_text": "{}"}, "TK-F009"),
+                ("bash", {"command": "rm /etc/github-copilot/policy.d/tracekit.json"}, "TK-F015")):
             with self.subTest(tool=tool_name, args=tool_args):
                 normalised = self.normalise(tool_name, tool_args)
                 decision = load_policy().decide(normalised["tool_name"], normalised["tool_input"])
                 self.assertIn(rule, decision["rule_ids"])
                 self.assertEqual(decision["verdict"], "ask")
-        ordinary = self.normalise("create", {"path": ".github/workflows/ci.yml", "file_text": "on: push"})
-        self.assertNotIn("TK-F009", load_policy().decide(ordinary["tool_name"], ordinary["tool_input"])["rule_ids"])
+        for tool_name, tool_args, rule in (
+                ("create", {"path": ".github/workflows/ci.yml", "file_text": "on: push"}, "TK-F009"),
+                ("create", {"path": "docs/github-copilot/policy.d/hooks.json", "file_text": "{}"}, "TK-F009"),
+                ("bash", {"command": "rm docs/github-copilot/policy.d/hooks.json"}, "TK-F015")):
+            with self.subTest(tool=tool_name, args=tool_args):
+                ordinary = self.normalise(tool_name, tool_args)
+                self.assertNotIn(rule, load_policy().decide(ordinary["tool_name"], ordinary["tool_input"])["rule_ids"])
+
+    def test_typed_input_is_read_as_devins_typed_input_is(self):
+        # #782's review: write_bash and write_powershell type into a running shell, as Devin's write_to_process does,
+        # so a control character, history expansion and shell state are denied in the hook, and so is input that isn't
+        # text: `rmx<DEL> -rf ~` runs `rm -rf ~`, and `^echo ^` re-runs the last line without its echo
+        def blocked(tool_name, tool_args):
+            p = {"sessionId": "s", "hook_event_name": "preToolUse", "toolCallId": "c1", "toolName": tool_name,
+                 "toolArgs": tool_args}
+            return agent_hooks._blocked("copilot", p, json.dumps(p)) or ""
+        for tool_name in ("write_bash", "write_powershell"):
+            for text, why in (("rmx\x7f -rf ~\n", "a control character"), ("git st\t\n", "a control character"),
+                              ("^echo ^\n", "expands from its history"), ("!-1\n", "expands from its history"),
+                              ("PROMPT_COMMAND='git push --force origin main'\n", "sets or replays state")):
+                with self.subTest(tool=tool_name, text=text):
+                    self.assertIn(why, blocked(tool_name, {"shellId": "0", "input": text}))
+            for tool_args in ({"shellId": "0"}, {"shellId": "0", "input": ""}, {"shellId": "0", "input": 5}, None):
+                with self.subTest(tool=tool_name, args=tool_args):
+                    self.assertIn("types no text", blocked(tool_name, tool_args))
+            for text in ("y\n", "git status\n", "exit\n", "y\r\n"):
+                with self.subTest(tool=tool_name, text=text):
+                    self.assertEqual(blocked(tool_name, {"shellId": "0", "input": text}), "")
+        self.assertIn("a control character", blocked("write_bash", json.dumps({"shellId": "0", "input": "ls\x00\n"})))
+        # \r ends a line, as a terminal reads it, so each line is decided
+        self.assertEqual(self.normalise("write_bash", {"shellId": "0", "input": "y\rgit push\r"})["tool_input"]["command"],
+                         "y\ngit push\n")
+
+    def test_typed_input_takes_no_receipt_before_it_runs(self):
+        for tool_name, later in (("write_bash", True), ("write_powershell", True), ("bash", False)):
+            with self.subTest(tool=tool_name):
+                self.assertIs(self.normalise(tool_name, {"shellId": "0", "input": "ls\n", "command": "ls"}).get("later"),
+                              later)
 
     def test_arguments_sent_as_a_json_string_are_read(self):
         normalised = self.normalise("bash", json.dumps({"command": "ls"}))

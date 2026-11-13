@@ -155,7 +155,8 @@ GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image":
 # monitor, Kilo's background_process); normalise marks their payload `later`, and the hook takes no receipt of what
 # they write (tracekit.model_receipt)
 LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task"),
-                   ("devin", "write_to_process"), ("kilo", "background_process")))
+                   ("devin", "write_to_process"), ("kilo", "background_process"), ("copilot", "write_bash"),
+                   ("copilot", "write_powershell")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
@@ -559,8 +560,10 @@ def tool(harness, name, ti):
                 ti["paths"] = own
             if own:
                 ti["file_path"] = own[0]
-        elif name in ("write_bash", "write_powershell"):   # input typed into a running command, as Codex's write_stdin
-            ti["command"] = ti.get("input")
+        elif name in ("write_bash", "write_powershell"):   # input typed into a running command, as Codex's write_stdin;
+            # \r ends a line, as a terminal reads it (as Devin's write_to_process); input that isn't text: _blocked
+            v = ti.get("input")
+            ti["command"] = v.replace("\r", "\n") if isinstance(v, str) else None
         if name in COPILOT_TOOLS:
             return COPILOT_TOOLS[name], ti
         # the payload doesn't say which tools are MCP ones: Copilot names them <server>-<tool>, so any other name with
@@ -794,7 +797,7 @@ def normalise(harness, p):
         out["session_id"] = p.get("sessionId")
         out["hook_event_name"] = ev[0].upper() + ev[1:]
         out["tool_name"], out["tool_input"] = tool(harness, name, p.get("toolArgs"))
-        out["tool_use_id"] = tool_call_id
+        out["tool_use_id"], out["later"] = tool_call_id, (harness, name) in LATER
 
         if ev == "postToolUse":
             result = p.get("toolResult")
@@ -995,27 +998,49 @@ def _blocked(harness, p, raw=""):
                     + (" Send it as {\"command\": \"...\"}." if name == "exec" else " Devin doesn't document them: "
                        "please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so Tracekit "
                        "can read them."))
-        typed = TYPED[name].search(v) if name in TYPED else None
-        if typed and typed.group().strip(" \t") in ("!", "^"):
-            return (f"Blocked by Tracekit: Devin's write_to_process types {typed.group().strip()!r}, which interactive "
-                    "bash expands from its history (a ! before a word, a ^ starting a line), so Tracekit can't read "
-                    "the line that runs; type the command itself.")
-        state = _sets_state(v) if name == "write_to_process" and not typed else None
-        if state:
-            return (f"Blocked by Tracekit: Devin's write_to_process types {state[:64]!r}, which sets or replays state "
-                    "of the running shell (history, an alias, a function, a prompt string, a trap, a key binding, a "
-                    "builtin, a shell option, PATH or a sourced file) that changes what a later line runs, and "
-                    "Tracekit decides each call alone; type the commands themselves.")
-        if typed:
-            return (f"Blocked by Tracekit: Devin's {name} {'types' if name == 'write_to_process' else 'sends'} a "
-                    f"control character ({typed.group()!r}), which a terminal's line editor acts on (erasing, "
-                    "discarding or completing text), so Tracekit can't read the line that runs; send plain text, each "
-                    "line ending in \\n.")
-    elif harness == "copilot" and len(str(p.get("toolName") or "")) >= COPILOT_NAME_MAX:
-        # a cut name may have lost the words a rule reads (send_money as send_mon): no split of it can be trusted
-        return (f"Blocked by Tracekit: Copilot's tool name is {COPILOT_NAME_MAX} characters or longer and may have "
-                "been truncated. Shorten the server name in Copilot's MCP config.")
+        if name in TYPED:
+            reason = _typed(f"Devin's {name}", v, name == "write_to_process")
+            if reason:
+                return reason
+    elif harness == "copilot":
+        cname = str(p.get("toolName") or "")
+        if len(cname) >= COPILOT_NAME_MAX:
+            # a cut name may have lost the words a rule reads (send_money as send_mon): no split of it can be trusted
+            return (f"Blocked by Tracekit: Copilot's tool name is {COPILOT_NAME_MAX} characters or longer and may have "
+                    "been truncated. Shorten the server name in Copilot's MCP config.")
+        if cname in ("write_bash", "write_powershell"):   # typed into a running shell, as Devin's write_to_process
+            # lean: write_powershell's text is read as bash's: a ! or a bash state word denies more than PowerShell
+            # needs; read PowerShell's own line editing if that stops real work
+            v = tool(harness, cname, p.get("toolArgs"))[1]["command"]
+            if not (isinstance(v, str) and v):
+                return (f"Blocked by Tracekit: Copilot's {cname} call types no text (its `input` isn't a non-empty "
+                        "string), so Tracekit can't decide what it runs.")
+            reason = _typed(f"Copilot's {cname}", v)
+            if reason:
+                return reason
     return _blocked_tool(harness, name, raw)
+
+
+def _typed(who, v, typing=True):
+    """Why the text `who` (a harness's tool: "Devin's exec") types into a running shell (typing), or sends as a command,
+    is denied, else None: a control character the line editor acts on, typed history expansion (TYPED), or a typed line
+    that sets or replays the shell's state (_sets_state)."""
+    typed = TYPED["write_to_process" if typing else "exec"].search(v)
+    if typed and typed.group().strip(" \t") in ("!", "^"):
+        return (f"Blocked by Tracekit: {who} types {typed.group().strip()!r}, which interactive bash expands from its "
+                "history (a ! before a word, a ^ starting a line), so Tracekit can't read the line that runs; type the "
+                "command itself.")
+    state = _sets_state(v) if typing and not typed else None
+    if state:
+        return (f"Blocked by Tracekit: {who} types {state[:64]!r}, which sets or replays state of the running shell "
+                "(history, an alias, a function, a prompt string, a trap, a key binding, a builtin, a shell option, "
+                "PATH or a sourced file) that changes what a later line runs, and Tracekit decides each call alone; "
+                "type the commands themselves.")
+    if typed:
+        return (f"Blocked by Tracekit: {who} {'types' if typing else 'sends'} a control character ({typed.group()!r}), "
+                "which a terminal's line editor acts on (erasing, discarding or completing text), so Tracekit can't "
+                "read the line that runs; send plain text, each line ending in \\n.")
+    return None
 
 
 def _not_text(q):
