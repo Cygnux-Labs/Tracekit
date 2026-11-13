@@ -157,6 +157,19 @@ class Mapping(HarnessCase):
                 assert "config" in error.lower()
                 assert self.sent == []
 
+    def test_copilot_denies_typed_input_it_cant_read_before_the_signer(self):
+        # #782's review: write_bash types into a running shell and is read as Devin's write_to_process is; with no
+        # input it was decided on a command of None and allowed
+        for tool_args in ({"shellId": "0", "input": "rmx\x7f -rf ~\n"}, {"shellId": "0", "input": "^echo ^\n"},
+                          {"shellId": "0"}):
+            with self.subTest(args=tool_args):
+                self.sent.clear()
+                code, _, error = self.hook("copilot", {"sessionId": "copilot-typed", "toolCallId": "call_typed",
+                                                       "toolName": "write_bash", "toolArgs": tool_args}, "preToolUse")
+                assert code == 2, error
+                assert "Blocked by Tracekit: Copilot's write_bash" in error
+                assert self.sent == []
+
     def set_signer_policy(self, policy):
         decisions = []
 

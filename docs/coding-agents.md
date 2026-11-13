@@ -154,7 +154,8 @@ later**: from that release its `preToolUse`, `postToolUse` and `postToolUseFailu
 Tracekit blocks a call whose payload has none rather than pair it by guesswork. `init` writes its own hooks file,
 `~/.copilot/hooks/tracekit.json` (`$COPILOT_HOME/hooks/tracekit.json` when that is set; `--project`:
 `.github/hooks/tracekit.json`), with a 600 s `timeout` on `preToolUse`: Copilot's own is 30 s, too short for a person
-to approve, and a hook that times out lets the call run, so Tracekit's answers within 540 s. Copilot's payload names
+to approve, and a call whose hook times out goes on through Copilot's normal permission flow, so Tracekit's answers
+within 540 s. Copilot's payload names
 no event, so the hook's command does, for the v1 hook too. Copilot denies a call when its hook exits with anything but
 0, which Tracekit's does at exit 2, and shows the reason from the hook's JSON (`permissionDecision: deny`). `--project`
 writes this machine's Python path into `.github/`, which is usually committed: init says how to keep the file out of
@@ -164,6 +165,9 @@ file the patch names), `Read`, `Glob`, `Grep`, `WebFetch` and `Task`, and `web_s
 `grep`, `powershell`, `write_bash`, `write_powershell` and `write_agent`, the tools Copilot gives other models, as
 `Write`, `Edit`, `Read`, `Write` or `Edit`, `Grep`, `PowerShell`, `Bash` and `PowerShell` (`command` = the typed
 input) and `Task`. Each file tool is decided on the `path` or `paths` it reads, never on another argument beside it.
+Text `write_bash` and `write_powershell` type into a running shell is read as Devin's `write_to_process` is: a
+control character, a history expansion (a `!` before a word, a `^` starting a line) or a line that sets the shell's
+state is denied in the hook, and so is a call with no text; no receipt is taken before what it types runs.
 The payload doesn't say which other tools are MCP ones: Copilot names them `<server>-<tool>`, so a name with a `-` is
 decided as an MCP tool under every split, and the strictest decision stands; a name of 64 characters or more, where
 Copilot cuts names, is denied ([limits](limits.md#policy)). No prompts, session events or model text are recorded.
