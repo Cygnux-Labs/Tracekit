@@ -1083,7 +1083,7 @@ def _package_indexes(commands, refs=()):
         argv = command["argv"]
         if not argv:
             continue
-        exe = argv[0].rsplit("/", 1)[-1].casefold()
+        exe = _program(argv)
         args = argv[1:]
         if exe.startswith("python") or exe == "py":   # py: the Windows launcher
             module = _python_module(args)
@@ -1213,7 +1213,7 @@ def _container_host_access(commands):
     the command it runs) give it host privileges or every capability, the host's process space, or a _HOST_PATH."""
     for command in commands:
         argv = command["argv"]
-        if not argv or argv[0].rsplit("/", 1)[-1] not in ("docker", "podman"):
+        if not argv or _program(argv) not in ("docker", "podman"):
             continue
         words, i = argv[1:], 0
         while i < len(words) and words[i].startswith("-"):   # a global option, and its value (_GLOBAL_VALUED)
@@ -1761,7 +1761,8 @@ _PLAIN_WORD = re.compile(r"[A-Za-z0-9_.:/-]*")   # a value that is one word of p
 
 def _runs(args, tool=""):
     """The `run` field of a tool no pack maps: for each argument TK-S010 reads as a command (at any depth, its name in
-    any case), `WORD:<its last /-part>` when it is one word of plain characters (letters, digits, `_ . : / -`), else
+    any case), `WORD:<its last /-part>` and the program name it gives (shell.base_name: reboot.exe is reboot) when it
+    is one word of plain characters (letters, digits, `_ . : / -`), else
     `CMD:<value>` (a string as given, a list or an object as canonical JSON); `MCPCMD:<value>` for any value when the
     tool's name is an MCP tool's in a case no pack maps (`MCP:x/y`), as TK-S010 reads an MCP tool's; and for each string under a sql,
     query or statement argument (at any depth, its name in any case, in a list or an object too) each statement as
@@ -1795,7 +1796,8 @@ def _runs(args, tool=""):
                 lex(key)
             if name in _COMMAND_KEYS and not cmd:
                 plain = tag == "CMD:" and isinstance(v, str) and _PLAIN_WORD.fullmatch(v)
-                out.append("WORD:" + v.rsplit("/", 1)[-1] if plain else tag + (v if isinstance(v, str) else canonical(v)))
+                out.extend(["WORD:" + w for w in (v.rsplit("/", 1)[-1], shell.base_name(v))] if plain else [
+                    tag + (v if isinstance(v, str) else canonical(v))])
                 walk(v, sql, True)
             elif name in _SQL_KEYS and not sql:
                 if whole:
@@ -1808,8 +1810,8 @@ def _runs(args, tool=""):
 
 
 def _program(argv):
-    """The program an argv runs, by its file name, casefolded and without .exe."""
-    return argv[0].replace("\\", "/").rsplit("/", 1)[-1].casefold().removesuffix(".exe") if argv else ""
+    """The program an argv runs, by its file name, casefolded and without .exe (shell.base_name)."""
+    return shell.base_name(argv[0]) if argv else ""
 
 
 _HISTORY = (".bash_history", ".zsh_history", "fish_history", "consolehost_history.txt")
@@ -1952,7 +1954,7 @@ def _opaque(command):
     perl -e 'open F, ">", …'); at or batch scheduling commands from a pipe or a file (the parser reads a herestring
     or heredoc), or osascript's do shell script or a Finder delete."""
     argv = command["argv"]
-    exe = argv[0].rsplit("/", 1)[-1].casefold()
+    exe = _program(argv)
     if exe in ("rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln"):
         return any("$" in a or "`" in a for a in argv[1:])
     if exe == "zip" and _zip_moves(argv[1:]):
@@ -2159,7 +2161,7 @@ def _command_effects(commands):
         argv = command["argv"]
         if not argv:
             continue
-        exe = argv[0].rsplit("/", 1)[-1]
+        exe = _program(argv)
         args = argv[1:]
         trust = _python_module(args) if _PYTHON_EXE.fullmatch(exe) else [exe, *args]
         if trust[:3] == ["tracekit", "signer", "trust"]:   # the trust config it writes (TK-D007's unless reads its line)
@@ -2189,7 +2191,7 @@ def _command_effects(commands):
                                                                                   "-fls"))
             found = {t.partition(":")[0] for t in runs if t.partition(":")[2] == "{}"}
             if "-delete" in args or any(a in ("-exec", "-execdir", "-ok", "-okdir") and i + 1 < len(args)
-                                        and args[i + 1].rsplit("/", 1)[-1].casefold() in (
+                                        and shell.base_name(args[i + 1]) in (
                                             "rm", "unlink", "shred") for i, a in enumerate(args)):
                 found.add("DELETE_TARGET")
             out.extend(kind + ":" + path for kind in sorted(found) for path in _find_files(args))
@@ -2278,7 +2280,7 @@ def _command_effects(commands):
             # the writer they are or run from their own words (git rm or mv, docker exec c rm, kubectl cp, parallel rm
             # ::: …), read from its name on (a git message or grep pattern is data)
             data = shell.data_words(argv)
-            j = next((j for j in range(1, len(argv)) if j not in data and argv[j].rsplit("/", 1)[-1].casefold() in (
+            j = next((j for j in range(1, len(argv)) if j not in data and shell.base_name(argv[j]) in (
                 "rm", "unlink", "shred", "truncate", "tee", "cp", "mv", "install", "ln", "dd", "sed", "perl", "find")),
                      None)
             if j is not None:
@@ -2999,14 +3001,17 @@ def _download_runs(commands):
                  for u in _URL.findall(" ".join(d["argv"][1:]))}
         if not saved or hosts and all(h == "localhost" or h.startswith(("127.", "[::1]", "::1")) for h in hosts):
             continue
-        names = {posixpath.basename(w) for w in d["argv"][1:] + saved} - {""}
+        names = {n for w in d["argv"][1:] + saved for n in (posixpath.basename(w), shell.base_name(w))} - {""}
         anyname = tool == "curl" and any(re.fullmatch(r"--remote-header-name|--config|-[A-Za-z]*[JK][A-Za-z]*", a)
                                          for a in d["argv"][1:])
 
+        def named(w):   # a word that names a saved file, as bash reads it or as Windows does (shell.base_name)
+            return bool(names & {posixpath.basename(w), shell.base_name(w)})
+
         def runs(c):
             given = c["argv"][1:] + list(c.get("in", ()))
-            return posixpath.basename(c["word"]) in names or anyname and "/" in c["word"] or _runs_code(c["argv"]) and (
-                anyname and given or any(posixpath.basename(w) in names or re.search(
+            return named(c["word"]) or anyname and "/" in c["word"] or _runs_code(c["argv"]) and (
+                anyname and given or any(named(w) or re.search(
                     r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(map(re.escape, names)), w) for w in given))
         out += [f"{tool} ; sh {c['word']}" for c in commands if c["pipeline"] != d["pipeline"] and runs(c)]
     return out

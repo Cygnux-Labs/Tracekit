@@ -5,12 +5,13 @@ strings, substitutions, heredocs into a shell, at or batch, trap's action and in
 `{"argv": [...], "word": str, "via": [...], "pipeline": n, "glob": bool, "opaque": bool, "stdin": [...]}`. argv[0] is
 a basename, the part after any `\\` casefolded and without a `.exe` (the agent's file system may ignore case: macOS
 runs git for `Git`; Windows runs git.exe for git); `word` is that first word as written (a path, or the text of a name
-an expansion builds); `via` says how the command was reached (empty at top level); commands with the same `pipeline`
-are stages of one pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob, brace or
-expansion in its name, a shell or interpreter reading its script from a pipe, a file or inherited stdin, `source` of
-a stream). `stdin`: the herestring and heredoc text the command reads (the names `xargs rm <<< x` deletes). A command
-of the line itself also has `out` and `in`, the files its redirections write and read, and `stage`, its place in its
-pipeline (0 first). `moved`: the stdin it inherits may be one the line moved (_reads_only). `background`: True when the
+an expansion builds); a first word with a `\\` is also read as Windows runs it, as a command of its own with that `\\`
+as `/` (Git Bash runs 'C:\\x\\bash' as bash). `via` says how the command was reached (empty at top level); commands
+with the same `pipeline` are stages of one pipeline, in order. `opaque`: what the command runs cannot be read from the
+line (a glob, brace or expansion in its name, a shell or interpreter reading its script from a pipe, a file or
+inherited stdin, `source` of a stream). `stdin`: the herestring and heredoc text the command reads (the names
+`xargs rm <<< x` deletes). A command of the line itself also has `out` and `in`, the files its redirections write
+and read, and `stage`, its place in its pipeline (0 first). `moved`: the stdin it inherits may be one the line moved (_reads_only). `background`: True when the
 and-or list it is in ends in `&` (`a && b &` sends both), when it is in a block whose closing word that `&` follows
 (`{ a; } &`, `while …; do a; done &`, if, for, select, case: from the and-or list the block opened in), or when one it
 runs in does (a subshell, an `sh -c` string); absent otherwise.
@@ -397,7 +398,7 @@ def _reads_only(cmds, ctx):
                     _ECHO_OPTIONS.fullmatch(a) or (v := _PLAIN_VARIABLE.fullmatch(a)) and not v.group(1).isdigit()
                     and v.group(1) not in ctx["unread_values"] | ctx["opaque_values"] for a in argv[1:])) or \
                 c["stdin"] or "*" in made or c["glob"] and made or \
-                any(w.rsplit("/", 1)[-1].casefold() in made for w in given) or \
+                any(base_name(w) in made for w in given) or \
                 any(re.fullmatch(r"\d+|-", f) or _stream(f) or made and re.search(r"[$`]", f) for f in given) or \
                 argv[0] in _READERS and argv[0] not in ("nproc", "ls") and not c.get("stage") and not c.get("in") and \
                 len(operands) <= (argv[0] in ("grep", "egrep", "fgrep", "rg")) and \
@@ -1100,6 +1101,21 @@ def _made_text(ctx):
 
 # a home or root as a word names it: ~ (~user too), $HOME, /home/<u>, /Users/<u>, /root or /
 _HOME_OR_ROOT = re.compile(r"(?:~[\w.-]*|\$HOME|\$\{HOME\}|/+(?:home|Users)(?:/+[^/]+)?|/+root)?/*")
+# the start of a word that names a Windows drive's root (C:\, c:/; Git Bash's /c/ and /cygdrive/c/, WSL's /mnt/c/),
+# with its Users folder (Windows reads names in any case), or the home's variable (%USERPROFILE%, $USERPROFILE,
+# PowerShell's $env:USERPROFILE): _windows_home
+_WINDOWS_HOME = re.compile(r"(?i)(?:[a-z]:(?=[/\\])|/(?:cygdrive/|mnt/)?[a-z](?![^/\\]))([/\\]+users(?![^/\\]))?|"
+                           r"(%userprofile%|\$\{userprofile\}|\$userprofile\b|\$env:userprofile\b)")
+
+
+def _windows_home(word):
+    """`word` read as / , /Users/… or ~ where it names a Windows root or home (_WINDOWS_HOME) and is a root or home
+    so (_HOME_OR_ROOT, before any trailing pattern: C:\\Users\\u\\* is /Users/u/*), its \\ as /; else `word`."""
+    m = _WINDOWS_HOME.match(word)
+    if not m:
+        return word
+    read = ("~" if m.group(2) else "/Users" if m.group(1) else "") + word[m.end():].replace("\\", "/")
+    return read if _HOME_OR_ROOT.fullmatch(read.rstrip("/*?.")) else word
 
 
 def _function_variable(word):
@@ -1397,8 +1413,8 @@ def _copy_operands(args):
 
 
 def _base(path):
-    """The name a path's last part gives: //tmp/tk, ./tk and sub/tk/ are all tk."""
-    return posixpath.basename(posixpath.normpath(path))
+    """The name a path's last part gives: //tmp/tk, ./tk, sub/tk/ and .\\tk (Windows reads \\ as /) are all tk."""
+    return posixpath.basename(posixpath.normpath(path.replace("\\", "/")))
 
 
 def _tracekit_copies(ctx):
@@ -1426,11 +1442,14 @@ def _tracekit_copies(ctx):
 def _home_readings(ctx):
     """Each recursive rm the line runs, read again where its operands name a home or root another way: a relative one
     after a cd or pushd there (`cd && rm -rf *`), one through a link the line made there (`ln -s ~ h; rm -rf h/*`) and
-    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), so TK-D004 reads them as that home or root.
+    the words echo or printf pipes into xargs (`echo ~ | xargs rm -rf`), and a Windows root or home (_windows_home:
+    C:\\ is /, %USERPROFILE% is ~; in a find's or rsync's words too), so TK-D004 reads them as that home or root.
     lean: in the line's order, whatever subshell or branch the cd is in; a cd elsewhere (or one it can't name) ends it"""
     where, links, printed = None, {}, {}
     for c in list(ctx["cmds"]):
-        argv = c["argv"]
+        argv = c["argv"][:1] + [_windows_home(a) for a in c["argv"][1:]]
+        if argv[0] in ("find", "rsync") and argv != c["argv"]:
+            ctx["cmds"].append({**c, "argv": argv, "via": c["via"] + ["read at home"]})
         ops = [a for a in argv[1:] if not a.startswith("-")]
         if argv[0] in ("cd", "pushd"):
             where = "~" if not ops else ops[0] if ops[0] and _HOME_OR_ROOT.fullmatch(ops[0]) else None
@@ -1635,7 +1654,7 @@ def _data_write(step, cmds):
     to = step.get("to")
     if not to or step.get("piped_on") or not all(_DATA_FILE.search(t) and not t.startswith("/dev/") for t in to):
         return False
-    names = {posixpath.basename(t) for t in to}
+    names = {n for t in to for n in (posixpath.basename(t), base_name(t))}
     mention = re.compile(r"(?<![\w.-])(?:%s)(?![\w-])" % "|".join(map(re.escape, names)))
     after = {}   # each pipeline's last stage that doesn't only read and print
     for c in cmds:
@@ -1645,8 +1664,9 @@ def _data_write(step, cmds):
         name, args = c["argv"][0], c["argv"][1:]
         if c is step.get("writer"):
             continue
-        if not reads_only(c, True) and name not in _DATA_COMPANY or c["opaque"] or posixpath.basename(c["word"]) in names or \
-                re.search(r"[$`*?[]", c["word"]) or name == "gh" and (args[0] if args else "") not in GH_COMMANDS:
+        if not reads_only(c, True) and name not in _DATA_COMPANY or c["opaque"] or \
+                names & {posixpath.basename(c["word"]), base_name(c["word"])} or re.search(r"[$`*?[]", c["word"]) or \
+                name == "gh" and (args[0] if args else "") not in GH_COMMANDS:
             return False
         if not any(mention.search(w) or re.search(r"[$`*?[]", w) for w in args + list(c.get("in", ())) + list(
                 c.get("stdin", ()))):
@@ -3684,10 +3704,10 @@ class _Parser:
         made = self.ctx["made_files"]
         crafted = text is not None or not words or not (
             words[0] in _READERS or words[0] in _ECHOERS or words[0] == "git") or "*" in made or any(globs) and made or \
-            any(w.rsplit("/", 1)[-1].casefold() in made for w in list(words[1:]) + ins)
+            any(base_name(w) in made for w in list(words[1:]) + ins)
         for (name, append), made in [(f, text) for f in files] + [(f, None) for f in others]:
             if not name.startswith(("/dev/", "/proc/")):   # a device keeps nothing to run
-                key = name.rsplit("/", 1)[-1].casefold()
+                key = base_name(name)
                 self.ctx["files"].setdefault(key, []).append((made, append, crafted))
                 if crafted:
                     self.ctx["made_files"].add(key)
@@ -3945,7 +3965,7 @@ class _Parser:
         lean: a name the line builds, with text it doesn't give, isn't counted for a path from / or ~ (a program run
         by its full path); count it if a crafted one is seen"""
         out, joined = [], None
-        for made, append, _ in self.ctx["files"].get(path.rsplit("/", 1)[-1].casefold(), []) + [
+        for made, append, _ in self.ctx["files"].get(base_name(path), []) + [
                 w for w in self.ctx["files"].get("*", []) if w[0] is not None or not path.startswith(("/", "~"))]:
             texts = None if made is None else [t if isinstance(t, str) else None if t.get("unknown") else
                                                t.get("text", "") + "\n" * ("text" in t) for t in made]
@@ -3997,9 +4017,12 @@ class _Parser:
                 continue
             self.ctx["nested"].add(key)
             program = _reader(text, cmd["argv"][0], direct)
-            if program is None:
+            if program is None:   # held, and read as Windows reads a #! path with \ (#!C:\x\bash.exe is bash)
                 cmd["opaque"] = True
-            elif program in SHELLS:   # (run by its path: its #! names the shell, for nested's grammar)
+                program = _reader(text, cmd["argv"][0], direct, base_name)
+            if program is None:
+                continue
+            if program in SHELLS:   # (run by its path: its #! names the shell, for nested's grammar)
                 self.nested(text, via + [program] + inside[len(via):] if direct else inside, gives)
             else:   # read as the inline code of its interpreter (python3 -c, node -e), for what it runs and writes
                 # lean: code it can't read there (a spawner given a name) isn't held, as before; hold it if one hides
@@ -4107,7 +4130,7 @@ class _Parser:
         else:
             return
         for path, kind in files.items():
-            if path and path.rsplit("/", 1)[-1].casefold() in self.ctx["files"]:
+            if path and base_name(path) in self.ctx["files"]:
                 if kind is None:
                     cmd["opaque"] = True
                 else:
@@ -4116,7 +4139,7 @@ class _Parser:
     def emit(self, argv, pid, via, glob=False, unreadable=None):
         """`unreadable[i]`: argv[i] is not a literal name (an unquoted glob or brace, or an expansion; only words of
         the line itself have one)."""
-        cmds, unreadable, repl = [], unreadable or [False] * len(argv), None
+        cmds, unreadable, repl, windows = [], unreadable or [False] * len(argv), None, []
         while argv:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
@@ -4136,6 +4159,8 @@ class _Parser:
             self.ctx["cmds"].append(cmd)
             cmds.append(cmd)
             self.charge(COMMAND_COST)
+            if "\\" in argv[0] and not unreadable[0]:   # and as Windows runs a path with \ (C:\x\bash is C:/x/bash)
+                windows += self.emit([argv[0].replace("\\", "/"), *argv[1:]], pid, via, glob, unreadable)
             if not unreadable[0] and "/" in argv[0]:   # a file run by its path
                 self.run_file(argv[0], via, cmd, True, args)
             if not unreadable[0] and argv[0] in self.ctx["functions"]:   # and as the program of that name, if it isn't
@@ -4277,8 +4302,8 @@ class _Parser:
                 cmd["opaque"] = True   # fc runs history or an editor it names; history -s, -r, -n put commands in it
             elif name == "history" and any(re.fullmatch(r"-\w*[wa]\w*", a) for a in args):
                 for a in (a for a in args if not a.startswith("-")):   # it writes the history into the file
-                    self.ctx["files"].setdefault(a.rsplit("/", 1)[-1].casefold(), []).append((None, False, True))
-                    self.ctx["made_files"].add(a.rsplit("/", 1)[-1].casefold())
+                    self.ctx["files"].setdefault(base_name(a), []).append((None, False, True))
+                    self.ctx["made_files"].add(base_name(a))
             elif name == "compgen":   # -C runs a command, -W's words are expanded again, -F calls a function
                 for k, a in enumerate(args):
                     if m := re.fullmatch(r"-[A-Za-z]*?([CWF])(.*)", a, re.S):
@@ -4428,7 +4453,7 @@ class _Parser:
                     if v and ":" in v and (src := v.split(":")[0]) and _HOME_OR_ROOT.fullmatch(src):
                         mounts[v.split(":")[1].rstrip("/") or "/"] = src
                 for k, a in enumerate(args):
-                    if a.rsplit("/", 1)[-1] == "rm" and mounts:
+                    if base_name(a) == "rm" and mounts:
                         ops = [next((src.rstrip("/") + w[len(dst):] or "/" for dst, src in mounts.items()
                                      if w.rstrip("/") == dst or w.startswith(dst.rstrip("/") + "/")), w) for w in args[k + 1:]]
                         if ops != args[k + 1:]:
@@ -4510,7 +4535,7 @@ class _Parser:
                     # a script the line may write
                     self.run_file(args[i], via + [name], cmd, gives=args[i + 1:], unread=unreadable[i + 1])
             break
-        return cmds
+        return cmds + windows
 
     def scan(self, kind, code, pid, via, cmd=None):
         """Follow the commands a program runs (see _CALL); sed's `s///e`, which runs what the input holds, makes
@@ -4563,7 +4588,7 @@ class _Parser:
         for body, printed in _awk_pipes(code) if kind == "awk" else ():
             text = _c_unescape("awk", body)
             self.nested(text, via)
-            loose |= printed and bool(w := text.split()) and w[0].rsplit("/", 1)[-1] in SHELLS
+            loose |= printed and bool(w := text.split()) and base_name(w[0]) in SHELLS
         for m in _QX.finditer(code) if kind in ("perl", "ruby") else ():
             close = code.find(_PAIRS[m.group(1)], m.end())
             self.charge((len(code) if close < 0 else close) - m.end())
@@ -5179,6 +5204,12 @@ def _lower_name(word):
     return word[:i] + (name[:-4] if name.endswith(".exe") and len(name) > 4 else name)
 
 
+def base_name(word):
+    """The name a word gives a program or file by: its part after the last / or \\ (Windows reads C:\\x\\git.exe so),
+    casefolded and without a .exe (_lower_name). A name bash's reading (after the last /) gives, it gives too."""
+    return _lower_name(word.replace("\\", "/").rsplit("/", 1)[-1])
+
+
 def _programs(words, cmds):
     """Indexes in `words` of the program names of `cmds`, emit's commands for them (a wrapper's and what it runs), and
     of what a find among them runs (the word after each -exec, -execdir, -ok or -okdir)."""
@@ -5287,19 +5318,19 @@ def _script_operand(kind, args):
     return i if i < len(args) and args[i] != "-" and not _stream(args[i]) else None
 
 
-def _reader(text, runner, direct):
+def _reader(text, runner, direct, name=lambda word: word.rsplit("/", 1)[-1]):
     """The program that reads a script file `runner` runs (a shell or one of CODE_FLAGS' interpreters), else None (no
     program this parser reads): run by its path (`direct`), the one its #! line names (an env one's command, with no
-    option: env -S splits and -i empties what follows), or bash for a file without one; else `runner` itself
-    (source and . are the shell's)."""
+    option: env -S splits and -i empties what follows; by its file name, `name`: base_name reads it as Windows does),
+    or bash for a file without one; else `runner` itself (source and . are the shell's)."""
     if not direct:
         return "sh" if runner in ("source", ".") else runner
     if not text.startswith("#!"):
         return "sh"
     words = text[2:].split("\n", 1)[0].split()
-    if words and words[0].rsplit("/", 1)[-1] == "env":
+    if words and name(words[0]) == "env":
         words = [w for w in words[1:] if "=" not in w]
-    program = words[0].rsplit("/", 1)[-1] if words and not words[0].startswith("-") else None
+    program = name(words[0]) if words and not words[0].startswith("-") else None
     return program if program in SHELLS or _kind(program or "") in CODE_FLAGS else None
 
 
