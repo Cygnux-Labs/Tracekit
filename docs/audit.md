@@ -61,7 +61,11 @@ denied and held calls (--all for every call):
   Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description. A TK-SHELL-PARSE
   hold also gives its cause's count on its own line (e.g. `ask TK-SHELL-PARSE quote 2`): the lines hold only how
   many calls the policy couldn't read for each cause in the engine's fixed list of cause names (`quote`, `input`,
-  `name`, …), never the command itself.
+  `name`, …), never the command itself. With `--since`, it also prints the calls by decision for each day of the
+  window, 24 hours each and numbered from the window's start (`Day 1`), a day with no calls too, and the calls with no
+  time (a calls-file line without `time`) on a `No time` line. A day line holds no date, weekday or hour, and the
+  window's start isn't printed, but with the date you post it, a reader can tell which days the agent ran. Without
+  `--since` there are no day lines: day 1 would be the first call's, and say how far back the transcripts go.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 

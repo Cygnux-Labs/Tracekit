@@ -9,6 +9,7 @@ import argparse
 import collections
 import hashlib
 import json
+import math
 import os
 import shutil
 import stat
@@ -441,6 +442,8 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         "policy": policy_path or DEFAULT_POLICY,
         "policy_hash": engine.policy_hash,
         "since": since,
+        # --since's window in seconds since the epoch: --share counts each day of it from its start, never printed
+        "window": [since_ts, now] if since else None,
         "sessions": len({(c["agent"], c["session"]) for c in calls}),
         "agents": agents,
         "calls_file": calls_file,
@@ -512,8 +515,8 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
     # section, or an engine check, which has none; not a flag that also matched), most first
     stopped = collections.Counter(r for c in report["calls"] if c["verdict"] in ("ask", "deny") for r in c["rule_ids"]
                                   if report["sections"].get(r, c["verdict"]) == c["verdict"])
-    window = "week" if report["since"] == "7d" else _days(time.time() - when(report["since"])) if report["since"] \
-        else "calls file" if report["calls_file"] else "transcripts"
+    window = "week" if report["since"] == "7d" else _days(report["window"][1] - report["window"][0]) \
+        if report["since"] else "calls file" if report["calls_file"] else "transcripts"
     agent = next(iter(report["agents"])) if len(report["agents"]) == 1 else None
     init = "tracekit init --dev --v2" + (f" --agent {agent}" if agent in AGENT_NAMES else "")   # claude: init's default
     lines += ["", f"your agent's {window}: {total:,} tool call{'s' * (total != 1)}; Tracekit would have held "
@@ -526,21 +529,43 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
     return "\n".join(_escaped(line) for line in lines) + "\n"
 
 
+def _by_day(report: dict) -> list[str]:
+    """--share's day lines, with --since: the calls by decision for each 24 hours of the window, numbered from its
+    start, a day with none too, then those with no time, if any. A day number, never a date: without --since there are
+    none, as day 1 would be the first call's and say how far back the transcripts go."""
+    if report["window"] is None:
+        return []
+    start, end = report["window"]
+    # lean: one line a day however long the window (a --since of a year prints 365); fold them into weeks if people
+    # post windows that long
+    days = [collections.Counter() for _ in range(max(1, math.ceil((end - start) / 86400)))]
+    no_time = collections.Counter()
+    for c in report["calls"]:
+        i = None if c["time"] is None else int((datetime.fromisoformat(c["time"]).timestamp() - start) // 86400)
+        if i is None or i >= 0:   # a call before the window is on no day
+            (no_time if i is None else days[min(i, len(days) - 1)])[c["verdict"]] += 1
+    return ["Calls by decision and day (24 hours each, day 1 from the window's start):",
+            *(f"  Day {i}: " + _counts({k: d[k] for k in DECISIONS}) for i, d in enumerate(days, 1)),
+            *["  No time: " + _counts({k: no_time[k] for k in DECISIONS})] * bool(no_time)]
+
+
 def share(report: dict) -> str:
     """The report's counts alone, for a person to post as a field report (docs/field-reports.md), as tracekit report
-    --share gives them: of --since, the window's length; no session, path, policy file, time, call or rule
-    description, and no rule id but Tracekit's own (report.share_rules). A rule is why its call was decided when its
-    section is the call's decision; an engine check, which has no section, is not placed."""
+    --share gives them: of --since, the window's length and each day's calls by decision (_by_day); no session, path,
+    policy file, date, time, call or rule description, and no rule id but Tracekit's own (report.share_rules). A rule
+    is why its call was decided when its section is the call's decision; an engine check, which has no section, is not
+    placed."""
     n, s, secs = report["counts"], report["sessions"], report["sections"]
     by_rule = collections.Counter((c["verdict"], rid, secs[rid] == c["verdict"] if rid in secs else None)
                                   for c in report["calls"] for rid in c["rule_ids"])
-    window = _days(time.time() - when(report["since"])) if report["since"] else \
+    window = _days(report["window"][1] - report["window"][0]) if report["since"] else \
         "the whole calls file" if report["calls_file"] else "every transcript"
     kind = "Claude Code" if set(report["agents"]) == {"claude"} else "coding-agent"
     causes = ENGINE_REASONS["TK-SHELL-PARSE"].get("causes", {})
     lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
              f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
+             *_by_day(report),
              "Calls by decision and rule (one call can match several rules):" + " none" * (not by_rule),
              *share_rules(by_rule),
              # a TK-SHELL-PARSE hold's cause, by name alone and only a name in the engine's own table, anything
