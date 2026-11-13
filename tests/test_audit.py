@@ -380,6 +380,15 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(page[3:8], ["Calls by decision and day (24 hours each, day 1 from the window's start):",
                                      day(1), day(2, deny=1), day(3), "  No time: allow 1, flag 0, ask 0, deny 0"])
 
+    def test_a_call_before_the_window_is_on_no_day(self):
+        """A call timed before --since's window is counted on no day, never wrapped to the last one."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=0.5)])
+        report = audit.audit(str(self.root), since="2d")
+        report["calls"].append({**report["calls"][0], "verdict": "deny",
+                                "time": datetime.fromtimestamp(report["window"][0] - 3600, timezone.utc).isoformat()})
+        self.assertEqual([line for line in audit._by_day(report) if "Day " in line],
+                         ["  Day 1: allow 0, flag 0, ask 0, deny 0", "  Day 2: allow 1, flag 0, ask 0, deny 0"])
+
     def test_share_has_no_day_lines_without_since(self):
         """Without --since a window starts at the first call: day lines would show how far back the transcripts go."""
         _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=3),

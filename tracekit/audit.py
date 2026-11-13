@@ -483,9 +483,9 @@ def _by_day(report: dict) -> list[str]:
     days = [collections.Counter() for _ in range(max(1, math.ceil((end - start) / 86400)))]
     no_time = collections.Counter()
     for c in report["calls"]:
-        day = no_time if c["time"] is None else \
-            days[min(int((datetime.fromisoformat(c["time"]).timestamp() - start) // 86400), len(days) - 1)]
-        day[c["verdict"]] += 1
+        i = None if c["time"] is None else int((datetime.fromisoformat(c["time"]).timestamp() - start) // 86400)
+        if i is None or i >= 0:   # a call before the window is on no day
+            (no_time if i is None else days[min(i, len(days) - 1)])[c["verdict"]] += 1
     return ["Calls by decision and day (24 hours each, day 1 from the window's start):",
             *(f"  Day {i}: " + _counts({k: d[k] for k in DECISIONS}) for i, d in enumerate(days, 1)),
             *["  No time: " + _counts({k: no_time[k] for k in DECISIONS})] * bool(no_time)]
