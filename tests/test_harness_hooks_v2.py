@@ -240,6 +240,53 @@ class Mapping(HarnessCase):
     def test_devin(self):
         self.check("devin")
 
+    def test_openhands(self):
+        self.check("openhands")
+
+    def test_openhands_held_call_unanswered_is_blocked_before_the_timeout(self):
+        # #563 review: OpenHands runs a call whose hook times out, so a held call nobody answers must be denied (exit 2,
+        # "make the identical call again") within APPROVAL_WAIT_S, under the 600 s timeout init gives PreToolUse
+        self.assertLess(claude_code.APPROVAL_WAIT_S, 600)
+        self.decision = "ask"
+        payload = {**cases("openhands")[0]["payload"], "session_id": "oh-held",
+                   "tool_input": {"command": "git push --force", "is_input": False, "kind": "TerminalAction"}}
+        with mock.patch.object(claude_code, "APPROVAL_WAIT_S", 1.0), \
+                mock.patch.dict(os.environ, {claude_code.WAIT_ENV: "1"}):
+            start = time.monotonic()
+            code, out, err = self.hook("openhands", payload, "PreToolUse")
+        self.assertEqual((code, out), (2, ""), err)
+        self.assertIn("HELD, nothing ran", err)
+        self.assertIn("identical call again", err)
+        self.assertLess(time.monotonic() - start, 30)
+
+    def test_openhands_sub_agents_are_denied_before_the_signer_and_typed_input_is_sent_marked(self):
+        # #563 review: task and delegate run a sub-agent with no hooks; text typed into the running command, a key and
+        # a line left open reach the signer marked `typed`, which the engine holds
+        for name in ("task", "delegate"):
+            with self.subTest(tool=name):
+                code, out, err = self.hook("openhands", {"session_id": "oh-s", "event_type": "PreToolUse", "tool_name": name,
+                                                         "tool_input": {"prompt": "ls"}}, "PreToolUse")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("runs a sub-agent whose tool calls run no hooks", err)
+        self.assertEqual(self.sent, [])
+        for ti in ({"command": "push --force origin main", "is_input": True}, {"command": "UP"}, {"command": "git \\"}):
+            with self.subTest(ti=ti):
+                self.hook("openhands", {"session_id": "oh-t", "event_type": "PreToolUse", "tool_name": "terminal",
+                                        "tool_input": {**ti, "kind": "TerminalAction"}}, "PreToolUse")
+                self.assertEqual((self.sent[-1]["tool"], self.sent[-1]["args"].get("typed")), ("Bash", True))
+        self.hook("openhands", {"session_id": "oh-t", "event_type": "PreToolUse", "tool_name": "terminal",
+                                "tool_input": {"command": "ls", "is_input": False, "kind": "TerminalAction"}}, "PreToolUse")
+        self.assertNotIn("typed", self.sent[-1]["args"])
+
+    def test_openhands_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
+        for name, ti in (("file_editor", {"command": "view", "path": None}), ("apply_patch", {"patch": "no headers"})):
+            with self.subTest(tool=name):
+                code, out, err = self.hook("openhands", {"session_id": "oh-9", "event_type": "PreToolUse",
+                                                         "tool_name": name, "tool_input": ti}, "PreToolUse")
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn(f"OpenHands' {name} call names no", err)
+        self.assertEqual(self.sent, [])
+
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
         # header and a webfetch with no url are denied in the hook, with no decide request sent
@@ -812,8 +859,9 @@ class Installer(unittest.TestCase):
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
-                    # through its own POSIX shell), and Devin's shell isn't documented: a path with a space keeps cmd.exe's
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin"):
+                    # through its own POSIX shell), OpenHands runs hooks with shell=True (cmd.exe), and Devin's shell
+                    # isn't documented: a path with a space keeps cmd.exe's
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
