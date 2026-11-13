@@ -578,7 +578,7 @@ def _pre(client, p, sid, tid):
 
     def block(msg, refused=None):
         cap()
-        _not_run(client, sid, tid, msg, refused)
+        _not_run(client, sid, tid, msg, event_hash({"tool": tool, "args": args}), refused)
         return _block(msg)
 
     tool, args = p.get("tool_name") or "?", p.get("tool_input")
@@ -659,16 +659,18 @@ def _pre(client, p, sid, tid):
     return 0
 
 
-def _not_run(client, sid, tid, msg, refused=None):
+def _not_run(client, sid, tid, msg, digest, refused=None):
     """Complete the decision an earlier PreToolUse of this call left open (CodeBuddy sends a deferred tool's call twice
     under one id: agent_hooks.tool) as an error with the head of `msg`, the block that stops the call: the harness's
-    PostToolUse may then carry only an error's text, which no hook can tell from a result. `refused`: this block's
+    PostToolUse may then carry only an error's text, which no hook can tell from a result. Only the same call: `digest`
+    (this call's tool and arguments) must be the open one's, so a reused id of another call leaves that call's
+    decision for its own PostToolUse. `refused`: this block's
     (decision_id, args_digest, approval_id), the call's approval refused as already used: if that decision consumed it
     for the same arguments, this one is completed in its place, and the signer closes both (it counts an open later
     decision of a call whose approval was consumed as a decided_not_completed gap)."""
     path = _state(sid, tid)
     call, st = _load(path), _load(_state(sid))
-    if not call or not st or call["run_id"] != st["run_id"]:
+    if not call or not st or call["run_id"] != st["run_id"] or call["args_digest"] != digest:
         return
     did = refused[0] if refused and refused[2] and refused[1:] == (call["args_digest"], call.get("approval_id")) \
         else call["decision_id"]
