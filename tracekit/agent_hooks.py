@@ -274,9 +274,11 @@ TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t
 # reading stands (typed_line). What stays unfinished once a call ran is kept for the next (keep_typed); a key a line
 # editor acts on (Esc, an arrow) adds nothing to it, but one that puts text in it (EDITS) leaves it unknown. Where it
 # is kept: per session and per terminal, under the
-# field each tool names its terminal by: Codex's exec session, Devin's shell (in any case), agy's background task
+# field each tool names its terminal by: Codex's exec session, Devin's shell (in any case), agy's background task,
+# Copilot's shell
 TYPED_INTO = {("codex", "write_stdin"): "session_id", ("devin", "write_to_process"): "shell_id",
-              ("antigravity", "manage_task"): "TaskId"}
+              ("antigravity", "manage_task"): "TaskId", ("copilot", "write_bash"): "shellId",
+              ("copilot", "write_powershell"): "shellId"}
 LINE_END = re.compile(r"[\n\x0f\x04]")   # a line end, readline's Ctrl-O (operate-and-get-next), a ^D that flushes
 # keys alone, which a line editor acts on: control characters and the escape sequences an arrow or a function key sends
 KEYS = re.compile(r"(?:\x1b(?:\[[0-?]*[ -/]*[@-~]|O[ -~])?|[\x00-\x09\x0b-\x1f\x7f-\x9f])+")
@@ -305,8 +307,8 @@ SHELL_STATE = {"fc", "bind", "trap", "enable", "exec", "shopt", "hash", "source"
 # later line starts would read settings other than the person's (one a line sets for its own command is TK-A070's)
 STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV|BASH_CMDS|BASH_ALIASES|LD_PRELOAD|LD_LIBRARY_PATH|"
                         r"LD_AUDIT|DYLD_\w+|HOME|USERPROFILE|XDG_CONFIG_HOME|(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|"
-                        r"KILOCODE|GOOSE|FACTORY|DROID|ANTIGRAVITY|AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR)_\w*"
-                        r"(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*)(?:$|[\[=+])")
+                        r"KILOCODE|GOOSE|FACTORY|DROID|ANTIGRAVITY|AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR|COPILOT|"
+                        r"CODEBUDDY)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*)(?:$|[\[=+])")
 # OpenHands' tools (software-agent-sdk openhands-tools): tool_input is the Action's model_dump(), with a `kind` key and
 # every optional field (null when unset); file_editor's tool name depends on its `command` (tool())
 # the gemini preset's file tools (openhands/tools/gemini) read `file_path`, list_directory `dir_path`
@@ -1437,11 +1439,13 @@ def _blocked(harness, p, raw="", line=None):
         if cname in ("write_bash", "write_powershell"):   # typed into a running shell, as Devin's write_to_process
             # lean: write_powershell's text is read as bash's: a ! or a bash state word denies more than PowerShell
             # needs; read PowerShell's own line editing if that stops real work
-            v = tool(harness, cname, p.get("toolArgs"))[1]["command"]
+            ti = tool(harness, cname, p.get("toolArgs"))[1]
+            v = ti["command"]
             if not (isinstance(v, str) and v):
                 return (f"Blocked by Tracekit: Copilot's {cname} call types no text (its `input` isn't a non-empty "
                         "string), so Tracekit can't decide what it runs.")
-            reason = _typed("Copilot's", cname, v, devin=True)
+            reason = _typed("Copilot's", cname, v, devin=True) or line and _typed(
+                "Copilot's", cname, line.replace(UNKNOWN, ""), devin=True) or _twice(harness, cname, ti)
             if reason:
                 return reason
     return _blocked_tool(harness, name, raw)
@@ -1503,8 +1507,8 @@ def typed_line(harness, p, q):
     kept, the text a shell there reads this call into: that text, then this call's, the call's own text), else None.
     q: the normalised payload."""
     ti = q.get("tool_input") if isinstance(q.get("tool_input"), dict) else {}
-    name = _named(harness, str(p.get("tool_name") or "")) if harness != "antigravity" else "manage_task" * (
-        str(ti.get("Action")).casefold() == "send_input")
+    name = _named(harness, str(p.get("toolName" if harness == "copilot" else "tool_name") or "")) \
+        if harness != "antigravity" else "manage_task" * (str(ti.get("Action")).casefold() == "send_input")
     terminal, text = _terminal(harness, name, ti), ti.get("command")
     if terminal is None or not isinstance(text, str):
         return None

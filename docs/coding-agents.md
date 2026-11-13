@@ -219,7 +219,9 @@ file the patch names), `Read`, `Glob`, `Grep`, `WebFetch` and `Task`, and `web_s
 input) and `Task`. Each file tool is decided on the `path` or `paths` it reads, never on another argument beside it.
 Text `write_bash` and `write_powershell` type into a running shell is read as Devin's `write_to_process` is: a
 control character, a history expansion (a `!` before a word, a `^` starting a line) or a line that sets the shell's
-state is denied in the hook, and so is a call with no text; no receipt is taken before what it types runs.
+state is denied in the hook, and so is a call with no text; no receipt is taken before what it types runs. Text the
+shell hasn't finished reading is kept for that shell (by session and `shellId`) and joined to the next call's, which is
+decided on its own and as that whole line, the stricter standing.
 The payload doesn't say which other tools are MCP ones: Copilot names them `<server>-<tool>`, so a name with a `-` is
 decided as an MCP tool under every split, and the strictest decision stands; a name of 64 characters or more, where
 Copilot cuts names, is denied ([limits](limits.md#policy)). No prompts, session events or model text are recorded.

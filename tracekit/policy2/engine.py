@@ -805,25 +805,32 @@ _PIP = re.compile(r"pip[0-9.]*")
 
 # the agent harnesses' CLIs (a hook or plugin of Tracekit's runs in their settings), also under the name a package
 # runner or an interpreter runs them by (npx @anthropic-ai/claude-code runs claude-code; node …/@openai/codex/…;
-# python -m hermes_cli.main; hermes-agent)
+# python -m hermes_cli.main; hermes-agent; CodeBuddy Code's codebuddy-code, cbc and codebuddy-lowmem; python -m gptme
+# and gptme's front ends, which load its plugins as it does)
 _HARNESS_CLIS = frozenset(("claude", "codex", "gemini", "qwen", "opencode", "kilo", "kilocode", "goose", "droid", "agy",
-                           "antigravity", "crush", "devin", "hermes", "cline", "openhands", "cursor-agent"))
+                           "antigravity", "crush", "devin", "hermes", "cline", "openhands", "cursor-agent", "copilot",
+                           "codebuddy", "gptme"))
 _HARNESS_NAMES = {"claude-code": "claude", "gemini-cli": "gemini", "qwen-code": "qwen", "opencode-ai": "opencode",
                   "hermes-agent": "hermes", "hermes-acp": "hermes", "hermes_cli": "hermes",
-                  "openhands-ai": "openhands"}
+                  "openhands-ai": "openhands", "codebuddy-code": "codebuddy", "cbc": "codebuddy",
+                  "codebuddy-lowmem": "codebuddy", "gptme-tui": "gptme", "gptme-acp": "gptme", "gptme-server": "gptme"}
 _HARNESS_PACKAGE = re.compile(r"(?<![\w.-])(?:@anthropic-ai/(claude-code)|@openai/(codex)|@google/(gemini-cli)|"
-                              r"@qwen-code/(qwen-code)|(opencode-ai)|@kilocode/(cli)|(cline)|(hermes-agent))(?:/|$)")
+                              r"@qwen-code/(qwen-code)|(opencode-ai)|@kilocode/(cli)|(cline)|(hermes-agent)|"
+                              r"@github/(copilot)|@tencent-ai/(codebuddy-code))(?:/|$)")
 _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
 # what makes a harness read settings other than the person's, or none: HOME, XDG_CONFIG_HOME and each harness's own
 # home, config, settings or data variable (CLAUDE_CONFIG_DIR, CODEX_HOME, HERMES_HOME, OPENCODE_CONFIG,
-# OPENHANDS_WORK_DIR, GOOSE_PATH_ROOT, CRUSH_GLOBAL_DATA, CLAUDE_CODE_SIMPLE, as --bare sets it); an option that loads other settings or none (claude --settings,
-# --setting-sources and --bare; --config, --profile; codex's -p, and its -c only for a key of its hooks, notify,
+# OPENHANDS_WORK_DIR, GOOSE_PATH_ROOT, CRUSH_GLOBAL_DATA, COPILOT_HOME, CODEBUDDY_CONFIG_DIR, CLAUDE_CODE_SIMPLE, as
+# --bare sets it; gptme has none of its own: ~/.config/gptme, or $XDG_CONFIG_HOME/gptme); an option that loads other
+# settings or none (claude --settings, --setting-sources and --bare; --config, --config-dir (copilot's), --profile, but
+# not gptme's, which profiles the run; codex's -p, and its -c only for a key of its hooks, notify,
 # sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`): -c
 # model_reasoning_effort=high is no such key, and codex's --disable of such a feature); hermes's -p
 _SETTINGS_VARIABLE = re.compile(r"HOME|USERPROFILE|XDG_CONFIG_HOME|(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|KILOCODE|"
-                                r"GOOSE|FACTORY|DROID|ANTIGRAVITY|AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR)_\w*"
-                                r"(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*", re.I)
-_SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|profile)(?:=[\w\W]*)?|--bare")
+                                r"GOOSE|FACTORY|DROID|ANTIGRAVITY|AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR|COPILOT|"
+                                r"CODEBUDDY)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
+                                re.I)
+_SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|config-dir|profile)(?:=[\w\W]*)?|--bare")
 _SETTINGS_SHORT = {"codex": ("-c", "-p"), "hermes": ("-p",)}
 _SETTINGS_KEY = re.compile(r"(?<![^\W_])(?:hooks?|notify|sandbox|approvals?|profiles?)(?![^\W_])", re.I)
 # the builtins that set a variable from their words (read's names, printf -v's, an assignment word)
@@ -845,7 +852,7 @@ def _harness(argv):
         return found and _HARNESS_NAMES.get(found, {"cli": "kilo"}.get(found, found))
     if _PYTHON_EXE.fullmatch(name):
         module = _python_module(argv[1:])[:1]
-        return "hermes" if module and module[0].split(".")[0] == "hermes_cli" else None
+        return module and {"hermes_cli": "hermes", "gptme": "gptme"}.get(module[0].split(".")[0]) or None
     return None
 
 
@@ -935,7 +942,8 @@ def _harness_launches(commands, refs=(), learned=None):
         def value(i, a, at):   # an option's value, in its word (after `at`) or the next
             return a[at:].removeprefix("=") or (args[i + 1] if i + 1 < len(args) else "")
         options = [a for i, a in enumerate(args) if _SETTINGS_OPTION.fullmatch(a) and not (
-            exe == "codex" and a.startswith("--config") and not _SETTINGS_KEY.search(value(i, a, 8)))]
+            exe == "codex" and a.startswith("--config") and not _SETTINGS_KEY.search(value(i, a, 8))) and not (
+            exe == "gptme" and a == "--profile")]
         short = _SETTINGS_SHORT.get(exe, ())
         options += [a for i, a in enumerate(args) if a[:2] in short and not (exe == "codex" and a[:2] == "-c" and not
                     _SETTINGS_KEY.search(value(i, a, 2)))]

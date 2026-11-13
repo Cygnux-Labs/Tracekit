@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -333,6 +334,36 @@ class Routes(unittest.TestCase):
             "CARGO_TARGET_DIR=/tmp/t codex exec x", "env FOO=1 claude -p x", "claude -p x --plugin-dir ./plugins"),
             "allow")
 
+    def test_copilot_started_with_settings_the_agent_chose_is_held(self):
+        # Copilot CLI reads its hooks under $COPILOT_HOME (else ~/.copilot) or --config-dir; @github/copilot's
+        # npm-loader.js starts it
+        self.expect(self.bash("COPILOT_HOME=/tmp/c copilot -p x", "copilot --config-dir /tmp/c -p x",
+                              "HOME=/tmp/h npx @github/copilot -p x",
+                              "node /usr/lib/node_modules/@github/copilot/npm-loader.js --config-dir=c -p x"),
+                    "ask", "TK-A070")
+        self.expect(self.bash("copilot -p 'fix the tests'", "COPILOT_MODEL=gpt-5 copilot -p x"), "allow")
+        self.assertIn("sets or replays state", agent_hooks._typed("Copilot's", "write_bash",
+                                                                  "export COPILOT_HOME=/tmp/c\n", devin=True))
+
+    def test_codebuddy_started_with_settings_the_agent_chose_is_held(self):
+        # @tencent-ai/codebuddy-code's programs (codebuddy, codebuddy-code, cbc, codebuddy-lowmem) read
+        # $CODEBUDDY_CONFIG_DIR and $CODEBUDDY_PROJECT_CONFIG_DIR, and --settings and --setting-sources
+        self.expect(self.bash("CODEBUDDY_CONFIG_DIR=/tmp/c codebuddy -p x", "CODEBUDDY_PROJECT_CONFIG_DIR=c cbc -p x",
+                              "HOME=/tmp/h codebuddy-code -p x", "codebuddy-lowmem --settings s.json -p x",
+                              "node ~/.npm/node_modules/@tencent-ai/codebuddy-code/bin/codebuddy --setting-sources "
+                              "project -p x"), "ask", "TK-A070")
+        self.expect(self.bash("codebuddy -p 'fix it'", "cbc -p x"), "allow")
+        self.assertIn("sets or replays state", agent_hooks._typed("Copilot's", "write_bash",
+                                                                  "CODEBUDDY_CONFIG_DIR=/tmp/c\n", devin=True))
+
+    def test_gptme_started_with_settings_the_agent_chose_is_held(self):
+        # gptme reads ~/.config/gptme (its plugins, Tracekit's) or $XDG_CONFIG_HOME/gptme, run as gptme, python -m
+        # gptme or a front end that loads its plugins; its --profile profiles the run
+        self.expect(self.bash("HOME=/tmp/h gptme 'fix it'", "XDG_CONFIG_HOME=/tmp/x gptme -y x",
+                              "HOME=/tmp/h python -m gptme x", "HOME=/tmp/h uvx gptme x", "HOME=/tmp/h gptme-tui",
+                              "HOME=/tmp/h gptme-acp", "HOME=/tmp/h gptme-server serve"), "ask", "TK-A070")
+        self.expect(self.bash("gptme 'fix it'", "gptme --profile 'fix it'", "python -m gptme x"), "allow")
+
     def test_hermes_settings_files_are_the_harness_settings(self):
         self.expect([("Write", {"file_path": "/home/u/.hermes/config.yaml", "content": "x"})], "ask", "TK-F009")
         self.expect(self.bash("echo x >> ~/.hermes/config.yaml", "mv ~/.hermes/plugins/tracekit /tmp/",
@@ -541,6 +572,12 @@ class Routes(unittest.TestCase):
                               "npm publish --dry-run false", "pnpm publish --dry-run false",
                               "npm publish --dry-run --dry=false", "npm publish --dry-run -dry-run=false",
                               "npm publish --dry-run --NO-dry-run"), "ask", "TK-A056", packs=("dev",))
+        # npm reads an option before its command too: a dry run spelled so is decided as the trailing one is, and a
+        # publish after options is one the strict pack holds
+        self.expect(self.bash("npm --dry-run publish", "npm --dry-run=true publish"),
+                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F004")
+        self.expect(self.bash("npm --dry-run=false publish", "npm --json publish", "npm --tag x pub"), "ask", "TK-F004",
+                    packs=("strict",))
 
     def test_a_dry_run_whose_words_a_runner_or_a_pattern_adds_is_held(self):
         # sec08 adversarial review: xargs, parallel, find -exec and fd -x add words at run time (`false`, or
@@ -773,7 +810,8 @@ class WindowsPrograms(unittest.TestCase):
 
 class TypedText(unittest.TestCase):
     """Text typed into a live terminal (Devin's write_to_process, Codex's write_stdin, agy's send_input, Hermes's
-    process_manage) that the shell hasn't finished reading is joined to the next call's: `git ` with no newline, or
+    process_manage, Copilot's write_bash and write_powershell) that the shell hasn't finished reading is joined to the
+    next call's: `git ` with no newline, or
     `git \\`, then `push --force origin main` ran the push in an interactive bash, and a quote opened in one call
     swallowed the next. Each call is decided on its own and as the line a shell there would read it into: the
     stricter stands, since the hook can't tell a shell from a pager that took a key (`q`)."""
@@ -793,6 +831,12 @@ class TypedText(unittest.TestCase):
             name, ti = "manage_task", {"Action": "send_input", "Input": text, "TaskId": "t"}
             p, raw = {"tool_name": name}, json.dumps({"hook_event_name": "PreToolUse",
                                                       "toolCall": {"name": name, "args": ti}})
+        elif harness.startswith("copilot"):   # copilot: write_bash; copilot-ps: write_powershell
+            name, ti = "write_powershell" if harness == "copilot-ps" else "write_bash", {"shellId": "0", "input": text}
+            harness = "copilot"
+            p = {"sessionId": session, "hook_event_name": "preToolUse", "toolCallId": "c", "toolName": name,
+                 "toolArgs": ti}
+            raw = json.dumps(p)
         else:
             name, ti = ("write_to_process", {"shell_id": "main", "input": text}) if harness == "devin" else (
                 "write_stdin", {"session_id": 1, "chars": text})
@@ -812,12 +856,12 @@ class TypedText(unittest.TestCase):
         return verdict
 
     def test_a_line_typed_in_parts_is_decided_whole(self):
-        for harness in ("codex", "devin", "antigravity"):
+        for harness in ("codex", "devin", "antigravity", "copilot", "copilot-ps"):
             for parts in (["git ", "push --fo" + "rce origin main\n"], ["git \\\n", "push --fo" + "rce origin main\n"],
                           ["echo '\n", "' ; sudo id ; echo '\n"], ["echo $(\n", "sudo id)\n"]):
                 with self.subTest(harness=harness, parts=parts):
                     first = self.call(harness, parts[0], session=f"{harness}{parts}")
-                    self.assertIn(first, ("allow", "ask"))
+                    self.assertIn(first, ("allow", "flag", "ask"))   # flag: a PowerShell call (write_powershell)
                     self.assertEqual(self.call(harness, parts[1], session=f"{harness}{parts}"), "deny")
         # a line that ended is read alone again, and a ^C drops what was typed before it
         self.assertEqual(self.call("codex", "ls\n", "t"), "allow")
@@ -826,7 +870,7 @@ class TypedText(unittest.TestCase):
 
     def test_text_another_program_took_never_makes_a_later_line_look_harmless(self):
         # `q` quits less, `y` answers a read -n1, `#` …: the shell then runs the next line as typed, not `qsudo id`
-        for harness in ("codex", "devin", "antigravity"):
+        for harness in ("codex", "devin", "antigravity", "copilot"):
             for first, then in (("q", "sudo id\n"), ("y", "rm -rf ~\n"), ("q", PUSH + "\n"), ("#", "rm -rf ~\n")):
                 with self.subTest(harness=harness, first=first, then=then):
                     s = f"{harness}{first}{then}"
@@ -858,9 +902,10 @@ class TypedText(unittest.TestCase):
             for text in (f"{PUSH}\x0f", "sudo id\x04", f"it push --fo{'rce'} origin main\x01g\r"):
                 self.assertIsNotNone(self.call(harness, text, session=f"e{harness}{text!r}"))
                 self.assertNotEqual(self.call(harness, text, session=f"e{harness}{text!r}"), "allow")
-        # Devin's keys are read as they are typed, as before: a control character, ^C and ^D too
-        for key in ("\x1b", "\t", "\x03", "\x04"):
-            self.assertIn("control character", self.call("devin", key, session=f"d{key!r}"))
+        # Devin's and Copilot's keys are read as they are typed, as before: a control character, ^C and ^D too
+        for harness in ("devin", "copilot", "copilot-ps"):
+            for key in ("\x1b", "\t", "\x03", "\x04"):
+                self.assertIn("control character", self.call(harness, key, session=f"d{harness}{key!r}"))
 
     def test_keys_alone_that_put_text_in_the_line_hold_the_enter_after_them(self):
         # sec08 r3: Tab completed `.en` to .env, and Up, Ctrl-P or Ctrl-R recalled a once-approved call, each run
@@ -894,10 +939,16 @@ class TypedText(unittest.TestCase):
         self.assertIn("TK-SHELL-PARSE", d["rule_ids"])
 
     def test_a_live_shell_whose_home_or_harness_settings_change_is_blocked(self):
-        for harness in ("codex", "devin"):
+        for harness in ("codex", "devin", "copilot"):
             for line in ("export HOME=/tmp/h\n", "CLAUDE_CONFIG_DIR=/tmp/c\n", "read HOME <<< /tmp/h\n"):
                 with self.subTest(harness=harness, line=line):
                     self.assertIn("sets or replays state", self.call(harness, line, session=f"{harness}{line}"))
+            # and typed across calls, as the line the shell reads; Devin's and Copilot's as they type
+            self.assertEqual(self.call(harness, "export HO", session=f"p{harness}"), "allow")
+            self.assertIn("sets or replays state", self.call(harness, "ME=/tmp/h\n", session=f"p{harness}"))
+            if harness != "codex":
+                self.assertEqual(self.call(harness, "export HO", session=f"t{harness}"), "allow")
+                self.assertIn("sets or replays state", self.call(harness, "ME=/tmp/h", session=f"t{harness}"))
 
     def test_hermes_text_typed_into_a_process_is_read_as_its_line(self):
         reason, line, text = hermes._typed("process_manage",
@@ -924,6 +975,9 @@ class TypedText(unittest.TestCase):
         p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
              "tool_input": {"session_id": 1, "sessionId": 2, "chars": "git "}}
         self.assertIn("names its terminal", agent_hooks._blocked("codex", p, json.dumps(p)))
+        p = {"sessionId": "s", "hook_event_name": "preToolUse", "toolCallId": "c", "toolName": "write_bash",
+             "toolArgs": {"shellId": "0", "shell_id": "1", "input": "git "}}
+        self.assertIn("names its terminal", agent_hooks._blocked("copilot", p, json.dumps(p)))
 
     def test_the_hook_decides_the_joined_line(self):
         from tracekit.integrations import claude_code, harness_hooks
@@ -937,9 +991,36 @@ class TypedText(unittest.TestCase):
                 p = {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
                      "tool_use_id": "c" + chars[:1], "tool_input": {"session_id": 1, "chars": chars}}
                 harness_hooks.run("codex", json.dumps(p), stdout=io.StringIO(), stderr=io.StringIO())
+            for chars in ("git ", "push origin main\n"):   # Copilot's payload names no event: its hook command does
+                p = {"sessionId": "s", "toolCallId": "k" + chars[:1], "toolName": "write_bash",
+                     "toolArgs": {"shellId": "0", "input": chars}}
+                harness_hooks.run("copilot", json.dumps(p), stdout=io.StringIO(), stderr=io.StringIO(),
+                                  event="preToolUse")
         # recorded as typed, each beside the line it completes
         self.assertEqual(seen, [("git ", None), ("push origin main\n", "git push origin main\n"), ("q", None),
-                                ("ls\n", "qls\n")])
+                                ("ls\n", "qls\n"), ("git ", None), ("push origin main\n", "git push origin main\n")])
+
+    def test_the_v1_hook_decides_the_joined_line(self):
+        # the v1 hook marks the line a call completes (typed_line) as the v2 hook does, and the v1 policy decides it
+        from tracekit import hook, policy
+        pol, seen = policy.load(policy.DEFAULT_POLICY)[0], []
+
+        def main(harness_reasoning=True):   # the v1 pipeline's decision on the call the hook hands it
+            q = json.loads(sys.stdin.read())
+            seen.append((q["tool_input"].get("typed_line"), policy.evaluate(pol, q["tool_name"], q["tool_input"])[
+                "decision"]))
+            return 2 if seen[-1][1] == "deny" else 0
+        with mock.patch.object(hook, "main", main), mock.patch.object(hook, "AGENT_NAME", hook.AGENT_NAME), \
+                mock.patch.object(hook, "APPROVAL_CAP_S", hook.APPROVAL_CAP_S):
+            for i, chars in enumerate(("git ", "push --fo" + "rce origin main\n")):
+                p = {"session_id": "v1", "hook_event_name": "PreToolUse", "tool_name": "write_stdin",
+                     "tool_use_id": f"c{i}", "tool_input": {"session_id": 1, "chars": chars}}
+                agent_hooks.run("codex", json.dumps(p), stdout=io.StringIO(), stderr=io.StringIO())
+                p = {"sessionId": "v1", "toolCallId": f"k{i}", "toolName": "write_bash",
+                     "toolArgs": {"shellId": "0", "input": chars}}
+                agent_hooks.run("copilot", json.dumps(p), stdout=io.StringIO(), stderr=io.StringIO(),
+                                event="preToolUse")
+        self.assertEqual(seen, [(None, "allow")] * 2 + [(PUSH + "\n", "deny")] * 2)
 
 
 class OpenCodePaths(unittest.TestCase):

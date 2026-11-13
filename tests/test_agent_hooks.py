@@ -125,6 +125,7 @@ class CopilotMapping(unittest.TestCase):
             return agent_hooks._blocked("copilot", p, json.dumps(p)) or ""
         for tool_name in ("write_bash", "write_powershell"):
             for text, why in (("rmx\x7f -rf ~\n", "a control character"), ("git st\t\n", "a control character"),
+                              ("\x1b[A", "a control character"),   # read as typed: a key alone, with no line end
                               ("^echo ^\n", "expands from its history"), ("!-1\n", "expands from its history"),
                               ("PROMPT_COMMAND='git push --force origin main'\n", "sets or replays state")):
                 with self.subTest(tool=tool_name, text=text):
@@ -2254,6 +2255,10 @@ class ClineTools(unittest.TestCase):
                                    "file_path": f"{home}/.ssh", "paths": [f"{home}/.ssh"], "pattern": "BEGIN"}))
         self.assertEqual(self.legacy("list_files", {"path": "/w", "recursive": "true"})[0], "LS")
         self.assertEqual(self.legacy("list_code_definition_names", {"path": "/w"})[0], "Grep")
+        # what follows a workspace hint is trimmed as JavaScript trims: U+FEFF too, U+0085 not (Python's strip() does
+        # the reverse)
+        self.assertEqual(self.legacy("read_file", {"path": "@app:﻿notes.txt\x85"})[1]["paths"],
+                         ["@app:﻿notes.txt\x85", "notes.txt\x85"])
         self.assertEqual(self.legacy("web_search", {"query": "x"}), ("WebSearch", {"query": "x"}))
         self.assertEqual(self.legacy("browser_action", {"action": "click", "coordinate": "1,2"}),
                          ("browser_action", {"action": "click", "coordinate": "1,2"}))

@@ -531,6 +531,19 @@ class TestAudit(unittest.TestCase):
         self.assertEqual([c["tool"] for c in audit.audit(str(self.root), since="7d", agent="cline")["calls"]],
                          ["Bash"])
 
+    def test_a_pre_v4_cline_call_its_hook_cant_read_is_blocked_as_the_hook_blocks_it(self):
+        """A legacy extension's call with no path or no command, which its hook blocks, is denied (TK-HOOK-BLOCKED) and
+        the rest is replayed, as for a v4 session's."""
+        _write_json(self.root / "t1" / "api_conversation_history.json", [
+            {"role": "user", "content": [{"type": "text", "text": "<task>tidy up</task>"}]},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "a", "name": "read_file", "input": {}},
+                {"type": "tool_use", "id": "b", "name": "execute_command", "input": {"requires_approval": False}},
+                {"type": "tool_use", "id": "c", "name": "execute_command", "input": {"command": "ls"}}]}])
+        report = audit.audit(str(self.root), agent="cline")
+        self.assertEqual([(c["verdict"], c["rule_ids"]) for c in report["calls"]],
+                         [("deny", ["TK-HOOK-BLOCKED"]), ("deny", ["TK-HOOK-BLOCKED"]), ("allow", [])])
+
     def test_since_keeps_cline_calls_by_their_ts(self):
         _write_json(self.root / "s1" / "s1.messages.json", {"messages": [
             _cline_use("run_commands", {"commands": ["rm -rf /"]}, _ms(days_ago=10)),
