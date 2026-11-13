@@ -153,7 +153,7 @@ ran and verified in 27 seconds: [`examples/v2/clean-machine.sh langchain`](https
 </picture>
 
 <sub>Stable: Claude Code, the OpenAI Agents SDK, LangChain / LangGraph, the Claude Agent SDK and MCP. Experimental: Codex
-CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin, Cline, gptme, OpenHands, GitHub Copilot CLI, CrewAI, Browser Use, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent
+CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin, Cline, gptme, OpenHands, GitHub Copilot CLI, CodeBuddy Code, CrewAI, Browser Use, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent
 Framework, Strands Agents, Hermes Agent, the Vercel AI SDK, NVIDIA OpenShell, E2B, microsandbox, agentgateway, Wassette, LiteLLM's MCP
 gateway, Docker's MCP Gateway and the TypeScript SDK.
 In NVIDIA OpenShell sandboxes, Tracekit decides and signs each HTTP request OpenShell lets out, and signs OpenShell's
@@ -190,7 +190,7 @@ own blocks, process events and policy changes into the same run. Setup:
 <br>
 
 Coding agents: `tracekit init --dev --v2` wires Claude Code's hooks to a dev signer; add `--agent codex`, `cursor`,
-`gemini`, `opencode`, `kilo`, `goose`, `qwen`, `droid`, `antigravity`, `crush`, `devin`, `cline`, `openhands` or `copilot` for the others (experimental). With Claude Code's sandbox on, Tracekit holds each unsandboxed
+`gemini`, `opencode`, `kilo`, `goose`, `qwen`, `droid`, `antigravity`, `crush`, `devin`, `cline`, `openhands`, `copilot` or `codebuddy` for the others (experimental). With Claude Code's sandbox on, Tracekit holds each unsandboxed
 retry for a person
 ([Claude Code's sandbox](https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Claude-Code-Sandbox));
 with Codex's, see what Tracekit sees and the settings to use
