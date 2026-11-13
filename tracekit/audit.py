@@ -159,34 +159,43 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
 
 def _gemini_calls(entry: dict):
     """(time, call) for each tool call a Gemini CLI session record holds: a message line's own, those of a $set's full
-    history (an older checkpoint) or of a pre-v0.39 session's messages."""
-    held = entry["$set"].get("messages") if isinstance(entry.get("$set"), dict) else entry.get("messages")
-    for msg in held if isinstance(held, list) else [entry]:
-        if not isinstance(msg, dict) or msg.get("type") != "gemini" or not isinstance(msg.get("toolCalls"), list):
-            continue
-        for c in msg["toolCalls"]:
-            if isinstance(c, dict):
-                yield _entry_time(c) or _entry_time(msg), c
+    history (an older checkpoint) or of a pre-v0.39 session's messages. None for a record whose messages or tool calls
+    aren't the lists and objects Gemini CLI writes."""
+    holder = entry["$set"] if isinstance(entry.get("$set"), dict) else entry
+    held = holder.get("messages", [entry])
+    if not isinstance(held, list):
+        yield None
+        return
+    for msg in held:
+        if not isinstance(msg, dict):
+            yield None
+        elif msg.get("type") == "gemini" and "toolCalls" in msg:
+            if not isinstance(msg["toolCalls"], list):
+                yield None
+                continue
+            for c in msg["toolCalls"]:
+                yield (_entry_time(c) or _entry_time(msg), c) if isinstance(c, dict) else None
 
 
 def _gemini(root: str, since_ts: float, unreadable: list):
-    """Gemini CLI's reader: (time, session, tool, args) for each tool call in the session files under root
-    (<project>/chats/session-*.jsonl, a subagent's chats/<parent session id>/<id>.jsonl, and the session-*.json
-    written before v0.39), None for a line that isn't JSON. A message is written again on each update: a call counts
-    once in its session, by its id, as its last copy has it, and stays counted after a $rewindTo drops it."""
+    """Gemini CLI's reader: (time, session, tool, args) for each tool call in the session files under root, its tmp
+    folder (<project>/chats/session-*.jsonl, a subagent's chats/<parent session id>/<id>.jsonl, and the session-*.json
+    and <id>.json written before v0.39), None for a record that isn't what Gemini CLI writes. A message is written
+    again on each update: a call counts once in its session, by its id, as its last copy has it, and stays counted
+    after a $rewindTo drops it."""
     seen: set[bytes] = set()
+    real = os.path.realpath(root)
     for path, _ in _iter_transcripts(root, unreadable, (".jsonl", ".json")):
-        folder = os.path.dirname(path)
-        # a session first: a project folder may be named chats
-        own = os.path.basename(folder) == "chats" and os.path.basename(path).startswith("session-")
-        sub = not own and os.path.basename(os.path.dirname(folder)) == "chats" and path.endswith(".jsonl")
+        parts = os.path.relpath(path, real).split(os.sep)   # by depth: a project may be named chats
+        own = len(parts) == 3 and parts[1] == "chats" and parts[2].startswith("session-")
+        sub = len(parts) == 4 and parts[1] == "chats"
         if not own and not sub:
-            continue   # the project's other files (logs.json, checkpoints)
+            continue   # the project's other files (logs.json, checkpoints, an activity log)
         f, err = _safe_open(path)
         if err:
             unreadable.append({"path": path, "error": err})
             continue
-        session = os.path.basename(folder) if sub else None   # a subagent's counts under its parent's session
+        session = parts[2] if sub else None   # a subagent's counts under its parent's session
         calls: dict = {}   # call id -> (time, tool, args), its last copy
         try:
             if path.endswith(".json"):
@@ -202,7 +211,11 @@ def _gemini(root: str, since_ts: float, unreadable: list):
                     continue
                 if session is None and isinstance(entry.get("sessionId"), str):
                     session = entry["sessionId"]
-                for at, c in _gemini_calls(entry):
+                for item in _gemini_calls(entry):
+                    if item is None:
+                        yield None
+                        continue
+                    at, c = item
                     cid = c.get("id") if isinstance(c.get("id"), str) else (None, len(calls))   # no id: its own call
                     calls[cid] = (at, c.get("name") if isinstance(c.get("name"), str) else "",
                                   c.get("args") if isinstance(c.get("args"), dict) else {})
@@ -210,7 +223,7 @@ def _gemini(root: str, since_ts: float, unreadable: list):
             unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
             f.close()
-        session = session or os.path.basename(path).rsplit(".", 1)[0]
+        session = session or parts[2].rsplit(".", 1)[0]
         for cid, (at, tool, args) in calls.items():
             if at is not None and at.timestamp() < since_ts:
                 continue
@@ -225,82 +238,6 @@ def _gemini(root: str, since_ts: float, unreadable: list):
             if key:
                 seen.add(key)
             yield at, session, tool, args
-
-
-def cline_root():
-    """Cline's sessions' folder (v4 and later), as the Cline SDK resolves it: $CLINE_SESSION_DATA_DIR, else sessions/
-    in $CLINE_DATA_DIR, else data/sessions in $CLINE_DIR or ~/.cline."""
-    data = os.environ.get("CLINE_DATA_DIR", "").strip() or os.path.join(
-        os.environ.get("CLINE_DIR", "").strip() or os.path.join(os.path.expanduser("~"), ".cline"), "data")
-    return os.environ.get("CLINE_SESSION_DATA_DIR", "").strip() or os.path.join(data, "sessions")
-
-
-def cline_roots():
-    """Cline's default folders: its sessions' folder (cline_root), and the tasks' folder that releases before 4.0 kept
-    in VS Code's global storage, which Cline 4 reads but doesn't move: on macOS, Linux and Windows."""
-    home = os.path.expanduser("~")
-    storage = [os.path.join(home, "Library", "Application Support", "Code"), os.path.join(home, ".config", "Code")]
-    if os.environ.get("APPDATA", "").strip():
-        storage.append(os.path.join(os.environ["APPDATA"].strip(), "Code"))
-    return [cline_root(), *(os.path.join(s, "User", "globalStorage", "saoudrizwan.claude-dev", "tasks")
-                            for s in storage)]
-
-
-def _cline(root: str, since_ts: float, unreadable: list):
-    """Cline's reader: (time, task, tool, args) for each tool_use block of an assistant message in the tasks under
-    root, a v4 sessions folder (<id>/<id>.messages.json, {"messages": [...]}) or a pre-v4 tasks folder
-    (<id>/api_conversation_history.json, a list of messages). A message's time is its `ts` (ms), else the file's
-    modification time; a file that isn't JSON of that shape is one malformed entry. Follows no symlink, and stays
-    inside root as Claude Code's reader does."""
-    root = os.path.realpath(root)
-    try:
-        tasks = sorted(os.listdir(root))
-    except OSError as e:
-        unreadable.append({"path": root, "error": f"cannot list: {e}"})
-        return
-    for task in tasks:
-        if os.path.islink(os.path.join(root, task)):
-            continue
-        for path in (os.path.join(root, task, f"{task}.messages.json"),
-                     os.path.join(root, task, "api_conversation_history.json")):
-            if not os.path.lexists(path):
-                continue
-            try:   # a Windows directory junction is no symlink to islink
-                if os.path.commonpath([root, os.path.realpath(path)]) != root:
-                    continue
-            except ValueError:   # another drive
-                continue
-            f, err = _safe_open(path)
-            if err:
-                unreadable.append({"path": path, "error": err})
-                continue
-            try:
-                with f:
-                    mtime, doc = os.fstat(f.fileno()).st_mtime, json.load(f)
-            except OSError as e:
-                unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
-                continue
-            except (ValueError, RecursionError):   # not JSON (or not UTF-8), or nested past what json.load takes
-                yield None
-                continue
-            messages = doc.get("messages") if isinstance(doc, dict) else doc
-            if not isinstance(messages, list):
-                yield None
-                continue
-            for m in messages:
-                if not isinstance(m, dict) or m.get("role") != "assistant" or not isinstance(m.get("content"), list):
-                    continue
-                ts = m.get("ts")
-                try:
-                    at = datetime.fromtimestamp(ts / 1000 if type(ts) in (int, float) else mtime, timezone.utc)
-                except (OverflowError, OSError, ValueError):   # a ts no date holds
-                    at = datetime.fromtimestamp(mtime, timezone.utc)
-                if at.timestamp() < since_ts:
-                    continue
-                for b in m["content"]:
-                    if isinstance(b, dict) and b.get("type") == "tool_use":
-                        yield (at, task, b.get("name") if isinstance(b.get("name"), str) else "",
-                               b.get("input") if isinstance(b.get("input"), dict) else {})
 
 
 def cursor_root():
