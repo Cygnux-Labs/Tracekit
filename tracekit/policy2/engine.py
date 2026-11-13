@@ -469,8 +469,9 @@ class Engine:
 
     def _parse_one(self, args, command, work, readings=True, fallback=True):
         """_parse's reading of one shell call as written."""
-        target = (lambda t: any(p.search(_text(t.casefold())) for p in self._persistent_targets)) \
-            if self._persistent_targets else None
+        # a file a line writes text into, as written and resolved (_normal: C:\u\.bashrc is C:/u/.bashrc)
+        target = (lambda t: any(p.search(_text(f.casefold())) for f in {t, _normal(t)}
+                                for p in self._persistent_targets)) if self._persistent_targets else None
         start = work[0]
         try:
             return _shell(args, target, readings, work), None
@@ -485,7 +486,8 @@ class Engine:
     def _subjects(cls, field, args, fields, parsed, split=False, finds=None, work=None, tool=""):
         """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
-        each line the parser normalised, a shell `code` those without the text a command only writes into a file
+        each line the parser normalised (each also with `\\` as `/`: _slashes), a shell `code` those without the
+        text a command only writes into a file
         (shell.analyse); an fs `path` with `..` also matches its lexically normalised form, and each entry of a
         `paths` list (every file of a Codex patch) is a path too, and an http field is read for each URL of a `urls`
         list too (every URL a Gemini CLI web_fetch prompt names). `target` (every class) is what the call
@@ -538,7 +540,7 @@ class Engine:
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
                          for w in c["argv"]) for c in parsed[0] if unknown and "$" in "".join(c["argv"])]))
         if cls == "shell" and field == "line":
-            return Engine._subjects(cls, "command", args, fields, parsed) + parsed[1]
+            return Engine._subjects(cls, "command", args, fields, parsed) + _slashes(parsed[1])
         if field is None:
             return [canonical(args)]
         if cls == "fs" and field == "path" and isinstance(args.get("paths"), list):   # a call on several files
@@ -556,7 +558,8 @@ class Engine:
     @staticmethod
     def _targets(cls, args, fields, parsed):
         """shell: each command's argv without its data words (shell.data_words), the redirection targets, assignments
-        and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
+        and heredoc programs, each also read as a path is (_path_forms: `\\` as `/`, as Windows reads one, and
+        casefolded, as the agent's file system may ignore case: `cp x .ENV`
         writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; a2a: the receiver;
         mcp: the whole call without the text it only carries (_acted_on), each string in it with a `/` or `\\` also
         read as a path is (classes.fs_forms: `/root/.aws//credentials`); app and unknown tools: the whole call;
@@ -675,8 +678,18 @@ def _url_targets(urls):
     return [of[u] for u in urls]
 
 
+def _slashes(texts):
+    """Texts of a shell call, each with a `\\` in it also read as `/`: a Windows path (Git Bash keeps a quoted or
+    escaped `\\`, and C:\\x is C:/x, as classes.fs_path reads one). A second reading: it adds matches. The parser's
+    texts hold a `\\` only where the shell keeps one; a line it can't read is read as written (_plain), so too."""
+    have = set(texts)
+    return texts + [n for n in dict.fromkeys(t.replace("\\", "/") for t in texts if "\\" in t) if n not in have]
+
+
 def _path_forms(targets):
-    """Targets, each also as plainly written (/etc/./x, /etc//x and /etc/y/../x name /etc/x) and casefolded."""
+    """Targets, each also with `\\` as `/` (_slashes), as plainly written (/etc/./x, /etc//x and /etc/y/../x name
+    /etc/x) and casefolded."""
+    targets = _slashes(targets)
     have = set(targets)
     targets = targets + [n for n in (" ".join(posixpath.normpath(p) if _DOTTED.search(p) else p for p in t.split(" "))
                                      for t in targets if ("." in t or "//" in t) and _DOTTED_WORD.search(t))

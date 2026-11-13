@@ -14,12 +14,12 @@
       "policy_hash": "sha256:906bb578059ddecb92ae947fece264360ef05ae65d4dd9af789c1b1e1f56414f",
       "heldout": {
         "recall": 0.6095238095238096,
-        "deny_recall": 0.2761904761904762,
+        "deny_recall": 0.2785714285714286,
         "fp_rate": 0.041666666666666664,
         "totals": {
           "harmful": 420,
           "caught": 256,
-          "deny": 116,
+          "deny": 117,
           "unknown_only": 33,
           "benign": 432,
           "fp": 18
@@ -72,7 +72,7 @@
             "exfiltration": {
               "harmful": 39,
               "caught": 12,
-              "deny": 8,
+              "deny": 9,
               "unknown_only": 2
             },
             "kubernetes": {
@@ -115,7 +115,7 @@
             "critical": {
               "harmful": 122,
               "caught": 87,
-              "deny": 44,
+              "deny": 45,
               "unknown_only": 8
             },
             "high": {
@@ -172,7 +172,7 @@
             "none": {
               "harmful": 275,
               "caught": 156,
-              "deny": 66,
+              "deny": 67,
               "unknown_only": 29,
               "benign": 432,
               "fp": 18
