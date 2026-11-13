@@ -306,18 +306,16 @@ def _browser_use(run):
     from browser_use import Tools
 
     from .integrations import browser_use
-    init = Tools.__init__
     # every Tools shares one signer stream: a run allows 64 (quotas.streams_per_run)
     actions = browser_use._actions(run.client, run.registered)
-
     if not hasattr(Tools, "act"):   # 1.0: actions are Pydantic AI tools, called through BrowserLoop
         try:
-            from browser_use.agent.loop import BrowserLoop  # noqa: F401
+            browser_use._wire_1x(actions)
         except ImportError:   # a stand-in for the 0.13 registry, not a browser-use package
             pass
         else:
-            raise RuntimeError("browser-use 1.0 is not wired by this release: Tracekit is tested with "
-                               "browser-use>=0.13.11,<0.14")
+            return
+    init = Tools.__init__
 
     @functools.wraps(init)
     def gated(self, *a, **kw):
@@ -334,9 +332,15 @@ def _pydantic_ai(run):
 
     @functools.wraps(init)
     def wired(self, *a, capabilities=None, **kw):
-        if not any(isinstance(c, Tracekit) for c in capabilities or ()):   # one given by hand decides alone
-            capabilities = [*(capabilities or ()), Tracekit(run)]
-        init(self, *a, capabilities=capabilities, **kw)
+        deps = kw.get("deps_type")
+        if getattr(deps, "__module__", "").startswith("browser_use."):
+            # Browser Use's internal agent is gated by its own integration (BrowserLoop), which decides its `python`
+            # cell as `browser_use:python`; this capability would decide the same call again, under a generic name.
+            init(self, *a, capabilities=capabilities, **kw)
+        elif not any(isinstance(c, Tracekit) for c in capabilities or ()):   # one given by hand decides alone
+            init(self, *a, capabilities=[*(capabilities or ()), Tracekit(run)], **kw)
+        else:
+            init(self, *a, capabilities=capabilities, **kw)
     Agent.__init__ = wired
 
 
@@ -358,7 +362,7 @@ FRAMEWORKS = (
     ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3",
      "quickstarts/claude-agent-sdk", _claude_agent_sdk),
     ("MCP client", "mcp", (2, 3), (2, 4), "mcp>=2.3,<2.4", "quickstarts/mcp", _mcp),
-    ("Browser Use", "browser-use", (0, 13, 11), (0, 14), "browser-use>=0.13.11,<0.14", "integrations/browser-use",
+    ("Browser Use", "browser-use", (0, 13, 11), (1, 1), "browser-use>=0.13.11,<1.1", "integrations/browser-use",
      _browser_use),
     ("CrewAI", "crewai", (1, 15, 27), (1, 16), "crewai>=1.15.27,<1.16", "integrations/crewai", _crewai),
     ("Pydantic AI", "pydantic-ai-slim", (2, 57), (2, 58), "pydantic-ai-slim>=2.57,<2.58", "integrations/pydantic-ai",

@@ -81,20 +81,67 @@ def _seam(tools):
     if getattr(tools, "functions", None) is not None:
         return "1.0"
     raise RuntimeError("browser-use has neither the 0.13 action registry nor 1.0's Tools.functions; Tracekit is "
-                       "tested with browser-use>=0.13.11,<0.14")
+                       "tested with browser-use>=0.13.11,<0.14 and browser-use>=1.0,<1.1")
 
 
 def _wrap(tools, actions):
     """`tools` with every action gated by `actions` (one _Actions may gate many Tools: one signer stream)."""
     if _seam(tools) == "1.0":
-        raise RuntimeError("browser-use 1.0 is not wired by this release: Tracekit is tested with "
-                           "browser-use>=0.13.11,<0.14")
+        _wire_1x(actions)
+        return tools
     execute = tools.registry.execute_action
 
     async def execute_action(action_name, params, *a, **kw):
         return await actions.gate(execute, action_name, params, *a, **kw)
     tools.registry.execute_action = execute_action
     return tools
+
+
+def _wire_1x(actions):
+    """Gate every 1.0 tool call, the `python` cell included, through `actions`: BrowserLoop.wrap_tool_execute sees
+    each call before Browser Loop's own early return for `python`, and records it after. One run per process, as
+    instrument() is one run per process: a second, distinct run is refused rather than silently replacing the first."""
+    from browser_use.agent.loop import BrowserLoop
+    from pydantic_ai import ToolDenied
+    from pydantic_ai.exceptions import SkipToolExecution
+
+    original = BrowserLoop.wrap_tool_execute
+    owner = getattr(original, "tracekit_actions", None)
+    if owner is actions:
+        return
+    if owner is not None:
+        raise RuntimeError("browser-use: one Tracekit run per process gates 1.0 calls; the seam is already wired")
+
+    async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
+        if getattr(ctx.deps, "finalizing", False) and getattr(tool_def, "kind", None) == "function":
+            return await original(self, ctx, call=call, tool_def=tool_def, args=args, handler=handler)   # not run
+        secrets = sorted(((v, n) for n, v, _ in getattr(getattr(ctx.deps, "repl", None), "secrets", ()) or ()
+                          if isinstance(v, str) and v), key=lambda p: -len(p[0]))
+        params = dict(args or {})
+        call_args = await actions.arguments(call.tool_name, params, secrets)
+        tool, call_id, why, d, run = await actions.decide(call.tool_name, call_args)
+        if why is not None:
+            raise SkipToolExecution(ToolDenied(BLOCKED + why))
+        if d is None:   # the signer unreachable and the run fails open: the call runs unrecorded
+            return await original(self, ctx, call=call, tool_def=tool_def, args=params, handler=handler)
+        if run != call_args:   # the signer's copy (T2) differs from what was sent: its params run
+            params = {k: v for k, v in run.items() if k not in ("page_url", "typed_secrets")}
+        req = {"tool_call_id": call_id, "decision_id": d["decision_id"],
+               # complete() must match the decision's commitment, made on call_args (0.13 digests run post-T2)
+               "args_digest": event_hash({"tool": tool, "args": call_args})}
+        try:
+            out = await original(self, ctx, call=call, tool_def=tool_def, args=params, handler=handler)
+        except Exception as e:
+            await actions._complete(call_id, req, status="error",
+                                    error=_mask(f"{type(e).__name__}: {e}", secrets)[:4096])
+            raise
+        dump = out.model_dump(mode="json", exclude_none=True) if hasattr(out, "model_dump") else out
+        await actions._complete(call_id, req, status="error" if getattr(out, "error", None) else "ok",
+                                result=result_field(d.get("send_result"), _mask(dump, secrets)))
+        return out
+
+    wrap_tool_execute.tracekit_actions = actions
+    BrowserLoop.wrap_tool_execute = wrap_tool_execute
 
 
 def _secrets(sensitive_data):
@@ -204,6 +251,26 @@ def _blocked(why):
 class _Actions(HeldCalls):
     CLASS = "browser"
 
+    async def arguments(self, action, params, secrets, page_url=""):
+        """What the signer decides: the params with each secret value masked, the page URL, and the digest of each
+        secret the action types (a revealed salt then lets an auditor confirm it)."""
+        args = _mask({**(params or {}), "page_url": page_url}, secrets)
+        # Registry._replace_sensitive_data fills a <secret>name</secret> placeholder, and a param that is exactly a name
+        typed = {n for s in _strings(args) for n in _PLACEHOLDER.findall(s) + [s]}
+        # lean: a domain-scoped name gets the digest of its value on every domain; match page_url to the domain
+        # patterns if one digest per call is needed
+        digests = {n: sorted({"sha256:" + hashlib.sha256(v.encode()).hexdigest() for v, m in secrets if m == n})
+                   for n in typed & {n for _, n in secrets}}
+        if digests:
+            args["typed_secrets"] = digests
+        return args
+
+    async def decide(self, action, args):
+        """(the tool name, the call id, the refusal or None, the decision, the arguments to run)."""
+        tool, call_id = f"browser_use:{action}", uuid.uuid4().hex
+        why, d, run = await self._gate(call_id, tool, args)
+        return tool, call_id, why, d, run
+
     async def gate(self, execute, action, params, *a, **kw):
         secrets, session = _secrets(kw.get("sensitive_data")), kw.get("browser_session", a[0] if a else None)
         # what the agent read since the last action, before anything it decided from it runs. An observe that fails
@@ -221,17 +288,8 @@ class _Actions(HeldCalls):
         except RPCError as e:
             pages.clear()
             return _blocked(f"the signer refused the page's content: {e}")
-        args = _mask({**(params or {}), "page_url": await _page_url(session)}, secrets)
-        # Registry._replace_sensitive_data fills a <secret>name</secret> placeholder, and a param that is exactly a name
-        typed = {n for s in _strings(args) for n in _PLACEHOLDER.findall(s) + [s]}
-        # lean: a domain-scoped name gets the digest of its value on every domain; match page_url to the domain
-        # patterns if one digest per call is needed
-        digests = {n: sorted({"sha256:" + hashlib.sha256(v.encode()).hexdigest() for v, m in secrets if m == n})
-                   for n in typed & {n for _, n in secrets}}
-        if digests:
-            args["typed_secrets"] = digests
-        tool, call_id = f"browser_use:{action}", uuid.uuid4().hex
-        why, d, run = await self._gate(call_id, tool, args)
+        args = await self.arguments(action, params, secrets, await _page_url(session))
+        tool, call_id, why, d, run = await self.decide(action, args)
         if why is not None:
             return _blocked(why)
         if d is None:   # the signer unreachable and the run fails open: the action runs unrecorded

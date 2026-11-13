@@ -38,10 +38,12 @@ PW, USER = "hunter2-Correct-Horse", "alice@shop.example"   # sensitive_data valu
 SECRETS = {"https://*.shop.example": {"pw": PW}, "user": USER}
 
 try:
+    from browser_use import Tools as _Tools
     from browser_use.agent.views import ActionResult
+    BU_1X = not hasattr(_Tools, "act")   # 1.0 removed Tools.act, and its actions are Pydantic AI tools
 except ImportError:
-    HAVE_BU, BU_MODULES = False, {n: types.ModuleType(n) for n in ("browser_use", "browser_use.agent",
-                                                                     "browser_use.agent.views")}
+    HAVE_BU, BU_1X, BU_MODULES = False, False, {n: types.ModuleType(n) for n in ("browser_use", "browser_use.agent",
+                                                                                  "browser_use.agent.views")}
 
     class ActionResult:
         def __init__(self, extracted_content=None, error=None):
@@ -528,7 +530,7 @@ class Wait(unittest.TestCase):
         self.assertEqual(browser_use._actions(fake, run).wait_s, 150)   # Browser Use's default where it says none
 
 
-@unittest.skipUnless(HAVE_BU, "browser-use not installed (pip install 'browser-use==0.13.11', Python 3.11+)")
+@unittest.skipUnless(HAVE_BU and not BU_1X, "browser-use 0.13 not installed (pip install 'browser-use==0.13.11')")
 class OnRealTools(unittest.TestCase):
     def test_actions_of_a_real_registry_are_gated(self):
         from browser_use import Tools
@@ -559,3 +561,53 @@ class OnRealTools(unittest.TestCase):
             {"text": "<secret>pw</secret>", "page_url": "", "typed_secrets": {"pw": [_sha(PW)]}},
             {"text": "user", "page_url": "", "typed_secrets": {"user": [_sha(USER)]}},
             {"path": "/", "page_url": ""}])
+
+
+@unittest.skipUnless(HAVE_BU and BU_1X, "browser-use 1.0 not installed (pip install 'browser-use==1.0.2')")
+class OnRealTools1x(unittest.TestCase):
+    def test_actions_and_python_cells_are_gated(self):
+        from browser_use import Tools
+        from browser_use.agent.loop import BrowserLoop
+        from pydantic_ai.exceptions import SkipToolExecution
+        tools = Tools()
+
+        @tools.action("Echo the text.")
+        async def echo(text: str):
+            return f"echo {text}"
+
+        @tools.action("Delete a path.")
+        async def wipe(path: str):
+            raise AssertionError("a denied action ran")
+
+        def rule(tool, args):   # Browser Loop's own tools, prefixed as the adapter records them
+            return {"wipe": ("deny", ["R-WIPE"]), "python": ("deny", ["R-PY"])}.get(
+                re.split("[/:]", tool)[-1], ("allow", []))
+        fake = FakeSigner(rule)
+        signer = Recording(fake)
+        trace_tools(tools, signer, fake.register_run({"request_id": "r1", "agent": {"name": "bu1"}}))
+        ctx = types.SimpleNamespace(deps=types.SimpleNamespace(
+            finalizing=False, repl=types.SimpleNamespace(secrets=[("pw", PW, None)])))
+        ran = []
+
+        def run_tool(name, args, kind="function"):
+            async def handler(seen):
+                ran.append((name, seen))
+                return "ran"
+            call = types.SimpleNamespace(tool_name=name, tool_call_id=f"id-{name}")
+            return asyncio.run(BrowserLoop().wrap_tool_execute(
+                ctx, call=call, tool_def=types.SimpleNamespace(kind=kind), args=args, handler=handler))
+
+        self.assertEqual(run_tool("echo", {"text": PW}), "ran")   # the real value reaches the tool
+        with self.assertRaises(SkipToolExecution):
+            run_tool("wipe", {"path": "/"})
+        with self.assertRaises(SkipToolExecution):
+            run_tool("python", {"code": "print(1)"})
+        self.assertEqual([n for n, _ in ran], ["echo"])
+        decided = [json.loads(r) for m, r in signer.sent if m == "decide"]
+        self.assertEqual([d["tool"] for d in decided],
+                         ["browser_use:echo", "browser_use:wipe", "browser_use:python"])
+        self.assertEqual([d["args"] for d in decided], [
+            {"text": "<secret>pw</secret>", "page_url": "", "typed_secrets": {"pw": [_sha(PW)]}},
+            {"path": "/", "page_url": ""},
+            {"code": "print(1)", "page_url": ""}])
+        self.assertNotIn(PW, json.dumps(signer.sent))
