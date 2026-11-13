@@ -352,7 +352,12 @@ class CodingPack(unittest.TestCase):
                 "time DOCKER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration",
                 "! DOCKER_HOST=unix:///var/run/docker.sock python x.py",
                 "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
-                "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py"]
+                "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "curl -s --unix-socket ~/Library/Containers/com.docker.docker/Data/docker.raw.sock http://localhost/containers/json",
+                "curl -s --unix-socket ~/.local/share/containers/podman/machine/podman-machine-default-api.sock http://localhost/info",
+                "curl -s --unix-socket ~/.local/share/containers/podman/machine/qemu/podman-machine-dev-api.sock http://localhost/info",
+                "curl -s --unix-socket /tmp/podman/dev-api.sock http://localhost/info",
+                "curl 'http+unix://%2Ftmp%2Fpodman%2Fdev-api.sock/info'"]
         benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
                   "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps",
                   "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up",
@@ -361,7 +366,12 @@ class CodingPack(unittest.TestCase):
                   "grep release_agent notes.txt", "cat /sys/fs/cgroup/x/release_agent",
                   "echo 1 > /sys/fs/cgroup/x/cgroup.procs", "echo curl docker.sock",
                   "time DOCKER_HOST=unix:///var/run/docker.sock docker ps",
-                  "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock docker ps"]
+                  "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock docker ps",
+                  "ls -la ~/Library/Containers/com.docker.docker/Data/docker.raw.sock",
+                  "ls -la ~/.local/share/containers/podman/machine/podman-machine-default-api.sock",
+                  "ls -la /tmp/podman/dev-api.sock",
+                  "echo docker.raw.sock",
+                  "curl -s --unix-socket /tmp/podman.raw.sock http://localhost/info"]
         rules = {"TK-A071", "TK-A072", "TK-A073"}
         files = (("Write", "/sys/fs/cgroup/x/release_agent", True), ("Edit", "/sys/fs/cgroup/x/notify_on_release", True),
                  ("Read", "/sys/fs/cgroup/x/release_agent", False), ("Write", "/w/notes/release_agent_notes.md", False))
