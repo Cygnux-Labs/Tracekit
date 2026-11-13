@@ -183,7 +183,7 @@ class Import:
         self.pending = collections.deque()   # effects not yet sent, oldest first
         self.lost = collections.Counter()   # loss -> times, not yet sent
         self.sending = None   # the call in flight: sent again, same request_id, until the signer takes it
-        self.beat = 0.0   # monotonic time of the last call the signer took
+        self.beat = float("-inf")   # monotonic time of the last call the signer took
         self.skipped = collections.Counter()   # why -> events skipped
 
     def add(self, line):

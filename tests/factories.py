@@ -2,6 +2,7 @@
 
 Import with `from factories import ...` (tests/ is on sys.path under pytest; see conftest.py).
 """
+import contextlib
 import datetime
 import hashlib
 import json
@@ -26,6 +27,7 @@ from tracekit import install, policy  # noqa: E402
 from tracekit.core import now_ts  # noqa: E402
 from tracekit.daemon import Signer, load_config  # noqa: E402
 from tracekit.ledger import read_records  # noqa: E402
+from tracekit.storage import file as storage_file  # noqa: E402
 
 
 def ev(typ, data, run="r1", agent="main", source="hook"):
@@ -191,9 +193,9 @@ class BoxScene:
         if allowed is not None:
             self.steps.append((t + 0.01, len(self.steps), "complete", ("box", tid, "WebFetch", {"url": url}, allowed)))
 
-    def write(self, t, path):
+    def write(self, t, path, deleted=False):
         """A file of the box's patch written back at apply, at `t`."""
-        args = {"file_path": path, "sha256": "0" * 64, "mode": 420, "symlink": False, "deleted": False,
+        args = {"file_path": path, "sha256": "0" * 64, "mode": 420, "symlink": False, "deleted": deleted,
                 "patch_sha256": "1" * 64}
         self.steps += [(t, len(self.steps), "decide", ("box", f"write-{len(self.steps)}", "Write", args)),
                        (t + 0.01, len(self.steps) + 1, "complete", ("box", f"write-{len(self.steps)}", "Write", args,
@@ -359,6 +361,34 @@ def persisted_queue(signer):
     can't open the file while it's being replaced."""
     with signer._queue_lock:
         return signer.log.storage.witness_queue()
+
+
+# the modules whose syncs a signer on the file store makes: its logs, its new files, and its state and key files
+SIGNER_SYNCS = {"tracekit.storage.file", "tracekit.signer.service", "tracekit.deploy.files"}
+
+
+@contextlib.contextmanager
+def signer_without_fsync():
+    """The signer's syncs (SIGNER_SYNCS) skipped in this process while it's open, for a test of what a signer decides
+    and records, not of its durability, which has tests of its own (test_storage_file's test_durability_modes and
+    test_a_failed_background_sync_names_the_records_not_known_durable, storage_contract's
+    test_torn_tail_is_set_aside_and_reported): fsync is most of such a test's time on windows-latest (#722). Yields the
+    modules of the syncs made anywhere else, which still run: a sync the signer moves to another module fails the test
+    instead of silently making it slow again."""
+    elsewhere, real = [], {name: getattr(os, name) for name in ("fsync", "fdatasync") if hasattr(os, name)}
+
+    def stub(name):
+        def sync(fd):
+            caller = sys._getframe(1).f_globals.get("__name__")
+            if caller not in SIGNER_SYNCS:
+                elsewhere.append(caller)
+                real[name](fd)
+        return sync
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(storage_file, "_sync", lambda fd, full: None))   # macOS's is an fcntl
+        for name in real:
+            stack.enter_context(mock.patch.object(os, name, stub(name)))
+        yield elsewhere
 
 
 def process_pool():

@@ -24,6 +24,7 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
 from factories import box_runset_bundle, damage_crc, rewrite_bundle, unverified_bundles  # noqa: E402
+from e22_import import import_e22  # noqa: E402
 from tracekit import cli, crypto, gateway, grants  # noqa: E402
 from tracekit.bundle import Report  # noqa: E402
 from tracekit.bundle_v2 import VERSIONS, export  # noqa: E402
@@ -1529,9 +1530,7 @@ class AgreementScripts(unittest.TestCase):
         """agree() compared the Python CLI only when it printed a report: one that crashed on a forgery counted as
         agreeing, and in E22 as expected. The Python CLI's refusal of a file that is no v2 bundle is no crash."""
         _build()
-        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
-        import e22_verifier_agreement as e22
-        import verify_page_check as vpc
+        e22, vpc = import_e22("verify_page_check")
         sample = os.path.join(TS, "src", "verify", "sample")
         with tempfile.TemporaryDirectory() as d:
             crash = os.path.join(d, "python")
@@ -1561,8 +1560,7 @@ class AgreementScripts(unittest.TestCase):
     def test_e22_forges_each_bundles_other_signer_trust_from_its_own_origin(self):
         """E22's "another signer's trust config" forgery wrote one shared file, so every base was checked against a key
         under the last base's origin, not its own."""
-        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
-        import e22_verifier_agreement as e22
+        e22 = import_e22()
         bundles = {"demo run": os.path.join(ROOT, "tests", "golden", "v2", "closed.tkb"),
                    "hook": os.path.join(TS, "src", "verify", "sample", "sample.tkb")}
         with tempfile.TemporaryDirectory() as d:

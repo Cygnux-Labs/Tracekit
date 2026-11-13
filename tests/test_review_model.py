@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 import test_findings_v2 as fv
+from factories import signer_without_fsync
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -507,7 +508,9 @@ class ModelArm(unittest.TestCase):
             return message({**FLAG, "run_seqs": bad} if bad else OK)
         _, url = serve(self, answer)
         out_path = os.path.join(d, "e20_reviewer.json")
-        out = e20.model_main({"E20_REVIEW_URL": f"{url}/v1/messages", "E20_REVIEW_MODEL": "gpt-5"}, out_path)
+        with signer_without_fsync() as elsewhere:   # the model arm's scoring, not its signer's durability
+            out = e20.model_main({"E20_REVIEW_URL": f"{url}/v1/messages", "E20_REVIEW_MODEL": "gpt-5"}, out_path)
+        self.assertEqual(sorted(set(elsewhere)), [])   # every sync was the signer's, skipped
         with open(out_path) as f:
             self.assertEqual(json.load(f)["families"], {"agent": "anthropic", "reviewer": "openai"})
         self.assertLessEqual({"tuned", "development", "development_v2", "held_out"}, set(out))   # scored apart

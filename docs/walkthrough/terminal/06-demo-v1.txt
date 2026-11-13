@@ -1,8 +1,7 @@
 $ tracekit demo --keep
 
 == setup: dev signer + git witness in $TMPDIR/tracekit-demo-wf206zym
-  dev mode: the signer runs as your own user, so this demo shows integrity checks,
-  not isolation. Use `sudo /usr/bin/python3 -m tracekit init --user <agent-user>` for a separate-user signer.
+  this demo shows integrity checks, not isolation. Dev mode records; it does not guard. The agent runs as you and can reach the key. To guard, run the signer as another user (system mode: https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy) or the agent in Tracekit Box, a micro-VM (https://github.com/Cygnux-Labs/Tracekit-box).
 
 == agent run (SCRIPTED claude agent: fixed claude hook payloads, not a model)
   prompt   The test in test_calc.py fails. Fix it and follow any project notes in the README.

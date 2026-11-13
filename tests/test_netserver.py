@@ -341,19 +341,27 @@ class SilentClient(unittest.TestCase):
 
             def log_message(self, *a):
                 pass
-        port = self.start(netserver.Server(("127.0.0.1", 0), Handler, timeout=2, deadline=0.3))
+        srv, done = netserver.Server(("127.0.0.1", 0), Handler, timeout=2, deadline=0.3), threading.Semaphore(0)
+        shutdown = srv.shutdown_request
+
+        def ended(request):   # after handle_error: whatever the server logs of a connection is written by now
+            shutdown(request)
+            done.release()
+        srv.shutdown_request = ended
+        port = self.start(srv)
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
             self.drip(port)   # cut mid request line: the server's 400 goes into a closed connection
-            time.sleep(0.3 * SLOWER)
+            self.assertTrue(done.acquire(timeout=10))
         self.assertEqual(err.getvalue(), "")
         with contextlib.redirect_stderr(err):
             s = socket.create_connection(("127.0.0.1", port))
             self.socks.append(s)
             s.sendall(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n")
             s.settimeout(3)
+            # the deadline may cut the connection while the server thread still writes the traceback (Windows CI)
             self.assertEqual(s.recv(1), b"")
-            time.sleep(0.3 * SLOWER)
+            self.assertTrue(done.acquire(timeout=10))
         self.assertIn("ValueError: a bug in the handler", err.getvalue())
 
     def test_a_corrupt_tls_record_logs_no_traceback(self):

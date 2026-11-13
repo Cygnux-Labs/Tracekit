@@ -10,6 +10,8 @@ import json
 import os
 import shlex
 import shutil
+import stat
+import subprocess
 import sys
 import tempfile
 import threading
@@ -252,6 +254,47 @@ class CodingAgentHooks(unittest.TestCase):
                     doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=doctor.FAIL: got.setdefault(
                         rid, doctor.OK if ok else bad), {harness: path}, False, self.d)
                     self.assertEqual(got["D-HOOKS-TIMEOUT"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
+
+    def test_a_codebuddy_pre_tool_hook_that_runs_after_tracekits_is_named(self):
+        """#761's review: CodeBuddy Code runs the user's settings' PreToolUse hooks, then the project's
+        .codebuddy/settings.json and settings.local.json, each in its order, and the last permissionDecision stands, so
+        a later hook's allow runs a call Tracekit denied: doctor names each file such a hook is in."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user, project = agent_hooks.config_path("codebuddy", home=home), agent_hooks.config_path("codebuddy", proj)
+        local = os.path.join(os.path.dirname(project), "settings.local.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+        other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 approve-safe-commands.py"}]}
+
+        def later():
+            rows = []
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((rid, ok, detail)),
+                                            {"codebuddy": user}, False, home)
+            (row,) = [r for r in rows if "after Tracekit's" in r[2]]
+            return row
+
+        self.assertEqual(later()[:2], ("D-HOOKS-ORDER", True))
+        with open(user) as f:
+            settings = json.load(f)
+        settings["hooks"]["PreToolUse"].insert(0, other)   # before Tracekit's: its allow is overridden by a deny
+        with open(user, "w") as f:
+            json.dump(settings, f)
+        self.assertTrue(later()[1])
+        os.makedirs(os.path.dirname(project))
+        # #761's re-review: a hook that only names Tracekit's module (in a comment) is not the command init writes
+        disguised = {"matcher": "*", "hooks": [{"type": "command", "command": "python3 approve-safe-commands.py  "
+                                                                              "# tracekit.integrations.harness_hooks"}]}
+        for f, hook in ((project, disguised), (project, other), (local, other)):
+            with open(f, "w") as out:
+                json.dump({"hooks": {"PreToolUse": [hook]}}, out)
+            rid, ok, detail = later()
+            self.assertEqual((rid, ok), ("D-HOOKS-ORDER", False))
+            self.assertIn(f, detail)
+        settings["hooks"]["PreToolUse"].append(other)   # after Tracekit's in the same file
+        with open(user, "w") as f:
+            json.dump(settings, f)
+        self.assertIn(user, later()[2])
 
     def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
         # agy and Crush wait 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states theirs
@@ -607,6 +650,49 @@ class AntigravityHooks(unittest.TestCase):
             self.assertIn("539 s", row["detail"])
             self.assertEqual(row["fix"], "tracekit init --dev --v2 --agent antigravity")
             self.assertEqual(got["D-AGY-HOOKS-RUN"]["status"], "ok", got["D-AGY-HOOKS-RUN"])
+
+    def test_openhands_project_hooks_that_replace_the_users_are_warned_about(self):
+        # #563 review: the CLI's working directory ($OPENHANDS_WORK_DIR, else the current one) has a .openhands/hooks.json
+        # that replaces the user's (a repo can switch Tracekit off); only a Tracekit v2 PreToolUse hook there decides calls
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d:
+            repo, work = os.path.join(d, "repo"), os.path.join(d, "work")
+            for p in (repo, work):
+                os.makedirs(os.path.join(p, ".openhands"))
+            with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), mock.patch("os.getcwd", return_value=repo), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for k in ("OPENHANDS_WORK_DIR", "OH_PERSISTENCE_DIR"):
+                    os.environ.pop(k, None)
+                os.environ["OPENHANDS_PERSISTENCE_DIR"] = os.path.join(d, "elsewhere")   # the CLI's settings, not hooks
+                path = agent_hooks.install("openhands", v2=True)
+                self.assertEqual(path, os.path.join(d, ".openhands", "hooks.json"))
+
+                def rows():
+                    return {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none.json"),
+                                                                 harnesses={"openhands": path})}
+                got = rows()
+                for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
+                    self.assertEqual(got[rid]["status"], "ok", got[rid])
+                self.assertNotIn("D-OPENHANDS-PROJECT", got)
+                project = os.path.join(repo, ".openhands", "hooks.json")
+                with open(project, "w") as f:
+                    json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "true"}]}]}}, f)
+                got = rows()["D-OPENHANDS-PROJECT"]
+                self.assertEqual(got["status"], "warn")
+                self.assertIn(f"{project} replaces {path}", got["detail"])
+                agent_hooks.install("openhands", project=repo, v2=True)   # Tracekit's own project hooks: fine
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "ok")
+                with open(project) as f:   # Tracekit's hooks on every event but PreToolUse: its calls go undecided
+                    blob = json.load(f)
+                blob["hooks"].pop("PreToolUse")
+                with open(project, "w") as f:
+                    json.dump(blob, f)
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "warn")
+                os.environ["OPENHANDS_WORK_DIR"] = work   # the CLI's working directory, not the current one
+                self.assertNotIn("D-OPENHANDS-PROJECT", rows())
+                with open(os.path.join(work, ".openhands", "hooks.json"), "w") as f:
+                    json.dump({"pre_tool_use": []}, f)
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "warn")
 
     def test_agy_sign_ins_and_a_disabled_hook_that_run_no_hook_are_warned_about(self):
         # agy loads its hooks and never runs them when signed in with a Gemini API key (antigravity-cli#893) or
@@ -1738,6 +1824,20 @@ class Versions(unittest.TestCase):
         self.assertNotIn(planted, mine)
         self.assertIn(home, relative)
 
+    def test_codebuddys_config_dir_places_its_user_hook_file(self):
+        """#761's review: $CODEBUDDY_CONFIG_DIR moves CodeBuddy Code's user settings (agent_hooks.config_path), so it
+        is one of the variables that place a user's hook files: an absolute one places the user's own, and a relative
+        one, which resolves against the working directory, is named instead."""
+        cb = os.path.join(os.path.realpath(self.d), "cb")
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": cb}):
+            mine, relative = doctor._user_hook_files()
+        self.assertIn(os.path.join(cb, "settings.json"), mine)
+        self.assertNotIn("CODEBUDDY_CONFIG_DIR", relative)
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": "cb"}):
+            mine, relative = doctor._user_hook_files()
+        self.assertIn("CODEBUDDY_CONFIG_DIR", relative)
+        self.assertNotIn(os.path.realpath(os.path.join("cb", "settings.json")), mine)
+
     def test_a_relative_interpreter_or_path_is_never_run(self):
         """Review of #512: a relative interpreter, or a relative working tree a -c hook puts on sys.path, resolves against
         doctor's working directory, not the hook's: doctor runs neither, from the user's own hook file either."""
@@ -1832,6 +1932,164 @@ class DevProfile(unittest.TestCase):
         self.assertEqual(fs.call_args.args[0], data)
         self.assertIn(f"{data} is on apfs", got["D-DATA-FS"]["detail"])
         self.assertNotIn("will be on", got["D-DATA-FS"]["detail"])
+
+
+class Tailer(unittest.TestCase):
+    """#797: a tailer_lost gap's signed reason says to run doctor to check the tailer, and doctor had no tailer check.
+    The client config, the sudoers file and getfacl's output are faked in a temp folder: no root needed."""
+    UID = 4242
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.home = os.path.join(self.d, "home")
+        self.dot, self.projects = os.path.join(self.home, ".claude"), os.path.join(self.home, ".claude", "projects")
+        self.agent = types.SimpleNamespace(pw_name="agent", pw_uid=1000, pw_dir=self.home)
+        self.client_json, self.sudoers = os.path.join(self.d, "client.json"), os.path.join(self.d, "tracekit-tailer")
+        self.client = {"signer": "/run/s.sock", "hooks": {"user": "agent", "agent": "claude"},
+                       "tailer": {"user": "tracekit-tailer", "uid": self.UID, "python": install.OPT_PYTHON}}
+        self.rule = f"agent ALL=(tracekit-tailer) NOPASSWD: {install.OPT_PYTHON} -I -m tracekit.tailer\n"
+        self.owner, self.mode = 0, 0o440
+        self.users = {"tracekit-tailer": types.SimpleNamespace(pw_uid=self.UID)}
+        self.acl = {self.home: f"user:{self.UID}:--x", self.dot: f"user:{self.UID}:--x",
+                    self.projects: f"user:{self.UID}:r-x"}
+        self.platform, self.getfacl = "linux", "/usr/bin/getfacl"
+        self.other, self.getfacl_fails = "---", None
+
+    def getfacl_run(self, argv, **kw):
+        path = argv[-1]
+        if path == self.getfacl_fails:
+            return subprocess.CompletedProcess(argv, 2, "", "")
+        if path not in self.acl:
+            return subprocess.CompletedProcess(argv, 1, "", f"getfacl: {path}: No such file or directory\n")
+        entry = f"{self.acl[path]}\n" if self.acl[path] else ""
+        return subprocess.CompletedProcess(argv, 0, f"# file: {path}\n# owner: 1000\nuser::rwx\n{entry}"
+                                                    f"group::---\nmask::r-x\nother::{self.other}\n\n", "")
+
+    def check(self, agent=True):
+        with open(self.client_json, "w") as f:
+            json.dump(self.client, f)
+        if self.rule is not None:
+            with open(self.sudoers, "w") as f:
+                f.write(self.rule)
+        real = os.lstat
+
+        def lstat(p, *a, **k):
+            st = real(p, *a, **k)
+            return types.SimpleNamespace(st_mode=stat.S_IFREG | self.mode, st_uid=self.owner) if p == self.sudoers \
+                else st
+        rows = []
+        with mock.patch.object(install, "TAILER_SUDOERS", self.sudoers), \
+                mock.patch.object(doctor.os, "lstat", lstat), \
+                mock.patch.object(doctor, "_user", side_effect=self.users.get), \
+                mock.patch.object(doctor.shutil, "which", return_value=self.getfacl), \
+                mock.patch.object(doctor.subprocess, "run", side_effect=self.getfacl_run), \
+                mock.patch.object(doctor.sys, "platform", self.platform):
+            doctor._tailer_checks(lambda id, ok, detail, fix, bad=doctor.FAIL: rows.append(
+                doctor.result(id, doctor.OK if ok else bad, detail, fix)), self.client_json, self.agent if agent else None)
+        return {r["id"]: r for r in rows}
+
+    def test_a_correct_setup_passes(self):
+        got = self.check()
+        self.assertEqual(sorted(got), ["D-TAILER-ACL", "D-TAILER-CONFIG", "D-TAILER-SUDO", "D-TAILER-USER"])
+        self.assertEqual({r["status"] for r in got.values()}, {"ok"}, got)
+
+    def test_no_tailer_key_warns_that_sessions_record_a_gap(self):
+        del self.client["tailer"]
+        got = self.check()
+        self.assertEqual(list(got), ["D-TAILER-CONFIG"])
+        self.assertEqual((got["D-TAILER-CONFIG"]["status"], got["D-TAILER-CONFIG"]["fix"]), ("warn", doctor.REINIT))
+        self.assertIn("tailer_lost gap", got["D-TAILER-CONFIG"]["detail"])
+
+    def test_v2_checks_runs_them_in_system_mode_for_claude_code_only(self):
+        del self.client["tailer"]
+        with open(self.client_json, "w") as f:
+            json.dump(self.client, f)
+        ids = {r["id"]: r["status"] for r in doctor.v2_checks({"data_dir": self.d}, client_json=self.client_json)}
+        self.assertEqual(ids["D-TAILER-CONFIG"], "warn")
+        self.assertNotIn("D-TAILER-CONFIG", {r["id"] for r in doctor.v2_checks(
+            {"data_dir": self.d}, "dev", client_json=self.client_json, settings=os.path.join(self.d, "none"))})
+        self.client["hooks"]["agent"] = "codex"
+        self.assertEqual(self.check(), {})
+
+    def test_the_tailer_user_is_missing_or_has_another_uid(self):
+        self.users = {}
+        self.assertEqual(self.check()["D-TAILER-USER"]["status"], "warn")
+        self.users = {"tracekit-tailer": types.SimpleNamespace(pw_uid=999)}
+        got = self.check()["D-TAILER-USER"]
+        self.assertEqual(got["status"], "warn")
+        self.assertIn(f"uid 999, not {self.UID}", got["detail"])
+
+    def test_the_sudo_rule_is_missing_wrong_or_not_root_only(self):
+        for name, change, want, says in (
+                ("missing", lambda: setattr(self, "rule", None), "warn", "is missing"),
+                ("another command", lambda: setattr(self, "rule", "agent ALL=(tracekit-tailer) NOPASSWD: "
+                                                                  "/usr/bin/python3 -I -m tracekit.tailer\n"),
+                 "warn", "has no rule for"),
+                ("commented out", lambda: setattr(self, "rule", "# " + self.rule), "warn", "has no rule for"),
+                ("another user's", lambda: setattr(self, "rule", self.rule.replace("agent ALL", "bob ALL")),
+                 "warn", "has no rule for"),
+                ("another run-as user", lambda: setattr(self, "rule", self.rule.replace("(tracekit-tailer)", "(root)")),
+                 "warn", "has no rule for"),
+                ("not root's", lambda: setattr(self, "owner", 1000), "fail", "belongs to uid 1000"),
+                ("writable", lambda: setattr(self, "mode", 0o664), "fail", "is 0664, not 0440")):
+            with self.subTest(name):
+                self.setUp()
+                if os.path.exists(self.sudoers):
+                    os.remove(self.sudoers)
+                change()
+                got = self.check()["D-TAILER-SUDO"]
+                self.assertEqual(got["status"], want, got)
+                self.assertIn(says, got["detail"])
+
+    def test_a_sudoers_file_that_is_not_utf8_warns_instead_of_crashing(self):
+        self.rule = None
+        with open(self.sudoers, "wb") as f:
+            f.write(b"agent ALL=(tracekit-tailer) NOPASSWD: \xff\xfe\n")
+        got = self.check()["D-TAILER-SUDO"]
+        self.assertEqual(got["status"], "warn", got)
+        self.assertIn("cannot read", got["detail"])
+
+    def test_the_acl_misses_a_folder_or_the_mask_takes_it_away(self):
+        for name, where, entry in (("no read on projects", "projects", f"user:{self.UID}:--x"),
+                                   ("no search on home", "home", "user:1:--x"),
+                                   ("masked", "dot", f"user:{self.UID}:r-x\t#effective:r--"),
+                                   ("projects missing", "projects", None)):
+            with self.subTest(name):
+                self.setUp()
+                path = getattr(self, where)
+                self.acl[path] = entry
+                if entry is None:
+                    del self.acl[path]
+                got = self.check()["D-TAILER-ACL"]
+                self.assertEqual(got["status"], "warn", got)
+                self.assertIn(path, got["detail"])
+
+    def test_getfacl_exiting_non_zero_warns_with_its_exit_code(self):
+        self.getfacl_fails = self.dot
+        got = self.check()["D-TAILER-ACL"]
+        self.assertEqual(got["status"], "warn", got)
+        self.assertIn(f"{self.dot}: getfacl exited 2", got["detail"])
+
+    def test_with_no_named_entry_other_decides(self):
+        self.acl = {self.home: "", self.dot: "", self.projects: ""}
+        self.other = "r-x"   # a 0755 home: no named entry, other can read and search
+        self.assertEqual(self.check()["D-TAILER-ACL"]["status"], "ok")
+        self.other = "---"
+        self.assertEqual(self.check()["D-TAILER-ACL"]["status"], "warn")
+
+    def test_the_acl_check_is_skipped_not_passed_where_it_cannot_run(self):
+        for name, attr, value, says in (("no getfacl", "getfacl", None, "no getfacl"),
+                                        ("macOS", "platform", "darwin", "Linux only")):
+            with self.subTest(name):
+                self.setUp()
+                setattr(self, attr, value)
+                got = self.check()["D-TAILER-ACL"]
+                self.assertEqual(got["status"], "warn")
+                self.assertIn("not checked", got["detail"])
+                self.assertIn(says, got["detail"])
+        self.setUp()
+        self.assertIn("no agent user", self.check(agent=False)["D-TAILER-ACL"]["detail"])
 
 
 if __name__ == "__main__":

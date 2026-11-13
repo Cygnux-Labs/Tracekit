@@ -44,6 +44,21 @@ class Demos(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("ran past 300 s", said)
 
+    def test_a_demo_of_the_dev_signer_runs_when_its_signer_starts_slower_than_a_client_waits(self):
+        """--check starts every demo at once, and under that load on CI's py3.9 a dev signer's first start took longer
+        than the 10 s a client waits for one it starts (autospawn.Hung, pid None). Here its start takes 11 s more."""
+        slow = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, slow, True)
+        with open(os.path.join(slow, "sitecustomize.py"), "w") as f:
+            f.write("import sys, time\n"
+                    "if sys.argv[1:] == ['signer', 'serve', '--dev']:\n"
+                    "    from tracekit.signer import service\n"
+                    "    open_dev = service.open_dev\n"
+                    "    service.open_dev = lambda: time.sleep(11) or open_dev()   # once it holds signer.lock\n")
+        with mock.patch.object(record_demos, "PYTHONPATH", slow + os.pathsep + record_demos.PYTHONPATH):
+            ok, said = record_demos.check("completeness")
+        self.assertTrue(ok, said)
+
 
 FAIL_AFTER_THE_PROXY = """
 import json, runpy, subprocess, sys

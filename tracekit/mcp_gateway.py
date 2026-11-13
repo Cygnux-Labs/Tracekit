@@ -81,6 +81,19 @@ class Unreachable(ConnectionError):
     """An upstream whose session couldn't be opened (again): nothing was sent to it."""
 
 
+def _cause(e):
+    """The exception to name for `e`: a group holding exactly one exception is that exception, nested groups too;
+    a group of two or more stays as it is. mcp's transports run in an anyio task group, whose errors arrive as a
+    group over the real cause (a refused connection, a stdio upstream that exited). Groups are found by their
+    `exceptions` attribute, not by class: Python 3.10 has no builtin ExceptionGroup, so anyio raises the
+    exceptiongroup backport's class there, a different type with the same shape."""
+    subs = getattr(e, "exceptions", None)
+    while isinstance(subs, tuple) and len(subs) == 1:
+        e = subs[0]
+        subs = getattr(e, "exceptions", None)
+    return e
+
+
 class Upstreams:
     """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, ...)` runs one
     of the mcp Client's methods on it from any thread. A session that ended (a stdio upstream that exited, a remote
@@ -92,8 +105,12 @@ class Upstreams:
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self._stop = asyncio.Event()
         self._held, self._locks = {}, {name: threading.Lock() for name in targets}
-        for name in targets:
-            self._open(name)
+        try:
+            for name in targets:
+                self._open(name)
+        except BaseException:   # a later upstream couldn't be opened: leave nothing running behind
+            self.close()
+            raise
 
     def _open(self, name):
         """Open upstream `name`'s session and hold it until close()."""
@@ -120,7 +137,8 @@ class Upstreams:
             e = ready.exception()
             if e is None:   # it opened just as the wait ran out
                 return
-            raise Unreachable(f"upstream {name!r} couldn't be opened: {type(e).__name__}: {e}") from e
+            shown = _cause(e)   # name the cause inside mcp's task group, not the group itself
+            raise Unreachable(f"upstream {name!r} couldn't be opened: {type(shown).__name__}: {shown}") from e
 
     def _run(self, coro, timeout=UPSTREAM_TIMEOUT_S):
         fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
@@ -386,11 +404,20 @@ def serve(cfg, client=None, targets=None):
     configured, values = _targets(cfg)
     values = secret_values(values)
     srv = transport.HttpServer(*transport.configure(cfg["http"]), None, handler=_McpGateway)
-    srv.mcp = {"upstreams": Upstreams(targets or configured), "trusted": set(cfg.get("trusted", [])),
-               "cut": lambda x: cut(x, values),
-               "max_body": cfg.get("max_body", MAX_BODY), "resources": collections.OrderedDict(),
-               "lock": threading.Lock(),
-               "custody": Custody(client or Client(cfg["signer"]), cfg.get("approval_wait_s", APPROVAL_WAIT_S))}
+    upstreams = None
+    try:   # the socket is already bound and listening: anything that raises from here closes it, and the
+        # upstreams if they were opened, instead of leaving both behind for an embedding caller
+        upstreams = Upstreams(targets or configured)
+        srv.mcp = {"upstreams": upstreams, "trusted": set(cfg.get("trusted", [])),
+                   "cut": lambda x: cut(x, values),
+                   "max_body": cfg.get("max_body", MAX_BODY), "resources": collections.OrderedDict(),
+                   "lock": threading.Lock(),
+                   "custody": Custody(client or Client(cfg["signer"]), cfg.get("approval_wait_s", APPROVAL_WAIT_S))}
+    except BaseException:
+        srv.server_close()
+        if upstreams is not None:
+            upstreams.close()
+        raise
     close = srv.server_close
 
     def server_close():
