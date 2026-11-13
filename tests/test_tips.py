@@ -634,7 +634,7 @@ class Command(unittest.TestCase):
         code, out, err = self.tips("--json")
         self.assertEqual(code, 0, err)
         got = json.loads(out)
-        self.assertEqual(list(got), ["window", "prices", "root", "sources", "tips"])
+        self.assertEqual(list(got), ["window", "prices", "root", "codex_root", "sources", "tips"])
         self.assertEqual([(t["id"], t["ok"]) for t in got["tips"]], [("context", True), ("cache", False),
                                                                      ("holds", True)])
         self.assertEqual((got["sources"]["signed"]["holds"], got["sources"]["transcripts"]["files"]), (1, 1))
@@ -854,7 +854,7 @@ class Codex(unittest.TestCase):
     def test_a_subagents_file_stays_its_own_agent_and_a_bad_line_stops_nothing(self):
         d = self.week()
         write_jsonl(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T10-00-00-2222eeee.jsonl"),
-                    rollout("2222eeee-0000-4000-8000-000000000002", source="codex-subagent") +
+                    rollout("2222eeee-0000-4000-8000-000000000002", source={"subagent": {"id": "sa-1"}}) +
                     [{"timestamp": "2026-10-10T09:00:20Z", "type": "token_usage_record", "payload": "not an object"},
                      {"timestamp": "2026-10-10T09:00:30Z", "type": "token_usage_record",
                       "payload": {"response_id": "resp_ok_0", "usage": {"input_tokens": 4_300, "cached_input_tokens": 1_000,
@@ -877,6 +877,19 @@ class Codex(unittest.TestCase):
         t = body["tips"][0]
         self.assertFalse(t["ok"])
         self.assertIn("No price for gpt-made-up", t["why"])
+
+    def test_the_models_codex_runs_today_all_have_a_price(self):
+        for m in ("gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-6.1-terra", "gpt-5.6-terra",
+                  "gpt-6-luna", "gpt-5.6-luna"):
+            t = tips.build([], codex=self.week(model=m), now=NOW)["tips"][0]
+            self.assertTrue(t["ok"], (m, t.get("why")))   # no "No price for …" note
+
+    def test_the_text_names_codex_on_a_codex_only_week_and_does_not_say_nothing_yet(self):
+        body = tips.build([], codex=self.week(), now=NOW)
+        out = tips.text(body, "store", root=None)
+        self.assertIn("Codex CLI's sessions", out)
+        self.assertIn(f"{body['codex_root']}: 1 file, 300 steps", out)
+        self.assertNotIn("nothing yet", out)
 
 
 if __name__ == "__main__":
