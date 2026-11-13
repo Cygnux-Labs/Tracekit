@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-87'
+version: '2026.11-v2-82'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -572,7 +572,7 @@ ask:
     reason: publishing model weights to a model hub
     remedy: Have a person approve the held call, or work with local models and leave the hub''s copy as it is.
     rationale: Publishing model weights to a model hub changes what every user of that model gets; a person confirms it.
-  - id: TK-A063
+  - id: TK-A071
     class: shell
     field: argv
     # each command's argv: curl, wget, socat, nc, ncat or netcat, then any words, one that names docker.sock or
@@ -583,7 +583,7 @@ ask:
     reason: a raw request through the Docker or Podman socket
     remedy: Use the docker or podman command, which shows what it does, or have a person approve the held call.
     rationale: A request to the container socket skips what the docker command shows a person, and can start a privileged container that mounts the host; a person confirms it.
-  - id: TK-A064
+  - id: TK-A072
     class: shell
     field: line
     # DOCKER_HOST set to a unix:// socket where a command starts (also after { then do else, up to eight assignments,
@@ -594,7 +594,7 @@ ask:
     reason: a program pointed at the Docker socket through DOCKER_HOST
     remedy: Use the docker or podman command, which shows what it does, or have a person approve the held call.
     rationale: A program given the container socket can start a privileged container that mounts the host without the docker command showing what it does; a person confirms it.
-  - id: TK-A065
+  - id: TK-A073
     class: shell
     field: effects
     # each file a command writes (redirections, tee …), as TK-A059 reads them, in lower case: a file named
@@ -605,11 +605,11 @@ ask:
     reason: writing a cgroup's release_agent or notify_on_release
     remedy: Have a person approve the held call; the agent's own work has no need to change a cgroup's release handling.
     rationale: A cgroup's release_agent makes the host run a program when the cgroup empties, which breaks out of a container; reading the files is allowed.
-  - id: TK-A066
+  - id: TK-A074
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    # a file named release_agent or notify_on_release written or edited through file tools, as TK-A065 reads the shell's
+    # a file named release_agent or notify_on_release written or edited through file tools, as TK-A073 reads the shell's
     pattern: '(?:^|/)(?:release_agent|notify_on_release)$'
     reason: writing a cgroup's release_agent or notify_on_release
     remedy: Have a person approve the held call; the agent's own work has no need to change a cgroup's release handling.
@@ -995,7 +995,7 @@ ask:
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
 
   # --- logins, setuid bits and network shells that outlive the session: held, as a person adds them (#750)
-  - id: TK-A067
+  - id: TK-A075
     class: shell
     field: argv
     # useradd and adduser of any form; usermod with a group option (-G or -g, also in a cluster or joined to its value,
@@ -1007,7 +1007,7 @@ ask:
     reason: creating a login or adding a user to an administrator group
     remedy: Have a person create the account or change its groups; the task rarely needs a login.
     rationale: A new login or sudo membership grants access that outlives the session; a person confirms it.
-  - id: TK-A068
+  - id: TK-A076
     class: shell
     field: effects
     # a file a command writes (a redirection, tee, cp, mv, dd …) that is an account or sudo file: the password, shadow,
@@ -1017,19 +1017,19 @@ ask:
     reason: changing the system's login or sudo files
     remedy: Have a person edit the account or sudoers file; use the account tools (useradd, visudo) from a person's terminal.
     rationale: These files decide who can log in and who can run commands as root; a person confirms each change.
-  - id: TK-A069
+  - id: TK-A077
     class: shell
     field: argv
     # chmod's setuid or setgid bit in its mode, the first word after up to eight options: an s that a + or = adds, in
     # any clause of a comma list and among other letters (u+s, +sx, g+s,u+x, u=rwxs, u-x+s), or a numeric mode whose
     # setuid/setgid digit is set (4 digits starting with 2 to 7, also with leading zeros, + or =: 4755, 04755, =2755).
-    # Removing it (u-s) and the sticky bit alone (1777) stay unheld. lean: eight options, as for TK-A067; read more if
+    # Removing it (u-s) and the sticky bit alone (1777) stay unheld. lean: eight options, as for TK-A075; read more if
     # a real call has more
     pattern: '^chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)'
     reason: setting the setuid or setgid bit on a file
     remedy: Have a person set the bit; a program that runs as its owner or group needs a person's review.
     rationale: A setuid or setgid file runs with its owner's rights on every run; a person confirms it.
-  - id: TK-A070
+  - id: TK-A078
     class: shell
     field: line
     # a write (a redirection or tee) into a bash or zsh startup file (TK-F011's: .bashrc, .bash_profile, .bash_login,
@@ -1063,7 +1063,8 @@ ask:
     # .github/copilot/settings*.json (whose disableAllHooks turns every hook off), and the machine's
     # /etc/github-copilot/policy.d/*.json hooks.
     # CodeBuddy Code reads its hooks from .codebuddy/settings.json and settings.local.json, and ~/.codebuddy/ (held, as
-    # the rest of .codebuddy/ is, but for its worktrees: below).
+    # the rest of .codebuddy/ is, but for its worktrees: below). gptme reads ~/.config/gptme/ (its config.toml and the
+    # plugins there, Tracekit's among them) and a project's gptme.toml or gptme.local.toml.
     # PowerShell runs a profile (*profile.ps1) before a hook it starts without -NoProfile, so a profile that exits ends
     # the hook before Tracekit runs: the user's in Documents/WindowsPowerShell/ (5.1) or Documents/PowerShell/ (7),
     # OneDrive's Documents too under its localized name (OneDrive - Contoso/Dokumente/), pwsh's on Linux and macOS in
