@@ -7,6 +7,7 @@ import bisect
 import fnmatch
 import functools
 import itertools
+import json
 import posixpath
 import re
 import shlex
@@ -1422,7 +1423,7 @@ def _git_push(argv):
     return ["PUSH:" + w[:64] for w in why]   # what matters is the reason; a word is cut, so a subject stays short
 
 
-def _gh_api(argv, replaced=None):
+def _gh_api(argv, replaced=None, runner=False):
     """A gh or hub api call's argv percent-decoded, as GitHub reads its path (`git/refs/heads%2Fmain`), and
     `PUSH:contents` when it puts or deletes a repository's file (repos/<o>/<r>/contents/…), which commits to the
     default branch unless a branch field names another. A branch the line can't tell is held too: HEAD, one gh reads
@@ -1431,7 +1432,8 @@ def _gh_api(argv, replaced=None):
     takes the rest of its word or the next word (`-f --method=GET` is a field), the method only from -X or --method (the
     last; POST with a field or --input, else GET) and the branch only from a field (`-F branch={branch}` is the current
     one); a method that is an expansion the line can't resolve counts as a write. The endpoint's route is _gh_routes'
-    (with `replaced`, the word xargs -I puts its input in place of): a write there gives `PUSH:merges` for
+    (with `replaced`, the word xargs -I or parallel -I puts its input in place of; a branch holding it, or a {…} word
+    when a `runner` runs gh, is one the runner fills in): a write there gives `PUSH:merges` for
     repos/<o>/<r>/merges (any form), `PUSH:merge-upstream` for a fork's merge-upstream into the default branch or one the line can't tell,
     and `PUSH:unknown` where the line can't tell where it goes (`"$EP"`, `repos/o/r/$P`, `git/refs/heads/$B`, a `..`
     segment, no endpoint, which xargs appends). A PUT or DELETE with an expansion before its route is unknown too
@@ -1468,9 +1470,11 @@ def _gh_api(argv, replaced=None):
     branch = branch.removeprefix("refs/").removeprefix("heads/")
     keys = {key for _, key, _ in fields}
     unread_body = "input" in kinds or any("$" in k or "`" in k for k in keys)
-    # a branch field that alone names a branch other than the default: literal, and no body or field name hides another
+    # a branch field that alone names a branch other than the default: literal, and no body or field name hides another;
+    # not one a runner fills in (the word xargs -I or parallel -I replaces, a {…} word under any runner)
+    filled = bool(replaced) and replaced in branch or runner and re.search(r"\{[^{}]*\}", branch)
     named = bool(branch) and not unread_body and branch[:1] != "@" and "$" not in branch and "`" not in branch and \
-        not (magic and "{branch}" in branch) and branch.casefold() not in ("main", "master", "head")
+        not (magic and "{branch}" in branch) and not filled and branch.casefold() not in ("main", "master", "head")
     routes, unknown, expanded = [], not positional, False   # no endpoint: xargs appends it (gh refuses none)
     for n, endpoint in enumerate(positional):   # (gh takes one; read each of more, which gh refuses)
         found, unread, before = _gh_routes(endpoint, replaced, strict=not n)
@@ -1498,23 +1502,29 @@ def _pushes(commands):
     """Each command's argv, as the `argv` field reads it, but a git push as what makes it need a person (_git_push):
     one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master; a gh or hub
     api call also percent-decoded (_gh_api), and GitHub's REST API through curl, wget, HTTPie or xh as gh api's is
-    read (_github_rest); a kubectl dry run (_kubectl_dry_run) or a publish's (_publish_dry_run) as `DRYRUN:<argv>`."""
+    read (_github_rest); a kubectl dry run (_kubectl_dry_run) or a publish's (_publish_dry_run) as `DRYRUN:<argv>`,
+    unless xargs, parallel, find -exec or fd -x runs it, which may add any word to it (`false`, --dry-run=none)."""
     out, replaced = [], None
     for command in commands:
         argv = command["argv"]
+        runner = {v.split(" ", 1)[0] for v in command.get("via", ())} & {"xargs", "gxargs", "parallel", "find", "fd"}
         if argv[:1] in (["xargs"], ["gxargs"]):   # the word its -I puts the input in place of, for what it runs
             inner = next(shell._unwrap(argv[0], argv[1:]))
             replaced = shell._xargs_replace(argv[1:len(argv) - len(inner)])
-        elif not {"xargs", "gxargs"} & set(command.get("via", ())):
-            replaced = None   # (the word was that xargs' only)
+        elif argv[:1] == ["parallel"]:   # (its -I, as xargs' is read)
+            i = 1
+            while i < len(argv) and argv[i].startswith("-"):
+                i += 2 if argv[i] in shell.PARALLEL_OPTS else 1
+            replaced = shell._xargs_replace(argv[1:i])
+        elif not {"xargs", "gxargs", "parallel"} & runner:
+            replaced = None   # (the word was that runner's only)
         push = _git_push(argv)
         out += push if push is not None else [
-            "DRYRUN:" * (_kubectl_dry_run(argv) or _publish_dry_run(argv)) + " ".join(argv)]
+            "DRYRUN:" * (not runner and (_kubectl_dry_run(argv) or _publish_dry_run(argv))) + " ".join(argv)]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
-            given = replaced if {"xargs", "gxargs"} & set(command.get("via", ())) else None
-            out += [s for s in _gh_api(argv, given) if s not in out]
+            given = replaced if {"xargs", "gxargs", "parallel"} & runner else None
+            out += [s for s in _gh_api(argv, given, bool(runner)) if s not in out]
         out += [s for s in _github_rest(argv) if s not in out]
-        runner = {v.split(" ", 1)[0] for v in command.get("via", ())} & {"xargs", "gxargs", "parallel", "find", "fd"}
         out += [s for s in _gh_repo_sync(argv, bool(runner)) if s not in out]
     return out
 
@@ -1575,8 +1585,10 @@ def _github_rest(argv):
     text = " ".join(body)
     branches = re.findall(r'"branch"\s*:\s*"([^"]*)"|\bbranch:?=([^\s&]*)', text)   # (two: as gh api's, untold)
     branch = "".join(branches[0]) if len(branches) == 1 else ""
+    # as written, and a JSON body's top-level one as JSON reads it (no escape or quote: `m\u0061in`, HTTPie's `:=`)
+    told = not re.search(r"[\\\"']", branch) and all(b == branch for b in map(_json_branch, body) if b is not None)
     branch = branch.removeprefix("refs/").removeprefix("heads/")
-    named = bool(branch) and "@" not in text and not re.search(r"[$`]", text + branch) and \
+    named = told and bool(branch) and "@" not in text and not re.search(r"[$`]", text + branch) and \
         branch.casefold() not in ("main", "master", "head")
     out = []
     for url in urls:
@@ -1593,6 +1605,24 @@ def _github_rest(argv):
         elif (put or delete) and "contents" in routes and not named:
             out.append(f"PUSH:contents {method[:64]}")
     return out
+
+
+def _json_branch(text):
+    """The branch a JSON object body names at its top as JSON reads it, "" for none, a value that isn't a string or a
+    key repeated in any object (which parsers read apart); None for a body that isn't a JSON object."""
+    repeated = []
+
+    def pairs(items):
+        repeated.append(len({k for k, _ in items}) < len(items))
+        return dict(items)
+    try:
+        doc = json.loads(text, object_pairs_hook=pairs)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    value = "" if any(repeated) else doc.get("branch", "")
+    return value if isinstance(value, str) else ""
 
 
 def _gh_repo_sync(argv, runner=False):
@@ -1621,10 +1651,15 @@ def _gh_repo_sync(argv, runner=False):
     return [] if repo is None and not runner or named else ["PUSH:repo-sync " + (branch or "default")[:64]]
 
 
+# a word of a dry run the line can't tell: an expansion it can't resolve, or a pattern (`fals?`, `--dry*`, `[f]alse`)
+# or a find -exec {} that may give any word, as `false` or --dry-run=none
+_UNTOLD = re.compile(r"[$`*?\[]|\{\}")
+
+
 def _kubectl_dry_run(argv):
     """Whether a kubectl command is a dry run as kubectl reads its words: its last --dry-run (bare, =client or =server;
     not =none or =false) comes before a bare `--`, after which kubectl reads every word as a name; no word before that
-    is --raw (a request sent as given) or holds an expansion the line can't resolve (`"$D"` may be `--` or a later
+    is --raw (a request sent as given) or a word the line can't tell (_UNTOLD: `"$D"` may be `--` or a later
     --dry-run=none), and no --dry-run word comes right after an option that may take it as its value (_kubectl_takes:
     `--field-manager --dry-run`)."""
     if _program(argv) != "kubectl":
@@ -1633,7 +1668,7 @@ def _kubectl_dry_run(argv):
     for prev, word in zip(argv, argv[1:]):
         if word == "--":
             break
-        if word.startswith("--raw") or "$" in word or "`" in word:
+        if word.startswith("--raw") or _UNTOLD.search(word):
             return False
         if word == "--dry-run" or word.startswith("--dry-run="):
             if _kubectl_takes(prev):
@@ -1655,7 +1690,7 @@ def _publish_dry_run(argv):
     cargo, uv or poetry publish; not Yarn 1's `yarn publish`, which may ignore a flag it doesn't know and publish): its
     last --dry-run (bare or =true; not =false, nor --no-dry-run after it, nor followed by `false`) comes before a bare
     `--`, after no option that may take it as its value, no other spelling nopt reads as it is on the line, and no word
-    before holds an expansion the line can't resolve."""
+    before is one the line can't tell (_UNTOLD)."""
     if _program(argv) not in _PUBLISHERS or "publish" not in argv[1:4] or _program(argv) == "yarn" and \
             argv[argv.index("publish") - 1] != "npm":
         return False
@@ -1663,7 +1698,7 @@ def _publish_dry_run(argv):
     for i, (prev, word) in enumerate(zip(argv, argv[1:]), 1):
         if word == "--":
             break
-        if "$" in word or "`" in word:
+        if _UNTOLD.search(word):
             return False
         name = word.split("=")[0]
         bare = name.lstrip("-").lower()

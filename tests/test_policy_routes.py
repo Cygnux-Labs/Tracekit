@@ -126,10 +126,16 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("curl -so \"$F\" " + u, "curl -o 'x#1.json' 'https://example.com/[1-2]'",
                               "curl -K opts.txt " + u, "curl -sJO " + u, "wget -i urls.txt", "wget -r " + u,
                               "wget --content-disposition " + u, "curl --frobnicate x.json " + u,
-                              # a URL urllib can't split raised in the engine (TK-ENGINE-ERROR): its name is unread
-                              "curl -O http://[::1/x.sh", "curl -sO 'http://[foo]/x.sh'", "wget https://[bad/.bashrc",
-                              "curl --remote-name-all " + u + " http://[b/y"),
+                              # a URL urllib can't split, with no path after its host
+                              "curl -O http://[::1", "wget 'http://10.0.0.[1-2]'"),
                     {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-SHELL-PARSE")
+        # sec08 adversarial review: one urllib can't split (a curl glob in the host: TK-ENGINE-ERROR, then unread) is
+        # named from its raw path, as its twin with a plain host is
+        self.expect(self.bash("curl -O 'http://10.0.0.[1-2]/.env'", "curl -sO 'http://[1-2].example/.env'",
+                              "wget 'http://[a/.env#f'"), "deny", "TK-D014")
+        self.expect(self.bash("curl -O http://[::1/x.sh", "curl -sO 'http://[foo]/x.sh'", "wget https://[bad/notes.txt",
+                              "curl --remote-name-all " + u + " http://[b/y"), ("allow", "flag"),
+                    packs=("dev", "coding", "server"))
         # a data download keeps its round-6 reading; a variable the line gives is read as its value
         self.expect(self.bash("curl -so data.json " + u + " && jq . data.json", "F=out.json; curl -so \"$F\" " + u,
                               "for s in a b; do curl -so $s.svg https://example.com/$s.svg; done", "wget -qO- " + u),
@@ -496,6 +502,31 @@ class Routes(unittest.TestCase):
             "curl -X PATCH https://api.github.com/repos/o/r/git/refs/heads/feature -d '{}'"),
             ("allow", "flag"), packs=("dev",))
 
+    def test_a_rest_branch_the_body_spells_another_way_is_held(self):
+        # sec08 adversarial review: a JSON escape in the branch or its key, a repeated key, or HTTPie's raw JSON value
+        # names main where the body was read as naming another branch, or none at its top
+        c = "curl -X PUT https://api.github.com/repos/o/r/contents/a.md -d "
+        self.expect(self.bash(c + "'{\"message\":\"m\",\"branch\":\"m\\u0061in\"}'",
+                              c + "'{\"message\":\"m\",\"branch\":\"feature\",\"\\u0062ranch\":\"main\"}'",
+                              c + "'{\"message\":\"m\",\"\\u0062ranch\":\"main\",\"x\":{\"branch\":\"feature\"}}'",
+                              c + "'{\"message\":\"m\",\"branch\":\"main\\u0000\"}'",
+                              "http PUT api.github.com/repos/o/r/contents/a.md message=m branch:='\"main\"'"),
+                    "ask", "TK-A056", packs=("dev",))
+        self.expect(self.bash(c + "'{\"message\":\"a\\nb\",\"branch\":\"dev\"}'",
+                              c + "'{\"message\":\"m\",\"content\":\"eA==\",\"branch\":\"feature/x-1\"}'"),
+                    ("allow", "flag"), packs=("dev",))
+
+    def test_a_branch_a_runner_fills_in_is_held(self):
+        # sec08 adversarial review: xargs -I, parallel's -I and its {}, find's and fd's {} put the input in the branch
+        # field at run time; it was read as the literal branch it names
+        c = "gh api -X PUT repos/o/r/contents/a.txt -f message=m -f content=eA== -f branch="
+        self.expect(self.bash("echo main | xargs -I{} " + c + "{}", "echo m | xargs -IX " + c + "Xain",
+                              "find main -maxdepth 0 -exec " + c + "{} \\;", "parallel " + c + "{} ::: main",
+                              "parallel -I ,, " + c + ",, ::: main", "fd -x " + c + "{/}"),
+                    "ask", "TK-A056", packs=("dev",))
+        self.expect(self.bash("echo x | xargs -I{} " + c + "feature", "parallel " + c + "feature ::: a"),
+                    ("allow", "flag"), packs=("dev",))
+
     def test_a_publish_dry_run_publishes_nothing(self):
         self.expect(self.bash("npm publish --dry-run", "pnpm publish --dry-run --no-git-checks", "cargo publish --dry-run",
                               "npm publish --provenance --dry-run", "yarn npm publish --dry-run",
@@ -509,6 +540,28 @@ class Routes(unittest.TestCase):
                               "npm publish --dry-run false", "pnpm publish --dry-run false",
                               "npm publish --dry-run --dry=false", "npm publish --dry-run -dry-run=false",
                               "npm publish --dry-run --NO-dry-run"), "ask", "TK-A056", packs=("dev",))
+
+    def test_a_dry_run_whose_words_a_runner_or_a_pattern_adds_is_held(self):
+        # sec08 adversarial review: xargs, parallel, find -exec and fd -x add words at run time (`false`, or
+        # --dry-run=none), and a pattern word may match a file so named; the line can't tell them, so it is no dry run
+        self.expect(self.bash("echo false | xargs npm publish --dry-run", "printf 'false' | xargs pnpm publish --dry-run",
+                              "find false -maxdepth 0 -exec npm publish --dry-run {} \\;",
+                              "parallel npm publish --dry-run ::: false", "xargs -a args.txt npm publish --dry-run",
+                              "xargs -I{} npm publish --dry-run {} < f", "fd -x npm publish --dry-run",
+                              "touch false; npm publish --dry-run fals?", "touch false; npm publish --dry-run fals*",
+                              "echo --dry-run=none | xargs kubectl apply -f x.yaml --dry-run=client",
+                              "kubectl apply -f x.yaml --dry-run=client --dry*"), "ask", "TK-A056", packs=("dev",))
+        self.expect(self.bash("npm publish --dry-run ./pkg", "kubectl apply -f x.yaml --dry-run=client",
+                              "kubectl delete -f x.yaml --dry-run=server -- dep*"), "flag", packs=("dev",))
+
+    def test_an_npm_publish_abbreviation_is_a_publish(self):
+        # sec08 adversarial review: npm runs an unambiguous prefix of a command's name (abbrev: pu, pub, publ and
+        # publi are publish; p is not), which no pack read as a publish
+        cases = self.bash("npm pu", "npm pub", "npm publ --tag latest", "npm publi", "npm pub --dry-run false")
+        self.expect(cases + self.bash("npm --tag latest pub"), "ask", "TK-A056", packs=("dev",))
+        self.expect(cases, {"coding": "flag", "server": "flag", "strict": "ask"}, "TK-F004",
+                    packs=("coding", "server", "strict"))
+        self.expect(self.bash("npm pack", "npm prune"), "allow", packs=("dev",))
 
     def test_the_powershell_tool_is_read_in_any_case(self):
         for (name, backend), e in self.engines.items():

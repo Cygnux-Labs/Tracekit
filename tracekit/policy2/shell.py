@@ -1254,12 +1254,17 @@ _WGET_UNNAMED = {"execute", "config", "input-file", "input-metalink", "trust-ser
 
 
 def _url_basename(url, query=False):
-    """The name a URL's path ends in (wget's with its query, which it keeps in the name); None for one urllib can't
-    split (a bracket that is no IPv6 host: `http://[::1/x`), whose name the line can't tell."""
+    """The name a URL's path ends in (wget's with its query, which it keeps in the name). One urllib can't split (a
+    bracket that is no IPv6 host: curl's glob `http://10.0.0.[1-2]/.env`) is read from its raw path, after the scheme
+    and the host's first `/`; None when it has no path there, whose name the line can't tell."""
     try:
         parts = urllib.parse.urlsplit(url if "://" in url else "//" + url)
     except ValueError:
-        return None
+        rest = re.sub(r"^[A-Za-z][\w+.-]*://", "", url)
+        if "/" not in rest:
+            return None
+        path, _, q = rest.partition("/")[2].partition("#")[0].partition("?")
+        parts = urllib.parse.SplitResult("", "", path, q, "")
     return posixpath.basename(parts.path) + ("?" + parts.query if query and parts.query else "")
 
 
