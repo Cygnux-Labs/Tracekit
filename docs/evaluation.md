@@ -571,14 +571,14 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 162 / 177 | 445 / 491 | 1071 / 1578 | 7.97 / 8.87 |
-| strict, RE2 / regex | 164 / 178 | 424 / 476 | 976 / 1642 | 7.37 / 8.45 |
-| dev, RE2 / regex | 171 / 186 | 458 / 515 | 1133 / 1655 | 8.07 / 9.2 |
+| default, RE2 / regex | 138 / 153 | 401 / 446 | 1326 / 1473 | 7.61 / 8.77 |
+| strict, RE2 / regex | 139 / 153 | 365 / 424 | 1224 / 1452 | 7.09 / 8.03 |
+| dev, RE2 / regex | 146 / 161 | 416 / 462 | 1354 / 1613 | 7.77 / 8.9 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (66.4% default, 72.6% strict) and no benign set's
 false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.11% default; 13.0%, 15.4%, 5.3%
-strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 25% of its on the same machine (every gate was recorded again on 2026-11-13, when a closer reading of shell lines, downloads and the environment added about 17-27% at p99 against main measured beside it; re-measured once before failing; another machine,
+strict), nor any blind pool's count of false positives, each recorded when its pool joined, so a new pool never moves an older one's (amandeavor, juliasadler, email_ops and narayanansriram: 1, 8, 2 and 2 default, amandeavor's recorded again when curl's reader held a curl option it doesn't know; 2, 11, 4 and 2 strict); `p99_ref` stays within 5% of the highest of four runs on the same machine (every gate was recorded again on 2026-11-13, when a closer reading of shell lines, downloads and the environment added about 12-19% at p99 against main measured beside it; re-measured once before failing; another machine,
 such as CI's Linux runner, isn't compared). The gate used to hold p99 in microseconds, and the same packs measured up
 to 11% over it on the recording laptop under ordinary load, so `make eval` failed at random. On that laptop, with
 every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its efficiency cores alone, p99 up to 4.5
