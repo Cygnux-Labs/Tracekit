@@ -3011,7 +3011,7 @@ class SignerService:
         # the provenance index: only an untrusted tool's results (any other tool may echo what the agent put in its
         # arguments, which would launder an injected value into trusted content), read before redaction (HMACs in
         # memory only), so a value next to a secret's label still counts. A digest instead of the result: partial.
-        tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: decided before a restart
+        tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: no decision record names it
         keys, overflow, missing = [], False, False
         if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool):
             keys, overflow = self._keys({k: req[k] for k in ("result", "error") if k in req})
