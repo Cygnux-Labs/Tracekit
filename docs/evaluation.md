@@ -506,10 +506,11 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   measured after rule changes and overstates what the packs catch on calls nobody has seen. The next release should
   score a fresh blind pool. A harmful call is caught when it is denied or held (ask); a benign call is a false positive
   when it is denied or held.
-- Blind pools (`eval/e21_blind/`, the `blind` set): three more pools in the held-out pool's shape, each written blind
+- Blind pools (`eval/e21_blind/`, the `blind` set): four more pools in the held-out pool's shape, each written blind
   to the rules by an outside contributor, scored pool by pool and together: `juliasadler.jsonl`, 57 harmful and 50
-  benign calls (#357, published 2026-10-24), `amandeavor.jsonl`, 45 harmful and 45 benign (#401, 2026-10-25), and
-  `email_ops.jsonl`, email and messaging, 25 harmful and 25 benign (#728, 2026-11-11; its misses go to #258). A pool's
+  benign calls (#357, published 2026-10-24), `amandeavor.jsonl`, 45 harmful and 45 benign (#401, 2026-10-25),
+  `email_ops.jsonl`, email and messaging, 25 harmful and 25 benign (#728, 2026-11-11; its misses go to #258), and
+  `narayanansriram.jsonl`, payments, 17 harmful and 23 benign (#741, 2026-11-12; its misses go to #737). A pool's
   blind score is the one at its publication: the code and packs of the commit that merged it, the numbers its pull
   request reported. Its misses were then read and turned into rule issues (#359 to #361 from the first pool, all
   closed by the rules they asked for; #402 to #405 from the second, #402 closed by #468, #403 by #532, #404 by #549 and the
@@ -549,8 +550,10 @@ denied or held:
 | | strict | 25 (55.6%), 19 denied | 2 | 39 (86.7%), 19 denied | 2 |
 | email_ops (25 harmful, 25 benign) | default | 5 (20.0%), 3 denied | 2 | 5 (20.0%), 3 denied | 2 |
 | | strict | 6 (24.0%), 4 denied | 4 | 6 (24.0%), 4 denied | 4 |
-| all three (127 harmful, 120 benign) | default | 63 (49.6%), 23 denied | 9 (7.5%) | 96 (75.6%), 24 denied | 10 (8.3%) |
-| | strict | 72 (56.7%), 27 denied | 16 (13.3%) | 101 (79.5%), 27 denied | 17 (14.2%) |
+| narayanansriram (17 harmful, 23 benign) | default | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
+| | strict | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
+| all four (144 harmful, 143 benign) | default | 70 (48.6%), 24 denied | 11 (7.7%) | 103 (71.5%), 25 denied | 12 (8.4%) |
+| | strict | 79 (54.9%), 28 denied | 18 (12.6%) | 108 (75.0%), 28 denied | 19 (13.3%) |
 
 The current policy scores above and the latency rows below were refreshed on macOS; the existing gates are unchanged.
 
@@ -581,7 +584,7 @@ every core busy, p99 rose up to 1.7 times and `p99_ref` at most 10%; on its effi
 times and `p99_ref` at most 14%. 60 literal-free rules added to `dev.yaml` doubled dev's `p99_ref` (RE2 5.53, regex
 5.18: the gate failed) and 15 raised it about 20% (3.38 and 3.44, under the gate's 3.45 and 3.6). The targets of 2%
 (default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
-(default 4.2%, strict 10.9%), the blind pools (default 8.3%, strict 14.2%) and strict's sessions (10.0%).
+(default 4.2%, strict 10.9%), the blind pools (default 8.4%, strict 13.3%) and strict's sessions (10.0%).
 
 How the held-out numbers moved, the pool unchanged: the first run, the only blind one, caught 211 of 420 (50.2%) by
 default and 246 (58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%)
