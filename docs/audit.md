@@ -111,7 +111,8 @@ deny by `TK-HOOK-BLOCKED`. A message's `ts` is its time, else the file's modific
 session. A file that isn't JSON of that shape counts as one malformed entry. A call an older task wrote as XML in the
 message's text, rather than as a `tool_use` block, isn't read.
 
-Gemini CLI's reader reads each project's `chats` folder under its tmp folder: `<project>/chats/session-*.jsonl` (JSON
+Gemini CLI's reader reads each project's `chats` folder under its tmp folder (give that, `~/.gemini`, one project's
+folder or its `chats` folder as ROOT; any other folder is refused, naming the one to give): `<project>/chats/session-*.jsonl` (JSON
 lines, since Gemini CLI 0.39), `<project>/chats/session-*.json` (one JSON object a session, before 0.39), and a
 subagent's `<project>/chats/<parent session id>/<id>.jsonl` (`<id>.json` before 0.39), which counts under its parent's
 session. The project's other files are not read, whatever the project is named. Tool calls are in a message's

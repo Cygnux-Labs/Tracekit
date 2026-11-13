@@ -177,16 +177,39 @@ def _gemini_calls(entry: dict):
                 yield (_entry_time(c) or _entry_time(msg), c) if isinstance(c, dict) else None
 
 
+def _gemini_layout(real: str):
+    """(folder to walk, what stands above it in <project>/chats/...) for a ROOT that is Gemini CLI's tmp folder, the
+    .gemini folder or a home that holds it, one project's folder or its chats folder; a ValueError for any other."""
+    def has(*p):
+        return os.path.isdir(os.path.join(real, *p))
+    if has(".gemini", "tmp"):
+        return os.path.join(real, ".gemini", "tmp"), []
+    if os.path.basename(real) == ".gemini" and has("tmp"):
+        return os.path.join(real, "tmp"), []
+    if has("chats") and not has("chats", "chats"):   # a project: a project named chats holds one, a tmp holds that
+        return real, [""]
+    if os.path.basename(real) == "chats" and not has("chats"):
+        return real, ["", "chats"]
+    try:
+        if os.path.basename(real) == "tmp" or any(os.path.isdir(os.path.join(real, d, "chats"))
+                                                   for d in os.listdir(real)):
+            return real, []
+    except OSError:   # a folder it can't list: _iter_transcripts reports it
+        return real, []
+    raise ValueError(f"{real} is not a Gemini CLI folder: give its tmp folder (~/.gemini/tmp, or .gemini/tmp in "
+                     "$GEMINI_CLI_HOME), a project's folder in it, or that project's chats folder")
+
+
 def _gemini(root: str, since_ts: float, unreadable: list):
     """Gemini CLI's reader: (time, session, tool, args) for each tool call in the session files under root, its tmp
-    folder (<project>/chats/session-*.jsonl, a subagent's chats/<parent session id>/<id>.jsonl, and the session-*.json
+    folder, a project's or its chats folder (<project>/chats/session-*.jsonl, a subagent's chats/<parent session id>/<id>.jsonl, and the session-*.json
     and <id>.json written before v0.39), None for a record that isn't what Gemini CLI writes. A message is written
     again on each update: a call counts once in its session, by its id, as its last copy has it, and stays counted
     after a $rewindTo drops it."""
     seen: set[bytes] = set()
-    real = os.path.realpath(root)
-    for path, _ in _iter_transcripts(root, unreadable, (".jsonl", ".json")):
-        parts = os.path.relpath(path, real).split(os.sep)   # by depth: a project may be named chats
+    folder, above = _gemini_layout(os.path.realpath(root))
+    for path, _ in _iter_transcripts(folder, unreadable, (".jsonl", ".json")):
+        parts = above + os.path.relpath(path, folder).split(os.sep)   # by depth: a project may be named chats
         own = len(parts) == 3 and parts[1] == "chats" and parts[2].startswith("session-")
         sub = len(parts) == 4 and parts[1] == "chats"
         if not own and not sub:

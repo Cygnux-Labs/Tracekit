@@ -942,6 +942,26 @@ class TestAudit(unittest.TestCase):
         report = audit.audit(str(self.root / "tmp"), agent="gemini")
         self.assertEqual((report["skipped_malformed"], report["calls"]), (6, []))
 
+    def test_gemini_cli_root_is_its_tmp_folder_a_project_its_chats_folder_or_what_holds_them(self):
+        """#764 review: each level of ROOT reads the same sessions, and a folder that is none of them is refused with
+        the folder to give, not read as a clean zero."""
+        tmp = self._gemini_sessions()
+        for root in (tmp, tmp / "proj", tmp / "proj" / "chats", tmp.parent, self.root):
+            with self.subTest(root=str(root)):
+                report = audit.audit(str(root), agent="gemini")
+                self.assertEqual((len(report["calls"]), report["sessions"]), (5, 2))
+        named = self.root / "named" / "chats"   # a project named chats: its folder and its chats folder
+        _write_jsonl(named / "chats" / "session-2026-11-12T10-00-aaaaaaaa.jsonl", [
+            {"sessionId": "sx"}, _gemini_msg("m1", [("c1", "read_file", {"file_path": "a"})])])
+        for root in (named.parent, named, named / "chats"):
+            with self.subTest(root=str(root)):
+                self.assertEqual([c["session"] for c in audit.audit(str(root), agent="gemini")["calls"]], ["sx"])
+        other = self.root / "other"
+        _write_jsonl(other / "s.jsonl", [_gemini_msg("m1", [("c1", "read_file", {"file_path": "a"})])])
+        code, _, err = _run(str(other), "--agent", "gemini")
+        self.assertEqual(code, 2)
+        self.assertIn("~/.gemini/tmp", err)
+
     def test_gemini_cli_home_moves_its_folder(self):
         tmp = self._gemini_sessions()
         with mock.patch.dict(os.environ, {**_home(self.root / "empty"), "GEMINI_CLI_HOME": str(self.root)}):
