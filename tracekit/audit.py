@@ -103,6 +103,16 @@ def _iter_transcripts(root: str, unreadable: list):
             yield path, _session_from_path(os.path.relpath(path, root))
 
 
+def _tool_uses(entry: dict):
+    """(block, tool, args) for each tool_use block in a transcript line's message, as Claude Code and Cursor write it."""
+    msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    content = msg.get("content")
+    for b in content if isinstance(content, list) else []:
+        if isinstance(b, dict) and b.get("type") == "tool_use":
+            yield (b, b.get("name") if isinstance(b.get("name"), str) else "",
+                   b.get("input") if isinstance(b.get("input"), dict) else {})
+
+
 def _claude_code(root: str, since_ts: float, unreadable: list):
     """Claude Code's reader: (time, session, tool, args) for each tool use in the transcripts under root, None for a
     line that isn't JSON. A tool use whose id and call were read already (a resumed or forked session's file repeats
@@ -123,14 +133,7 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
                 at = _entry_time(entry)
                 if at is not None and at.timestamp() < since_ts:
                     continue
-                msg = entry.get("message") if isinstance(entry.get("message"), dict) else {}
-                content = msg.get("content")
-                blocks = content if isinstance(content, list) else []
-                for b in blocks:
-                    if not isinstance(b, dict) or b.get("type") != "tool_use":
-                        continue
-                    tool = b.get("name") if isinstance(b.get("name"), str) else ""
-                    args = b.get("input") if isinstance(b.get("input"), dict) else {}
+                for b, tool, args in _tool_uses(entry):
                     try:   # the same id and call: a copy (a backend may reuse an id for another call)
                         key = isinstance(b.get("id"), str) and hashlib.sha256(json.dumps(
                             [b["id"], tool, args], sort_keys=True, default=str).encode()).digest()
@@ -142,6 +145,48 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
                         seen.add(key)
                     yield at, session, tool, args
         except OSError as e:   # a read that fails (a line nested past what json.loads takes is malformed)
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+        finally:
+            f.close()
+
+
+def cursor_root():
+    """Cursor's transcripts' folder, for both its IDE's agent and the cursor-agent CLI."""
+    return os.path.join(os.path.expanduser("~"), ".cursor", "projects")
+
+
+def _cursor(root: str, since_ts: float, unreadable: list):
+    """Cursor's reader: (None, session, tool, args) for each tool use in the agent transcripts under root, which is
+    the projects folder, one project's folder or its agent-transcripts folder (<project>/agent-transcripts/<id>/
+    <id>.jsonl, an older build's flat <id>.jsonl, a subagent's in <id>/subagents/, which counts under <id>), None for
+    a line that isn't JSON. A line has no time and no id: a file
+    last written before since_ts is skipped and one written since counts whole, and every line counts, copies too."""
+    real = os.path.realpath(root)
+    # root may be the projects folder, one project's folder, or that project's agent-transcripts folder
+    if os.path.basename(real) == "agent-transcripts":
+        above = ["", "agent-transcripts"]
+    elif os.path.isdir(os.path.join(real, "agent-transcripts")):
+        above = [""]
+    else:
+        above = []
+    for path, _ in _iter_transcripts(root, unreadable):
+        folders = above + os.path.relpath(path, real).split(os.sep)
+        if len(folders) < 3 or folders[1] != "agent-transcripts":
+            continue
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        try:
+            if os.fstat(f.fileno()).st_mtime < since_ts:
+                continue
+            for _n, entry in transcript_entries(f, final=True):
+                if entry is None:
+                    yield None
+                elif entry.get("role") == "assistant":
+                    for _b, tool, args in _tool_uses(entry):
+                        yield None, folders[2].removesuffix(".jsonl"), tool, args
+        except OSError as e:
             unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
             f.close()
@@ -228,6 +273,7 @@ def _cline(root: str, since_ts: float, unreadable: list):
 # (time, session, tool, args), None for a line it counts as malformed
 READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
                       _claude_code),
+           "cursor": (cursor_root, "~/.cursor/projects", _cursor),
            "cline": (cline_roots, "$CLINE_SESSION_DATA_DIR, else $CLINE_DATA_DIR/sessions, else "
                      "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline); and before 4.0, saoudrizwan.claude-dev/tasks "
                      "in VS Code's global storage", _cline)}
@@ -489,11 +535,11 @@ def share(report: dict) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code's and Cline's), or in a calls file any agent's log can be "
+                                 "transcripts (Claude Code, Cursor and Cline), or in a calls file any agent's log can be "
                                  "turned into, through the policy and count what it would have held or denied. "
                                  "Read-only, local, and a replay against today's policy, not a signed record.")
-    ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or with --agent cline, Cline's "
-                    "(default: every known agent's folder that exists: " + "; ".join(f"{n}: {w}" for n, (_, w, _) in
+    ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or --agent's reader's (default: "
+                    "every known agent's folder that exists: " + "; ".join(f"{n}: {w}" for n, (_, w, _) in
                                                                           READERS.items()) + ")")
     ap.add_argument("--calls", metavar="FILE", help="read the calls from FILE (- for stdin) instead: one JSON object "
                     'a line, {"tool": ..., "args": {...}}, with "time" and "session" if known')

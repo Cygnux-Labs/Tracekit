@@ -31,8 +31,9 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` is a Claude Code transcripts' folder (Cline's with `--agent cline`, and another agent's once it has a
-  reader); a folder that doesn't exist is an error (exit 2). With no ROOT and no `--calls`, audit reads every known
+- `ROOT` is a Claude Code transcripts' folder (Cursor's with `--agent cursor`, Cline's with `--agent cline`, and
+  another agent's once it has a reader); a folder that doesn't exist is an error (exit 2). With no ROOT and no
+  `--calls`, audit reads every known
   agent's default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
   file: a pipe (as `<(...)` gives) goes to `--calls -`. A file it can't open, or `--calls -` with no standard input,
@@ -44,9 +45,9 @@ denied and held calls (--all for every call):
   call missing the argument it is decided on) is a deny by `TK-HOOK-BLOCKED`; the others are mapped as the hook maps
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
-  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT. An agent with no reader (every agent but
-  `claude` and `cline`) needs `--calls FILE`, and `--agent claude` or `--agent cline` a ROOT or `--calls FILE`:
-  without them it exits 2.
+  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with
+  `--calls`. An agent with no reader (every agent but `claude`, `cursor` and `cline`) needs `--calls FILE`, and
+  `--agent claude`, `cursor` or `cline` a ROOT or `--calls FILE`: without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -68,6 +69,7 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `cursor` | `~/.cursor/projects` |
 | `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
@@ -80,6 +82,15 @@ Claude Code's reader reads every `.jsonl` file under its folder, at any depth: e
 under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
+
+Cursor's reader reads the agent transcripts Cursor writes for each chat, of its IDE's agent and of the `cursor-agent`
+CLI: `<project>/agent-transcripts/<id>/<id>.jsonl` under its folder (an older build's flat `<id>.jsonl`, and a
+subagent's file in `<id>/subagents/`, which counts under `<id>`). A ROOT can also be one project's folder or its
+`agent-transcripts` folder. Each line is a JSON object; a `role: assistant` line's message may contain `tool_use`
+blocks, whose names are mapped as Cursor's Tracekit hook maps them (`Shell` is decided as `Bash`). A line has no time,
+no id and no tool result: with `--since`, a file last written before the window is skipped and one written in it
+counts whole, and a call can't be told from a copy of it, so each line counts. The IDE's chat database (`state.vscdb`)
+isn't read.
 
 Cline's reader reads each task in its folder: `<id>/<id>.messages.json`, where Cline 4.0 and later (the CLI and the
 VS Code extension) keep a session, and `<id>/api_conversation_history.json`, where earlier releases of the extension
