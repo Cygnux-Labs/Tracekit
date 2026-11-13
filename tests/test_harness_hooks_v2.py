@@ -1197,8 +1197,10 @@ class Installer(unittest.TestCase):
                     with open(path) as f:
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
-                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map
-                    hooks = [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
+                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map; Kiro's file a list of
+                    # hooks, each with its command under `action`
+                    hooks = [h["action"] for h in blob["hooks"]] if harness == "kiro" else \
+                        [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
@@ -1209,8 +1211,8 @@ class Installer(unittest.TestCase):
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
                     # through its own POSIX shell), OpenHands runs hooks with shell=True (cmd.exe), and Devin's shell
                     # isn't documented: a path with a space keeps cmd.exe's. CodeBuddy Code runs them under Git Bash, as
-                    # Claude Code does
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy"):
+                    # Claude Code does, and Kiro under cmd.exe
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy", "kiro"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
@@ -1228,7 +1230,7 @@ class Installer(unittest.TestCase):
                                  "set it to true there for Devin to read Claude Code's hooks, rules, skills, commands "
                                  "and MCP servers again\n")
                     self.assertEqual(out, want)
-                    if harness in ("droid", "copilot"):   # left with no hooks, their own file goes
+                    if harness in ("droid", "copilot", "kiro"):   # left with no hooks, their own file goes
                         self.assertFalse(os.path.exists(path))
                         continue
                     with open(path) as f:
@@ -1332,8 +1334,9 @@ class Installer(unittest.TestCase):
                     init()
                     with open(path) as f:
                         blob = json.load(f)
-                    hooks = [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
-                             for g in groups for h in (g["hooks"] if "hooks" in g else [g])]
+                    hooks = [(h["trigger"], h["action"]) for h in blob["hooks"]] if harness == "kiro" else \
+                        [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
+                         for g in groups for h in (g["hooks"] if "hooks" in g else [g])]
                     for ev, h in hooks:
                         p = subprocess.run(h["command"], shell=True, input="{}", capture_output=True, text=True,
                                            timeout=30)

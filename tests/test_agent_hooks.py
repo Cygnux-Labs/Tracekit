@@ -2638,7 +2638,7 @@ class Installer(unittest.TestCase):
     def test_install_merge_idempotent_uninstall(self):
         d = tempfile.mkdtemp()
         try:
-            for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "cline", "gptme")):   # JSON
+            for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "cline", "gptme", "kiro")):   # JSON (Kiro's file is Tracekit's own)
                 path = agent_hooks.config_path(h, d)
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 mine = {"hooks": {"SessionStart" if h != "cursor" else "sessionStart": [{"hooks": [{"type": "command", "command": "echo mine"}]}
@@ -2813,7 +2813,7 @@ class Installer(unittest.TestCase):
         from tracekit.install import SettingsError
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "cline", "gptme")):   # JSON configs
+        for h in (x for x in agent_hooks.HARNESSES if x not in (*agent_hooks.PLUGIN_TOOLS, "cline", "gptme", "kiro")):   # JSON configs (Kiro's file is Tracekit's own)
             ev, bad = {"cursor": "preToolUse", "codex": "PreToolUse", "gemini": "BeforeTool", "goose": "PreToolUse", "qwen": "PreToolUse",
                        "droid": "PreToolUse", "antigravity": "PreToolUse", "crush": "PreToolUse",
                        "devin": "PreToolUse", "openhands": "PreToolUse", "codebuddy": "PreToolUse",
@@ -3177,13 +3177,14 @@ class Installer(unittest.TestCase):
         # a file there with a hook of a person's is left as it is
         mine = {"version": "v1", "hooks": [{"name": "lint", "trigger": "PostToolUse",
                                             "action": {"type": "command", "command": "npm run lint"}}]}
-        with open(path, "w") as f:
-            json.dump(mine, f)
-        for uninstall in (False, True):
-            with self.subTest(uninstall=uninstall), self.assertRaises(SettingsError):
-                agent_hooks.install("kiro", d, uninstall=uninstall)
-        with open(path) as f:
-            self.assertEqual(json.load(f), mine)
+        for theirs in (mine, {"theme": "dark"}):   # a person's hook, or anything else but Tracekit's hooks
+            with open(path, "w") as f:
+                json.dump(theirs, f)
+            for uninstall in (False, True):
+                with self.subTest(theirs=theirs, uninstall=uninstall), self.assertRaises(SettingsError):
+                    agent_hooks.install("kiro", d, uninstall=uninstall)
+            with open(path) as f:
+                self.assertEqual(json.load(f), theirs)
 
     def test_kiro_init_says_when_its_cli_reads_no_user_hooks(self):
         # ~/.kiro/hooks is read from Kiro CLI V3 on; a project's .kiro/hooks by every release

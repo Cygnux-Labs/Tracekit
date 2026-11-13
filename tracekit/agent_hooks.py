@@ -99,9 +99,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             off); each file tool is decided on the path it reads, and a file, shell or fetch call without it is denied
 
 What each harness exposes decides what Tracekit can see: Gemini CLI, Droid, Devin, OpenHands, Cline's VS Code
-extension and Kiro CLI do not give tool calls an id, so pre and post events are paired by (tool, arguments) in order, and Antigravity
-CLI's by (step index, tool, arguments); Cursor and Qwen Code report failures through postToolUseFailure, and OpenHands
-with is_error in its tool_response.
+extension and Kiro CLI do not give tool calls an id, so pre and post events are paired by (tool, arguments) in order,
+and Antigravity CLI's by (step index, tool, arguments); Cursor and Qwen Code report failures through
+postToolUseFailure, and OpenHands with is_error in its tool_response.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
 import hashlib
@@ -1911,10 +1911,10 @@ def _command(harness, ev, v2, python):
     # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
     # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
     # can't parse: an interpreter path that needs no quotes goes bare, which both run
-    # assume Droid runs hooks under cmd.exe; Kiro CLI does (3.3.0). goose (sh -c), Crush and CodeBuddy Code (Git Bash where it finds one, as
-    # Claude Code) keep _hook_command's form, and so does OpenHands (subprocess.run(shell=True): cmd.exe). Devin
-    # doesn't document its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that doesn't goes
-    # bare, which both run
+    # assume Droid runs hooks under cmd.exe; Kiro CLI does (3.3.0). goose (sh -c), Crush and CodeBuddy Code (Git Bash
+    # where it finds one, as Claude Code) keep _hook_command's form, and so does OpenHands (subprocess.run(shell=True):
+    # cmd.exe). Devin doesn't document its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that
+    # doesn't goes bare, which both run
     if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands", "codebuddy", "kiro"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
@@ -2037,17 +2037,17 @@ def kiro_version():
 
 def _install_kiro(path, uninstall=False, v2=False, python=None):
     """Tracekit's own Kiro hook file: {"version": "v1", "hooks": [...]}, one hook per event named tracekit-<event>, with
-    no matcher (every tool). Uninstall removes the file; a file there with a hook that isn't Tracekit's is left as it
-    is."""
+    no matcher (every tool). Uninstall removes the file; a file there that holds anything but Tracekit's hooks is left
+    as it is."""
     from .install import SettingsError, _atomic_write_json, _backup_changed
     path = os.path.abspath(path)
     if uninstall and not os.path.exists(path):
         return path
     s, txt = _read(path)
     hooks = s.get("hooks", [])
-    if txt is not None and not (isinstance(hooks, list) and all(
+    if txt is not None and not (set(s) <= {"version", "hooks"} and isinstance(hooks, list) and all(
             isinstance(h, dict) and str(h.get("name")).startswith("tracekit-") for h in hooks)):
-        raise SettingsError(f"{path} has hooks that aren't Tracekit's; Tracekit did not change it.")
+        raise SettingsError(f"{path} holds more than Tracekit's hooks; Tracekit did not change it.")
     removed = {_version(h["action"].get("command")) for h in hooks if isinstance(h.get("action"), dict)} - {None}
     if uninstall:
         _backup_changed(path, txt, None)
