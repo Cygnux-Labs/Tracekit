@@ -125,7 +125,10 @@ class Routes(unittest.TestCase):
         # URL list, a recursive fetch, a name the server picks, an option the reader doesn't know) is held
         self.expect(self.bash("curl -so \"$F\" " + u, "curl -o 'x#1.json' 'https://example.com/[1-2]'",
                               "curl -K opts.txt " + u, "curl -sJO " + u, "wget -i urls.txt", "wget -r " + u,
-                              "wget --content-disposition " + u, "curl --frobnicate x.json " + u),
+                              "wget --content-disposition " + u, "curl --frobnicate x.json " + u,
+                              # a URL urllib can't split raised in the engine (TK-ENGINE-ERROR): its name is unread
+                              "curl -O http://[::1/x.sh", "curl -sO 'http://[foo]/x.sh'", "wget https://[bad/.bashrc",
+                              "curl --remote-name-all " + u + " http://[b/y"),
                     {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-SHELL-PARSE")
         # a data download keeps its round-6 reading; a variable the line gives is read as its value
         self.expect(self.bash("curl -so data.json " + u + " && jq . data.json", "F=out.json; curl -so \"$F\" " + u,

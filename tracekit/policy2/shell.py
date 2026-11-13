@@ -1254,8 +1254,12 @@ _WGET_UNNAMED = {"execute", "config", "input-file", "input-metalink", "trust-ser
 
 
 def _url_basename(url, query=False):
-    """The name a URL's path ends in (wget's with its query, which it keeps in the name)."""
-    parts = urllib.parse.urlsplit(url if "://" in url else "//" + url)
+    """The name a URL's path ends in (wget's with its query, which it keeps in the name); None for one urllib can't
+    split (a bracket that is no IPv6 host: `http://[::1/x`), whose name the line can't tell."""
+    try:
+        parts = urllib.parse.urlsplit(url if "://" in url else "//" + url)
+    except ValueError:
+        return None
     return posixpath.basename(parts.path) + ("?" + parts.query if query and parts.query else "")
 
 
@@ -1319,12 +1323,15 @@ def download_writes(argv):
         named = [v for n, v in given if n == "output"]
         if names & {"remote-name", "remote-name-all"}:
             named += [_url_basename(u) for u in urls]
-        writes += [posixpath.join(folder, w) if folder and w not in ("-", "/dev/null") else w for w in named]
-        unread |= bool(names & {"config", "remote-header-name"})
+        writes += [posixpath.join(folder, w) if folder and w not in ("-", "/dev/null") else w
+                   for w in named if w is not None]
+        unread |= None in named or bool(names & {"config", "remote-header-name"})
     else:
         folder = next((v for n, v in reversed(given) if n == "directory-prefix"), "")
         if "output-document" not in names and "spider" not in names:
-            writes += [posixpath.join(folder, n) if folder else n for n in (_url_basename(u, True) for u in urls)]
+            bases = [_url_basename(u, True) for u in urls]
+            writes += [posixpath.join(folder, n) if folder else n for n in bases if n is not None]
+            unread |= None in bases
         unread |= bool(names & _WGET_UNNAMED)
     return [w for w in writes if w not in ("-", "/dev/null", "")], unread
 
