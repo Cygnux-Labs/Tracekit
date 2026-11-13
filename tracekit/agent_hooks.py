@@ -223,7 +223,10 @@ KILO_PATH_ARG = {**OPENCODE_PATH_ARG, **dict.fromkeys(("notebook_read", "noteboo
 KILO_BLOCKED = ("notebook_execute",)
 # the harnesses that load Tracekit's OpenCode plugin: their tool names and the argument each file tool reads
 PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_TOOLS, KILO_PATH_ARG)}
-JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
+# JavaScript's whitespace, as its regex \s and String.prototype.trim() read it: Python's \s also takes \x1c-\x1f and
+# \x85, and leaves out
+JS_SPACE = r"\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
+JS_TRIM = re.compile(rf"^[{JS_SPACE}]+|[{JS_SPACE}]+$")
 # Cline's tools that run a command, read or write a file or fetch a URL (sdk/packages/core/src/extensions/tools). Its
 # PreToolUse hook sees a call before Cline checks the input against the tool's schema, which takes several shapes
 # (schemas.ts: run_commands a list, one command, {command, args} run without a shell, or cmd; read_files files, paths
@@ -257,7 +260,7 @@ CLINE_TARGET = frozenset(("path", "paths", "file", "files", "filename", "dir", "
 CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "UserPromptSubmit")
 CLINE_FILE = "PreToolUse.ps1" if os.name == "nt" else "PreToolUse"
 CLINE_PATH_KEYS = ("path", "file_path", "filePath")
-CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))""")   # getHeredocDelimiter
+CLINE_HEREDOC = re.compile(rf"""(?<![<])<<-?[{JS_SPACE}]*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))""")   # getHeredocDelimiter
 
 
 def _each(v, *keys):

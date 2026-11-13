@@ -1218,6 +1218,22 @@ class ClineTools(unittest.TestCase):
             with self.subTest(ti=ti), self.assertRaises(ValueError):   # nothing Tracekit can decide: blocked
                 agent_hooks.tool("cline", "run_commands", ti)
 
+    def test_a_here_doc_is_found_with_javascripts_whitespace(self):
+        # Cline finds a here-doc's delimiter and its closing entry with JavaScript's \s and trim(), which take neither
+        # \x1c-\x1f nor \x85 (Python's \s takes both): such an entry opens or closes no here-doc, so each runs on its own
+        push = "git push --force origin main"
+        for cmds, want in ((["cat <<\x1cEOF", push, "EOF"], ["cat <<\x1cEOF", push, "EOF"]),
+                           (["cat <<\x85EOF", push, "EOF"], ["cat <<\x85EOF", push, "EOF"]),
+                           (["cat <<EOF", push, "EOF\x1c"], ["cat <<EOF", push, "EOF\x1c"]),
+                           (["cat <<EOF", push, "EOF\x85"], ["cat <<EOF", push, "EOF\x85"]),
+                           (["cat <<EOF", "x", " EOF　"], ["cat <<EOF\nx\n EOF　"])):   # JS's own spaces trim
+            with self.subTest(cmds=cmds):
+                args = agent_hooks.tool("cline", "run_commands", {"commands": cmds})[1]
+                self.assertEqual(args.get("commands") or [args["command"]], want)
+        pol = load_policy(DEFAULT_POLICY)
+        self.assertEqual(pol.decide(*agent_hooks.tool("cline", "run_commands", {"commands": ["cat <<\x1cEOF", push, "EOF"]}))[
+            "verdict"], pol.decide("Bash", {"command": push})["verdict"])
+
     def test_file_tools_are_decided_on_every_file_they_name(self):
         for ti, want in (({"files": [{"path": "/w/a"}, {"file_path": "/w/b"}, "/w/c"]}, ["/w/a", "/w/b", "/w/c"]),
                          ({"paths": "/w/a"}, ["/w/a"]), ({"file_paths": ["/w/a", "/w/b"]}, ["/w/a", "/w/b"]),
