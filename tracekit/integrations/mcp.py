@@ -1,5 +1,5 @@
 """MCP client (python `mcp` package): every `call_tool` and `get_prompt` on a ClientSession is decided by the signer
-before it is sent to the server and recorded after.
+before it is sent to the server and recorded after, and `read_resource` records what it returns as an observed input.
 
     from tracekit.integrations.mcp import TracekitSession
     run = signer.register_run({"request_id": "r1", "agent": {"name": "my-agent"}})
@@ -19,11 +19,12 @@ A waiting call whose task calls a tool or gets a prompt on the session first, or
 signer's decided_not_completed gap at run close. Rounds without `request_state`, or whose decision isn't `allow` (a
 flag or an ask), are decided as calls of their own. A result with `isError: true` completes as an error; an exception from the session
 propagates unchanged and completes as an error.
-`list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input (`mcp:<server>/tools`,
-`/resources`, `/prompts`; a page over half a signer frame as its digest) and returned once recorded. A list the signer
-cannot reach is withheld unless the run fails open for this class, when it is returned with a warning; a refusal is
-withheld either way. The list mcp itself asks for inside `call_tool` (to check a result against the tool's output
-schema) never reaches the model and isn't recorded. Only those calls made through the wrapped session are seen.
+`read_resource`, `list_tools`, `list_resources` and `list_prompts` are recorded as untrusted observed input
+(`mcp:<server>/resource`, `/tools`, `/resources`, `/prompts`; a result over half a signer frame as its digest) and
+returned once recorded. A resource or list the signer cannot reach is withheld unless the run fails open for this
+class, when it is returned with a warning; a refusal is withheld either way. The list mcp itself asks for inside
+`call_tool` (to check a result against the tool's output schema) never reaches the model and isn't recorded. Only
+those calls made through the wrapped session are seen.
 """
 import asyncio
 import functools
@@ -67,34 +68,38 @@ class TracekitSession(HeldCalls):
     async def get_prompt(self, name, arguments=None, *a, **kw):
         return await self._call("get_prompt", "prompt:", name, arguments, *a, **kw)
 
+    async def read_resource(self, uri, *a, **kw):
+        return await self._observed("read_resource", "resource", uri, *a, **kw)
+
     async def list_tools(self, *a, **kw):
-        return await self._list("tools", *a, **kw)
+        return await self._observed("list_tools", "tools", *a, **kw)
 
     async def list_resources(self, *a, **kw):
-        return await self._list("resources", *a, **kw)
+        return await self._observed("list_resources", "resources", *a, **kw)
 
     async def list_prompts(self, *a, **kw):
-        return await self._list("prompts", *a, **kw)
+        return await self._observed("list_prompts", "prompts", *a, **kw)
 
     def _server_name(self):
         """(the name the session gave, or None; the `mcp:<name>` component, `unknown` when it gave none)."""
         raw = self._server or getattr(getattr(self._session, "server_info", None), "name", None)
         return raw, _UNSAFE.sub("_", raw or "") or "unknown"
 
-    async def _list(self, kind, *a, **kw):
-        """The page `list_<kind>` returned, once recorded as untrusted input the model reads. An unreachable signer
-        returns it only when the run fails open for this class; a refusal is withheld either way."""
-        out = await getattr(self._session, "list_" + kind)(*a, **kw)
+    async def _observed(self, method, kind, *a, **kw):
+        """What the session's `method` returned (a resource, a list's page), once recorded as untrusted input the model
+        reads (`mcp:<server>/<kind>`). An unreachable signer returns it only when the run fails open for this class; a
+        refusal is withheld either way."""
+        out = await getattr(self._session, method)(*a, **kw)
         raw, server = self._server_name()
         if not raw:
-            warnings.warn(_UNNAMED, stacklevel=4)   # list_* -> _list -> warn: the caller's line, as _call's warning
+            warnings.warn(_UNNAMED, stacklevel=4)   # list_* -> _observed -> warn: the caller's line, as _call's warning
         try:
             await self._rpc("observe", source=f"mcp:{server}/{kind}", trust="untrusted",
                             value=result_field(True, out.model_dump(mode="json", by_alias=True, exclude_none=True)))
         except SignerUnavailable as e:   # unreachable: the run's fail mode for this class, as _gate
             if not fail_open(self.fail_modes, self.CLASS):
                 raise
-            warnings.warn(f"tracekit: MCP {kind} list not recorded: {e}", stacklevel=2)
+            warnings.warn(f"tracekit: MCP {kind} not recorded: {e}", stacklevel=2)
         return out
 
     async def _send(self, method, *a, **kw):

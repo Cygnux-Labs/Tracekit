@@ -146,22 +146,29 @@ class _Mcp1Session:
             raise MCPError(-32603, "boom")
         return GetPromptResult(messages=[PromptMessage(role="user", content=TextContent(type="text", text="hi"))])
 
+    async def read_resource(self, uri, *a, **kw):
+        from mcp.types import ReadResourceResult, TextResourceContents
+        self.calls += 1
+        return ReadResourceResult(contents=[TextResourceContents(uri=uri, text=f"body of {uri}")])
+
 
 class _StubSession(_Mcp1Session):
     server_info = type("Info", (), {"name": "stub"})()
 
 
 class _Signer:
-    """A signer that fails the way it is told: `decide` and `complete` raise `errors[method]` when set."""
+    """A signer that fails the way it is told: `decide`, `complete` and `observe` raise `errors[method]` when set."""
 
     def __init__(self, decision="allow", **errors):
-        self.decision, self.errors, self.tools, self.completed, self.requests = decision, errors, [], [], []
+        self.decision, self.errors, self.tools, self.completed = decision, errors, [], []
+        self.observed, self.requests = [], []
 
     def __getattr__(self, method):
         def call(req):
             self.requests.append((method, req))
             self.tools += [req["tool"]] if method == "decide" else []
             self.completed += [req] if method == "complete" else []
+            self.observed += [req] if method == "observe" else []
             if method in self.errors:
                 raise self.errors[method]
             return {"decide": {"decision": self.decision, "decision_id": "dec-1", "rule_ids": ["r1"]},
@@ -254,10 +261,69 @@ class SignerFailures(unittest.TestCase):
         run = mock.Mock(client=signer, registered=self.RUN)
         with mock.patch("mcp.ClientSession", _StubSession), \
                 mock.patch.object(_StubSession, "call_tool", _StubSession.call_tool), \
-                mock.patch.object(_StubSession, "get_prompt", _StubSession.get_prompt):
+                mock.patch.object(_StubSession, "get_prompt", _StubSession.get_prompt), \
+                mock.patch.object(_StubSession, "read_resource", _StubSession.read_resource):
             autowire._mcp(run)
             out = asyncio.run(_StubSession().get_prompt("triage", {"issue": "1"}))
         self.assertEqual((out.messages[0].content.text, signer.tools), ("hi", ["mcp:stub/prompt:triage"]))
+
+    def test_read_resource_is_recorded_as_an_untrusted_observed_input(self):
+        session, signer = _StubSession(), _Signer()
+        out = asyncio.run(TracekitSession(session, signer, self.RUN).read_resource("note://inbox"))
+        self.assertEqual((out.contents[0].text, session.calls), ("body of note://inbox", 1))
+        self.assertEqual([(r["source"], r["trust"], r["value"]["contents"][0]["text"]) for r in signer.observed],
+                         [("mcp:stub/resource", "untrusted", "body of note://inbox")])
+
+        from tracekit import autowire
+        signer = _Signer()
+        run = mock.Mock(client=signer, registered=self.RUN)
+        with mock.patch("mcp.ClientSession", _StubSession), \
+                mock.patch.object(_StubSession, "call_tool", _StubSession.call_tool), \
+                mock.patch.object(_StubSession, "get_prompt", _StubSession.get_prompt), \
+                mock.patch.object(_StubSession, "read_resource", _StubSession.read_resource):
+            autowire._mcp(run)
+            out = asyncio.run(_StubSession().read_resource("note://inbox"))
+        self.assertEqual((out.contents[0].text, [(r["source"], r["trust"]) for r in signer.observed]),
+                         ("body of note://inbox", [("mcp:stub/resource", "untrusted")]))
+
+    def test_an_unrecorded_resource_is_withheld_when_the_run_fails_closed(self):
+        """The default fail mode is closed, and a signer refusal is withheld even when the run fails open."""
+        from tracekit.sdk.client import SignerUnavailable
+        from tracekit.signer.rpc_schema import RPCError
+        session = _StubSession()
+        with self.assertRaises(SignerUnavailable):
+            asyncio.run(TracekitSession(session, _Signer(observe=SignerUnavailable("down")),
+                                        self.RUN).read_resource("note://inbox"))
+        self.assertEqual(session.calls, 1)   # fetched from the server, not returned
+        with self.assertRaises(RPCError):
+            asyncio.run(TracekitSession(_StubSession(), _Signer(observe=RPCError("unavailable", "storage down")),
+                                        self.RUN).read_resource("note://inbox"))
+        with self.assertRaises(RPCError):
+            asyncio.run(TracekitSession(_StubSession(), _Signer(observe=RPCError("unavailable", "storage down")),
+                                        {**self.RUN, "fail_modes": {"mcp": "open"}}).read_resource("note://inbox"))
+
+    def test_an_unrecorded_resource_is_returned_when_the_run_fails_open(self):
+        from tracekit.sdk.client import SignerUnavailable
+        session = _StubSession()
+        with self.assertWarns(UserWarning) as cm:
+            gate = TracekitSession(session, _Signer(observe=SignerUnavailable("down")),
+                                   {**self.RUN, "fail_modes": {"mcp": "open"}})
+            out = asyncio.run(gate.read_resource("note://inbox"))
+        self.assertEqual((out.contents[0].text, session.calls), ("body of note://inbox", 1))
+        self.assertIn("not recorded", str(cm.warning))
+
+    def test_a_resource_over_half_a_frame_is_recorded_as_its_digest(self):
+        from mcp.types import ReadResourceResult, TextResourceContents
+        from tracekit.format.canon import event_hash
+
+        class Big(_StubSession):
+            async def read_resource(self, uri, *a, **kw):
+                return ReadResourceResult(contents=[TextResourceContents(uri=uri, text="x" * (1 << 20))])
+        signer = _Signer()
+        out = asyncio.run(TracekitSession(Big(), signer, self.RUN).read_resource("note://inbox"))
+        self.assertEqual(len(out.contents[0].text), 1 << 20)
+        self.assertEqual([r["value"] for r in signer.observed],
+                         [event_hash(out.model_dump(mode="json", by_alias=True, exclude_none=True))])
 
 
 class _ListingSession(_StubSession):
@@ -366,6 +432,7 @@ class ListsAreObserved(unittest.TestCase):
         with mock.patch("mcp.ClientSession", _ListingSession), \
                 mock.patch.object(_ListingSession, "call_tool", _ListingSession.call_tool), \
                 mock.patch.object(_ListingSession, "get_prompt", _ListingSession.get_prompt), \
+                mock.patch.object(_ListingSession, "read_resource", _ListingSession.read_resource), \
                 mock.patch.object(_ListingSession, "list_tools", _ListingSession.list_tools), \
                 mock.patch.object(_ListingSession, "list_resources", _ListingSession.list_resources), \
                 mock.patch.object(_ListingSession, "list_prompts", _ListingSession.list_prompts):
@@ -385,7 +452,7 @@ class InputRequiredRounds(unittest.TestCase):
         from mcp.client.session import ClientSession
         self.orig_methods = {
             m: getattr(ClientSession, m)
-            for m in ("call_tool", "get_prompt", "list_tools", "list_resources", "list_prompts")
+            for m in ("call_tool", "get_prompt", "read_resource", "list_tools", "list_resources", "list_prompts")
             if hasattr(ClientSession, m)
         }
         self.addCleanup(self._restore)
@@ -914,7 +981,8 @@ class BigLists(unittest.TestCase):
         from tracekit import autowire
         from tracekit.policy2.engine import Engine
         from tracekit.signer.service import SignerService
-        for name in ("call_tool", "get_prompt", "list_tools", "list_resources", "list_prompts"):   # autowire patches them
+        for name in ("call_tool", "get_prompt", "read_resource", "list_tools", "list_resources",
+                     "list_prompts"):   # autowire patches them
             patcher = mock.patch.object(ClientSession, name, getattr(ClientSession, name))
             patcher.start()
             self.addCleanup(patcher.stop)
