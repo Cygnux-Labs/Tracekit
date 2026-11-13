@@ -31,9 +31,9 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` is a Claude Code transcripts' folder (another agent's with `--agent NAME`, once that agent has a reader); a
-  folder that doesn't exist is an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's
-  default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
+- `ROOT` is a Claude Code transcripts' folder (Cline's with `--agent cline`, and another agent's once it has a
+  reader); a folder that doesn't exist is an error (exit 2). With no ROOT and no `--calls`, audit reads every known
+  agent's default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
   file: a pipe (as `<(...)` gives) goes to `--calls -`. A file it can't open, or `--calls -` with no standard input,
   exits 2 with the reason; for a FILE that isn't a regular file, what it is: a directory, a pipe, a symlink (audit
@@ -45,7 +45,8 @@ denied and held calls (--all for every call):
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
   `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT. An agent with no reader (every agent but
-  `claude`) needs `--calls FILE`, and `--agent claude` a ROOT or `--calls FILE`: without them it exits 2.
+  `claude` and `cline`) needs `--calls FILE`, and `--agent claude` or `--agent cline` a ROOT or `--calls FILE`:
+  without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -67,9 +68,12 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
-`--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`.
+`--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`. An
+agent read from more than one of its default folders is one entry: its calls and sessions add up, and `folder` is the
+list of them.
 
 Claude Code's reader reads every `.jsonl` file under its folder, at any depth: each Claude Code session's transcript, and its subagents' files
 (`<session>/subagents/*.jsonl`, a workflow's agents' in `<session>/subagents/workflows/<workflow>/`), which count
@@ -77,7 +81,20 @@ under that session. Each line is a JSON object; assistant messages may contain `
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
 
-It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
+Cline's reader reads each task in its folder: `<id>/<id>.messages.json`, where Cline 4.0 and later (the CLI and the
+VS Code extension) keep a session, and `<id>/api_conversation_history.json`, where earlier releases of the extension
+kept a task, in VS Code's global storage (`saoudrizwan.claude-dev/tasks` under `~/Library/Application
+Support/Code/User/globalStorage` on macOS, `~/.config/Code/User/globalStorage` on Linux and
+`%APPDATA%\Code\User\globalStorage` on Windows; Cline 4 reads those but doesn't move them, so with no ROOT audit
+reads each of those that exists as well). Like Claude Code's reader, it stays inside its folder, through a Windows
+directory junction too. Each `tool_use` block of an assistant message is a call, mapped as Tracekit's Cline hook maps
+it, so every command of a `run_commands` and every file of a `read_files` is decided; a call the hook can't read is a
+deny by `TK-HOOK-BLOCKED`. A message's `ts` is its time, else the file's modification time. The task's id is its
+session. A file that isn't JSON of that shape counts as one malformed entry. A call an older task wrote as XML in the
+message's text, rather than as a `tool_use` block, isn't read.
+
+The readers follow no symlink. Files and folders they can't read are counted and skipped, and so is a line that isn't
+JSON.
 
 ## Calls file
 
