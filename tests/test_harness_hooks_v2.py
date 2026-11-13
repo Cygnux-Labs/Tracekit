@@ -64,13 +64,15 @@ class Mapping(HarnessCase):
         super().setUp()
         # the held cases are approved while the hook waits (as Slack or the viewer would): the waiting setting
         os.environ[claude_code.WAIT_ENV] = str(claude_code.APPROVAL_WAIT_S)
-        self.decision, self.sent, mutex = "allow", [], threading.Lock()
+        self.decision, self.sent, self.observed, mutex = "allow", [], [], threading.Lock()
         self.signer = FakeSigner(lambda tool, args: (self.decision, [] if self.decision == "allow" else ["R-1"]))
 
         def handle(identity, frame):
             with mutex:
                 if frame["method"] == "decide":
                     self.sent.append({k: frame[k] for k in ("tool", "tool_call_id", "args")})
+                if frame["method"] == "observe":
+                    self.observed.append(frame["value"])
                 return getattr(self.signer, frame.pop("method"))(frame)
         os.environ["TRACEKIT_SIGNER"] = ac._serve(self, handle)
 
@@ -192,6 +194,48 @@ class Mapping(HarnessCase):
                 self.assertEqual(self.hook("cline", payload, ev)[:2], (0, "{}"))
         code, out, err = self.hook("cline", "not json", "PreToolUse")   # a payload it can't read: cancelled
         self.assertEqual((code, json.loads(out)["cancel"]), (0, True), err)
+
+    def test_gptme_recorded_confirmations_reach_the_signer(self):
+        self.check("gptme")
+
+    def test_gptme_does_not_complete_a_denied_call_or_decide_a_read(self):
+        payload = {"session_id": "s-gptme", "tool_use_id": "shell_1", "tool_name": "shell",
+                   "tool_input": {"args": [], "content": "printf safe", "kwargs": None}}
+        self.decision = "deny"
+        self.assertEqual(self.hook("gptme", payload, "PreToolUse")[:2], (2, ""))
+        self.assertEqual(self.hook("gptme", dict(payload, tool_response="skipped"), "PostToolUse")[0], 0)
+        read = {"session_id": "s-gptme", "tool_use_id": "read_1", "tool_name": "read",
+                "tool_input": {"args": [], "content": "probe file.txt", "kwargs": None}, "tool_response": "line one"}
+        self.assertEqual(self.hook("gptme", read, "ToolObserved")[0], 0)
+        self.assertEqual(len(self.sent), 1)
+        run = self.signer._runs[claude_code._load(claude_code._state("s-gptme"))["run_id"]]
+        self.assertFalse(any(e["type"] == "tool.result" for e in run["events"]))
+        self.assertEqual([e["data"]["source"] for e in run["events"] if e["type"] == "input.observed"],
+                         ["gptme:tool-undecided:Read"])
+
+    def test_gptme_expanded_prompt_is_only_an_untrusted_observation(self):
+        prompt = next(e["prompt"] for case in cases("gptme") for sample in case["observed"]
+                      for e in sample.get("session_events", ()) if e["event"] == "turn.pre" and "@notes.txt" in e["prompt"])
+        self.assertIn("Tracekit review fixture from the file.", prompt)
+        # An older generated plugin can still report the expanded turn as UserPromptSubmit.
+        for event in ("PromptObserved", "UserPromptSubmit"):
+            with self.subTest(event=event):
+                sid = "gptme-prompt-" + event
+                self.assertEqual(self.hook("gptme", {"session_id": sid, "prompt": prompt}, event)[:2], (0, ""))
+                state = claude_code._load(claude_code._state(sid))
+                self.assertFalse(state.get("constraints"))
+                run = self.signer._runs[state["run_id"]]
+                observed = [e["data"] for e in run["events"] if e["type"] == "input.observed"]
+                self.assertEqual([(d["source"], d["trust"]) for d in observed], [("gptme:prompt", "untrusted")])
+                self.assertEqual(self.observed[-1], [prompt])
+
+    def test_gptme_invalid_confirmation_blocks_before_deciding(self):
+        payload = {"session_id": "s-gptme", "tool_use_id": "shell_1", "tool_name": "shell",
+                   "tool_input": {"kwargs": {"command": ["not a string"]}}}
+        for body in ("[", payload, dict(payload, tool_use_id=None)):
+            with self.subTest(body=body):
+                self.assertEqual(self.hook("gptme", body, "PreToolUse")[:2], (2, ""))
+        self.assertEqual(self.sent, [])
 
     def test_devin(self):
         self.check("devin")
@@ -653,7 +697,7 @@ class OnTheDevPolicy(HarnessCase):
 class Installer(unittest.TestCase):
     def setUp(self):
         home = ac.tmpdir(self)
-        env = mock.patch.dict(os.environ, {"HOME": home, "XDG_DATA_HOME": os.path.join(home, "data"),
+        env = mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, "XDG_DATA_HOME": os.path.join(home, "data"),
                                            "LOCALAPPDATA": os.path.join(home, "data")})   # init makes the dev log key
         env.start()
         self.addCleanup(env.stop)
@@ -666,17 +710,41 @@ class Installer(unittest.TestCase):
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             return cli.main(list(argv)), out.getvalue()
 
+    def test_gptme_rejects_project_and_system_hooks_before_installing(self):
+        for command in (
+            ("init", "--dev", "--v2", "--agent", "gptme", "--project"),
+            ("init", "--v2", "--agent", "gptme", "--user", "tracekit-test-agent"),
+            ("uninstall", "--agent", "gptme", "--project"),
+        ):
+            with self.subTest(command=command):
+                self.assertEqual(self.cli(*command)[0], 2)
+                self.assertFalse(os.path.exists(agent_hooks.config_path("gptme")))
+
     def test_init_dev_v2_replaces_v1_and_uninstall_removes_it(self):
         d = ac.tmpdir(self)
         with mock.patch("os.getcwd", return_value=d):
             for harness in agent_hooks.HARNESSES:
                 with self.subTest(harness=harness):
-                    path = agent_hooks.config_path(harness, d)
+                    project = None if harness == "gptme" else d
+                    path = agent_hooks.config_path(harness, project)
                     with contextlib.redirect_stdout(io.StringIO()):
-                        agent_hooks.install(harness, d)   # v1
-                    code, out = self.cli("init", "--dev", "--v2", "--agent", harness, "--project")
+                        agent_hooks.install(harness, project)   # v1
+                    scope = ("--project",) if project else ()
+                    code, out = self.cli("init", "--dev", "--v2", "--agent", harness, *scope)
                     self.assertEqual(code, 0)
                     self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {path}", out)
+                    if harness == "gptme":
+                        bridge = agent_hooks._gptme_hook_path(path)
+                        with open(bridge, encoding="utf-8") as f:
+                            self.assertEqual(agent_hooks._version(f.read()), "v2")
+                        again = self.cli("init", "--dev", "--v2", "--agent", harness)[1].splitlines()
+                        self.assertEqual(again[0], f"v2 {harness} hooks: {path}")
+                        code, out = self.cli("uninstall", "--agent", harness)
+                        self.assertEqual(code, 0)
+                        self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
+                        self.assertFalse(os.path.exists(bridge))
+                        self.assertTrue(os.path.isfile(path))
+                        continue
                     if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
                             plugin = f.read()
@@ -851,7 +919,7 @@ class Installer(unittest.TestCase):
             # OpenCode: no shell; agy answers at exit 0 in JSON (test_antigravity_installed_commands_answer_in_json_…)
             # Cline's hook files answer a cancel themselves (test_a_cline_hook_file_cancels_a_call_whose_hook_...)
             for harness in ("claude", *(h for h in agent_hooks.HARNESSES
-                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity", "cline"))):
+                                        if h not in (*agent_hooks.PLUGIN_TOOLS, "antigravity", "cline", "gptme"))):
                 path = os.path.join(d, str(bool(python)), harness, "hooks.json")
 
                 def init():
