@@ -310,6 +310,15 @@ def _browser_use(run):
     # every Tools shares one signer stream: a run allows 64 (quotas.streams_per_run)
     actions = browser_use._actions(run.client, run.registered)
 
+    if not hasattr(Tools, "act"):   # 1.0: actions are Pydantic AI tools, called through BrowserLoop
+        try:
+            from browser_use.agent.loop import BrowserLoop  # noqa: F401
+        except ImportError:   # a stand-in for the 0.13 registry, not a browser-use package
+            pass
+        else:
+            raise RuntimeError("browser-use 1.0 is not wired by this release: Tracekit is tested with "
+                               "browser-use>=0.13.11,<0.14")
+
     @functools.wraps(init)
     def gated(self, *a, **kw):
         init(self, *a, **kw)

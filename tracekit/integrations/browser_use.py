@@ -74,8 +74,21 @@ def _actions(signer, run, approval_wait_s=None):
     return _Actions(signer, run, limit if approval_wait_s is None else min(approval_wait_s, limit))
 
 
+def _seam(tools):
+    """The API the installed Browser Use has: 0.13's `registry.execute_action`, or 1.0's Pydantic AI tools."""
+    if callable(getattr(getattr(tools, "registry", None), "execute_action", None)):
+        return "0.13"
+    if getattr(tools, "functions", None) is not None:
+        return "1.0"
+    raise RuntimeError("browser-use has neither the 0.13 action registry nor 1.0's Tools.functions; Tracekit is "
+                       "tested with browser-use>=0.13.11,<0.14")
+
+
 def _wrap(tools, actions):
     """`tools` with every action gated by `actions` (one _Actions may gate many Tools: one signer stream)."""
+    if _seam(tools) == "1.0":
+        raise RuntimeError("browser-use 1.0 is not wired by this release: Tracekit is tested with "
+                           "browser-use>=0.13.11,<0.14")
     execute = tools.registry.execute_action
 
     async def execute_action(action_name, params, *a, **kw):
