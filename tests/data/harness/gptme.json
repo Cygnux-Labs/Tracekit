@@ -373,5 +373,17 @@
      "events": [
         {"event": "tool.confirm", "tool_use": {"tool": "mcp", "args": null, "content": null, "kwargs": {"command": "load probe"}, "call_id": "call_tracekit_7", "_format": "tool"}, "preview": "Load MCP server 'probe'?", "workspace": null},
         {"event": "tool.execute.post", "tool_use": {"tool": "mcp", "args": null, "content": null, "kwargs": {"command": "load probe"}, "call_id": "call_tracekit_7", "_format": "tool"}, "workspace": "/work", "results": [{"role": "system", "content": "Cancelled"}]}
+     ]}]},
+  {"name": "Windows tool: shell background job",
+   "payload": {"hook_event_name": "PreToolUse", "session_id": "gptme-fixture", "cwd": "<workspace>", "tool_name": "shell", "tool_use_id": "00000000000000000000000000000021", "tool_input": {"args": null, "content": null, "kwargs": {"command": "printf tracekit-background", "background": true}}},
+   "decision": "allow",
+   "request": {"tool": "Bash", "tool_call_id": "00000000000000000000000000000021", "args": {"command": "printf tracekit-background", "run_in_background": true}},
+   "exit": 0,
+   "stdout": "",
+   "observed": [{"gptme_version": "0.36.0", "tool_format": "tool", "backend": "scripted OpenAI-compatible transport", "platform": "Windows", "scenario": "stopped at confirmation before starting the job",
+     "events": [
+        {"event": "tool.execute.pre", "tool_use": {"tool": "shell", "args": null, "content": null, "kwargs": {"command": "printf tracekit-background", "background": true}, "call_id": "call_tracekit_0", "_format": "tool"}, "workspace": "<workspace>"},
+        {"event": "tool.confirm", "tool_use": {"tool": "shell", "args": null, "content": null, "kwargs": {"command": "printf tracekit-background", "background": true}, "call_id": "call_tracekit_0", "_format": "tool"}, "preview": "printf tracekit-background", "workspace": "<workspace>"},
+        {"event": "tool.execute.post", "tool_use": {"tool": "shell", "args": null, "content": null, "kwargs": {"command": "printf tracekit-background", "background": true}, "call_id": "call_tracekit_0", "_format": "tool"}, "workspace": "<workspace>", "results": [{"role": "system", "content": "Tracekit background capture: stop before starting a job"}]}
      ]}]}
 ]

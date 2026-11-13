@@ -373,7 +373,13 @@ def _gptme_tool(name, ti):
             value = value.removeprefix("$ ")
         if not isinstance(value, str):
             raise ValueError(f"gptme {name} requires text {key}")
-        return ("Bash" if name == "shell" else name), {key: value}
+        if name == "ipython":
+            return name, {key: value}
+        result = {"command": value}
+        background = kwargs.get("background") if kwargs is not None else None
+        if background is True or isinstance(background, str) and background.lower() in ("1", "true", "yes", "on"):
+            result["run_in_background"] = True
+        return "Bash", result
 
     if name in ("save", "append", "patch", "read", "morph", "hashline_edit"):
         mapped = {"save": "Write", "append": "Edit", "patch": "Edit", "read": "Read",
@@ -1433,7 +1439,14 @@ def _gptme_config(directory, path):
         # need to read more elaborate plugin config.
         has_plugins = bool(re.search(r'(?m)^\s*(?:\[+\s*["\']?plugins\b|["\']?plugins["\']?\s*[.=])', text))
         configured = any(line.strip() == paths for line in text.splitlines())
-        enabled_hint = 'If [plugins].enabled is nonempty, include "tracekit" in the list.'
+        top, *tables = re.split(r"(?m)^[ \t]*(?=\[)", text)
+        table = next((section for section in tables
+                      if re.match(r'''\[[ \t]*(?:plugins|"plugins"|'plugins')[ \t]*\][ \t]*(?:#[^\n]*)?\r?\n''',
+                                  section)), "")
+        key = r'''(?:enabled|"enabled"|'enabled')[ \t]*='''
+        if re.search(r"(?m)^[ \t]*" + key, table) or re.search(
+                r'''(?m)^[ \t]*(?:plugins|"plugins"|'plugins')[ \t]*\.[ \t]*''' + key, top):
+            enabled_hint = 'If [plugins].enabled is nonempty, include "tracekit" in the list.'
     else:
         try:
             config = tomllib.loads(text)
