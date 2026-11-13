@@ -1890,6 +1890,82 @@ class TimedAndBraced(unittest.TestCase):
                     timed = e.decide("Bash", {"command": f"{prefix} {{ {cmd}; }}"})
                     self.assertGreaterEqual(rank(timed["verdict"]), rank(plain["verdict"]), (prefix, row.get("note")))
 
+    def test_a_loop_decides_no_more_loosely_than_any_value_it_holds(self):
+        """The differential a reading reduction has to stand on (#683): a for loop over values decides at least as
+        strictly as any one of them read alone, and keeps every rule id one of them raises. Sharing one reading
+        between two values a rule can tell apart is what breaks it -- #729's fold turned `deny` into `flag` on
+        addresses read without a scheme (`for h in 189.254.43518 169.254.43518; do echo http:/$h/x; done`), where
+        one reading a value is a deny (TK-S001) in each shell pack here. So the floor is one reading per value, and
+        this measures it over the shell corpus on both engines, with each value also swapped for one whose digits
+        differ and with the scheme dropped. The control is the loosest reduction there is -- a loop's first value
+        standing for all of them -- which this corpus has to catch; without that the assertion below would hold on
+        an empty corpus and prove nothing."""
+        rank = ("allow", "flag", "ask", "deny").index
+
+        def looped(words, at, values):
+            """The line with a for loop over `values` in place of its word `at`. A value is quoted as a shell quotes
+            it, so a corpus argument holding a quote or a `;` still writes a loop bash can read: unquoted, four such
+            rows came back `TK-SHELL-PARSE` and lost their rule id, which measures the header's spelling rather than
+            whether the loop reads its values apart."""
+            header = " ".join("'%s'" % v.replace("'", "'\\''") for v in values)
+            return "for tkv in %s; do %s; done" % (header, " ".join(words[:at] + ['"$tkv"'] + words[at + 1:]))
+
+        def corpus():
+            """(note, its words, the index of its last word, two values that word may take) for every shell corpus
+            command. The second value swaps the digits a rule reads (0 with 9, 6 with 8, 1 with 7), so a reduction
+            that folds on the wrong classes is caught: `169.254.43518` against `189.254.43518` is one such pair."""
+            for kind in ("deny", "benign"):
+                with open(os.path.join(CORPUS, kind, "shell.jsonl"), encoding="utf-8") as f:
+                    for row in map(json.loads, f):
+                        cmd = row["args"].get("command")
+                        if not isinstance(cmd, str) or "<<" in cmd or "tkv" in cmd:
+                            continue
+                        words = cmd.split(" ")
+                        at = max((n for n, w in enumerate(words) if w.strip()), default=None)
+                        if at is None:
+                            continue
+                        swapped = words[at].translate(str.maketrans("0168", "9718"))
+                        if swapped == words[at]:   # no digit to swap: a trailing dot and an upper case stand in
+                            swapped = words[at] + "."
+                        yield row.get("note"), words, at, (words[at], swapped)
+
+        def verdict(e, line):
+            d = e.decide("Bash", {"command": line})
+            return d["verdict"], set(d["rule_ids"])
+
+        checked = caught = 0
+        for backend in BACKENDS:
+            e = Engine(pc.build(os.path.join(PACKS, "dev.yaml"))[0], backend)
+            for note, words, at, values in corpus():
+                whole = verdict(e, looped(words, at, values))
+                singles = [verdict(e, looped(words, at, (v,))) for v in values]
+                strictest = max(rank(s[0]) for s in singles)
+                with self.subTest(backend=backend, note=note, values=values):
+                    self.assertGreaterEqual(rank(whole[0]), strictest, (note, values, whole[0],
+                                                                       [s[0] for s in singles]))
+                    # A line the parser cannot read is held for a person on this pack (ask, TK-SHELL-PARSE), which
+                    # is never looser than a value it holds and is how main already reads what it can't parse, so
+                    # only a line it did read has to carry the ids its values raise (`unset -v HISTFILE` with a
+                    # two-value loop is one the parser gives up on, and its ask stands).
+                    if "TK-SHELL-PARSE" not in whole[1]:
+                        self.assertLessEqual(set().union(*(s[1] for s in singles)), whole[1],
+                                             (note, values, whole[1], [s[1] for s in singles]))
+                checked += 1
+                if rank(verdict(e, looped(words, at, values[:1]))[0]) < strictest:
+                    caught += 1
+            self.assertGreater(caught, 0, "the corpus no longer catches a first value standing for the rest")
+            # the scheme-dropped addresses of #729's review, on every pack that has a shell: a deny whichever way
+            # the value is spelled, including with no scheme at all
+            for pack in ("dev.yaml", "server.yaml", "server-core.yaml", "strict.yaml"):
+                e = Engine(pc.build(os.path.join(PACKS, pack))[0], backend)
+                for pair in (("189.254.43518", "169.254.43518"), ("189.16689662", "169.16689662")):
+                    for form in ("%s", "http:/%s/x", "http:%s/x"):
+                        line = "for h in %s %s; do echo %s; done" % (pair[0], pair[1], form % "$h")
+                        d = e.decide("Bash", {"command": line})
+                        self.assertIn("TK-S001", d["rule_ids"], (backend, pack, line, d["verdict"]))
+                        self.assertEqual(d["verdict"], "deny", (backend, pack, line))
+        self.assertGreater(checked, 500, "the corpus walk stopped early")
+
     def test_brace_expansion_in_an_argument_makes_the_words_bash_makes(self):
         for line, words in (
                 ("alpha -{r,f}", ["-r", "-f"]), ("alpha {x,y}z", ["xz", "yz"]), ("alpha x{,y}", ["x", "xy"]),
