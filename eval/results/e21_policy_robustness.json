@@ -5888,15 +5888,27 @@
     "max_fp_rate": {
       "default": {
         "heldout": 0.041666666666666664,
-        "blind": 0.08421052631578947,
         "sessions": 0.015384615384615385,
         "e17": 0.0011862396204033216
       },
       "strict": {
         "heldout": 0.12962962962962962,
-        "blind": 0.14166666666666666,
         "sessions": 0.15384615384615385,
         "e17": 0.054567022538552785
+      }
+    },
+    "max_blind_fp": {
+      "default": {
+        "amandeavor": 0,
+        "email_ops": 2,
+        "juliasadler": 8,
+        "narayanansriram": 2
+      },
+      "strict": {
+        "amandeavor": 2,
+        "email_ops": 4,
+        "juliasadler": 11,
+        "narayanansriram": 2
       }
     },
     "max_p99_ref": {

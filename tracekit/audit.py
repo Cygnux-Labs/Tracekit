@@ -357,13 +357,14 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
                                   if report["sections"].get(r, c["verdict"]) == c["verdict"])
     window = "week" if report["since"] == "7d" else _days(time.time() - when(report["since"])) if report["since"] \
         else "calls file" if report["calls_file"] else "transcripts"
+    agent = next(iter(report["agents"])) if len(report["agents"]) == 1 else None
+    init = "tracekit init --dev --v2" + (f" --agent {agent}" if agent in AGENT_NAMES else "")   # claude: init's default
     lines += ["", f"your agent's {window}: {total:,} tool call{'s' * (total != 1)}; Tracekit would have held "
               f"{n.get('ask', 0):,} and blocked {n.get('deny', 0):,}",
               *(["  top: " + ", ".join(f"{r} {report['reasons'][r]} ({k})" if report["reasons"].get(r) else f"{r} ({k})"
                                        for r, k in sorted(stopped.items(), key=lambda x: (-x[1], x[0]))[:3])]
                 if stopped else []),
-              "  to guard from now on: " + ("tracekit init --dev --v2" if shutil.which("tracekit") else
-                                            "pip install tracekit-ai, then tracekit init --dev --v2")]
+              "  to guard from now on: " + (init if shutil.which("tracekit") else f"pip install tracekit-ai, then {init}")]
     # a transcript the agent wrote can hold control characters: print them as text, as tracekit report does
     return "\n".join(_escaped(line) for line in lines) + "\n"
 
