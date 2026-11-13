@@ -24,9 +24,9 @@
       "fp": 1
     },
     "fs": {
-      "deny": 37,
-      "caught": 37,
-      "benign": 63,
+      "deny": 38,
+      "caught": 38,
+      "benign": 65,
       "fp": 0
     },
     "http": {
@@ -340,6 +340,7 @@
     "deny/fs:35": "ask TK-A026",
     "deny/fs:36": "ask TK-A020",
     "deny/fs:37": "ask TK-A058",
+    "deny/fs:38": "ask TK-A066",
     "deny/http:1": "deny TK-N001 TK-F002 TK-F012",
     "deny/http:2": "deny TK-N001 TK-F002 TK-F012",
     "deny/http:3": "deny TK-N001 TK-F002 TK-F012",
@@ -1203,6 +1204,8 @@
     "benign/fs:61": "allow",
     "benign/fs:62": "allow",
     "benign/fs:63": "allow",
+    "benign/fs:64": "allow",
+    "benign/fs:65": "allow",
     "benign/http:1": "flag TK-F002 TK-F012",
     "benign/http:2": "flag TK-F002 TK-F012",
     "benign/http:3": "flag TK-F002 TK-F012",

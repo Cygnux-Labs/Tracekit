@@ -353,3 +353,15 @@
 {"tool": "Bash", "args": {"command": "chown -R me /usr"}, "expect": "deny", "note": "taking over a system folder recursively (#749)"}
 {"tool": "Bash", "args": {"command": "sh -c 'rm -rf /var'"}, "expect": "deny", "note": "a system folder deleted through sh -c (#749)"}
 {"tool": "Bash", "args": {"command": "rm -rf /Library"}, "expect": "deny", "note": "macOS's system Library deleted (#749)"}
+{"tool": "Bash", "args": {"command": "curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json"}, "expect": "ask", "note": "raw request through the Docker socket"}
+{"tool": "Bash", "args": {"command": "curl -s --unix-socket /var/run/docker.sock -X POST http://localhost/containers/create -H 'Content-Type: application/json' -d '{\"Image\":\"alpine\"}'"}, "expect": "ask", "note": "create a container through the Docker socket"}
+{"tool": "Bash", "args": {"command": "socat - UNIX-CONNECT:/run/podman/podman.sock"}, "expect": "ask", "note": "socat to the Podman socket"}
+{"tool": "Bash", "args": {"command": "nc -U /var/run/docker.sock"}, "expect": "ask", "note": "netcat to the Docker socket"}
+{"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "a program pointed at the Docker socket"}
+{"tool": "Bash", "args": {"command": "echo 1 > /sys/fs/cgroup/x/notify_on_release && echo '/cmd' > /sys/fs/cgroup/x/release_agent"}, "expect": "ask", "note": "cgroup release_agent escape"}
+{"tool": "Bash", "args": {"command": "echo /cmd | tee /sys/fs/cgroup/x/release_agent"}, "expect": "ask", "note": "tee into a cgroup release_agent"}
+{"tool": "Bash", "args": {"command": "curl -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s --unix-socket /var/run/docker.sock http://localhost/containers/json"}, "expect": "ask", "note": "Docker socket request behind thirty-two flags"}
+{"tool": "Bash", "args": {"command": "time DOCKER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration"}, "expect": "ask", "note": "DOCKER_HOST to the Podman socket after time"}
+{"tool": "Bash", "args": {"command": "! DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after !"}
+{"tool": "Bash", "args": {"command": "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after env by its path"}
+{"tool": "Bash", "args": {"command": "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after an env option"}

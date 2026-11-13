@@ -534,7 +534,7 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
 destructive 16 of 36, defence evasion 15 of 30, supply chain 16 of 27; strongest: database 32 of
-32, Kubernetes 25 of 27. By evasion, calls with none are caught 155 of 275; quoting 9 of 18, environment prefixes 8 of 14, substitution 40
+32, Kubernetes 25 of 27. By evasion, calls with none are caught 158 of 275; quoting 9 of 18, environment prefixes 9 of 14, substitution 40
 of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`; a program a variable names is read,
 and one that is a bare program name, `K=kubectl; $K …`, is still held: it only hides that name). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
