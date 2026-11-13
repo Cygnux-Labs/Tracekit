@@ -3,6 +3,7 @@ v2 counterparts of the v1 policy known gaps, the benign corpus, engine conforman
 memoisation, fresh decision ids and `complete`."""
 import functools
 import importlib.util
+import itertools
 import json
 import os
 import random
@@ -4330,6 +4331,96 @@ class PackReading(unittest.TestCase):
         self.assertEqual(e.decide("mcp:postgres/execute", {"sql": "DROP TABLE users"})["verdict"], "deny")
 
 
+class OversizeSubjects(unittest.TestCase):
+    """sec08 policy review: a rule stopped reading its subjects at the first one over 64 KiB and took TK-OVERSIZE, so a
+    long word hid every later subject of that rule (`X=<17,000 a's>; true $X$X$X$X; sudo id`), and on the laptop pack
+    (`oversize: ask`) each deny became a hold a person may approve. A rule that matches a subject it can read gives its
+    own decision; TK-OVERSIZE stands only where it matched none. And the laptop pack holds TK-OVERSIZE only for a call
+    that is itself over 64 KiB: a subject only the reading makes that long (a variable expanded several times) stays a
+    deny there, as on a server."""
+
+    @classmethod
+    def setUpClass(cls):
+        backend = "re2" if HAVE_RE2 else "regex"
+        cls.packs = {n: Engine(pc.build(os.path.join(PACKS, n + ".yaml"))[0], backend)
+                     for n in ("dev", "coding", "server", "strict")}
+
+    def decide(self, pack, tool, args):
+        return svc.evaluate(self.packs[pack], tool, args)[0]
+
+    def keeps_its_denies(self, pairs):
+        """Each (call, the same call without its long part): on every pack where the second is denied, the first is,
+        with each of the second's deny rules."""
+        for (tool, args), bare in pairs:
+            for pack, e in self.packs.items():
+                want = self.decide(pack, *bare)
+                if want["verdict"] != "deny":
+                    continue
+                denies = {r["id"] for sec, r, *_ in e.rules if sec == "deny"} & set(want["rule_ids"])
+                with self.subTest(pack=pack, tool=tool, args=str(args)[-70:], size=len(str(args))):
+                    d = self.decide(pack, tool, args)
+                    self.assertEqual(d["verdict"], "deny", d)
+                    self.assertLessEqual(denies, set(d["rule_ids"]), d)
+
+    def test_a_long_word_hides_no_other_command_from_a_deny_rule(self):
+        # the long word: an expansion only the reading makes over 64 KiB (the call stays under it, so it is read), just
+        # over (four times 16,384 bytes) and well over; before and after the denied command, joined each way, in each
+        # group and wrapper the parser reads a line in
+        quarter = engine_mod.MAX_SUBJECT // 4
+        pads = ("true $X$X$X$X", 'echo "$X$X$X$X"', ": ${X}${X}${X}${X}")
+        groups = ("{x}", "({x})", "{{ {x}; }}", "if true; then {x}; fi", "for i in 1; do {x}; done", "bash -c '{x}'",
+                  "timeout 5 sh -c '{x}'", "watch -n1 '{x}'")
+        pairs = []
+        for deny, k, group, after, (pad, sep) in itertools.product(
+                ("sudo id", "cat ~/.aws/credentials"), (quarter, quarter + 600), groups, (False, True),
+                zip(pads, ("; ", " && ", "\n"))):
+            body = sep.join([deny, pad] if after else [pad, deny])
+            pairs.append((("Bash", {"command": group.format(x=f"X={'a' * k}{sep}{body}")}),
+                          ("Bash", {"command": group.format(x=deny)})))
+        self.assertEqual(len(pairs), 192)
+        self.keeps_its_denies(pairs)
+
+    def test_a_long_argument_hides_no_other_argument_from_a_deny_rule(self):
+        cred, meta = "/root/.aws/credentials", "http://169.254.169.254/latest/"
+        pairs = []
+        for n in (engine_mod.MAX_SUBJECT + 1, 70 * 1024):
+            big = "p" * n
+            pairs += [(("Edit", {"paths": [big, cred]}), ("Edit", {"paths": [cred]})),
+                      (("Edit", {"paths": [cred, big]}), ("Edit", {"paths": [cred]})),
+                      (("mcp__fs__read", {"junk": big, "path": cred}), ("mcp__fs__read", {"path": cred})),
+                      (("Write", {"file_path": "/repo/.env", "content": big}),
+                       ("Write", {"file_path": "/repo/.env", "content": "x"})),
+                      (("WebFetch", {"url": meta, "prompt": big}), ("WebFetch", {"url": meta, "prompt": "x"}))]
+        self.keeps_its_denies(pairs)
+        for pack in ("dev", "server"):   # the review's cases
+            for tool, args, rule in (("Edit", {"paths": ["p" * 70 * 1024, cred]}, "TK-S004"),
+                                     ("Bash", {"command": f"X={'a' * 17000}; true $X$X$X$X; sudo id"}, "TK-D001"),
+                                     ("Bash", {"command": f"X={'a' * 17000}; true $X$X$X$X; cat ~/.aws/credentials"},
+                                      "TK-S004")):
+                with self.subTest(pack=pack, tool=tool):
+                    d = self.decide(pack, tool, args)
+                    self.assertEqual(d["verdict"], "deny", d)
+                    self.assertIn(rule, d["rule_ids"])
+
+    def test_only_a_call_over_64_kib_waits_for_a_person_on_the_laptop_pack(self):
+        x = "X=" + "a" * (engine_mod.MAX_SUBJECT // 4) + "; "
+        for command in (x + "sudo $X$X$X$X id", x + 'sudo "$X$X$X$X" id', x + "echo $X$X$X$X",
+                        x + "cat $X$X$X$X ~/.aws/credentials"):
+            for pack in self.packs:
+                with self.subTest(pack=pack, command=command[-30:]):
+                    d = self.decide(pack, "Bash", {"command": command})
+                    self.assertEqual((d["verdict"], "TK-OVERSIZE" in d["rule_ids"]), ("deny", True), d)
+        many = [f"https://h{i}.example/" for i in range(engine_mod.MAX_URLS + 1)]   # more URLs than are read one by one
+        for tool, args in (("Bash", {"command": "echo " + "x" * engine_mod.MAX_SUBJECT}),
+                           # 61,440 bytes of content, 71,680 as the JSON the rules read
+                           ("Write", {"file_path": "/repo/data.py", "content": "x = 1\n" * 10240}),
+                           ("WebFetch", {"url": many[0], "urls": many})):
+            for pack, want in (("dev", "ask" if tool != "WebFetch" else "deny"), ("server", "deny"), ("strict", "deny")):
+                with self.subTest(pack=pack, tool=tool):
+                    d = self.decide(pack, tool, args)
+                    self.assertEqual((d["verdict"], "TK-OVERSIZE" in d["rule_ids"]), (want, True), d)
+
+
 @unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
 class ServerCorpora(unittest.TestCase):
     def test_e17_server_packs_hold_on_the_corpora(self):
@@ -4679,6 +4770,22 @@ class GuardrailsAndPushes(unittest.TestCase):
         self.verdicts([("Bash", {"command": x}) for x in (
             f"gh api -X PUT https://api.github.com/{c} -f branch=feature",
             "gh api https://api.github.com/repos/o/r/contents/a.txt")], "flag", "TK-F012")
+
+    def test_two_branch_fields_are_a_branch_the_line_cant_tell(self):
+        """sec08 policy review: _gh_api read the last branch field on the line, but gh builds the body from every -f
+        field and then every -F field, so `-F branch=main -f branch=feature` may write to main unheld. Two branch fields
+        of any spelling are a branch the line can't tell: held, as one gh reads from a file is."""
+        c = "repos/o/r/contents/a.txt -f message=m -f content=Yg=="
+        spellings = ("-f {}", "-F {}", "--field {}", "--raw-field {}", "--field={}", "--raw-field={}", "-f{}", "-F{}")
+        cases = [f"gh api -X PUT {c} {one.format('branch=' + a)} {two.format('branch=' + b)}"
+                 for one, two in itertools.product(spellings, repeat=2) for a, b in (("main", "feature"),
+                                                                                    ("feature", "main"))]
+        cases += [f"gh api -X PUT {c} -f branch=feature -F branch=feature", f"hub api -X PUT {c} -F branch=main -f branch=x",
+                  f"gh api -X DELETE {c} -f sha=x -F branch=master -f branch=feature",
+                  "gh api -X POST repos/o/r/merge-upstream -F branch=main -f branch=feature"]
+        self.verdicts([("Bash", {"command": x}) for x in cases], "ask", "TK-A056")
+        self.verdicts([("Bash", {"command": f"gh api -X PUT {c} -F branch=feature"}),
+                       ("Bash", {"command": "gh api -X POST repos/o/r/merge-upstream -f branch=feature"})], "allow")
 
     def test_a_comment_ends_where_each_database_ends_it(self):
         """Third review of #605: a -- or # comment ends where each database ends it: PostgreSQL and SQL Server at a

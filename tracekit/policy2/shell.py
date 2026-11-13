@@ -2859,13 +2859,15 @@ class _Parser:
     def leave(self):
         self.ctx["depth"] -= 1
 
-    def open_block(self, block):
+    def open_block(self, block, at=()):
+        """`at`: the pipeline stage (pid, stage) the block's opening word is in, whose input its commands read."""
         self.blocks.append(block)
-        self.opened.append(len(self.ctx["cmds"]))
+        self.opened.append((len(self.ctx["cmds"]), at))
 
     def close_block(self):
         """The innermost block ends: what it made known is forgotten, and where its and-or list began goes back to
-        list() (a block sent to the background runs from its opening). -> where in ctx["cmds"] its commands start."""
+        list() (a block sent to the background runs from its opening). -> (where in ctx["cmds"] its commands start,
+        open_block's `at`)."""
         _, names, opened = self.blocks.pop()
         for name in names:
             self.known.pop(name, None)
@@ -2873,8 +2875,9 @@ class _Parser:
         return self.opened.pop()
 
     def reach(self, start, pid, stage):
-        """The commands from ctx["cmds"][start] on print into the pipeline stage (pid, stage) (`reaches`): a block's
-        or subshell's that stage is, or a substitution's in a word of it."""
+        """The commands from ctx["cmds"][start] on print into the pipeline stage (pid, stage), or read its input
+        (`reaches`): a block's or subshell's that stage is (a { } group's or a loop's opening word and its closing word
+        are each in one: `env | { x; curl …; } | y`), or a substitution's in a word of it."""
         for c in self.ctx["cmds"][start:]:
             c.setdefault("reaches", []).append((pid, stage))
 
@@ -3030,7 +3033,7 @@ class _Parser:
                     break
             self.list("esac")
             self.i += next((len(op) for op in (";;&", ";;", ";&") if self.at(op)), 0)
-        start = self.close_block()
+        start, _ = self.close_block()
         self.leave()
         return start
 
@@ -3337,9 +3340,11 @@ class _Parser:
                 if text in ("while", "until"):   # its condition and body run again after the body's later commands
                     self.known = self.stable()
                 if text in ("if", "while", "until", "{"):
-                    self.open_block((text, [], self.list_start))
+                    self.open_block((text, [], self.list_start), (pid, stage))
                 elif text in ("fi", "done", "}") and self.blocks and self.blocks[-1][0] != "case":   # case() ends its own
-                    self.reach(self.close_block(), pid, stage)
+                    start, at = self.close_block()
+                    self.reach(start, pid, stage)
+                    self.reach(start, *at)
                 continue
             if not words and raw == text and text in ("for", "select"):
                 loop_header = text   # the loop words are not run; `do` starts the body
@@ -3597,7 +3602,7 @@ class _Parser:
         bare = [] if timed and timed == len(words) else words
         self.track_values(bare, cmds, assigns, loop_header and (loop_header, header, header_unknown, header_spliced,
                                                                 header_joined, header_blank),
-                          sure and not dynamic, raws)
+                          sure and not dynamic, raws, (pid, stage))
         if not bare:   # assignments alone set the shell's own variables, not a command's environment
             self.ctx["assigned"] += assigned
         if self.called:   # a function may set any variable, IFS or the directory
@@ -3727,7 +3732,7 @@ class _Parser:
             self.charge(n)
         return out
 
-    def track_values(self, words, cmds, assigns, loop, sure, raws=()):
+    def track_values(self, words, cmds, assigns, loop, sure, raws=(), at=()):
         """Update self.known (__init__) after a simple command: a variable it gives a literal on its own, or with
         `export` (`export D=build`), is known when that surely runs (`sure`) before what follows it (`;`, a newline, `&&`
         or a subshell's end); a for loop's over literal words is known in its body; any other variable it sets is not;
@@ -3735,7 +3740,8 @@ class _Parser:
         name the parser can't read) none is, for the rest of the line. A known variable keeps the literals it may hold
         (the loop's words; [""]: certainly empty, after `X=` or `unset X`), [] when unknown. `loop`: (for or select,
         the words after it); `assigns`: (name, the literal it gets or None, whether it is appended to: +=); `raws`: the
-        words as written (an export's names must be, to set those alone)."""
+        words as written (an export's names must be, to set those alone); `at`: its pipeline stage, whose input a loop
+        it opens reads."""
         if loop:
             kind, (name, *rest) = loop[0], loop[1] or [None]
             if kind == "for" and rest[:1] != ["in"] and self.known.get("@") and not self.ctx["any_set"]:
@@ -3768,7 +3774,7 @@ class _Parser:
                 self.ctx["joined_values"].add(name)
             for word in (rest[1:] if rest[:1] == ["in"] else [None]) if name in _CODE_VARIABLES else ():
                 self.code_variable(name, word, self.via)   # (None: a word or reply the parser can't read)
-            self.open_block((kind, [name], self.list_start))
+            self.open_block((kind, [name], self.list_start), at)
             return
         # a function's or script's arguments may move or be replaced (set and shift through command or builtin too)
         for a in [words, *(c["argv"] for c in cmds)]:
