@@ -159,7 +159,8 @@ Each init run writes `/etc/tracekit/signer.yaml` again from its flags. It drops 
 1. Stop the signer: on Linux, `sudo systemctl stop tracekit-signer`; on macOS,
    `sudo launchctl bootout system/dev.tracekit.signer`. Until init starts it again, AGENT's tool calls are blocked.
    Init restarts the harness helper and the egress observer itself, so they run the new version.
-2. Keep a copy of the config: `sudo cp /etc/tracekit/signer.yaml /root/signer.yaml.bak`.
+2. Keep a copy of the config in root's home (`/root` on Linux, `/var/root` on macOS):
+   `sudo cp /etc/tracekit/signer.yaml ~root/signer.yaml.bak`.
 3. Run the same commands again, with the same init flags. `-U` installs the newer version; on the clone route, clone
    the new release's tag into a new directory. On macOS, init bootstraps the signer and, with `--harness`, the helper
    again; no separate launchd command is needed here.

@@ -272,3 +272,41 @@
 {"tool": "Bash", "args": {"command": "env | grep PATH"}, "expect": "allow", "note": "environment read locally"}
 {"tool": "Bash", "args": {"command": "env | sort > env.txt"}, "expect": "allow", "note": "environment written locally"}
 {"tool": "Bash", "args": {"command": "printenv HOME | tee home.txt"}, "expect": "allow", "note": "one variable written locally"}
+{"tool": "Bash", "args": {"command": "rm -rf ./var/cache"}, "expect": "allow", "note": "a project folder named var (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf /var/tmp/build-123"}, "expect": "allow", "note": "a temporary folder inside /var (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf /tmp/x"}, "expect": "allow", "note": "a temporary folder (#749)"}
+{"tool": "Bash", "args": {"command": "chmod -R 755 ./dist"}, "expect": "allow", "note": "a recursive mode change in the project (#749)"}
+{"tool": "Bash", "args": {"command": "chown -R \"$USER\" ./node_modules"}, "expect": "allow", "note": "taking over the project's dependencies (#749)"}
+{"tool": "Bash", "args": {"command": "ls -la /etc"}, "expect": "allow", "note": "listing a system folder (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf ./build"}, "expect": "allow", "note": "deleting the project's build output (#749)"}
+{"tool": "Bash", "args": {"command": "chmod -R u+w ."}, "expect": "allow", "note": "making the project writable (#749)"}
+{"tool": "Bash", "args": {"command": "find /var -name '*.log' -delete"}, "expect": "allow", "note": "deleting logs found by name under /var (#749)"}
+{"tool": "Bash", "args": {"command": "git commit -m \"Deny rm -rf /etc\""}, "expect": "allow", "note": "a commit message naming a system folder delete (#749)"}
+{"tool": "Bash", "args": {"command": "grep -rn \"rm -rf /usr\" docs/"}, "expect": "allow", "note": "searching for a system folder delete (#749)"}
+{"tool": "Bash", "args": {"command": "echo \"never run rm -rf /var\""}, "expect": "allow", "note": "printing a system folder delete (#749)"}
+{"tool": "Bash", "args": {"command": "gh issue comment 1 --body \"rm -rf /etc is denied now\""}, "expect": "allow", "note": "a comment naming a system folder delete (#749)"}
+{"tool": "Bash", "args": {"command": "docker ps"}, "expect": "allow", "note": "list containers"}
+{"tool": "Bash", "args": {"command": "docker run --rm hello-world"}, "expect": "allow", "note": "run a container through the docker command"}
+{"tool": "Bash", "args": {"command": "ls -la /var/run/docker.sock"}, "expect": "allow", "note": "list the Docker socket file"}
+{"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///var/run/docker.sock docker ps"}, "expect": "allow", "note": "docker with an explicit socket"}
+{"tool": "Bash", "args": {"command": "cat /sys/fs/cgroup/cpu.max"}, "expect": "allow", "note": "read a cgroup limit"}
+{"tool": "Bash", "args": {"command": "cat /sys/fs/cgroup/x/release_agent"}, "expect": "allow", "note": "read a cgroup release_agent"}
+{"tool": "Bash", "args": {"command": "grep release_agent notes.txt"}, "expect": "allow", "note": "search notes for release_agent"}
+{"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps"}, "expect": "allow", "note": "docker by its path with an explicit socket"}
+{"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up"}, "expect": "allow", "note": "compose with an explicit socket"}
+{"tool": "Bash", "args": {"command": "echo 'export PATH=$PATH:~/bin' >> ~/.bashrc"}, "expect": "allow", "note": "an ordinary startup-file edit stays as it is (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'alias ll=ls' >> ~/.bashrc"}, "expect": "allow", "note": "an alias in bashrc stays as it is (#750)"}
+{"tool": "Bash", "args": {"command": "crontab -l"}, "expect": "allow", "note": "listing the user's crontab (#750)"}
+{"tool": "Bash", "args": {"command": "chmod 755 ./build.sh"}, "expect": "allow", "note": "an ordinary executable mode (#750)"}
+{"tool": "Bash", "args": {"command": "chmod u+x deploy.sh"}, "expect": "allow", "note": "an ordinary executable mode by symbol (#750)"}
+{"tool": "Bash", "args": {"command": "id -u"}, "expect": "allow", "note": "the current user id (#750)"}
+{"tool": "Bash", "args": {"command": "groups"}, "expect": "allow", "note": "the current user's groups (#750)"}
+{"tool": "Bash", "args": {"command": "cat /etc/passwd"}, "expect": "allow", "note": "reading the password file (#750)"}
+{"tool": "Bash", "args": {"command": "usermod -L dev"}, "expect": "allow", "note": "locking an account without a group change (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'socat is great' >> notes.md"}, "expect": "allow", "note": "a network tool's name in an ordinary file (#750)"}
+{"tool": "Bash", "args": {"command": "chmod u-s x"}, "expect": "allow", "note": "removing the setuid bit (#750)"}
+{"tool": "Bash", "args": {"command": "chmod 1777 x"}, "expect": "allow", "note": "the sticky bit alone (#750)"}
+{"tool": "Bash", "args": {"command": "gpasswd -d dev sudo"}, "expect": "allow", "note": "removing a user from sudo (#750)"}
+{"tool": "Bash", "args": {"command": "usermod -u 1001 dev"}, "expect": "allow", "note": "changing a login's uid to an ordinary one (#750)"}
+{"tool": "Bash", "args": {"command": "cat /etc/cron.daily/logrotate"}, "expect": "allow", "note": "reading a cron script (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'alias ports=\"nc -zv localhost\"' >> ~/.zshrc"}, "expect": "allow", "note": "an nc alias without -e in zshrc (#750)"}

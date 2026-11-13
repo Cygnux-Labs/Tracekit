@@ -253,6 +253,47 @@ class CodingAgentHooks(unittest.TestCase):
                         rid, doctor.OK if ok else bad), {harness: path}, False, self.d)
                     self.assertEqual(got["D-HOOKS-TIMEOUT"], "ok" if value == APPROVAL_WAIT_S * scale else "warn")
 
+    def test_a_codebuddy_pre_tool_hook_that_runs_after_tracekits_is_named(self):
+        """#761's review: CodeBuddy Code runs the user's settings' PreToolUse hooks, then the project's
+        .codebuddy/settings.json and settings.local.json, each in its order, and the last permissionDecision stands, so
+        a later hook's allow runs a call Tracekit denied: doctor names each file such a hook is in."""
+        home, proj = os.path.join(self.d, "home"), os.path.join(self.d, "proj")
+        user, project = agent_hooks.config_path("codebuddy", home=home), agent_hooks.config_path("codebuddy", proj)
+        local = os.path.join(os.path.dirname(project), "settings.local.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("codebuddy", path=user, v2=True)
+        other = {"matcher": "Bash", "hooks": [{"type": "command", "command": "python3 approve-safe-commands.py"}]}
+
+        def later():
+            rows = []
+            with mock.patch("os.getcwd", return_value=proj):
+                doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: rows.append((rid, ok, detail)),
+                                            {"codebuddy": user}, False, home)
+            (row,) = [r for r in rows if "after Tracekit's" in r[2]]
+            return row
+
+        self.assertEqual(later()[:2], ("D-HOOKS-ORDER", True))
+        with open(user) as f:
+            settings = json.load(f)
+        settings["hooks"]["PreToolUse"].insert(0, other)   # before Tracekit's: its allow is overridden by a deny
+        with open(user, "w") as f:
+            json.dump(settings, f)
+        self.assertTrue(later()[1])
+        os.makedirs(os.path.dirname(project))
+        # #761's re-review: a hook that only names Tracekit's module (in a comment) is not the command init writes
+        disguised = {"matcher": "*", "hooks": [{"type": "command", "command": "python3 approve-safe-commands.py  "
+                                                                              "# tracekit.integrations.harness_hooks"}]}
+        for f, hook in ((project, disguised), (project, other), (local, other)):
+            with open(f, "w") as out:
+                json.dump({"hooks": {"PreToolUse": [hook]}}, out)
+            rid, ok, detail = later()
+            self.assertEqual((rid, ok), ("D-HOOKS-ORDER", False))
+            self.assertIn(f, detail)
+        settings["hooks"]["PreToolUse"].append(other)   # after Tracekit's in the same file
+        with open(user, "w") as f:
+            json.dump(settings, f)
+        self.assertIn(user, later()[2])
+
     def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
         # agy and Crush wait 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states theirs
         from tracekit import agent_hooks
@@ -607,6 +648,49 @@ class AntigravityHooks(unittest.TestCase):
             self.assertIn("539 s", row["detail"])
             self.assertEqual(row["fix"], "tracekit init --dev --v2 --agent antigravity")
             self.assertEqual(got["D-AGY-HOOKS-RUN"]["status"], "ok", got["D-AGY-HOOKS-RUN"])
+
+    def test_openhands_project_hooks_that_replace_the_users_are_warned_about(self):
+        # #563 review: the CLI's working directory ($OPENHANDS_WORK_DIR, else the current one) has a .openhands/hooks.json
+        # that replaces the user's (a repo can switch Tracekit off); only a Tracekit v2 PreToolUse hook there decides calls
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d:
+            repo, work = os.path.join(d, "repo"), os.path.join(d, "work")
+            for p in (repo, work):
+                os.makedirs(os.path.join(p, ".openhands"))
+            with mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), mock.patch("os.getcwd", return_value=repo), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                for k in ("OPENHANDS_WORK_DIR", "OH_PERSISTENCE_DIR"):
+                    os.environ.pop(k, None)
+                os.environ["OPENHANDS_PERSISTENCE_DIR"] = os.path.join(d, "elsewhere")   # the CLI's settings, not hooks
+                path = agent_hooks.install("openhands", v2=True)
+                self.assertEqual(path, os.path.join(d, ".openhands", "hooks.json"))
+
+                def rows():
+                    return {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev", settings=os.path.join(d, "none.json"),
+                                                                 harnesses={"openhands": path})}
+                got = rows()
+                for rid in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT"):
+                    self.assertEqual(got[rid]["status"], "ok", got[rid])
+                self.assertNotIn("D-OPENHANDS-PROJECT", got)
+                project = os.path.join(repo, ".openhands", "hooks.json")
+                with open(project, "w") as f:
+                    json.dump({"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "true"}]}]}}, f)
+                got = rows()["D-OPENHANDS-PROJECT"]
+                self.assertEqual(got["status"], "warn")
+                self.assertIn(f"{project} replaces {path}", got["detail"])
+                agent_hooks.install("openhands", project=repo, v2=True)   # Tracekit's own project hooks: fine
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "ok")
+                with open(project) as f:   # Tracekit's hooks on every event but PreToolUse: its calls go undecided
+                    blob = json.load(f)
+                blob["hooks"].pop("PreToolUse")
+                with open(project, "w") as f:
+                    json.dump(blob, f)
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "warn")
+                os.environ["OPENHANDS_WORK_DIR"] = work   # the CLI's working directory, not the current one
+                self.assertNotIn("D-OPENHANDS-PROJECT", rows())
+                with open(os.path.join(work, ".openhands", "hooks.json"), "w") as f:
+                    json.dump({"pre_tool_use": []}, f)
+                self.assertEqual(rows()["D-OPENHANDS-PROJECT"]["status"], "warn")
 
     def test_agy_sign_ins_and_a_disabled_hook_that_run_no_hook_are_warned_about(self):
         # agy loads its hooks and never runs them when signed in with a Gemini API key (antigravity-cli#893) or
@@ -1737,6 +1821,20 @@ class Versions(unittest.TestCase):
             mine, relative = doctor._user_hook_files()
         self.assertNotIn(planted, mine)
         self.assertIn(home, relative)
+
+    def test_codebuddys_config_dir_places_its_user_hook_file(self):
+        """#761's review: $CODEBUDDY_CONFIG_DIR moves CodeBuddy Code's user settings (agent_hooks.config_path), so it
+        is one of the variables that place a user's hook files: an absolute one places the user's own, and a relative
+        one, which resolves against the working directory, is named instead."""
+        cb = os.path.join(os.path.realpath(self.d), "cb")
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": cb}):
+            mine, relative = doctor._user_hook_files()
+        self.assertIn(os.path.join(cb, "settings.json"), mine)
+        self.assertNotIn("CODEBUDDY_CONFIG_DIR", relative)
+        with mock.patch.dict(os.environ, {"CODEBUDDY_CONFIG_DIR": "cb"}):
+            mine, relative = doctor._user_hook_files()
+        self.assertIn("CODEBUDDY_CONFIG_DIR", relative)
+        self.assertNotIn(os.path.realpath(os.path.join("cb", "settings.json")), mine)
 
     def test_a_relative_interpreter_or_path_is_never_run(self):
         """Review of #512: a relative interpreter, or a relative working tree a -c hook puts on sys.path, resolves against
