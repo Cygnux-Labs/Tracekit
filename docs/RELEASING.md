@@ -16,11 +16,15 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    (`VERSION`, which the verifier reports), in `docs/deploy-container.md`'s build example and `docs/deploy.md`'s
    clone example (the tag and the directory), in `server.json` and
    `plugin/.claude-plugin/plugin.json` (`version`), in both Helm charts (`appVersion` in `deploy/helm/*/Chart.yaml`
-   and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("This is
-   <version>"), and add a dated entry to `CHANGELOG.md`. In `sdk/typescript/package-lock.json` set the root package's
-   `version` (twice) and `optionalDependencies` too, and put back each `node_modules/@cygnuxlabs/tracekit-signer-*`
-   entry as `{"optional": true}`: the last release's locked versions don't satisfy the new ones, so `npm ci` (the
-   release build) fails until they are unlocked; step 5 locks the new ones.
+   and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("Version
+   <version>") and its CI example (`uses: Cygnux-Labs/Tracekit@v<version>`; `tests/test_version.py` checks both).
+   Raise the upper bound of `tracekit-ai` in `integrations/hermes/plugin.yaml` (`python_dependencies`) to the next
+   minor (`<1.8` for a 1.7.x), so the plugin takes the release (`tests/test_version.py` checks it takes
+   `__version__`). Add a dated entry to `CHANGELOG.md`. In
+   `sdk/typescript/package-lock.json` set the root package's `version` (twice) and `optionalDependencies` too, and put
+   back each `node_modules/@cygnuxlabs/tracekit-signer-*` entry as `{"optional": true}`: the last release's locked
+   versions don't satisfy the new ones, so `npm ci` (the release build) fails until they are unlocked; step 5 locks
+   the new ones.
 2. `make check` and `make release-dry-run` locally; CI must be green on `main`.
 3. Tag and push: `git tag v<version> && git push origin v<version>`. The workflow refuses a tag other than `v` +
    `__version__`, and a `package.json` version that isn't its npm form.
@@ -31,7 +35,9 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    `sdk/typescript/package-lock.json`. The version bump can't lock signer packages that aren't published yet, and once
    they are, `npm ci` (the `release-dry-run` job, `scripts/release/build.py`) fails until the lockfile names them. In
    the same PR add the tag to `RELEASED` in `tests/test_released_verifiers.py`, so CI runs this release's verifier on
-   every later signer's bundles.
+   every later signer's bundles. If the release added a row to `VERSIONS` in `tracekit/bundle_v2.py`, freeze it in the
+   same PR: add the sha256 of `canonical(VERSIONS["<version>"])` (`tracekit.format.canon`), computed from the tagged
+   code, to `shipped` in `test_shipped_rows_are_frozen` (`tests/test_bundle_v2.py`).
 6. Once the `pypi` job has published, an owner of the `Cygnux-Labs` GitHub organisation publishes the MCP gateway's
    entry in the MCP Registry from the tagged checkout. The registry proves the `io.github.Cygnux-Labs` namespace
    through a GitHub login, and `mcp-publisher login github` (device flow) can't see the org's Owner role: create a

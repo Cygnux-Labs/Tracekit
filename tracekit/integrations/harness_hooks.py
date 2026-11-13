@@ -1,7 +1,7 @@
-"""Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush and Devin
-hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin
+and Cline hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin|cline EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -98,7 +98,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
-    if harness in ("qwen", "droid", "antigravity", "crush", "devin"):   # lean: their transcript formats are not read; model text goes unrecorded
+    if harness in ("qwen", "droid", "antigravity", "crush", "devin", "cline"):   # lean: their transcript formats are not read; model text goes unrecorded
         return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
@@ -194,8 +194,11 @@ def _responses(lines):
 def _codex_tool(item):
     """Map one Codex rollout call to the tool and arguments its live PreToolUse hook decides.
 
-    Codex's rollout holds the arguments rewritten for its hook, not necessarily the exact
-    bytes the model emitted. There is deliberately only one mapping for live and audit.
+    The rollout's response_item is the Responses API item returned by the model, not the
+    PreToolUse payload Codex makes from it. Build the hook payload Codex would send
+    (core/src/tools/registry.rs:150-160, 943-960; exec_command.rs:499-509;
+    apply_patch.rs:394-398; mcp.rs:114-131, 449-457) and apply the live hook's
+    mapping. Audit decides each call in the form Codex's PreToolUse hook gets it.
     """
     t, name, cid = item.get("type"), str(item.get("name") or ""), item.get("call_id")
     if t == "custom_tool_call" and name == "apply_patch":
@@ -231,7 +234,7 @@ def _use(item):
     if mapped is None:
         return None
     tool, args = mapped
-    # coerced: the payload is Codex's rewrite of the model's arguments, so reconciliation compares the tool, not them
+    # coerced: Codex rewrites the model's arguments for PreToolUse; compare the tool, not args
     return {"id": parsers._id(item["call_id"]), "name": tool[:256] or "?", "executed_by": "client",
             "args_source": "coerced", "args_digest": event_hash({"tool": tool, "args": args})}
 
@@ -279,6 +282,8 @@ def entry(harness=None, event=None):
         print(f"usage: python -m tracekit.integrations.harness_hooks {{{'|'.join(agent_hooks.HARNESSES)}}} [EVENT]; "
               "blocking", file=sys.stderr)
         return 2
+    if harness == "cline":
+        agent_hooks.cline_cap_wait()
     return run(harness, agent_hooks.stdin_text(), event=event)
 
 

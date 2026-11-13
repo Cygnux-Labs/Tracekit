@@ -1,6 +1,7 @@
 import argparse
 import contextlib
 import glob
+import hashlib
 import os
 import re
 import shutil
@@ -12,7 +13,7 @@ from unittest import mock
 
 import yaml
 
-from tracekit import cli
+from tracekit import cli, install
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import service
@@ -131,10 +132,17 @@ class LimitsIndex(unittest.TestCase):
 
 
 class DocCommands(unittest.TestCase):
+    def test_system_mode_upgrade_docs_include_macos_signer_label(self):
+        """The macOS upgrade commands must use the launchd label configured by init."""
+        upgrade = read(os.path.join(ROOT, "docs", "deploy.md")).split("To upgrade:", 1)[1]
+        self.assertIn(f"sudo launchctl bootout system/{install.V2_LABEL}", upgrade)
+        self.assertIn(f"sudo launchctl kickstart -k system/{install.V2_LABEL}", upgrade)
+
     def test_every_tracekit_command_in_a_code_block_exists(self):
         known = cli_commands()
         self.assertIn("verify", known)
-        pages = [os.path.join(ROOT, "README.md")] + glob.glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True)
+        pages = [os.path.join(ROOT, "README.md")] + [p for d in ("docs", "plugin") for p in glob.glob(
+            os.path.join(ROOT, d, "**", "*.md"), recursive=True)]
         unknown = [f"{os.path.relpath(p, ROOT)}: tracekit {m}" for p in pages for _, block in FENCE.findall(read(p))
                    for m in COMMAND.findall(block) if m not in known]
         self.assertEqual(unknown, [])
@@ -166,6 +174,16 @@ class DocCommands(unittest.TestCase):
                     with self.subTest(block=i, pyyaml_blocked=blocked), \
                             mock.patch.dict("sys.modules", {"yaml": None} if blocked else {}):
                         self.assertIn("data_dir", service.load_config(path))
+
+
+class PluginSkills(unittest.TestCase):
+    def test_the_plugins_setup_skill_is_the_public_one(self):
+        """The plugin ships Cygnux-Labs/tracekit-skills' skills/tracekit-setup/SKILL.md byte for byte, so skill indexes
+        find one text. Change it there first, copy it here, then pin its git blob id: `git rev-parse
+        main:skills/tracekit-setup/SKILL.md` in that repository."""
+        data = read(os.path.join(ROOT, "plugin", "skills", "tracekit-setup", "SKILL.md")).encode("utf-8")
+        self.assertEqual(hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest(),
+                         "e4e4a489b51956e513549e449ca0f7e770ec7ab2")   # tracekit-skills 5b78b59
 
 
 class DocTableCells(unittest.TestCase):

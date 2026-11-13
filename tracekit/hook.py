@@ -25,6 +25,9 @@ from .core import now_ts
 from .locking import lock_file, unlock_file
 
 AGENT_NAME = "claude-code"
+# seconds a held call may wait for its answer, under a harness that runs the call once its hook takes longer (None: the
+# policy's approval_timeout_s)
+APPROVAL_CAP_S = None
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 
 
@@ -223,6 +226,8 @@ def wait_for_approval(ev_call, decision, pol):
             shown = f"{k}={v}"
             break
     timeout = float(pol.get("approval_timeout_s", 120))
+    if APPROVAL_CAP_S is not None:
+        timeout = min(timeout, APPROVAL_CAP_S)
     try:
         r = client.rpc({"op": "approval_request", "run_id": ev_call["run_id"], "agent_id": ev_call["agent_id"],
                         "tool_use_id": d["tool_use_id"], "summary": f"{d['name']} {shown}"[:400],
@@ -235,10 +240,12 @@ def wait_for_approval(ev_call, decision, pol):
     print(f"[tracekit] waiting for approval {aid}: {d['name']} {shown[:200]} "
           f"({'; '.join(decision['reasons'])}). From another terminal: tracekit approve {aid}  |  tracekit reject {aid}",
           file=sys.stderr, flush=True)
-    end = time.time() + timeout + 5
+    end = time.time() + timeout + (5 if APPROVAL_CAP_S is None else 0)
     while time.time() < end:
         try:
-            w = client.rpc({"op": "approval_wait", "approval_id": aid, "wait_s": 20}, timeout=30)
+            w = client.rpc({"op": "approval_wait", "approval_id": aid,
+                            "wait_s": 20 if APPROVAL_CAP_S is None else max(1, min(20, int(end - time.time())))},
+                           timeout=30)
         except client.SignerUnavailable as e:
             return False, f"signer unavailable while waiting for approval ({e}); rejected"
         dec = w.get("decision")

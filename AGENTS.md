@@ -88,8 +88,9 @@ There is no typecheck step.
 - `make test` takes ~15 minutes (about 4,500 tests): many start a real signer daemon and spawn hook processes. Run
   single files while iterating.
 - `agent-flow gates run` runs in the main checkout, not the worktree you call it from. In a worktree run the gates
-  there: `PYTHONPATH=$PWD make test-ts lint build test PY=<repo>/.venv/bin/python` (the venv's editable install points
-  at the main checkout, so without PYTHONPATH test subprocesses import its code).
+  there: `PATH=<repo>/.venv/bin:$PATH PYTHONPATH=$PWD make test-ts lint build test PY=<repo>/.venv/bin/python` (the
+  venv's editable install points at the main checkout, so without PYTHONPATH test subprocesses import its code; the
+  TypeScript tests run `$TRACEKIT_PYTHON`, else `python3` from PATH, which is otherwise the system's).
 - Rules in `tracekit/policy/default.yaml` match raw strings: quoted text that mentions a risky command can trip them.
 - `planning/` is local and gitignored — task specs must be copied into the issue, not referenced by path. <!-- agent-flow:ignore-refs -->
 

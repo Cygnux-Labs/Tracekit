@@ -27,7 +27,7 @@ from tracekit.client import client_home
 from tracekit.format.canon import event_hash
 from tracekit.format import checkpoint
 from tracekit.format.checkpoint import ED25519
-from tracekit.integrations import claude_code
+from tracekit.integrations import claude_code, harness_hooks
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer import service
@@ -1226,6 +1226,36 @@ class HeldCalls(unittest.TestCase):
             t.join()
         self.assertEqual(sorted(codes.values()), [0, 2, 2, 2])
         self.assertEqual(self.consumed(), [aid])
+
+    def test_gemini_hold_shows_person_commands_with_direct_bang_prefix(self):
+        def gemini(event, **fields):
+            payload = {"session_id": "gemini-test", "hook_event_name": event, **fields}
+            out, err = io.StringIO(), io.StringIO()
+            previous_agent = claude_code.AGENT
+            try:
+                code = harness_hooks.run("gemini", json.dumps(payload), out, err)
+            finally:
+                claude_code.AGENT = previous_agent
+            return code, out.getvalue(), err.getvalue()
+
+        self.assertEqual(gemini("SessionStart")[0], 0)
+
+        code, _, err = gemini(
+            "BeforeTool",
+            tool_name="run_shell_command",
+            tool_input={"command": self.UPLOAD, "description": "upload"},
+        )
+
+        self.assertEqual(code, 2, err)
+        lines = err.strip().split("\n")
+        aid = lines[0].split()[4]
+
+        self.assertEqual(
+            lines[3],
+            f"Person: look with `!tracekit approvals show {aid}`; allow once with "
+            f"`!tracekit approvals approve {aid}`; refuse with "
+            f"`!tracekit approvals reject {aid}`.",
+        )
 
     def test_a_retry_of_a_rejected_call_says_who_rejected_it(self):
         """The person rejects a held call and the agent tries it again: the block said only to approve a new approval,

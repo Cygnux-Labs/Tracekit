@@ -11,8 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from tracekit import __version__, audit, cli
-from tracekit import agent_hooks
+from tracekit import __version__, agent_hooks, audit, cli
 from tracekit.integrations import harness_hooks
 from tracekit.signer.service import DEFAULT_POLICY, evaluate, load_policy
 
@@ -25,10 +24,16 @@ def _call(tool, args, days_ago=0):
 
 
 def _rollout(item, days_ago=0):
-    """Redacted envelope shape checked against a real local rollout (no session content copied)."""
+    """Synthetic Codex rollout envelope checked against the documented format."""
     at = datetime.now(timezone.utc) - timedelta(days=days_ago)
-    return {"timestamp": at.isoformat().replace("+00:00", "Z"), "ordinal": 0,
-            "type": "response_item", "payload": item, "metadata": {}}
+    return {"type": "response_item", "timestamp": at.isoformat().replace("+00:00", "Z"),
+            "payload": item}
+
+
+def _line(tool, args, days_ago=0, **extra):
+    """A line of a calls file (#714)."""
+    at = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return {"time": at.isoformat().replace("+00:00", "Z"), "tool": tool, "args": args, **extra}
 
 
 def _write_jsonl(path: Path, lines: list[dict | str]):
@@ -333,79 +338,307 @@ class TestAudit(unittest.TestCase):
         self.assertNotIn("\x1b", text)
         self.assertIn("\\u001b", text)
 
-    def test_codex_rollout_mapping_and_live_hook_policy_parity(self):
-        # A local rollout confirmed these envelope and JSON-string argument fields; values below are synthetic.
+    def test_a_calls_file_is_decided_as_transcripts_are(self):
+        """#714: a calls file any agent's log can be turned into: a line without tool and args is malformed, --since
+        cuts by its time, and a line without a session counts under the file's name."""
+        path = self.root / "calls.jsonl"
+        _write_jsonl(path, [_line("Bash", {"command": "rm -rf /"}, session="s1"),
+                            _line("Bash", {"command": "terraform destroy -auto-approve"}),
+                            _line("Bash", {"command": "rm -rf /"}, days_ago=10),
+                            {"args": {"command": "ls"}}, {"tool": "Bash", "args": "ls"}, "not json"])
+        report = audit.audit(calls=str(path), since="7d")
+        self.assertEqual(report["counts"], {"deny": 1, "ask": 1, "flag": 0, "allow": 0})
+        self.assertEqual(report["skipped_malformed"], 3)
+        self.assertEqual([(c["agent"], c["session"]) for c in report["calls"]],
+                         [("other", "s1"), ("other", "calls.jsonl")])
+        code, out, _ = _run("--calls", str(path), "--since", "7d", "--json")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out)["counts"], report["counts"])
+        self.assertEqual(_run("--calls", str(self.root / "missing.jsonl"))[0], 2)
+
+    def test_a_calls_file_is_read_from_stdin(self):
+        data = (json.dumps(_line("Bash", {"command": "rm -rf /"})) + "\n").encode()
+        with mock.patch("sys.stdin", io.TextIOWrapper(io.BytesIO(data))):
+            code, out, _ = _run("--calls", "-", "--json")
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["counts"]["deny"], 1)
+        self.assertEqual(report["calls"][0]["session"], "stdin")
+
+    def test_agent_maps_a_calls_files_names_as_its_hook_does(self):
+        args = {"command": "rm -rf /"}
+        _write_jsonl(self.root / "calls.jsonl", [_line("run_shell_command", args)])
+        tool, mapped = agent_hooks.tool("gemini", "run_shell_command", args)
+        expected = evaluate(load_policy(DEFAULT_POLICY), tool, mapped)[0]
+        call = audit.audit(calls=str(self.root / "calls.jsonl"), agent="gemini")["calls"][0]
+        self.assertEqual((call["agent"], call["tool"], call["verdict"], call["rule_ids"]),
+                         ("gemini", "Bash", expected["verdict"], expected["rule_ids"]))
+        self.assertEqual(call["verdict"], "deny")
+        code, _, err = _run(str(self.root), "--agent", "gemini")   # no reader of Gemini CLI's own sessions yet
+        self.assertEqual(code, 2)
+        self.assertIn("--calls FILE --agent gemini", err)
+
+    def test_with_no_root_every_known_agents_folder_that_exists_is_read(self):
+        home = self.root / "home"
+        folder = home / ".claude" / "projects"
+        _write_jsonl(folder / "p" / "s.jsonl", [_call("Bash", {"command": "rm -rf /"}),
+                                                _call("Bash", {"command": "ls"})])
+        absent = ("nothere", (lambda: str(home / ".nothere"), "~/.nothere", audit._claude_code))
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}), \
+                mock.patch.dict(audit.READERS, dict([absent])):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, _ = _run("--json")
+            text = _run()[1]
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["agents"], {"claude": {"folder": str(folder), "calls": 2, "sessions": 1}})
+        self.assertEqual({c["agent"] for c in report["calls"]}, {"claude"})
+        self.assertIn(f"\nread: claude ({folder}): 2 calls in 1 session\n", text)
+
+    def test_agent_claude_is_init_s_name_and_claude_code_still_works(self):
+        """The 1.7.0 review: audit --agent took claude-code where init, uninstall and the plugin skill take claude."""
+        _write_jsonl(self.root / "p" / "s.jsonl", [_call("Bash", {"command": "ls"})])
+        for name in ("claude", "claude-code"):
+            with self.subTest(name=name):
+                code, out, err = _run(str(self.root), "--agent", name, "--json")
+                self.assertEqual(code, 0, err)
+                self.assertEqual(json.loads(out)["agents"], {"claude": {"folder": str(self.root), "calls": 1,
+                                                                        "sessions": 1}})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["audit", "--help"])
+        self.assertRegex(out.getvalue(), r"--agent \{[a-z,]*\bclaude\b")   # one name in the help: init's
+        self.assertNotIn("claude-code", out.getvalue())
+        # audit() itself takes the old name too (the PR #754 review): it read no ROOT, and a calls file's agent kept it
+        self.assertEqual(audit.audit(str(self.root), agent="claude-code")["agents"],
+                         {"claude": {"folder": str(self.root), "calls": 1, "sessions": 1}})
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "ls"})])
+        report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="claude-code")
+        self.assertEqual((list(report["agents"]), [c["agent"] for c in report["calls"]]), (["claude"], ["claude"]))
+
+    def test_a_shell_command_no_agent_sends_is_held_as_the_signer_holds_it(self):
+        """The 1.7.0 review: --agent codex crashed (TypeError) on an argv with an item that isn't a string; then such a
+        line was skipped as malformed with --agent and held without it. The signer holds a shell command its parser
+        can't read (TK-SHELL-PARSE), whichever agent sent it: so does audit, with any --agent or none."""
+        bad = [["ls", 1], ["ls", None], ["ls", ["-la"]], [["ls"]], ["ls", 10 ** 30], ["bash", "-lc", 1], 1, {}]
+        for agent, tool in ((None, "Bash"), ("claude", "Bash"), ("codex", "shell"), ("codex", "Bash"),
+                            ("gemini", "run_shell_command"), ("opencode", "bash"), ("goose", "shell")):
+            with self.subTest(agent=agent, tool=tool):
+                _write_jsonl(self.root / "calls.jsonl", [_line(tool, {"command": c}) for c in bad]
+                             + [_line(tool, {"command": "ls -la"})])
+                code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--json", "--show",
+                                      *(["--agent", agent] if agent else []))
+                self.assertEqual(code, 0, err)
+                report = json.loads(out)
+                self.assertEqual(report["skipped_malformed"], 0)
+                self.assertEqual([(c["tool"], c["verdict"], "TK-SHELL-PARSE" in c["rule_ids"])
+                                  for c in report["calls"]],
+                                 [("Bash", "ask", True)] * len(bad) + [("Bash", "allow", False)])
+        _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"command": ["bash", "-lc", "ls -la"]})])   # Codex's
+        report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="codex")
+        self.assertEqual([(c["tool"], c["verdict"]) for c in report["calls"]], [("Bash", "allow")])
+
+    def test_a_call_cline_s_hook_cant_read_is_blocked_as_the_hook_blocks_it(self):
+        """The 1.7.0 review: one Cline call the mapping can't read (a run_commands argv with a number in it, an editor
+        with no path) stopped the whole --agent cline replay (exit 2). Its live hook blocks such a call: audit denies
+        it (TK-HOOK-BLOCKED) and replays the rest."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("run_commands", {"command": "ls"}),
+                                                 _line("run_commands", {"command": ["ls", 1]}),
+                                                 _line("editor", {"command": "view"}),
+                                                 _line("run_commands", {"command": "git status"})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "cline", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual(report["skipped_malformed"], 0)
+        self.assertEqual([(c["verdict"], c["rule_ids"]) for c in report["calls"]],
+                         [("allow", []), ("deny", ["TK-HOOK-BLOCKED"]), ("deny", ["TK-HOOK-BLOCKED"]),
+                          ("allow", [])])
+
+    def test_kilo_generate_image_without_a_path_is_decided(self):
+        """The 1.7.0 review's fuzzing: --agent kilo crashed (KeyError) on a generate_image with an image and no path;
+        it is decided as the Read of the image."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("generate_image", {"prompt": "x", "image": "in.png"})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "kilo", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([c["tool"] for c in json.loads(out)["calls"]], ["Read"])
+
+    def test_a_line_nested_past_what_the_mapping_takes_is_malformed(self):
+        """#730 review: --agent droid or devin crashed on a line json.loads takes but agent_hooks._strings can't."""
+        deep = '{"tool": "ApplyPatch", "args": {"x": ' + "[" * 1000 + '"s"' + "]" * 1000 + "}}"
+        for agent, tool in (("droid", "ApplyPatch"), ("devin", "apply_patch")):
+            with self.subTest(agent=agent):
+                _write_jsonl(self.root / "calls.jsonl", [deep.replace("ApplyPatch", tool),
+                                                         _line("Bash", {"command": "ls"})])
+                code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", agent, "--json")
+                self.assertEqual(code, 0, err)
+                report = json.loads(out)
+                self.assertEqual((report["skipped_malformed"], sum(report["counts"].values())), (1, 1))
+
+    def test_a_time_that_isnt_iso_8601_is_malformed(self):
+        _write_jsonl(self.root / "calls.jsonl", [{"time": 1762783331, "tool": "Bash", "args": {"command": "ls"}},
+                                                 {"time": None, "tool": "Bash", "args": {"command": "ls"}}])
+        report = audit.audit(calls=str(self.root / "calls.jsonl"), since="7d")
+        self.assertEqual((report["skipped_malformed"], report["counts"]["allow"]), (1, 1))   # no time: kept
+
+    def test_agent_denies_what_its_hook_denies_before_mapping(self):
+        """#730 review: Kilo's notebook_execute, Crush's sub-agents and a Devin call missing its argument are denied in
+        the hook before mapping."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("notebook_execute", {"cell": "print(1)"})])
+        report = audit.audit(calls=str(self.root / "calls.jsonl"), agent="kilo")
+        self.assertEqual((report["calls"][0]["verdict"], report["calls"][0]["rule_ids"]),
+                         ("deny", ["TK-HOOK-BLOCKED"]))
+        self.assertEqual(report["by_rule"], {"TK-HOOK-BLOCKED": 1})   # the per-rule counts agree with the total
+        self.assertIn("TK-HOOK-BLOCKED: 1  (the agent's Tracekit hook denies", audit.format_report(report))
+        # Tracekit's own id, not a custom rule; like an engine check, it has no section of the policy
+        self.assertIn("  deny TK-HOOK-BLOCKED 1 (not placed)", audit.share(report).splitlines())
+        _write_jsonl(self.root / "calls.jsonl", [_line("agent", {"prompt": "tidy up"})])
+        self.assertEqual(audit.audit(calls=str(self.root / "calls.jsonl"), agent="crush")["counts"]["deny"], 1)
+        _write_jsonl(self.root / "calls.jsonl", [_line("read", {"path_name": "notes.txt"})])   # no file_path
+        self.assertEqual(audit.audit(calls=str(self.root / "calls.jsonl"), agent="devin")["counts"]["deny"], 1)
+
+    def test_what_a_calls_file_option_cant_read_exits_2_with_the_reason(self):
+        code, _, err = _run("--calls", str(self.root / "missing.jsonl"))
+        self.assertEqual(code, 2)
+        self.assertIn("missing.jsonl", err)
+        # what isn't a regular file: what it is, and to send a pipe to --calls - only for a pipe (the 1.7.0 review)
+        code, _, err = _run("--calls", str(self.root))
+        self.assertEqual((code, err.splitlines()[-1]),
+                         (2, f"tracekit audit: cannot read the calls file: {self.root} is a directory"))
+        cases = []
+        if os.path.exists("/dev/null"):
+            cases.append(("/dev/null", "/dev/null is not a regular file"))
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(self.root / "fifo")
+            cases.append((str(self.root / "fifo"), "fifo is a pipe (as <(...) gives); send it to --calls -"))
+        try:
+            (self.root / "link.jsonl").symlink_to(self.root / "missing.jsonl")
+            cases.append((str(self.root / "link.jsonl"), "link.jsonl is a symlink, which audit doesn't follow"))
+            (self.root / "dir-link").symlink_to(self.root, target_is_directory=True)   # not "a directory" (PR #754)
+            cases.append((str(self.root / "dir-link"), "dir-link is a symlink, which audit doesn't follow"))
+        except OSError:   # Windows without the privilege
+            pass
+        for path, said in cases:
+            with self.subTest(path=path):
+                code, _, err = _run("--calls", path)
+                self.assertEqual(code, 2)
+                self.assertTrue(err.rstrip().endswith(said), err)
+                self.assertEqual("--calls -" in err, "pipe" in said)
+        with mock.patch("sys.stdin", None):   # started with stdin closed (<&-)
+            code, _, err = _run("--calls", "-")
+        self.assertEqual(code, 2)
+        self.assertIn("no standard input", err)
+
+    def test_agent_without_root_or_calls_exits_2(self):
+        # an agent with no reader: only --calls FILE, which works (a ROOT is refused); claude: a ROOT or --calls FILE
+        code, _, err = _run("--agent", "codex")
+        self.assertEqual(code, 2)
+        self.assertIn("--agent codex needs a ROOT or --calls FILE", err)
+        code, out, err = _run(str(self.root), "--agent", "codex", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["agents"]["codex"]["calls"], 0)
+        for argv in (["--agent", "gemini"], [str(self.root), "--agent", "gemini"]):
+            with self.subTest(argv=argv):
+                code, _, err = _run(*argv)
+                self.assertEqual(code, 2)
+                self.assertIn("no reader for gemini's sessions yet", err)
+        code, _, err = _run("--agent", "claude")
+        self.assertEqual(code, 2)
+        self.assertIn("--agent claude needs a ROOT or --calls FILE", err)
+        with self.assertRaisesRegex(ValueError, "no reader for gemini's"):   # audit() itself, a ROOT given or not
+            audit.audit(str(self.root), agent="gemini")
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as e:
+            cli.main(["audit", "--calls", "-", "--agent", "no-such-agent"])
+        self.assertEqual(e.exception.code, 2)
+
+    def test_share_over_a_calls_file(self):
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "rm -rf /"}, session="s1")])
+        page = audit.share(audit.audit(calls=str(self.root / "calls.jsonl")))
+        self.assertEqual(page.splitlines()[:3], [
+            f"Tracekit {__version__} field report (tracekit audit --share): the whole calls file",
+            "a replay against today's policy, not a signed record: 1 coding-agent session",
+            "Tool calls: 1   allow 0, flag 0, ask 0, deny 1"])
+        self.assertNotIn("s1", page)
+
+    def test_codex_rollout_hook_mapping_and_signer_parity(self):
         items = [
-            {"type": "function_call", "id": "item-1", "status": "completed", "namespace": "",
-             "name": "exec_command", "call_id": "cx-1",
-             "arguments": json.dumps({"cmd": "rm -rf /", "yield_time_ms": 10})},
-            {"type": "custom_tool_call", "name": "apply_patch", "call_id": "cx-2",
-             "input": "*** Begin Patch\n*** Add File: src/example.txt\n+hello\n*** End Patch"},
-            {"type": "function_call", "namespace": "mcp__filesystem", "name": "read_file", "call_id": "cx-3",
-             "arguments": json.dumps({"path": "src/example.txt"})},
+            {"type": "function_call", "name": "exec_command", "call_id": "cx1",
+             "arguments": json.dumps({"cmd": "rm -rf /", "yield_time_ms": 100})},
+            {"type": "custom_tool_call", "name": "apply_patch", "call_id": "cx2",
+             "input": "*** Begin Patch\n*** Add File: note.txt\n+hi\n*** End Patch"},
+            {"type": "function_call", "namespace": "mcp__filesystem", "name": "read_file",
+             "call_id": "cx3", "arguments": json.dumps({"path": "note.txt"})},
         ]
-        _write_jsonl(self.root / "2026" / "11" / "09" / "rollout-demo.jsonl", [
-            {"type": "session_meta", "timestamp": _rollout({})["timestamp"], "payload": {"id": "cx"}},
-            _rollout({"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]}),
-            *(_rollout(item) for item in items),
-            _rollout({"type": "function_call_output", "call_id": "cx-1", "output": "ok"}),
+        _write_jsonl(self.root / "2026" / "11" / "12" / "rollout-demo.jsonl", [
+            {"type": "session_meta", "timestamp": _rollout({})["timestamp"]},
+            *[_rollout(item) for item in items],
+            _rollout({"type": "function_call", "name": "write_stdin", "call_id": "no-hook",
+                      "arguments": json.dumps({"chars": "x"})}),
+            _rollout({"type": "function_call_output", "call_id": "cx1", "output": "ok"}),
         ])
-        report = audit.audit(str(self.root))
-        self.assertEqual((len(report["calls"]), report["sessions"], report["codex_sessions"]), (3, 1, 1))
+        report = audit.audit(str(self.root), agent="codex")
+        self.assertEqual((len(report["calls"]), report["sessions"]), (3, 1))
         self.assertEqual([c["tool"] for c in report["calls"]],
                          ["Bash", "Edit", "mcp__filesystem__read_file"])
-        self.assertEqual(report["calls"][0]["verdict"], "deny")
+        hooks = [agent_hooks.tool("codex", "Bash", {"command": "rm -rf /"}),
+                 agent_hooks.tool("codex", "apply_patch", {"command": items[1]["input"]}),
+                 agent_hooks.tool("codex", "mcp__filesystem__read_file", {"path": "note.txt"})]
         engine = load_policy(DEFAULT_POLICY)
-        for item, rec in zip(items, report["calls"]):
-            self.assertEqual(harness_hooks._codex_tool(item),
-                             agent_hooks.tool("codex", *self._live_codex_hook_input(item)))
-            tool, args = harness_hooks._codex_tool(item)
-            self.assertEqual((rec["tool"], rec["verdict"], rec["rule_ids"]),
-                             (tool, evaluate(engine, tool, args)[0]["verdict"],
-                              evaluate(engine, tool, args)[0].get("rule_ids") or []))
+        for item, expected, call in zip(items, hooks, report["calls"]):
+            self.assertEqual(harness_hooks._codex_tool(item), expected)
+            decision = evaluate(engine, *expected)[0]
+            self.assertEqual((call["tool"], call["verdict"], call["rule_ids"]),
+                             (expected[0], decision["verdict"], decision.get("rule_ids") or []))
         self.assertIn("coding-agent session", audit.share(report))
-        self.assertNotIn("Claude Code session", audit.share(report))
 
-    @staticmethod
-    def _live_codex_hook_input(item):
-        # The hook input Codex sends; assert normalization agrees with the shared rollout mapper.
-        if item["name"] == "exec_command":
-            return "Bash", {"command": json.loads(item["arguments"])["cmd"]}
-        if item["name"] == "apply_patch":
-            return "apply_patch", {"command": item["input"]}
-        return "mcp__filesystem__read_file", json.loads(item["arguments"])
-
-    def test_codex_no_hook_duplicate_bad_lines_time_window_and_claude_compat(self):
-        new = {"type": "function_call", "name": "exec_command", "call_id": "cx-new",
-               "arguments": json.dumps({"cmd": "ls -la"})}
-        old = {"type": "function_call", "name": "exec_command", "call_id": "cx-old",
-               "arguments": json.dumps({"cmd": "echo old"})}
-        _write_jsonl(self.root / "rollout-demo.jsonl", [
-            _rollout(old, days_ago=30), _rollout(new), _rollout(new),
-            _rollout({"type": "function_call", "name": "write_stdin", "call_id": "cx-skip",
-                      "arguments": json.dumps({"chars": "anything"})}),
+    def test_codex_reader_duplicate_malformed_since_and_no_hook(self):
+        new = {"type": "function_call", "name": "exec_command", "call_id": "new",
+               "arguments": json.dumps({"cmd": "ls"})}
+        old = {**new, "call_id": "old"}
+        changed = {**new, "arguments": json.dumps({"cmd": "pwd"})}
+        _write_jsonl(self.root / "rollout-a.jsonl", [
+            _rollout(old, 30), _rollout(new), _rollout(new), _rollout(changed),
             _rollout({"type": "function_call", "name": "exec_command",
-                      "arguments": json.dumps({"cmd": "ls"})}),
-            _rollout({"type": "function_call", "name": "exec_command", "call_id": "cx-invalid",
-                      "arguments": "not-json"}),
-            _rollout({"type": "message", "role": "assistant", "content": []}),
-            _rollout(None), "not json", _call("Bash", {"command": "pwd"}),
+                      "arguments": json.dumps({"cmd": "no-id"})}),
+            _rollout({"type": "function_call", "name": "exec_command", "call_id": "bad",
+                      "arguments": "bad json"}), _rollout(None), "not json",
+            _call("Bash", {"command": "rm -rf /"}),
         ])
-        report = audit.audit(str(self.root), since="7d")
-        self.assertEqual(report["skipped_malformed"], 2)
-        self.assertEqual((report["counts"]["allow"], len(report["calls"])), (2, 2))
-        self.assertEqual(report["sessions"], 1)
-        self.assertTrue(all(c["time"] for c in report["calls"]))
-        self.assertEqual(report["codex_sessions"], 1)
+        _write_jsonl(self.root / "rollout-b.jsonl", [_rollout(new)])
+        _write_jsonl(self.root / "history.jsonl", [_rollout(new)])
+        report = audit.audit(str(self.root), agent="codex", since="7d")
+        self.assertEqual((len(report["calls"]), report["sessions"], report["skipped_malformed"]),
+                         (2, 1, 2))
+        self.assertEqual(report["counts"]["allow"], 2)
 
-    def test_codex_redaction_does_not_leak_key(self):
+    def test_codex_home_default_both_readers_and_redaction(self):
+        home = self.root / "home"
+        codex = self.root / "other" / "sessions"
         secret = "sk-ant-" + "a1B2c3D4e5F6g7H8i9J0" * 2
-        item = {"type": "function_call", "name": "exec_command", "call_id": "cx-secret",
-                "arguments": json.dumps({"cmd": "export ANTHROPIC_API_KEY=" + secret})}
-        _write_jsonl(self.root / "rollout-demo.jsonl", [_rollout(item)])
-        shown = audit.audit(str(self.root), show=True)["calls"]
-        self.assertEqual(len(shown), 1)
-        self.assertNotIn(secret, shown[0]["text"])
+        _write_jsonl(home / ".claude" / "projects" / "p" / "s.jsonl",
+                     [_call("Bash", {"command": "rm -rf /"})])
+        _write_jsonl(codex / "2026" / "11" / "12" / "rollout-demo.jsonl", [
+            _rollout({"type": "function_call", "name": "exec_command", "call_id": "cx1",
+                      "arguments": json.dumps({"cmd": "export ANTHROPIC_API_KEY=" + secret})})])
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home),
+                                          "CODEX_HOME": str(codex.parent)}):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, err = _run("--json", "--show")
+            self.assertEqual(code, 0, err)
+            report = json.loads(out)
+            self.assertEqual(set(report["agents"]), {"claude", "codex"})
+            self.assertEqual(report["sessions"], 2)
+            self.assertEqual(report["agents"]["codex"]["folder"], str(codex))
+            self.assertNotIn(secret, report["calls"][1]["text"])
+            self.assertIn("coding-agent sessions", _run("--share")[1])
+        with mock.patch.dict(os.environ, {"HOME": str(self.root / "missing"),
+                                          "USERPROFILE": str(self.root / "missing")}):
+            os.environ.pop("CODEX_HOME", None)
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            self.assertEqual(audit.codex_root(), str(self.root / "missing" / ".codex" / "sessions"))
+            code, _, err = _run()
+            self.assertEqual(code, 2)
+            self.assertIn("$CODEX_HOME/sessions", err)
+            self.assertIn("~/.codex/sessions", err)
 
 
 if __name__ == "__main__":

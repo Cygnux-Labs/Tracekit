@@ -20,9 +20,10 @@ hermes config set timeouts.tools.sequential_call 600
 hermes config set timeouts.tools.concurrent_batch 600
 ```
 
-The plugin needs `tracekit-ai` 1.4.2 or later, the first release with these hooks; Hermes asks before it installs it
-into its own environment. At install Hermes also asks for `TRACEKIT_SIGNER_TOKEN`: leave it empty unless your signer
-is on `tcp://`.
+The plugin installs `tracekit-ai` 1.6.0 or later, for the current signer and policy (its hooks date from 1.4.2);
+Hermes asks before it installs it into its own environment. At install Hermes also asks for `TRACEKIT_SIGNER_TOKEN`:
+leave it empty unless your signer is on `tcp://`. If you run your own signer (`TRACEKIT_SIGNER`), upgrade it to 1.6
+first: a 1.6 client refuses an older signer, so every call would be blocked until you do.
 
 **Raise Hermes's limits for approvals.** An `ask` waits for a person inside `pre_tool_call`, and Hermes bounds that
 hook twice: by `plugins.hook_callback_timeout` (30 s by default, 600 s at most), and by the call's own tool deadline

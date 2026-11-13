@@ -336,7 +336,12 @@ class Setup(unittest.TestCase):
         from mcp import ClientSession
         original = mock.AsyncMock(return_value="result")
         self.addCleanup(setattr, ClientSession, "call_tool", ClientSession.call_tool)
+        self.addCleanup(setattr, ClientSession, "get_prompt", ClientSession.get_prompt)
+        self.addCleanup(setattr, ClientSession, "read_resource", ClientSession.read_resource)
         self.addCleanup(setattr, ClientSession, "initialize", ClientSession.initialize)
+        for name in ("list_tools", "list_resources", "list_prompts"):
+            if hasattr(ClientSession, name):
+                self.addCleanup(setattr, ClientSession, name, getattr(ClientSession, name))
         ClientSession.call_tool = original
         process = mock.Mock()
         with mock.patch("tracekit.integrations.mcp.TracekitSession") as gate:

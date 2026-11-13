@@ -46,6 +46,7 @@ import concurrent.futures
 import os
 import re
 import threading
+import time
 import uuid
 
 from tracekit import __version__, yamlmini
@@ -65,13 +66,23 @@ PROTOCOL = "2025-06-18"   # answered to an initialize that names no protocol ver
 UPSTREAM_TIMEOUT_S = 600
 BLOCKED = "Tool call blocked by policy: "
 MAX_RESOURCES = 10000   # resource URI -> its upstream, as listed: the most recently listed or read
+MAX_LIST_PAGES = 100    # cursor pages fetched from one upstream per tools/list, resources/list or prompts/list
 PROMPT = "prompt:"   # prompts are decided as mcp:<upstream>/prompt:<name>, so no tool name may start with it
 LISTS = {"tools/list": ("list_tools", "tools"), "prompts/list": ("list_prompts", "prompts"),
          "resources/list": ("list_resources", "resources")}
 
 
+class UpstreamTimeout(TimeoutError):
+    """An upstream call that didn't answer within the time Upstreams waits for it, unlike a TimeoutError the call
+    raised itself (a socket's, anyio's fail_after)."""
+
+
+class Unreachable(ConnectionError):
+    """An upstream whose session couldn't be opened (again): nothing was sent to it."""
+
+
 class Upstreams:
-    """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, *a)` runs one
+    """One session per upstream MCP server, held open on an event loop of its own; `call(name, method, ...)` runs one
     of the mcp Client's methods on it from any thread. A session that ended (a stdio upstream that exited, a remote
     one that went away) is opened again on the next call."""
 
@@ -100,22 +111,34 @@ class Upstreams:
                 raise
         ready = concurrent.futures.Future()
         self._held[name] = asyncio.run_coroutine_threadsafe(hold(ready), self.loop)
-        ready.result(UPSTREAM_TIMEOUT_S)
+        try:
+            ready.result(UPSTREAM_TIMEOUT_S)
+        except Exception:
+            if not ready.done():   # the wait ran out: give up this attempt, the next call opens a new session
+                self._held[name].cancel()
+                raise Unreachable(f"upstream {name!r} gave no session in {UPSTREAM_TIMEOUT_S:g} s") from None
+            e = ready.exception()
+            if e is None:   # it opened just as the wait ran out
+                return
+            raise Unreachable(f"upstream {name!r} couldn't be opened: {type(e).__name__}: {e}") from e
 
     def _run(self, coro, timeout=UPSTREAM_TIMEOUT_S):
         fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
         try:
             return fut.result(timeout)
         except concurrent.futures.TimeoutError:
-            fut.cancel()   # else the call keeps running (and holding its buffers) after its answer was given up
-            raise
+            # the call raised a TimeoutError of its own (from 3.11 the same class), or ended as the wait ran out;
+            # else cancel it, so it doesn't keep running (and holding its buffers) after its answer was given up
+            if fut.done() or not fut.cancel():
+                return fut.result()
+            raise UpstreamTimeout(f"no answer in {timeout:g} s") from None
 
-    def call(self, name, method, *a):
+    def call(self, name, method, *a, timeout=UPSTREAM_TIMEOUT_S, **kw):
         with self._locks[name]:
             if not self._stop.is_set() and (self._held[name].done() or _closed(self.clients[name])):
                 self._held[name].cancel()   # its session ended (the upstream exited or went away): a new one
                 self._open(name)
-        return self._run(getattr(self.clients[name], method)(*a))
+        return self._run(getattr(self.clients[name], method)(*a, **kw), timeout=timeout)
 
     def close(self):
         self.loop.call_soon_threadsafe(self._stop.set)
@@ -180,18 +203,39 @@ class _McpGateway(_Handler):
                     "serverInfo": {"name": "tracekit-mcp-gateway", "version": __version__}}
         if method == "ping":
             return {}
-        # lean: the first page of each upstream's tools, resources and prompts; follow nextCursor if one lists more
         if method in LISTS:
             call, kind = LISTS[method]
             listed = []
+            deadline = time.monotonic() + UPSTREAM_TIMEOUT_S
             for up in ups.clients:
-                items = getattr(ups.call(up, call), kind)
-                if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
-                    items = [t for t in items if not t.name.startswith(PROMPT)]
+                cursor, n, seen, all_items = None, 0, set(), []
+                while True:
+                    try:
+                        result = ups.call(up, call, cursor=cursor, timeout=deadline - time.monotonic())
+                    except UpstreamTimeout:   # the listing's time ran out; any other TimeoutError is the upstream's
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list timed out (one listing has "
+                                             f"{UPSTREAM_TIMEOUT_S:g} s for every upstream and page)") from None
+                    items = getattr(result, kind)
+                    if kind == "tools":   # one named like a prompt would be decided as that prompt: never offered
+                        items = [t for t in items if not t.name.startswith(PROMPT)]
+                    all_items.extend(items)
+                    cursor = result.next_cursor
+                    n += 1
+                    if cursor is None:
+                        break
+                    if cursor in seen:
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list page {n} returned a cursor an earlier "
+                                     "page had returned, so the listing would never end; fix the upstream's cursor")
+                    seen.add(cursor)
+                    if n >= MAX_LIST_PAGES:
+                        raise _Error(-32603, f"upstream {up!r}: {kind}/list exceeded {MAX_LIST_PAGES} pages; "
+                                     f"the gateway lists at most {MAX_LIST_PAGES} pages per upstream; "
+                                     "give the upstream larger pages or fix its cursor")
                 if kind == "resources":
-                    for r in items:
+                    for r in all_items:
                         _remember(gw, str(r.uri), up)
-                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name) for i in items]
+                page = [_dump(i) if kind == "resources" else dict(_dump(i), name=up + SEP + i.name)
+                        for i in all_items]
                 # the model reads what the upstream wrote in them: an untrusted input
                 listed += self._observe(gw, key, up, kind, page, trusted=False)
             return {kind: listed}
@@ -227,7 +271,7 @@ class _McpGateway(_Handler):
             return why[1]
         try:
             out = gw["cut"](_dump(gw["upstreams"].call(up, method, name, args)))
-        except Exception as e:   # it reached the upstream: the call may have run
+        except Exception as e:   # it reached the upstream, and may have run, unless the upstream couldn't be opened
             why = _upstream_error(e, ran=True)
             gw["custody"].complete(key, tcid, d, tool, args, "error", error=gw["cut"](why)[:4096])
             raise _Error(-32603, why) from None
@@ -254,6 +298,8 @@ class _Error(Exception):
 
 
 def _upstream_error(e, ran=False):
+    if isinstance(e, Unreachable):
+        return f"upstream error: {e}; nothing was sent to it, and the gateway tries to open it again on the next call"
     return (f"upstream error: {type(e).__name__}: {e}" + ("; the call may have run: check before making it again"
                                                           if ran else "")
             + "; the gateway connects to an upstream that went away again on the next call")
