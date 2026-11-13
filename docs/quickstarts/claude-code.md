@@ -43,7 +43,7 @@ A held call doesn't run either, until you approve it. Claude Code shows the hold
 Why: a quote on the line is never closed
 Instead: Close the quote.
 Person: look with `! tracekit approvals show apr-6f0c…`; allow once with `! tracekit approvals approve apr-6f0c…`; refuse with `! tracekit approvals reject apr-6f0c…`.
-Agent: ask the person: approve this call or skip it? Don't reword the call to get past the hold; ...
+Agent: ask the person: approve or skip? Don't reword around the hold, but do take an Instead step that's yours and say so; ...
 ```
 
 ## 3. Answer it
