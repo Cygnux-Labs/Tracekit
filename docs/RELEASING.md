@@ -18,6 +18,10 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    `plugin/.claude-plugin/plugin.json` (`version`), in both Helm charts (`appVersion` in `deploy/helm/*/Chart.yaml`
    and the image tag in `deploy/helm/*/values.yaml`, both `v<version>`) and in the README's licence line ("Version
    <version>") and its CI example (`uses: Cygnux-Labs/Tracekit@v<version>`; `tests/test_version.py` checks both).
+   Pin it in the plugin's install lines, `tracekit-ai==<version>` in `plugin/scripts/tracekit-hook` and
+   `plugin/README.md` (`tests/test_hook_invocation.py` checks they match `plugin.json`), and in docs no test checks:
+   `uses: Cygnux-Labs/Tracekit@v<version>` in `docs/verdicts.md` and `docs/concepts/verification.md`, and
+   `uvx --from tracekit-ai==<version>` in `docs/for-auditors.md`.
    Raise the upper bound of `tracekit-ai` in `integrations/hermes/plugin.yaml` (`python_dependencies`) to the next
    minor (`<1.8` for a 1.7.x), so the plugin takes the release (`tests/test_version.py` checks it takes
    `__version__`). Add a dated entry to `CHANGELOG.md`. In

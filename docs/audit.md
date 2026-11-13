@@ -31,9 +31,10 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` is a Claude Code transcripts' folder (another agent's with `--agent NAME`, when that agent has a reader); a
-  folder that doesn't exist is an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's
-  default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
+- `ROOT` is a Claude Code transcripts' folder (Cursor's with `--agent cursor`, Cline's with `--agent cline`,
+  Gemini CLI's with `--agent gemini`, and another agent's once it has a reader); a folder that doesn't exist is
+  an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's default folder that exists
+  (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
   file: a pipe (as `<(...)` gives) goes to `--calls -`. A file it can't open, or `--calls -` with no standard input,
   exits 2 with the reason; for a FILE that isn't a regular file, what it is: a directory, a pipe, a symlink (audit
@@ -44,9 +45,10 @@ denied and held calls (--all for every call):
   call missing the argument it is decided on) is a deny by `TK-HOOK-BLOCKED`; the others are mapped as the hook maps
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
-  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with `--calls`. An agent with no
-  reader (every agent but `claude`, `cline` or `gemini`) needs `--calls FILE`, and `--agent claude`, `cline` or
-  `gemini` a ROOT or `--calls FILE`: without them it exits 2.
+  `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with
+  `--calls`. An agent with no reader (every agent but `claude`, `cursor`, `cline` and `gemini`) needs
+  `--calls FILE`, and `--agent claude`, `cursor`, `cline` or `gemini` a ROOT or `--calls FILE`: without them it
+  exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -57,7 +59,12 @@ denied and held calls (--all for every call):
 - `--share` prints the counts alone, to post as a [field report](field-reports.md): the window's length, the number
   of sessions, the calls by decision, and each rule by the decision of the calls it matched, marked `also matched,
   not why` when the rule's section isn't that decision and `not placed` for an engine check. A rule id that isn't
-  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description.
+  Tracekit's own is counted as `custom rule`. No session, path, time, call or rule description. With `--since`, it
+  also prints the calls by decision for each day of the window, 24 hours each and numbered from the window's start
+  (`Day 1`), a day with no calls too, and the calls with no time (a calls-file line without `time`) on a `No time`
+  line. A day line holds no date, weekday or hour, and the window's start isn't printed, but with the date you post
+  it, a reader can tell which days the agent ran. Without `--since` there are no day lines: day 1 would be the first
+  call's, and say how far back the transcripts go.
 
 The report always begins with the disclaimer: "a replay against today's policy, not a signed record".
 
@@ -68,6 +75,7 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `cursor` | `~/.cursor/projects` |
 | `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
 | `gemini` | `$GEMINI_CLI_HOME/.gemini/tmp` when it is set, else `~/.gemini/tmp` |
 
@@ -81,6 +89,15 @@ Claude Code's reader reads every `.jsonl` file under its folder, at any depth: e
 under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
+
+Cursor's reader reads the agent transcripts Cursor writes for each chat, of its IDE's agent and of the `cursor-agent`
+CLI: `<project>/agent-transcripts/<id>/<id>.jsonl` under its folder (an older build's flat `<id>.jsonl`, and a
+subagent's file in `<id>/subagents/`, which counts under `<id>`). A ROOT can also be one project's folder or its
+`agent-transcripts` folder. Each line is a JSON object; a `role: assistant` line's message may contain `tool_use`
+blocks, whose names are mapped as Cursor's Tracekit hook maps them (`Shell` is decided as `Bash`). A line has no time,
+no id and no tool result: with `--since`, a file last written before the window is skipped and one written in it
+counts whole, and a call can't be told from a copy of it, so each line counts. The IDE's chat database (`state.vscdb`)
+isn't read.
 
 Cline's reader reads each task in its folder: `<id>/<id>.messages.json`, where Cline 4.0 and later (the CLI and the
 VS Code extension) keep a session, and `<id>/api_conversation_history.json`, where earlier releases of the extension
@@ -138,7 +155,9 @@ jq -c '{time: .ts, tool: .tool, args: .input}' agent.log | tracekit audit --call
   (`TK-ENGINE-ERROR`), as the signer would decide it. A shell command that is neither text nor an argv of strings
   (an argv with an item that isn't a string, say), with any `--agent` or none, is held (`TK-SHELL-PARSE`), as the
   signer holds it; with `--agent cline` or `--agent devin`, a call that agent's hook can't read is denied
-  (`TK-HOOK-BLOCKED`), as its hook blocks it before the signer sees it.
+  (`TK-HOOK-BLOCKED`), as its hook blocks it before the signer sees it. So is a goose `read_image` call whose source
+  Tracekit can't read as a URL (`http://[::1/cat.png`): that is the v2 hook's answer, while the v1 hook allows such a
+  call under the default fail-open mode.
 - Counts per rule id, most first, each with what the rule is (its `reason` or `label`, or the viewer's words for the
   engine's own rules).
 - The session and timestamp of each denied or held call (every call with `--all`), and its redacted text with

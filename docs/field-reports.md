@@ -53,12 +53,13 @@ approval then expired unused; rejected or expired counts the holds never approve
 ## Without a hook: replay past transcripts
 
 ```bash
-tracekit audit --share --since 7d      # Claude Code's and Gemini CLI's sessions (~/.claude/projects, ~/.gemini/tmp), replayed through the policy
+tracekit audit --share --since 7d      # Claude Code's and Cursor's transcripts, Cline's tasks and Gemini CLI's sessions, replayed through the policy
 ```
 
 [`tracekit audit`](audit.md) puts no hook in your agent's loop and starts no signer: it replays the tool calls in
-Claude Code's and Gemini CLI's past sessions through today's dev policy pack and counts what it would have done. Its counts are a
-replay, not a signed record, and a floor of what the signer would hold ([limits](limits.md#audit-tracekit-audit)).
+Claude Code's and Cursor's past transcripts, Cline's tasks and Gemini CLI's past sessions through today's dev policy
+pack and counts what it would have done. Its counts are a replay, not a signed record, and a floor of what the signer
+would hold ([limits](limits.md#audit-tracekit-audit)).
 `--share` prints the same kind of counts: the number of sessions, the calls by decision, and each rule by the decision
 of the calls it matched, marked as `report --share` marks it.
 
@@ -70,6 +71,7 @@ of the calls it matched, marked as `report --share` marks it.
 | Whether the store verifies, and how many runs do (`report`) | A run id, a session id, a user id or any identity |
 | The runs that verify, by agent: Tracekit's own names, every other as `other` (`report`); the number of sessions (`audit`) | A tool's arguments, a command, a path or a URL it touched |
 | Tool calls by decision: allow, flag, ask, deny | An example call, a rule's description, a hold's reason or who answered it |
+| With `--since`, tool calls by decision for each day of the window, numbered from its start (`Day 1`, 24 hours each), and those with no time on a `No time` line (`audit`): with the date you post it, a reader can tell which days the agent ran | A day's date, weekday or hour, or when the window starts |
 | Holds by outcome: approved · ran, rejected, expired, ... (`report`) | What the model or the person said, a tool's result, a gap's reason |
 | The gaps by kind: the signer's own kinds, any other as `other` (`report`) | An agent name that isn't Tracekit's own |
 | Each rule with its decision and its count: Tracekit's own rule ids, every other as `custom rule` (`no rule` for a decision no rule named, `report`); each rule's holds, with how many were approved (by a person or the run's own user, as on a dev signer) and how many never approved were rejected or expired (`report`) | A rule id that isn't Tracekit's own; any record, hash or signature |

@@ -481,6 +481,13 @@ class Doctor(unittest.TestCase):
         with mock.patch.object(install.client, "system_config", return_value=None):
             self.assertEqual(self.run_doctor(None)[0], 1)
 
+    def test_system_config_fix_names_the_root_owned_clone(self):
+        # under PEP 668 (Debian 12, Ubuntu 23.04+) the bare system-Python init fails outside a clone of the release
+        with mock.patch.object(install.client, "system_config", return_value=None):
+            out = self.run_doctor(None)[1]
+        self.assertIn("fix: from a root-owned clone of the release (", out)
+        self.assertIn("#laptop-system-mode), sudo /usr/bin/python3 -m tracekit init --user <agent-user>", out)
+
     def test_untrusted_system_config_is_a_fail_line(self):
         with mock.patch.object(install.client, "system_config", side_effect=client.SystemConfigError("not root-owned")):
             code, out = self.run_doctor(None)

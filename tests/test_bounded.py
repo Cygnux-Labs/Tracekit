@@ -5,18 +5,21 @@ mutation of the golden closed bundle, run-set and run in parts (tests/test_verif
 the first)."""
 import base64
 import collections
+import contextlib
 import importlib.util
 import itertools
 import json
 import os
 import shutil
+import sys
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 
 import test_signer_service as ts
 import test_ts_verifier as tv
-from factories import process_pool
+from factories import process_pool, signer_without_fsync
 from test_verify_v2_property import zipped
 
 from tracekit import merkle
@@ -27,6 +30,7 @@ from tracekit.signer import service as svc
 from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import STRICTNESS, _stricter
+from tracekit.storage import file as storage_file
 from tracekit.verify import v2
 
 ENGINES = ("re2", "regex") if importlib.util.find_spec("re2") else ("regex",)
@@ -351,6 +355,32 @@ APPROVALS_DEPTH = int(os.environ.get("TRACEKIT_BOUND_APPROVALS", "5"))
 # that does fails the test). Past ~200, the signer's scans of its live approvals cost more than the starts they save
 RUNS_PER_SIGNER = 200
 LIMITS = Limits(open_runs=2 * RUNS_PER_SIGNER, pending_approvals=2 * RUNS_PER_SIGNER, events_per_s=1e9, burst=10 ** 9)
+# the modules whose syncs a signer on the file store makes: its logs, its new files, and its state and key files
+SIGNER_SYNCS = {"tracekit.storage.file", "tracekit.signer.service", "tracekit.deploy.files"}
+
+
+@contextlib.contextmanager
+def signer_without_fsync():
+    """The signer's syncs (SIGNER_SYNCS) skipped in this process while it's open: the state space checks the approval
+    path, and durability has tests of its own (test_storage_file's test_durability_modes and
+    test_a_failed_background_sync_names_the_records_not_known_durable, storage_contract's
+    test_torn_tail_is_set_aside_and_reported), while fsync made the space ~14x slower on windows-latest (#722). Yields
+    the modules of the syncs made anywhere else, which still run: a sync the signer moves to another module fails the
+    test instead of silently making it slow again."""
+    elsewhere, real = [], {name: getattr(os, name) for name in ("fsync", "fdatasync") if hasattr(os, name)}
+
+    def stub(name):
+        def sync(fd):
+            caller = sys._getframe(1).f_globals.get("__name__")
+            if caller not in SIGNER_SYNCS:
+                elsewhere.append(caller)
+                real[name](fd)
+        return sync
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(storage_file, "_sync", lambda fd, full: None))   # macOS's is an fcntl
+        for name in real:
+            stack.enter_context(mock.patch.object(os, name, stub(name)))
+        yield elsewhere
 
 
 class ApprovalStateSpace(unittest.TestCase):
@@ -371,14 +401,21 @@ class ApprovalStateSpace(unittest.TestCase):
         starts = range(0, len(actions) ** APPROVALS_DEPTH, RUNS_PER_SIGNER)
         with process_pool() as pool:
             parts = list(pool.map(self.part, [actions] * len(starts), [prefix] * len(starts), starts))
-        self.assertEqual([w for wrong, _ in parts for w in wrong][:20], [])
+        self.assertEqual([w for wrong, _, _ in parts for w in wrong][:20], [])
+        self.assertEqual(sorted({m for _, _, elsewhere in parts for m in elsewhere}), [])   # every sync was skipped
         if APPROVALS_DEPTH >= 5:   # the shortest sequence to each outcome takes five steps
-            self.assertEqual(set().union(*(reached for _, reached in parts)), need)
+            self.assertEqual(set().union(*(reached for _, reached, _ in parts)), need)
 
     @staticmethod
     def part(actions, prefix, start):
-        """(in a worker process) Sequences start.. of the space, RUNS_PER_SIGNER of them, on a signer of their own:
-        (what was wrong, the outcomes reached)."""
+        """(in a worker process) Sequences start.. of the space, RUNS_PER_SIGNER of them, on a signer of their own,
+        without its fsync: (what was wrong, the outcomes reached, the modules of the syncs made outside the signer)."""
+        with signer_without_fsync() as elsewhere:
+            wrong, reached = ApprovalStateSpace._part(actions, prefix, start)
+        return wrong, reached, elsewhere
+
+    @staticmethod
+    def _part(actions, prefix, start):
         d, expect, wrong, reached = tempfile.mkdtemp(), {}, [], set()   # lean: left behind when a part raises
         s = svc.SignerService(d, policy=ts.PAY_ASKS, limits=LIMITS)
         sequences = itertools.islice(itertools.product(actions, repeat=APPROVALS_DEPTH), start, start + RUNS_PER_SIGNER)

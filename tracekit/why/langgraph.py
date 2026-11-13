@@ -297,12 +297,20 @@ class _Fork:
         return _Thread(self.thread.run_id, events + ([{"type": "decision", "ablated": True}] if applied[0] else []))
 
 
+# what was frozen when this module was imported: Python 3.12 starts with objects frozen (375 in 3.12.16), so a count
+# above this, not any count, is a host's own freeze. lean: a host that froze objects before importing this module is
+# taken for that start-up freeze, and its objects are unfrozen with the trials' heap; import this module first, or
+# freeze after, to keep a freeze of your own
+_FROZEN_AT_IMPORT = gc.get_freeze_count()
+
+
 @contextlib.contextmanager
 def _trials_heap() -> Iterator[None]:
     """Each branch's gc.collect() scans only what the trials allocate: the objects the process held before are frozen
     (out of the collector's sight) for the trials and unfrozen after, so a branch's collection costs the same in a
-    large host process as in a small one. A host that froze objects itself keeps its freeze (and full collections)."""
-    if gc.get_freeze_count():
+    large host process as in a small one. A host that froze objects itself (more than _FROZEN_AT_IMPORT) keeps its
+    freeze (and full collections)."""
+    if gc.get_freeze_count() > _FROZEN_AT_IMPORT:
         yield
         return
     gc.freeze()

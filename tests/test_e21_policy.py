@@ -1,5 +1,7 @@
 """E21 (eval/e21_policy_robustness.py): how a held-out pool is scored, and the developer-session false positives."""
+import copy
 import importlib.util
+import json
 import os
 import types
 import unittest
@@ -60,6 +62,24 @@ class Gates(unittest.TestCase):
                     "profiles": {"default": {"heldout": {"recall": recall, "fp_rate": fp}, "e17": {"fp_rate": 0.01}}}}
         self.assertEqual(e21.gate(out(0.5, 0.04), []), [])
         self.assertEqual(len(e21.gate(out(0.49, 0.05), [])), 2)
+
+    def test_each_blind_pool_is_capped_by_its_own_recorded_false_positives(self):
+        """The 1.7.0 review: strict's blind cap was the pooled rate, re-recorded upward when email_ops joined, so the
+        older pools could rise from 13 to 17 false positives without failing while the pooled rate stayed under."""
+        with open(e21.RESULTS, encoding="utf-8") as f:
+            recorded = json.load(f)
+        pools = recorded["profiles"]["strict"]["blind"]["pools"]
+        self.assertEqual(recorded["gates"]["max_blind_fp"]["strict"],
+                         {n: p["totals"].get("fp", 0) for n, p in pools.items()})
+
+        def out(moved):   # the recorded run, with false positives moved between pools: the pooled rate is the same
+            profiles = copy.deepcopy(recorded["profiles"])
+            for name, by in moved.items():
+                profiles["strict"]["blind"]["pools"][name]["totals"]["fp"] += by
+            return {**recorded, "machine": "other", "profiles": profiles}
+        self.assertEqual(e21.gate(out({}), []), [])
+        self.assertEqual(e21.gate(out({"juliasadler": 2, "email_ops": -2}), []),
+                         ["strict blind pool juliasadler false positives 13 > the recorded 11"])
 
     def test_a_busy_machine_moves_the_microseconds_not_the_gate_a_slower_policy_fails_it(self):
         """The latency gate held p99 in microseconds to the first run's plus 25%: the same packs on a laptop under

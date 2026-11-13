@@ -106,7 +106,8 @@ def collect(config=None, issuer_key=None):
         agent = _user(h.get("user"))
         home = agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
         plugin = agent and install.plugin_enabled([home])
-        # lean: another coding agent's hook config gets D-HOOKS-EVENT, D-HOOKS-TIMEOUT and the reasoning checks only;
+        # lean: another coding agent's hook config gets D-HOOKS-EVENT, D-HOOKS-TIMEOUT (CodeBuddy Code's D-HOOKS-ORDER
+        # too) and the reasoning checks only;
         # D-HOOKS-PRESENT names it without reading its events, and D-HOOKS-VENV and D-SIGNER-ENV are Claude Code's;
         # until doctor reads them per format
         return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
@@ -144,6 +145,12 @@ def collect(config=None, issuer_key=None):
                 continue
             _codex_trust(lambda id, ok, detail, fix, bad=FAIL: rows.append(result(id, OK if ok else bad, detail, fix)),
                          path, hooks if isinstance(hooks, dict) else {}, None, WARN)
+    if "gptme" not in harnesses:
+        path = agent_hooks.config_path("gptme")
+        bridge = agent_hooks._gptme_hook_path(path)
+        if os.path.isfile(bridge) or os.path.isfile(os.path.join(os.path.dirname(bridge), "__init__.py")):
+            ok, detail = _gptme_load_check(path)
+            rows.append(result("D-GPTME-LOAD", OK if ok else WARN, detail, "tracekit init --dev --agent gptme"))
     return rows
 
 
@@ -204,6 +211,9 @@ def _harness_hooks(harness, config):
         return {ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config}
     if harness == "devin" and "hooks" not in config:
         return {ev: config[ev] for ev in agent_hooks.DEVIN_EVENTS if ev in config}
+    if harness == "openhands" and "hooks" not in config:   # its direct form, in either key style
+        return {ev: config.get(ev) or config.get(f) for ev, f in agent_hooks.OPENHANDS_FIELDS.items()
+                if config.get(ev) or config.get(f)}
     if harness == "antigravity":   # its "enabled" is D-AGY-HOOKS-RUN's
         named = config.get(agent_hooks.AGY_HOOK) or {}
         return {ev: named[ev] for ev in agent_hooks.AGY_EVENTS if ev in named}
@@ -215,6 +225,14 @@ def _dev_harnesses():
     from . import agent_hooks
     out = {}
     for harness in agent_hooks.HARNESSES:
+        if harness == "gptme":
+            path = agent_hooks.config_path(harness)
+            try:
+                if agent_hooks._version(" ".join(_gptme_argv(path))) == "v2":
+                    out[harness] = path
+            except (OSError, ValueError, TypeError):
+                pass
+            continue
         for path in (agent_hooks.config_path(harness), agent_hooks.config_path(harness, os.getcwd())):
             if harness in agent_hooks.PLUGIN_TOOLS or harness == "cline":   # a JavaScript plugin or Cline's hook
                 # files, not a JSON hook config
@@ -241,6 +259,10 @@ def _hook_commands(harness, path):
         texts = [install.agent_file(os.path.join(folder, ev + suffix)).decode("utf-8", "replace")
                  for ev in agent_hooks.CLINE_EVENTS if os.path.exists(os.path.join(folder, ev + suffix))]
         return [agent_hooks.cline_argv(t) for t in texts if agent_hooks._version(t) == "v2"]
+
+    if harness == "gptme":
+        argv = _gptme_argv(path)
+        return [shlex.join(argv)] if argv else []
     if harness in agent_hooks.PLUGIN_TOOLS:
         m = re.search(r"^const commands = (.*);$", install.agent_file(path).decode("utf-8", "replace"), re.M)
         return list(json.loads(m.group(1)).values()) if m else []
@@ -248,6 +270,103 @@ def _hook_commands(harness, path):
     return [h["command"] for lst in hooks.values() for g in lst
             for h in (g.get("hooks") or () if "hooks" in g else [g])
             if isinstance(h, dict) and agent_hooks._version(h.get("command")) == "v2"]
+
+
+def _gptme_argv(path):
+    from . import agent_hooks
+    source = install.agent_file(agent_hooks._gptme_hook_path(path)).decode("utf-8")
+    if not source.startswith(agent_hooks.GPTME_MARKER + "\n"):
+        return []
+    match = re.search(r"^COMMAND = (.*)$", source, re.M)
+    return json.loads(match[1]) if match else []
+
+
+def _outside_cwd(path):
+    if not path or not os.path.isabs(path):
+        return False
+    cwd = os.path.normcase(os.path.realpath(os.getcwd()))
+    for candidate in (os.path.abspath(path), os.path.realpath(path)):
+        try:
+            if os.path.commonpath((cwd, os.path.normcase(candidate))) == cwd:
+                return False
+        except ValueError:   # Windows paths on different drives
+            pass
+    return True
+
+
+def _gptme_python():
+    launcher = shutil.which("gptme")
+    if not _outside_cwd(launcher):
+        return None
+    executable = "python.exe" if os.name == "nt" else "python"
+    adjacent = os.path.join(os.path.dirname(os.path.realpath(launcher)), executable)
+    if _outside_cwd(adjacent) and os.path.isfile(adjacent):
+        return adjacent
+    uv = shutil.which("uv") if os.name == "nt" else None
+    if _outside_cwd(uv):
+        try:
+            tool_dir = subprocess.check_output([uv, "tool", "dir"], text=True, timeout=5).strip()
+            candidate = os.path.join(tool_dir, "gptme", "Scripts", executable)
+            if _outside_cwd(candidate) and os.path.isfile(candidate):
+                return candidate
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return None
+
+
+_GPTME_PROBE = """
+import sys
+from pathlib import Path
+from gptme.config import get_config, set_config_from_workspace
+from gptme.hooks import HookType, get_hooks
+from gptme.plugins import register_plugin_hooks
+
+bridge = Path(sys.argv[1]).resolve()
+package = bridge.parents[1]
+set_config_from_workspace(Path.cwd())
+paths, enabled = get_config().get_plugin_config()
+if not any(path.resolve() in (package.parent, package) for path in paths):
+    raise SystemExit("the installed plugin is outside gptme's configured plugin paths")
+if enabled and "tracekit" not in enabled:
+    raise SystemExit("the effective plugin allowlist excludes tracekit")
+register_plugin_hooks([package], enabled)
+for hook in get_hooks(HookType.TOOL_CONFIRM):
+    if hook.name == "tracekit.confirm" and Path(hook.func.__code__.co_filename).resolve() == bridge:
+        break
+else:
+    raise SystemExit("gptme did not register tracekit.confirm")
+"""
+
+
+def _gptme_load_check(path):
+    from . import agent_hooks
+    bridge = agent_hooks._gptme_hook_path(path)
+    try:
+        argv = _gptme_argv(path)
+        if not argv or not all(isinstance(part, str) for part in argv):
+            return False, f"cannot read the gptme bridge command at {bridge}"
+        # Check the generated files before loading the Tracekit package on its own.
+        source = install.agent_file(bridge).decode("utf-8")
+        v2 = agent_hooks._version(" ".join(argv)) == "v2"
+        expected = agent_hooks._gptme_plugin(None, v2)
+        command = "COMMAND = " + json.dumps(argv)
+        expected = re.sub(r"^COMMAND = .*$", lambda _: command, expected, count=1, flags=re.M)
+        init = (agent_hooks.GPTME_MARKER + "\n").encode()
+        hooks = os.path.dirname(bridge)
+        if (source != expected or install.agent_file(os.path.join(hooks, "__init__.py")) !=
+                init + b"from .bridge import register\n" or
+                install.agent_file(os.path.join(os.path.dirname(hooks), "__init__.py")) != init):
+            return False, f"gptme plugin at {bridge} differs from this Tracekit's generated files"
+        python = _gptme_python()
+        if not python:
+            return False, "doctor couldn't find gptme's Python outside the working directory"
+        run = subprocess.run([python, "-I", "-B", "-c", _GPTME_PROBE, bridge], capture_output=True,
+                             encoding="utf-8", errors="replace", timeout=10)
+        if run.returncode:
+            return False, (run.stderr.strip().splitlines() or ["gptme failed to load the plugin"])[-1]
+        return True, f"gptme registered Tracekit's confirmation hook from {bridge}"
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        return False, f"cannot verify the gptme plugin: {e}"
 
 
 # what a hook's Python imports as tracekit: its version, its tracekit/__init__.py and that Python's user site-packages
@@ -348,7 +467,7 @@ def _dev_signer():
 # the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path); `~`
 # is USERPROFILE on Windows
 USER_ENV = ("USERPROFILE" if os.name == "nt" else "HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME",
-            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG")
+            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "COPILOT_HOME", "CODEBUDDY_CONFIG_DIR")
 
 
 def _user_hook_files():
@@ -608,6 +727,28 @@ def _hook_run(scale=1, unit="s"):
             f"{(APPROVAL_WAIT_S - 2 * 30) * scale} {unit}, only with {WAIT_ENV} set)")
 
 
+def _openhands_checks(add, path, home, fix):
+    """OpenHands (#563): the CLI reads the hooks of its working directory ($OPENHANDS_WORK_DIR, else the current one),
+    .openhands/hooks.json, in place of the user's ~/.openhands/hooks.json when it exists (HookConfig.load reads the first
+    that exists; $OPENHANDS_PERSISTENCE_DIR moves the CLI's settings, not this file). Only a Tracekit v2 hook on
+    PreToolUse there decides its calls."""
+    from . import agent_hooks
+    project = agent_hooks.config_path("openhands", os.environ.get("OPENHANDS_WORK_DIR") or os.getcwd())
+    if os.path.realpath(path) == os.path.realpath(project) or not os.path.exists(project):
+        return
+    try:
+        ours = any(agent_hooks._version(h.get("command")) == "v2"
+                   for g in _harness_hooks("openhands", _json(project) or {}).get("PreToolUse") or ()
+                   if isinstance(g, dict) for h in g.get("hooks") or () if isinstance(h, dict))
+    except (OSError, ValueError, AttributeError, TypeError):
+        ours = False
+    add("D-OPENHANDS-PROJECT", ours,
+        f"{project} replaces {path} here: the OpenHands CLI reads only the first of them that exists, and it has no "
+        "Tracekit v2 PreToolUse hook, so in this directory OpenHands runs its calls undecided" if not ours else
+        f"{project} has Tracekit's v2 PreToolUse hook",
+        f"{fix} --project (in this directory), or don't run OpenHands on this repo", bad=WARN)
+
+
 def _ps_policy():
     """PowerShell's effective execution policy (Restricted, RemoteSigned, ...), else None when it can't be read."""
     with contextlib.suppress(OSError, subprocess.SubprocessError):
@@ -641,6 +782,11 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
         fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
+        if harness == "gptme":
+            if not prod:
+                ok, detail = _gptme_load_check(path)
+                add("D-GPTME-LOAD", ok, detail, fix, bad=WARN)
+            continue
         if harness == "antigravity":
             _agy_runs(add, path, home or os.path.expanduser("~"), fix)
         try:
@@ -653,6 +799,8 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness == "codex":
             _codex_trust(add, path, hooks, home, FAIL if prod else WARN)
+        if harness == "openhands":
+            _openhands_checks(add, path, home, fix)
         unnamed =sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
         blocking = sorted({ev for ev, h in cmds if ev not in agent_hooks.PRE
                            and (FAIL_CLOSED in h["command"] or h.get("failClosed") is True)})   # Cursor's failClosed
@@ -671,14 +819,48 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             f"{harness} hooks in {path}: the pre-tool hook has no {key}: {json.dumps(block)}, so {harness} runs a call "
             "whose hook can't run, undecided and unrecorded" if lets_past else
             f"each {harness} hook command in {path} names its event", fix, bad=WARN)
+        if harness == "codebuddy":
+            later = _codebuddy_later(home)
+            add("D-HOOKS-ORDER", not later,
+                f"a CodeBuddy Code PreToolUse hook in {' and '.join(later)} runs after Tracekit's, and CodeBuddy takes "
+                "the last hook's permissionDecision: its allow runs a call Tracekit denied" if later else
+                "no other CodeBuddy Code PreToolUse hook runs after Tracekit's",
+                "have no hook that runs after Tracekit's answer permissionDecision allow, or remove it", bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
         # a timeout the hook doesn't set: agy's and Crush's own default is 30 s
-        default = 30 if harness in ("antigravity", "crush") else 60
+        default = 30 if harness in ("antigravity", "crush", "copilot") else 60
         pre = [h.get("timeout", default * scale) for h in pre]
         pre = [t if type(t) in (int, float) and 0 <= t < float("inf") else 0 for t in pre]
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
                 f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
+
+
+def _codebuddy_later(home=None):
+    """The settings files with a CodeBuddy Code PreToolUse hook that runs after Tracekit's. CodeBuddy runs the user's
+    settings' hooks (`home`: the agent user's home), then the project's .codebuddy/settings.json and
+    settings.local.json (doctor's working directory's), each in its order, and the last permissionDecision stands.
+    Tracekit's hook is the first that runs its module; after it, any hook but the exact PreToolUse command init writes
+    (v1 or v2, dev or system mode) is named: one that only names the module, in a comment, may answer anything.
+    lean: a plugin's, a skill's or an SDK host's hooks, which run later too, aren't read (docs/limits.md)"""
+    from . import agent_hooks
+    mine = {agent_hooks._command("codebuddy", "PreToolUse", v2, python)
+            for v2 in (True, False) for python in (None, install.OPT_PYTHON)}
+    project = agent_hooks.config_path("codebuddy", os.getcwd())
+    files = [agent_hooks.config_path("codebuddy", home=home) if home else agent_hooks.config_path("codebuddy"),
+             project, os.path.join(os.path.dirname(project), "settings.local.json")]
+    ours, later = False, []
+    for f in dict.fromkeys(files):
+        try:
+            hooks = [h for g in _json(f)["hooks"]["PreToolUse"] for h in g["hooks"]]
+        except (OSError, ValueError, LookupError, TypeError):   # no file, no hooks, or not CodeBuddy's shape
+            continue
+        for h in hooks:
+            cmd = h.get("command") if isinstance(h, dict) else None
+            if ours and not (isinstance(cmd, str) and cmd in mine) and f not in later:
+                later.append(f)
+            ours = ours or agent_hooks._version(cmd) is not None
+    return later
 
 
 def _text(path):
@@ -801,6 +983,94 @@ def _vault_off(cfg, keys):
     except (OSError, ValueError, KeyError) as e:
         return False, f"off; cannot count the runs still retained: {e}", "run doctor as root"
     return (False, f"off, {n} runs still retained (erase or keep)", fix) if n else (True, off, "")
+
+
+def _acl_perms(out, uid):
+    """The permissions `getfacl -n` output `out` gives uid: its named entry (as the mask leaves it), else other's."""
+    # lean: the groups' entries aren't read; init grants the tailer's user a named entry
+    named = other = None
+    for line in out.splitlines():
+        entry, _, effective = line.partition("#effective:")
+        parts = entry.strip().split(":")
+        if len(parts) == 3 and parts[:2] == ["user", str(uid)]:
+            named = effective.strip() or parts[2]
+        elif len(parts) == 3 and parts[0] == "other":
+            other = parts[2]
+    return named if named is not None else other or ""
+
+
+def _tailer_checks(add, client_json, agent):
+    """D-TAILER-*: what system init sets up for a Claude Code agent's transcript tailer (install._tailer_acl,
+    install._tailer_sudo, client.json's `tailer` key). Without it each session records a tailer_lost gap, whose signed
+    reason sends the reader here."""
+    try:
+        sc = read_json(client_json)
+    except (OSError, ValueError):   # D-SYSTEM-CONFIG's
+        return
+    hooks = sc.get("hooks") if isinstance(sc, dict) else None
+    if not isinstance(hooks, dict) or hooks.get("agent", "claude") != "claude":   # the tailer reads Claude Code's only
+        return
+    t = sc.get("tailer")
+    if not (isinstance(t, dict) and isinstance(t.get("user"), str) and type(t.get("uid")) is int
+            and isinstance(t.get("python"), str)):
+        add("D-TAILER-CONFIG", False, f"{client_json} " + ("names no tailer" if t is None else
+            "has a tailer that isn't {user, uid, python}") + ": each Claude Code session records a tailer_lost gap "
+            "instead of its transcript", REINIT, bad=WARN)
+        return
+    user, uid, python = t["user"], t["uid"], t["python"]
+    add("D-TAILER-CONFIG", True, f"{client_json} names the tailer: {user} (uid {uid}), {python}", "")
+    pw = _user(user)
+    add("D-TAILER-USER", pw is not None and pw.pw_uid == uid, f"no user {user}" if pw is None else
+        f"{user} has uid {pw.pw_uid}, not {uid}: the signer lets only uid {uid} make the tailer's calls"
+        if pw.pw_uid != uid else f"the tailer's user {user} has uid {uid}", REINIT, bad=WARN)
+
+    sudoers, cmd = install.TAILER_SUDOERS, f"{python} -I -m tracekit.tailer"
+    try:
+        st = os.lstat(sudoers)
+        bad = [why for why, hit in ((f"{sudoers} isn't a file", not stat.S_ISREG(st.st_mode)),
+                                    (f"{sudoers} belongs to uid {st.st_uid}, not root", st.st_uid != 0),
+                                    (f"{sudoers} is {stat.S_IMODE(st.st_mode):04o}, not 0440",
+                                     stat.S_IMODE(st.st_mode) != 0o440)) if hit]
+        if bad:
+            add("D-TAILER-SUDO", False, "; ".join(bad), f"sudo chown 0:0 {sudoers}; sudo chmod 440 {sudoers}; or "
+                + REINIT)
+        else:
+            # the exact line install._tailer_sudo writes, so a commented-out line or another user's rule doesn't count
+            rule = f"{agent.pw_name} ALL=({user}) NOPASSWD: {cmd}" if agent else None
+            text = read_text(sudoers)
+            named = rule in (ln.strip() for ln in text.splitlines()) if rule else cmd in text
+            add("D-TAILER-SUDO", named, f"{sudoers} lets the agent's user start {cmd}" if named else
+                f"{sudoers} has no rule for {cmd}: the agent's user can't start the tailer", REINIT, bad=WARN)
+    except FileNotFoundError:
+        add("D-TAILER-SUDO", False, f"{sudoers} is missing: the agent's user can't start the tailer", REINIT, bad=WARN)
+    except OSError as e:
+        add("D-TAILER-SUDO", False, f"cannot read {sudoers}: {e.strerror}", ROOT_DOCTOR, bad=WARN)
+    except ValueError as e:   # not UTF-8
+        add("D-TAILER-SUDO", False, f"cannot read {sudoers}: {e}", REINIT, bad=WARN)
+
+    getfacl = shutil.which("getfacl")
+    if not agent or not sys.platform.startswith("linux") or not getfacl:
+        add("D-TAILER-ACL", False, "not checked: " + ("no agent user is known (client.json names none)" if not agent
+            else f"doctor reads ACLs on Linux only, this is {sys.platform}" if not sys.platform.startswith("linux")
+            else "no getfacl (install the acl package)"),
+            f"check that {user} can search {agent.pw_dir} and ~/.claude and read ~/.claude/projects"
+            if agent else REINIT, bad=WARN)
+        return
+    dot = os.path.join(agent.pw_dir, ".claude")
+    missing = []
+    for path, need in ((agent.pw_dir, "x"), (dot, "x"), (os.path.join(dot, "projects"), "rx")):
+        try:
+            r = subprocess.run([getfacl, "-n", "-p", path], capture_output=True, text=True, timeout=15)
+        except (OSError, subprocess.SubprocessError) as e:
+            missing.append(f"{path}: {e}")
+            continue
+        got = _acl_perms(r.stdout, uid) if r.returncode == 0 else None
+        if got is None:
+            missing.append(f"{path}: {(r.stderr or '').strip()[:256] or f'getfacl exited {r.returncode}'}")
+        elif not all(c in got for c in need):
+            missing.append(f"{path} ({got or 'no entry'}, needs {'read and search' if need == 'rx' else 'search'})")
+    add("D-TAILER-ACL", not missing, f"{user} can't reach the transcripts: " + "; ".join(missing) if missing else
+        f"{user} can search {agent.pw_dir} and {dot} and read {os.path.join(dot, 'projects')}", REINIT, bad=WARN)
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
@@ -1168,6 +1438,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     add("D-FAIL-MODES", not open_, f"fail-open: {', '.join(open_)}" if open_ else "every class fails closed",
         "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent",
         bad=WARN)
+    if prod and client_json:
+        _tailer_checks(add, client_json, agent)
 
     ws = cfg.get("witnesses") or []
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "

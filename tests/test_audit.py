@@ -22,6 +22,11 @@ def _call(tool, args, days_ago=0):
             "message": {"content": [{"type": "tool_use", "name": tool, "input": args}]}}
 
 
+def _cursor_call(tool, args):
+    """An assistant line with one tool use, as Cursor writes it in an agent transcript: no id, no time (#716)."""
+    return {"role": "assistant", "message": {"content": [{"type": "tool_use", "name": tool, "input": args}]}}
+
+
 def _line(tool, args, days_ago=0, **extra):
     """A line of a calls file (#714)."""
     at = datetime.now(timezone.utc) - timedelta(days=days_ago)
@@ -296,6 +301,20 @@ class TestAudit(unittest.TestCase):
             out = _run(str(self.root))[1]
         self.assertTrue(out.endswith("\n  to guard from now on: pip install tracekit-ai, then tracekit init --dev --v2\n"))
 
+    @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")
+    def test_the_guard_line_names_the_calls_files_agent(self):
+        """The 1.7.0 review: audit --agent codex ended with init without --agent, which installs Claude Code's hooks."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "ls"})])
+        for agent in (*agent_hooks.AGENT_NAMES, "claude", None):
+            with self.subTest(agent=agent):
+                code, out, err = _run("--calls", str(self.root / "calls.jsonl"), *(["--agent", agent] if agent else []))
+                self.assertEqual(code, 0, err)
+                flag = f" --agent {agent}" if agent in agent_hooks.AGENT_NAMES else ""   # claude is init's default
+                self.assertTrue(out.endswith(f"\n  to guard from now on: tracekit init --dev --v2{flag}\n"), out)
+        with mock.patch("shutil.which", return_value=None):
+            out = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "codex")[1]
+        self.assertTrue(out.endswith(", then tracekit init --dev --v2 --agent codex\n"), out)
+
     def test_the_default_folder_is_in_claude_config_dir_when_it_is_set(self):
         _write_jsonl(self.root / "config" / "projects" / "p" / "s.jsonl", [_call("Bash", {"command": "rm -rf /"})])
         home = self.root / "home"   # no .claude: a fallback to ~/.claude/projects finds nothing
@@ -331,6 +350,9 @@ class TestAudit(unittest.TestCase):
             f"Tracekit {__version__} field report (tracekit audit --share): 7 days",
             "a replay against today's policy, not a signed record: 1 Claude Code session",
             "Tool calls: 5   allow 1, flag 1, ask 2, deny 1",
+            "Calls by decision and day (24 hours each, day 1 from the window's start):",
+            *[f"  Day {d}: allow 0, flag 0, ask 0, deny 0" for d in range(1, 7)],
+            "  Day 7: allow 1, flag 1, ask 2, deny 1",
             "Calls by decision and rule (one call can match several rules):",
             "  deny TK-D004 1", "  deny TK-F003 1 (also matched, not why)", "  ask TK-A001 1",
             "  ask TK-SHELL-PARSE 1 (not placed)", "  flag TK-F003 1"])
@@ -347,6 +369,48 @@ class TestAudit(unittest.TestCase):
             self.assertNotIn(mark, text)
             self.assertNotIn(self.tmp.name, text)
             self.assertNotRegex(text, r"\d{4}-\d\d-\d\d|\d\d:\d\d")   # no date or time
+            self.assertNotRegex(text, r"(?i)\b(?:mon|tue|wed|thu|fri|sat|sun)")   # no weekday
+            self.assertNotIn(str(int(report["window"][0])), text)   # nor the window's start
+
+    def test_share_counts_each_day_of_the_window(self):
+        """#746: with --since, --share gives the calls by decision for each 24 hours from the window's start, a day
+        with none too, and the calls with no time on a line of their own."""
+        def day(n, allow=0, ask=0, deny=0):
+            return f"  Day {n}: allow {allow}, flag 0, ask {ask}, deny {deny}"
+        _write_jsonl(self.root / "s.jsonl", [
+            _call("Bash", {"command": "rm -rf /"}, days_ago=5.5), _call("Bash", {"command": "ls"}, days_ago=5.5),
+            _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=2.5),
+            _call("Bash", {"command": "ls"}, days_ago=0.5), _call("Bash", {"command": "ls"}, days_ago=10),
+            _call("Bash", {"command": "ls"}, days_ago=-1)])   # a clock ahead: the last day
+        page = audit.share(audit.audit(str(self.root), since="7d"))
+        self.assertEqual([line for line in page.splitlines() if "Day " in line],
+                         [day(1), day(2, allow=1, deny=1), day(3), day(4), day(5, ask=1), day(6), day(7, allow=2)])
+        self.assertNotIn("No time", page)
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "rm -rf /"}, days_ago=1.5),
+                                                 {"tool": "Bash", "args": {"command": "ls"}}])
+        page = audit.share(audit.audit(calls=str(self.root / "calls.jsonl"), since="3d")).splitlines()
+        self.assertEqual(page[3:8], ["Calls by decision and day (24 hours each, day 1 from the window's start):",
+                                     day(1), day(2, deny=1), day(3), "  No time: allow 1, flag 0, ask 0, deny 0"])
+
+    def test_a_call_before_the_window_is_on_no_day(self):
+        """A call timed before --since's window is counted on no day, never wrapped to the last one."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=0.5)])
+        report = audit.audit(str(self.root), since="2d")
+        report["calls"].append({**report["calls"][0], "verdict": "deny",
+                                "time": datetime.fromtimestamp(report["window"][0] - 3600, timezone.utc).isoformat()})
+        self.assertEqual([line for line in audit._by_day(report) if "Day " in line],
+                         ["  Day 1: allow 0, flag 0, ask 0, deny 0", "  Day 2: allow 1, flag 0, ask 0, deny 0"])
+
+    def test_share_has_no_day_lines_without_since(self):
+        """Without --since a window starts at the first call: day lines would show how far back the transcripts go."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=3),
+                                             _call("Bash", {"command": "ls"})])
+        _write_jsonl(self.root / "calls.jsonl", [{"tool": "Bash", "args": {"command": "ls"}}])
+        for report in (audit.audit(str(self.root)), audit.audit(calls=str(self.root / "calls.jsonl"))):
+            page = audit.share(report)
+            self.assertNotIn("Day ", page)
+            self.assertNotIn("No time", page)
+            self.assertIsNone(report["window"])
 
     def test_a_time_utc_cannot_hold_is_a_call_without_a_time(self):
         line = _call("Bash", {"command": "ls"})
@@ -599,6 +663,28 @@ class TestAudit(unittest.TestCase):
         report = audit.audit(str(tasks), agent="cline")
         self.assertEqual([c["session"] for c in report["calls"]], ["s1"])
 
+    def test_a_goose_read_image_source_that_isnt_a_url_is_blocked_as_the_hook_blocks_it(self):
+        """#771: urlsplit raises on the source; goose's v2 hook blocks the call: audit denies it, replays the rest."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("read_image", {"source": "http://[::1/cat.png"}),
+                                                 _line("shell", {"command": "ls"})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "goose", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(c["verdict"], c["rule_ids"]) for c in json.loads(out)["calls"]],
+                         [("deny", ["TK-HOOK-BLOCKED"]), ("allow", [])])
+
+    def test_a_mapping_bug_is_not_reported_as_the_hook_blocking_the_call(self):
+        """#771: only UnreadableCall is a call the hook blocks; any other ValueError from the mapping is a bug that ends
+        the replay with its message (exit 2)."""
+        def bug(*_):
+            raise ValueError("a mapping bug")
+
+        _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"command": "ls"})])
+        with mock.patch.object(audit, "hook_tool", side_effect=bug):
+            with self.assertRaisesRegex(ValueError, "a mapping bug"):
+                audit.audit(calls=str(self.root / "calls.jsonl"), agent="goose")
+            code, _, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "goose")
+        self.assertEqual((code, err.splitlines()[-1]), (2, "tracekit audit: a mapping bug"))
+
     def test_kilo_generate_image_without_a_path_is_decided(self):
         """The 1.7.0 review's fuzzing: --agent kilo crashed (KeyError) on a generate_image with an image and no path;
         it is decided as the Read of the image."""
@@ -747,6 +833,48 @@ class TestAudit(unittest.TestCase):
         calls = audit.audit(str(self.root / "tmp"), agent="gemini")["calls"]
         self.assertEqual(sorted((c["session"], c["tool"]) for c in calls), [("sx", "Read"), ("sx", "Read")])
 
+    def test_gemini_cli_since_goes_by_each_calls_own_time(self):
+        """#764 review: a window drops the calls older than it, one by one, in a session written since."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        _write_jsonl(chats / "session-2026-11-02T10-00-aaaaaaaa.jsonl", [
+            {"sessionId": "s1", "projectHash": "h"},
+            _gemini_msg("m1", [("c1", "run_shell_command", {"command": "rm -rf /"})], days_ago=10),
+            _gemini_msg("m2", [("c2", "run_shell_command", {"command": "ls"})], days_ago=1)])
+        report = audit.audit(str(self.root / "tmp"), agent="gemini", since="7d")
+        self.assertEqual(report["counts"], {"allow": 1, "ask": 0, "deny": 0, "flag": 0})
+        self.assertEqual(len(audit.audit(str(self.root / "tmp"), agent="gemini")["calls"]), 2)
+
+    def test_gemini_cli_call_without_a_time_takes_its_messages(self):
+        """#764 review: a call with no timestamp of its own is as old as the message that holds it."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        old = _gemini_msg("m1", [("c1", "run_shell_command", {"command": "rm -rf /"})], days_ago=10)
+        new = _gemini_msg("m2", [("c2", "run_shell_command", {"command": "ls"})], days_ago=1)
+        for msg in (old, new):
+            del msg["toolCalls"][0]["timestamp"]
+        _write_jsonl(chats / "session-2026-11-02T10-00-aaaaaaaa.jsonl", [{"sessionId": "s1"}, old, new])
+        report = audit.audit(str(self.root / "tmp"), agent="gemini", since="7d")
+        self.assertEqual(report["counts"], {"allow": 1, "ask": 0, "deny": 0, "flag": 0})
+
+    def test_gemini_cli_session_json_that_is_not_json_is_one_malformed_entry(self):
+        """#764 review: a session-*.json that isn't JSON, or is nested past what json takes, is counted, not a crash."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        chats.mkdir(parents=True)
+        (chats / "session-2026-10-30T09-00-aaaaaaaa.json").write_text("{broken", encoding="utf-8")
+        (chats / "session-2026-10-30T09-01-bbbbbbbb.json").write_text("[" * 200000, encoding="utf-8")
+        report = audit.audit(str(self.root / "tmp"), agent="gemini")
+        self.assertEqual((report["skipped_malformed"], report["calls"]), (2, []))
+
+    def test_gemini_cli_resumed_session_counts_a_call_once_across_its_files(self):
+        """#764 review: a pre-0.39 .json and the .jsonl that resuming it wrote hold the same call: one call."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        msg = _gemini_msg("m1", [("c1", "run_shell_command", {"command": "ls"})])
+        (chats).mkdir(parents=True)
+        (chats / "session-2026-10-30T09-00-aaaaaaaa.json").write_text(
+            json.dumps({"sessionId": "s0", "messages": [msg]}), encoding="utf-8")
+        _write_jsonl(chats / "session-2026-11-01T09-00-aaaaaaaa.jsonl", [{"sessionId": "s0"}, msg])
+        calls = audit.audit(str(self.root / "tmp"), agent="gemini")["calls"]
+        self.assertEqual([(c["session"], c["tool"]) for c in calls], [("s0", "Bash")])
+
     def test_gemini_cli_home_moves_its_folder(self):
         tmp = self._gemini_sessions()
         with mock.patch.dict(os.environ, {"GEMINI_CLI_HOME": str(self.root), "HOME": str(self.root / "empty"),
@@ -764,6 +892,72 @@ class TestAudit(unittest.TestCase):
             "a replay against today's policy, not a signed record: 1 coding-agent session",
             "Tool calls: 1   allow 0, flag 0, ask 0, deny 1"])
         self.assertNotIn("s1", page)
+
+    def test_cursor_shell_is_decided_as_bash(self):
+        """#716: a Cursor tool's name is mapped as its hook maps it."""
+        args = {"command": "rm -rf /", "description": "clean"}
+        _write_jsonl(self.root / "C-src-app" / "agent-transcripts" / "c1" / "c1.jsonl", [
+            {"role": "user", "message": {"content": [{"type": "text", "text": "tidy up"}]}},
+            _cursor_call("Shell", args)])
+        tool, mapped = agent_hooks.tool("cursor", "Shell", args)
+        expected = evaluate(load_policy(DEFAULT_POLICY), tool, mapped)[0]
+        call = audit.audit(str(self.root), agent="cursor")["calls"][0]
+        self.assertEqual((call["agent"], call["session"], call["tool"], call["time"], call["verdict"], call["rule_ids"]),
+                         ("cursor", "c1", "Bash", None, expected["verdict"], expected["rule_ids"]))
+        self.assertEqual(call["verdict"], "deny")
+
+    def test_cursor_subagent_and_flat_files_count_under_their_session(self):
+        transcripts = self.root / "C-src-app" / "agent-transcripts"
+        ls = _cursor_call("Shell", {"command": "ls"})
+        _write_jsonl(transcripts / "c1" / "c1.jsonl", [ls])
+        _write_jsonl(transcripts / "c1" / "subagents" / "s9.jsonl", [ls, ls])   # no ids: a copy counts too
+        _write_jsonl(transcripts / "old.jsonl", [ls])   # an older build's flat file
+        _write_jsonl(self.root / "C-src-app" / "canvases" / "x.jsonl", [ls])   # not a transcript
+        report = audit.audit(str(self.root), agent="cursor")
+        self.assertEqual(sorted(c["session"] for c in report["calls"]), ["c1", "c1", "c1", "old"])
+        self.assertEqual(report["agents"]["cursor"]["sessions"], 2)
+
+    def test_cursor_file_written_before_since_is_skipped(self):
+        transcripts = self.root / "C-src-app" / "agent-transcripts"
+        _write_jsonl(transcripts / "old" / "old.jsonl", [_cursor_call("Shell", {"command": "ls"})])
+        eight_days_ago = (datetime.now(timezone.utc) - timedelta(days=8)).timestamp()
+        os.utime(transcripts / "old" / "old.jsonl", (eight_days_ago, eight_days_ago))
+        _write_jsonl(transcripts / "new" / "new.jsonl", [_cursor_call("Shell", {"command": "ls"})] * 2)
+        report = audit.audit(str(self.root), since="7d", agent="cursor")
+        self.assertEqual([c["session"] for c in report["calls"]], ["new", "new"])   # a file in the window counts whole
+
+    def test_cursor_malformed_line_is_counted(self):
+        _write_jsonl(self.root / "C-src-app" / "agent-transcripts" / "c1" / "c1.jsonl", [
+            "{not json", _cursor_call("Shell", {"command": "ls"})])
+        code, out, err = _run(str(self.root), "--agent", "cursor", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        self.assertEqual((report["skipped_malformed"], report["counts"]["allow"]), (1, 1))
+
+    def test_cursor_root_can_be_a_project_or_its_transcripts_folder(self):
+        """#755 review: a project's folder, or its agent-transcripts folder, reads what the projects folder reads."""
+        project = self.root / "C-src-app"
+        _write_jsonl(project / "agent-transcripts" / "c1" / "c1.jsonl", [_cursor_call("Shell", {"command": "ls"})])
+        _write_jsonl(project / "agent-transcripts" / "old.jsonl", [_cursor_call("Shell", {"command": "ls"})])
+        for root in (self.root, project, project / "agent-transcripts"):
+            with self.subTest(root=root.name):
+                report = audit.audit(str(root), agent="cursor")
+                self.assertEqual(sorted(c["session"] for c in report["calls"]), ["c1", "old"])
+
+    def test_with_no_root_cursors_folder_is_read(self):
+        home = self.root / "home"
+        folder = home / ".cursor" / "projects"
+        _write_jsonl(folder / "p" / "agent-transcripts" / "c1" / "c1.jsonl",
+                     [_cursor_call("Shell", {"command": "rm -rf /"})])
+        with mock.patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            code, out, _ = _run("--json")
+        self.assertEqual(code, 0)
+        report = json.loads(out)
+        self.assertEqual(report["agents"], {"cursor": {"folder": str(folder), "calls": 1, "sessions": 1}})
+        call = report["calls"][0]
+        self.assertEqual((call["agent"], call["session"], call["tool"], call["verdict"]),
+                         ("cursor", "c1", "Bash", "deny"))
 
 
 if __name__ == "__main__":

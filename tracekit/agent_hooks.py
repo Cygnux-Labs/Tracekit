@@ -1,5 +1,6 @@
 """Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush,
-Devin (CLI and Desktop) and Cline (CLI and VS Code extension), on the Claude Code pipeline.
+Devin (CLI and Desktop), Cline (CLI and VS Code extension), GitHub Copilot CLI and CodeBuddy Code, on the Claude
+Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -13,6 +14,8 @@ Devin (CLI and Desktop) and Cline (CLI and VS Code extension), on the Claude Cod
     tracekit init --dev --agent crush        # ~/.config/crush/crush.json (project: crush.json)
     tracekit init --dev --agent devin        # ~/.config/devin/config.json (project: .devin/hooks.v1.json)
     tracekit init --dev --agent cline        # ~/Documents/Cline/Hooks/<event> (project: .clinerules/hooks/<event>)
+    tracekit init --dev --agent copilot      # ~/.copilot/hooks/tracekit.json (project: .github/hooks/tracekit.json)
+    tracekit init --dev --agent codebuddy    # ~/.codebuddy/settings.json (project: .codebuddy/settings.json)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -24,7 +27,10 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     harness            -> Tracekit
     Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars), Edit (paths: every file the
                                                           patch adds, updates, deletes or moves to), mcp__s__t
-    Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t
+    Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t (its hook sends an
+            edit as a Write of the file); its transcripts' StrReplace, ApplyPatch, EditNotebook, search_replace, write,
+            delete_file, edit_notebook -> Edit, Edit (all patch file headers in paths), NotebookEdit, Edit, Write, Edit,
+            NotebookEdit
     Gemini  run_shell_command, read_file, read_many_files, write_file, replace, glob, search_file_content,
             list_directory, web_fetch, google_web_search
             -> Bash, Read, Read, Write, Edit, Glob, Grep, LS, WebFetch, WebSearch (every path a file tool reads, under
@@ -61,11 +67,35 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             it creates a missing file), Edit (every file the patch names), WebFetch (every URL); a call Tracekit can't
             read a command, file or URL from is denied. Its hook blocks by answering a cancel, which stops Cline's
             task; the VS Code extension's payload carries no call id
+    Copilot bash, powershell, write_bash, write_powershell, apply_patch, create, edit, str_replace_editor, view, glob,
+            grep, rg, web_fetch, task, write_agent, web_search, <server>-<tool>
+            -> Bash, PowerShell, Bash and PowerShell (command = the typed input), Edit (every file the patch adds,
+            updates, deletes or moves to), Write, Edit, Read, Write or Edit (by its command), Read, Glob, Grep, Grep,
+            WebFetch, Task, Task, mcp:github-mcp-server/web_search, mcp__<server>-<tool> (Copilot CLI 1.0.107's names;
+            an earlier release sends no toolCallId, and its calls are blocked; each file tool decided on the `path`
+            or `paths` it reads). The preToolUse payload doesn't say which tools are MCP
+            ones, and joins a server's name and its tool's with a `-` either may hold: any other name with a `-` is
+            decided as an MCP tool under every split and as an unknown tool, and the strictest decision stands. Every
+            custom MCP tool captured on 1.0.107 arrived as <server>-<tool> (server tracekit-alpha's probe_note as
+            tracekit-alpha-probe_note), none under a bare name. Copilot turns a space or a dot in either name into
+            `-` before the hook sees it (server `tracekit space`, tool `read.note`: tracekit-space-read-note), so a
+            rule that names a server or tool with one doesn't match, while the rules on a tool's words do; it cuts
+            the joined name at 64 characters, and a name that long is denied in the hook
+    CodeBuddy Code sends Claude Code's payloads, event names and tool names; its own NotebookRead and ViewImage
+            -> Read (of the path each reads), LibraryUpload decided as an upload of its file, and DeferExecuteTool as
+            the call it runs
 
-What each harness exposes decides what Tracekit can see: Gemini CLI, Droid, Devin and Cline's VS Code extension do not
-give tool calls an id, so pre and post events are paired by (tool, arguments) in order, and Antigravity CLI's by (step
-index, tool, arguments);
-Cursor and Qwen Code report failures through postToolUseFailure.
+    OpenHands  terminal, file_editor, apply_patch, glob, grep, MCP tools
+            -> Bash (is_input: text typed into the running command, later), Read (view), Write (create) or Edit (the
+            rest) on `path`, Edit (every patch file header in paths), Glob, Grep, MCP names as they are; its payload
+            is Claude Code's under other keys (event_type, working_dir, message), and tool_input's `kind` is dropped;
+            a file_editor with no path or an apply_patch with no file header is denied in the hook
+
+
+What each harness exposes decides what Tracekit can see: Gemini CLI, Droid, Devin, OpenHands and Cline's VS Code
+extension do not give tool calls an id, so pre and post events are paired by (tool, arguments) in order, and Antigravity
+CLI's by (step index, tool, arguments); Cursor and Qwen Code report failures through postToolUseFailure, and OpenHands
+with is_error in its tool_response.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
 import hashlib
@@ -86,11 +116,32 @@ from .policy2.classes import PATH_KEYS, first
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
-               "devin": "devin", "cline": "cline"}
+               "devin": "devin", "cline": "cline", "gptme": "gptme", "openhands": "openhands",
+               "copilot": "copilot", "codebuddy": "codebuddy-code"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
 
+
+# Copilot CLI 1.0.107's own tools. bash, apply_patch, view, glob, rg, web_fetch, task and web_search are as its
+# preToolUse payloads name them (the tools it gives a GPT model); the others, which it gives other models, and every
+# tool's arguments are as its bundle parses them (cli-main.js: view {path}, create {path, file_text}, edit and
+# str_replace {path, old_str, new_str}, glob and grep {pattern, paths: a string or a list}, write_bash and
+# write_powershell {shellId, input}). web_search is a tool of its built-in MCP server (its preMcpToolCall payload:
+# serverName github-mcp-server), sent under its bare name; write_agent messages a sub-agent, as task starts one
+COPILOT_TOOLS = {
+    "bash": "Bash", "write_bash": "Bash", "powershell": "PowerShell", "write_powershell": "PowerShell",
+    "apply_patch": "Edit", "edit": "Edit", "str_replace": "Edit", "create": "Write", "view": "Read",
+    "glob": "Glob", "grep": "Grep", "rg": "Grep",
+    "web_fetch": "WebFetch",
+    "web_search": "mcp:github-mcp-server/web_search",
+    "task": "Task", "write_agent": "Task",
+}
+COPILOT_EDITOR = {"view": "view", "create": "create"}   # str_replace_editor's commands; any other edits the file
+COPILOT_PATH_TOOLS = ("view", "create", "edit", "str_replace")   # they read `path`
+COPILOT_SEARCH_TOOLS = ("glob", "grep", "rg")   # they read `paths`
+COPILOT_EVENTS = {"preToolUse": 600, "postToolUse": 30, "postToolUseFailure": 30}   # each with its hook's timeout, s
+COPILOT_NAME_MAX = 64   # Copilot cuts a longer MCP tool name to this many characters
 GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_files": "Read", "write_file": "Write", "replace": "Edit",
                 "glob": "Glob", "search_file_content": "Grep", "grep_search": "Grep", "list_directory": "LS",
                 "web_fetch": "WebFetch", "google_web_search": "WebSearch", "save_memory": "Memory"}
@@ -105,9 +156,20 @@ GEMINI_PATH_ARGS = ("file_path", "absolute_path", "notebook_path", "dir_path", "
 # a URL in Gemini CLI's web_fetch prompt: its scheme in any case (WHATWG URL parsing), up to a character JavaScript's
 # \s matches (the prompt is split on them)
 WEB_FETCH_URL = re.compile(r"https?://[^\t\n\v\f\r \u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]+", re.I)
-# a Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
+# what JavaScript's trim() takes off a string's ends: str.strip(JS_SPACE) does the same, in linear time
+JS_SPACE = "\t\n\v\f\r \u00a0\u1680" + "".join(map(chr, range(0x2000, 0x200b))) + "\u2028\u2029\u202f\u205f\u3000\ufeff"
+# Cursor's hooks name a call by what it does on the computer: an edit by any of its tools reaches preToolUse as a Read and
+# then a Write of the whole file (file_path, content).
+# A Delete is an Edit, as a Codex patch's Delete File is: the file rules (a credentials file, the transcripts) read it
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Edit", "Task": "Task", "Edit": "Edit"}
-CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath")
+# Its transcripts name the model's edit tools (Cursor 3.29.15): StrReplace, EditNotebook, and an older prompt's
+# search_replace, write, delete_file and edit_notebook, each with the argument its file is in. Cursor refuses a call
+# without a string there; Tracekit then leaves the name unmapped, an unknown tool, as it does an ApplyPatch with no
+# file header, rather than decide an edit of no file
+CURSOR_EDITS = {"StrReplace": ("Edit", "path"), "search_replace": ("Edit", "file_path"), "write": ("Write", "file_path"),
+                "delete_file": ("Edit", "target_file"), "EditNotebook": ("NotebookEdit", "target_notebook"),
+                "edit_notebook": ("NotebookEdit", "target_notebook")}
+CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath", "target_notebook")
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
                   "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
                   "task": "Task", "todowrite": "TodoWrite"}
@@ -120,7 +182,8 @@ GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image":
 # monitor, Kilo's background_process); normalise marks their payload `later`, and the hook takes no receipt of what
 # they write (tracekit.model_receipt)
 LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task"),
-                   ("devin", "write_to_process"), ("kilo", "background_process")))
+                   ("devin", "write_to_process"), ("kilo", "background_process"), ("copilot", "write_bash"),
+                   ("copilot", "write_powershell")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
@@ -157,6 +220,11 @@ DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart",
 DEVIN_PATH_KEY = re.compile(r"(?:path|paths|file)$")
 # a unified diff's file names: --- a/x and +++ b/x (up to a tab, where diff -u puts the time), and diff --git a/x b/x
 DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+)$)", re.M)
+
+
+class UnreadableCall(ValueError):
+    """A call a harness's mapping can't read on purpose (tool()): its hook blocks it (Cline's; goose's, which its v2
+    hook blocks), and tracekit audit reports it as TK-HOOK-BLOCKED; any other ValueError is a bug."""
 
 
 def _diff_names(name):
@@ -197,6 +265,32 @@ TYPED = {"write_to_process": re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]|!(?![ \t
 SHELL_STATE = {"fc", "bind", "trap", "enable", "exec", "shopt", "hash", "source", "."}
 STATE_VARS = re.compile(r"(?:PROMPT_COMMAND|PS[0124]|PATH|BASH_ENV|BASH_CMDS|BASH_ALIASES|LD_PRELOAD|LD_LIBRARY_PATH|"
                         r"LD_AUDIT|DYLD_\w+)(?:$|[\[=+])")
+# OpenHands' tools (software-agent-sdk openhands-tools): tool_input is the Action's model_dump(), with a `kind` key and
+# every optional field (null when unset); file_editor's tool name depends on its `command` (tool())
+# the gemini preset's file tools (openhands/tools/gemini) read `file_path`, list_directory `dir_path`
+OPENHANDS_TOOLS = {"terminal": "Bash", "apply_patch": "Edit", "glob": "Glob", "grep": "Grep", "write_file": "Write",
+                   "edit": "Edit", "read_file": "Read", "list_directory": "LS"}
+OPENHANDS_PATH_ARG = {"file_editor": "path", "write_file": "file_path", "edit": "file_path", "read_file": "file_path",
+                      "list_directory": "dir_path"}
+# task (TaskToolSet, in the CLI's default tools) and delegate (DelegateTool) run a sub-conversation with
+# hook_config=None for the built-in agents (tools/task/manager.py, delegate/impl.py): its calls run no hook
+OPENHANDS_SUBAGENTS = ("task", "task_tool_set", "delegate")
+# what the terminal sends as keystrokes, not a command, even with is_input false (terminal/interface.py
+# SUPPORTED_SPECIAL_KEYS and parse_ctrl_key; tmux_terminal.send_keys): matched on the text stripped and upper-cased
+OPENHANDS_KEYS = re.compile(r"ENTER|TAB|BS|ESC|UP|DOWN|LEFT|RIGHT|HOME|END|PGUP|PGDN|(?:C-|CTRL[-+])[A-Z]")
+# a key typed in a terminal command: a control character, a tab too (Tab completes the word before it in interactive
+# bash: ~/.ss<TAB>authorized_keys is ~/.ssh/authorized_keys), as in TYPED["write_to_process"] but without its history
+# parts, since the terminal starts bash with `set +H`; \n ends a line, and only it
+OPENHANDS_KEY_CHAR = re.compile(r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+# a line bash continues on the next call: it ends in an odd number of backslashes (the terminal sends Enter after it)
+OPENHANDS_OPEN_LINE = re.compile(r"(?<!\\)(?:\\\\)*\\$")
+OPENHANDS_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
+# HookConfig reads hooks.json in three forms: {"hooks": {...}}, or the event map itself with Claude Code's names, or with
+# its own field names (HookConfig.save's); a file with both names for one event doesn't load (_normalize_hooks_input)
+OPENHANDS_FIELDS = {ev: re.sub(r"(?<!^)(?=[A-Z])", "_", ev).lower() for ev in (*OPENHANDS_EVENTS, "Stop")}
+# what each of these OpenHands tools is decided on: a call that sends none of it is denied in the hook (_blocked)
+OPENHANDS_DECIDED_ON = {**{t: k for t, k in OPENHANDS_PATH_ARG.items()},
+                        "apply_patch": "file header (*** Add, Update or Delete File:)"}
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
@@ -214,7 +308,6 @@ KILO_PATH_ARG = {**OPENCODE_PATH_ARG, **dict.fromkeys(("notebook_read", "noteboo
 KILO_BLOCKED = ("notebook_execute",)
 # the harnesses that load Tracekit's OpenCode plugin: their tool names and the argument each file tool reads
 PLUGIN_TOOLS = {"opencode": (OPENCODE_TOOLS, OPENCODE_PATH_ARG), "kilo": (KILO_TOOLS, KILO_PATH_ARG)}
-JS_TRIM = re.compile(r"^[\s\ufeff]+|[\s\ufeff]+$")
 # Cline's tools that run a command, read or write a file or fetch a URL (sdk/packages/core/src/extensions/tools). Its
 # PreToolUse hook sees a call before Cline checks the input against the tool's schema, which takes several shapes
 # (schemas.ts: run_commands a list, one command, {command, args} run without a shell, or cmd; read_files files, paths
@@ -227,6 +320,9 @@ CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "UserP
 CLINE_FILE = "PreToolUse.ps1" if os.name == "nt" else "PreToolUse"
 CLINE_PATH_KEYS = ("path", "file_path", "filePath")
 CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))""")   # getHeredocDelimiter
+# CodeBuddy Code's tools are Claude Code's by name and arguments (its bundled code, @tencent-ai/codebuddy-code
+# 2.183.0); of its own, these read a file: each is a Read of the path it reads, never of a decoy beside it
+CODEBUDDY_READS = {"NotebookRead": "notebook_path", "ViewImage": "image_path"}
 
 
 def _each(v, *keys):
@@ -253,19 +349,19 @@ def _cline_commands(v):
             m, end = CLINE_HEREDOC.search(lines[0]), 0
             if m:
                 end = next((i for i, x in enumerate(lines[1:], 1)
-                            if JS_TRIM.sub("", x) == next(filter(None, m.groups()))), 0)
+                            if x.strip(JS_SPACE) == next(filter(None, m.groups()))), 0)
             out.append("\n".join(lines[:end + 1]))
             lines = lines[end + 1:]
         if c is None:
             continue
         line = c.get("command") if isinstance(c, dict) else None
         if not isinstance(line, str) or not line.strip():
-            raise ValueError("a Cline run_commands entry Tracekit can't read as a command")
+            raise UnreadableCall("a Cline run_commands entry Tracekit can't read as a command")
         args = c.get("args")
         argv = isinstance(args, list) and bool(args) and all(isinstance(a, str) for a in args)
         out.append(shlex.join([line, *args]) if argv else line)   # an argv, else the line as written
     if not out:
-        raise ValueError("Cline's run_commands names no command")
+        raise UnreadableCall("Cline's run_commands names no command")
     return out
 
 
@@ -315,9 +411,136 @@ def _strings(value):
             yield from _strings(child)
 
 
+def _gptme_tool(name, ti):
+    args, content, kwargs = ti.get("args"), ti.get("content"), ti.get("kwargs")
+    if kwargs is not None:
+        if not isinstance(kwargs, dict) or args is not None or content is not None:
+            raise ValueError("gptme native calls must carry only a kwargs object")
+    elif not isinstance(args, list) or not all(isinstance(arg, str) for arg in args) or not isinstance(content, str):
+        raise ValueError("gptme markdown calls must carry an args list and text content")
+
+    if name == "tmux":
+        operations = ti.get("operations")
+        if not isinstance(operations, list) or not operations or not all(isinstance(op, str) for op in operations):
+            raise ValueError("gptme tmux requires the parsed operations")
+        commands, pane_input = [], False
+        for op in operations:
+            parts = op.split(maxsplit=1)
+            if len(parts) == 2 and parts[0] == "new-session":
+                commands.append(parts[1])
+            elif len(parts) == 2 and parts[0] == "send-keys":
+                pane = parts[1].split(maxsplit=1)
+                if len(pane) != 2:
+                    continue   # gptme rejects the missing keys
+                keys = pane[1]
+                # A pane can already contain partial input or run another program. Inspect the new text and
+                # require approval even when it looks harmless.
+                pane_input = True
+                try:
+                    tokens = shlex.split(keys)
+                except ValueError:
+                    tokens = [keys]
+                commands.append("".join({"Space": " ", "Enter": "\n", "C-m": "\n"}.get(k, k) for k in tokens))
+        if commands:
+            result = {"commands": commands, "tmux_operations": operations}
+            if pane_input:
+                result["gptme_tmux_input"] = True
+            return "Bash", result
+        return name, {"operations": operations}
+
+    if name == "patch_many":
+        patches = ti.get("patches")
+        if not isinstance(patches, list) or not patches or not all(
+                isinstance(p, list) and len(p) == 2 and all(isinstance(v, str) and v for v in p) for p in patches):
+            raise ValueError("gptme patch_many requires the prepared patches")
+        return "Edit", {"paths": [path for path, _ in patches], "patches": [patch for _, patch in patches]}
+
+    if name == "mcp":
+        command = kwargs.get("command") if kwargs is not None else content
+        if isinstance(command, str) and command.lstrip().startswith("load"):
+            return "mcp__gptme__load", {"command": command}
+
+    if name in ("shell", "ipython"):
+        key = "command" if name == "shell" else "code"
+        value = kwargs.get(key) if kwargs is not None else content.strip()
+        if name == "shell" and kwargs is None:
+            if args:
+                raise ValueError("gptme markdown shell takes no positional arguments")
+            value = value.removeprefix("$ ")
+        if not isinstance(value, str):
+            raise ValueError(f"gptme {name} requires text {key}")
+        if name == "ipython":
+            return name, {key: value}
+        result = {"command": value}
+        background = kwargs.get("background") if kwargs is not None else None
+        if background is True or isinstance(background, str) and background.lower() in ("1", "true", "yes", "on"):
+            result["run_in_background"] = True
+        return "Bash", result
+
+    if name in ("save", "append", "patch", "read", "morph", "hashline_edit"):
+        mapped = {"save": "Write", "append": "Edit", "patch": "Edit", "read": "Read",
+                  "morph": "Edit", "hashline_edit": "Edit"}[name]
+        if name == "read" and kwargs is None and not args:
+            paths = [line.strip() for line in content.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+        else:
+            path = kwargs.get("path") if kwargs is not None else " ".join(args)
+            if kwargs is None and name != "read" and path.startswith(("save ", "append ", "patch ")):
+                path = path.split(" ", 1)[1]
+            paths = [path]
+        if not paths or not all(isinstance(path, str) and path for path in paths):
+            raise ValueError(f"gptme {name} requires a file path")
+        result = {"file_path": os.path.expanduser(paths[0])}
+        if name == "read":
+            if len(paths) > 1:
+                result["paths"] = [os.path.expanduser(path) for path in paths]
+        else:
+            key = "patch" if name == "patch" else "content"
+            native_key = "edit" if name in ("morph", "hashline_edit") else key
+            value = kwargs.get(native_key) if kwargs is not None else content
+            if not isinstance(value, str):
+                raise ValueError(f"gptme {name} requires text {key}")
+            result[key] = value
+        return mapped, result
+
+    if "." in name:
+        server, _, command = name.partition(".")
+        params = kwargs if kwargs is not None else json.loads(content)
+        if not server or not command or not isinstance(params, dict):
+            raise ValueError("gptme MCP calls require a qualified tool name and an arguments object")
+        return f"mcp__{server}__{command}", params
+    return name, kwargs if kwargs is not None else ti
+
+
 def tool(harness, name, ti):
     """-> (tracekit tool name, normalised input)."""
     ti = dict(_input(ti))
+    if harness == "gptme":
+        return _gptme_tool(name, ti)
+    if harness == "openhands":
+        if ti.get("kind") == "MCPToolAction" and isinstance(ti.get("data"), dict):   # an MCP call's arguments
+            return name, dict(ti["data"])
+        ti.pop("kind", None)   # the Action class's name, not an argument
+        if name in OPENHANDS_PATH_ARG:
+            path = ti.get(OPENHANDS_PATH_ARG[name])
+            ti["paths"] = [path] if isinstance(path, str) and path else []
+            ti["file_path"] = ti["paths"][0] if ti["paths"] else None
+            if name == "file_editor":
+                return {"view": "Read", "create": "Write"}.get(ti.get("command"), "Edit"), ti
+        if name == "terminal" and isinstance(ti.get("command"), str):
+            # the terminal is interactive (bash in tmux): text typed into the command running, a key, and a line left
+            # open run with what comes before or after them, which this call alone doesn't show; the engine holds a
+            # call marked `typed` (TK-SHELL-PARSE), and holds an unclosed quote or heredoc as a line it can't read
+            # tmux types a command as keys (send_keys literal), so a control character in it is one too: ^U erases what
+            # came before it on the line, \r is an Enter (`echo hi\x15git push --force` runs the push), a tab completes
+            # the word before it
+            c = ti["command"]
+            if ti.get("is_input") is True or OPENHANDS_KEYS.fullmatch(c.strip().upper()) or \
+                    OPENHANDS_OPEN_LINE.search(c) or OPENHANDS_KEY_CHAR.search(c):
+                ti["typed"] = True
+        if name == "apply_patch":   # Codex's patch format
+            files = [f.strip() for f in PATCH_FILE.findall(str(ti.get("patch") or ""))]
+            ti["paths"], ti["file_path"] = files, files[0] if files else None
+        return OPENHANDS_TOOLS.get(name, name), ti
     if harness in ("droid", "devin"):
         name, files = _named(harness, name), None
         if name == ("ApplyPatch" if harness == "droid" else "apply_patch"):   # every file a patch header names,
@@ -369,16 +592,40 @@ def tool(harness, name, ti):
     if harness == "cursor":
         if name.startswith("MCP:"):
             return "mcp__cursor__" + re.sub(r"[^A-Za-z0-9_-]+", "_", name[4:]), ti
+        # Cursor doesn't document which of these its tools read: every path they name is decided, so a decoy
+        # `file_path` beside the `path` a tool reads never replaces it (read before a tool's own file is set below)
+        paths = [f for f in ti["paths"] if isinstance(f, str)] if isinstance(ti.get("paths"), list) else []
+        files = [ti[k] for k in CURSOR_PATH_ARGS if isinstance(ti.get(k), str)]
+        if name == "ApplyPatch":   # every file a patch header names, in whichever argument holds it, as Cursor reads it:
+            # a {"patch": ...} in JSON unwrapped, \r and \r\n read as \n, each line trimmed as JavaScript trims it
+            texts, unread = list(_strings(ti)), False
+            for s in texts[:]:
+                if s.strip(JS_SPACE).startswith("{"):
+                    try:
+                        j = json.loads(s.strip(JS_SPACE))
+                    except json.JSONDecodeError:   # not JSON: Cursor reads the text as it is
+                        continue
+                    except (ValueError, RecursionError):   # JSON Tracekit can't read: decided as an unknown tool, as
+                        unread = True                       # before
+                        break
+                    if isinstance(j, dict) and list(j) == ["patch"] and isinstance(j["patch"], str):
+                        texts.append(j["patch"])
+            lines = "\n".join(x.strip(JS_SPACE) for x in re.sub(r"\r\n?", "\n", "\n".join(texts)).split("\n"))
+            headers = [f for f in (g.strip(JS_SPACE) for g in PATCH_FILE.findall(lines)) if f]
+            if headers and not unread:
+                ti["paths"], ti["file_path"] = list(dict.fromkeys(headers + files + paths)), headers[0]
+                return "Edit", ti
+        edit = CURSOR_EDITS.get(name)
+        if edit and not isinstance(ti.get(edit[1]), str):   # no file to decide it on: left unmapped (CURSOR_EDITS)
+            edit = None
+        if edit and edit[0] == "NotebookEdit":   # v1 decides a NotebookEdit on its file_path and notebook_path
+            ti["file_path"] = ti["notebook_path"] = ti["target_notebook"]
         for k in CURSOR_PATH_ARGS[1:]:
             if k in ti and "file_path" not in ti:
                 ti["file_path"] = ti[k]
-        # Cursor doesn't document which of these its tools read: every path they name is decided, so a decoy
-        # `file_path` beside the `path` a tool reads never replaces it
-        paths = [f for f in ti["paths"] if isinstance(f, str)] if isinstance(ti.get("paths"), list) else []
-        files = [ti[k] for k in CURSOR_PATH_ARGS if isinstance(ti.get(k), str)]
         if any(f not in [ti["file_path"], *paths] for f in files):
             ti["paths"] = list(dict.fromkeys(files + paths))
-        return CURSOR_TOOLS.get(name, name), ti
+        return edit[0] if edit else CURSOR_TOOLS.get(name, name), ti
     if harness == "gemini" and name.startswith("mcp_"):   # mcp_<server>_<tool> (packages/core/src/tools/mcp-tool.ts)
         return "mcp__" + name[4:], ti
     if harness in ("gemini", "qwen"):
@@ -424,7 +671,7 @@ def tool(harness, name, ti):
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
             # (1.2.0) read a header only up to its next ':' (split(":", 2)): both are decided
-            files = [JS_TRIM.sub("", g) for f in OPENCODE_PATCH_FILE.findall(str(ti.get("patchText") or ""))
+            files = [g.strip(JS_SPACE) for f in OPENCODE_PATCH_FILE.findall(str(ti.get("patchText") or ""))
                      for g in dict.fromkeys((f, f.split(":")[0]))]
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
@@ -434,7 +681,10 @@ def tool(harness, name, ti):
             # decided by scheme, as goose's url::Url::parse reads the source: tabs and newlines dropped, outer spaces and
             # controls trimmed, backslashes read as slashes in a web URL (https:x.example/a, HTTPS:\\x.example\a)
             src = re.sub(r"[\t\n\r]", "", str(ti.get("source") or "")).strip("".join(map(chr, range(33))))
-            parts = urllib.parse.urlsplit(src.replace("\\", "/"))
+            try:
+                parts = urllib.parse.urlsplit(src.replace("\\", "/"))
+            except ValueError:   # urlsplit refuses it (an unclosed bracket: http://[::1/cat.png)
+                raise UnreadableCall("goose's read_image source isn't a URL Tracekit can read") from None
             if parts.scheme.lower() in ("http", "https"):
                 return "WebFetch", {**ti, "url": src.replace("\\", "/")}
             if parts.scheme.lower() == "file":   # goose reads a file: URL's path, made absolute (file:etc/x is /etc/x)
@@ -475,7 +725,7 @@ def tool(harness, name, ti):
         elif name == "read_files":
             files = [p for e in _each(v, "files", "paths", "file_paths") + one for p in _cline_paths(e)]
             if not files or not all(isinstance(f, str) and f for f in files):
-                raise ValueError("Cline's read_files names a file Tracekit can't read as a path")
+                raise UnreadableCall("Cline's read_files names a file Tracekit can't read as a path")
             for k in PATH_KEYS:   # its own paths decide, never a decoy beside them
                 ti.pop(k, None)
             ti["file_path"], ti["paths"] = files[0], list(dict.fromkeys(files))
@@ -483,7 +733,7 @@ def tool(harness, name, ti):
             # Write; else an Edit
             path = v.get("path") if one else None
             if not isinstance(path, str) or not path:
-                raise ValueError("Cline's editor names no path")
+                raise UnreadableCall("Cline's editor names no path")
             for k in PATH_KEYS:
                 ti.pop(k, None)
             ti["path"] = ti["file_path"] = path
@@ -493,18 +743,75 @@ def tool(harness, name, ti):
             if isinstance(new, str):
                 ti["new_string"] = new
         elif name == "apply_patch":   # the patch is its `input`, or the whole input as a string
-            files = [JS_TRIM.sub("", f) for f in PATCH_FILE.findall(str(v.get("input") if one else v))]   # JS trim()
+            files = [f.strip(JS_SPACE) for f in PATCH_FILE.findall(str(v.get("input") if one else v))]   # JS trim()
             if not files or not all(files):
-                raise ValueError("Cline's apply_patch names no file")
+                raise UnreadableCall("Cline's apply_patch names no file")
             ti["file_path"], ti["paths"] = files[0], files
         elif name == "fetch_web_content":
             urls = [r.get("url") if isinstance(r, dict) else None for r in _each(v, "requests")]
             if not urls or not all(isinstance(u, str) and u for u in urls):
-                raise ValueError("Cline's fetch_web_content names no URL")
+                raise UnreadableCall("Cline's fetch_web_content names no URL")
             ti["url"] = urls[0]
             if len(set(urls)) > 1:
                 ti["urls"] = list(dict.fromkeys(urls))
         return CLINE_TOOLS.get(name, name), ti
+    if harness == "copilot":
+        if name == "str_replace_editor":   # one tool for viewing, creating and editing: decided as the one it does
+            name = COPILOT_EDITOR.get(ti.get("command"), "edit")
+        if name == "apply_patch":   # the patch is the arguments, or their `input` or `patch`
+            files = [f.strip() for f in PATCH_FILE.findall("\n".join(_strings(ti)))]
+            if not files or not all(files):
+                raise ValueError("Copilot's apply_patch names no file")
+            ti["file_path"], ti["paths"] = files[0], files
+        elif name in COPILOT_PATH_TOOLS or name in COPILOT_SEARCH_TOOLS:
+            # the path the tool itself reads decides, never a decoy `file_path` beside it; a search's `paths` is one
+            # path or a list
+            own = ti.get("path") if name in COPILOT_PATH_TOOLS else ti.get("paths")
+            own = [x for x in (own if isinstance(own, list) else [own]) if isinstance(x, str)]
+            for k in PATH_KEYS:
+                ti.pop(k, None)
+            if name in COPILOT_SEARCH_TOOLS:
+                ti["paths"] = own
+            if own:
+                ti["file_path"] = own[0]
+        elif name in ("write_bash", "write_powershell"):   # input typed into a running command, as Codex's write_stdin;
+            # \r ends a line, as a terminal reads it (as Devin's write_to_process); input that isn't text: _blocked
+            v = ti.get("input")
+            ti["command"] = v.replace("\r", "\n") if isinstance(v, str) else None
+        if name in COPILOT_TOOLS:
+            return COPILOT_TOOLS[name], ti
+        # the payload doesn't say which tools are MCP ones: Copilot names them <server>-<tool>, so any other name with
+        # a `-` is decided as one under every split (the signer's _evaluate), and one without as the unknown tool it is
+        # lean: a name that also holds `__` is split there alone, as Claude Code's mcp__<server>__<tool>; try its `-`
+        # too if an MCP server ever names a tool with `__`
+        return ("mcp__" + name if "-" in name else name), ti
+    if harness == "codebuddy":
+        if name == "DeferExecuteTool" and isinstance(ti.get("toolName"), str):
+            # it runs the deferred tool `toolName` with `params` (an object, or one as a JSON string): decided as that
+            # call, so the call never runs on a reading of the wrapper. That tool's own PreToolUse, under the same call
+            # id, decides it again: the signer takes the decision the call completes as the call's and the other as
+            # superseded, so no gap (service._finish_run).
+            # lean: such a call has two decision records; one needs the signer to answer a repeated decide of an open,
+            # allowed decision with the same arguments from it (it writes one per decide)
+            return tool(harness, ti["toolName"], ti.get("params"))
+        if name in CODEBUDDY_READS:
+            ti["file_path"] = ti.get(CODEBUDDY_READS[name])
+            return "Read", ti
+        if name == "LibraryUpload":   # it sends the file at `path` off the machine: the packs decide it as the upload it
+            # is (TK-D022, TK-F024), on that file, never on a decoy beside it. CodeBuddy parses no URL
+            # (PathUtils.resolveFilePathToWorkDir): it takes `file://`, else `file:`, off the front and opens the rest,
+            # `~/` in the home folder and a relative path in its cwd (`@x` as itself, else as x), decoding nothing. Each
+            # form it may open is decided, and each percent-decoded too
+            path = ti.get("path")
+            if isinstance(path, str):
+                path = path[7:] if path.startswith("file://") else path[5:] if path.startswith("file:") else path
+            forms = [path] if isinstance(path, str) else []
+            forms += [f[1:] for f in forms if f.startswith("@")]
+            forms = list(dict.fromkeys(forms + [urllib.parse.unquote(f) for f in forms]))
+            ti.pop("paths", None)
+            ti["file_path"] = path
+            if len(forms) > 1:
+                ti["paths"] = forms
     return name, ti
 
 
@@ -550,15 +857,29 @@ def _paired_ids(harness, run_id, tool_name, ti, phase, drop=None):
 
 def normalise(harness, p):
     """Harness payload -> Claude Code-shaped payload for tracekit.hook, or None for events Tracekit ignores."""
+    if harness == "openhands":   # HookEvent (openhands/sdk/hooks/types.py): Claude Code's fields under other names
+        p = {**p, "hook_event_name": p.get("hook_event_name") or p.get("event_type"), "cwd": p.get("working_dir"),
+             "prompt": p.get("message")}
     ev = p.get("hook_event_name") or ""
     out = {"cwd": p.get("cwd") or (p.get("workspace_roots") or [None])[0],
            "transcript_path": p.get("transcript_path"), "model": p.get("model")}
-    if harness in ("codex", "qwen", "droid", "crush", "devin"):   # Claude Code's payloads; Qwen Code and Crush add
-        # PostToolUseFailure (Crush's payload is Claude Code's own: same field and event names)
+    if harness == "gptme" and ev in ("PromptObserved", "UserPromptSubmit"):
+        return dict(out, hook_event_name="PromptObserved", session_id=p.get("session_id"), prompt=p.get("prompt"))
+    if harness == "gptme" and ev == "ToolObserved":
+        name, args = p.get("tool_name") or "?", _input(p.get("tool_input"))
+        try:
+            name, args = tool(harness, name, args)
+        except (ValueError, TypeError):
+            pass   # an undecided tool may have run without a confirmation preview
+        return dict(out, hook_event_name=ev, session_id=p.get("session_id"), tool_use_id=p.get("tool_use_id"),
+                    tool_name=name, tool_input=args, tool_response=p.get("tool_response"))
+    if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme", "openhands", "codebuddy"):   # Claude Code's
+        # payloads; Qwen Code, Crush and CodeBuddy Code add PostToolUseFailure (Crush's and CodeBuddy's payloads are
+        # Claude Code's own: same field and event names)
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
              "SessionStart": "SessionStart", "SessionEnd": "SessionEnd"}
-        if harness in ("qwen", "crush"):
+        if harness in ("qwen", "crush", "codebuddy"):
             m["PostToolUseFailure"] = "PostToolUseFailure"
         if ev not in m:
             return None
@@ -567,13 +888,18 @@ def normalise(harness, p):
             out["tool_name"], out["tool_input"] = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
             out["tool_use_id"] = p.get("tool_use_id")
             out["later"] = (harness, _named(harness, str(p.get("tool_name")))) in LATER
-            if harness in ("droid", "devin"):   # their documented payloads carry no call id
+            if harness == "openhands":   # terminal with is_input: text typed into the command already running
+                out["later"] = p.get("tool_name") == "terminal" and out["tool_input"].get("is_input") is True
+            if harness in ("droid", "devin", "openhands"):   # their payloads carry no call id
                 out["tool_use_id"] = out["session_id"] and _paired_ids(
                     harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
             if ev != "PreToolUse":
                 out["tool_response"] = r = p.get("tool_response")
                 if harness == "devin" and isinstance(r, dict) and r.get("success") is False:   # {success, output, error}
                     out["hook_event_name"], out["error"] = "PostToolUseFailure", r.get("error")
+                if harness == "openhands" and isinstance(r, dict) and r.get("is_error") is True:   # an Observation
+                    text = "\n".join(c.get("text", "") for c in r.get("content") or [] if isinstance(c, dict))
+                    out["hook_event_name"], out["error"] = "PostToolUseFailure", text or "error"
             if ev == "PostToolUseFailure":
                 out["error"] = p.get("error")
         if ev == "UserPromptSubmit":
@@ -716,6 +1042,30 @@ def normalise(harness, p):
         if ev == "TaskComplete":
             return dict(out, hook_event_name="SessionEnd", reason="task complete")
         return None
+
+    if harness == "copilot":
+        if ev not in COPILOT_EVENTS:
+            return None
+
+        tool_call_id = p.get("toolCallId")
+        if not isinstance(tool_call_id, str) or not tool_call_id.strip():
+            raise ValueError("Copilot CLI 1.0.107 or later is required; toolCallId must be a non-empty string")
+
+        name = p.get("toolName")
+        if not isinstance(name, str) or not name:
+            raise ValueError("Copilot's toolName must be a non-empty string")
+        out["session_id"] = p.get("sessionId")
+        out["hook_event_name"] = ev[0].upper() + ev[1:]
+        out["tool_name"], out["tool_input"] = tool(harness, name, p.get("toolArgs"))
+        out["tool_use_id"], out["later"] = tool_call_id, (harness, name) in LATER
+
+        if ev == "postToolUse":
+            result = p.get("toolResult")
+            out["tool_response"] = result.get("textResultForLlm") if isinstance(result, dict) else result
+        elif ev == "postToolUseFailure":
+            out["error"] = p.get("error")
+        return out
+
     raise ValueError(f"unknown harness {harness!r}")
 
 
@@ -733,7 +1083,7 @@ class Tee(io.StringIO):
 
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
 STOPPED_LINES = ("Why: ", "Instead: ", "Person: ", "Agent: ")   # how the lines after a stop's first go on (stopped)
-PAIRED = ("gemini", "droid", "antigravity", "devin", "cline")   # the harnesses whose call ids _paired_ids makes
+PAIRED = ("gemini", "droid", "antigravity", "devin", "cline", "openhands")   # the harnesses whose call ids _paired_ids makes
 
 
 # goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
@@ -780,6 +1130,9 @@ def _blocked_tool(harness, tool_name, raw=""):
     a Crush input the tool may read otherwise than Tracekit. tool_name: the harness's own name for the tool, before it
     is mapped; raw: the hook payload as received."""
     name = tool_name.removeprefix("code_execution__")
+    if harness == "openhands" and tool_name in OPENHANDS_SUBAGENTS:
+        return (f"Blocked by Tracekit: OpenHands' {tool_name} runs a sub-agent whose tool calls run no hooks, so "
+                "Tracekit can't decide them; make each call itself instead.")
     if harness == "goose" and name in GOOSE_CODE_MODE:
         return (f"Blocked by Tracekit: goose's {name} (Code Mode) runs tool calls through dispatch_tool with no "
                 "PreToolUse hook, so Tracekit can't decide them; make each call itself instead.")
@@ -896,6 +1249,12 @@ def _blocked(harness, p, raw=""):
         return (f"Blocked by Tracekit: Devin's {name[:64]} call sends an argument more than once (case ignored): "
                 f"{twice[:64]!r}. json.loads keeps its last value and Devin's decoder may keep another, so Tracekit "
                 "can't be sure it decides the arguments the tool runs with; send each argument once.")
+    if harness == "openhands" and name in OPENHANDS_DECIDED_ON and not tool(harness, name, p.get("tool_input"))[1].get(
+            "file_path"):
+        sent = ", ".join(k for k, v in _input(p.get("tool_input")).items() if v is not None and k != "kind")[:200]
+        return (f"Blocked by Tracekit: OpenHands' {name} call names no {OPENHANDS_DECIDED_ON[name]}, which Tracekit "
+                f"decides it on, so it can't decide this call (its arguments: {sent or 'none'}). Please report it on "
+                "https://github.com/Cygnux-Labs/Tracekit/issues/563.")
     if harness == "devin" and name in DEVIN_DECIDED_ON:   # Devin documents none of these tools' arguments: one sent
         # under a name Tracekit doesn't read would leave the call decided on nothing
         ti = tool(harness, name, p.get("tool_input"))[1]
@@ -908,23 +1267,49 @@ def _blocked(harness, p, raw=""):
                     + (" Send it as {\"command\": \"...\"}." if name == "exec" else " Devin doesn't document them: "
                        "please report their names on https://github.com/Cygnux-Labs/Tracekit/issues/566 so Tracekit "
                        "can read them."))
-        typed = TYPED[name].search(v) if name in TYPED else None
-        if typed and typed.group().strip(" \t") in ("!", "^"):
-            return (f"Blocked by Tracekit: Devin's write_to_process types {typed.group().strip()!r}, which interactive "
-                    "bash expands from its history (a ! before a word, a ^ starting a line), so Tracekit can't read "
-                    "the line that runs; type the command itself.")
-        state = _sets_state(v) if name == "write_to_process" and not typed else None
-        if state:
-            return (f"Blocked by Tracekit: Devin's write_to_process types {state[:64]!r}, which sets or replays state "
-                    "of the running shell (history, an alias, a function, a prompt string, a trap, a key binding, a "
-                    "builtin, a shell option, PATH or a sourced file) that changes what a later line runs, and "
-                    "Tracekit decides each call alone; type the commands themselves.")
-        if typed:
-            return (f"Blocked by Tracekit: Devin's {name} {'types' if name == 'write_to_process' else 'sends'} a "
-                    f"control character ({typed.group()!r}), which a terminal's line editor acts on (erasing, "
-                    "discarding or completing text), so Tracekit can't read the line that runs; send plain text, each "
-                    "line ending in \\n.")
+        if name in TYPED:
+            reason = _typed(f"Devin's {name}", v, name == "write_to_process")
+            if reason:
+                return reason
+    elif harness == "copilot":
+        cname = str(p.get("toolName") or "")
+        if len(cname) >= COPILOT_NAME_MAX:
+            # a cut name may have lost the words a rule reads (send_money as send_mon): no split of it can be trusted
+            return (f"Blocked by Tracekit: Copilot's tool name is {COPILOT_NAME_MAX} characters or longer and may have "
+                    "been truncated. Shorten the server name in Copilot's MCP config.")
+        if cname in ("write_bash", "write_powershell"):   # typed into a running shell, as Devin's write_to_process
+            # lean: write_powershell's text is read as bash's: a ! or a bash state word denies more than PowerShell
+            # needs; read PowerShell's own line editing if that stops real work
+            v = tool(harness, cname, p.get("toolArgs"))[1]["command"]
+            if not (isinstance(v, str) and v):
+                return (f"Blocked by Tracekit: Copilot's {cname} call types no text (its `input` isn't a non-empty "
+                        "string), so Tracekit can't decide what it runs.")
+            reason = _typed(f"Copilot's {cname}", v)
+            if reason:
+                return reason
     return _blocked_tool(harness, name, raw)
+
+
+def _typed(who, v, typing=True):
+    """Why the text `who` (a harness's tool: "Devin's exec") types into a running shell (typing), or sends as a command,
+    is denied, else None: a control character the line editor acts on, typed history expansion (TYPED), or a typed line
+    that sets or replays the shell's state (_sets_state)."""
+    typed = TYPED["write_to_process" if typing else "exec"].search(v)
+    if typed and typed.group().strip(" \t") in ("!", "^"):
+        return (f"Blocked by Tracekit: {who} types {typed.group().strip()!r}, which interactive bash expands from its "
+                "history (a ! before a word, a ^ starting a line), so Tracekit can't read the line that runs; type the "
+                "command itself.")
+    state = _sets_state(v) if typing and not typed else None
+    if state:
+        return (f"Blocked by Tracekit: {who} types {state[:64]!r}, which sets or replays state of the running shell "
+                "(history, an alias, a function, a prompt string, a trap, a key binding, a builtin, a shell option, "
+                "PATH or a sourced file) that changes what a later line runs, and Tracekit decides each call alone; "
+                "type the commands themselves.")
+    if typed:
+        return (f"Blocked by Tracekit: {who} {'types' if typing else 'sends'} a control character ({typed.group()!r}), "
+                "which a terminal's line editor acts on (erasing, discarding or completing text), so Tracekit can't "
+                "read the line that runs; send plain text, each line ending in \\n.")
+    return None
 
 
 def _not_text(q):
@@ -946,12 +1331,21 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
     if not isinstance(p, dict):
         raise ValueError("the hook payload is not a JSON object")
     p = dict(p, hook_event_name=event) if event else p
-    is_pre = p.get("hook_event_name") in PRE or (harness == "goose" and p.get("event") in PRE)
+    is_pre = p.get("hook_event_name") in PRE or (harness == "goose" and p.get("event") in PRE) or (
+        harness == "openhands" and not p.get("hook_event_name") and p.get("event_type") in PRE)
     q = normalise(harness, p)
+    if harness == "gptme" and q and q["hook_event_name"] == "PromptObserved":
+        q = None   # v1 has no untrusted prompt observation
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
     reason = (_blocked(harness, p, raw) or _not_text(q)) if is_pre else None
+    if reason is None and is_pre and harness == "openhands" and (q.get("tool_input") or {}).get("typed") is True:
+        # the v2 engine holds a call marked typed for a person (TK-SHELL-PARSE); the v1 policy doesn't read the mark
+        reason = ("Blocked by Tracekit: this OpenHands terminal call is text typed into a command already running, a "
+                  "key, a control character or a line left open, which runs with what came before or comes after it, "
+                  "and Tracekit's v1 hook can't hold it for a person. Send the whole command in one call, or use the "
+                  "v2 hook (tracekit init --dev --v2 --agent openhands), which holds it for approval.")
     err = Tee(stderr)
     if reason is not None:   # a call the hook can't decide as it runs: denied before the pipeline
         print(reason, file=err)
@@ -1018,7 +1412,10 @@ def _reply(harness, stdout, allowed, msg, is_pre):
         # a cancel stops Cline's whole task, not only the call (the CLI and the extension both turn it into a stop)
         stdout.write(json.dumps({} if allowed or not is_pre else
                                 {"cancel": True, "errorMessage": msg or "Blocked by Tracekit"}))
-    elif harness in ("codex", "droid") and not allowed and is_pre:
+    elif harness == "copilot" and not allowed and is_pre:
+        # Copilot denies the call at any exit but 0, and shows the reason only from this JSON (1.0.107)
+        stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": msg or "Blocked by Tracekit"}))
+    elif harness in ("codex", "droid", "codebuddy") and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                         "permissionDecisionReason": msg or "Blocked by tracekit"}}))
     stdout.flush()
@@ -1032,10 +1429,18 @@ def config_path(harness, project=None, home=None):
     of ~/.codex, by its real path (codex-rs find_codex_home_from_env), which keys the hooks' trust; ~/.codex as it is.
     lean: another user's (home) is ~/.codex: their CODEX_HOME isn't known here"""
     base = project or home or os.path.expanduser("~")
+    if harness == "gptme":
+        return os.path.join(home or os.path.expanduser("~"), ".config", "gptme", "config.toml")
     codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
         else os.path.join(base, ".codex")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
+    # CodeBuddy Code reads its user settings from $CODEBUDDY_CONFIG_DIR, and a project's from
+    # $CODEBUDDY_PROJECT_CONFIG_DIR (absolute, or in the project), when each is set to more than blanks
+    moved = os.environ.get("CODEBUDDY_PROJECT_CONFIG_DIR" if project else "CODEBUDDY_CONFIG_DIR", "")
+    codebuddy = os.path.join(project, moved.strip()) if project and moved.strip() else moved \
+        if not home and moved.strip() else os.path.join(base, ".codebuddy")
     return {"codex": os.path.join(codex, "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
+            "codebuddy": os.path.join(codebuddy, "settings.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
             "qwen": os.path.join(base, ".qwen", "settings.json"),
@@ -1063,7 +1468,17 @@ def config_path(harness, project=None, home=None):
             # hook is a file named after its event (on Windows the extension runs <event>.ps1). Its PreToolUse stands
             # for the set _install_cline writes
             "cline": os.path.join(base, ".clinerules", "hooks", CLINE_FILE) if project else
-                     os.path.join(base, "Documents", "Cline", "Hooks", CLINE_FILE)}[harness]
+                     os.path.join(base, "Documents", "Cline", "Hooks", CLINE_FILE),
+            # the OpenHands CLI (1.16.0 as released, on SDK 1.21.0; its main is on 1.28.1) reads
+            # <working dir>/.openhands/hooks.json, else
+            # ~/.openhands/hooks.json, the first that exists (HookConfig.load); $OH_PERSISTENCE_DIR is honoured on SDK
+            # main only, so it isn't followed here
+            "openhands": os.path.join(base, ".openhands", "hooks.json"),
+            # Copilot CLI runs every hooks file in a repository's .github/hooks and in its home's hooks/ ($COPILOT_HOME,
+            # else ~/.copilot): Tracekit's own file
+            "copilot": os.path.join(base, ".github", "hooks", "tracekit.json") if project else
+                       os.path.join((None if home else os.environ.get("COPILOT_HOME")) or
+                                    os.path.join(base, ".copilot"), "hooks", "tracekit.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -1289,6 +1704,142 @@ def _install_opencode(path, uninstall=False, v2=False, python=None, harness="ope
     return path
 
 
+GPTME_MARKER = "# Installed by Tracekit; tracekit uninstall --agent gptme removes this file."
+GPTME_HOOK = "bridge.py"
+
+
+def _gptme_hook_path(config):
+    return os.path.join(os.path.dirname(config), "plugins", "tracekit", "hooks", GPTME_HOOK)
+
+
+def _gptme_plugin(python, v2):
+    from .install import _dev_hook_argv
+    module = V2_MODULE if v2 else "tracekit.agent_hooks"
+    argv = [python, "-I", "-m", module, "gptme"] if python else _dev_hook_argv(module, "entry", ("gptme",))
+    with open(os.path.join(os.path.dirname(__file__), "_gptme_plugin.py"), encoding="utf-8") as f:
+        source = f.read()
+    return GPTME_MARKER + "\n" + source.replace("COMMAND = ()", "COMMAND = " + json.dumps(argv), 1).replace(
+        "V2 = False", f"V2 = {v2}", 1)
+
+
+def _gptme_config(directory, path):
+    from .deploy import files
+    from .install import SettingsError
+    name = os.path.basename(path)
+    raw = files.read(directory, name)
+    text = raw.decode("utf-8") if raw is not None else ""
+    standard = "~/.config/gptme/plugins"
+    paths = f'paths = ["{standard}"]'
+    enabled_hint = None
+    try:
+        import tomllib
+    except ImportError:
+        # lean: on Python 3.9/3.10 detect the table by its header or key; use a TOML parser if older interpreters
+        # need to read more elaborate plugin config.
+        has_plugins = bool(re.search(r'(?m)^\s*(?:\[+\s*["\']?plugins\b|["\']?plugins["\']?\s*[.=])', text))
+        configured = any(line.strip() == paths for line in text.splitlines())
+        top, *tables = re.split(r"(?m)^[ \t]*(?=\[)", text)
+        table = next((section for section in tables
+                      if re.match(r'''\[[ \t]*(?:plugins|"plugins"|'plugins')[ \t]*\][ \t]*(?:#[^\n]*)?\r?\n''',
+                                  section)), "")
+        key = r'''(?:enabled|"enabled"|'enabled')[ \t]*='''
+        if re.search(r"(?m)^[ \t]*" + key, table) or re.search(
+                r'''(?m)^[ \t]*(?:plugins|"plugins"|'plugins')[ \t]*\.[ \t]*''' + key, top):
+            enabled_hint = 'If [plugins].enabled is nonempty, include "tracekit" in the list.'
+    else:
+        try:
+            config = tomllib.loads(text)
+        except ValueError as e:
+            raise SettingsError(f"{path} is not valid TOML; Tracekit did not change it: {e}") from e
+        has_plugins = "plugins" in config
+        plugins = config.get("plugins")
+        entries = plugins.get("paths", ()) if isinstance(plugins, dict) else ()
+        configured = isinstance(entries, list) and any(
+            isinstance(entry, str) and (entry == standard or os.path.realpath(os.path.expanduser(entry)) ==
+                                        os.path.realpath(os.path.join(os.path.dirname(path), "plugins")))
+            for entry in entries
+        )
+        if isinstance(entries, list) and all(isinstance(entry, str) for entry in entries):
+            paths = "paths = " + json.dumps([*entries, standard], ensure_ascii=False)
+        enabled = plugins.get("enabled") if isinstance(plugins, dict) else None
+        if isinstance(enabled, list) and enabled and "tracekit" not in enabled and all(isinstance(p, str) for p in enabled):
+            enabled_hint = "enabled = " + json.dumps([*enabled, "tracekit"], ensure_ascii=False)
+    if has_plugins:
+        # lean: print changes for existing tables; use a TOML editor if automatic merges are needed.
+        if not configured:
+            print(f"Add the Tracekit plugin directory to [plugins] in {path}: {paths}")
+        if enabled_hint:
+            print(f"Enable the Tracekit plugin in [plugins] in {path}: {enabled_hint}")
+        return
+    if raw is not None:
+        files.backup(directory, name, raw)
+    prefix = text.rstrip("\r\n") + "\n\n" if text else ""
+    files.write(directory, name, (prefix + "[plugins]\n" + paths + "\n").encode("utf-8"))
+
+
+def _install_gptme(path, uninstall, v2, python):
+    from .deploy import files
+    from .install import SettingsError
+    path = os.path.abspath(path)
+    plugin = os.path.dirname(os.path.dirname(_gptme_hook_path(path)))
+    if uninstall and not os.path.lexists(plugin):
+        return path
+    marker = (GPTME_MARKER + "\n").encode("utf-8")
+    removed = set()
+    try:
+        with contextlib.ExitStack() as stack:
+            def entered(directory):
+                stack.callback(files.close, directory)
+                return directory
+
+            parent = os.path.dirname(path)
+            os.makedirs(parent, exist_ok=True)
+            root = entered(files.open_dir(parent))
+            plugins = entered(files.subdir(root, "plugins"))
+            existed = os.path.lexists(plugin)
+            package = entered(files.subdir(plugins, "tracekit"))
+            raw = files.read(package, "__init__.py")
+            if existed and (raw is None or not raw.startswith(marker)):
+                raise SettingsError(f"{plugin} is not Tracekit's plugin; Tracekit did not change it.")
+            hook_path = os.path.join(plugin, "hooks")
+            hooks = entered(files.subdir(package, "hooks")) if not uninstall or os.path.lexists(hook_path) else None
+            entries = [(package, "__init__.py", marker)]
+            if hooks is not None:
+                entries.extend(((hooks, "__init__.py", marker + b"from .bridge import register\n"),
+                                (hooks, GPTME_HOOK, b"" if uninstall else _gptme_plugin(python, v2).encode("utf-8"))))
+            for directory, name, _ in entries:
+                existing = files.read(directory, name)
+                if existing is not None and not existing.startswith(marker):
+                    raise SettingsError(f"{plugin}/{name} is not Tracekit's plugin; Tracekit did not change it.")
+                if name == GPTME_HOOK and existing:
+                    version = _version(existing.decode("utf-8", "replace"))
+                    if version:
+                        removed.add(version)
+            if uninstall:
+                for directory, name, _ in reversed(entries[1:]):
+                    with contextlib.suppress(FileNotFoundError):
+                        files.remove(directory, name)
+                if hooks is not None:
+                    with contextlib.suppress(OSError):
+                        os.rmdir(hook_path)
+                # Keep ownership if gptme left bytecode or the user added files to the package.
+                if os.listdir(plugin) == ["__init__.py"]:
+                    files.remove(package, "__init__.py")
+            else:
+                for directory, name, contents in entries:
+                    if files.read(directory, name) != contents:
+                        files.write(directory, name, contents)
+                _gptme_config(root, path)
+    except (OSError, UnicodeDecodeError) as e:
+        raise SettingsError(f"{path}: {e}") from e
+    if uninstall:
+        for directory in (os.path.join(plugin, "hooks"), plugin):
+            with contextlib.suppress(OSError):
+                os.rmdir(directory)
+    _said(path, removed, uninstall, v2)
+    return path
+
+
 def _read(path):
     """(the JSON object in the hook config `path`, its text), or ({}, None) when there is no file."""
     from .install import SettingsError
@@ -1307,18 +1858,21 @@ def _read(path):
 
 def _command(harness, ev, v2, python):
     """The command of Tracekit's hook for `ev` (python: see install._hook_command). The v2 hook names its event, so it
-    can block a pre-tool payload it cannot read; agy's payload names none, so its v1 hook does too."""
+    can block a pre-tool payload it cannot read; agy's and Copilot's payloads name none, so their v1 hooks do too
+    (without it a v1 hook reads no event from the payload, and lets the call run undecided)."""
     from .install import _hook_command
     c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
-                      (harness, ev) if v2 or harness == "antigravity" else (harness,), python, ev in PRE,
+                      (harness, ev) if v2 or harness in ("antigravity", "copilot") else (harness,), python, ev in PRE,
                       harness == "antigravity")
     # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
     # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
     # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
     # can't parse: an interpreter path that needs no quotes goes bare, which both run
-    # assume Droid runs hooks under cmd.exe. goose (sh -c) and Crush keep _hook_command's form. Devin doesn't document
-    # its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that doesn't goes bare, which both run
-    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush"):
+    # assume Droid runs hooks under cmd.exe. goose (sh -c), Crush and CodeBuddy Code (Git Bash where it finds one, as
+    # Claude Code) keep _hook_command's form, and so does OpenHands (subprocess.run(shell=True): cmd.exe). Devin
+    # doesn't document its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that doesn't goes
+    # bare, which both run
+    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands", "codebuddy"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
     c = m.group(1) + c[m.end():] if m else c if harness == "devin" else f"& {c}"
@@ -1577,6 +2131,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     config file (path, or config_path), replacing those of the other version. -> the file's path."""
     from .install import SettingsError, _atomic_write_json, _backup_changed
     path = path or config_path(harness, project)
+    if harness == "gptme":
+        return _install_gptme(path, uninstall, v2, python)
     if harness in PLUGIN_TOOLS:
         return _install_opencode(path, uninstall, v2, python, harness)
     if harness == "goose":
@@ -1585,7 +2141,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         return _install_crush(path, uninstall, v2, python)
     if harness == "cline":
         return _install_cline(path, uninstall, v2, python)
-    if harness == "droid" and uninstall and not os.path.exists(path):
+    if harness in ("droid", "copilot") and uninstall and not os.path.exists(path):   # nothing to remove: no file made
         return path
     if harness == "droid" and not uninstall and not os.path.exists(path):
         legacy = os.path.join(os.path.dirname(path), "hooks", "hooks.json")
@@ -1601,7 +2157,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     # and Devin's config.json nest that map under `hooks`. agy's maps each hook's name to its event map: Tracekit's is
     # AGY_HOOK
     key = AGY_HOOK if harness == "antigravity" else "hooks"
-    bare = harness == "droid" or harness == "devin" and os.path.basename(path) == "hooks.v1.json"
+    bare = harness == "droid" or harness == "devin" and os.path.basename(path) == "hooks.v1.json" or \
+        harness == "openhands" and "hooks" not in s and any(k in OPENHANDS_FIELDS or k in OPENHANDS_FIELDS.values()
+                                                           for k in s)   # its direct form: merged as it is written
+    fields = harness == "openhands" and bare and any(k in OPENHANDS_FIELDS.values() for k in s)   # snake_case keys
     hooks = s if bare else s.setdefault(key, {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'{key}' in {path} must be an object; Tracekit did not change it.")
@@ -1616,12 +2175,19 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 return {"command": _command(harness, ev, v2, python), "type": "command", "timeout": events[ev],
                         "failClosed": closed and ev in PRE}   # on another event Cursor blocks a prompt too
         removed = _merge(hooks, path, events, entry, uninstall, flat=True)
+    elif harness == "copilot":
+        s.setdefault("version", 1)
+
+        def entry(ev):   # `command` and `timeout` (s), which Copilot CLI 1.0.107 reads as its `bash` and `timeoutSec`
+            return {"type": "command", "command": _command(harness, ev, v2, python), "timeout": COPILOT_EVENTS[ev]}
+        removed = _merge(hooks, path, COPILOT_EVENTS, entry, uninstall, flat=True)
     else:
         events = (DROID_EVENTS if harness == "droid" else AGY_EVENTS if harness == "antigravity" else
-                  DEVIN_EVENTS if harness == "devin" else
+                  DEVIN_EVENTS if harness == "devin" else OPENHANDS_EVENTS if harness == "openhands" else
                   ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
                   else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
-                  if harness == "qwen" else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
+                  if harness in ("qwen", "codebuddy") else
+                  ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
         tools = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "BeforeTool", "AfterTool"}
 
         def entry(ev):
@@ -1637,7 +2203,11 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                 h["timeout"] = 600 if ev == "PreToolUse" else 30
             # Devin's matcher is a regex, which "*" isn't: a group with none matches every tool
             return {"matcher": "*", "hooks": [h]} if ev in tools and harness != "devin" else {"hooks": [h]}
-        removed = _merge(hooks, path, events, entry, uninstall)
+        if fields:   # a file in OpenHands' own field names keeps them: Tracekit's hooks go under pre_tool_use, ...
+            named = {OPENHANDS_FIELDS[ev]: ev for ev in events}
+            removed = _merge(hooks, path, list(named), lambda k: entry(named[k]), uninstall)
+        else:
+            removed = _merge(hooks, path, events, entry, uninstall)
     if harness == "antigravity":   # Tracekit's named hook holds only its own two entries, rewritten whole: agy loads a
         # named hook with "enabled": false and never runs it
         if not uninstall:
@@ -1663,7 +2233,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         except SettingsError as e:   # Tracekit's hooks still go: what is left can't be told from a person's
             kept = f"{settings} can't be read ({e.__cause__})"
     changed = _backup_changed(path, txt, s)
-    if uninstall and harness == "droid" and (not s or kept is False):
+    if uninstall and (harness == "droid" and (not s or kept is False)
+                      or harness == "copilot" and set(s) <= {"version"}):   # Tracekit's own file, left with no hooks
         os.unlink(path)
     elif changed:
         _atomic_write_json(path, s)
@@ -1673,6 +2244,11 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         except SettingsError:   # a config.toml init can't have written to
             pass
     _said(path, removed, uninstall, v2)
+    if harness == "copilot" and project and changed and not uninstall:   # said when the file is written
+        print(f"{path} names this machine's Python, and .github/ is usually committed: on another machine, or in "
+              "Copilot's cloud agent, the hook can't start, so Copilot denies every call there. Keep the file out of "
+              "the commit (add .github/hooks/tracekit.json to .git/info/exclude), or install the hooks for your user "
+              "instead (the same command without --project)")
     if kept:
         print(f"{path} kept: {kept}. Droid runs the hooks in it, and those in {settings} only once it is gone: move "
               f"any you want into {settings}, then delete it")
@@ -1747,7 +2323,7 @@ def entry(harness=None, event=None):
             pre = True   # unreadable: answered as a tool call
         # OpenCode's plugin passes the model's arguments unchecked: a call its hook can't decide doesn't run, as when
         # the hook can't start; nor, in any hook, one whose payload nests too deep to read
-        closed = event in PRE or isinstance(e, RecursionError) or H.fail_closed()
+        closed = event in PRE or (harness == "gptme" and pre) or isinstance(e, RecursionError) or H.fail_closed()
         print(f"[tracekit] {harness} hook error ({e}); "
               + ("allowing (fail-open)" if not closed else "blocking" if pre else "event not recorded"), file=sys.stderr)
         _reply(harness, sys.stdout, not closed, str(e), pre)

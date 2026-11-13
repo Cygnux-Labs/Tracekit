@@ -13,7 +13,7 @@ from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import agent_hooks, client, install  # noqa: E402
+from tracekit import __version__, agent_hooks, client, install  # noqa: E402
 
 MARKER = "SHADOWED-TRACEKIT-RAN"
 SITE = mock.Mock(origin="/usr/lib/python3/site-packages/tracekit/__init__.py")
@@ -282,7 +282,8 @@ class PluginShim(unittest.TestCase):
             code, err = self.hook(event)
             self.assertEqual(code, 1, event)
             self.assertIn("NOT recorded", err.splitlines()[0])   # the line Claude Code shows
-            self.assertIn("Ask the person to set it up: pip install tracekit-ai==1.6.0 && tracekit init --dev --v2 --no-hooks", err)
+            self.assertIn(f"Ask the person to set it up: pip install tracekit-ai=={__version__} && tracekit init --dev --v2 "
+                          "--no-hooks", err)
 
     def set_up_tracekit(self):
         """What `tracekit init --dev --v2` and the dev signer leave behind: the dev signer's data dir."""
@@ -355,7 +356,8 @@ class PluginShim(unittest.TestCase):
             self.assertEqual(code, want, (event, err))
             self.assertIn("tracekit 1.0.0", err.splitlines()[0])
             self.assertIn("is older than 1.2", err)
-            self.assertIn("Ask the person to run: pip install tracekit-ai==1.6.0 && tracekit init --dev --v2 --no-hooks", err)
+            self.assertIn(f"Ask the person to run: pip install tracekit-ai=={__version__} && tracekit init --dev --v2 "
+                          "--no-hooks", err)
             self.assertNotIn("Traceback", err)
 
     def test_a_tracekit_whose_hook_does_not_import_blocks_tool_calls(self):

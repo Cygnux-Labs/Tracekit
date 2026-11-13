@@ -576,6 +576,11 @@ def _pre(client, p, sid, tid):
     def cap(wait_s=0.0):
         client.timeout = max(min(per_call, end - time.monotonic() - wait_s), 0.001)
 
+    def block(msg, refused=None):
+        cap()
+        _not_run(client, sid, tid, msg, event_hash({"tool": tool, "args": args}), refused)
+        return _block(msg)
+
     tool, args = p.get("tool_name") or "?", p.get("tool_input")
     cap()
     approved, said_no = _reworded(client, sid, args, cap) if _bash(tool, args) else (None, None)
@@ -585,7 +590,7 @@ def _pre(client, p, sid, tid):
     run, d = _run(client, sid, send="decide", transcript=_transcript(p), tool_call_id=tid, tool=tool, args=args,
                   args_source="parsed")
     if d["decision"] == "deny":
-        return _block(stopped(f"BLOCKED, nothing ran, and no one can approve it{_rules(d['rule_ids'])}.",
+        return block(stopped(f"BLOCKED, nothing ran, and no one can approve it{_rules(d['rule_ids'])}.",
                               d.get("reason")))
     if d["decision"] == "ask":
         # a live constraint's reason says which and what to do; a reworded retry of a rejected command's note first
@@ -627,30 +632,54 @@ def _pre(client, p, sid, tid):
             bang = _approval_command_prefix(AGENT, client.signer)
             expires, look = _utc(asked.get("expires_at")), f"look with `{bang}{cmd} show {aid}`"
             if waited.get("reason"):   # an agent approver's approval in its veto delay: approved, it may run after it
-                return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])} is {waited['reason']}, then "
+                return block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])} is {waited['reason']}, then "
                                       "make the identical call again.", reason, look + ".",
                                       "wait as the first line says, then make the identical call again; if it is "
                                       "held again, tell the person and pass on what it says."))
-            return _block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])}"
+            return block(stopped(f"HELD, nothing ran: {aid}{_rules(d['rule_ids'])}"
                                   + (f", expires {expires}." if expires else "."), reason,
                                   f"{look}; allow once with `{bang}{cmd} approve {aid}`; refuse with "
                                   f"`{bang}{cmd} reject {aid}`."))
         if c is None:   # rejected (and by whom), expired, or the wait failed
             outcome = (state == "rejected" and waited.get("reason")) or state
-            return _block(stopped(f"NOT APPROVED, nothing ran{f': {aid}' if aid else ''}{_rules(d['rule_ids'])}: "
-                                  f"{outcome}.", reason))
+            return block(stopped(f"NOT APPROVED, nothing ran{f': {aid}' if aid else ''}{_rules(d['rule_ids'])}: "
+                                  f"{outcome}.", reason), (d["decision_id"], event_hash({"tool": tool, "args": args}), aid))
     else:
         cap()
         c = run.approval_consume(tid, tool, args)   # every call that runs: once, for the decided args
     if not c["ok"]:
-        return _block(stopped(f"BLOCKED, nothing ran{_rules(c['rule_ids'])}.", c.get("reason")))
+        return block(stopped(f"BLOCKED, nothing ran{_rules(c['rule_ids'])}.", c.get("reason")))
     if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
         args = c["args"]
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "tool_call_id": tid, "decision_id": d["decision_id"],
                                         "args_digest": event_hash({"tool": tool, "args": args}),
-                                        "send_result": d.get("send_result", False)})
+                                        "send_result": d.get("send_result", False),
+                                        **({"approval_id": aid} if d["decision"] == "ask" else {})})
     return 0
+
+
+def _not_run(client, sid, tid, msg, digest, refused=None):
+    """Complete the decision an earlier PreToolUse of this call left open (CodeBuddy sends a deferred tool's call twice
+    under one id: agent_hooks.tool) as an error with the head of `msg`, the block that stops the call: the harness's
+    PostToolUse may then carry only an error's text, which no hook can tell from a result. Only the same call: `digest`
+    (this call's tool and arguments) must be the open one's, so a reused id of another call leaves that call's
+    decision for its own PostToolUse. `refused`: this block's
+    (decision_id, args_digest, approval_id), the call's approval refused as already used: if that decision consumed it
+    for the same arguments, this one is completed in its place, and the signer closes both (it counts an open later
+    decision of a call whose approval was consumed as a decided_not_completed gap)."""
+    path = _state(sid, tid)
+    call, st = _load(path), _load(_state(sid))
+    if not call or not st or call["run_id"] != st["run_id"] or call["args_digest"] != digest:
+        return
+    did = refused[0] if refused and refused[2] and refused[1:] == (call["args_digest"], call.get("approval_id")) \
+        else call["decision_id"]
+    try:
+        _run(client, sid, register=False, send="complete", tool_call_id=tid, decision_id=did,
+             args_digest=call["args_digest"], status="error", error=msg.splitlines()[0][:4096])
+    except (SignerUnavailable, RPCError):   # the call is blocked either way
+        return
+    os.remove(path)
 
 
 def _post(client, p, sid, tid):
@@ -983,6 +1012,21 @@ def _handle(client, p, event, sid, tid):
         return _pre(client, p, sid, tid)
     if event in TOOL_EVENTS:
         return _post(client, p, sid, tid)
+    if AGENT == "gptme" and event == "PromptObserved":
+        prompt = p.get("prompt")
+        if isinstance(prompt, str) and prompt:
+            for value in _observe_values([prompt]):
+                _run(client, sid, send="observe", source="gptme:prompt", trust="untrusted", value=value)
+        return 0
+    if AGENT == "gptme" and event == "ToolObserved":
+        from tracekit import agent_hooks, policy as policy_mod
+        name = p["tool_name"]
+        args = p["tool_input"]
+        capture = policy_mod.load()[0].get("content_capture", "hashed")
+        secret = any(privacy.mentions_dotenv(value) for value in agent_hooks._strings(args))
+        value = privacy.content({"args": args, "result": p.get("tool_response")}, capture, secret)
+        _run(client, sid, send="observe", source=f"gptme:tool-undecided:{name}"[:256], trust="untrusted", value=value)
+        return 0
     if event == "SessionEnd":   # not at Stop: a background subagent's call may still be running then
         _unfinished(client, sid)
         run, _ = _run(client, sid, register=False)
