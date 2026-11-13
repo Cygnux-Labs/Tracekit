@@ -210,6 +210,9 @@ def _harness_hooks(harness, config):
         return {ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config}
     if harness == "devin" and "hooks" not in config:
         return {ev: config[ev] for ev in agent_hooks.DEVIN_EVENTS if ev in config}
+    if harness == "openhands" and "hooks" not in config:   # its direct form, in either key style
+        return {ev: config.get(ev) or config.get(f) for ev, f in agent_hooks.OPENHANDS_FIELDS.items()
+                if config.get(ev) or config.get(f)}
     if harness == "antigravity":   # its "enabled" is D-AGY-HOOKS-RUN's
         named = config.get(agent_hooks.AGY_HOOK) or {}
         return {ev: named[ev] for ev in agent_hooks.AGY_EVENTS if ev in named}
@@ -723,6 +726,28 @@ def _hook_run(scale=1, unit="s"):
             f"{(APPROVAL_WAIT_S - 2 * 30) * scale} {unit}, only with {WAIT_ENV} set)")
 
 
+def _openhands_checks(add, path, home, fix):
+    """OpenHands (#563): the CLI reads the hooks of its working directory ($OPENHANDS_WORK_DIR, else the current one),
+    .openhands/hooks.json, in place of the user's ~/.openhands/hooks.json when it exists (HookConfig.load reads the first
+    that exists; $OPENHANDS_PERSISTENCE_DIR moves the CLI's settings, not this file). Only a Tracekit v2 hook on
+    PreToolUse there decides its calls."""
+    from . import agent_hooks
+    project = agent_hooks.config_path("openhands", os.environ.get("OPENHANDS_WORK_DIR") or os.getcwd())
+    if os.path.realpath(path) == os.path.realpath(project) or not os.path.exists(project):
+        return
+    try:
+        ours = any(agent_hooks._version(h.get("command")) == "v2"
+                   for g in _harness_hooks("openhands", _json(project) or {}).get("PreToolUse") or ()
+                   if isinstance(g, dict) for h in g.get("hooks") or () if isinstance(h, dict))
+    except (OSError, ValueError, AttributeError, TypeError):
+        ours = False
+    add("D-OPENHANDS-PROJECT", ours,
+        f"{project} replaces {path} here: the OpenHands CLI reads only the first of them that exists, and it has no "
+        "Tracekit v2 PreToolUse hook, so in this directory OpenHands runs its calls undecided" if not ours else
+        f"{project} has Tracekit's v2 PreToolUse hook",
+        f"{fix} --project (in this directory), or don't run OpenHands on this repo", bad=WARN)
+
+
 def _ps_policy():
     """PowerShell's effective execution policy (Restricted, RemoteSigned, ...), else None when it can't be read."""
     with contextlib.suppress(OSError, subprocess.SubprocessError):
@@ -773,6 +798,8 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness == "codex":
             _codex_trust(add, path, hooks, home, FAIL if prod else WARN)
+        if harness == "openhands":
+            _openhands_checks(add, path, home, fix)
         unnamed =sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
         blocking = sorted({ev for ev, h in cmds if ev not in agent_hooks.PRE
                            and (FAIL_CLOSED in h["command"] or h.get("failClosed") is True)})   # Cursor's failClosed
