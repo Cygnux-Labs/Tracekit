@@ -32,7 +32,10 @@ an error at SessionEnd; one that is never completed is the signer's decided_not_
 
 Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript the hook payloads name, from the
 run's first event: it records the model's tool uses, thinking and text, and the user's prompts (as commitments, with
-their content when the signer keeps content) from the transcript, which no hook payload carries. A new session's run
+their content when the signer keeps content) from the transcript, which no hook payload carries. In dev mode each event
+of the run checks that its tailer still holds the run's tailer lock, and starts it again where its progress log says it
+got when it doesn't (_restart): after a signed tailer_lost gap when it stopped without a word, at most RESTARTS times a
+run; with none when it parked itself (idle). A new session's run
 reads it from its first line; a later run of the session (after an idle close) has its tailer start where the hook last
 saw the transcripts while the earlier run was open (_seen), and a resumed session's first run, or one a session with no
 state left starts (Claude Code went on after a SessionEnd with no SessionStart), where its transcript ended then: the
@@ -114,6 +117,9 @@ HELD = 32
 # never closed by the hook: it is left for the signer's idle close, its tail unproven
 GONE = ("run_closed", "unknown_run", "run_token_invalid")
 SKEW = r"Tracekit signer .* serves client "   # tracekit.sdk.client's warning, which _skew tells the person instead
+# lean: a run's dev-mode tailer that stops without a word is started again this many times (a crash at the same line
+# would otherwise cost a gap and a process at every event); raise it if long runs see more kills
+RESTARTS = 10
 
 
 VERSION = re.compile(r"[\w.+!-]{1,64}", re.ASCII)   # a version shown to a person: ASCII, no control character
@@ -441,14 +447,109 @@ def _seen(transcript):
                                  *sorted(glob.glob(os.path.join(subs, "workflows", "*", "agent-*.jsonl")))]}
 
 
+def _tailer_files(path, run_id):
+    """The lock a dev-mode tailer of run `run_id` holds for its life, and its progress log (tracekit.tailer), beside the
+    session's state `path`; kept with it (_prune)."""
+    base = f"{path[:-len('.json')]}.tailer-{hashlib.sha256(run_id.encode()).hexdigest()[:16]}"
+    return base + ".lock", base + ".log"
+
+
+def _free(lock, create=False):
+    """The tailer lock `lock`, held now (a file to hand the tailer), when no tailer holds it; None while one does, once
+    its tailer ended for good (it removed the file), or when there is none (system mode, or a tailer an earlier hook
+    started), unless `create`."""
+    try:
+        f = os.fdopen(os.open(lock, os.O_RDONLY | os.O_NOFOLLOW | (os.O_CREAT if create else 0), 0o600), "rb")
+    except FileNotFoundError:
+        return None
+    try:
+        lock_file(f, blocking=False)
+        if os.path.samestat(os.fstat(f.fileno()), os.stat(lock)):
+            return f
+    except OSError:   # held: its tailer runs; or gone: it ended for good
+        pass
+    f.close()
+    return None
+
+
+def _start(client, st, argv, handle, held=None):
+    """Start the tailer `argv` with `handle` on its stdin, detached; `held`: the run's tailer lock, which the tailer then
+    holds for its life. One that could not start is a signed gap, once, and the call goes on."""
+    try:
+        p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True, pass_fds=(held.fileno(),) if held else ())
+        p.stdin.write(json.dumps(handle).encode())
+        p.stdin.close()
+    except OSError as e:
+        for f in (handle["lock"], handle["progress"]) if held else ():   # no hook is to take it for a stopped one
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(f)
+        RunHandle(client, st).call("tailer_lost", reason=f"the transcript tailer did not start: {e}"[:1024], offset=0)
+    finally:
+        if held:
+            held.close()
+
+
+def _restart(client, path, st):
+    """Start the run's dev-mode tailer again once it no longer holds its lock, where its progress log says it got (the
+    bytes it read checked by their digests): after a signed tailer_lost gap when it stopped without a word, at most
+    RESTARTS times a run, or with none when it parked itself (tracekit.tailer: idle). None is started for a run the
+    hook found ended, nor once the signer refuses the gap (the run is final); a parked one's run may have closed
+    unknown to the hook: the new tailer then exits at its first record, which the signer refuses."""
+    lock, log = _tailer_files(path, st["run_id"])
+    held = _free(lock)
+    if held is None:
+        return
+    if (system_config() or {}).get("signer"):   # system mode: the signer watches its tailer, not a file of the agent's
+        held.close()
+        return
+    from tracekit.tailer import resume   # only here: it loads the signer's module
+    offsets, digests, parked = resume(log)
+    # lean: with no progress log (removed) a new tailer reads on from where the hook last saw the transcripts, so what
+    # the stopped one had not read by then is skipped; keep the run's start offsets in the state if that happens
+    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"],
+              "offsets": offsets or st.get("offsets") or {}, "digests": digests, "until": path, "lock": lock,
+              "progress": log}
+    n = st.get("restarts", 0)
+    why = ("the run ended" if st.get("ended") else None if parked or n < RESTARTS else
+           f"it stopped {n + 1} times in this run")
+    again = why is None
+    try:
+        if not parked:
+            RunHandle(client, st).call("tailer_lost", offset=handle["offsets"].get(st["transcript"], 0), reason=(
+                "the transcript tailer stopped without a word (killed, or it failed before it could say why); " + (
+                    f"a new one reads on from where it stopped (restart {n + 1} of at most {RESTARTS}): the lines "
+                    "written meanwhile are recorded late" if again else
+                    f"it is not started again ({why}): what the transcript says after that is not recorded: read "
+                    "the transcript itself for it")))
+    except RPCError as e:
+        if e.code not in GONE:
+            held.close()
+            raise
+        again = False   # the run ended: nothing more is read for it
+    if not again:
+        for f in (lock, log):
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(f)
+        held.close()
+        return
+    if not parked:
+        st["restarts"] = n + 1
+        files.write_json(path, st)
+    _start(client, st, [sys.executable, "-I", "-m", "tracekit.tailer"], handle, held)
+
+
 def _tail(client, path, st):
-    """Start tracekit.tailer for the run, detached, unless it has one. System mode: through sudo as the tailer's own
-    user (the root-owned system config names it), with a token the signer issued to that user's uid for this run; with
-    no tailer installed, the signer records a tailer_lost gap for the run instead. A run whose state names no offsets
-    (registered before its transcript was known, by an earlier hook) starts where the transcripts end the first time
-    this runs, kept in the state so a retry after a failed start reads from the same place."""
-    if (AGENT != "claude-code" or not (st and st.get("transcript")) or st.get("tailer") == st["run_id"]
-            or os.name == "nt"):   # Claude Code transcripts only; POSIX only
+    """Start tracekit.tailer for the run, detached, unless it has one (dev mode: start it again once it stopped,
+    _restart). System mode: through sudo as the tailer's own user (the root-owned system config names it), with a
+    token the signer issued to that user's uid for this run; with no tailer installed, the signer records a tailer_lost
+    gap for the run instead. A run whose state names no offsets (registered before its transcript was known, by an
+    earlier hook) starts where the transcripts end the first time this runs, kept in the state so a retry after a
+    failed start reads from the same place."""
+    if AGENT != "claude-code" or not (st and st.get("transcript")) or os.name == "nt":   # Claude Code only; POSIX only
+        return
+    if st.get("tailer") == st["run_id"]:
+        _restart(client, path, st)
         return
     # lean: a run a session goes on with after a SessionEnd (no SessionStart: a message to the session, a usage limit's
     # reset) starts where the transcripts end at its first event; what Claude Code wrote between the SessionEnd and
@@ -460,26 +561,21 @@ def _tail(client, path, st):
     handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"], "offsets": st["offsets"]}
     sc = system_config() or {}
     t = sc.get("tailer")
-    argv = None   # a tailer that dies or is killed stops its heartbeats: the signer writes the tailer_lost gap
     if t:
-        # this tailer cannot see SessionEnd (the session state is the agent's): it exits once a call finds the run
-        # final, or with a tailer_lost after tailer.IDLE_TAILER_S without a new line
+        # a tailer that dies or is killed stops its heartbeats: the signer writes the tailer_lost gap. This one cannot
+        # see SessionEnd (the session state is the agent's): it exits once a call finds the run final
         handle["run_token"] = RunHandle(client, st).call("delegate_run", identity=f"uid:{t['uid']}")["run_token"]
-        argv = ["sudo", "-n", "-u", t["user"], t["python"], "-I", "-m", "tracekit.tailer"]
+        _start(client, st, ["sudo", "-n", "-u", t["user"], t["python"], "-I", "-m", "tracekit.tailer"], handle)
     elif sc.get("signer"):   # system mode, but init could not give the tailer access
         RunHandle(client, st).call("tailer_lost", reason="no transcript tailer is installed", offset=0)
-    else:   # exits once SessionEnd removes the session state
-        handle["until"] = path
-        argv = [sys.executable, "-I", "-m", "tracekit.tailer"]
-    if argv:
-        try:
-            p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                 start_new_session=True)
-            p.stdin.write(json.dumps(handle).encode())
-            p.stdin.close()
-        except OSError as e:   # no tailer could start: a signed gap says so, once, and the call goes on
-            RunHandle(client, st).call("tailer_lost", reason=f"the transcript tailer did not start: {e}"[:1024],
-                                       offset=0)
+    else:   # exits once SessionEnd removes the session state; holds the run's tailer lock, so a hook sees it stop
+        lock, log = _tailer_files(path, st["run_id"])
+        held = _free(lock, create=True)
+        if held:   # else a tailer of this run holds it already
+            with os.fdopen(os.open(log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600), "w") as f:
+                f.write(json.dumps({"offsets": st["offsets"]}) + "\n")   # where a restarted one reads what it never did
+            _start(client, st, [sys.executable, "-I", "-m", "tracekit.tailer"],
+                   dict(handle, until=path, lock=lock, progress=log), held)
     st["tailer"] = st["run_id"]
     files.write_json(path, st)
 
@@ -999,6 +1095,9 @@ def _prune():
         # could lock a fresh file beside one still held, so two runs get registered, rare enough for dev mode
         if f.endswith(".lock") and os.path.exists(f[:-len(".lock")] + ".json"):
             continue
+        if ".tailer-" in f and os.path.exists(os.path.join(os.path.dirname(f), os.path.basename(f).split(".")[0]
+                                                           + ".json")):   # a run's tailer's: kept with its session
+            continue
         session = f.endswith(".json") and os.path.basename(f).count(".") == 1   # not claude-code-<sid>.<call>.json
         try:
             if os.path.getmtime(f) < now - (SESSION_KEEP_S if session else IDLE_S):
@@ -1047,7 +1146,8 @@ def _handle(client, p, event, sid, tid):
             if e.code not in GONE:   # closed already (idle), or a signer reset: only the state is left
                 raise
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
-            os.remove(f)
+            with contextlib.suppress(FileNotFoundError):   # a tailer that ended removes its own lock and log
+                os.remove(f)
         return 0
     transcript, prompt = _transcript(p), p.get("prompt") if event == "UserPromptSubmit" else None
     if event == "SessionStart":

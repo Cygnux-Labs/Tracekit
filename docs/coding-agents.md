@@ -558,7 +558,9 @@ Without anything else installed, the signer turns what it saw and then never hea
   with `parent` from a bound harness process is a `run.child` record in its parent;
 - in system mode, a transcript tailer that stops calling the signer while the run is open, killed, crashed or never
   started, from the moment the hook took its token (`tailer_lost`), and a second tailer token for the same run
-  (`tailer_redelegated`);
+  (`tailer_redelegated`); in dev mode, a tailer the run's next hook event finds stopped without a word (`tailer_lost`):
+  the hook then starts a new one where the stopped one got, so the lines written meanwhile are recorded late, not lost
+  (at most 10 times a run, [limits](limits.md));
 - writes after the run ended (`late_activity`, in a run-set), apart from each client's first one, from which it learns
   that the run ended (an idle close) and moves to a new run. A hook moves to a new run too when the signer was reset
   (its data dir or run token key made anew) and refuses the session's run token: the earlier run, if the store still
