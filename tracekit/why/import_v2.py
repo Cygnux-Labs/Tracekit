@@ -136,12 +136,13 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
     """call (run_seq) -> {"decision", "result": records, "approval": {decision, approver, self_approved}}; an approval
     that expired, was abandoned or revoked before anyone answered it is that decision ("expired", ...). The agent's retry
     of a held call that consumed that call's approval (signer _reusable) has its approval and `retry_of`, the held call;
-    the held call, blocked at once, `ran_by`, the retry. A call is the latest decision of its id and attempt, unless
-    that one ran: it is then a call of its own, as is the held call a decision folds into (held_calls); an approval's
-    records are the call's its request was for, and a result the call of the decision
-    it names (decision_id): one that did not run and is not its id and attempt's latest call is not in the log."""
+    the held call, blocked at once, `ran_by`, the retry. A call is the latest decision of its id and attempt, an
+    earlier one that ran (its result before or after the later decision), or the held call a decision folds into
+    (held_calls); an approval's records are the call's its request was for, and a result the call of the decision it
+    names (decision_id): a decision that did not run and is not its id and attempt's latest call is not in the log."""
     calls: Dict[int, Dict[str, Any]] = {}
     cur: Dict[tuple, int] = {}   # (id, attempt) -> its latest call
+    replaced = set()   # calls a later decision under their id and attempt replaced: dropped at the end if never run
     asked: Dict[str, str] = {}   # approval id -> its call (a later approval record may not name the call)
     folds, owners = held_calls(recs)
     appr, used, decs, did = {}, set(), {}, {}   # call (run_seq) -> its approval; calls whose approval was used;
@@ -151,8 +152,9 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
         if t == "policy.decision":
             seq = did[d.get("decision_id")] = folds.get(e["run_seq"], e["run_seq"])
             key = (tid, e.get("attempt"))
-            if key in cur and cur[key] != seq and "result" not in calls[cur[key]]:
-                del calls[cur[key]]   # a later decision replaces one that did not run
+            if key in cur and cur[key] != seq:
+                replaced.add(cur[key])
+            replaced.discard(seq)   # a decision folded into a replaced held call makes it the latest again
             cur[key] = seq
             calls[seq] = {"decision": r, "seq": seq}
             decs.setdefault(key, []).append((seq, d["decision"]))
@@ -178,6 +180,9 @@ def _calls(recs: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
         elif t in ("approval.expired", "approval.abandoned", "approval.revoked") and aid in owners:
             if (appr.get(owners[aid]) or {}).get("decision") in (None, "approve"):
                 appr[owners[aid]] = {"decision": t.split(".")[1], "approver": None, "self_approved": False}
+    for seq in replaced:
+        if "result" not in calls[seq]:
+            del calls[seq]
     for c in calls.values():
         if c["seq"] in appr:
             c["approval"] = appr[c["seq"]]

@@ -307,6 +307,12 @@ class Engine:
                 if unread or held:
                     hits[on_parse_error].append("TK-SHELL-PARSE")
                     cause = unread or _unread_cause(held)
+                # a hook's mark for text typed into a command already running, a key or a line left open
+                # (agent_hooks: OpenHands' terminal): it runs with what comes before or after it, which this call
+                # alone doesn't show. Only ever holds: a call without the mark is decided as before
+                if args.get("typed") is True and not _hidden and "TK-SHELL-PARSE" not in hits[on_parse_error]:
+                    hits[on_parse_error].append("TK-SHELL-PARSE")
+                    cause = "typed"
         # the fallback's 1 s covers its regex matches alone (_backend): reading the call (the parse, the subjects) isn't
         # charged to it, and is bounded by the input size limits, as on RE2
         nondeterministic = False
@@ -874,7 +880,7 @@ def _set_names(commands, refs, given=()):
 
 
 def _gh_runs(commands):
-    """What gh runs that its own commands don't say, which TK-A071 holds (`GH: <words>`): an alias set or imported
+    """What gh runs that its own commands don't say, which TK-A081 holds (`GH: <words>`): an alias set or imported
     (`gh alias set m 'pr merge --admin'`; a --shell one runs a shell), an extension installed, upgraded, browsed for or
     run by exec, and a command that is none of gh's own (shell.GH_COMMANDS: an alias's or an extension's, a program of
     its own), and the editor, pager or browser it is set to run."""

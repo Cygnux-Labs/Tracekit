@@ -246,8 +246,8 @@ def _matches(r, tool, ti):
 def evaluate(pol, tool, ti, cwd=None):
     """Return {'decision', 'rule_ids', 'reasons', 'flags'}; decision in allow|deny|ask|flag.
     Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's), commands (a `commands`
-    list, as Cline's run_commands, each run in its own shell) or URLs (`urls`) is decided on each one as its file_path,
-    command or url: a rule that matches any of them applies."""
+    list, as Cline's run_commands or gptme's tmux batch, each run in its own shell) or URLs (`urls`) is decided on each
+    one as its file_path, command or url: a rule that matches any of them applies."""
     if not isinstance(ti, dict):
         ti = {} if ti is None else {"value": ti}
     field = FIELD_FOR_TOOL.get(tool)

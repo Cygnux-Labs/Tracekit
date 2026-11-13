@@ -1,5 +1,5 @@
 """Second routes to what the packs hold, each read as a whole class on dev, coding, server and strict and on both
-engines: every way the shell writes a file (TK-D014, TK-A067, TK-A068, TK-F024) and a pattern that may name one, a
+engines: every way the shell writes a file (TK-D023, TK-A079, TK-A080, TK-F025) and a pattern that may name one, a
 for loop's brace words, a harness's own settings commands and a harness started with settings the agent chose
 (TK-A054, TK-A069, TK-A070), an unmapped file tool read as the file tool it is, a `commands` list read entry by entry,
 SQL comments and dollar quotes as PostgreSQL and MySQL lex them, and text typed into a live shell."""
@@ -60,28 +60,28 @@ class Routes(unittest.TestCase):
                               "sed --in-place 's/a/b/' .env", "f=.env; sed -i 's/a/b/' $f", "truncate -s0 .env",
                               "dd if=x of=.env", "awk '{print > \".env\"}' x", "sed -i 's/a/b/' ~/.aws/credentials",
                               "sed -i 's/a/b/' ~/.ssh/config", "sed -i 's/a/b/' ~/.ssh/authorized_keys",
-                              "find . -name .env -exec sed -i 's/a/b/' {} +"), "deny", "TK-D014")
+                              "find . -name .env -exec sed -i 's/a/b/' {} +"), "deny", "TK-D023")
 
     def test_a_startup_item_or_git_hook_written_by_any_writer_is_held(self):
         self.expect(self.bash("sed -i 's/a/b/' /etc/profile", "perl -pi -e 's/a/b/' /etc/profile.d/x.sh",
-                              "cp x /etc/zshrc"), "ask", "TK-A067")
+                              "cp x /etc/zshrc"), "ask", "TK-A079")
         self.expect(self.bash("perl -pi -e 's/a/b/' .git/hooks/pre-commit", "truncate -s0 .git/hooks/pre-push"),
-                    "ask", "TK-A068")
+                    "ask", "TK-A080")
 
     def test_a_shell_startup_file_written_by_any_writer_is_flagged_and_held_on_strict(self):
         # as TK-F011 reads a redirection into one: a coding agent's PATH line in ~/.bashrc is ordinary setup
         self.expect(self.bash("sed -i 's/a/b/' ~/.bashrc", "cp x ~/.zshrc", "perl -pi -e 's/a/b/' ~/.profile"),
-                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F024")
+                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F025")
 
     def test_a_pattern_is_read_as_each_protected_name_it_may_make(self):
         # bash expands a redirection's pattern that matches one file, and an argument's to each file it matches
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
         self.expect(self.bash("echo k >> ~/.ssh/authorized_key?", "echo x > .en?", "sed -i 's/a/b/' .e[n]v"), held,
-                    "TK-D014")
+                    "TK-D023")
         self.expect(self.bash("echo x > ~/.bashr?", "sed -i 's/a/b/' ~/.b*", "echo x >> ~/.zsh*"),
-                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F024")
-        self.expect(self.bash("echo x > .git/hook?/pre-commit"), "ask", "TK-A068")
-        self.expect(self.bash("cp ~/.ssh/id_* /tmp/"), held, "TK-D014")
+                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F025")
+        self.expect(self.bash("echo x > .git/hook?/pre-commit"), "ask", "TK-A080")
+        self.expect(self.bash("cp ~/.ssh/id_* /tmp/"), held, "TK-D023")
 
     def test_every_in_place_switch_find_and_output_writer_reaches_the_rules(self):
         self.expect(self.bash(
@@ -93,9 +93,9 @@ class Routes(unittest.TestCase):
             "find . -name .env -exec truncate -s0 {} +", "find . -name .env | xargs sed -i 's/a/b/'",
             "echo .env | xargs sed -i 's/a/b/'", "cd ~/.ssh && sed -i 's/a/b/' authorized_keys",
             "sort -o .env .env", "uniq x .env", "ex -sc '%s/a/b/|x' .env", "vim -es -c '%s/a/b/' -c wq .env",
-            "xxd -r x .env", "find . -name .env -fprint .env"), "deny", "TK-D014")
+            "xxd -r x .env", "find . -name .env -fprint .env"), "deny", "TK-D023")
         self.expect(self.bash("find .git/hooks -type f -exec sed -i 's/a/b/' {} +",
-                              "find .git -name pre-commit -exec sed -i 's/a/b/' {} +"), "ask", "TK-A068")
+                              "find .git -name pre-commit -exec sed -i 's/a/b/' {} +"), "ask", "TK-A080")
         self.expect(self.bash("cd ~/.hermes && sed -i 's/a/b/' config.yaml"), "ask", "TK-F015")
         # a negated or pruned test finds no file: what the find edits is everything else
         self.expect(self.bash("find . -type f ! -name .env -exec sed -i 's/a/b/' {} +",
@@ -118,10 +118,10 @@ class Routes(unittest.TestCase):
                    "wget -qO .claude/worktrees/x/.claude/settings.json " + u, "curl -so ~/.claude/settings.json " + u]
         self.expect(self.bash(*harness), "ask", "TK-F015")
         self.expect(self.bash("curl -so .env " + u, "wget -qO .env " + u, "curl -sO https://example.com/a/.env"),
-                    "deny", "TK-D014")
-        self.expect(self.bash("curl -so .git/hooks/pre-commit " + u), "ask", "TK-A068")
+                    "deny", "TK-D023")
+        self.expect(self.bash("curl -so .git/hooks/pre-commit " + u), "ask", "TK-A080")
         self.expect(self.bash("curl -so ~/.bashrc " + u, "wget -qO ~/.zshrc " + u),
-                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F024")
+                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F025")
         # a file it writes that the line can't name (a variable it gives no value, curl's #1 or a config file, a
         # URL list, a recursive fetch, a name the server picks, an option the reader doesn't know) is held
         self.expect(self.bash("curl -so \"$F\" " + u, "curl -o 'x#1.json' 'https://example.com/[1-2]'",
@@ -133,7 +133,7 @@ class Routes(unittest.TestCase):
         # sec08 adversarial review: one urllib can't split (a curl glob in the host: TK-ENGINE-ERROR, then unread) is
         # named from its raw path, as its twin with a plain host is
         self.expect(self.bash("curl -O 'http://10.0.0.[1-2]/.env'", "curl -sO 'http://[1-2].example/.env'",
-                              "wget 'http://[a/.env#f'"), "deny", "TK-D014")
+                              "wget 'http://[a/.env#f'"), "deny", "TK-D023")
         self.expect(self.bash("curl -O http://[::1/x.sh", "curl -sO 'http://[foo]/x.sh'", "wget https://[bad/notes.txt",
                               "curl --remote-name-all " + u + " http://[b/y"), ("allow", "flag"),
                     packs=("dev", "coding", "server"))
@@ -169,9 +169,9 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("env -C ~/.ssh sed -i 's/a/b/' config", "env --chdir=$HOME/.ssh sed -i 's/a/b/' config",
                               "awk '{print > FILENAME}' .env", "patch -i d .env", "patch -d ~/.ssh -i d config",
                               "ls -a | grep env | xargs sed -i 's/a/b/'", "printf '.e%s' nv | xargs sed -i 's/a/b/'"),
-                    "deny", "TK-D014")
+                    "deny", "TK-D023")
         self.expect(self.bash("nvim --headless +%s/a/b/ +wq ~/.bashrc", "vim -c wq ~/.bashrc"),
-                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F024")
+                    {"dev": "flag", "coding": "flag", "server": "flag", "strict": "ask"}, "TK-F025")
         # sec08 r2: awk's ARGV[n] is its n-th operand; a find's -exec sh -c script writes the {} it is given as $1,
         # $0 or a bare for loop's word
         self.expect(self.bash("awk '{print > ARGV[1]}' .env", "awk '{print > ARGV[2]}' x .env",
@@ -179,7 +179,7 @@ class Routes(unittest.TestCase):
                               "find . -name .env -exec sh -c 'echo x >> \"$1\"' _ {} \\;",
                               "find . -name .env -exec sh -c 'echo x >> \"$0\"' {} \\;",
                               "find . -name .env -exec sh -c 'for f; do echo x >> \"$f\"; done' _ {} +"),
-                    "deny", "TK-D014")
+                    "deny", "TK-D023")
         self.expect(self.bash("env -C src sed -i s/a/b/ config", "awk '{print > FILENAME}' src/a.txt",
                               "patch -p1 -i fix.diff", "vim -R ~/.bashrc", "vim src/main.py",
                               "git ls-files | grep '\\.py$' | xargs sed -i s/a/b/",
@@ -189,8 +189,8 @@ class Routes(unittest.TestCase):
     def test_a_pattern_is_read_part_by_part_and_with_negated_and_posix_brackets(self):
         held = {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}
         self.expect(self.bash("sed -i 's/a/b/' ~/.ss?/conf?g", "echo x > .e[^x]v", "echo x > .e[!x]v",
-                              "echo x > .e[[:alpha:]]v"), held, "TK-D014")
-        self.expect(self.bash("echo x > .git/hook[^x]/pre-commit"), "ask", "TK-A068")
+                              "echo x > .e[[:alpha:]]v"), held, "TK-D023")
+        self.expect(self.bash("echo x > .git/hook[^x]/pre-commit"), "ask", "TK-A080")
 
     def test_a_pattern_is_read_with_bash_classes_and_the_glob_options_the_line_sets(self):
         # bash 3.2 expanded each to the .env or ~/.ssh/config there: an equivalence or collating class is its letter,
@@ -199,7 +199,7 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("sed -i 's/a/b/' .e[[=n=]]v", "sed -i 's/a/b/' .e[[.n.]]v",
                               "sed -i 's/a/b/' ~/.ss[[=h=]]/config", "shopt -s dotglob; sed -i 's/a/b/' *env",
                               "GLOBIGNORE=x; sed -i 's/a/b/' *env", "shopt -s nocaseglob; sed -i 's/a/b/' .E[N]V"),
-                    held, "TK-D014")
+                    held, "TK-D023")
         # extglob's own syntax isn't read: held, as a line the parser can't read is
         self.expect(self.bash("shopt -s extglob; sed -i 's/a/b/' .@(env)"), held, "TK-SHELL-PARSE")
         self.expect(self.bash("sed -i 's/a/b/' *env", "shopt -s dotglob; ls *"), "allow")
@@ -213,8 +213,8 @@ class Routes(unittest.TestCase):
                               "for GLOBIGNORE in x; do :; done; sed -i s/a/b/ *env",
                               "read GLOBIGNORE <<< x; sed -i s/a/b/ *env", "printf -v GLOBIGNORE x; sed -i s/a/b/ *env",
                               "cat /tmp/k >> ~/.ssh/authorized[[.underscore.]]keys",
-                              "cat /tmp/k >> ~/.ssh/authorized[[=__=]keys"), held, "TK-D014")
-        self.expect(self.bash("find . -name '*env' -exec sed -i s/a/b/ {} +"), "deny", "TK-D014")
+                              "cat /tmp/k >> ~/.ssh/authorized[[=__=]keys"), held, "TK-D023")
+        self.expect(self.bash("find . -name '*env' -exec sed -i s/a/b/ {} +"), "deny", "TK-D023")
         # an option the parser can't read (a name in a variable, zsh's setopt) holds a pattern it may widen
         self.expect(self.bash("o=dotglob; shopt -s $o; sed -i s/a/b/ *env", "setopt globdots; sed -i s/a/b/ *env"),
                     held, "TK-SHELL-PARSE")
@@ -241,13 +241,13 @@ class Routes(unittest.TestCase):
                               "cd ~/proj/deploy && find . -name config -exec sed -i 's/a/b/' {} +",
                               "find ~/proj -name 'config' -print | xargs sed -i 's/a/b/'"), "allow")
         self.expect(self.bash("find ~ -name config -exec sed -i 's/a/b/' {} +",
-                              "find / -name authorized_keys -exec sed -i 's/a/b/' {} +"), "deny", "TK-D014")
+                              "find / -name authorized_keys -exec sed -i 's/a/b/' {} +"), "deny", "TK-D023")
 
     def test_a_pattern_after_a_cd_joins_only_as_the_names_it_may_make(self):
         self.expect(self.bash("cd /home/u/p/.claude/worktrees/w && rm -f src/*.orig",
                               "cd /home/u/p/.claude/worktrees/w && sed -i s/a/b/ tests/*.py"), ("allow", "flag"))
         self.expect(self.bash("cd ~/.ssh && sed -i s/a/b/ conf?g"),
-                    {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-D014")
+                    {"dev": "ask", "coding": "ask", "server": "ask", "strict": "deny"}, "TK-D023")
 
     def test_ordinary_writes_and_patterns_stay_unheld(self):
         self.expect(self.bash("sed -i 's/foo/bar/g' src/app.py", "sed -i 's/a/b/' *.py", "echo x > out.txt",
@@ -261,7 +261,7 @@ class Routes(unittest.TestCase):
 
     # --- a for loop's brace words
     def test_a_for_loops_brace_words_are_its_values(self):
-        self.expect(self.bash("for k in id_{rsa,x}; do cp ~/.ssh/$k /tmp/; done"), "deny", "TK-D014")
+        self.expect(self.bash("for k in id_{rsa,x}; do cp ~/.ssh/$k /tmp/; done"), "deny", "TK-D023")
         self.expect(self.bash("for h in {169.254.169.254,x}; do curl -s http://$h/; done",
                               "for h in 1{6,8}9.254.169.254; do curl -s http://$h/; done"),
                     {"dev": "deny", "server": "deny", "strict": "deny"}, "TK-S001", packs=("dev", "server", "strict"))
@@ -388,7 +388,7 @@ class Routes(unittest.TestCase):
         self.expect(self.bash("gh alias set m 'pr merge --admin'", "gh m 1", "gh co 12", "gh alias import a.yml",
                               "gh alias set up 'api -X PUT repos/o/r/contents/a.md -f message=m' && gh up",
                               "gh extension install evil/gh-x && gh x --go", "gh ext exec x",
-                              "gh config set pager 'less -R'"), "ask", "TK-A071")
+                              "gh config set pager 'less -R'"), "ask", "TK-A081")
         # a GraphQL query from a file, stdin or a substitution may be any write an inline one is held for
         self.expect(self.bash("gh api graphql -F query=@m.graphql", "gh api graphql --input q.json",
                               "gh api graphql -f query=\"$(cat m.graphql)\""),
