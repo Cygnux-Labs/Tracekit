@@ -4210,7 +4210,7 @@
       if (TIPSERR) return put("tipsp", `<div class="empty">${esc("The tips could not be read: " + TIPSERR)} <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>`);
       if (tipsKey === TIPS) return;
       tipsKey = TIPS;
-      const s = TIPS.sources, [w0, w1] = TIPS.window, days = Math.round((w1 - w0) / 86400), tr = s.transcripts;
+      const s = TIPS.sources, [w0, w1] = TIPS.window, days = Math.round((w1 - w0) / 86400), tr = s.transcripts, cx = s.codex;
       const also = s.signed.also || {};
       const span = s.signed.span ? ` from ${fmtD(s.signed.span[0])} ${fmtT(s.signed.span[0]).slice(0, 5)} to ${fmtD(s.signed.span[1])} ${fmtT(s.signed.span[1]).slice(0, 5)}, the viewer's live view` : "";
       put("tipsp", `<div class="tips"><div class="tread">READ: ${esc(plural(s.signed.records, "signed record") + span)} (${esc(plural(s.signed.steps, "model step"))} with token counts, ${esc(plural(s.signed.holds, "held call"))})`
@@ -4218,7 +4218,10 @@
         + esc(TIPS.root ? ` · Claude Code's transcripts in ${TIPS.root}, read-only: ${plural(tr.files, "file")}, ${plural(tr.steps, "step")}` + (tr.unreadable ? `, ${tr.unreadable} unreadable` : "")
           + "; the tips list sessions from every project under that folder"
           : " · no transcripts read: start tracekit view with --transcripts DIR (with --dev it reads Claude Code's own)")
-        + esc(` · the last ${plural(days, "day")}, to ${fmtD(w1)} ${fmtT(w1)} ${TZ} · dollars at Anthropic's list prices of ${TIPS.prices}: a subscription bills none of them, but the same tokens fill its usage limit.`)
+        + esc(TIPS.codex_root ? ` · Codex CLI's sessions in ${TIPS.codex_root}, read-only: ${plural(cx.files, "file")}, ${plural(cx.steps, "step")}` + (cx.unreadable ? `, ${cx.unreadable} unreadable` : "")
+          + "; they are read only with --dev"
+          : "")
+        + esc(` · the last ${plural(days, "day")}, to ${fmtD(w1)} ${fmtT(w1)} ${TZ} · dollars at Anthropic's and OpenAI's list prices of ${TIPS.prices}: a subscription bills none of them, but the same tokens fill its usage limit.`)
         + ` <button type="button" class="cp" data-tipsre="">READ AGAIN</button></div>` + TIPS.tips.map((t, i) => tipCard(t, i, days)).join("") + `</div>`);
       $("tipssum").textContent = `${TIPS.tips.filter(t => t.ok).length} of ${TIPS.tips.length} with enough data · operator-side, not evidence`;
     }

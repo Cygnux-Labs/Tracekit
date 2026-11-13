@@ -369,7 +369,8 @@ without tool calls has no tool_use id). The page's first line says how many sign
 of the signed records it read: the viewer's live view, its newest 50,000 rows, which on a busy store is less than 7
 days. Holds come only from signed records; a transcript adds how long each blocked the agent and
 whether it ran in a subagent. Codex CLI's session files (`$CODEX_HOME/sessions`, else `~/.codex/sessions`) are read the
-same way, read-only, so a Codex-only week gets the context tip (its records carry each request's input, cached-input,
+same way, read-only, but only when the viewer runs `--dev` (with `--transcripts DIR` they are not read), so a
+Codex-only week gets the context tip (its records carry each request's input, cached-input,
 cache-write and output tokens). The cache tip covers no Codex agent — a session record names no cache lifetime
 (OpenAI's writes last 30 minutes or 12 hours, and the record doesn't say which) — while the holds tip, which comes
 from signed records, covers Codex hook runs like any other; a session record's call ids are not read yet, so a
@@ -384,8 +385,9 @@ are in [limits](limits.md#viewer).
 #### tracekit tips
 
 `tracekit tips` (experimental) prints the same three tips without the viewer, for a terminal or an agent. It reads
-the dev signer's store (or `--data-dir DIR`'s, without transcripts, as `tracekit view --data-dir` reads it) and Claude
-Code's transcripts, read-only, with no network and no model. It checks each run with a record in the window with the
+the dev signer's store (or `--data-dir DIR`'s, without transcripts, as `tracekit view --data-dir` reads it), Claude
+Code's transcripts and Codex CLI's sessions (`$CODEX_HOME/sessions`, else `~/.codex/sessions`), read-only, with no
+network and no model. It checks each run with a record in the window with the
 verifier first, as the viewer does, so a busy week takes a minute or two; a run that doesn't verify is left out and
 counted. Unlike the page, it reads every run in the window, not only the viewer's newest 50,000 rows.
 

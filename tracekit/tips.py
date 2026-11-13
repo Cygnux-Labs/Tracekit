@@ -65,9 +65,12 @@ PRICES["models"].update({
     "gpt-6-rosalind*": {"input": 15, "output": 75, "cache_read": 1.5, "cache_write": 18.75, "cache_write_1h": 37.5},
     "gpt-6-cyber*": {"input": 20, "output": 100, "cache_read": 2, "cache_write": 25, "cache_write_1h": 50},
     "gpt-6.1-sol*": {"input": 2, "output": 10, "cache_read": 0.1, "cache_write": 2.5, "cache_write_1h": 5},
+    "gpt-6-sol*": {"input": 2, "output": 10, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 5},
     "gpt-5.6-sol*": {"input": 4, "output": 20, "cache_read": 0.4, "cache_write": 5, "cache_write_1h": 10},
     "gpt-6.1-terra*": {"input": 1, "output": 5, "cache_read": 0.05, "cache_write": 1.25, "cache_write_1h": 2.5},
-    "gpt-6-luna*": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.25}})
+    "gpt-5.6-terra*": {"input": 2, "output": 12, "cache_read": 0.2, "cache_write": 2.5, "cache_write_1h": 5},
+    "gpt-6-luna*": {"input": 0.1, "output": 0.5, "cache_read": 0.01, "cache_write": 0.125, "cache_write_1h": 0.25},
+    "gpt-5.6-luna*": {"input": 0.2, "output": 1.2, "cache_read": 0.02, "cache_write": 0.25, "cache_write_1h": 0.5}})
 _RATES = Prices(PRICES)
 
 WINDOW_S = 7 * 86400
@@ -270,7 +273,8 @@ def read_codex_sessions(root, since):
                     continue
                 if e.get("type") == "session_meta":
                     sid = p.get("id") if isinstance(p.get("id"), str) else sid
-                    sub = "subagent" in str(p.get("source") or "").lower()
+                    src = p.get("source")   # an object ("subagent": {...}) in real rollouts, a string in old ones
+                    sub = "subagent" in src if isinstance(src, dict) else "subagent" in str(src or "").lower()
                 elif e.get("type") == "turn_context" and isinstance(p.get("model"), str):
                     model = p["model"]
                 elif e.get("type") == "token_usage_record" and isinstance(p.get("usage"), dict):
@@ -647,8 +651,8 @@ def cache_tip(agents, calls, held=(), asked=()):
                    "still writes what it added; a held call nobody answered could fail at once and wait not at all "
                    "(its waiting time is counted in tip 3).",
                    f"Would have saved: {_money(now)} - {_money(alt)} = {_about(now - alt)}, an estimate."] if fix else [])
-               + (["Steps without a recorded cache lifetime (signed records hold none) are left out: "
-                   f"{unknown}."] if unknown else []) + noprice,
+               + (["Steps without a recorded cache lifetime (signed records and Codex's session files hold none) are "
+                   f"left out: {unknown}."] if unknown else []) + noprice,
                fix={"text": "Add a line to the agent's instructions (AGENTS.md or CLAUDE.md):",
                     "copy": f"- Keep each blocking call under {_dur(short - MARGIN, down=True)}: the prompt cache here lasted "
                             f"{seen}, counted from the start of the request that last read or wrote it, and the step "
@@ -773,6 +777,7 @@ def build(rows, root=None, now=None, since=None, codex=None):
     every = list(signed.values()) + list(agents.values()) + list(codex_agents.values())
     return {"window": [since, now], "prices": PRICES["as_of"],
             "root": _shown(root) if root and os.path.isdir(root) else None,
+            "codex_root": _shown(codex) if codex and os.path.isdir(codex) else None,
             "sources": {"signed": {"agents": len(signed), "steps": sum(len(a["steps"]) for a in signed.values()),
                                    "also": also, "records": len(times),
                                    "span": [min(times), max(times)] if times else None,
@@ -853,14 +858,17 @@ def _wrap(text, indent="  "):
 def text(t, store, failed=0, root=None):
     """`tracekit tips` in plain words: what it read from `store` (its name) and the transcripts (looked for in `root`),
     then each tip's title, evidence, estimated saving and fix, or why it has none; one line when nothing was read."""
-    s, tr = t["sources"]["signed"], t["sources"]["transcripts"]
+    s, tr, cx = t["sources"]["signed"], t["sources"]["transcripts"], t["sources"]["codex"]
     since = time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(t["window"][0]))
     read = f"{store}: {s['records']:,} signed records" + (
         f", {failed} run{'s' * (failed != 1)} left out: {'they' if failed != 1 else 'it'} didn't verify (tracekit view "
         "shows why)" if failed else "") + (
         f"; Claude Code's transcripts in {t['root']}: {tr['files']:,} file{'s' * (tr['files'] != 1)}" if t["root"] else
-        f"; no Claude Code transcripts in {_shown(root)}" if root else "")
-    if not (s["records"] or tr["steps"]):
+        f"; no Claude Code transcripts in {_shown(root)}" if root else "") + (
+        f"; Codex CLI's sessions in {t['codex_root']}: {cx['files']:,} file{'s' * (cx['files'] != 1)}, "
+        f"{cx['steps']:,} step{'s' * (cx['steps'] != 1)}"
+        + (f", {cx['unreadable']} unreadable" if cx["unreadable"] else "") if t["codex_root"] else "")
+    if not (s["records"] or tr["steps"] or cx["steps"]):
         return _escaped(f"tracekit tips: read {read}, since {since}: nothing yet")
     out = [_wrap(f"Read {read}, read-only, since {since}. Dollars are Anthropic's and OpenAI's list prices of {t['prices']}: a "
                  "subscription bills none of them, but the same tokens fill its usage limit. An estimate, "
