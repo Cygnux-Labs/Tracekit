@@ -602,8 +602,8 @@ stayed at 36 while the pool grew to 814 (4.4%). Of the eight the 1.5.2 rule swee
 (`kubectl delete pod`, as `TK-F004`), and of the seven its review added, three (`kubectl delete -f`,
 `py -m pip install` and a `curl -T` upload); the five Docker-volume cases (`TK-A048`), the 21 AWS audit-logging reads and changes that leave detection on
 (`TK-C010`), the six lookalikes of `TK-A055` and the fifteen Kubernetes and Vault listings and look-alikes (`TK-A052`,
-`TK-A053`) strict does not hold either: 46 of 890 (5.2%). The policy merge train's benign cases add four it holds, `docker run --rm hello-world` and three shell startup-file edits: 50 of 944 (5.3%).
-All 50 are benign calls strict holds (ten more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names): 33 as a push, publish, install, apply, `docker run` or `kubectl delete` (`TK-F004`), 13 as a
+`TK-A053`) strict does not hold either: 50 of 944 (5.3%).
+All 50 are benign calls strict holds (ten more than 1.5.2's 40: 1.5.3's strict holds every install, push and network command its limits row names, and the first policy merge train's benign cases add four it holds, `docker run --rm hello-world` and three shell startup-file edits): 33 as a push, publish, install, apply, `docker run` or `kubectl delete` (`TK-F004`), 13 as a
 network command (`TK-F013`), 3 as a shell startup-file edit (`TK-F011`), and 1 draft email to a list address (`TK-M003`); `TK-F012` (any URL a call acts on) only flags in
 strict, it never holds one by itself.
 
