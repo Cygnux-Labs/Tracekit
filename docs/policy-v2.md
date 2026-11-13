@@ -757,14 +757,23 @@ secret expression as its **data argument** to an explicit `http://` or `https://
 are `.github/workflows/*`, `.github/actions/**/action.yml` or `action.yaml` (composite actions),
 `.gitlab-ci.yml`, `.circleci/config.yml`, `azure-pipelines.yml` or `azure-pipelines.yaml`, and `Jenkinsfile`
 (case-insensitive paths and Windows path forms). It checks `curl` and `wget` with `-d`, `-F`, combined short
-flags such as `-sd`, `--data*`, `--form*`, `--json` and `--post-data`;
-the argument itself must contain `$VAR`, `${VAR}`, `${env.X}`, `$(SECRET)`, `${{ secrets.X }}`,
-`${{ secrets['X'] }}` or `${{ toJSON(secrets) }}`. A secret on stdin from `echo`, `printf` or
-`printenv` (optionally piped through `base64`) is held with a `-d`/`--data*` `@-` upload, or a `curl -T -` / `curl --upload-file -` stdin upload. Credentials
+flags such as `-sd`, `--data*`, `--form*`, `--json`, `--post-data` and `--body-data`;
+the argument itself must contain `$VAR`, `${VAR}` or an expansion of it (`${VAR:-x}`, `${VAR#x}`), `${env.X}`,
+`$env:X`, `$(SECRET)`, or a GitHub expression in any case: `${{ secrets.X }}`, `${{ secrets['X'] }}`,
+`${{ env.X }}`, `${{ github.token }}` or `${{ toJSON(secrets) }}` (of `github` or `env` too). A JSON body is
+read through its escaped quotes (`"{\"t\":\"$TOKEN\"}"`) and through quotes spliced into one word
+(`'{"t":"'"$TOKEN"'"}'`). A secret on stdin from `echo`, `printf` or `cat` of a variable, or from a dump of the
+environment (`env`, `printenv`, `set`, `export`, `declare`), optionally piped through `base64` (with its options,
+`-w0`), is held with a `-d`/`--data*` `@-` upload, or a `curl -T -` / `curl --upload-file -` stdin upload. Credentials
 only in authentication options or the URL are not treated as uploaded secret data, and public `$GITHUB_SHA`
-does not count as a secret. A local-file path in `-T`/`--upload-file` or `--post-file` is not read and is not evidence
-of a secret upload. Only `curl -T -` / `curl --upload-file -` with a recognized secret on stdin is held. It sees commands
-later in a block and after `;`/`&&`, `sudo`, `env A=1` and
-absolute program paths. The 128-character spans prevent a pattern from reaching into another command.
+(or `${GITHUB_SHA…}`) does not count as a secret unless the written text names `GITHUB_SHA` another way
+(`GITHUB_SHA=$TOKEN`, an `env:` key, a comment). A local-file path in `-T`/`--upload-file` or `--post-file` is not
+read and is not evidence of a secret upload. Only `curl -T -` / `curl --upload-file -` with a recognized secret on
+stdin is held. It sees commands later in a block; after `;`, `&`, `&&`, `|` and `||`; after the keys `run:`,
+`script:`, `before_script:`, `after_script:`, `command:`, `bash:`, `pwsh:` and `powershell:` and Jenkins'
+`sh`, `bat` and `powershell` steps (`'''` and `"""` strings too); behind `sudo`, `doas`, `env`, `time`, `nohup`,
+`command`, `exec`, `builtin`, `nice` and `timeout` with their options and numbers, assignments, `if`, `then`,
+`else`, `elif`, `do`, `while`, `until`, `(`, `{`, `!` and `X=$(`; and absolute program paths. The 128-character
+spans prevent a pattern from reaching into another command.
 It does not parse shell/YAML, expand variables, interpret scripts, or read generated workflows; see
 [limitations](limits.md). It does not claim to detect general `nc` exfiltration.
