@@ -136,6 +136,7 @@ class Compile(unittest.TestCase):
 
     def test_oversize_is_ask_or_deny_and_inherited(self):
         self.assertIn("oversize must be ask or deny", "\n".join(self.errors("oversize: flag\n")))
+        self.assertNotIn("oversize must be", "\n".join(self.errors("oversize: deny\n")))
         self.write("base.yaml", "oversize: ask\ntools:\n  Bash: shell\n")
         self.assertEqual(pc.build(self.write("p.yaml", "extends: base.yaml\n"))[0]["oversize"], "ask")
         # a policy that extends the laptop default's ask sets deny back: TK-OVERSIZE takes its rule's section again
@@ -143,6 +144,17 @@ class Compile(unittest.TestCase):
                                                      "deny:\n  - {id: R, class: shell, pattern: x}\n"))
         self.assertEqual(errors, [])
         self.assertEqual(Engine(pol, "regex").decide("Bash", {"command": "x" * (MAX_SUBJECT + 1)})["verdict"], "deny")
+
+    def test_oversize_deny_on_a_pack_extending_dev_denies_a_large_write(self):
+        dev_path = os.path.join(PACKS, "dev.yaml")
+        big = {"file_path": "/repo/big.py", "content": "x = 1\n" * 18000}   # 108 KB
+        held = Engine(pc.build(dev_path)[0], "regex").decide("Write", big)
+        self.assertEqual((held["verdict"], held["rule_ids"]), ("ask", ["TK-OVERSIZE"]))
+        shutil.copytree(PACKS, os.path.join(self.d, "packs"))   # a relative extends must stay on one drive
+        child, errs = pc.build(self.write("c.yaml", "extends: packs/dev.yaml\noversize: deny\n"))
+        self.assertEqual(errs, [])
+        d = Engine(child, "regex").decide("Write", big)
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
 
     def test_on_parse_error_is_ask_or_deny_and_inherited(self):
         self.assertIn("on_parse_error must be ask or deny", "\n".join(self.errors("on_parse_error: flag\n")))

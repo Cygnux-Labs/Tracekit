@@ -245,14 +245,16 @@ def _matches(r, tool, ti):
 
 def evaluate(pol, tool, ti, cwd=None):
     """Return {'decision', 'rule_ids', 'reasons', 'flags'}; decision in allow|deny|ask|flag.
-    Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's) is decided on each
-    one as its file_path: a rule that matches any of them applies."""
+    Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's), commands (a `commands`
+    list, as Cline's run_commands, each run in its own shell) or URLs (`urls`) is decided on each one as its file_path,
+    command or url: a rule that matches any of them applies."""
     if not isinstance(ti, dict):
         ti = {} if ti is None else {"value": ti}
-    paths = ti.get("paths") if FIELD_FOR_TOOL.get(tool) == "file_path" else None
-    calls = [ti] + [dict(ti, file_path=p) for p in paths] if isinstance(paths, list) else [ti]
+    field = FIELD_FOR_TOOL.get(tool)
+    each = ti.get({"file_path": "paths", "command": "commands", "url": "urls"}.get(field))
+    calls = [ti] + [{**ti, field: x} for x in each] if isinstance(each, list) else [ti]
     # typed input is also decided as the line a shell would read it into (agent_hooks.typed_line)
-    if FIELD_FOR_TOOL.get(tool) == "command" and isinstance(ti.get("typed_line"), str):
+    if field == "command" and isinstance(ti.get("typed_line"), str):
         calls.append(dict(ti, command=ti["typed_line"]))
     # Claude Code's Monitor runs its command in the shell Bash uses, and PowerShell is its shell on Windows: a rule
     # applies under either name, so one written for Bash and one for the tool itself both match
