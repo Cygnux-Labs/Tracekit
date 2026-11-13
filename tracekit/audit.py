@@ -83,9 +83,15 @@ def _not_regular(path: str) -> str | None:
             "a directory" if stat.S_ISDIR(mode) else "not a regular file")
 
 
-def _iter_transcripts(root: str, unreadable: list):
-    """Yield (path, session) for each .jsonl under root, at any depth (a session's subagent files too). Follows no
-    symlink; a folder it can't list goes into `unreadable`."""
+def gemini_root():
+    """Gemini CLI's sessions' folder: .gemini/tmp in $GEMINI_CLI_HOME when set (Gemini CLI's own setting for another
+    home), else in ~ (gemini-cli 0.68: utils/paths.ts homedir, config/storage.ts getGlobalTempDir)."""
+    return os.path.join(os.environ.get("GEMINI_CLI_HOME") or os.path.expanduser("~"), ".gemini", "tmp")
+
+
+def _iter_transcripts(root: str, unreadable: list, suffixes: tuple = (".jsonl",)):
+    """Yield (path, Claude Code session) for each file under root ending in one of `suffixes`, at any depth (a
+    session's subagent files too). Follows no symlink; a folder it can't list goes into `unreadable`."""
     root = os.path.realpath(root)   # a root reached through a symlink (macOS /var, a linked ~/.claude) is still the root
 
     def failed(e):
@@ -95,7 +101,7 @@ def _iter_transcripts(root: str, unreadable: list):
         dirnames[:] = sorted(d for d in dirnames if not os.path.islink(os.path.join(dirpath, d)))
         for name in sorted(filenames):
             path = os.path.join(dirpath, name)
-            if not name.endswith(".jsonl") or os.path.islink(path):
+            if not name.endswith(suffixes) or os.path.islink(path):
                 continue
             try:   # stay inside root: a Windows directory junction is no symlink to islink, and the walk enters it
                 if os.path.commonpath([root, os.path.realpath(path)]) != root:
@@ -150,6 +156,112 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
             unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
             f.close()
+
+
+def _gemini_calls(entry: dict):
+    """(time, call) for each tool call a Gemini CLI session record holds: a message line's own, those of a $set's full
+    history (an older checkpoint) or of a pre-v0.39 session's messages. None for a record whose messages or tool calls
+    aren't the lists and objects Gemini CLI writes."""
+    holder = entry["$set"] if isinstance(entry.get("$set"), dict) else entry
+    held = holder.get("messages", [entry])
+    if not isinstance(held, list):
+        yield None
+        return
+    for msg in held:
+        if not isinstance(msg, dict):
+            yield None
+        elif msg.get("type") == "gemini" and "toolCalls" in msg:
+            if not isinstance(msg["toolCalls"], list):
+                yield None
+                continue
+            for c in msg["toolCalls"]:
+                yield (_entry_time(c) or _entry_time(msg), c) if isinstance(c, dict) else None
+
+
+def _gemini_layout(real: str):
+    """(folder to walk, what stands above it in <project>/chats/...) for a ROOT that is Gemini CLI's tmp folder, the
+    .gemini folder or a home that holds it, one project's folder or its chats folder; a ValueError for any other."""
+    def has(*p):
+        return os.path.isdir(os.path.join(real, *p))
+    if has(".gemini", "tmp"):
+        return os.path.join(real, ".gemini", "tmp"), []
+    if os.path.basename(real) == ".gemini" and has("tmp"):
+        return os.path.join(real, "tmp"), []
+    if has("chats") and not has("chats", "chats"):   # a project: a project named chats holds one, a tmp holds that
+        return real, [""]
+    if os.path.basename(real) == "chats" and not has("chats"):
+        return real, ["", "chats"]
+    try:
+        if os.path.basename(real) == "tmp" or any(os.path.isdir(os.path.join(real, d, "chats"))
+                                                   for d in os.listdir(real)):
+            return real, []
+    except OSError:   # a folder it can't list: _iter_transcripts reports it
+        return real, []
+    raise ValueError(f"{real} is not a Gemini CLI folder: give its tmp folder (~/.gemini/tmp, or .gemini/tmp in "
+                     "$GEMINI_CLI_HOME), a project's folder in it, or that project's chats folder")
+
+
+def _gemini(root: str, since_ts: float, unreadable: list):
+    """Gemini CLI's reader: (time, session, tool, args) for each tool call in the session files under root, its tmp
+    folder, a project's or its chats folder (<project>/chats/session-*.jsonl, a subagent's chats/<parent session id>/<id>.jsonl, and the session-*.json
+    and <id>.json written before v0.39), None for a record that isn't what Gemini CLI writes. A message is written
+    again on each update: a call counts once in its session, by its id, as its last copy has it, and stays counted
+    after a $rewindTo drops it."""
+    seen: set[bytes] = set()
+    folder, above = _gemini_layout(os.path.realpath(root))
+    for path, _ in _iter_transcripts(folder, unreadable, (".jsonl", ".json")):
+        parts = above + os.path.relpath(path, folder).split(os.sep)   # by depth: a project may be named chats
+        own = len(parts) == 3 and parts[1] == "chats" and parts[2].startswith("session-")
+        sub = len(parts) == 4 and parts[1] == "chats"
+        if not own and not sub:
+            continue   # the project's other files (logs.json, checkpoints, an activity log)
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        session = parts[2] if sub else None   # a subagent's counts under its parent's session
+        calls: dict = {}   # call id -> (time, tool, args), its last copy
+        try:
+            if path.endswith(".json"):
+                try:
+                    entries = [json.loads(f.read())]
+                except (ValueError, RecursionError):
+                    entries = [None]
+            else:
+                entries = (e for _n, e in transcript_entries(f, final=True))
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    yield None
+                    continue
+                if session is None and isinstance(entry.get("sessionId"), str):
+                    session = entry["sessionId"]
+                for item in _gemini_calls(entry):
+                    if item is None:
+                        yield None
+                        continue
+                    at, c = item
+                    cid = c.get("id") if isinstance(c.get("id"), str) else (None, len(calls))   # no id: its own call
+                    calls[cid] = (at, c.get("name") if isinstance(c.get("name"), str) else "",
+                                  c.get("args") if isinstance(c.get("args"), dict) else {})
+        except OSError as e:
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+        finally:
+            f.close()
+        session = session or parts[2].rsplit(".", 1)[0]
+        for cid, (at, tool, args) in calls.items():
+            if at is not None and at.timestamp() < since_ts:
+                continue
+            try:   # the same id and call in another file of the session (a resumed pre-v0.39 session's .jsonl
+                # repeats its .json's): a copy
+                key = isinstance(cid, str) and hashlib.sha256(json.dumps(
+                    [session, cid, tool, args], sort_keys=True, default=str).encode()).digest()
+            except (RecursionError, ValueError):   # arguments the encoder can't take: counted
+                key = None
+            if key in seen:
+                continue
+            if key:
+                seen.add(key)
+            yield at, session, tool, args
 
 
 def cursor_root():
@@ -278,7 +390,8 @@ READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set,
            "cursor": (cursor_root, "~/.cursor/projects", _cursor),
            "cline": (cline_roots, "$CLINE_SESSION_DATA_DIR, else $CLINE_DATA_DIR/sessions, else "
                      "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline); and before 4.0, saoudrizwan.claude-dev/tasks "
-                     "in VS Code's global storage", _cline)}
+                     "in VS Code's global storage", _cline),
+           "gemini": (gemini_root, "$GEMINI_CLI_HOME/.gemini/tmp when it is set, else ~/.gemini/tmp", _gemini)}
 
 
 def _defaults(default) -> list[str]:
@@ -581,7 +694,7 @@ def share(report: dict) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code, Cursor and Cline), or in a calls file any agent's log can be "
+                                 "transcripts (Claude Code, Cursor, Cline and Gemini CLI), or in a calls file any agent's log can be "
                                  "turned into, through the policy and count what it would have held or denied. "
                                  "Read-only, local, and a replay against today's policy, not a signed record.")
     ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or --agent's reader's (default: "
