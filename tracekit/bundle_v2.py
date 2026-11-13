@@ -83,9 +83,10 @@ VERSIONS = {
     # assurance dev, which a verifier before 1.6.0 can't see
     "1.6.0": {"types": [], "fields": {}, "values": {"ext": {"self_approved": [True]}},
               "ext": ["box", "grant", "intent.grant", "intent.revoked"]},
-    # approval.consumed names the decision the signer used the approval for, so a view folds exactly it; a 1.6
-    # verifier can't read the field and must say the bundle needs 1.7
-    "1.7.0": {"types": [], "fields": {"approval.consumed": ["decision_id"]}, "values": {}},
+    # approval.consumed names the decision the signer used the approval for in the non-critical slot (ext), so a
+    # 1.6 verifier still verifies the bundle and says it did not interpret the name; the owner places this row in
+    # the release it ships in
+    "1.8.0": {"types": [], "fields": {}, "values": {}, "ext": ["approval.decision"]},
 }
 # the version that added the non-critical slot: an `ext` field on any record, and the `ext` record type. A record that
 # uses it needs that version (an older one fails its schema); a verifier from it on checks the record's signature, chain

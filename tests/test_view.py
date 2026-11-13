@@ -463,20 +463,6 @@ class Translate(unittest.TestCase):
         self.assertEqual(self.feed(*self.HELD, v2rec(4, "ext", {"name": "pcm.grant", "approval_id": "apr-1"}))[-1]
                          ["v2"]["tool_use_id"], "c1")
 
-    def test_a_later_calls_consume_names_its_decision(self):
-        """Format 1.7: a later call of the same run, tool and arguments names the decision its consume ran under, so
-        another decision of its id and attempt can't take its place."""
-        recs = [*self.HELD, self.approved(4),
-                v2rec(5, "policy.decision", {"tool_use_id": "c2", "tool": "Bash", "decision": "ask",
-                                             "rule_ids": ["TK-A032"], "policy_hash": SERVER_HASH,
-                                             "decision_id": "d2"}, tool_call_id="c2"),
-                v2rec(6, "approval.consumed", {"approval_id": "apr-1", "decision_id": "d2"}, tool_call_id="c2"),
-                v2rec(7, "tool.result", {"tool_use_id": "c2", "ok": True, "decision_id": "d2"}, tool_call_id="c2"),
-                v2rec(8, "run.final", {"head_run_seq": 8})]
-        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
-        self.assertEqual((dict(rv["permissions"]), dict(rv["holds"]), rv["retries"]),
-                         ({"approved · ran": 1}, {"approved · ran": 1}, 1))
-
     def test_a_retry_with_the_held_calls_own_id_is_that_call_not_another(self):
         """LangGraph's retry sends the held call again with its id, and its consume names no `held`: the review counted
         it as a fourth call of three and a second decision of the held call."""
@@ -491,14 +477,15 @@ class Translate(unittest.TestCase):
                          ({"ask": 1}, 1, {"approved · ran": 1}, {"approved · ran": 1}))
 
     def test_a_consume_that_names_its_decision_folds_exactly_that_one(self):
-        """Format 1.7: the consume names the decision it ran under, so the other ask of the same id and attempt stays a
-        call of its own (not answered), rather than the five-condition rule folding the last ask."""
+        """Format 1.8's ext.approval.decision: the consume names its decision, so the other ask of the same id and
+        attempt stays a call of its own (not answered), rather than the five-condition rule folding the last ask."""
         ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
                "policy_hash": SERVER_HASH}
         recs = [*self.HELD, self.approved(4),
                 v2rec(5, "policy.decision", ask, tool_call_id="c1"),
                 v2rec(6, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1"),
-                v2rec(7, "approval.consumed", {"approval_id": "apr-1", "decision_id": "d2"}, tool_call_id="c1"),
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d2"}),
                 v2rec(8, "tool.result", {"tool_use_id": "c1", "ok": True, "decision_id": "d2"}, tool_call_id="c1"),
                 v2rec(9, "run.final", {"head_run_seq": 9})]
         rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
@@ -507,7 +494,7 @@ class Translate(unittest.TestCase):
                           {"approved · ran": 1, "not answered": 1}))
 
     def test_the_page_folds_the_decision_a_consume_names(self):
-        """The page's foldsOf reads the same field: the named retry folds into the held call, the unnamed ask stays."""
+        """The page's foldsOf reads the same ext name: the named retry folds into the held call, the unnamed ask stays."""
         ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
                "policy_hash": SERVER_HASH}
         recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}),
@@ -517,7 +504,8 @@ class Translate(unittest.TestCase):
                 v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve"}),
                 v2rec(5, "policy.decision", ask, tool_call_id="c1"),
                 v2rec(6, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1"),
-                v2rec(7, "approval.consumed", {"approval_id": "apr-1", "decision_id": "d2"}, tool_call_id="c1")]
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d2"})]
         out = json.loads(page_js(["foldsOf", "FOLDS", "callKey"], f"""
             const rows = {json.dumps(self.feed(*recs))};
             foldsOf(rows, FOLDS);

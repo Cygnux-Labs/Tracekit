@@ -36,7 +36,7 @@ export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./
 export const VERSION = "1.6.0";
 /** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
  * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
-export const READS = "1.7.0";
+export const READS = "1.8.0";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
@@ -1071,12 +1071,50 @@ export async function checkGrants(rep: Report, events: J[], floats: Floats) {
 
 type ExtCheck = (rep: Report, events: J[], floats: Floats) => void | Promise<void>;
 /**
+ * ext.approval.decision (1.8.0): each approval.consumed names a policy.decision of its own run, tool_call_id and attempt
+ * that comes before it. The signer writes the decision it checked the approval's use against; the check is a warning,
+ * not a failure, when the bundle doesn't hold it (an ext name is non-critical).
+ */
+export function checkApprovalDecision(rep: Report, events: J[]): void {
+  const decisions = new Map<string, J[]>(), at = (v: J): number => typeof v === "number" ? v : 0;
+  const key = (e: J, id: string) => JSON.stringify([get(e, "run_id"), id]);
+  for (const e of events) {
+    const d = get(e, "data");
+    if (get(e, "type") === "policy.decision" && isObj(d) && typeof d.decision_id === "string")
+      decisions.set(key(e, d.decision_id), [...(decisions.get(key(e, d.decision_id)) ?? []), e]);
+  }
+  let n = 0;
+  const bad: J[] = [];
+  for (const e of events) {
+    if (!extNames(e).includes("approval.decision")) continue;
+    n++;
+    if (get(e, "type") !== "approval.consumed") {
+      bad.push(e);
+      continue;
+    }
+    const ext = isObj(get(e, "ext")) ? e.ext : {};
+    const did = ext["approval.decision"];
+    const before = typeof did === "string" ? (decisions.get(key(e, did)) ?? [])
+      .filter((d) => at(get(d, "run_seq")) < at(get(e, "run_seq"))) : [];
+    if (typeof did !== "string" || !before.some((d) =>
+      (get(d, "tool_call_id") ?? get(get(d, "data"), "tool_use_id")) === get(e, "tool_call_id")
+      && at(get(d, "attempt")) === at(get(e, "attempt")))) bad.push(e);
+  }
+  if (n) rep.check("approval decision", bad.length === 0,
+    bad.length === 0 ? `${n} record(s) name a policy.decision of their run, call id and attempt before them`
+      : `the record(s) at seq ${bad.slice(0, 5).map((e) => str(get(e, "seq"))).join(", ")} carry `
+        + "ext.approval.decision without naming a policy.decision of their run, call id and attempt before it",
+    [], bad.length > 0);
+}
+
+/**
  * The ext names this verifier interprets (the VERSIONS rows' "ext" in tracekit/bundle_v2.py): name -> its check, whose
  * lines are its own: every other line of the report reads the same without them (docs/format-v2.md §9). Names that
  * share a check are read together, once: a grant, its revocation and the calls it released.
  */
 const EXT_CHECKS = new Map<string, ExtCheck>([["amended", checkAmended], ["openshell.policy", checkOpenshellPolicy],
-  ["box", checkBox], ["intent.grant", checkGrants], ["intent.revoked", checkGrants], ["grant", checkGrants]]);
+  ["box", checkBox], ["approval.decision", checkApprovalDecision], ["intent.grant", checkGrants],
+  ["intent.revoked", checkGrants], ["grant", checkGrants]]);
 const MAX_UNREAD = 20;   // `not interpreted` lines, one per ext name; the rest on one line
 /** A run's problems past which its later records go unchecked: forged records cost a verifier little. */
 const RUN_PROBLEMS = 20;
@@ -1156,8 +1194,10 @@ export async function checkExt(rep: Report, events: J[], full: J, floats: Floats
     ? `; tracekit >= ${full} checks it` : "";
   let shown = 0, more = 0;
   const done = new Set<ExtCheck>();
-  // records a check reads beside its names' own: the decisions TK-GRANT names, ext.grant or not
-  const also = new Map<ExtCheck, J[]>([[checkGrants, events.filter(tkGrant)]]);
+  // records a check reads beside its names' own: the decisions TK-GRANT names, ext.grant or not; the decisions
+  // ext.approval.decision names
+  const also = new Map<ExtCheck, J[]>([[checkGrants, events.filter(tkGrant)],
+    [checkApprovalDecision, events.filter((e) => get(e, "type") === "policy.decision")]]);
   const run = async (f: ExtCheck) => {   // once, over the records of every name it reads and what it reads beside them
     done.add(f);
     await f(rep, [...new Set([...[...carry].filter(([k]) => EXT_CHECKS.get(k) === f).flatMap(([, v]) => v),

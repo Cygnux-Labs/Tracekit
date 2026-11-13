@@ -3768,15 +3768,14 @@ class SignerService:
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
                 # under this call's tool_call_id; the approval.request it names has the earlier attempt's. The decision
                 # the use was checked against: the current call when its arguments are the approved ones (a retry), else
-                # the decision the approval was asked for (the call under its id whose arguments changed since). A view
-                # folds exactly it (format 1.7)
-                used = {"approval_id": aid}
-                if call and call.get("decision_id") and call.get("commitment") \
-                        and self._opens(call["commitment"], call["decision_id"], digest):
-                    used["decision_id"] = call["decision_id"]
-                elif isinstance(a.get("decision_id"), str):
-                    used["decision_id"] = a["decision_id"]
-                tx.emit(run, "approval.consumed", used, source="signer", **top)
+                # the decision the approval was asked for (the call under its id whose arguments changed since). It goes
+                # in the non-critical slot, so a verifier that doesn't interpret it still verifies the bundle (1.8.0)
+                data, ext = {"approval_id": aid}, None
+                if call and call.get("decision_id") and call.get("attempt") == attempt and self._same(call, digest):
+                    ext = {"approval.decision": call["decision_id"]}
+                elif isinstance(a.get("decision_id"), str) and a.get("attempt", 0) == attempt:
+                    ext = {"approval.decision": a["decision_id"]}
+                tx.emit(run, "approval.consumed", data, source="signer", **top, **({"ext": ext} if ext else {}))
                 rec = run.get("rec")
                 if rec is not None:   # an approved call explains what it was decided for (reconcile.explained)
                     if tcid in rec["l2"]:

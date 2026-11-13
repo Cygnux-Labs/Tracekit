@@ -3797,10 +3797,10 @@
     // a run's held calls as why/import_v2.held_calls reads them. Returns the owners: approval key -> the decision row its
     // request was for (the latest under the request's call id and attempt). Into `out`: each decision row that is a held
     // call's retry with its own id (LangGraph's resume) -> the held call's row. A consume that names its decision
-    // (decision_id, format 1.7) folds exactly that one; without it a consume names a call id and attempt, not a decision,
-    // so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it has no
-    // approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of that
-    // approval under the id does. When in doubt it is a call of its own
+    // (ext.approval.decision, format 1.8) folds exactly that one; without it a consume names a call id and attempt, not
+    // a decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it
+    // has no approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of
+    // that approval under the id does. When in doubt it is a call of its own
     function foldsOf(rows, out = new Map()) {
       const decs = new Map(), at = new Map(), owners = new Map(), mism = new Map(), cons = new Map();   // call key -> its decisions
       const named = new Map(), byId = new Map();   // an approval -> the decisions its consumes name; decision key -> its row
@@ -3820,7 +3820,7 @@
       });
       const own = new Set(owners.values());
       for (const [aid, h] of owners) {
-        if (named.has(aid)) {   // the consume names its decision (format 1.7): fold exactly it, never an ask it didn't name
+        if (named.has(aid)) {   // the consume names its decision (ext.approval.decision, format 1.8): fold exactly it
           for (const did of named.get(aid)) {
             const d = byId.get(did);
             if (d && d.v2.decision === "ask" && d.tool_name === h.tool_name && at.get(d) > at.get(h) && !own.has(d)

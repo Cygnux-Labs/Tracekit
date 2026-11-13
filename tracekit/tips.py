@@ -237,8 +237,11 @@ def held_calls(rows, since):
         # each row as the record held_calls reads: view.Translator's rows name its call, attempt and approval
         folds, owners = import_v2.held_calls([{"event": {
             "type": r["v2"]["type"], "run_seq": r["v2"]["run_seq"], "attempt": r["v2"].get("attempt"),
+            "ext": ({"approval.decision": r["v2"]["decision_id"]}
+                    if r["v2"].get("type") == "approval.consumed" and r["v2"].get("decision_id") else {}),
             "data": {"tool_use_id": r["v2"].get("tool_use_id"), "tool": r.get("tool_name"),
-                     "decision": r["v2"].get("decision"), "approval_id": r["v2"].get("approval_id")}}} for r in recs])
+                     "decision": r["v2"].get("decision"), "decision_id": r["v2"].get("decision_id"),
+                     "approval_id": r["v2"].get("approval_id")}}} for r in recs])
         latest, answered = {}, {}   # (call id, attempt) and call id -> its latest decision; a held call -> its answer
         for r in recs:
             v = r["v2"]

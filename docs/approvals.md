@@ -94,10 +94,10 @@ it, the agent sends the same call again, under a new tool call id, and that call
    (`a person rejected this exact call (apr-…, by uid:501); ask them before trying again`), so the agent asks before
    it tries again; the new approval lets a person change their mind.
 3. Its `approval_consume` consumes that approval, once: the signer signs `approval.consumed` with the approval's id and,
-   from format 1.7, the `decision_id` it was checked against, under the retry's `tool_call_id`, and the approval's
-   `approval.request` and `approval` records name the blocked attempt's. A T2 approval is consumed with the
-   `approval_id_hint` that `approval_request` returned, and the consume returns the signer's copy of the arguments as
-   for any T2 call.
+   from format 1.8, `ext.approval.decision`, the `policy.decision` it checked the use against, under the retry's
+   `tool_call_id`; the approval's `approval.request` and `approval` records name the blocked attempt's. A T2 approval is
+   consumed with the `approval_id_hint` that `approval_request` returned, and the consume returns the signer's copy of
+   the arguments as for any T2 call.
 4. The retry completes as an approved call (no `executed_against_policy` gap), once: a second result on the same
    approval, under another decision of the same call, is signed with that gap. If it never completes, the retry, not
    the blocked attempt, is the run's `decided_not_completed` gap. The blocked attempt never ran under the approval: if
@@ -106,8 +106,8 @@ it, the agent sends the same call again, under a new tool call id, and that call
 
 Sent again before anyone answered, the call asks on its own, with a new approval each time; approving any of them lets
 the next retry run. After a retry ran, the same call is held again: one approval runs one call. The records are the
-ones every approval writes. From format 1.7 the consume also names the decision it ran under, so a bundle holding that
-field needs a 1.7 verifier, and one without it verifies as before.
+ones every approval writes. Every consume from this signer also carries `ext.approval.decision`, the decision it ran
+under; an older verifier still verifies the bundle and warns that it did not interpret the name.
 A held or quarantined run follows [its own rules](incidents.md).
 
 In Claude Code a Bash call's arguments include a free-text `description`, which the model rewords on almost every

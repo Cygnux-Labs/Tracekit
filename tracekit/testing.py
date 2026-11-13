@@ -80,14 +80,14 @@ class FakeSigner:
         if req["client_seq"] <= run["streams"].get(req["stream"], -1):
             raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")
 
-    def _append(self, run, typ, data, req=None):
+    def _append(self, run, typ, data, req=None, ext=None):
         if req is not None:   # an event call: record skipped client_seq values as a gap, then advance
             last = run["streams"].get(req["stream"], -1)
             if req["client_seq"] > last + 1:
                 self._append(run, "capture.gap", {"kind": "client_counter_gap", "stream": req["stream"],
                                                   "from": last + 1, "to": req["client_seq"] - 1})
             run["streams"][req["stream"]] = req["client_seq"]
-        ev = {"run_seq": len(run["events"]), "type": typ, "data": data}
+        ev = {"run_seq": len(run["events"]), "type": typ, "data": data, **({"ext": ext} if ext else {})}
         ev["event_hash"] = event_hash(ev)
         run["events"].append(ev)
         return ev["run_seq"]
@@ -287,12 +287,13 @@ class FakeSigner:
             else:
                 a["state"], a["used_by"] = "consumed", (req["tool_call_id"], attempt)
                 self._index[k] = aid   # the call that ran under it, an earlier attempt's or its own
-                used = {"approval_id": aid}
-                if call and call.get("decision_id") and call.get("args_digest") == digest:
-                    used["decision_id"] = call["decision_id"]
-                elif self._approval_decision.get(aid):   # the current call's arguments changed: its own decision ran
-                    used["decision_id"] = self._approval_decision[aid]
-                self._append(run, "approval.consumed", used)
+                ext = None
+                if call and call.get("decision_id") and call.get("attempt") == attempt \
+                        and call.get("args_digest") == digest:
+                    ext = {"approval.decision": call["decision_id"]}
+                elif self._approval_decision.get(aid) and a["attempt"] == attempt:
+                    ext = {"approval.decision": self._approval_decision[aid]}
+                self._append(run, "approval.consumed", {"approval_id": aid}, ext=ext)
                 out = {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
                 if a["executor"] == "t2":   # the real arguments, never the approver's redacted copy
                     x = a["exec_args"]
