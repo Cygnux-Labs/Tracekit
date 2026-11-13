@@ -272,3 +272,16 @@
 {"tool": "Bash", "args": {"command": "env | grep PATH"}, "expect": "allow", "note": "environment read locally"}
 {"tool": "Bash", "args": {"command": "env | sort > env.txt"}, "expect": "allow", "note": "environment written locally"}
 {"tool": "Bash", "args": {"command": "printenv HOME | tee home.txt"}, "expect": "allow", "note": "one variable written locally"}
+{"tool": "Bash", "args": {"command": "rm -rf ./var/cache"}, "expect": "allow", "note": "a project folder named var (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf /var/tmp/build-123"}, "expect": "allow", "note": "a temporary folder inside /var (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf /tmp/x"}, "expect": "allow", "note": "a temporary folder (#749)"}
+{"tool": "Bash", "args": {"command": "chmod -R 755 ./dist"}, "expect": "allow", "note": "a recursive mode change in the project (#749)"}
+{"tool": "Bash", "args": {"command": "chown -R \"$USER\" ./node_modules"}, "expect": "allow", "note": "taking over the project's dependencies (#749)"}
+{"tool": "Bash", "args": {"command": "ls -la /etc"}, "expect": "allow", "note": "listing a system folder (#749)"}
+{"tool": "Bash", "args": {"command": "rm -rf ./build"}, "expect": "allow", "note": "deleting the project's build output (#749)"}
+{"tool": "Bash", "args": {"command": "chmod -R u+w ."}, "expect": "allow", "note": "making the project writable (#749)"}
+{"tool": "Bash", "args": {"command": "find /var -name '*.log' -delete"}, "expect": "allow", "note": "deleting logs found by name under /var (#749)"}
+{"tool": "Bash", "args": {"command": "git commit -m \"Deny rm -rf /etc\""}, "expect": "allow", "note": "a commit message naming a system folder delete (#749)"}
+{"tool": "Bash", "args": {"command": "grep -rn \"rm -rf /usr\" docs/"}, "expect": "allow", "note": "searching for a system folder delete (#749)"}
+{"tool": "Bash", "args": {"command": "echo \"never run rm -rf /var\""}, "expect": "allow", "note": "printing a system folder delete (#749)"}
+{"tool": "Bash", "args": {"command": "gh issue comment 1 --body \"rm -rf /etc is denied now\""}, "expect": "allow", "note": "a comment naming a system folder delete (#749)"}
