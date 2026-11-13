@@ -342,8 +342,8 @@ class Engine:
             return any(self._match(rx, t, whole, deadline) for t in texts)
 
         def hit(entry, parsed, memo, oversize):
-            """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects before one
-            over MAX_SUBJECT), else None; TimeoutError past the deadline."""
+            """The id a rule gives the call (its own, or TK-OVERSIZE when it matches none of the subjects it can read
+            and one is over MAX_SUBJECT), else None; TimeoutError past the deadline."""
             sec, rule, tool_re, pat, unless, lits, req, tool_lits, key, ids, parts = entry
             if tool_re is not None and not self._named(tool_re, tool_lits, name, low_name, deadline):
                 return None
@@ -433,8 +433,12 @@ class Engine:
         if (spent or work[0] > shell.MAX_WORK) and "TK-SHELL-PARSE" not in hits[on_parse_error]:
             hits[on_parse_error].append("TK-SHELL-PARSE")
             cause = cause or "budget"
-        if self.policy.get("oversize") == "ask" and "TK-OVERSIZE" in hits["deny"]:   # what it can't read waits for a
-            hits["deny"] = [i for i in hits["deny"] if i != "TK-OVERSIZE"]          # person (the dev pack), not a deny
+        # a call over MAX_SUBJECT (its arguments as JSON), which the policy can't read, waits for a person (the dev pack),
+        # not a deny; a smaller one whose reading makes a subject longer (a variable expanded several times, more URLs
+        # than are read one by one) stays a deny, as the agent chose to make it so
+        if self.policy.get("oversize") == "ask" and "TK-OVERSIZE" in hits["deny"] and \
+                len(_text(canonical(args)).encode()) > MAX_SUBJECT:
+            hits["deny"] = [i for i in hits["deny"] if i != "TK-OVERSIZE"]
             hits["ask"].append("TK-OVERSIZE")
         verdict = next((sec for sec in SECTIONS if hits[sec]), "allow")
         out = {"verdict": verdict, "rule_ids": list(dict.fromkeys(hits["deny"] + hits["ask"] + hits["flag"])),
@@ -998,12 +1002,13 @@ def _sends(command):
 
 def _environment_sent(parsed):
     """`SENT:<printer> <sender>` for each command that prints the whole environment (_environment_dump) into one that
-    sends it off the machine (_sends): a later stage of its pipeline, a sender in a block or subshell there or in a
-    process substitution a later stage writes into (`env | (curl …)`, `env | tee >(curl …)`), or that sender's own
-    words, herestring or heredoc (a substitution, process substitution, block or subshell whose output reaches it: the
-    parse's `reaches`; `$(env)` in a heredoc), unless a stage on the way only counts or hashes it (wc, sha256sum); a
-    file it is written into, then read or sent (`env > /tmp/e; curl -T /tmp/e …`); a redirection to /dev/tcp or
-    /dev/udp on a line that prints it; and a sender that reads a process's environ file itself (`curl -d
+    sends it off the machine (_sends): a later stage of its pipeline, a sender anywhere in it (in a block, a loop or a
+    subshell there, behind a wrapper, in code a shell or eval runs, in a substitution or process substitution of it:
+    `env | (timeout 9 curl …)`, `env | { x; curl …; }`, `env | sh -c 'curl …'`, `env | tee >(curl …)`), or that
+    sender's own words, herestring or heredoc (a substitution, process substitution, block or subshell whose output
+    reaches it: the parse's `reaches`; `$(env)` in a heredoc), unless a stage on the way only counts or hashes it (wc,
+    sha256sum); a file it is written into, then read or sent (`env > /tmp/e; curl -T /tmp/e …`); a redirection to
+    /dev/tcp or /dev/udp on a line that prints it; and a sender that reads a process's environ file itself (`curl -d
     @/proc/self/environ`). parsed: shell.analyse's."""
     commands = parsed[0]
     files, dumps, more = set(), [], True
@@ -1025,11 +1030,12 @@ def _environment_sent(parsed):
     for c in commands:
         if _program(c["argv"]) in _SUMMARIES:
             summaries.setdefault(c.get("pipeline"), []).append((c.get("stage") or 0))
-    for s in senders:   # where it reads: its own stage, and a block's or a >()'s stage it is in (inside)
+    # where each sender reads: its own stage, and each stage it is inside (inside: a block, a loop, a subshell, code a
+    # shell or eval runs, a substitution or a process substitution, behind any wrapper, each reads that stage's input)
+    for s in senders:
         at_of.setdefault((s.get("pipeline"), False), {}).setdefault(_program(s["argv"]), []).append((s.get("stage") or 0))
-        if not s.get("via") or s["via"][-1] == ">()":
-            for p, k in dict.fromkeys(s.get("reaches") or ()):
-                at_of.setdefault((p, True), {}).setdefault(_program(s["argv"]), []).append(k)
+        for p, k in dict.fromkeys(s.get("reaches") or ()):
+            at_of.setdefault((p, True), {}).setdefault(_program(s["argv"]), []).append(k)
     for stages in [*summaries.values(), *(v for by in at_of.values() for v in by.values())]:
         stages.sort()
 
@@ -1420,13 +1426,13 @@ def _gh_api(argv, replaced=None):
     """A gh or hub api call's argv percent-decoded, as GitHub reads its path (`git/refs/heads%2Fmain`), and
     `PUSH:contents` when it puts or deletes a repository's file (repos/<o>/<r>/contents/…), which commits to the
     default branch unless a branch field names another. A branch the line can't tell is held too: HEAD, one gh reads
-    from a file (`-F branch=@b.txt`) or an expansion gives, and any with --input, whose body then names the branch
-    (the fields go to the query). The words are read as gh reads them: an option that takes a value takes the rest
-    of its word or the next word (`-f --method=GET` is a field), the method only from -X or --method (the last; POST
-    with a field or --input, else GET) and the branch only from a field (`-F branch={branch}` is the current one); a
-    method that is an expansion the line can't resolve counts as a write. The endpoint's route is _gh_routes' (with
-    `replaced`, the word xargs -I puts its input in place of): a write there gives `PUSH:merges` for repos/<o>/<r>/merges
-    (any form), `PUSH:merge-upstream` for a fork's merge-upstream into the default branch or one the line can't tell,
+    from a file (`-F branch=@b.txt`) or an expansion gives, two branch fields, and any with --input, whose body then
+    names the branch (the fields go to the query). The words are read as gh reads them: an option that takes a value
+    takes the rest of its word or the next word (`-f --method=GET` is a field), the method only from -X or --method (the
+    last; POST with a field or --input, else GET) and the branch only from a field (`-F branch={branch}` is the current
+    one); a method that is an expansion the line can't resolve counts as a write. The endpoint's route is _gh_routes'
+    (with `replaced`, the word xargs -I puts its input in place of): a write there gives `PUSH:merges` for
+    repos/<o>/<r>/merges (any form), `PUSH:merge-upstream` for a fork's merge-upstream into the default branch or one the line can't tell,
     and `PUSH:unknown` where the line can't tell where it goes (`"$EP"`, `repos/o/r/$P`, `git/refs/heads/$B`, a `..`
     segment, no endpoint, which xargs appends). A PUT or DELETE with an expansion before its route is unknown too
     when its body is the contents API's (message and content, or message and sha, or one the line can't read) and
@@ -1456,7 +1462,9 @@ def _gh_api(argv, replaced=None):
     fields = [(kind, *v.partition("=")[::2]) for kind, v in given if kind in ("field", "raw")]
     method = next((v for kind, v in reversed(given) if kind == "method"),
                   "POST" if kinds & {"field", "raw", "input"} else "GET")
-    magic, branch = next(((kind == "field", v) for kind, key, v in reversed(fields) if key == "branch"), (False, ""))
+    # gh sends every -f field, then every -F field: of two branch fields, the line can't tell which GitHub reads
+    branches = [(kind == "field", v) for kind, key, v in fields if key == "branch"]
+    magic, branch = branches[0] if len(branches) == 1 else (False, "")
     branch = branch.removeprefix("refs/").removeprefix("heads/")
     keys = {key for _, key, _ in fields}
     unread_body = "input" in kinds or any("$" in k or "`" in k for k in keys)
@@ -1565,8 +1573,9 @@ def _github_rest(argv):
         return []
     put, delete = (unread_method or method.upper() == m for m in ("PUT", "DELETE"))
     text = " ".join(body)
-    branch = re.findall(r'"branch"\s*:\s*"([^"]*)"|\bbranch:?=([^\s&]*)', text)
-    branch = next((a or b for a, b in reversed(branch)), "").removeprefix("refs/").removeprefix("heads/")
+    branches = re.findall(r'"branch"\s*:\s*"([^"]*)"|\bbranch:?=([^\s&]*)', text)   # (two: as gh api's, untold)
+    branch = "".join(branches[0]) if len(branches) == 1 else ""
+    branch = branch.removeprefix("refs/").removeprefix("heads/")
     named = bool(branch) and "@" not in text and not re.search(r"[$`]", text + branch) and \
         branch.casefold() not in ("main", "master", "head")
     out = []
@@ -1702,8 +1711,8 @@ def _runs(args, tool=""):
     space: `SQL;<statement>` for one a `;` ends, `SQL:<statement>` for the last; before a literal or comment that
     doesn't close, only those a `;` ends (a database may run them, then fails on the rest)."""
     out, tag = [], "MCPCMD:" if _text(tool).casefold().startswith(("mcp:", "mcp__")) else "CMD:"
-    # a call over MAX_SUBJECT isn't lexed (every pack that reads `run` denies it unread: TK-OVERSIZE): its SQL is the
-    # whole call as written, longer than MAX_SUBJECT, which every rule on it takes as TK-OVERSIZE
+    # a call over MAX_SUBJECT isn't lexed: its SQL is the whole call as written, longer than MAX_SUBJECT, which every
+    # rule on it takes as TK-OVERSIZE in its section (dev, the pack that reads `run`, holds it: `oversize: ask`)
     whole = canonical(args)
     whole = "SQL:" + whole if len(whole) > MAX_SUBJECT else None
 
@@ -3050,16 +3059,16 @@ def _strings(value):
 
 
 def _prepare(subjects, tag=0):
-    """(the subjects as text, up to the first longer than MAX_SUBJECT, past `tag` bytes a field's own tag adds
-    (_TAGGED); their casefolded forms, which the prefilters read (RE2 matching in any case folds a long s to s and the
-    Kelvin sign to k, as casefold() does and lower() doesn't); those joined by a newline; whether one was longer). A
-    rule matches the subjects before a long one and, matching none, takes TK-OVERSIZE, as one that walked them in
-    order would."""
+    """(the subjects as text, but each longer than MAX_SUBJECT, past `tag` bytes a field's own tag adds (_TAGGED);
+    their casefolded forms, which the prefilters read (RE2 matching in any case folds a long s to s and the Kelvin sign
+    to k, as casefold() does and lower() doesn't); those joined by a newline; whether one was longer). A rule matches
+    every subject it can read, wherever a long one is, and takes TK-OVERSIZE only when it matches none of them: a long
+    word never hides a later command (`X=<17 KB>; true $X$X$X$X; sudo id`) or a later path."""
     texts = []
     for s in subjects:
         b = s if s.isascii() else s.encode("utf-8", "backslashreplace")   # ASCII is its own UTF-8
         if len(b) > MAX_SUBJECT + tag:
-            break
+            continue
         texts.append(s if b is s else b.decode("utf-8"))
     lows = [t.casefold() for t in texts]
     return texts, lows, "\n".join(lows), len(texts) < len(subjects)
