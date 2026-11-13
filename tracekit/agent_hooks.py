@@ -382,6 +382,10 @@ def tool(harness, name, ti):
     if harness == "cursor":
         if name.startswith("MCP:"):
             return "mcp__cursor__" + re.sub(r"[^A-Za-z0-9_-]+", "_", name[4:]), ti
+        # Cursor doesn't document which of these its tools read: every path they name is decided, so a decoy
+        # `file_path` beside the `path` a tool reads never replaces it (read before a tool's own file is set below)
+        paths = [f for f in ti["paths"] if isinstance(f, str)] if isinstance(ti.get("paths"), list) else []
+        files = [ti[k] for k in CURSOR_PATH_ARGS if isinstance(ti.get(k), str)]
         if name == "ApplyPatch":   # every file a patch header names, in whichever argument holds it, as Cursor reads it:
             # a {"patch": ...} in JSON unwrapped, \r and \r\n read as \n, each line trimmed as JavaScript trims it
             texts, unread = list(_strings(ti)), False
@@ -389,15 +393,17 @@ def tool(harness, name, ti):
                 if s.strip(JS_SPACE).startswith("{"):
                     try:
                         j = json.loads(s.strip(JS_SPACE))
-                    except (ValueError, RecursionError):   # JSON Python can't read, though JavaScript may: the patch
-                        unread = True                       # isn't read at all, and stays an unknown tool
+                    except json.JSONDecodeError:   # not JSON: Cursor reads the text as it is
+                        continue
+                    except (ValueError, RecursionError):   # JSON Tracekit can't read: decided as an unknown tool, as
+                        unread = True                       # before
                         break
                     if isinstance(j, dict) and list(j) == ["patch"] and isinstance(j["patch"], str):
                         texts.append(j["patch"])
             lines = "\n".join(x.strip(JS_SPACE) for x in re.sub(r"\r\n?", "\n", "\n".join(texts)).split("\n"))
-            files = [f for f in (g.strip(JS_SPACE) for g in PATCH_FILE.findall(lines)) if f]
-            if files and not unread:
-                ti["paths"], ti["file_path"] = files, files[0]
+            headers = [f for f in (g.strip(JS_SPACE) for g in PATCH_FILE.findall(lines)) if f]
+            if headers and not unread:
+                ti["paths"], ti["file_path"] = list(dict.fromkeys(headers + files + paths)), headers[0]
                 return "Edit", ti
         edit = CURSOR_EDITS.get(name)
         if edit and not isinstance(ti.get(edit[1]), str):   # no file to decide it on: left unmapped (CURSOR_EDITS)
@@ -407,10 +413,6 @@ def tool(harness, name, ti):
         for k in CURSOR_PATH_ARGS[1:]:
             if k in ti and "file_path" not in ti:
                 ti["file_path"] = ti[k]
-        # Cursor doesn't document which of these its tools read: every path they name is decided, so a decoy
-        # `file_path` beside the `path` a tool reads never replaces it
-        paths = [f for f in ti["paths"] if isinstance(f, str)] if isinstance(ti.get("paths"), list) else []
-        files = [ti[k] for k in CURSOR_PATH_ARGS if isinstance(ti.get(k), str)]
         if any(f not in [ti["file_path"], *paths] for f in files):
             ti["paths"] = list(dict.fromkeys(files + paths))
         return edit[0] if edit else CURSOR_TOOLS.get(name, name), ti

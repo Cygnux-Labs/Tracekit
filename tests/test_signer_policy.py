@@ -7,7 +7,6 @@ import json
 import os
 import random
 import shutil
-import sys
 import tempfile
 import time
 import tracemalloc
@@ -2301,11 +2300,14 @@ class CodingPack(unittest.TestCase):
                      (("ApplyPatch", {"patch": patch}), ("Edit", {"file_path": path})),
                      # Cursor unwraps a JSON {"patch": ...} and reads a header from the line trimmed as JavaScript trims
                      (("ApplyPatch", {"patch": json.dumps({"patch": patch})}), ("Edit", {"file_path": path})),
-                     (("ApplyPatch", {"patch": patch.replace("*** Update", "﻿ *** Update"), "path": "/w/a.txt"}),
+                     (("ApplyPatch", {"patch": patch.replace("*** Update", "\ufeff *** Update"), "path": "/w/a.txt"}),
                       ("Edit", {"file_path": path})),
                      # and reads \r and \r\n as line ends (the review of #767: a CR-only patch was decided on no file)
                      (("ApplyPatch", {"patch": patch.replace("\n", "\r")}), ("Edit", {"file_path": path})),
                      (("ApplyPatch", patch.replace("\n", "\r\n")), ("Edit", {"file_path": path})),
+                     # text that isn't JSON is read as the patch it is, as Cursor reads it
+                     (("ApplyPatch", {"patch": patch, "note": "{"}), ("Edit", {"file_path": path})),
+                     (("ApplyPatch", {"patch": "{\n" + patch}), ("Edit", {"file_path": path})),
                      (("EditNotebook", {"target_notebook": path, **cell}), ("NotebookEdit", {"notebook_path": path})),
                      (("edit_notebook", {"target_notebook": path, **cell}), ("NotebookEdit", {"notebook_path": path})))
             for pack, engine, e in self.every_pack():
@@ -2333,12 +2335,17 @@ class CodingPack(unittest.TestCase):
                  ("write", {"contents": "x"}), ("delete_file", {"path": "/w/a.py"}),
                  ("EditNotebook", {"cell_idx": 0, "new_string": "x"}),
                  ("edit_notebook", {"target_notebook": ["/w/a.ipynb"], "file_path": "/w/a.ipynb"}))
-        # a JSON object Python's json module can't read (nesting past its recursion limit; an integer past its digit
-        # limit, where it has one) leaves the whole patch unread, whatever headers its other arguments hold
+        # a patch Tracekit can't read is decided as an unknown tool, as on main; one this Python reads is held
         inner = json.dumps("*** Begin Patch\n*** Update File: /home/u/.cursor/hooks.json\n@@\n-a\n+b\n*** End Patch\n")
         note = "*** Begin Patch\n*** Update File: /w/src/app.py\n@@\n-a\n+b\n*** End Patch\n"
-        for first in ("[" * 5000 + "]" * 5000,) + ("1" + "0" * 5000,) * hasattr(sys, "get_int_max_str_digits"):
-            forms += (("ApplyPatch", {"patch": '{"patch": ' + first + ', "patch": ' + inner + "}", "note": note}),)
+        held = ()
+        for first in ("[" * 5000 + "]" * 5000, "1" + "0" * 5000):
+            text = '{"patch": ' + first + ', "patch": ' + inner + "}"
+            try:
+                json.loads(text)
+                held += (("ApplyPatch", {"patch": text, "note": note}),)
+            except (ValueError, RecursionError):
+                forms += (("ApplyPatch", {"patch": text, "note": note}),)
         for pack, engine, e in self.every_pack():
             for name, ti in forms:
                 with self.subTest(pack=pack, engine=engine, name=name, input=ti):
@@ -2347,6 +2354,26 @@ class CodingPack(unittest.TestCase):
                     self.assertEqual(mapped, name)
                     self.assertIn("TK-UNKNOWN-TOOL", d["rule_ids"])
                     self.assertNotEqual(d["verdict"], "allow")
+            for name, ti in held:
+                with self.subTest(pack=pack, engine=engine, name=name, held=True):
+                    d = e.decide(*agent_hooks.tool("cursor", name, ti))
+                    self.assertEqual((d["verdict"] != "allow", "TK-F009" in d["rule_ids"]), (True, True))
+
+    def test_every_path_argument_of_a_cursor_edit_is_decided(self):
+        # the review of #767: a path argument beside the file a tool reads was dropped from the decision
+        from tracekit import agent_hooks
+        ok = "*** Begin Patch\n*** Update File: /w/src/ok.py\n@@\n-a\n+b\n*** End Patch\n"
+        for pack, engine, e in self.every_pack():
+            for name, ti in (("EditNotebook", {"target_notebook": "/w/src/ok.ipynb", "file_path": "/w/.env"}),
+                             ("edit_notebook", {"target_notebook": "/w/src/ok.ipynb", "path": "/w/.env"}),
+                             ("ApplyPatch", {"patch": ok, "path": "/w/.env"}),
+                             ("ApplyPatch", {"patch": ok, "target_file": "/w/.env"}),
+                             ("ApplyPatch", {"patch": ok, "paths": ["/w/.env"]}),
+                             ("StrReplace", {"path": "/w/src/ok.py", "filePath": "/w/.env", "old_string": "a",
+                                             "new_string": "b"})):
+                with self.subTest(pack=pack, engine=engine, name=name, input=ti):
+                    d = e.decide(*agent_hooks.tool("cursor", name, ti))
+                    self.assertEqual((d["verdict"], "TK-D005" in d["rule_ids"]), ("deny", True), d)
 
     def test_a_notebook_edit_naming_the_model_endpoint_is_flagged(self):
         # TK-F016 read Write, Edit and MultiEdit only (the review of #767): a notebook cell setting it was not flagged
