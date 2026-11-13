@@ -93,8 +93,12 @@ REASONS = {
                         "with no time of their own, so no call can be placed against it",
                         "read the box's events for it (`tkbox events <box>`)"),
     "apply_dir": ("the file was written back to a directory that isn't the box's workspace, or may be one under it "
-                  "(`tkbox apply --dir`), or the box run names no workspace",
+                  "(`tkbox apply --dir`)",
                   "apply to the workspace the box was started with"),
+    "no_workspace": ("the box run has no readable workspace in its tkbox.box record, so the patch's paths cannot "
+                     "be matched to the workspace",
+                     "check that Box records its workspace in tkbox.box and that the analysing identity can read "
+                     "its content; review the patch by hand (`tkbox diff`) if that record is missing"),
     "no_path": ("a write call of the agent's names no path, so any file may be its",
                 "review the box's patch (`tkbox diff`) against the agent's calls"),
     "shell_ran": ("a shell, MCP or other call that writes files without naming them ran, so any file may be its",
@@ -439,7 +443,9 @@ def check(run, out, cov, others, opts, deadline, clock):
         if p is None:
             return missing, None
         p = posixpath.normpath(p)
-        if not workspace or p == workspace or not _under(p, workspace):
+        if not workspace:
+            return "no_workspace", None
+        if p == workspace or not _under(p, workspace):
             return "apply_dir", None
         rel = posixpath.relpath(p, workspace)
         if rel in named:
@@ -544,7 +550,10 @@ def _check_task(run, out, cov, writes, workspace, bodies, missing):
             note(missing)
             continue
         p = posixpath.normpath(p)
-        if not workspace or p == workspace or not _under(p, workspace):
+        if not workspace:
+            note("no_workspace")
+            continue
+        if p == workspace or not _under(p, workspace):
             note("apply_dir")
             continue
         rel = posixpath.relpath(p, workspace)
