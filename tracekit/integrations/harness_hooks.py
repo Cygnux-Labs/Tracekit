@@ -269,6 +269,8 @@ def entry(harness=None, event=None):
         return 2
     if harness == "cline":
         agent_hooks.cline_cap_wait()
+        stdout = agent_hooks.ClineAnswer(event)   # before reading stdin: the whole hook is bounded
+        return run(harness, agent_hooks.stdin_text(), stdout=stdout, event=event)
     return run(harness, agent_hooks.stdin_text(), event=event)
 
 

@@ -212,9 +212,12 @@ def redact(obj, dotenv=False, _depth=0):
 # Tool-input fields recorded in clear (after redaction): the minimum a security reviewer needs
 # to see *what* was done. Everything else is recorded as a hash unless content_capture=full.
 ALWAYS_CLEAR = {"command", "file_path", "notebook_path", "path", "url", "pattern", "query", "glob",
-                "description", "subagent_type", "child_agent_id", "timeout", "run_in_background", "offset", "limit"}
+                "description", "subagent_type", "child_agent_id", "timeout", "run_in_background", "offset", "limit",
+                "commands", "paths", "urls"}
 # fields that say which action ran: a .env mention in them turns on dotenv redaction for the others, never for them
 ACTION_FIELDS = ("command", "file_path", "path", "pattern")
+# a call's several commands or files (Cline's run_commands, a patch's files): each entry is an ACTION_FIELDS value
+ACTION_LISTS = ("commands", "paths")
 
 
 def _redact_heredocs(cmd):
@@ -231,13 +234,15 @@ def _redact_heredocs(cmd):
 def tool_input(tool, ti, content_capture="hashed"):
     """Map a raw tool_input dict to {field: content} per docs/privacy.md."""
     out, ti = {}, scrub(ti or {})
-    dotenv = mentions_dotenv(*(ti.get(k) for k in ACTION_FIELDS))
+    dotenv = mentions_dotenv(*(ti.get(k) for k in ACTION_FIELDS),
+                             *(x for k in ACTION_LISTS if isinstance(ti.get(k), list) for x in ti[k]))
     for k, v in ti.items():
         rk = redact_text(k)[0] if isinstance(k, str) else k
-        rv, red = redact(v, dotenv and k not in ACTION_FIELDS)
-        if dotenv and k == "command" and isinstance(rv, str):
-            rv, hit = _redact_heredocs(rv)
-            red = red or hit
+        rv, red = redact(v, dotenv and k not in ACTION_FIELDS and k not in ACTION_LISTS)
+        if dotenv and k in ("command", "commands"):   # a heredoc's body, in the command or in each of several
+            done = [_redact_heredocs(c) if isinstance(c, str) else (c, False)
+                    for c in (rv if isinstance(rv, list) else [rv])]
+            rv, red = [c for c, _ in done] if isinstance(rv, list) else done[0][0], red or any(h for _, h in done)
         if content_capture == "full" or k in ALWAYS_CLEAR:
             out[rk] = content_value(rv, red)
         else:

@@ -220,10 +220,11 @@ def wait_for_approval(ev_call, decision, pol):
     Returns (approved: bool, message)."""
     d = ev_call["data"]
     shown = ""
-    for k in ("command", "file_path", "url"):
-        v = (d["input"].get(k) or {}).get("value")
+    for one, many in (("command", "commands"), ("file_path", "paths"), ("url", "urls")):
+        each = (d["input"].get(many) or {}).get("value")   # a call on several, each decided: the approver sees all
+        v = each if isinstance(each, list) and len(each) > 1 else (d["input"].get(one) or {}).get("value")
         if v:
-            shown = f"{k}={v}"
+            shown = f"{len(v)} {many}={json.dumps(v)}" if isinstance(v, list) else f"{one}={v}"
             break
     timeout = float(pol.get("approval_timeout_s", 120))
     if APPROVAL_CAP_S is not None:

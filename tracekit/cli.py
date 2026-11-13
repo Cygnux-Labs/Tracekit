@@ -1464,7 +1464,8 @@ def _args(x):
 
 def _gist(c, aid, n=60):
     """The call approval `aid` holds, in at most `n` characters: its command, file path or URL, else its arguments as
-    JSON, from the signer's copy; "" when the signer gives none."""
+    JSON, from the signer's copy; "" when the signer gives none. A call on several commands, files or URLs, each
+    decided on its own, gives every one, their count first, in at most 400: never a harmless first one alone."""
     from .signer.rpc_schema import RPCError
     try:
         args = _args(c.approval_get({"approval_id": aid}))
@@ -1472,9 +1473,12 @@ def _gist(c, aid, n=60):
         return ""
     if args is None:
         return ""
+    k, many = next(((k, x) for k in ("commands", "paths", "urls") if isinstance(args, dict)
+                    and isinstance(x := args.get(k), list) and len(x) > 1), (None, None))
     v = next((args[k] for k in ("command", "file_path", "path", "url") if isinstance(args, dict)
               and isinstance(args.get(k), str)), None)
-    text = " ".join((json.dumps(args) if v is None else v).split())
+    text = " ".join((f"{len(many)} {k}: {json.dumps(many)}" if many else json.dumps(args) if v is None else v).split())
+    n = max(n, 400) if many else n
     return text if len(text) <= n else text[:n - 3] + "..."
 
 
