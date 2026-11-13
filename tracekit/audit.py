@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import shutil
+import stat
 import sys
 import time
 from datetime import datetime, timezone
@@ -64,6 +65,20 @@ def _safe_open(path: str) -> tuple[Any, str | None]:
         return os.fdopen(_open_regular(path), "rb"), None
     except OSError as e:
         return None, str(e)
+
+
+def _not_regular(path: str) -> str | None:
+    """What `path` is, when it is no regular file (_safe_open refuses it), else None. A symlink is followed to say
+    what it names: Linux's <(...) gives one to a pipe."""
+    try:
+        if stat.S_ISREG(os.lstat(path).st_mode):
+            return None
+        mode = os.stat(path).st_mode
+    except OSError:   # missing (the open's own error says so), or a symlink to nothing
+        return "a symlink, which audit doesn't follow" if os.path.islink(path) else None
+    return ("a pipe (as <(...) gives); send it to --calls -" if stat.S_ISFIFO(mode) else
+            "a symlink, which audit doesn't follow" if os.path.islink(path) else
+            "a directory" if stat.S_ISDIR(mode) else "not a regular file")
 
 
 def _iter_transcripts(root: str, unreadable: list):
@@ -177,12 +192,113 @@ def _cursor(root: str, since_ts: float, unreadable: list):
             f.close()
 
 
-# one entry per agent: its name, its default folder (read when audit runs, so the env var that moves it counts), where
-# that folder is as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
+def cline_root():
+    """Cline's sessions' folder (v4 and later), as the Cline SDK resolves it: $CLINE_SESSION_DATA_DIR, else sessions/
+    in $CLINE_DATA_DIR, else data/sessions in $CLINE_DIR or ~/.cline."""
+    data = os.environ.get("CLINE_DATA_DIR", "").strip() or os.path.join(
+        os.environ.get("CLINE_DIR", "").strip() or os.path.join(os.path.expanduser("~"), ".cline"), "data")
+    return os.environ.get("CLINE_SESSION_DATA_DIR", "").strip() or os.path.join(data, "sessions")
+
+
+def cline_roots():
+    """Cline's default folders: its sessions' folder (cline_root), and the tasks' folder that releases before 4.0 kept
+    in VS Code's global storage, which Cline 4 reads but doesn't move: on macOS, Linux and Windows."""
+    home = os.path.expanduser("~")
+    storage = [os.path.join(home, "Library", "Application Support", "Code"), os.path.join(home, ".config", "Code")]
+    if os.environ.get("APPDATA", "").strip():
+        storage.append(os.path.join(os.environ["APPDATA"].strip(), "Code"))
+    return [cline_root(), *(os.path.join(s, "User", "globalStorage", "saoudrizwan.claude-dev", "tasks")
+                            for s in storage)]
+
+
+def _cline(root: str, since_ts: float, unreadable: list):
+    """Cline's reader: (time, task, tool, args) for each tool_use block of an assistant message in the tasks under
+    root, a v4 sessions folder (<id>/<id>.messages.json, {"messages": [...]}) or a pre-v4 tasks folder
+    (<id>/api_conversation_history.json, a list of messages). A message's time is its `ts` (ms), else the file's
+    modification time; a file that isn't JSON of that shape is one malformed entry. Follows no symlink, and stays
+    inside root as Claude Code's reader does."""
+    root = os.path.realpath(root)
+    try:
+        tasks = sorted(os.listdir(root))
+    except OSError as e:
+        unreadable.append({"path": root, "error": f"cannot list: {e}"})
+        return
+    for task in tasks:
+        if os.path.islink(os.path.join(root, task)):
+            continue
+        for path in (os.path.join(root, task, f"{task}.messages.json"),
+                     os.path.join(root, task, "api_conversation_history.json")):
+            if not os.path.lexists(path):
+                continue
+            try:   # a Windows directory junction is no symlink to islink
+                if os.path.commonpath([root, os.path.realpath(path)]) != root:
+                    continue
+            except ValueError:   # another drive
+                continue
+            f, err = _safe_open(path)
+            if err:
+                unreadable.append({"path": path, "error": err})
+                continue
+            try:
+                with f:
+                    mtime, doc = os.fstat(f.fileno()).st_mtime, json.load(f)
+            except OSError as e:
+                unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+                continue
+            except (ValueError, RecursionError):   # not JSON (or not UTF-8), or nested past what json.load takes
+                yield None
+                continue
+            messages = doc.get("messages") if isinstance(doc, dict) else doc
+            if not isinstance(messages, list):
+                yield None
+                continue
+            for m in messages:
+                if not isinstance(m, dict) or m.get("role") != "assistant" or not isinstance(m.get("content"), list):
+                    continue
+                ts = m.get("ts")
+                try:
+                    at = datetime.fromtimestamp(ts / 1000 if type(ts) in (int, float) else mtime, timezone.utc)
+                except (OverflowError, OSError, ValueError):   # a ts no date holds
+                    at = datetime.fromtimestamp(mtime, timezone.utc)
+                if at.timestamp() < since_ts:
+                    continue
+                for b in m["content"]:
+                    if isinstance(b, dict) and b.get("type") == "tool_use":
+                        yield (at, task, b.get("name") if isinstance(b.get("name"), str) else "",
+                               b.get("input") if isinstance(b.get("input"), dict) else {})
+
+
+# one entry per agent: its name, its default folder or folders (read when audit runs, so the env var that moves one
+# counts), where they are as a person reads it, and its reader (root, since_ts, unreadable) -> iterable of
 # (time, session, tool, args), None for a line it counts as malformed
-READERS = {"claude-code": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
-                           _claude_code),
-           "cursor": (cursor_root, "~/.cursor/projects", _cursor)}
+READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
+                      _claude_code),
+           "cursor": (cursor_root, "~/.cursor/projects", _cursor),
+           "cline": (cline_roots, "$CLINE_SESSION_DATA_DIR, else $CLINE_DATA_DIR/sessions, else "
+                     "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline); and before 4.0, saoudrizwan.claude-dev/tasks "
+                     "in VS Code's global storage", _cline)}
+
+
+def _defaults(default) -> list[str]:
+    """The folders a READERS entry's default gives (one, or a list), those that exist, each once (an env var can name
+    another default's folder)."""
+    folders, seen, found = default(), set(), []
+    for f in [folders] if isinstance(folders, str) else folders:
+        if os.path.isdir(f) and os.path.realpath(f) not in seen:
+            seen.add(os.path.realpath(f))
+            found.append(f)
+    return found
+
+
+def _agent(name: str | None) -> str | None:
+    """An agent's name as init --agent takes it: claude-code is the name Claude Code's reader had before it took
+    init's (claude)."""
+    return "claude" if name == "claude-code" else name
+
+
+def _no_reader(agent: str) -> str:
+    """What to do with an agent's sessions when no reader reads them: a ROOT can't help."""
+    return f"no reader for {agent}'s sessions yet; turn them into a calls file and use --calls FILE --agent {agent}"
 
 
 def _calls(f, name: str, since_ts: float, unreadable: list):
@@ -226,6 +342,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         raise ValueError(f"--since {since[:40]!r} is not in the past")
     engine = load_policy(policy_path or DEFAULT_POLICY)
     unreadable: list[dict] = []
+    agent = _agent(agent)
     if calls is not None:
         if calls == "-":
             if sys.stdin is None:   # started with stdin closed (<&-)
@@ -234,18 +351,18 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
         else:
             f, err = _safe_open(calls)
             if err:
-                raise OSError(f"cannot read the calls file: {err}" + (
-                    "; to read a pipe (as <(...) gives), send it to --calls -" if "not a regular file" in err else ""))
+                what = _not_regular(calls)
+                raise OSError(f"cannot read the calls file: {f'{calls} is {what}' if what else err}")
             label = os.path.basename(calls)
         sources = [(agent or "other", calls, _calls(f, label, since_ts, unreadable))]
-    elif agent is not None and root is None:
-        raise ValueError(f"--agent {agent} needs a ROOT or --calls FILE")
+    elif agent is not None and (root is None or agent not in READERS):
+        raise ValueError(f"--agent {agent} needs a ROOT or --calls FILE" if agent in READERS else _no_reader(agent))
     elif root is not None:
-        name = agent or "claude-code"
+        name = agent or "claude"
         sources = [(name, root, READERS[name][2](root, since_ts, unreadable))]
     else:
         sources = [(name, folder, read(folder, since_ts, unreadable))
-                   for name, (default, _, read) in READERS.items() if os.path.isdir(folder := default())]
+                   for name, (default, _, read) in READERS.items() for folder in _defaults(default)]
 
     counts = {"allow": 0, "ask": 0, "deny": 0, "flag": 0}
     by_rule: dict[str, int] = {}
@@ -257,7 +374,7 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
 
     for name, folder, read in sources:
         start = len(calls_out)
-        hook = name if name in AGENT_NAMES else None   # map an agent's names as its hook does
+        hook = name if name in AGENT_NAMES else None   # map the calls' names as that agent's hook does
         for item in read:
             if item is None:
                 skipped_malformed += 1
@@ -273,8 +390,10 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 except RecursionError:   # nested past what the mapping takes, as json.loads counts such a line
                     skipped_malformed += 1
                     continue
+                except ValueError:   # a call the mapping can't read (Cline's): its live hook blocks it
+                    blocked = True
             try:   # as the signer decides it: an MCP tool also as mcp:<server>/<tool> and under its bare name,
-                # PowerShell also as a shell line
+                # PowerShell also as a shell line; a shell command its parser can't read is held (TK-SHELL-PARSE)
                 decision = {"verdict": "deny", "rule_ids": ["TK-HOOK-BLOCKED"]} if blocked else \
                     evaluate(engine, tool, args)[0]
             except RecursionError:   # nesting the signer refuses (it denies an engine error itself)
@@ -295,7 +414,15 @@ def audit(root: str | None = None, policy_path: str | None = None, since: str | 
                 rec["text"] = call_text(tool, _shown(scrub(args), _dotenv(args)))
             calls_out.append(rec)
         mine = calls_out[start:]
-        agents[name] = {"folder": folder, "calls": len(mine), "sessions": len({c["session"] for c in mine})}
+        if name in agents:   # an agent's second default folder: its counts add to the first's
+            a = agents[name]
+            a["folder"] = [*([a["folder"]] if isinstance(a["folder"], str) else a["folder"]), folder]
+            a["calls"] += len(mine)
+            a["session_ids"] |= {c["session"] for c in mine}
+        else:
+            agents[name] = {"folder": folder, "calls": len(mine), "session_ids": {c["session"] for c in mine}}
+    for a in agents.values():
+        a["sessions"] = len(a.pop("session_ids"))
     calls_file, calls = calls is not None, calls_out
 
     times = [datetime.fromisoformat(c["time"]).timestamp() for c in calls if c["time"]]
@@ -336,7 +463,8 @@ def format_report(report: dict, as_json: bool = False, every: bool = False) -> s
         report["disclaimer"],
         f"policy: {report['policy']} ({report['policy_hash']})",
         "",
-        "read: " + ("; ".join(f"{a} ({v['folder']}): {v['calls']} call{'s' * (v['calls'] != 1)} in {v['sessions']} "
+        "read: " + ("; ".join(f"{a} ({', '.join([v['folder']] if isinstance(v['folder'], str) else v['folder'])}): "
+                             f"{v['calls']} call{'s' * (v['calls'] != 1)} in {v['sessions']} "
                              f"session{'s' * (v['sessions'] != 1)}" for a, v in report["agents"].items()) or "nothing"),
         f"{total} tool call{'s' * (total != 1)} in {s} session{'s' * (s != 1)}{window}: Tracekit would have denied "
         f"{n.get('deny', 0)} and held {n.get('ask', 0)} for a person; it would have flagged {n.get('flag', 0)} "
@@ -395,7 +523,7 @@ def share(report: dict) -> str:
                                   for c in report["calls"] for rid in c["rule_ids"])
     window = _days(time.time() - when(report["since"])) if report["since"] else \
         "the whole calls file" if report["calls_file"] else "every transcript"
-    kind = "Claude Code" if set(report["agents"]) == {"claude-code"} else "coding-agent"
+    kind = "Claude Code" if set(report["agents"]) == {"claude"} else "coding-agent"
     lines = [f"Tracekit {__version__} field report (tracekit audit --share): {window}",
              f"{report['disclaimer']}: {s:,} {kind} session{'s' * (s != 1)}",
              f"Tool calls: {sum(n.values()):,}   " + _counts({k: n.get(k, 0) for k in DECISIONS}),
@@ -406,16 +534,17 @@ def share(report: dict) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code, Cursor), or in a calls file any agent's log can be turned into, "
-                                 "through the policy and count what it would have held or denied. Read-only, local, "
-                                 "and a replay against today's policy, not a signed record.")
+                                 "transcripts (Claude Code, Cursor and Cline), or in a calls file any agent's log can be "
+                                 "turned into, through the policy and count what it would have held or denied. "
+                                 "Read-only, local, and a replay against today's policy, not a signed record.")
     ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or --agent's reader's (default: "
                     "every known agent's folder that exists: " + "; ".join(f"{n}: {w}" for n, (_, w, _) in
                                                                           READERS.items()) + ")")
     ap.add_argument("--calls", metavar="FILE", help="read the calls from FILE (- for stdin) instead: one JSON object "
                     'a line, {"tool": ..., "args": {...}}, with "time" and "session" if known')
-    ap.add_argument("--agent", choices=sorted({*READERS, *AGENT_NAMES}), help="with --calls, map each call's tool "
-                    "names as that agent's hook does; with ROOT, read it with that agent's reader")
+    ap.add_argument("--agent", type=_agent, choices=sorted({*READERS, *AGENT_NAMES}), help="with --calls, map each "
+                    "call's tool names as that agent's hook does (its name as init --agent takes it); with ROOT, read "
+                    "it with that agent's reader")
     ap.add_argument("--policy", help="a policy file (default: the dev pack, tracekit/policy2/packs/dev.yaml)")
     ap.add_argument("--since", help="7d, 24h, 30m, or an ISO date or time (UTC unless it says)")
     ap.add_argument("--show", action="store_true", help="also print each call, with secrets redacted")
@@ -429,17 +558,16 @@ def main(argv=None):
         ap.error("give ROOT or --calls, not both")
     root = os.path.expanduser(a.root) if a.root is not None else None
     where = "; ".join(f"{n}: {w}" for n, (_, w, _) in READERS.items())
-    # a calls file is opened once, in audit(): what it can't open, and --agent with neither ROOT nor --calls, exit 2
-    # there
+    # a calls file is opened once, in audit(): what it can't open, and --agent claude with neither ROOT nor --calls,
+    # exit 2 there
+    if a.calls is None and a.agent is not None and a.agent not in READERS:   # before ROOT's folder: one can't help
+        print(f"tracekit audit: {_no_reader(a.agent)}", file=sys.stderr)
+        return 2
     if a.calls is None and root is not None:
-        if a.agent is not None and a.agent not in READERS:
-            print(f"tracekit audit: no reader for {a.agent}'s sessions yet; turn them into a calls file and use "
-                  f"--calls FILE --agent {a.agent}", file=sys.stderr)
-            return 2
         if not os.path.isdir(root):
             print(f"tracekit audit: no such folder: {root} ({where})", file=sys.stderr)
             return 2
-    elif a.calls is None and a.agent is None and not any(os.path.isdir(d()) for d, _, _ in READERS.values()):
+    elif a.calls is None and a.agent is None and not any(_defaults(d) for d, _, _ in READERS.values()):
         print(f"tracekit audit: no agent's folder found ({where}); give a ROOT, or --calls FILE", file=sys.stderr)
         return 2
     try:

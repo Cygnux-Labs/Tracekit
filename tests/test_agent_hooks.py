@@ -138,6 +138,25 @@ class Harnesses(DaemonCase):
         self.assertEqual(calls, [("Bash", None), ("Edit", "src/app.py"), ("Bash", None)])
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
 
+    def test_codex_shell_command_that_isnt_text_is_denied(self):
+        """The PR #754 review: an argv with an item that isn't a string (Codex sends none) reached the v1 policy as a
+        list, whose rules matched its repr: a force push came back allow, rm -rf / only flag. The v1 hook denies a shell
+        command that isn't text, naming it (the v2 signer holds it, TK-SHELL-PARSE)."""
+        base = {"session_id": "cx-argv", "cwd": self.d, "hook_event_name": "PreToolUse"}
+        for i, (name, argv) in enumerate((("shell", ["git", "push", "--force", "origin", "main", None]),
+                                          ("shell", ["rm", "-rf", "/", 1]),
+                                          ("Bash", ["git", "push", "--force", "origin", "main"]))):
+            with self.subTest(name=name, argv=argv):
+                code, out, err = self.hook("codex", {**base, "tool_name": name, "tool_use_id": f"a{i}",
+                                                     "tool_input": {"command": argv}})
+                self.assertEqual(code, 0 if os.name == "nt" else 2, err)   # agent_hooks._exit
+                self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
+                self.assertIn(json.dumps(argv), err)
+        code, out, err = self.hook("codex", {**base, "tool_name": "shell", "tool_use_id": "ok",   # Codex's own argv
+                                             "tool_input": {"command": ["bash", "-lc", "git status"]}})
+        self.assertEqual((code, out), (0, ""), err)
+        self.assertEqual([e["data"]["tool_use_id"] for e in self.events("cx-argv") if e["type"] == "tool.call"], ["ok"])
+
     def test_cursor(self):
         base = {"conversation_id": "cu-1", "generation_id": "g", "model": "claude-x", "cursor_version": "2.0", "workspace_roots": [self.d],
                 "user_email": None, "transcript_path": None}
@@ -1780,6 +1799,18 @@ class Installer(unittest.TestCase):
         # with no image, only the path it writes: a `paths` the model sent beside it is dropped, as Kilo drops it
         _, ti = agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "path": "/w/out.png", "paths": ["/w/b"]})
         self.assertEqual(ti["paths"], [])
+        # an image and no path: the image alone (the mapping raised KeyError, so tracekit audit --agent kilo crashed)
+        self.assertEqual(agent_hooks.tool("kilo", "generate_image", {"prompt": "x", "image": "/w/in.png"}),
+                         ("Read", {"prompt": "x", "image": "/w/in.png", "file_path": "/w/in.png", "paths": ["/w/in.png"]}))
+
+    def test_codex_joins_an_argv_only_of_strings(self):
+        """An argv with an item that isn't a string (Codex sends none) is left as sent: joining it raised TypeError,
+        so tracekit audit --agent codex crashed."""
+        self.assertEqual(agent_hooks.tool("codex", "shell", {"command": ["bash", "-lc", "ls -la"]}),
+                         ("Bash", {"command": "ls -la"}))
+        for argv in (["ls", 1], ["ls", None], ["ls", ["-la"]], ["ls", 10 ** 30]):
+            with self.subTest(argv=argv):
+                self.assertEqual(agent_hooks.tool("codex", "shell", {"command": argv}), ("Bash", {"command": argv}))
 
     def test_cursor_decides_every_path_its_input_names(self):
         # Cursor doesn't document which key its tools read a path from: a decoy file_path beside the path, target_file
