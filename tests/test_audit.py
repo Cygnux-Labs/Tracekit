@@ -33,6 +33,13 @@ def _line(tool, args, days_ago=0, **extra):
     return {"time": at.isoformat().replace("+00:00", "Z"), "tool": tool, "args": args, **extra}
 
 
+def _gemini_msg(mid, calls, days_ago=0):
+    """A Gemini CLI message line with tool calls (#715): calls are (id, name, args)."""
+    at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat().replace("+00:00", "Z")
+    return {"id": mid, "timestamp": at, "type": "gemini", "content": "", "toolCalls": [
+        {"id": cid, "name": name, "args": args, "status": "success", "timestamp": at} for cid, name, args in calls]}
+
+
 def _write_jsonl(path: Path, lines: list[dict | str]):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as f:
@@ -499,9 +506,9 @@ class TestAudit(unittest.TestCase):
         self.assertEqual((call["agent"], call["tool"], call["verdict"], call["rule_ids"]),
                          ("gemini", "Bash", expected["verdict"], expected["rule_ids"]))
         self.assertEqual(call["verdict"], "deny")
-        code, _, err = _run(str(self.root), "--agent", "gemini")   # no reader of Gemini CLI's own sessions yet
+        code, _, err = _run(str(self.root), "--agent", "opencode")   # no reader of OpenCode's own sessions yet
         self.assertEqual(code, 2)
-        self.assertIn("--calls FILE --agent gemini", err)
+        self.assertIn("--calls FILE --agent opencode", err)
 
     def test_with_no_root_every_known_agents_folder_that_exists_is_read(self):
         home = self.root / "home"
@@ -821,11 +828,195 @@ class TestAudit(unittest.TestCase):
         code, _, err = _run("--agent", "claude")
         self.assertEqual(code, 2)
         self.assertIn("--agent claude needs a ROOT or --calls FILE", err)
-        with self.assertRaisesRegex(ValueError, "no reader for gemini's"):   # audit() itself, a ROOT given or not
-            audit.audit(str(self.root), agent="gemini")
+        with self.assertRaisesRegex(ValueError, "no reader for opencode's"):   # audit() itself, a ROOT given or not
+            audit.audit(str(self.root), agent="opencode")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as e:
             cli.main(["audit", "--calls", "-", "--agent", "no-such-agent"])
         self.assertEqual(e.exception.code, 2)
+
+    def _gemini_sessions(self) -> Path:
+        """A Gemini CLI tmp folder (#715): a session written as JSON lines, its subagent's file, a session from before
+        v0.39 (one JSON object), and a project file that isn't a session."""
+        chats = self.root / ".gemini" / "tmp" / "proj" / "chats"
+        rm = ("c1", "run_shell_command", {"command": "rm -rf /"})
+        _write_jsonl(chats / "session-2026-11-12T10-00-s1aaaaaa.jsonl", [
+            {"sessionId": "s1", "projectHash": "h", "startTime": "2026-11-12T10:00:00Z"},
+            _gemini_msg("m1", [rm]),
+            _gemini_msg("m1", [rm]),   # the same message, written again when the call ended
+            {"$rewindTo": "m1"},   # the conversation drops it; the call was still made
+            _gemini_msg("m2", [("c2", "run_shell_command", {"command": "ls"})]),
+            {"$patch": {"id": "m2", "toolCalls": [{"id": "c2", "result": []}]}},
+            {"$set": {"lastUpdated": "2026-11-12T10:05:00Z"}},
+            # Gemini CLI's older checkpoint: the whole history in one line, holding a call no message line has
+            {"$set": {"messages": [_gemini_msg("m3", [("c3", "read_file", {"file_path": "notes.md"})])]}},
+            "not json"])
+        _write_jsonl(chats / "s1" / "sub1.jsonl", [
+            {"sessionId": "sub1", "projectHash": "h", "kind": "subagent"},
+            _gemini_msg("m1", [("c1", "read_file", {"file_path": "README.md"})])])
+        old = chats / "session-2026-10-30T09-00-s0bbbbbb.json"
+        old.write_text(json.dumps({"sessionId": "s0", "projectHash": "h", "messages": [
+            {"id": "u1", "type": "user", "content": "clean up"},
+            _gemini_msg("m1", [("c1", "run_shell_command", {"command": "terraform destroy -auto-approve"})])]},
+            indent=2), encoding="utf-8")
+        (chats.parent / "logs.json").write_text(json.dumps(_gemini_msg("m9", [rm])), encoding="utf-8")
+        return self.root / ".gemini" / "tmp"
+
+    def test_gemini_cli_sessions_are_read_as_its_hook_decides_them(self):
+        tmp = self._gemini_sessions()
+        code, out, err = _run(str(tmp), "--agent", "gemini", "--json")
+        self.assertEqual(code, 0, err)
+        report = json.loads(out)
+        engine = load_policy(DEFAULT_POLICY)
+        expected = []
+        for session, name, args in (("s0", "run_shell_command", {"command": "terraform destroy -auto-approve"}),
+                                    ("s1", "run_shell_command", {"command": "rm -rf /"}),
+                                    ("s1", "run_shell_command", {"command": "ls"}),
+                                    ("s1", "read_file", {"file_path": "notes.md"}),
+                                    ("s1", "read_file", {"file_path": "README.md"})):
+            tool, mapped = agent_hooks.tool("gemini", name, args)
+            expected.append((session, tool, evaluate(engine, tool, mapped)[0]["verdict"]))
+        self.assertEqual(sorted((c["session"], c["tool"], c["verdict"]) for c in report["calls"]), sorted(expected))
+        self.assertEqual([c["tool"] for c in report["calls"] if c["session"] == "s1"][:2], ["Bash", "Bash"])
+        self.assertEqual((report["counts"]["deny"], report["counts"]["ask"]), (1, 1))   # rm -rf /, terraform destroy
+        self.assertEqual(report["skipped_malformed"], 1)
+        self.assertEqual(report["agents"], {"gemini": {"folder": str(tmp), "calls": 5, "sessions": 2}})
+        self.assertEqual(report["sessions"], 2)
+
+    def test_a_gemini_cli_project_named_chats_is_read_as_a_project(self):
+        """#764 review: ~/.gemini/tmp/chats/chats/session-*.jsonl was taken for a subagent's file of a session named chats."""
+        chats = self.root / "tmp" / "chats" / "chats"
+        _write_jsonl(chats / "session-2026-11-12T10-00-aaaaaaaa.jsonl", [
+            {"sessionId": "sx", "projectHash": "h"}, _gemini_msg("m1", [("c1", "read_file", {"file_path": "a"})])])
+        _write_jsonl(chats / "sx" / "sub.jsonl", [_gemini_msg("m1", [("c1", "read_file", {"file_path": "b"})])])
+        calls = audit.audit(str(self.root / "tmp"), agent="gemini")["calls"]
+        self.assertEqual(sorted((c["session"], c["tool"]) for c in calls), [("sx", "Read"), ("sx", "Read")])
+
+    def test_gemini_cli_since_goes_by_each_calls_own_time(self):
+        """#764 review: a window drops the calls older than it, one by one, in a session written since."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        _write_jsonl(chats / "session-2026-11-02T10-00-aaaaaaaa.jsonl", [
+            {"sessionId": "s1", "projectHash": "h"},
+            _gemini_msg("m1", [("c1", "run_shell_command", {"command": "rm -rf /"})], days_ago=10),
+            _gemini_msg("m2", [("c2", "run_shell_command", {"command": "ls"})], days_ago=1)])
+        report = audit.audit(str(self.root / "tmp"), agent="gemini", since="7d")
+        self.assertEqual(report["counts"], {"allow": 1, "ask": 0, "deny": 0, "flag": 0})
+        self.assertEqual(len(audit.audit(str(self.root / "tmp"), agent="gemini")["calls"]), 2)
+
+    def test_gemini_cli_call_without_a_time_takes_its_messages(self):
+        """#764 review: a call with no timestamp of its own is as old as the message that holds it."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        old = _gemini_msg("m1", [("c1", "run_shell_command", {"command": "rm -rf /"})], days_ago=10)
+        new = _gemini_msg("m2", [("c2", "run_shell_command", {"command": "ls"})], days_ago=1)
+        for msg in (old, new):
+            del msg["toolCalls"][0]["timestamp"]
+        _write_jsonl(chats / "session-2026-11-02T10-00-aaaaaaaa.jsonl", [{"sessionId": "s1"}, old, new])
+        report = audit.audit(str(self.root / "tmp"), agent="gemini", since="7d")
+        self.assertEqual(report["counts"], {"allow": 1, "ask": 0, "deny": 0, "flag": 0})
+
+    def test_gemini_cli_session_json_that_is_not_json_is_one_malformed_entry(self):
+        """#764 review: a session-*.json that isn't JSON, or is nested past what json takes, is counted, not a crash."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        chats.mkdir(parents=True)
+        (chats / "session-2026-10-30T09-00-aaaaaaaa.json").write_text("{broken", encoding="utf-8")
+        (chats / "session-2026-10-30T09-01-bbbbbbbb.json").write_text("[" * 200000, encoding="utf-8")
+        report = audit.audit(str(self.root / "tmp"), agent="gemini")
+        self.assertEqual((report["skipped_malformed"], report["calls"]), (2, []))
+
+    def test_gemini_cli_resumed_session_counts_a_call_once_across_its_files(self):
+        """#764 review: a pre-0.39 .json and the .jsonl that resuming it wrote hold the same call: one call."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        msg = _gemini_msg("m1", [("c1", "run_shell_command", {"command": "ls"})])
+        (chats).mkdir(parents=True)
+        (chats / "session-2026-10-30T09-00-aaaaaaaa.json").write_text(
+            json.dumps({"sessionId": "s0", "messages": [msg]}), encoding="utf-8")
+        _write_jsonl(chats / "session-2026-11-01T09-00-aaaaaaaa.jsonl", [{"sessionId": "s0"}, msg])
+        calls = audit.audit(str(self.root / "tmp"), agent="gemini")["calls"]
+        self.assertEqual([(c["session"], c["tool"]) for c in calls], [("s0", "Bash")])
+
+    def test_gemini_cli_subagent_session_written_before_0_39_is_read(self):
+        """#764 review: Gemini CLI 0.38 wrote a subagent's session as chats/<parent>/<id>.json, one JSON object."""
+        sub = self.root / "tmp" / "proj" / "chats" / "s1" / "sub.json"
+        sub.parent.mkdir(parents=True)
+        sub.write_text(json.dumps({"sessionId": "sub", "messages": [
+            _gemini_msg("m1", [("c1", "run_shell_command", {"command": "rm -rf /"})])]}), encoding="utf-8")
+        report = audit.audit(str(self.root / "tmp"), agent="gemini")
+        self.assertEqual([(c["session"], c["verdict"]) for c in report["calls"]], [("s1", "deny")])
+
+    def test_gemini_cli_reads_only_the_files_that_are_sessions(self):
+        """#764 review: a project named chats keeps its logs.json and its activity log out of the sessions, as does
+        any project's other file in chats."""
+        call = [_gemini_msg("m1", [("c1", "run_shell_command", {"command": "rm -rf /"})])]
+        tmp = self.root / "tmp"
+        (tmp / "chats" / "chats").mkdir(parents=True)
+        (tmp / "chats" / "logs.json").write_text(json.dumps({"messages": call}), encoding="utf-8")
+        _write_jsonl(tmp / "chats" / "logs" / "session-2026-11-12T10-00-aaaaaaaa.jsonl", call)
+        (tmp / "proj" / "chats").mkdir(parents=True)
+        (tmp / "proj" / "chats" / "notes.json").write_text(json.dumps({"messages": call}), encoding="utf-8")
+        _write_jsonl(tmp / "chats" / "chats" / "session-2026-11-12T10-00-bbbbbbbb.jsonl", [
+            {"sessionId": "real"}, _gemini_msg("m1", [("c1", "read_file", {"file_path": "a"})])])
+        calls = audit.audit(str(tmp), agent="gemini")["calls"]
+        self.assertEqual([(c["session"], c["tool"]) for c in calls], [("real", "Read")])
+
+    def test_gemini_cli_call_time_is_its_own_before_its_messages(self):
+        """#764 review: a call's own time counts, not its message's: the message is older than the call it holds."""
+        msg = _gemini_msg("m1", [("c1", "run_shell_command", {"command": "rm -rf /"})], days_ago=10)
+        msg["toolCalls"][0]["timestamp"] = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        _write_jsonl(self.root / "tmp" / "proj" / "chats" / "session-2026-11-02T10-00-aaaaaaaa.jsonl",
+                     [{"sessionId": "s1"}, msg])
+        report = audit.audit(str(self.root / "tmp"), agent="gemini", since="7d")
+        self.assertEqual(report["counts"]["deny"], 1)
+
+    def test_gemini_cli_calls_without_an_id_each_count_and_a_session_is_named_by_its_file(self):
+        """#764 review: a call with no id is a call of its own, and a session file with no sessionId is its file's name."""
+        msg = _gemini_msg("m1", [("x", "read_file", {"file_path": "a"}), ("x", "read_file", {"file_path": "b"})])
+        for c in msg["toolCalls"]:
+            del c["id"]
+        _write_jsonl(self.root / "tmp" / "proj" / "chats" / "session-2026-11-12T10-00-aaaaaaaa.jsonl", [msg])
+        calls = audit.audit(str(self.root / "tmp"), agent="gemini")["calls"]
+        self.assertEqual([c["session"] for c in calls], ["session-2026-11-12T10-00-aaaaaaaa"] * 2)
+
+    def test_gemini_cli_records_of_the_wrong_shape_are_malformed_entries(self):
+        """#764 review: messages or toolCalls that aren't lists, a message or a call that isn't an object: each one
+        malformed entry, as Cline's reader counts them, and no call."""
+        chats = self.root / "tmp" / "proj" / "chats"
+        chats.mkdir(parents=True)
+        bad = ({"messages": "x"}, {"messages": ["x"]}, {"messages": [{"type": "gemini", "toolCalls": {}}]},
+               {"messages": [{"type": "gemini", "toolCalls": ["x"]}]})
+        for i, doc in enumerate(bad):
+            (chats / f"session-2026-10-30T09-0{i}-aaaaaaaa.json").write_text(json.dumps(doc), encoding="utf-8")
+        _write_jsonl(chats / "session-2026-11-12T10-00-bbbbbbbb.jsonl", [
+            {"$set": {"messages": "x"}}, {"type": "gemini", "toolCalls": [1]}])
+        report = audit.audit(str(self.root / "tmp"), agent="gemini")
+        self.assertEqual((report["skipped_malformed"], report["calls"]), (6, []))
+
+    def test_gemini_cli_root_is_its_tmp_folder_a_project_its_chats_folder_or_what_holds_them(self):
+        """#764 review: each level of ROOT reads the same sessions, and a folder that is none of them is refused with
+        the folder to give, not read as a clean zero."""
+        tmp = self._gemini_sessions()
+        for root in (tmp, tmp / "proj", tmp / "proj" / "chats", tmp.parent, self.root):
+            with self.subTest(root=str(root)):
+                report = audit.audit(str(root), agent="gemini")
+                self.assertEqual((len(report["calls"]), report["sessions"]), (5, 2))
+        named = self.root / "named" / "chats"   # a project named chats: its folder and its chats folder
+        _write_jsonl(named / "chats" / "session-2026-11-12T10-00-aaaaaaaa.jsonl", [
+            {"sessionId": "sx"}, _gemini_msg("m1", [("c1", "read_file", {"file_path": "a"})])])
+        for root in (named.parent, named, named / "chats"):
+            with self.subTest(root=str(root)):
+                self.assertEqual([c["session"] for c in audit.audit(str(root), agent="gemini")["calls"]], ["sx"])
+        other = self.root / "other"
+        _write_jsonl(other / "s.jsonl", [_gemini_msg("m1", [("c1", "read_file", {"file_path": "a"})])])
+        code, _, err = _run(str(other), "--agent", "gemini")
+        self.assertEqual(code, 2)
+        self.assertIn("~/.gemini/tmp", err)
+
+    def test_gemini_cli_home_moves_its_folder(self):
+        tmp = self._gemini_sessions()
+        with mock.patch.dict(os.environ, {**_home(self.root / "empty"), "GEMINI_CLI_HOME": str(self.root)}):
+            for k in ("CLINE_DIR", "CLINE_DATA_DIR", "CLINE_SESSION_DATA_DIR", "CLAUDE_CONFIG_DIR"):
+                os.environ.pop(k, None)
+            code, out, err = _run("--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(json.loads(out)["agents"], {"gemini": {"folder": str(tmp), "calls": 5, "sessions": 2}})
 
     def test_share_over_a_calls_file(self):
         _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "rm -rf /"}, session="s1")])
