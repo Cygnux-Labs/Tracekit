@@ -362,6 +362,8 @@ def tail(run, path, uid, until=None, wait=None, status=None, offsets=None, diges
         while True:
             gone = until is not None and not os.path.exists(until)
             cur = main
+            if main.f is None:   # opened before its subagents are listed: a first wake can be the last (SessionEnd)
+                _verify(main, uid)
             for p in _subagents(path) if main.f is not None else ():
                 ts.setdefault(p, _Transcript(p, os.path.basename(p), start.get(p, 0), sums.get(p)))
             for cur in ts.values() if gone else ():   # the last wake checks every transcript before a line can be

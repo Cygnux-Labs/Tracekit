@@ -684,16 +684,11 @@ class HookStartsTheTailer(unittest.TestCase):
         self.start().assert_not_called()   # SessionStart again (resume, clear): the run has its tailer
 
     def test_a_tailer_stopped_more_than_restarts_times_is_not_started_again(self):
-        path = "/home/agent/t.jsonl"
-        files.write_json(self.cc._state("s1"), {"run_id": "run-1", "run_token": "tok", "stream": "x", "seq": 0,
-                                                "transcript": path, "offsets": {path: 0}, "tailer": "run-1",
-                                                "restarts": self.cc.RESTARTS})
-        lock, _ = self.cc._tailer_files(self.cc._state("s1"), "run-1")
-        open(lock, "w").close()   # its tailer held it, and is gone
+        lock, _ = self.state(restarts=self.cc.RESTARTS)
         self.start().assert_not_called()
         method, req = self.client.call.call_args.args
         self.assertEqual(method, "tailer_lost")
-        self.assertIn(f"it stopped {self.cc.RESTARTS + 1} times in this run and is not started again", req["reason"])
+        self.assertIn(f"it is not started again (it stopped {self.cc.RESTARTS + 1} times in this run)", req["reason"])
         self.assertFalse(os.path.exists(lock))
         self.client.call.reset_mock()
         self.start().assert_not_called()   # told once
@@ -727,6 +722,58 @@ class HookStartsTheTailer(unittest.TestCase):
             os.utime(f, (old, old))
         self.cc._prune()
         self.assertEqual([os.path.exists(f) for f in (*kept, *gone)], [True, True, False, False])
+
+    def test_a_lock_its_tailer_removed_as_it_ended_is_not_taken_for_a_stopped_tailers(self):
+        lock, _ = self.cc._tailer_files(self.cc._state("s1"), "run-1")
+        tailers = self.cc._free(lock, create=True)
+        real = self.cc.lock_file
+
+        def ended(f, blocking=True):   # between the hook's open and its lock, the tailer ends for good
+            os.remove(lock)
+            tailers.close()
+            return real(f, blocking)
+        with mock.patch.object(self.cc, "lock_file", ended):
+            self.assertIsNone(self.cc._free(lock))
+
+    def state(self, **fields):
+        """Session s1's state: run-1, whose tailer the hook started; its tailer lock, free (that tailer is gone)."""
+        path = "/home/agent/t.jsonl"
+        files.write_json(self.cc._state("s1"), {"run_id": "run-1", "run_token": "tok", "stream": "x", "seq": 0,
+                                                "transcript": path, "offsets": {path: 0}, "tailer": "run-1",
+                                                **fields})
+        lock, log = self.cc._tailer_files(self.cc._state("s1"), "run-1")
+        open(lock, "w").close()
+        return lock, log
+
+    def test_session_end_takes_a_file_its_tailer_removed_meanwhile(self):
+        self.start()
+        real, gone = self.cc.glob.glob, self.cc._state("s1")[:-len(".json")] + ".tailer-0.log"   # listed, then removed
+        p = {"hook_event_name": "SessionEnd", "session_id": "s1", "reason": "other"}
+        with mock.patch.object(self.cc.glob, "glob", lambda pat: real(pat) + [gone] * pat.endswith("*")), \
+                mock.patch.object(self.cc, "system_config", return_value=None):
+            self.assertEqual(self.cc._handle(self.client, p, "SessionEnd", "s1", None), 0)
+        self.assertFalse(os.path.exists(self.cc._state("s1")))
+
+    def test_system_mode_starts_no_tailer_for_a_tailer_lock_in_the_agents_runtime_dir(self):
+        """The runtime dir is the agent's: a tailer lock file it puts there makes no system-mode hook start a tailer
+        of the agent's uid, nor sign a gap."""
+        self.state()
+        system = {"signer": "/run/s.sock", "tailer": {"user": "tracekit-tailer", "uid": 999998,
+                                                      "python": "/opt/tracekit/bin/python"}}
+        self.start(system).assert_not_called()
+        self.client.call.assert_not_called()
+
+    def test_a_run_the_hook_found_ended_gets_no_new_tailer(self):
+        lock, log = self.state(ended=True)
+        with open(log, "w") as f:
+            f.write('{"offsets": {}}\n"parked"\n')
+        popen = self.popen()
+        with mock.patch.object(self.cc.subprocess, "Popen", popen), \
+                mock.patch.object(self.cc, "system_config", return_value=None):
+            self.cc._run(self.client, "s1", register=False)
+        popen.assert_not_called()
+        self.client.call.assert_not_called()   # parked: nothing was missed
+        self.assertFalse(os.path.exists(lock) or os.path.exists(log))
 
     def test_system_mode_runs_it_as_the_tailer_user_with_a_delegated_token(self):
         t = {"user": "tracekit-tailer", "uid": 999998, "python": "/opt/tracekit/bin/python"}
@@ -907,7 +954,8 @@ class HookRestartsTheTailer(unittest.TestCase):
                 return steps.pop(0)()
             if then:
                 raise then
-            os.remove(h["until"])
+            with contextlib.suppress(FileNotFoundError):   # SessionEnd removed it
+                os.remove(h["until"])
         try:
             tailer.tail(Run(self.signer, h), h["path"], os.getuid(), h.get("until"), wait, offsets=h.get("offsets"),
                         **{k: h[k] for k in ("digests", "progress", "lock") if k in h})
@@ -920,7 +968,8 @@ class HookRestartsTheTailer(unittest.TestCase):
     def finish(self):
         """The run's (reconcile records, tailer_lost reasons, model exchange ids) once it is final."""
         run = Run(self.signer, self.started[0][0])
-        run.call("close_run")
+        with contextlib.suppress(RPCError):   # SessionEnd closed it
+            run.call("close_run")
         self.signer.sweep(time.monotonic() + 3600)
         with open(os.path.join(self.d, "data", "store", "records.jsonl"), "rb") as f:
             events = [json.loads(x)["event"] for x in f.read().splitlines()]
@@ -928,6 +977,59 @@ class HookRestartsTheTailer(unittest.TestCase):
                 [e["data"]["reason"] for e in events if e["type"] == "capture.gap"
                  and e["data"]["kind"] == "tailer_lost"],
                 [e["data"].get("exchange_id") for e in events if e["type"] == "model.exchange"])
+
+    def park(self):
+        with mock.patch.object(tailer, "IDLE_TAILER_S", -1):
+            self.tailer(then=AssertionError("still tailing past the idle limit"))
+
+    def session_end_after(self, stop):
+        """SessionEnd as the first event after the tailer stopped (`stop`): the hook starts it once more, then closes
+        the run and removes the session's state, so the new tailer's first wake is its last. Meanwhile a sub-agent said
+        something and called a tool no hook decided, and a workflow's agent called one too."""
+        sub = os.path.join(self.d, "s1", "subagents", "agent-a1.jsonl")
+        wf = os.path.join(self.d, "s1", "subagents", "workflows", "wf_1-a2b", "agent-a2.jsonl")
+        self.write(PROMPT, TOOL_USE)
+        self.hook(start="startup")
+        self.decide("toolu_1", "Bash", ARGS)
+        stop()
+        self.write({**SAID, "uuid": "u-s", "message": {**SAID["message"], "id": "msg_s"}},
+                   use_line("toolu_x", "Read", {"file_path": "x.txt"}), path=sub)
+        self.write(use_line("toolu_w", "Read", {"file_path": "w.txt"}), path=wf)
+        with mock.patch.object(self.cc.subprocess, "Popen", self.popen), \
+                mock.patch.object(self.cc, "system_config", return_value=None):
+            self.assertEqual(self.cc._handle(self.client, {"hook_event_name": "SessionEnd", "session_id": "s1",
+                                                           "transcript_path": self.path, "reason": "other"},
+                                             "SessionEnd", "s1", None), 0)
+        self.assertEqual(len(self.started), 2)
+        self.tailer()
+        found, lost, exchanges = self.finish()
+        self.assertEqual(found, [("reconcile.hook_missing", "toolu_w"), ("reconcile.hook_missing", "toolu_x")])
+        self.assertEqual(sorted(exchanges), ["msg_1", "msg_s", "msg_toolu_w", "msg_toolu_x", "u-3"])
+        return lost
+
+    def test_session_end_right_after_a_park_reads_every_transcript(self):
+        """The new tailer listed the sub-agents' transcripts only once the main one was open: on a first wake that was
+        also its last it read the main one alone, and a sub-agent's call no hook decided was no hook_missing."""
+        self.assertEqual(self.session_end_after(self.park), [])
+
+    def test_session_end_right_after_a_kill_reads_every_transcript(self):
+        lost = self.session_end_after(lambda: self.tailer(then=Killed))
+        self.assertEqual(len(lost), 1)
+        self.assertIn("the lines written meanwhile are recorded late", lost[0])
+
+    def test_a_tailer_killed_more_than_restarts_times_is_not_started_again(self):
+        self.write(PROMPT, TOOL_USE)
+        self.hook(start="startup")
+        with mock.patch.object(self.cc, "RESTARTS", 2):
+            for i in range(3):
+                self.tailer(then=Killed)
+                self.write(use_line(f"toolu_{i}0", "Read", {"file_path": f"{i}.txt"}))
+                self.decide(f"toolu_{i}0", "Read", {"file_path": f"{i}.txt"})   # finds it stopped
+        self.assertEqual(len(self.started), 3)   # its first, and 2 restarts
+        _, lost, _ = self.finish()
+        self.assertEqual(len(lost), 3)
+        self.assertIn("(restart 2 of at most 2)", lost[1])
+        self.assertIn("it is not started again (it stopped 3 times in this run)", lost[2])
 
     def test_a_killed_tailer_is_started_again_from_where_it_stopped_after_a_signed_gap(self):
         """In dev mode nothing watched the tailer: once it was killed (or failed before it could say why), the run's

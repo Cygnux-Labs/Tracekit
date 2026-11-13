@@ -486,27 +486,35 @@ def _start(client, st, argv, handle, held=None):
 def _restart(client, path, st):
     """Start the run's dev-mode tailer again once it no longer holds its lock, where its progress log says it got (the
     bytes it read checked by their digests): after a signed tailer_lost gap when it stopped without a word, at most
-    RESTARTS times a run, or with none when it parked itself (tracekit.tailer: idle). A run already final gets
-    neither."""
+    RESTARTS times a run, or with none when it parked itself (tracekit.tailer: idle). None is started for a run the
+    hook found ended, nor once the signer refuses the gap (the run is final); a parked one's run may have closed
+    unknown to the hook: the new tailer then exits at its first record, which the signer refuses."""
     lock, log = _tailer_files(path, st["run_id"])
     held = _free(lock)
     if held is None:
         return
+    if (system_config() or {}).get("signer"):   # system mode: the signer watches its tailer, not a file of the agent's
+        held.close()
+        return
     from tracekit.tailer import resume   # only here: it loads the signer's module
     offsets, digests, parked = resume(log)
+    # lean: with no progress log (removed) a new tailer reads on from where the hook last saw the transcripts, so what
+    # the stopped one had not read by then is skipped; keep the run's start offsets in the state if that happens
     handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"],
               "offsets": offsets or st.get("offsets") or {}, "digests": digests, "until": path, "lock": lock,
               "progress": log}
     n = st.get("restarts", 0)
-    again = parked or n < RESTARTS
+    why = ("the run ended" if st.get("ended") else None if parked or n < RESTARTS else
+           f"it stopped {n + 1} times in this run")
+    again = why is None
     try:
         if not parked:
             RunHandle(client, st).call("tailer_lost", offset=handle["offsets"].get(st["transcript"], 0), reason=(
                 "the transcript tailer stopped without a word (killed, or it failed before it could say why); " + (
                     f"a new one reads on from where it stopped (restart {n + 1} of at most {RESTARTS}): the lines "
                     "written meanwhile are recorded late" if again else
-                    f"it stopped {n + 1} times in this run and is not started again: what the transcript says after "
-                    "that is not recorded: read the transcript itself for it")))
+                    f"it is not started again ({why}): what the transcript says after that is not recorded: read "
+                    "the transcript itself for it")))
     except RPCError as e:
         if e.code not in GONE:
             held.close()
@@ -1131,7 +1139,8 @@ def _handle(client, p, event, sid, tid):
             if e.code not in GONE:   # closed already (idle), or a signer reset: only the state is left
                 raise
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
-            os.remove(f)
+            with contextlib.suppress(FileNotFoundError):   # a tailer that ended removes its own lock and log
+                os.remove(f)
         return 0
     transcript, prompt = _transcript(p), p.get("prompt") if event == "UserPromptSubmit" else None
     if event == "SessionStart":
