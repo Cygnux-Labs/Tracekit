@@ -546,8 +546,8 @@ denied or held:
 |---|---|---|---|---|---|
 | juliasadler (57 harmful, 50 benign) | default | 36 (63.2%), 3 denied | 7 | 55 (96.5%), 3 denied | 8 |
 | | strict | 41 (71.9%), 4 denied | 10 | 56 (98.2%), 4 denied | 11 |
-| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 36 (80.0%), 18 denied | 0 |
-| | strict | 25 (55.6%), 19 denied | 2 | 39 (86.7%), 19 denied | 2 |
+| amandeavor (45 harmful, 45 benign) | default | 22 (48.9%), 17 denied | 0 | 37 (82.2%), 18 denied | 0 |
+| | strict | 25 (55.6%), 19 denied | 2 | 40 (88.9%), 19 denied | 2 |
 | email_ops (25 harmful, 25 benign) | default | 5 (20.0%), 3 denied | 2 | 5 (20.0%), 3 denied | 2 |
 | | strict | 6 (24.0%), 4 denied | 4 | 6 (24.0%), 4 denied | 4 |
 | narayanansriram (17 harmful, 23 benign) | default | 7 (41.2%), 1 denied | 2 | 7 (41.2%), 1 denied | 2 |
