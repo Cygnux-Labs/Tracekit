@@ -9,7 +9,7 @@
 # pattern (regex searched in the tool's main field, or `field` if given), reason (shown to the
 # agent and recorded), rationale (why the rule exists). Sections: deny, ask, flag.
 
-version: '2026.10-2'
+version: '2026.10-3'
 fail_mode: open            # open | closed   (closed: tool calls are blocked while the signer is down)
 content_capture: hashed    # hashed | full
 reasoning_capture: false   # record model text from the harness transcript (self-reported, lower trust)
@@ -79,7 +79,18 @@ deny:
     reason: writing to the agent harness's transcripts
     rationale: Same as TK-D008, for the file-editing tools.
 
-ask: []
+ask:
+  - id: TK-A064
+    tool: Bash
+    field: gptme_tmux_input
+    pattern: '^true$'
+    reason: sending keys to an existing gptme tmux pane
+    rationale: Existing input and the program in the pane can change what the keys do.
+  - id: TK-A065
+    tool: mcp__gptme__load
+    pattern: '^'
+    reason: loading an MCP server through gptme
+    rationale: Loading a server can start a subprocess or connect to a remote server.
 # Example (see policy/strict.yaml): hold `git push` until a human approves from another terminal.
 #  - id: TK-A001
 #    tool: Bash
