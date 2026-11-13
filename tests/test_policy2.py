@@ -1017,7 +1017,7 @@ class Speed(unittest.TestCase):
         took `http` in each URL for a network command (a 20 KB download script: 0.8 s), TK-F011 a redirection
         target past the next `>`, TK-M004 a mention's label past the next `<`, TK-DB005 the text after each COPY.
         TK-A047 split a word at each `$` or backquote, and a branch name at each `/protection`, then read on to the end
-        from each split (PR #468's review: each spent the 1 s and denied). TK-A064's socket and assignment values read
+        from each split (PR #468's review: each spent the 1 s and denied). TK-A072's socket and assignment values read
         `\\S*` past each `;`, so an unspaced line of `;DOCKER_HOST=unix://` went quadratic (PR #731: 1 s, denied)."""
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
         n, scale = MAX_SUBJECT - 200, machine_scale()

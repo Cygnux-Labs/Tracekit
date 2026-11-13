@@ -14,6 +14,8 @@ tracekit init --dev --v2 --agent goose      # ~/.agents/plugins/tracekit/hooks/h
 tracekit init --dev --v2 --agent antigravity   # ~/.gemini/config/hooks.json (see Antigravity CLI below)
 tracekit init --dev --v2 --agent crush      # $CRUSH_GLOBAL_CONFIG, else $XDG_CONFIG_HOME (or ~/.config)/crush: crush.json; --project: ./crush.json
 tracekit init --dev --v2 --agent devin      # ~/.config/devin/config.json (Windows %APPDATA%\devin\config.json); --project: .devin/hooks.v1.json
+tracekit init --dev --v2 --agent cline      # ~/Documents/Cline/Hooks/<event>; --project: .clinerules/hooks/<event>
+tracekit init --dev --v2 --agent gptme      # ~/.config/gptme/plugins/tracekit/ (user config only, no --project)
 tracekit init --dev --v2 --agent openhands  # ~/.openhands/hooks.json; --project: .openhands/hooks.json
 tracekit init --dev --v2 --agent copilot    # ~/.copilot/hooks/tracekit.json; --project: .github/hooks/tracekit.json (Copilot CLI 1.0.107 or later)
 tracekit init --dev --v2 --agent codebuddy  # ~/.codebuddy/settings.json ($CODEBUDDY_CONFIG_DIR/settings.json when it is set); --project: .codebuddy/settings.json
@@ -30,7 +32,7 @@ edit or turn off) is for Claude Code only, and init refuses it with these agents
 `--v2` and write the same files:
 
 ```bash
-tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, openhands, copilot, codebuddy
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, cline, gptme, openhands, copilot, codebuddy
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
