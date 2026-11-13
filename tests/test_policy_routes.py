@@ -267,6 +267,49 @@ class Routes(unittest.TestCase):
                               "for h in 1{6,8}9.254.169.254; do curl -s http://$h/; done"),
                     {"dev": "deny", "server": "deny", "strict": "deny"}, "TK-S001", packs=("dev", "server", "strict"))
 
+    def test_a_loop_decides_no_more_loosely_than_each_value_written_in(self):
+        """#683's differential: a for loop over values decides at least as strictly as each value alone (a loop over
+        one value, which the parser reads written in), and keeps every rule id one of them raises. Each shell command
+        of E17's corpus with its last word (a redirection's target too: `echo … >> ~/.bashrc`) as a loop's "$tkv" over
+        that word and one that differs from it (0 and 9, 1 and 6 swapped, else a trailing dot), alone and after four
+        other values, so a value past a line's first four readings is read too. The control: the corpus catches a loop
+        read as its first value alone."""
+        rank = ("allow", "flag", "ask", "deny").index
+
+        def looped(words, at, values):   # each value quoted as a shell quotes it, so bash reads the loop
+            header = " ".join("'%s'" % v.replace("'", "'\\''") for v in values)
+            return "for tkv in %s; do %s; done" % (header, " ".join(words[:at] + ['"$tkv"'] + words[at + 1:]))
+
+        checked = caught = 0
+        for kind in ("deny", "benign"):
+            with open(os.path.join(os.path.dirname(__file__), "data", "policy", kind, "shell.jsonl"),
+                      encoding="utf-8") as f:
+                commands = [json.loads(x)["args"].get("command") for x in f if x.strip()]
+            for cmd in commands:
+                if not isinstance(cmd, str) or "<<" in cmd or "tkv" in cmd:
+                    continue
+                words = cmd.split(" ")
+                at = max((n for n, w in enumerate(words) if w.strip()), default=None)
+                if at is None:
+                    continue
+                other = words[at].translate(str.maketrans("0961", "9016"))
+                values = (words[at], other if other != words[at] else words[at] + ".")
+                for backend in BACKENDS:
+                    e = self.engines[("dev", backend)]
+                    singles = [svc.evaluate(e, "Bash", {"command": looped(words, at, (v,))})[0] for v in values]
+                    strictest = max(rank(s["verdict"]) for s in singles)
+                    for pad in ((), ("p0", "p1", "p2", "p3")):
+                        whole = svc.evaluate(e, "Bash", {"command": looped(words, at, pad + values)})[0]
+                        with self.subTest(backend=backend, cmd=cmd[:80], pad=bool(pad)):
+                            self.assertGreaterEqual(rank(whole["verdict"]), strictest, (whole, singles))
+                            if "TK-SHELL-PARSE" not in whole["rule_ids"]:   # (a line it can't read is held)
+                                self.assertLessEqual(set().union(*(s["rule_ids"] for s in singles)),
+                                                     set(whole["rule_ids"]), (whole, singles))
+                    checked += 1
+                    caught += rank(singles[0]["verdict"]) < strictest
+        self.assertGreater(checked, 500)
+        self.assertGreater(caught, 0, "the corpus no longer catches a loop read as its first value alone")
+
     # --- a harness's own settings commands and a harness started with settings the agent chose
     def test_a_harness_settings_command_is_held(self):
         self.expect(self.bash("hermes plugins disable tracekit", "hermes -p work plugins remove tracekit",

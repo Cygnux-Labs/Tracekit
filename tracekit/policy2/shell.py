@@ -2698,6 +2698,7 @@ class _Parser:
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
         self.data_steps = []
         self.gone = [{} for _ in range(12)]   # each second reading's text of the words in self.out it changes (None: gone)
+        self.pieces = []   # (a command's start and end in self.out, a reading of its pipeline alone, as gone's: flush)
         self.unwrapped = set()   # emit(): (pipeline, wrapper, what it may run) read where an option may take a value
         # the variables bash expands to a non-empty value here, which no second reading empties: $PWD (bash sets it),
         # one the line gave a literal (`D=build; rm -rf "$D"/`) and a for loop's over literal words, in its body;
@@ -2965,6 +2966,19 @@ class _Parser:
             more += _lines_without(self.out, self.progs, gone)
         self.ctx["lines"] += _lines(self.out, self.progs) + more
         self.ctx["kept_batches"].append((self.out.copy(), self.progs.copy(), self.data_steps.copy(), gones))
+        progs = set(self.progs)
+        for begin, end, gone in self.pieces:   # a reading of one command's pipeline alone (simple): from the and-or
+            while begin and self.out[begin - 1] not in _LIST_ENDS:   # list's separator before it to the one after
+                begin -= 1
+            while end < len(self.out) and self.out[end] not in _LIST_ENDS:
+                end += 1
+            words = self.out[begin:end]
+            at = [i - begin for i in range(begin, end) if i in progs]
+            gone = {i - begin: t for i, t in gone.items() if begin <= i < end}
+            self.charge(2 * sum(map(len, words)))
+            self.ctx["lines"] += _lines_without(words, at, gone)
+            self.ctx["kept_batches"].append((words, at, [({i - begin for i in indexes if begin <= i < end}, step)
+                                                         for indexes, step in self.data_steps], [gone]))
 
     def blank(self):
         s = self.s
@@ -3174,6 +3188,7 @@ class _Parser:
                 self.ctx["steps"][-1]["piped_on"] = True
 
     def simple(self, pid, piped=False, stage=0):
+        begin, targets = len(self.out), []   # where it starts in self.out; (where a redirection's target is, its slots)
         words, globs, names, strings, docs, idx, spans, here, exps = [], [], [], [], [], [], [], [], []
         first = len(self.ctx["cmds"])   # the commands its substitutions run, then its own, follow
         self.piped = piped
@@ -3300,6 +3315,8 @@ class _Parser:
                     self.ctx["more"] |= bool(other)
                     named = [target[0]] + other * self.ctx["readings"] + [t for texts in self.fill([self.slots])
                                                                           for t in texts]
+                    if self.slots:   # (each literal a known variable in it may hold: its line too, below)
+                        targets.append((len(self.out) - 1, self.slots))
                     if self.ifs:   # bash splits an unquoted $IFS's value out of the name: `>${IFS}f` writes f
                         at, was = [start] + [i for span in self.ifs for i in span] + [self.i], self.spliced
                         for a, b in zip(at[::2], at[1::2]):   # each piece, and with its expansions empty
@@ -3607,13 +3624,14 @@ class _Parser:
                 alt = [f for t in texts if t is not None for f in ((t,) if isinstance(t, str) else t)]
             else:
                 kept, alt = range(len(texts)), texts
-            # lean: past the 4th, a literal's or a pattern's reading makes a command, not a line: a rule on the line
-            # or code (TK-D011) reads the first 4 (a loop over hundreds of words would read its whole script again for
-            # each); line all if needed
+            # past the 4th, a literal's or a pattern's reading is a line of the command's pipeline alone (flush), so a
+            # loop over hundreds of words doesn't read its whole script again for each
+            read = {idx[i]: " ".join(t) if isinstance(t, tuple) else t for i, t in enumerate(texts) if t != words[i]}
             if k < 16 + len(combos):
                 self.gone += [{} for _ in range(k + 1 - len(self.gone))]
-                self.gone[k].update((idx[i], " ".join(t) if isinstance(t, tuple) else t) for i, t in enumerate(texts)
-                                    if t != words[i])
+                self.gone[k].update(read)
+            else:
+                self.pieces.append((begin, len(self.out), read))
             if alt and (key := tuple(alt)) not in seen and not data:
                 seen.add(key)
                 self.charge(sum(map(len, alt)))
@@ -3622,6 +3640,14 @@ class _Parser:
                                                             for f, i in zip(alt, kept)])
                 cmds += more
                 self.progs += [idx[kept[j]] for j in _programs(alt, more)]
+        # and a redirection's target as bash opens it with each literal a known variable in it may hold, the command's
+        # words in the same reading (`for f in a ~/.bashrc; do echo … >> "$f"; done` writes ~/.bashrc), each a line of
+        # the command's pipeline alone (flush)
+        at = idx + [i for i, _ in targets]
+        for texts in self.fill(slots + [s for _, s in targets], True) if targets else ():
+            self.pieces.append((begin, len(self.out), {
+                at[i]: None if not t and i < len(alones) and alones[i] else " ".join(t) if isinstance(t, tuple) else t
+                for i, t in enumerate(texts) if t is not None}))
         self.known = outer
         # bash sets $_ to the last word of each simple command it runs, OPTARG to an option's value getopts reads: each
         # literal one may be the value later on the line (given), where TK-D012 also denies one in the action position
@@ -4868,15 +4894,15 @@ class _Parser:
         return text, raw, bool(glob) or vglob, self.ctx["exp"] != exp
 
     def sub(self, label):
-        saved = self.via, self.out, self.progs, self.data, self.data_steps, self.gone, dict(self.known), self.inherit, \
-            self.piped
+        saved = self.via, self.out, self.progs, self.data, self.data_steps, self.gone, self.pieces, dict(self.known), \
+            self.inherit, self.piped
         self.via, self.out, self.progs, self.data, self.data_steps = self.via + [label], [], [], set(), []
-        self.gone = [{} for _ in range(12)]
+        self.gone, self.pieces = [{} for _ in range(12)], []
         self.inherit = self.inherit or self.piped or bool(self.blocks)   # the stdin of the command it is in
         self.list(")")
         self.flush()
-        self.via, self.out, self.progs, self.data, self.data_steps, self.gone, self.known, self.inherit, self.piped = \
-            saved   # a subshell's own
+        self.via, self.out, self.progs, self.data, self.data_steps, self.gone, self.pieces, self.known, self.inherit, \
+            self.piped = saved   # a subshell's own
 
     def arith(self):
         """Read `$(( ))` from after its `$((`, running the substitutions in it; dollar() calls it only when the text
@@ -5221,6 +5247,9 @@ def _programs(words, cmds):
             if c["argv"][0] == "find":
                 out += [k + j + 1 for j, a in enumerate(c["argv"][:-1]) if a in ("-exec", "-execdir", "-ok", "-okdir")]
     return out
+
+
+_LIST_ENDS = frozenset((";", "&", "&&", "||", "(", ")"))   # the words of a line between its and-or lists (flush)
 
 
 def _lines(words, progs):
