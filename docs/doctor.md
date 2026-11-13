@@ -108,5 +108,6 @@ KMS keys in the agent's pod are the case to avoid: keep the signer that holds th
 | `D-V1-HOOKS` | never: lists the Tracekit hooks it found (ok) |
 | `D-HARNESS-HELPER` | a harness is registered and `tracekitd-harness-helper.service` is missing or its capability bounding set is anything but `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH` (fix: `sudo /opt/tracekit/bin/python -I -m tracekit migrate --system`) |
 
-Fix: re-run `sudo /usr/bin/python3 -m tracekit init --user AGENT`. For the policy, make it root-owned, then run
+Fix: from a root-owned clone of the release ([laptop system mode](deploy.md#laptop-system-mode)), re-run
+`sudo /usr/bin/python3 -m tracekit init --user AGENT`. For the policy, make it root-owned, then run
 `sudo /opt/tracekit/bin/python -I -m tracekit migrate --system`.

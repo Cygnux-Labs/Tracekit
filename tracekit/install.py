@@ -37,6 +37,10 @@ SYS_HOME = "/var/lib/tracekit"
 SYS_USER = "tracekit"
 OPT = "/opt/tracekit"   # system mode: root-owned virtualenv the signer and hooks run from
 OPT_PYTHON = os.path.join(OPT, "bin", "python")
+# v1 system mode's init, worded like doctor.REINIT: under PEP 668 (Debian 12, Ubuntu 23.04+) the system Python runs it
+# only from a clone of the release
+V1_REINIT = (f"from a root-owned clone of the release ({wiki_url('docs/deploy.md', 'laptop-system-mode')}), "
+             "sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
 SYSTEMD_DIR = "/etc/systemd/system"
 TOOL_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
 OTHER_EVENTS = ["UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "SessionStart", "SessionEnd"]
@@ -1204,7 +1208,7 @@ def migrate_system(fail_mode=None, harnesses=None):
         raise SystemExit(f"migrate --system needs root: sudo {OPT_PYTHON} -I -m tracekit migrate --system")
     signer_cfg = os.path.join(SYS_HOME, "config.json")
     if not os.path.exists(signer_cfg):
-        raise SystemExit(f"no system-mode signer at {SYS_HOME}; run `sudo /usr/bin/python3 -m tracekit init --user <agent-user>` instead")
+        raise SystemExit(f"no system-mode signer at {SYS_HOME}; init one instead: {V1_REINIT}")
     unit = os.path.join(SYSTEMD_DIR, "tracekitd.service")
     try:
         runs_opt = f"ExecStart={OPT_PYTHON} " in read_text(unit)
@@ -1393,13 +1397,12 @@ def v1_results(checks=None):
         try:
             sc = client.system_config()
         except client.SystemConfigError as e:
-            return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {e}",
-                                 "sudo /usr/bin/python3 -m tracekit init --user <agent-user>")]
+            return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {e}", V1_REINIT)]
         if sc is None:
             return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {client.SYSTEM_CONFIG} is missing or not "
-                                 "root-owned", "sudo /usr/bin/python3 -m tracekit init --user <agent-user>")]
+                                 "root-owned", V1_REINIT)]
         from .policy import DEFAULT_POLICY
-        reinstall = "re-run sudo /usr/bin/python3 -m tracekit init --user <agent-user> to reinstall into " + OPT
+        reinstall = f"re-run init to reinstall into {OPT}: " + V1_REINIT
         checks = [("signer python", OPT_PYTHON, reinstall), ("venv config", os.path.join(OPT, "pyvenv.cfg"), reinstall),
                   ("runtime", OPT, reinstall), ("unit file", _unit_path(), reinstall),
                    ("policy file", sc.get("policy") or DEFAULT_POLICY,

@@ -28,7 +28,7 @@ next: tracekit view --dev   (every run, replayed and reviewed)
 
 $ tracekit doctor
 WARN  Dev mode records; it does not guard. The agent runs as you and can reach the key. For protection, use system mode or Box.  (D-PROCESS-BOUNDARY)
-      fix: use system mode where the agent must not reach the signer: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>
+      fix: use system mode where the agent must not reach the signer: from a root-owned clone of the release (https://github.com/Cygnux-Labs/Tracekit/wiki/Deploy#laptop-system-mode), sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>
 ok    7 keys, 0600 in a 0700 dir  (D-KEYS-MODE)
 ok    off: the signer keeps commitments only, no content  (D-CONTENT-VAULT)
 ok    the log key and the record key differ  (D-KEYS-DISTINCT)
