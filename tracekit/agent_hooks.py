@@ -415,14 +415,14 @@ def _gptme_tool(name, ti):
     args, content, kwargs = ti.get("args"), ti.get("content"), ti.get("kwargs")
     if kwargs is not None:
         if not isinstance(kwargs, dict) or args is not None or content is not None:
-            raise ValueError("gptme native calls must carry only a kwargs object")
+            raise UnreadableCall("gptme native calls must carry only a kwargs object")
     elif not isinstance(args, list) or not all(isinstance(arg, str) for arg in args) or not isinstance(content, str):
-        raise ValueError("gptme markdown calls must carry an args list and text content")
+        raise UnreadableCall("gptme markdown calls must carry an args list and text content")
 
     if name == "tmux":
         operations = ti.get("operations")
         if not isinstance(operations, list) or not operations or not all(isinstance(op, str) for op in operations):
-            raise ValueError("gptme tmux requires the parsed operations")
+            raise UnreadableCall("gptme tmux requires the parsed operations")
         commands, pane_input = [], False
         for op in operations:
             parts = op.split(maxsplit=1)
@@ -452,7 +452,7 @@ def _gptme_tool(name, ti):
         patches = ti.get("patches")
         if not isinstance(patches, list) or not patches or not all(
                 isinstance(p, list) and len(p) == 2 and all(isinstance(v, str) and v for v in p) for p in patches):
-            raise ValueError("gptme patch_many requires the prepared patches")
+            raise UnreadableCall("gptme patch_many requires the prepared patches")
         return "Edit", {"paths": [path for path, _ in patches], "patches": [patch for _, patch in patches]}
 
     if name == "mcp":
@@ -465,10 +465,10 @@ def _gptme_tool(name, ti):
         value = kwargs.get(key) if kwargs is not None else content.strip()
         if name == "shell" and kwargs is None:
             if args:
-                raise ValueError("gptme markdown shell takes no positional arguments")
+                raise UnreadableCall("gptme markdown shell takes no positional arguments")
             value = value.removeprefix("$ ")
         if not isinstance(value, str):
-            raise ValueError(f"gptme {name} requires text {key}")
+            raise UnreadableCall(f"gptme {name} requires text {key}")
         if name == "ipython":
             return name, {key: value}
         result = {"command": value}
@@ -488,7 +488,7 @@ def _gptme_tool(name, ti):
                 path = path.split(" ", 1)[1]
             paths = [path]
         if not paths or not all(isinstance(path, str) and path for path in paths):
-            raise ValueError(f"gptme {name} requires a file path")
+            raise UnreadableCall(f"gptme {name} requires a file path")
         result = {"file_path": os.path.expanduser(paths[0])}
         if name == "read":
             if len(paths) > 1:
@@ -498,15 +498,18 @@ def _gptme_tool(name, ti):
             native_key = "edit" if name in ("morph", "hashline_edit") else key
             value = kwargs.get(native_key) if kwargs is not None else content
             if not isinstance(value, str):
-                raise ValueError(f"gptme {name} requires text {key}")
+                raise UnreadableCall(f"gptme {name} requires text {key}")
             result[key] = value
         return mapped, result
 
     if "." in name:
         server, _, command = name.partition(".")
-        params = kwargs if kwargs is not None else json.loads(content)
+        try:
+            params = kwargs if kwargs is not None else json.loads(content)
+        except ValueError:
+            raise UnreadableCall("gptme MCP call content isn't JSON") from None
         if not server or not command or not isinstance(params, dict):
-            raise ValueError("gptme MCP calls require a qualified tool name and an arguments object")
+            raise UnreadableCall("gptme MCP calls require a qualified tool name and an arguments object")
         return f"mcp__{server}__{command}", params
     return name, kwargs if kwargs is not None else ti
 
