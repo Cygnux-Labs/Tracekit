@@ -611,6 +611,28 @@ class TestAudit(unittest.TestCase):
         report = audit.audit(str(tasks), agent="cline")
         self.assertEqual([c["session"] for c in report["calls"]], ["s1"])
 
+    def test_a_goose_read_image_source_that_isnt_a_url_is_blocked_as_the_hook_blocks_it(self):
+        """#771: urlsplit raises on the source; goose's v2 hook blocks the call: audit denies it, replays the rest."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("read_image", {"source": "http://[::1/cat.png"}),
+                                                 _line("shell", {"command": "ls"})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "goose", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(c["verdict"], c["rule_ids"]) for c in json.loads(out)["calls"]],
+                         [("deny", ["TK-HOOK-BLOCKED"]), ("allow", [])])
+
+    def test_a_mapping_bug_is_not_reported_as_the_hook_blocking_the_call(self):
+        """#771: only UnreadableCall is a call the hook blocks; any other ValueError from the mapping is a bug that ends
+        the replay with its message (exit 2)."""
+        def bug(*_):
+            raise ValueError("a mapping bug")
+
+        _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"command": "ls"})])
+        with mock.patch.object(audit, "hook_tool", side_effect=bug):
+            with self.assertRaisesRegex(ValueError, "a mapping bug"):
+                audit.audit(calls=str(self.root / "calls.jsonl"), agent="goose")
+            code, _, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "goose")
+        self.assertEqual((code, err.splitlines()[-1]), (2, "tracekit audit: a mapping bug"))
+
     def test_kilo_generate_image_without_a_path_is_decided(self):
         """The 1.7.0 review's fuzzing: --agent kilo crashed (KeyError) on a generate_image with an image and no path;
         it is decided as the Read of the image."""

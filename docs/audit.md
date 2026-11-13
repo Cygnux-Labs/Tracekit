@@ -134,7 +134,9 @@ jq -c '{time: .ts, tool: .tool, args: .input}' agent.log | tracekit audit --call
   (`TK-ENGINE-ERROR`), as the signer would decide it. A shell command that is neither text nor an argv of strings
   (an argv with an item that isn't a string, say), with any `--agent` or none, is held (`TK-SHELL-PARSE`), as the
   signer holds it; with `--agent cline` or `--agent devin`, a call that agent's hook can't read is denied
-  (`TK-HOOK-BLOCKED`), as its hook blocks it before the signer sees it.
+  (`TK-HOOK-BLOCKED`), as its hook blocks it before the signer sees it. So is a goose `read_image` call whose source
+  Tracekit can't read as a URL (`http://[::1/cat.png`): that is the v2 hook's answer, while the v1 hook allows such a
+  call under the default fail-open mode.
 - Counts per rule id, most first, each with what the rule is (its `reason` or `label`, or the viewer's words for the
   engine's own rules).
 - The session and timestamp of each denied or held call (every call with `--all`), and its redacted text with
