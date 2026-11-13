@@ -285,3 +285,12 @@
 {"tool": "Bash", "args": {"command": "grep -rn \"rm -rf /usr\" docs/"}, "expect": "allow", "note": "searching for a system folder delete (#749)"}
 {"tool": "Bash", "args": {"command": "echo \"never run rm -rf /var\""}, "expect": "allow", "note": "printing a system folder delete (#749)"}
 {"tool": "Bash", "args": {"command": "gh issue comment 1 --body \"rm -rf /etc is denied now\""}, "expect": "allow", "note": "a comment naming a system folder delete (#749)"}
+{"tool": "Bash", "args": {"command": "docker ps"}, "expect": "allow", "note": "list containers"}
+{"tool": "Bash", "args": {"command": "docker run --rm hello-world"}, "expect": "allow", "note": "run a container through the docker command"}
+{"tool": "Bash", "args": {"command": "ls -la /var/run/docker.sock"}, "expect": "allow", "note": "list the Docker socket file"}
+{"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///var/run/docker.sock docker ps"}, "expect": "allow", "note": "docker with an explicit socket"}
+{"tool": "Bash", "args": {"command": "cat /sys/fs/cgroup/cpu.max"}, "expect": "allow", "note": "read a cgroup limit"}
+{"tool": "Bash", "args": {"command": "cat /sys/fs/cgroup/x/release_agent"}, "expect": "allow", "note": "read a cgroup release_agent"}
+{"tool": "Bash", "args": {"command": "grep release_agent notes.txt"}, "expect": "allow", "note": "search notes for release_agent"}
+{"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps"}, "expect": "allow", "note": "docker by its path with an explicit socket"}
+{"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up"}, "expect": "allow", "note": "compose with an explicit socket"}
