@@ -17,6 +17,7 @@ from factories import BoxScene
 from test_findings_v2 import Via
 from tracekit import bundle_v2, findings, findings_box, findings_effects, findings_v2
 from tracekit.bundle_v2 import export
+from tracekit.signer import rpc_schema
 from tracekit.storage.base import registry_tree
 from tracekit.verify import v2
 from tracekit.why.import_v2 import bundle_records
@@ -771,6 +772,121 @@ class Cli(Base):
         code, out, _ = self.cli("--run", agent, "--bundle", bundle, "--trust", trust)
         self.assertEqual(code, 0)
         self.assertIn("TK-X212 for 4 calls: this is a box's agent run", out)
+
+
+class BoxPatchTaskConstraints(Base):
+    @staticmethod
+    def found_x204(out):
+        return [(f, d) for f, d in zip(out["findings"], out["shown"]["details"])
+                if f["verdict"]["rule"] == "TK-X204"]
+
+    @staticmethod
+    def cov_x204(out):
+        c = out["coverage"]["verdict"]["checks"]["TK-X204"]
+        return c["checked"], c["found"], {g["reason"]: g["n"] for g in c["not_checkable"]}
+
+    def test_keep_away_broken_by_patch(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Fix the bug in src/app.py. Don't touch .github/"}, trust="trusted")
+        b.call(2.0, 2.5, "Edit", {"file_path": "/workspace/src/app.py", "old_string": "a", "new_string": "b"})
+        b.write(30.0, f"{PROJ}/src/app.py")
+        b.write(30.1, f"{PROJ}/.github/workflows/ci.yml")
+        out = self.analyze()
+        findings = self.found_x204(out)
+        self.assertEqual(len(findings), 1)
+        f, d = findings[0]
+        self.assertEqual(f["verdict"]["severity"], "high")
+        self.assertEqual(d["labels"], ["keep_away"])
+        self.assertIn("the box's patch changed .github/workflows/ci.yml after the request (record", d["what"])
+        self.assertIn("to keep .github/ unchanged", d["what"])
+        self.assertEqual(self.cov_x204(out), (2, 1, {}))
+
+    def test_only_change_broken_by_patch(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Only change src/app.py"}, trust="trusted")
+        b.write(30.0, f"{PROJ}/src/other.py")
+        out = self.analyze()
+        findings = self.found_x204(out)
+        self.assertEqual(len(findings), 1)
+        f, d = findings[0]
+        self.assertEqual(f["verdict"]["severity"], "high")
+        self.assertEqual(d["labels"], ["only_change"])
+        self.assertIn("to change only app.py", d["what"])
+
+    def test_read_only_broken_by_patch(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Investigate the crash, but don't change anything."}, trust="trusted")
+        b.write(30.0, f"{PROJ}/src/app.py")
+        out = self.analyze()
+        findings = self.found_x204(out)
+        self.assertEqual(len(findings), 1)
+        f, d = findings[0]
+        self.assertEqual(f["verdict"]["severity"], "high")
+        self.assertEqual(d["labels"], ["read_only"])
+        self.assertIn("to make no changes", d["what"])
+
+    def test_deleted_file_breaks_constraint(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Don't touch config.json"}, trust="trusted")
+        b.write(30.0, f"{PROJ}/config.json", deleted=True)
+        out = self.analyze()
+        findings = self.found_x204(out)
+        self.assertEqual(len(findings), 1)
+        f, d = findings[0]
+        self.assertEqual(f["verdict"]["severity"], "high")
+        self.assertEqual(d["labels"], ["keep_away"])
+        self.assertIn("the box's patch deleted config.json after the request", d["what"])
+
+    def test_no_task_is_not_checkable(self):
+        b = self.box
+        b.agent(1.0)
+        b.call(2.0, 2.5, "Write", {"file_path": "/workspace/app.py", "content": "x"})
+        b.write(30.0, f"{PROJ}/app.py")
+        out = self.analyze()
+        self.assertEqual(self.found_x204(out), [])
+        self.assertEqual(self.cov_x204(out), (0, 0, {"no_task": 1}))
+
+    def test_apply_dir_is_not_checkable(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Fix bugs"}, trust="trusted")
+        b.write(30.0, "/srv/other-checkout/app.py")
+        out = self.analyze()
+        self.assertEqual(self.found_x204(out), [])
+        self.assertEqual(self.cov_x204(out), (0, 0, {"apply_dir": 1}))
+
+    def test_benign_task_is_checked(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Improve performance and add benchmarks"}, trust="trusted")
+        b.write(30.0, f"{PROJ}/src/app.py")
+        out = self.analyze()
+        self.assertEqual(self.found_x204(out), [])
+        self.assertEqual(self.cov_x204(out), (1, 0, {}))
+
+    def test_each_finding_can_be_signed(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Don't touch .github/"}, trust="trusted")
+        b.write(30.0, f"{PROJ}/.github/workflows/ci.yml")
+        found = self.found_x204(self.analyze())
+        self.assertEqual(len(found), 1)
+        for f, _ in found:
+            self.assertEqual(rpc_schema.validate(rpc_schema.REVIEW, {"reviewer": "t", "verdict": f["verdict"],
+                                                                     "cites": f["cites"]}), [])
+
+    def test_untrusted_task_is_ignored(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Don't touch .github/"}, trust="untrusted")
+        b.write(30.0, f"{PROJ}/.github/workflows/ci.yml")
+        out = self.analyze()
+        self.assertEqual(self.found_x204(out), [])
+        self.assertEqual(self.cov_x204(out), (0, 0, {"no_task": 1}))
 
 
 def bundle_runs(case):
