@@ -45,8 +45,8 @@ denied and held calls (--all for every call):
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
   `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with `--calls`. An agent with no
-  reader (every agent but `claude` or `gemini`) needs `--calls FILE`, and `--agent claude` or `gemini` a ROOT or
-  `--calls FILE`: without them it exits 2.
+  reader (every agent but `claude`, `cline` or `gemini`) needs `--calls FILE`, and `--agent claude`, `cline` or
+  `gemini` a ROOT or `--calls FILE`: without them it exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -68,16 +68,31 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
 | `gemini` | `$GEMINI_CLI_HOME/.gemini/tmp` when it is set, else `~/.gemini/tmp` |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
-`--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`.
+`--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`. An
+agent read from more than one of its default folders is one entry: its calls and sessions add up, and `folder` is the
+list of them.
 
 Claude Code's reader reads every `.jsonl` file under its folder, at any depth: each Claude Code session's transcript, and its subagents' files
 (`<session>/subagents/*.jsonl`, a workflow's agents' in `<session>/subagents/workflows/<workflow>/`), which count
 under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
+
+Cline's reader reads each task in its folder: `<id>/<id>.messages.json`, where Cline 4.0 and later (the CLI and the
+VS Code extension) keep a session, and `<id>/api_conversation_history.json`, where earlier releases of the extension
+kept a task, in VS Code's global storage (`saoudrizwan.claude-dev/tasks` under `~/Library/Application
+Support/Code/User/globalStorage` on macOS, `~/.config/Code/User/globalStorage` on Linux and
+`%APPDATA%\Code\User\globalStorage` on Windows; Cline 4 reads those but doesn't move them, so with no ROOT audit
+reads each of those that exists as well). Like Claude Code's reader, it stays inside its folder, through a Windows
+directory junction too. Each `tool_use` block of an assistant message is a call, mapped as Tracekit's Cline hook maps
+it, so every command of a `run_commands` and every file of a `read_files` is decided; a call the hook can't read is a
+deny by `TK-HOOK-BLOCKED`. A message's `ts` is its time, else the file's modification time. The task's id is its
+session. A file that isn't JSON of that shape counts as one malformed entry. A call an older task wrote as XML in the
+message's text, rather than as a `tool_use` block, isn't read.
 
 Gemini CLI's reader reads each project's `chats` folder under its folder: `<project>/chats/session-*.jsonl` (JSON
 lines, since Gemini CLI 0.39), `<project>/chats/session-*.json` (one JSON object a session, before 0.39), and a
@@ -93,7 +108,8 @@ when that is set): read it with `tracekit audit ~/.cache/.gemini/tmp --agent gem
 older than 30 days by default (`general.sessionRetention`), so older calls can't be audited: set a longer
 `general.sessionRetention.maxAge` in its settings to keep them.
 
-It follows no symlink. Files and folders it can't read are counted and skipped, and so is a line that isn't JSON.
+The readers follow no symlink. Files and folders they can't read are counted and skipped, and so is a line that isn't
+JSON.
 
 ## Calls file
 

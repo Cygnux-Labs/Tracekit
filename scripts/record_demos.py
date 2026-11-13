@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEMOS = os.path.join(ROOT, "docs", "demos")
@@ -39,6 +40,7 @@ SCENARIOS = {
 # a demo with no bundle -> what its output must say
 OUTPUT = {"why": re.compile(r"remove input:vendor:portal/notes\.md .* CAUSAL")}
 PYTHONPATH = ROOT + os.pathsep + os.environ.get("PYTHONPATH", "")   # this checkout's tracekit, installed or not
+TIMEOUT_S = 300   # a demo's, and its dev signer's start
 
 
 def missing(name):
@@ -48,6 +50,30 @@ def missing(name):
     if absent:
         return f"{', '.join(absent)} not installed"
     return "its person approves on a Unix socket: POSIX only" if configured and os.name != "posix" else None
+
+
+def dev_signer(env):
+    """The dev signer of a demo's `env`, started as autospawn starts one, once it serves; None when it exits first or
+    doesn't serve within TIMEOUT_S. With every demo starting at once (--check), its first start can take longer than the
+    10 s a client waits for one it starts itself (autospawn.ensure), which then says Hung of a signer still starting."""
+    run_dir = env["TRACEKIT_RUNTIME_DIR"]
+    os.makedirs(run_dir, 0o700)
+    with open(os.path.join(run_dir, "signer.log"), "ab") as log:
+        p = subprocess.Popen([sys.executable, "-m", "tracekit", "signer", "serve", "--dev"], cwd=run_dir, env=env,
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log, umask=0o077)
+    deadline = time.monotonic() + TIMEOUT_S
+    try:
+        while not os.path.exists(os.path.join(run_dir, "endpoint.json")):   # it publishes this once it serves
+            if p.poll() is not None or time.monotonic() > deadline:
+                p.kill()
+                p.wait()
+                return None
+            time.sleep(0.05)
+    except BaseException:   # interrupted while it starts (Ctrl-C): don't leave it running
+        p.kill()
+        p.wait()
+        raise
+    return p
 
 
 def run(name):
@@ -61,15 +87,23 @@ def run(name):
                PYTHONUNBUFFERED="1", PYTHONPATH=PYTHONPATH)
     for k in ("TRACEKIT_SIGNER", "TRACEKIT_SIGNER_TOKEN", "TRACEKIT_SIGNER_TOKEN_FILE", "TRACEKIT_EGRESS_PROXY"):
         env.pop(k, None)
+    signer = None
     try:
+        if not SCENARIOS[name][2] and name not in OUTPUT:   # a bundle and no signer of its own: the dev signer's
+            signer = dev_signer(env)
+            if signer is None:
+                raise RuntimeError(f"{name}: the dev signer did not start (its files are in {tmp})")
         cmd = ["-m", "tracekit"] if argv[0] == "tracekit" else [os.path.join(ROOT, *argv[0].split("/"))]
         p = subprocess.run([sys.executable, *cmd, *(a.replace("$TMP", tmp) for a in argv[1:])], cwd=tmp, env=env,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=TIMEOUT_S)
     except subprocess.TimeoutExpired as e:   # a failure like any other: --check reports the other demos too
         raise RuntimeError(f"{name}: {' '.join(argv)} ran past {e.timeout:g} s (its files are in {tmp})\n"
                            f"{e.stdout or ''}") from e
-    finally:   # the dev signer the example may have started
+    finally:   # the dev signer, if the example used one
         subprocess.run([sys.executable, "-m", "tracekit", "down"], cwd=tmp, env=env, capture_output=True)
+        if signer:
+            signer.kill()
+            signer.wait()
     if p.returncode:
         raise RuntimeError(f"{name}: {' '.join(argv)} exited {p.returncode} (its files are in {tmp})\n{p.stdout}")
     text = f"$ {'' if argv[0] == 'tracekit' else 'python '}{' '.join(argv)}\n{p.stdout}"

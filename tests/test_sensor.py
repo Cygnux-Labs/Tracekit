@@ -26,10 +26,9 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.verify import v2
 
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
-# protojson Timestamp, nanoseconds; an hour from now: after the runs the tests register (an event goes to the run open
-# at its time)
-TIME = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%f") \
-    + "456Z"
+# protojson Timestamp, nanoseconds; after the runs the tests register, however long the suite takes to get here (an
+# event goes to the run open at its time)
+TIME = "2099-10-12T10:00:01.615123456Z"
 TS = TIME[:26] + "Z"   # as the signer takes it: microseconds
 EXEC_ID = "a2luZC1jb250cm9sLXBsYW5lOjExNDI4NjE1NjM2OTAxOjUxNTgz"
 PARENT_EXEC_ID = "a2luZC1jb250cm9sLXBsYW5lOjkwNzkyMjU2MjMy"
@@ -266,6 +265,20 @@ class TestImport(Sensed):
         (old,) = self.gaps(self.events("tracekit/signer"), "effect_outside_run")
         self.assertIn(f"uid:{ME.subject} has no open run registered by 2026-10-05T10:00:01.615123Z", old["reason"])
 
+    def test_the_events_go_to_a_run_registered_long_after_this_file_was_imported(self):
+        """TIME was an hour from import, and Windows CI reached these tests more than an hour after collecting them:
+        their runs registered after their events, which went to no run. A run registered two hours from now still comes
+        before TIME."""
+        later = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=2)).strftime(
+            "%Y-%m-%dT%H:%M:%S.%fZ")
+        with mock.patch.object(pipeline, "now_ts", lambda: later):
+            imp = self.importer()
+            imp.flush()
+            run = self.register()
+            imp.add(exec_line())
+            self.assertTrue(imp.flush())
+            self.assertEqual(len(self.typed(self.events(run["run_id"]), "effect.observed")), 1)
+
     def test_an_event_a_little_before_its_run_registered_is_the_runs(self):
         """The sensor's clock a little behind the signer's: no older run is open, so the run just registered takes it."""
         imp = self.importer()
@@ -488,6 +501,18 @@ class TestDelivery(Sensed):
         self.assertTrue(imp.flush())
         first, second = (c[0][0] for c in imp.client.observe_effect.call_args_list)
         self.assertEqual(first, second)
+
+    def test_the_first_flush_is_a_heartbeat_while_the_clock_reads_under_heartbeat_s(self):
+        """time.monotonic() counts from boot on Linux, and from near 0 in each process on macOS py3.9: an import started
+        then still sends its first heartbeat at once, and the next one HEARTBEAT_S later."""
+        imp = self.importer()
+        imp.client = types.SimpleNamespace(observe_effect=mock.Mock())
+        self.assertTrue(imp.flush(5))
+        self.assertEqual(imp.client.observe_effect.call_count, 1)
+        self.assertTrue(imp.flush(6))
+        self.assertEqual(imp.client.observe_effect.call_count, 1)
+        self.assertTrue(imp.flush(5 + svc.HEARTBEAT_S))
+        self.assertEqual(imp.client.observe_effect.call_count, 2)
 
     def test_past_the_buffer_events_are_a_loss(self):
         imp = self.importer()
