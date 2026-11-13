@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-82'
+version: '2026.11-v2-84'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -586,12 +586,12 @@ ask:
   - id: TK-A072
     class: shell
     field: line
-    # DOCKER_HOST set to a unix:// socket where a command starts (also after { then do else, up to eight assignments,
-    # options, env (also by a path), command, time or ! words) for a program that isn't docker, podman, docker-compose
-    # or podman-compose (by a path too, or .exe), which talks to the daemon directly; `export DOCKER_HOST=…` and a grep
-    # for it aren't held
-    pattern: '(?:^|[;&|({]\s*|\b(?:then|do|else)\s+)(?:(?:env|command|time|!|(?:[^\s/;&|()=]*/){1,8}env|-[^\s;&|()]*|[A-Za-z_][A-Za-z0-9_]*=(?:[^\s;&|(){}]|\$\([^\s;&|(){}]*\)|\$\{[^\s;&|(){}]*\})*)\s+){0,8}?DOCKER_HOST=unix://(?:[^\s;&|(){}]|\$\([^\s;&|(){}]*\)|\$\{[^\s;&|(){}]*\})*\s+(?:(?:[^\s/;&|()]*/){9}\S*|(?:[^\s/;&|()]*/){0,8}(?:[^\s/;&|()dp][^\s/]*|d(?:[^\s/o][^\s/]*|o(?:[^\s/c][^\s/]*|c(?:[^\s/k][^\s/]*|k(?:[^\s/e][^\s/]*|e(?:[^\s/r][^\s/]*|r(?:[^\s/\-\.][^\s/]*|\-(?:[^\s/c][^\s/]*|c(?:[^\s/o][^\s/]*|o(?:[^\s/m][^\s/]*|m(?:[^\s/p][^\s/]*|p(?:[^\s/o][^\s/]*|o(?:[^\s/s][^\s/]*|s(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?)?|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?|p(?:[^\s/o][^\s/]*|o(?:[^\s/d][^\s/]*|d(?:[^\s/m][^\s/]*|m(?:[^\s/a][^\s/]*|a(?:[^\s/n][^\s/]*|n(?:[^\s/\-\.][^\s/]*|\-(?:[^\s/c][^\s/]*|c(?:[^\s/o][^\s/]*|o(?:[^\s/m][^\s/]*|m(?:[^\s/p][^\s/]*|p(?:[^\s/o][^\s/]*|o(?:[^\s/s][^\s/]*|s(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?)?|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?))(?:\s|$)'
-    reason: a program pointed at the Docker socket through DOCKER_HOST
+    # DOCKER_HOST, or Podman's CONTAINER_HOST, set to a unix:// socket where a command starts (also after { then do
+    # else, up to eight assignments, options, numbers, env, nohup or nice (each also by a path), command, time or !
+    # words) for a program that isn't docker, podman, docker-compose or podman-compose (by a path too, or .exe), which
+    # talks to the daemon directly; `export DOCKER_HOST=…` and a grep for it aren't held
+    pattern: '(?:^|[;&|({]\s*|\b(?:then|do|else)\s+)(?:(?:env|command|time|nohup|nice|!|\+?[0-9]+|(?:[^\s/;&|()=]*/){1,8}(?:env|nohup|nice)|-[^\s;&|()]*|[A-Za-z_][A-Za-z0-9_]*=(?:[^\s;&|(){}]|\$\([^\s;&|(){}]*\)|\$\{[^\s;&|(){}]*\})*)\s+){0,8}?(?:DOCKER|CONTAINER)_HOST=unix://(?:[^\s;&|(){}]|\$\([^\s;&|(){}]*\)|\$\{[^\s;&|(){}]*\})*\s+(?:(?:[^\s/;&|()]*/){9}\S*|(?:[^\s/;&|()]*/){0,8}(?:[^\s/;&|()dp][^\s/]*|d(?:[^\s/o][^\s/]*|o(?:[^\s/c][^\s/]*|c(?:[^\s/k][^\s/]*|k(?:[^\s/e][^\s/]*|e(?:[^\s/r][^\s/]*|r(?:[^\s/\-\.][^\s/]*|\-(?:[^\s/c][^\s/]*|c(?:[^\s/o][^\s/]*|o(?:[^\s/m][^\s/]*|m(?:[^\s/p][^\s/]*|p(?:[^\s/o][^\s/]*|o(?:[^\s/s][^\s/]*|s(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?)?|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?|p(?:[^\s/o][^\s/]*|o(?:[^\s/d][^\s/]*|d(?:[^\s/m][^\s/]*|m(?:[^\s/a][^\s/]*|a(?:[^\s/n][^\s/]*|n(?:[^\s/\-\.][^\s/]*|\-(?:[^\s/c][^\s/]*|c(?:[^\s/o][^\s/]*|o(?:[^\s/m][^\s/]*|m(?:[^\s/p][^\s/]*|p(?:[^\s/o][^\s/]*|o(?:[^\s/s][^\s/]*|s(?:[^\s/e][^\s/]*|e(?:[^\s/\.][^\s/]*|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?)?)?|\.(?:[^\s/e][^\s/]*|e(?:[^\s/x][^\s/]*|x(?:[^\s/e][^\s/]*|e(?:[^\s/][^\s/]*))?)?)?))?)?)?)?)?))(?:\s|$)'
+    reason: a program pointed at the Docker or Podman socket through DOCKER_HOST or CONTAINER_HOST
     remedy: Use the docker or podman command, which shows what it does, or have a person approve the held call.
     rationale: A program given the container socket can start a privileged container that mounts the host without the docker command showing what it does; a person confirms it.
   - id: TK-A073

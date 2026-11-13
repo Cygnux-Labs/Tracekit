@@ -352,7 +352,13 @@ class CodingPack(unittest.TestCase):
                 "time DOCKER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration",
                 "! DOCKER_HOST=unix:///var/run/docker.sock python x.py",
                 "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
-                "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py"]
+                "env -- DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "nohup env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "nice -n 5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "nice -n +5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "/usr/bin/nohup env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "CONTAINER_HOST=unix:///run/podman/podman.sock python x.py",
+                "env CONTAINER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration"]
         benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
                   "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps",
                   "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up",
@@ -361,7 +367,12 @@ class CodingPack(unittest.TestCase):
                   "grep release_agent notes.txt", "cat /sys/fs/cgroup/x/release_agent",
                   "echo 1 > /sys/fs/cgroup/x/cgroup.procs", "echo curl docker.sock",
                   "time DOCKER_HOST=unix:///var/run/docker.sock docker ps",
-                  "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock docker ps"]
+                  "/usr/bin/env DOCKER_HOST=unix:///var/run/docker.sock docker ps",
+                  "nohup env DOCKER_HOST=unix:///var/run/docker.sock docker ps", "nice -n 5 python x.py",
+                  "CONTAINER_HOST=unix:///run/podman/podman.sock podman ps",
+                  "CONTAINER_HOST=unix:///run/podman/podman.sock podman-compose up",
+                  "export CONTAINER_HOST=unix:///run/podman/podman.sock && podman ps",
+                  "grep CONTAINER_HOST=unix:// compose.yaml"]
         rules = {"TK-A071", "TK-A072", "TK-A073"}
         files = (("Write", "/sys/fs/cgroup/x/release_agent", True), ("Edit", "/sys/fs/cgroup/x/notify_on_release", True),
                  ("Read", "/sys/fs/cgroup/x/release_agent", False), ("Write", "/w/notes/release_agent_notes.md", False))
