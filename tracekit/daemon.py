@@ -130,6 +130,14 @@ HOOK_BOUND_SOURCES = {"hook", "transcript"}   # the sources a harness spawns; sd
 BINDING_MODES = ("off", "record", "enforce")
 
 
+def _read_after(read_at, prev_read_at):
+    """Was a mark read after the mark it is compared with? Marks written before read_at existed carry no time,
+    and a replayed ledger has none either: those keep the arrival order they are recorded in."""
+    if read_at is None or prev_read_at is None:
+        return True
+    return read_at > prev_read_at
+
+
 class Signer:
     def __init__(self, home, cfg):
         self.home, self.cfg = home, cfg
@@ -148,7 +156,7 @@ class Signer:
         self.lock = threading.RLock()
         self.cond = threading.Condition(self.lock)
         self.runs = {}            # run_id -> state (see _run)
-        self.transcripts = {}     # path -> {"length", "hash", "history": {length: hash}}
+        self.transcripts = {}     # path -> {"length", "hash", "read_at", "history": {length: hash}}
         self.tool_uses = {}       # tool_use_id -> {"model": (run, name, t) | None, "hook": (run, t) | None, "done": bool}
         self.approvals = {}       # approval id -> pending approval
         self.since_cp = 0
@@ -205,7 +213,7 @@ class Signer:
                 self.last_cp_seq = ev["data"]["head_seq"]
             tr = ev.get("transcript")
             if tr and not tr.get("missing"):
-                self._note_transcript(tr["path"], tr["length"], tr["hash"])
+                self._note_transcript(tr["path"], tr["length"], tr["hash"], tr.get("read_at"))
         state = os.path.join(self.home, "runs.json")
         if os.path.exists(state):
             try:
@@ -342,11 +350,12 @@ class Signer:
         return None
 
     # ---------- C2: transcript marks ----------
-    def _note_transcript(self, path, length, h):
-        t = self.transcripts.setdefault(path, {"length": -1, "hash": None, "history": {}})
+    def _note_transcript(self, path, length, h, read_at=None):
+        t = self.transcripts.setdefault(path, {"length": -1, "hash": None, "read_at": None, "history": {}})
         t["updated_at"] = time.time()
-        if length >= t["length"]:
+        if length >= t["length"] and _read_after(read_at, t["read_at"]):
             t["length"], t["hash"] = length, h
+            t["read_at"] = read_at if read_at is not None else t["read_at"]
         t["history"][length] = h
         if len(t["history"]) > 64:
             for k in sorted(t["history"])[:-32]:
@@ -354,23 +363,31 @@ class Signer:
                     del t["history"][k]
 
     def _check_transcript(self, mark, run_id):
-        """Compare a transcript mark with the last one; emit trace.tamper on deletion, truncation or edits."""
+        """Compare a transcript mark with the last one; emit trace.tamper on deletion, truncation or edits.
+
+        A hook reads the transcript before it sends the event, so the hooks of one session can report out of
+        order. Marks carry the moment their read hit EOF (read_at), and a shorter mark is only a truncation when
+        it was read after the mark it is compared with: a file that only grows cannot be shorter later. A mark
+        read earlier says nothing about the file now, but what it read is still checked against the history."""
         path = mark["path"]
         prev = self.transcripts.get(path)
         if prev is None or prev["length"] < 0:
             if not mark.get("missing"):
-                self._note_transcript(path, mark["length"], mark["hash"])
+                self._note_transcript(path, mark["length"], mark["hash"], mark.get("read_at"))
             return
+        newer = _read_after(mark.get("read_at"), prev["read_at"])
         before = {"hash": prev["hash"], "length": prev["length"]}
         kind = None
         if mark.get("missing"):
-            kind = "deleted"
+            kind = "deleted" if newer else None
         elif mark["length"] < prev["length"]:
-            kind = "truncated"
+            kind = "truncated" if newer else None
         else:
             pl, ph = mark.get("prefix_length"), mark.get("prefix_hash")
             if pl is None or pl not in prev["history"]:
-                kind = "prefix_unverifiable"
+                # an older read reported late may name a length the signer no longer remembers; only the file as
+                # it is now can be unverifiable
+                kind = "prefix_unverifiable" if newer else None
             elif prev["history"][pl] != ph:
                 kind = "edited"
         if kind:
@@ -378,9 +395,9 @@ class Signer:
                                             "after": {"hash": None if mark.get("missing") else mark["hash"],
                                                       "length": None if mark.get("missing") else mark["length"]}}, run_id)
             # start over from what is there now, so one rewrite produces one event
-            self.transcripts[path] = {"length": -1, "hash": None, "history": {}}
+            self.transcripts[path] = {"length": -1, "hash": None, "read_at": None, "history": {}}
         if not mark.get("missing"):
-            self._note_transcript(path, mark["length"], mark["hash"])
+            self._note_transcript(path, mark["length"], mark["hash"], mark.get("read_at"))
 
     # ---------- C4 / C5: background checks ----------
     def _tool_use(self, tid):

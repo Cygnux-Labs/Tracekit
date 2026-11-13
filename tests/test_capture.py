@@ -3,6 +3,7 @@ stale runs (C5), YAML policy (C7), approvals (C8), redaction (C9).
 
     python3 -m unittest tests.test_capture -v
 """
+import hashlib
 import http.server
 import importlib
 import json
@@ -24,8 +25,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import requests  # noqa: E402
-from tracekit import bundle, install, peercred, policy, privacy, yamlmini  # noqa: E402
-from tracekit.core import read_json, read_text, write_json  # noqa: E402
+from tracekit import bundle, client, install, peercred, policy, privacy, yamlmini  # noqa: E402
+from tracekit.core import now_ts, read_json, read_text, write_json  # noqa: E402
 from factories import ledger_records, make_signer, wait_for  # noqa: E402
 
 _SAVED_POLICY = None
@@ -236,6 +237,38 @@ class TranscriptTamper(Stack):
             p.wait(30)
         self.pre("t9", "ls")
         self.assertEqual(self.of("trace.tamper"), [])
+
+    def mark(self, length, body, prefix_length=None, prefix_body=None, read_at=None):
+        """Send one hook event carrying a transcript mark, so that marks can be given in any order.
+
+        read_at is when that read hit EOF; the signer orders marks by it instead of by arrival (see #727)."""
+        self._seq = getattr(self, "_seq", 0) + 1
+        m = {"path": self.transcript, "length": length, "hash": "sha256:" + hashlib.sha256(body).hexdigest(),
+             "prefix_length": prefix_length,
+             "prefix_hash": None if prefix_body is None else "sha256:" + hashlib.sha256(prefix_body).hexdigest()}
+        if read_at is not None:
+            m["read_at"] = read_at
+        r = client.send({"run_id": self.run_id, "agent_id": "main", "parent_id": None, "source": "hook",
+                         "ts": now_ts(), "type": "tool.call",
+                         "data": {"tool_use_id": f"m{self._seq}", "name": "Bash",
+                                  "input": {"command": {"value": "ls", "redacted": False}}},
+                         "transcript": m})
+        self.assertTrue(r.get("ok"), r)
+
+    def test_a_mark_read_before_the_last_one_is_not_a_truncation(self):
+        """#727: a hook reads the transcript before it sends the event, so the marks of parallel hooks can arrive in
+        the order they were *sent*, not the order they were read. A shorter mark read earlier is not a truncation."""
+        grew, older = b"x" * 719, b"x" * 631        # the file only grew: 631 bytes are a prefix of 719
+        now = time.time()
+        self.mark(719, grew, 631, older, read_at=now + 0.5)
+        self.mark(631, older, 631, older, read_at=now)
+        self.assertEqual(self.of("trace.tamper"), [])
+
+    def test_a_mark_read_after_a_truncation_is_still_reported(self):
+        now = time.time()
+        self.mark(719, b"x" * 719, None, None, read_at=now)
+        self.mark(300, b"x" * 300, 719, b"x" * 719, read_at=now + 0.5)   # cut back to an earlier length
+        self.assertEqual([x["data"]["kind"] for x in self.of("trace.tamper")], ["truncated"])
 
 
 # ---------------------------------------------------------------- proxy
