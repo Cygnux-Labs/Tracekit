@@ -42,8 +42,9 @@ HOOK = install._hook_command(install.V2_HOOK).replace(" -I ", " -I -X faulthandl
 # an Instead step
 OWN_STEP = ("If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs "
             "to get past the policy: every call is signed and kept.")
-HELD_AGENT = ("tell the person what this call was for and pass on these commands, then wait for their answer; a "
-              "subagent puts them in its final report. Once it is approved, make the identical call again. " + OWN_STEP)
+HELD_AGENT = ("ask the person: approve this call or skip it? Don't reword the call to get past the hold; wait for their "
+              "answer. Pass on the Person line and say what the call was for; a subagent puts both in its final report. "
+              "Once it is approved, make the identical call again. " + OWN_STEP)
 BLOCKED_AGENT = "tell the person what you were doing and why it was blocked. " + OWN_STEP
 
 
@@ -1870,6 +1871,15 @@ class HoldLine(unittest.TestCase):
                 self.assertEqual(self.waits, [0])   # one look, to see whether an agent approved it already
                 self.assertEqual(json.loads(out), {"systemMessage": held, "hookSpecificOutput": {
                     "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": held}})
+
+    def test_a_held_call_asks_the_person_approve_or_skip(self):
+        """#816: 63 of 70 holds in #815 expired, the agent rewording the call or moving on: the held message asks the
+        person one question, next to the command that approves the call, and says not to reword it around the hold."""
+        _, lines, _ = self.pre("force push.", wait="")
+        held = "\n".join(lines)
+        for said in ("`! tracekit approvals approve apr-1`", "ask the person: approve this call or skip it?",
+                     "Don't reword the call to get past the hold", "Never hide what a call runs"):
+            self.assertIn(said, held)
 
     def test_a_retry_in_an_agents_veto_delay_says_it_is_approved_and_how_long_to_wait(self):
         """An agent approver's approval reads `requested` while people may still revoke it: the held retry said to

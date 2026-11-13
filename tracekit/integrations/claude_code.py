@@ -199,12 +199,14 @@ def stopped(head, reason=None, person=None, agent=None):
     """What a call Tracekit stopped tells its agent and person, in every harness (each delivers it its own way: _block
     for Claude Code, agent_hooks._reply for the others): `head` (with _rules), the signer's `reason` (Why) and, after
     its INSTEAD, what to do instead; then `person`, the commands that answer a held call, and what the agent does
-    (`agent`, else: with `person`, pass them on and, once approved, make the identical call again; without, tell the
-    person). An Instead step may be the person's (check the payee before approving): the agent takes only its own."""
+    (`agent`, else: with `person`, ask them approve or skip, first since agent_hooks._reply may cut the end, and, once
+    approved, make the identical call again; without, tell the person). An Instead step may be the person's (check the
+    payee before approving): the agent takes only its own."""
     why, _, instead = (reason or "").partition(INSTEAD)
-    agent = (agent or ("tell the person what this call was for and pass on these commands, then wait for their "
-                       "answer; a subagent puts them in its final report. Once it is approved, make the identical call "
-                       "again." if person else "tell the person what you were doing and why it was blocked.")) + (
+    agent = (agent or ("ask the person: approve this call or skip it? Don't reword the call to get past the hold; wait "
+                       "for their answer. Pass on the Person line and say what the call was for; a subagent puts both "
+                       "in its final report. Once it is approved, make the identical call again." if person else
+                       "tell the person what you were doing and why it was blocked.")) + (
         " If the Instead line is a step you can take yourself, you may take it and say so." if instead else "")
     return "\n".join([f"[tracekit] {head}", *([f"Why: {why}"] if why else []),
                       *([f"Instead: {instead}"] if instead else []), *([f"Person: {person}"] if person else []),
