@@ -831,6 +831,24 @@ class CodeBuddyDeferredCalls(HarnessCase):
                          [(False, decisions[1]["decision_id"])])
         self.assertEqual([e["data"]["kind"] for e in events if e["type"] == "capture.gap"], [])
 
+    def test_a_reused_id_of_another_call_leaves_that_calls_result(self):
+        """#799's review: a different call under an id that is still open (a model that writes its own ids) is blocked;
+        the open call's decision is left for its own PostToolUse, which records what it really returned."""
+        base = {"session_id": "cb-reuse", "transcript_path": None, "cwd": "/w"}
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionStart", "source": "startup"})[0], 0)
+        pre = {**base, "hook_event_name": "PreToolUse", "tool_name": "Bash", "call_id": "call_r1",
+               "tool_use_id": "call_r1"}
+        self.assertEqual(self.hook("codebuddy", {**pre, "tool_input": {"command": "ls"}})[0], 0)
+        self.assertEqual(self.hook("codebuddy", {**pre, "tool_input": {"command": "rm -rf ~"}})[0], 2)
+        self.assertEqual(self.hook("codebuddy", {
+            **base, "hook_event_name": "PostToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"},
+            "call_id": "call_r1", "tool_use_id": "call_r1", "tool_response": {"stdout": "a.txt"}})[0], 0)
+        events = self.signed("cb-reuse")
+        decisions = [e["data"] for e in events if e["type"] == "policy.decision"]
+        self.assertEqual([d["decision"] for d in decisions], ["allow", "deny"])
+        self.assertEqual([(e["data"]["ok"], e["data"]["decision_id"]) for e in events if e["type"] == "tool.result"],
+                         [(True, decisions[0]["decision_id"])])
+
 
 class OnTheDevPolicy(HarnessCase):
     """The signer's default policy sees what the mapping gives it: every file of a patch, the input typed into a shell."""
