@@ -43,6 +43,8 @@ SHARE = [re.compile(x) for x in (
     r"Integrity: the store \w+, \d+ of \d+ runs verify",
     rf"Runs that verify, by agent: (?:{_counts(AGENTS | {'other'})}|none)",
     rf"Tool calls: {N}   {_counts(DECISIONS)}",
+    r"Calls by decision and day \(24 hours each, day 1 from the window's start\):",
+    rf"  (?:Day {N}|No time): {_counts(DECISIONS)}",
     rf"Holds: {N}(?:   {_counts(OUTCOMES)})?(?:   \({N} of the agent's retries of a held call, counted with it\))?",
     rf"Gaps \(signed records that something may be missing\): {N}(?:   {_counts(set(view.GAP_WORDS) | {'other'})})?",
     r"(?:Denied and flagged calls, by rule|Calls by decision and rule) \(one call can match several rules\):(?: none)?",
@@ -251,6 +253,19 @@ class TestFeedback(unittest.TestCase):
             with self.subTest(line):
                 self.assertEqual(report_problems(f"{ok}\n{line}\n```\n"),
                                  [f"line 18 ({line[:40]!r}): the counts hold only what tracekit report --share prints"])
+
+    def test_audit_shares_day_lines_are_count_lines(self):
+        """#746: the day lines tracekit audit --share prints with --since may go in a field report file."""
+        from tracekit import audit
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "calls.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write('{"tool": "Bash", "args": {"command": "ls"}}\n')
+            days = [line for line in audit.share(audit.audit(calls=path, since="2d")).splitlines()
+                    if line.startswith(("Calls by decision and day", "  Day ", "  No time"))]
+        self.assertEqual(len(days), 4)
+        text = "\n".join(["# Tracekit field report", "", "## Counts", "", "```text", WEEK, *days, "```", ""])
+        self.assertEqual(report_problems(text), [])
 
     def test_every_field_report_in_docs_is_report_shaped(self):
         for name in sorted(os.listdir(REPORTS)):
