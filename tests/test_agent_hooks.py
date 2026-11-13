@@ -1,6 +1,6 @@
 """Coding-agent adapters: Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid,
-Antigravity CLI, Crush and Devin hooks through the real hook pipeline and signer. Payloads follow each harness's published
-hook documentation.
+Antigravity CLI, Crush, Devin and Kiro CLI hooks through the real hook pipeline and signer. Payloads follow each
+harness's published hook documentation.
 python3 -m pytest tests/test_agent_hooks.py -q"""
 import contextlib
 import hashlib
@@ -2031,6 +2031,66 @@ class CrushTools(unittest.TestCase):
         self.assertEqual((download["verdict"], download["rule_ids"]), (write["verdict"], write["rule_ids"]))
 
 
+class KiroTools(unittest.TestCase):
+    def test_tools_map_onto_the_policy_vocabulary_on_the_path_each_reads(self):
+        # as Kiro CLI 3.3.0 sends them (tests/data/harness/kiro.json); the 2.x names its migration notes keep
+        for name, ti, want, path in (
+                ("execute_bash", {"command": "ls"}, "Bash", None), ("execute_pwsh", {"command": "dir"}, "Bash", None),
+                ("shell", {"command": "ls"}, "Bash", None), ("read_file", {"path": "/w/a"}, "Read", "/w/a"),
+                ("fs_write", {"path": "/w/a", "text": "x"}, "Write", "/w/a"),
+                ("fs_append", {"path": "/w/a", "text": "x"}, "Write", "/w/a"),
+                ("str_replace", {"path": "/w/a", "oldStr": "a", "newStr": "b"}, "Edit", "/w/a"),
+                ("delete_file", {"targetFile": "/w/a"}, "Edit", "/w/a"), ("list_directory", {"path": "/w"}, "LS", "/w"),
+                ("grep_search", {"query": "x", "path": "/w"}, "Grep", "/w"),
+                ("file_search", {"query": "x"}, "Glob", None),
+                ("web_fetch", {"url": "https://x.example"}, "WebFetch", None),
+                ("remote_web_search", {"query": "x"}, "WebSearch", None), ("invoke_sub_agent", {}, "Task", None)):
+            with self.subTest(tool=name):
+                tool, args = agent_hooks.tool("kiro", name, ti)
+                self.assertEqual((tool, args.get("file_path")), (want, path))
+        # the path the tool reads decides: a decoy `file_path`, `path` or `paths` beside it never does
+        for name, ti in (("delete_file", {"targetFile": "/home/u/.ssh/id_rsa", "path": "/w/a", "file_path": "/w/a"}),
+                         ("read_file", {"path": "/home/u/.ssh/id_rsa", "file_path": "/w/a", "paths": ["/w/a"]})):
+            with self.subTest(decoy=name):
+                args = agent_hooks.tool("kiro", name, ti)[1]
+                self.assertEqual((args["file_path"], args.get("paths")), ("/home/u/.ssh/id_rsa", None))
+        self.assertEqual(agent_hooks.tool("kiro", "fs_write", {"path": "/w/a", "text": "k=v"})[1]["content"], "k=v")
+        self.assertEqual(agent_hooks.tool("kiro", "str_replace", {"path": "/w/a", "oldStr": "a", "newStr": "b"})[1]
+                         ["new_string"], "b")
+        # Kiro joins an MCP server and tool with `_`: a server named with `_` can't be split off, so none is
+        self.assertEqual(agent_hooks.tool("kiro", "mcp_rec_server_echo_text", {"text": "x"})[0],
+                         "mcp__rec_server_echo_text")
+        pol = load_policy()
+        self.assertEqual(pol.decide(*agent_hooks.tool("kiro", "delete_file", {"targetFile": "/home/u/.ssh/id_rsa"}))
+                         ["verdict"], pol.decide("Edit", {"file_path": "/home/u/.ssh/id_rsa"})["verdict"])
+
+    def test_a_call_without_what_it_is_decided_on_is_blocked_in_the_hook(self):
+        for name, ti in (("execute_bash", {"cmd": "rm -rf /"}), ("execute_pwsh", {"command": ""}),
+                         ("delete_file", {"path": "/w/a"}), ("fs_write", {"text": "x"}), ("read_file", {"path": None}),
+                         ("web_fetch", {"uri": "https://x.example"})):
+            with self.subTest(tool=name):
+                why = agent_hooks._blocked("kiro", {"tool_name": name, "tool_input": ti})
+                self.assertIn(f"Kiro's {name} call has no", why or "")
+        self.assertIsNone(agent_hooks._blocked("kiro", {"tool_name": "delete_file",
+                                                        "tool_input": {"targetFile": "/w/a"}}))
+        self.assertIsNone(agent_hooks._blocked("kiro", {"tool_name": "file_search", "tool_input": {"query": "x"}}))
+
+    def test_events_are_claude_codes_and_calls_are_paired_without_an_id(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        patch_env(self, TRACEKIT_CLIENT_HOME=d)
+        base = {"session_id": "sess_1", "cwd": "/w"}
+        pre = agent_hooks.normalise("kiro", dict(base, hook_event_name="PreToolUse", tool_name="execute_bash",
+                                                 tool_input={"command": "ls"}))
+        post = agent_hooks.normalise("kiro", dict(base, hook_event_name="PostToolUse", tool_name="execute_bash",
+                                                  tool_input={"command": "ls"}, tool_response="Output:\nx"))
+        self.assertRegex(pre["tool_use_id"], r"^kiro_[0-9a-f]{16}_1$")
+        self.assertEqual((post["tool_use_id"], post["tool_response"]), (pre["tool_use_id"], "Output:\nx"))
+        self.assertEqual(agent_hooks.normalise("kiro", dict(base, hook_event_name="UserPromptSubmit", prompt="go"))
+                         ["prompt"], "go")
+        self.assertIsNone(agent_hooks.normalise("kiro", dict(base, hook_event_name="Stop")))   # nothing to record
+
+
 class ClineTools(unittest.TestCase):
     def test_every_command_in_any_shape_cline_takes_is_decided(self):
         # PreToolUse fires before Cline checks the input against run_commands' schema, which takes a list, one command,
@@ -3081,6 +3141,67 @@ class Installer(unittest.TestCase):
         with open(path) as f:
             self.assertEqual(json.load(f), {"theme": "dark",
                                             "hooks": {"PreToolUse": [{"name": "mine", "command": "echo mine", "timeout": 5}]}})
+
+    def test_kiro_hooks_are_tracekits_own_file_and_never_replace_a_persons(self):
+        from tracekit.install import SettingsError
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.assertEqual(agent_hooks.config_path("kiro", d), os.path.join(d, ".kiro", "hooks", "tracekit.json"))
+        self.assertEqual(agent_hooks.config_path("kiro", None, d), os.path.join(d, ".kiro", "hooks", "tracekit.json"))
+        path = agent_hooks.config_path("kiro", d)
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("kiro", d, python="/opt/tracekit/python")
+            agent_hooks.install("kiro", d, python="/opt/tracekit/python")   # idempotent
+        with open(path) as f:
+            cfg = json.load(f)
+        self.assertEqual(cfg["version"], "v1")
+        self.assertEqual([h["trigger"] for h in cfg["hooks"]], list(agent_hooks.KIRO_EVENTS))
+        for h in cfg["hooks"]:
+            ev = h["trigger"]
+            # Kiro runs a call whose hook times out: 600 s leaves a person time to approve a held one
+            self.assertEqual((h["name"], h["timeout"], h["action"]["type"]),
+                             ("tracekit-" + ev, 600 if ev == "PreToolUse" else 30, "command"), ev)
+            self.assertNotIn("matcher", h)   # every tool
+            self.assertIn("tracekit.agent_hooks", h["action"]["command"])
+            self.assertIn("kiro", h["action"]["command"])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            agent_hooks.install("kiro", d, v2=True, python="/opt/tracekit/python")
+        self.assertIn("v1 hooks replaced by v2 hooks", out.getvalue())
+        with open(path) as f:
+            self.assertTrue(all(agent_hooks.V2_MODULE in h["action"]["command"] for h in json.load(f)["hooks"]))
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("kiro", d, uninstall=True)
+            agent_hooks.install("kiro", d, uninstall=True)   # nothing left to remove
+        self.assertFalse(os.path.exists(path))
+        # a file there with a hook of a person's is left as it is
+        mine = {"version": "v1", "hooks": [{"name": "lint", "trigger": "PostToolUse",
+                                            "action": {"type": "command", "command": "npm run lint"}}]}
+        with open(path, "w") as f:
+            json.dump(mine, f)
+        for uninstall in (False, True):
+            with self.subTest(uninstall=uninstall), self.assertRaises(SettingsError):
+                agent_hooks.install("kiro", d, uninstall=uninstall)
+        with open(path) as f:
+            self.assertEqual(json.load(f), mine)
+
+    def test_kiro_init_says_when_its_cli_reads_no_user_hooks(self):
+        # ~/.kiro/hooks is read from Kiro CLI V3 on; a project's .kiro/hooks by every release
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        patch_env(self, HOME=d, USERPROFILE=d)
+        for version, warned in (((2, 9, 0), True), ((3, 3, 0), False), (None, False)):
+            out = io.StringIO()
+            with self.subTest(version=version), contextlib.redirect_stdout(out), \
+                    mock.patch.object(agent_hooks, "kiro_version", return_value=version):
+                agent_hooks.install("kiro", python="/opt/tracekit/python")
+                agent_hooks.install("kiro", os.path.join(d, "p"), python="/opt/tracekit/python")   # a project's
+                self.assertEqual(out.getvalue().count("only from 3.0"), int(warned))
+        done = subprocess.CompletedProcess([], 0, "kiro-cli 3.3.0\n", "")   # what 3.3.0 prints
+        with mock.patch.object(subprocess, "run", return_value=done):
+            self.assertEqual(agent_hooks.kiro_version(), (3, 3, 0))
+        with mock.patch.object(subprocess, "run", side_effect=FileNotFoundError):
+            self.assertIsNone(agent_hooks.kiro_version())
 
     def test_cline_argv_reads_a_powershell_hook_in_linear_time(self):
         argv = ["C:\\py\\python.exe", "-I", "it's", "", "a''b", "x y"]

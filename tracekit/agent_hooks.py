@@ -1,6 +1,6 @@
 """Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush,
-Devin (CLI and Desktop), Cline (CLI and VS Code extension), GitHub Copilot CLI and CodeBuddy Code, on the Claude
-Code pipeline.
+Devin (CLI and Desktop), Cline (CLI and VS Code extension), GitHub Copilot CLI, CodeBuddy Code and Kiro CLI, on
+the Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -16,6 +16,7 @@ Code pipeline.
     tracekit init --dev --agent cline        # ~/Documents/Cline/Hooks/<event> (project: .clinerules/hooks/<event>)
     tracekit init --dev --agent copilot      # ~/.copilot/hooks/tracekit.json (project: .github/hooks/tracekit.json)
     tracekit init --dev --agent codebuddy    # ~/.codebuddy/settings.json (project: .codebuddy/settings.json)
+    tracekit init --dev --agent kiro         # ~/.kiro/hooks/tracekit.json (project: .kiro/hooks/tracekit.json)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -91,9 +92,14 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             is Claude Code's under other keys (event_type, working_dir, message), and tool_input's `kind` is dropped;
             a file_editor with no path or an apply_patch with no file header is denied in the hook
 
+    Kiro    execute_bash, execute_pwsh, read_file, fs_write, fs_append, str_replace, delete_file, list_directory,
+            file_search, grep_search, web_fetch, remote_web_search, invoke_sub_agent, mcp_<server>_<tool>
+            -> Bash, Bash, Read, Write, Write, Edit, Edit (its targetFile), LS, Glob, Grep, WebFetch, WebSearch, Task,
+            mcp__<server>_<tool> (Kiro joins server and tool with `_`, so a server name with `_` in it can't be split
+            off); each file tool is decided on the path it reads, and a file, shell or fetch call without it is denied
 
-What each harness exposes decides what Tracekit can see: Gemini CLI, Droid, Devin, OpenHands and Cline's VS Code
-extension do not give tool calls an id, so pre and post events are paired by (tool, arguments) in order, and Antigravity
+What each harness exposes decides what Tracekit can see: Gemini CLI, Droid, Devin, OpenHands, Cline's VS Code
+extension and Kiro CLI do not give tool calls an id, so pre and post events are paired by (tool, arguments) in order, and Antigravity
 CLI's by (step index, tool, arguments); Cursor and Qwen Code report failures through postToolUseFailure, and OpenHands
 with is_error in its tool_response.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
@@ -117,7 +123,8 @@ from .policy2.classes import PATH_KEYS, first
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
                "devin": "devin", "cline": "cline", "gptme": "gptme", "openhands": "openhands",
-               "copilot": "copilot", "codebuddy": "codebuddy-code"}
+               "copilot": "copilot", "codebuddy": "codebuddy-code",
+               "kiro": "kiro-cli"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -319,6 +326,20 @@ CLINE_TOOLS = {"run_commands": "Bash", "read_files": "Read", "editor": "Edit", "
 CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "UserPromptSubmit")
 CLINE_FILE = "PreToolUse.ps1" if os.name == "nt" else "PreToolUse"
 CLINE_PATH_KEYS = ("path", "file_path", "filePath")
+# Kiro CLI's built-in tools (kiro.dev/docs/tools), as hooks receive them on CLI 3.3.0: the V3 ids (execute_pwsh on
+# Windows), and the 2.x names its migration notes say still work. Each file tool reads its own key (KIRO_PATH_ARG):
+# delete_file reads `targetFile`, not `path`. A delete is an Edit, as Cursor's is: the file rules read it
+KIRO_TOOLS = {"execute_bash": "Bash", "execute_pwsh": "Bash", "shell": "Bash", "read_file": "Read", "read": "Read",
+              "fs_write": "Write", "fs_append": "Write", "write": "Write", "str_replace": "Edit", "delete_file": "Edit",
+              "list_directory": "LS", "file_search": "Glob", "grep_search": "Grep", "web_fetch": "WebFetch",
+              "remote_web_search": "WebSearch", "invoke_sub_agent": "Task"}
+KIRO_PATH_ARG = {"read_file": "path", "fs_write": "path", "fs_append": "path", "str_replace": "path",
+                 "delete_file": "targetFile", "list_directory": "path", "grep_search": "path"}
+# the argument a Kiro call is decided on: a call without it as a string is denied in the hook (_blocked)
+KIRO_DECIDED_ON = {**KIRO_PATH_ARG, "execute_bash": "command", "execute_pwsh": "command", "web_fetch": "url"}
+KIRO_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
+KIRO_OLD = ("Kiro CLI {} runs the hook files in ~/.kiro/hooks only from 3.0: upgrade it, or install Tracekit's hooks "
+            "in a project's .kiro/hooks with --project")
 CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))""")   # getHeredocDelimiter
 # CodeBuddy Code's tools are Claude Code's by name and arguments (its bundled code, @tencent-ai/codebuddy-code
 # 2.183.0); of its own, these read a file: each is a Read of the path it reads, never of a decoy beside it
@@ -758,6 +779,17 @@ def tool(harness, name, ti):
             if len(set(urls)) > 1:
                 ti["urls"] = list(dict.fromkeys(urls))
         return CLINE_TOOLS.get(name, name), ti
+    if harness == "kiro":
+        if name.startswith("mcp_"):   # mcp_<server>_<tool>: the split isn't known, as for Gemini CLI and Crush
+            return "mcp__" + name[4:], ti
+        if name in KIRO_PATH_ARG:   # the path the tool itself reads decides, never a decoy beside it
+            ti.pop("paths", None)
+            ti["file_path"] = ti.get(KIRO_PATH_ARG[name])
+        if name in ("fs_write", "fs_append") and "text" in ti:   # what it writes, as a Write's content
+            ti["content"] = ti["text"]
+        if name == "str_replace":
+            ti.update(old_string=ti.get("oldStr"), new_string=ti.get("newStr"))
+        return KIRO_TOOLS.get(name, name), ti
     if harness == "copilot":
         if name == "str_replace_editor":   # one tool for viewing, creating and editing: decided as the one it does
             name = COPILOT_EDITOR.get(ti.get("command"), "edit")
@@ -876,7 +908,7 @@ def normalise(harness, p):
             pass   # an undecided tool may have run without a confirmation preview
         return dict(out, hook_event_name=ev, session_id=p.get("session_id"), tool_use_id=p.get("tool_use_id"),
                     tool_name=name, tool_input=args, tool_response=p.get("tool_response"))
-    if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme", "openhands", "codebuddy"):   # Claude Code's
+    if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme", "openhands", "codebuddy", "kiro"):   # Claude Code's
         # payloads; Qwen Code, Crush and CodeBuddy Code add PostToolUseFailure (Crush's and CodeBuddy's payloads are
         # Claude Code's own: same field and event names)
         out["session_id"] = p.get("session_id")
@@ -893,7 +925,7 @@ def normalise(harness, p):
             out["later"] = (harness, _named(harness, str(p.get("tool_name")))) in LATER
             if harness == "openhands":   # terminal with is_input: text typed into the command already running
                 out["later"] = p.get("tool_name") == "terminal" and out["tool_input"].get("is_input") is True
-            if harness in ("droid", "devin", "openhands"):   # their payloads carry no call id
+            if harness in ("droid", "devin", "openhands", "kiro"):   # their payloads carry no call id
                 out["tool_use_id"] = out["session_id"] and _paired_ids(
                     harness, out["session_id"], out["tool_name"], out["tool_input"], "pre" if ev == "PreToolUse" else "post")
             if ev != "PreToolUse":
@@ -1086,7 +1118,7 @@ class Tee(io.StringIO):
 
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
 STOPPED_LINES = ("Why: ", "Instead: ", "Person: ", "Agent: ")   # how the lines after a stop's first go on (stopped)
-PAIRED = ("gemini", "droid", "antigravity", "devin", "cline", "openhands")   # the harnesses whose call ids _paired_ids makes
+PAIRED = ("gemini", "droid", "antigravity", "devin", "cline", "openhands", "kiro")   # the harnesses whose call ids _paired_ids makes
 
 
 # goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
@@ -1246,6 +1278,11 @@ def _blocked(harness, p, raw=""):
         call = dict(call) if isinstance(call, _Pairs) else {}
         return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
     name = _named(harness, str(p.get("tool_name") or ""))
+    if harness == "kiro" and name in KIRO_DECIDED_ON:
+        v = _input(p.get("tool_input")).get(KIRO_DECIDED_ON[name])
+        if not (isinstance(v, str) and v):
+            return (f"Blocked by Tracekit: Kiro's {name} call has no {KIRO_DECIDED_ON[name]}, which Tracekit decides "
+                    "it on, so it can't decide this call.")
     twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
         raw.strip() else None
     if twice is not None:
@@ -1481,7 +1518,10 @@ def config_path(harness, project=None, home=None):
             # else ~/.copilot): Tracekit's own file
             "copilot": os.path.join(base, ".github", "hooks", "tracekit.json") if project else
                        os.path.join((None if home else os.environ.get("COPILOT_HOME")) or
-                                    os.path.join(base, ".copilot"), "hooks", "tracekit.json")}[harness]
+                                    os.path.join(base, ".copilot"), "hooks", "tracekit.json"),
+            # Kiro CLI runs every hook file in a project's .kiro/hooks, and in ~/.kiro/hooks from CLI V3: Tracekit's is
+            # a file of its own there
+            "kiro": os.path.join(base, ".kiro", "hooks", "tracekit.json")}[harness]
 
 
 CODEX_SUMMARY = "model_reasoning_summary"   # Codex's reasoning.summary for the Responses API: auto|concise|detailed|none
@@ -1871,11 +1911,11 @@ def _command(harness, ev, v2, python):
     # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
     # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
     # can't parse: an interpreter path that needs no quotes goes bare, which both run
-    # assume Droid runs hooks under cmd.exe. goose (sh -c), Crush and CodeBuddy Code (Git Bash where it finds one, as
+    # assume Droid runs hooks under cmd.exe; Kiro CLI does (3.3.0). goose (sh -c), Crush and CodeBuddy Code (Git Bash where it finds one, as
     # Claude Code) keep _hook_command's form, and so does OpenHands (subprocess.run(shell=True): cmd.exe). Devin
     # doesn't document its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that doesn't goes
     # bare, which both run
-    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands", "codebuddy"):
+    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands", "codebuddy", "kiro"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
     c = m.group(1) + c[m.end():] if m else c if harness == "devin" else f"& {c}"
@@ -1982,6 +2022,50 @@ def _install_goose(path, uninstall=False, v2=False, python=None):
 
 
 CRUSH_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure", "SessionStart", "SessionEnd")
+
+
+def kiro_version():
+    """The installed Kiro CLI's version (`kiro-cli --version` prints "kiro-cli 3.3.0") as a tuple, else None."""
+    import subprocess
+    try:
+        out = subprocess.run(["kiro-cli", "--version"], capture_output=True, text=True, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"(\d+)\.(\d+)\.(\d+)", out or "")
+    return tuple(map(int, m.groups())) if m else None
+
+
+def _install_kiro(path, uninstall=False, v2=False, python=None):
+    """Tracekit's own Kiro hook file: {"version": "v1", "hooks": [...]}, one hook per event named tracekit-<event>, with
+    no matcher (every tool). Uninstall removes the file; a file there with a hook that isn't Tracekit's is left as it
+    is."""
+    from .install import SettingsError, _atomic_write_json, _backup_changed
+    path = os.path.abspath(path)
+    if uninstall and not os.path.exists(path):
+        return path
+    s, txt = _read(path)
+    hooks = s.get("hooks", [])
+    if txt is not None and not (isinstance(hooks, list) and all(
+            isinstance(h, dict) and str(h.get("name")).startswith("tracekit-") for h in hooks)):
+        raise SettingsError(f"{path} has hooks that aren't Tracekit's; Tracekit did not change it.")
+    removed = {_version(h["action"].get("command")) for h in hooks if isinstance(h.get("action"), dict)} - {None}
+    if uninstall:
+        _backup_changed(path, txt, None)
+        os.unlink(path)
+    else:
+        # seconds: 600 leaves a person time to approve a held call (Kiro's default is 60, and it runs a call whose
+        # hook times out)
+        new = {"version": "v1", "hooks": [{"name": "tracekit-" + ev, "trigger": ev, "action": {
+            "type": "command", "command": _command("kiro", ev, v2, python)}, "timeout": 600 if ev in PRE else 30}
+            for ev in KIRO_EVENTS]}
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if _backup_changed(path, txt, new):
+            _atomic_write_json(path, new)
+        version = kiro_version() if path == os.path.abspath(config_path("kiro")) else None
+        if version and version < (3,):
+            print(KIRO_OLD.format(".".join(map(str, version))))
+    _said(path, removed, uninstall, v2)
+    return path
 
 
 def _install_crush(path, uninstall=False, v2=False, python=None):
@@ -2144,6 +2228,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         return _install_crush(path, uninstall, v2, python)
     if harness == "cline":
         return _install_cline(path, uninstall, v2, python)
+    if harness == "kiro":
+        return _install_kiro(path, uninstall, v2, python)
     if harness in ("droid", "copilot") and uninstall and not os.path.exists(path):   # nothing to remove: no file made
         return path
     if harness == "droid" and not uninstall and not os.path.exists(path):

@@ -1,7 +1,7 @@
 """Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin,
-Cline, gptme, OpenHands, GitHub Copilot CLI and CodeBuddy Code hooks on the v2 signer RPC.
+Cline, gptme, OpenHands, GitHub Copilot CLI, CodeBuddy Code and Kiro CLI hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin|cline|gptme|openhands|copilot|codebuddy EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin|cline|gptme|openhands|copilot|codebuddy|kiro EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -101,7 +101,7 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
     if harness in ("qwen", "droid", "antigravity", "crush", "devin", "cline", "gptme", "openhands", "copilot",
-                   "codebuddy"):   # lean: their transcript formats are not read; model text goes unrecorded
+                   "codebuddy", "kiro"):   # lean: their transcript formats are not read; model text goes unrecorded
         return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))
