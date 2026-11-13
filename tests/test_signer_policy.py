@@ -1078,6 +1078,49 @@ class CodingPack(unittest.TestCase):
                     self.assertNotIn("TK-A059", d["rule_ids"], d)
                     self.assertNotIn("TK-A060", d["rule_ids"], d)
 
+    def test_a_pth_in_site_packages_asks_as_a_pth_not_as_weights(self):
+        """TK-A067 (fs) / TK-A068 (shell): a .pth written directly into site-packages or dist-packages is
+        held as a Python .pth file, which runs at every Python start, and no longer matches the model
+        weights rules TK-A058 / TK-A059; a .pth anywhere else keeps the weights reason (#747)."""
+        site = "/home/u/proj/.venv/lib/python3.11/site-packages/src.pth"
+        dist = "/usr/lib/python3/dist-packages/src.pth"
+        held_fs = [("Write", {"file_path": site, "content": "x"}),
+                   ("Write", {"file_path": dist, "content": "x"}),
+                   ("Write", {"file_path": "/w/SITE-PACKAGES/src.pth", "content": "x"}),
+                   ("Edit", {"file_path": site, "old_string": "a", "new_string": "b"})]
+        held_shell = [f"cp src.pth {site}",
+                      f"echo /src > {site}",
+                      f"cp src.pth {dist}",
+                      "cp src.pth /w/Dist-Packages/src.pth"]
+        for pack, engine, e in self.every_pack():
+            for tool, args in held_fs:
+                with self.subTest(pack=pack, engine=engine, tool=tool, path=args.get("file_path")):
+                    d = e.decide(tool, args)
+                    self.assertIn("TK-A067", d["rule_ids"], d)
+                    self.assertNotIn("TK-A058", d["rule_ids"], d)
+                    self.assertEqual("ask", d["verdict"], d)
+            for cmd in held_shell:
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn("TK-A068", d["rule_ids"], d)
+                    self.assertNotIn("TK-A059", d["rule_ids"], d)
+                    self.assertEqual("ask", d["verdict"], d)
+            with self.subTest(pack=pack, engine=engine, cmd="cp model.pth checkpoints/model.pth"):
+                d = e.decide("Bash", {"command": "cp model.pth checkpoints/model.pth"})
+                self.assertIn("TK-A059", d["rule_ids"], d)
+                self.assertNotIn("TK-A068", d["rule_ids"], d)
+            with self.subTest(pack=pack, engine=engine, tool="Write", path="/w/site-packages/pkg/model.pth"):
+                d = e.decide("Write", {"file_path": "/w/site-packages/pkg/model.pth", "content": "w"})
+                self.assertIn("TK-A058", d["rule_ids"], d)
+                self.assertNotIn("TK-A067", d["rule_ids"], d)
+            # a folder merely named like site-packages, or a subfolder of one, is not it either
+            for cmd in ("cp src.pth /w/mysite-packages/src.pth",
+                        "cp src.pth /w/site-packages/pkg/model.pth"):
+                with self.subTest(pack=pack, engine=engine, cmd=cmd):
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertIn("TK-A059", d["rule_ids"], d)
+                    self.assertNotIn("TK-A068", d["rule_ids"], d)
+
     def test_a_patch_applied_through_the_shell_asks_in_every_pack(self):
         """Codex applies a patch itself when the shell runs apply_patch, so its files reached no file rule."""
         patches = ["apply_patch <<'EOF'\n*** Begin Patch\n*** Add File: .env\n+A=1\n*** End Patch\nEOF",
