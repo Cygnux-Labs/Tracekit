@@ -378,19 +378,45 @@ class TestAudit(unittest.TestCase):
         --share, where the name alone leaves the machine."""
         path = self.root / "calls.jsonl"
         _write_jsonl(path, [_line("Bash", {"command": "echo 'open"}),
-                            _line("Bash", {"command": "bash < script.sh"})])
+                            _line("Bash", {"command": "bash < script.sh"}),
+                            _line("Bash", {"command": 'eval "$CMD"'})])
         report = audit.audit(calls=str(path))
-        self.assertEqual([c.get("unread") for c in report["calls"]], ["quote", "input"])
-        self.assertEqual(report["unread_causes"], {"quote": 1, "input": 1})
+        self.assertEqual([c.get("unread") for c in report["calls"]], ["quote", "input", "other"])
+        self.assertEqual(report["unread_causes"], {"quote": 1, "input": 1, "other": 1})
         code, out, _ = _run("--calls", str(path), "--json")
         self.assertEqual(code, 0)
-        self.assertEqual([c.get("unread") for c in json.loads(out)["calls"]], ["quote", "input"])
+        self.assertEqual([c.get("unread") for c in json.loads(out)["calls"]], ["quote", "input", "other"])
         text = audit.format_report(report)
         self.assertIn("    quote: 1  (a quote on the line is never closed)", text)
         self.assertIn("    input: 1  (a shell or interpreter runs code from a pipe, a file or its input)", text)
+        # a cause with no entry of its own in the engine's table gives TK-SHELL-PARSE's own reason
+        self.assertIn("    other: 1  (the policy can't read what this shell command runs)", text)
         page = audit.share(report)
         self.assertIn("  ask TK-SHELL-PARSE quote 1", page)
         self.assertIn("  ask TK-SHELL-PARSE input 1", page)
+        self.assertIn("  ask TK-SHELL-PARSE other 1", page)
+
+    def test_share_prints_an_unknown_cause_as_other(self):
+        """#745: --share is where the text leaves the machine, so a decision whose unread is not a cause in
+        the engine's table (a path, say) is counted as other there, and the string itself never appears."""
+        path = self.root / "calls.jsonl"
+        _write_jsonl(path, [_line("Bash", {"command": "echo 'open"})])
+        report = audit.audit(calls=str(path))
+        report["calls"][0]["unread"] = "/home/user/secret.sh"
+        page = audit.share(report)
+        self.assertIn("  ask TK-SHELL-PARSE other 1", page)
+        self.assertNotIn("/home/user/secret.sh", page)
+        self.assertNotIn("secret.sh", page)
+
+    def test_share_puts_denied_causes_first(self):
+        """#745: --share's cause lines put the denies first, then the holds, as its rule lines do."""
+        path, policy = self.root / "calls.jsonl", self.root / "policy.yaml"
+        _write_jsonl(path, [_line("Bash", {"command": "echo 'open"}), _line("Bash", {"command": "echo 'shut"}),
+                            _line("Bash", {"command": "ours-tool; bash < script.sh"})])
+        policy.write_text("description: ours\ntools:\n  Bash: shell\n"
+                          "deny:\n  - {id: ours, tool: Bash, pattern: ours-tool, reason: ours}\n", encoding="utf-8")
+        page = audit.share(audit.audit(policy_path=str(policy), calls=str(path)))
+        self.assertIn("\n  deny TK-SHELL-PARSE input 1\n  ask TK-SHELL-PARSE quote 2\n", page)
 
     def test_a_calls_file_is_decided_as_transcripts_are(self):
         """#714: a calls file any agent's log can be turned into: a line without tool and args is malformed, --since
