@@ -343,6 +343,9 @@ class TestAudit(unittest.TestCase):
             f"Tracekit {__version__} field report (tracekit audit --share): 7 days",
             "a replay against today's policy, not a signed record: 1 Claude Code session",
             "Tool calls: 5   allow 1, flag 1, ask 2, deny 1",
+            "Calls by decision and day (24 hours each, day 1 from the window's start):",
+            *[f"  Day {d}: allow 0, flag 0, ask 0, deny 0" for d in range(1, 7)],
+            "  Day 7: allow 1, flag 1, ask 2, deny 1",
             "Calls by decision and rule (one call can match several rules):",
             "  deny TK-D004 1", "  deny TK-F003 1 (also matched, not why)", "  ask TK-A001 1",
             "  ask TK-SHELL-PARSE 1 (not placed)", "  flag TK-F003 1"])
@@ -359,6 +362,48 @@ class TestAudit(unittest.TestCase):
             self.assertNotIn(mark, text)
             self.assertNotIn(self.tmp.name, text)
             self.assertNotRegex(text, r"\d{4}-\d\d-\d\d|\d\d:\d\d")   # no date or time
+            self.assertNotRegex(text, r"(?i)\b(?:mon|tue|wed|thu|fri|sat|sun)")   # no weekday
+            self.assertNotIn(str(int(report["window"][0])), text)   # nor the window's start
+
+    def test_share_counts_each_day_of_the_window(self):
+        """#746: with --since, --share gives the calls by decision for each 24 hours from the window's start, a day
+        with none too, and the calls with no time on a line of their own."""
+        def day(n, allow=0, ask=0, deny=0):
+            return f"  Day {n}: allow {allow}, flag 0, ask {ask}, deny {deny}"
+        _write_jsonl(self.root / "s.jsonl", [
+            _call("Bash", {"command": "rm -rf /"}, days_ago=5.5), _call("Bash", {"command": "ls"}, days_ago=5.5),
+            _call("Bash", {"command": "terraform destroy -auto-approve"}, days_ago=2.5),
+            _call("Bash", {"command": "ls"}, days_ago=0.5), _call("Bash", {"command": "ls"}, days_ago=10),
+            _call("Bash", {"command": "ls"}, days_ago=-1)])   # a clock ahead: the last day
+        page = audit.share(audit.audit(str(self.root), since="7d"))
+        self.assertEqual([line for line in page.splitlines() if "Day " in line],
+                         [day(1), day(2, allow=1, deny=1), day(3), day(4), day(5, ask=1), day(6), day(7, allow=2)])
+        self.assertNotIn("No time", page)
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "rm -rf /"}, days_ago=1.5),
+                                                 {"tool": "Bash", "args": {"command": "ls"}}])
+        page = audit.share(audit.audit(calls=str(self.root / "calls.jsonl"), since="3d")).splitlines()
+        self.assertEqual(page[3:8], ["Calls by decision and day (24 hours each, day 1 from the window's start):",
+                                     day(1), day(2, deny=1), day(3), "  No time: allow 1, flag 0, ask 0, deny 0"])
+
+    def test_a_call_before_the_window_is_on_no_day(self):
+        """A call timed before --since's window is counted on no day, never wrapped to the last one."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=0.5)])
+        report = audit.audit(str(self.root), since="2d")
+        report["calls"].append({**report["calls"][0], "verdict": "deny",
+                                "time": datetime.fromtimestamp(report["window"][0] - 3600, timezone.utc).isoformat()})
+        self.assertEqual([line for line in audit._by_day(report) if "Day " in line],
+                         ["  Day 1: allow 0, flag 0, ask 0, deny 0", "  Day 2: allow 1, flag 0, ask 0, deny 0"])
+
+    def test_share_has_no_day_lines_without_since(self):
+        """Without --since a window starts at the first call: day lines would show how far back the transcripts go."""
+        _write_jsonl(self.root / "s.jsonl", [_call("Bash", {"command": "ls"}, days_ago=3),
+                                             _call("Bash", {"command": "ls"})])
+        _write_jsonl(self.root / "calls.jsonl", [{"tool": "Bash", "args": {"command": "ls"}}])
+        for report in (audit.audit(str(self.root)), audit.audit(calls=str(self.root / "calls.jsonl"))):
+            page = audit.share(report)
+            self.assertNotIn("Day ", page)
+            self.assertNotIn("No time", page)
+            self.assertIsNone(report["window"])
 
     def test_a_time_utc_cannot_hold_is_a_call_without_a_time(self):
         line = _call("Bash", {"command": "ls"})
@@ -619,6 +664,17 @@ class TestAudit(unittest.TestCase):
         self.assertEqual(code, 0, err)
         self.assertEqual([(c["verdict"], c["rule_ids"]) for c in json.loads(out)["calls"]],
                          [("deny", ["TK-HOOK-BLOCKED"]), ("allow", [])])
+
+    def test_a_gptme_call_its_hook_cant_read_is_blocked_as_the_hook_blocks_it(self):
+        """A markdown call without an args list, and an MCP call whose content isn't JSON, stopped the whole --agent
+        gptme replay (a plain ValueError). gptme's hook blocks both: audit denies them and replays the rest."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"args": ["x"], "content": "ls"}),
+                                                 _line("srv.do", {"args": [], "content": "not json"}),
+                                                 _line("shell", {"args": [], "content": "ls"})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "gptme", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(c["verdict"], c["rule_ids"]) for c in json.loads(out)["calls"]],
+                         [("deny", ["TK-HOOK-BLOCKED"]), ("deny", ["TK-HOOK-BLOCKED"]), ("allow", [])])
 
     def test_a_mapping_bug_is_not_reported_as_the_hook_blocking_the_call(self):
         """#771: only UnreadableCall is a call the hook blocks; any other ValueError from the mapping is a bug that ends
