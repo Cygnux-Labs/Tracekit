@@ -473,6 +473,15 @@ class TestAudit(unittest.TestCase):
         self.assertEqual({c["agent"] for c in report["calls"]}, {"claude"})
         self.assertIn(f"\nread: claude ({folder}): 2 calls in 1 session\n", text)
 
+    def test_help_names_every_reader(self):
+        """#811: audit's description listed the agents it reads by hand, so a new reader had to remember to edit it."""
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            cli.main(["audit", "--help"])
+        description = out.getvalue().split("\n\n")[1]   # after the usage lines, whose --agent choices name them too
+        for name in audit.READERS:
+            self.assertIn(name, description)
+
     def test_agent_claude_is_init_s_name_and_claude_code_still_works(self):
         """The 1.7.0 review: audit --agent took claude-code where init, uninstall and the plugin skill take claude."""
         _write_jsonl(self.root / "p" / "s.jsonl", [_call("Bash", {"command": "ls"})])

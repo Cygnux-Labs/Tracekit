@@ -560,7 +560,7 @@ def share(report: dict) -> str:
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit audit", description="replay the tool calls in your coding agents' "
-                                 "transcripts (Claude Code, Cursor and Cline), or in a calls file any agent's log can be "
+                                 "transcripts (" + ", ".join(READERS) + "), or in a calls file any agent's log can be "
                                  "turned into, through the policy and count what it would have held or denied. "
                                  "Read-only, local, and a replay against today's policy, not a signed record.")
     ap.add_argument("root", nargs="?", help="a transcripts' folder: Claude Code's, or --agent's reader's (default: "
