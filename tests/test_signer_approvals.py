@@ -185,6 +185,28 @@ class Scenarios(rc.Harness):
         types = self.types()
         self.assertEqual((types.count("approval.consumed"), types.count("approval.request")), (1, 3))
         self.assertNotIn("capture.gap", types)   # tc-3 ran under a consumed approval
+        used = next(e for e in self.read() if e["type"] == "approval.consumed")
+        self.assertEqual(used["data"]["decision_id"], d["decision_id"])   # the retry's decision, not the held call's
+
+    def test_a_retry_of_the_held_calls_own_id_names_its_decision(self):
+        """LangGraph sends the held call again under its own id: the consume names that decision, not the held one."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        _, d, _ = self.retry(tcid="tc-1")
+        self.assertTrue(self.consume(tcid="tc-1", hint=aid)["ok"])
+        used = next(e for e in self.read() if e["type"] == "approval.consumed")
+        self.assertEqual(used["data"]["decision_id"], d["decision_id"])
+
+    def test_a_changed_arguments_decision_does_not_take_the_consumes_decision_id(self):
+        """The call was decided again with other arguments, then the approval was used with the approved ones: the
+        consume names the decision it ran (the held one), not the changed decision that was never approved."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        held = next(e["data"]["decision_id"] for e in self.read() if e["type"] == "policy.decision")
+        self.decide(tool="pay", args=dict(PAY, cents=999))
+        self.assertTrue(self.consume(hint=aid)["ok"])
+        used = next(e for e in self.read() if e["type"] == "approval.consumed")
+        self.assertEqual(used["data"]["decision_id"], held)
 
     def test_the_first_attempt_run_anyway_after_its_retry_used_the_approval_ran_against_the_policy(self):
         """A retry consumed the approval and ran; the blocked first attempt's own result (an agent that ran it in spite
@@ -544,13 +566,14 @@ class TestRealSigner(unittest.TestCase):
         self.assertEqual(self.retry("tc-2", 1)["approval_id"], aid)
         self.assertTrue(self.consume(tool_call_id="tc-2", approval_id_hint=aid)["ok"])
         self.restart()   # the snapshot keeps which call ran under it
+        did = self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-2"]["decision_id"]
         self.s.complete({"request_id": "c2", **self.run, "stream": "s", "client_seq": 2, "tool_call_id": "tc-2",
-                         "decision_id": self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-2"]["decision_id"],
+                         "decision_id": did,
                          "args_digest": event_hash({"tool": "pay", "args": PAY}), "status": "ok"})
         es = self.events()
         self.assertNotIn("capture.gap", [e["type"] for e in es])
         used = next(e for e in es if e["type"] == "approval.consumed")
-        self.assertEqual((used["tool_call_id"], used["data"]), ("tc-2", {"approval_id": aid}))
+        self.assertEqual((used["tool_call_id"], used["data"]), ("tc-2", {"approval_id": aid, "decision_id": did}))
 
     def test_an_expired_approval_is_never_used_by_a_retry(self):
         aid = self.pending()

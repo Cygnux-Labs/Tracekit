@@ -1461,6 +1461,8 @@ ENTRIES = {
     "approval.spent": [registered(), answered(spent={"R1": 100})],
     "approval.not_before": [registered(), answered(not_before=TS_)],
     "approval.consume_by": [registered(), answered(consume_by=TS_)],
+    "approval.consumed.decision_id": [registered(), ("approval.consumed", {"approval_id": "apr-1", "decision_id":
+                                                                           "dec-1"}, "run-a")],
     "approval.expired.reason": [registered(), ("approval.expired", {"approval_id": "apr-1", "reason": "ttl"}, "run-a")],
     "capture.gap.kind=reask_after_reject": [registered(), ("capture.gap", {
         "kind": "reask_after_reject", "reason": "asked again", "tool_use_id": "t1"}, "run-a")],

@@ -3796,24 +3796,42 @@
     const callKey = r => r.session_id + "|" + (r.tool_use_id ?? r.v2?.tool_use_id) + "|" + (r.v2?.attempt ?? ""), aidKey = r => r.session_id + "|" + r.v2?.approval_id, didKey = r => r.session_id + "|" + r.v2?.decision_id, refusedUse = r => /^approval\.(refused|binding_mismatch)$/.test(r.v2?.type);
     // a run's held calls as why/import_v2.held_calls reads them. Returns the owners: approval key -> the decision row its
     // request was for (the latest under the request's call id and attempt). Into `out`: each decision row that is a held
-    // call's retry with its own id (LangGraph's resume) -> the held call's row. A consume names a call id and attempt, not
-    // a decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it
-    // has no approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of
-    // that approval under the id does. When in doubt it is a call of its own
+    // call's retry with its own id (LangGraph's resume) -> the held call's row. A consume that names its decision
+    // (decision_id, format 1.7) folds exactly that one; without it a consume names a call id and attempt, not a decision,
+    // so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it has no
+    // approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of that
+    // approval under the id does. When in doubt it is a call of its own
     function foldsOf(rows, out = new Map()) {
       const decs = new Map(), at = new Map(), owners = new Map(), mism = new Map(), cons = new Map();   // call key -> its decisions
+      const named = new Map(), byId = new Map();   // an approval -> the decisions its consumes name; decision key -> its row
       out.clear();
       rows.forEach((r, i) => {
         const a = r.v2?.approval, k = callKey(r);
-        if (r.event === "PreToolUse" && r.v2) { at.set(r, i); decs.set(k, [...(decs.get(k) || []), r]); }
+        if (r.event === "PreToolUse" && r.v2) {
+          at.set(r, i); decs.set(k, [...(decs.get(k) || []), r]);
+          if (r.v2.decision_id) byId.set(didKey(r), r);
+        }
         else if (a === "requested" && decs.has(k)) owners.set(aidKey(r), decs.get(k).at(-1));
         else if (a === "binding_mismatch") mism.set(aidKey(r), i);   // the latest
-        else if (a === "consumed") cons.set(aidKey(r), [...(cons.get(aidKey(r)) || []), [i, k]]);
+        else if (a === "consumed") {
+          cons.set(aidKey(r), [...(cons.get(aidKey(r)) || []), [i, k]]);
+          if (r.v2.decision_id) named.set(aidKey(r), [...(named.get(aidKey(r)) || []), didKey(r)]);
+        }
       });
       const own = new Set(owners.values());
-      for (const [aid, h] of owners) for (const d of decs.get(callKey(h)))
-        if (at.get(d) > at.get(h) && d.v2.decision === "ask" && d.tool_name === h.tool_name && !own.has(d) && !(mism.get(aid) > at.get(d))
-            && (cons.get(aid) || []).some(([c, k]) => c > at.get(d) && k === callKey(h))) out.set(d, h);
+      for (const [aid, h] of owners) {
+        if (named.has(aid)) {   // the consume names its decision (format 1.7): fold exactly it, never an ask it didn't name
+          for (const did of named.get(aid)) {
+            const d = byId.get(did);
+            if (d && d.v2.decision === "ask" && d.tool_name === h.tool_name && at.get(d) > at.get(h) && !own.has(d)
+                && callKey(d) === callKey(h)) out.set(d, h);
+          }
+          continue;
+        }
+        for (const d of decs.get(callKey(h)))
+          if (at.get(d) > at.get(h) && d.v2.decision === "ask" && d.tool_name === h.tool_name && !own.has(d) && !(mism.get(aid) > at.get(d))
+              && (cons.get(aid) || []).some(([c, k]) => c > at.get(d) && k === callKey(h))) out.set(d, h);
+      }
       return owners;
     }
     // a call's acts under its id (latest last), and the one a row of `r`'s id and attempt is of that passes `ok`

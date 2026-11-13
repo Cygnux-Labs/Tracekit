@@ -171,6 +171,11 @@ class TestSchemaV2(unittest.TestCase):
                 missing.pop(next(iter(data)))
                 self.assertTrue(schema.validate(ev(t, missing)))
 
+    def test_an_approval_consumed_may_name_its_decision(self):
+        """Format 1.7: the field is optional, so an old consume still validates (test_every_new_type)."""
+        self.assertEqual(schema.validate(ev("approval.consumed", {"approval_id": "ap-1", "decision_id": "dec-1"})), [])
+        self.assertTrue(schema.validate(ev("approval.consumed", {"approval_id": "ap-1", "decision_id": 1})))
+
     def test_new_fields(self):
         good = ev(tenant="acme", tenant_attested=False, principal="u@x", principal_attested=False, request_id="r-1",
                   stream="s-1", client_seq=4, tool_call_id="call_1", attempt=0, step=2, run_seq=1, run_prev_hash=H,

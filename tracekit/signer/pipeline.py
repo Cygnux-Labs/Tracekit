@@ -636,7 +636,9 @@ class RecordLog:
                 a["state"] = APPROVAL_ENDS[e["type"]]
                 used = [e.get("tool_call_id"), e.get("attempt", 0)]
                 if e["type"] == "approval.consumed" and used != [a["tool_call_id"], a["attempt"]]:   # a later call's
-                    a["used_by"] = [*used, (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)
+                    # the decision the consume names (format 1.7), else the later call's current one
+                    a["used_by"] = [*used, e["data"].get("decision_id")
+                                    or (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)
                     index[(e["tenant"], e["run_id"], *used)] = e["data"]["approval_id"]
             elif e["type"] == "ext" and e["data"].get("name") == "pcm.grant" and e["data"].get("approval_id"):
                 approvals[e["data"]["approval_id"]]["granted"] = True   # Service._pcm_grant: one grant per approval

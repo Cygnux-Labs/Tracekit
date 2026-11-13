@@ -451,7 +451,8 @@ class Translator(observe.Translator):
                 # which call and approval a record is of: the page reads them as held_calls does
                 **({"attempt": e["attempt"]} if e.get("attempt") is not None else {}),
                 **({"approval_id": d["approval_id"]} if d.get("approval_id") else {}),
-                **({"decision_id": d["decision_id"]} if t == "tool.result" and d.get("decision_id") else {}),
+                **({"decision_id": d["decision_id"]} if t in ("tool.result", "approval.consumed")
+                   and d.get("decision_id") else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:

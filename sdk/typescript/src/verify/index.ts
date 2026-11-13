@@ -36,7 +36,7 @@ export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./
 export const VERSION = "1.6.0";
 /** The newest bundle format version this verifier reads: the reference's VERSIONS' newest row (tracekit/bundle_v2.py),
  * or VERSION when later (tracekit/verify/v2.py READS); a bundle needing a later one is UNVERIFIABLE. */
-export const READS = "1.6.0";
+export const READS = "1.7.0";
 /** The browser verifier of the latest release (docs/RELEASING.md). */
 const PAGE = "https://cygnux-labs.github.io/Tracekit/verify/";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;

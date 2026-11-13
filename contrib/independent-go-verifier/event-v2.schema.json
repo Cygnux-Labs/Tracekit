@@ -3035,6 +3035,10 @@
       "properties": {
         "approval_id": {
           "$ref": "#/$defs/id"
+        },
+        "decision_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.7: the open decision the approval was consumed for"
         }
       }
     },

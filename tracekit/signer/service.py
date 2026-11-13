@@ -3766,8 +3766,17 @@ class SignerService:
                 if aid != own:   # an earlier attempt's (_reusable): this call ran under it (pipeline.ran)
                     tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
-                # under this call's tool_call_id; the approval.request it names has the earlier attempt's
-                tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                # under this call's tool_call_id; the approval.request it names has the earlier attempt's. The decision
+                # the use was checked against: the current call when its arguments are the approved ones (a retry), else
+                # the decision the approval was asked for (the call under its id whose arguments changed since). A view
+                # folds exactly it (format 1.7)
+                used = {"approval_id": aid}
+                if call and call.get("decision_id") and call.get("commitment") \
+                        and self._opens(call["commitment"], call["decision_id"], digest):
+                    used["decision_id"] = call["decision_id"]
+                elif isinstance(a.get("decision_id"), str):
+                    used["decision_id"] = a["decision_id"]
+                tx.emit(run, "approval.consumed", used, source="signer", **top)
                 rec = run.get("rec")
                 if rec is not None:   # an approved call explains what it was decided for (reconcile.explained)
                     if tcid in rec["l2"]:

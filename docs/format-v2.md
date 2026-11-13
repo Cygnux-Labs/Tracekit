@@ -89,6 +89,7 @@ its record hash is that of `"seq": 1`. It adds to v1:
 | `tenant_attested`, `principal`, `principal_attested` | signer | whether tenant and principal came from the caller's verified identity |
 | `request_id`, `stream`, `client_seq` | client | idempotency key and per-stream counter; a skipped `client_seq` becomes a signer gap |
 | `tool_call_id`, `attempt` | client | the call a record is about; an `approval.consumed`'s is the call that ran under the approval, its own or a later call of the same run, tool and arguments ([approve, then retry](approvals.md#approve-then-retry)) |
+| `decision_id` | signer | on `approval.consumed` (format 1.7), the open decision the approval was used for; without it a view infers the held call's retry from its tool, id and attempt |
 | `tier` | signer | `T1`/`T2`/`T3` evidence tier, when known; OTLP imports are `T3` |
 | `step`, `capture_layer` | — | defined by the schema; the signer does not write them yet |
 | `args_commitment`, `args_source` | signer | the commitment (§2) and whether arguments were `raw`, `parsed` or `coerced` |
@@ -580,6 +581,7 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
 | 1.6.0 | — | — | `ext` `self_approved`: `true` (an `intent.grant` the run's own user issued: a self-approval, which makes the assurance `dev`) | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
+| 1.7.0 | — | `approval.consumed`: `decision_id` | — | — |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
