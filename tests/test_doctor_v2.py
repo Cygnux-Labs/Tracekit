@@ -1856,13 +1856,17 @@ class Tailer(unittest.TestCase):
         self.acl = {self.home: f"user:{self.UID}:--x", self.dot: f"user:{self.UID}:--x",
                     self.projects: f"user:{self.UID}:r-x"}
         self.platform, self.getfacl = "linux", "/usr/bin/getfacl"
+        self.other, self.getfacl_fails = "---", None
 
     def getfacl_run(self, argv, **kw):
         path = argv[-1]
+        if path == self.getfacl_fails:
+            return subprocess.CompletedProcess(argv, 2, "", "")
         if path not in self.acl:
             return subprocess.CompletedProcess(argv, 1, "", f"getfacl: {path}: No such file or directory\n")
-        return subprocess.CompletedProcess(argv, 0, f"# file: {path}\n# owner: 1000\nuser::rwx\n{self.acl[path]}\n"
-                                                    "group::---\nmask::r-x\nother::---\n\n", "")
+        entry = f"{self.acl[path]}\n" if self.acl[path] else ""
+        return subprocess.CompletedProcess(argv, 0, f"# file: {path}\n# owner: 1000\nuser::rwx\n{entry}"
+                                                    f"group::---\nmask::r-x\nother::{self.other}\n\n", "")
 
     def check(self, agent=True):
         with open(self.client_json, "w") as f:
@@ -1924,6 +1928,11 @@ class Tailer(unittest.TestCase):
                 ("another command", lambda: setattr(self, "rule", "agent ALL=(tracekit-tailer) NOPASSWD: "
                                                                   "/usr/bin/python3 -I -m tracekit.tailer\n"),
                  "warn", "has no rule for"),
+                ("commented out", lambda: setattr(self, "rule", "# " + self.rule), "warn", "has no rule for"),
+                ("another user's", lambda: setattr(self, "rule", self.rule.replace("agent ALL", "bob ALL")),
+                 "warn", "has no rule for"),
+                ("another run-as user", lambda: setattr(self, "rule", self.rule.replace("(tracekit-tailer)", "(root)")),
+                 "warn", "has no rule for"),
                 ("not root's", lambda: setattr(self, "owner", 1000), "fail", "belongs to uid 1000"),
                 ("writable", lambda: setattr(self, "mode", 0o664), "fail", "is 0664, not 0440")):
             with self.subTest(name):
@@ -1934,6 +1943,14 @@ class Tailer(unittest.TestCase):
                 got = self.check()["D-TAILER-SUDO"]
                 self.assertEqual(got["status"], want, got)
                 self.assertIn(says, got["detail"])
+
+    def test_a_sudoers_file_that_is_not_utf8_warns_instead_of_crashing(self):
+        self.rule = None
+        with open(self.sudoers, "wb") as f:
+            f.write(b"agent ALL=(tracekit-tailer) NOPASSWD: \xff\xfe\n")
+        got = self.check()["D-TAILER-SUDO"]
+        self.assertEqual(got["status"], "warn", got)
+        self.assertIn("cannot read", got["detail"])
 
     def test_the_acl_misses_a_folder_or_the_mask_takes_it_away(self):
         for name, where, entry in (("no read on projects", "projects", f"user:{self.UID}:--x"),
@@ -1949,6 +1966,19 @@ class Tailer(unittest.TestCase):
                 got = self.check()["D-TAILER-ACL"]
                 self.assertEqual(got["status"], "warn", got)
                 self.assertIn(path, got["detail"])
+
+    def test_getfacl_exiting_non_zero_warns_with_its_exit_code(self):
+        self.getfacl_fails = self.dot
+        got = self.check()["D-TAILER-ACL"]
+        self.assertEqual(got["status"], "warn", got)
+        self.assertIn(f"{self.dot}: getfacl exited 2", got["detail"])
+
+    def test_with_no_named_entry_other_decides(self):
+        self.acl = {self.home: "", self.dot: "", self.projects: ""}
+        self.other = "r-x"   # a 0755 home: no named entry, other can read and search
+        self.assertEqual(self.check()["D-TAILER-ACL"]["status"], "ok")
+        self.other = "---"
+        self.assertEqual(self.check()["D-TAILER-ACL"]["status"], "warn")
 
     def test_the_acl_check_is_skipped_not_passed_where_it_cannot_run(self):
         for name, attr, value, says in (("no getfacl", "getfacl", None, "no getfacl"),

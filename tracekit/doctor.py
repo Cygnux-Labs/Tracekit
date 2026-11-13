@@ -804,8 +804,8 @@ def _vault_off(cfg, keys):
 
 
 def _acl_perms(out, uid):
-    """The permissions `getfacl -n` output `out` gives uid: its named entry (as the mask leaves it), else other's.
-    lean: the groups' entries aren't read; init grants the tailer's user a named entry"""
+    """The permissions `getfacl -n` output `out` gives uid: its named entry (as the mask leaves it), else other's."""
+    # lean: the groups' entries aren't read; init grants the tailer's user a named entry
     named = other = None
     for line in out.splitlines():
         entry, _, effective = line.partition("#effective:")
@@ -853,20 +853,25 @@ def _tailer_checks(add, client_json, agent):
             add("D-TAILER-SUDO", False, "; ".join(bad), f"sudo chown 0:0 {sudoers}; sudo chmod 440 {sudoers}; or "
                 + REINIT)
         else:
-            named = cmd in read_text(sudoers)
+            # the exact line install._tailer_sudo writes, so a commented-out line or another user's rule doesn't count
+            rule = f"{agent.pw_name} ALL=({user}) NOPASSWD: {cmd}" if agent else None
+            text = read_text(sudoers)
+            named = rule in (ln.strip() for ln in text.splitlines()) if rule else cmd in text
             add("D-TAILER-SUDO", named, f"{sudoers} lets the agent's user start {cmd}" if named else
                 f"{sudoers} has no rule for {cmd}: the agent's user can't start the tailer", REINIT, bad=WARN)
     except FileNotFoundError:
         add("D-TAILER-SUDO", False, f"{sudoers} is missing: the agent's user can't start the tailer", REINIT, bad=WARN)
     except OSError as e:
         add("D-TAILER-SUDO", False, f"cannot read {sudoers}: {e.strerror}", ROOT_DOCTOR, bad=WARN)
+    except ValueError as e:   # not UTF-8
+        add("D-TAILER-SUDO", False, f"cannot read {sudoers}: {e}", REINIT, bad=WARN)
 
     getfacl = shutil.which("getfacl")
     if not agent or not sys.platform.startswith("linux") or not getfacl:
         add("D-TAILER-ACL", False, "not checked: " + ("no agent user is known (client.json names none)" if not agent
             else f"doctor reads ACLs on Linux only, this is {sys.platform}" if not sys.platform.startswith("linux")
             else "no getfacl (install the acl package)"),
-            f"check that {user} can search {agent.pw_dir if agent else '~'} and ~/.claude and read ~/.claude/projects"
+            f"check that {user} can search {agent.pw_dir} and ~/.claude and read ~/.claude/projects"
             if agent else REINIT, bad=WARN)
         return
     dot = os.path.join(agent.pw_dir, ".claude")
