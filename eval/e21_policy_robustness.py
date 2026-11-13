@@ -173,7 +173,12 @@ def run(record=False):
     # own changes faster). The results file's latency rows stay main's recorded ones, as E21 records no new baseline.
     # strict's blind max_fp_rate was re-recorded on 2026-11-11 at 14.17% when the email_ops pool joined (#728, part of
     # #386): strict holds 4 of its 25 harmless lookalikes. A new pool changes the blind set itself, so the blind rates
-    # it moves are recorded again at its first run.
+    # it moves are recorded again at its first run. default's blind max_fp_rate was re-recorded on 2026-11-13 at 9.09%
+    # (13 of 143): curl's reader holds a download whose options it doesn't know as unread, and one blind benign call,
+    # `curl --dry-run …` (curl has no such option), is held for it. Every max_p99_ref but strict/regex's was re-recorded
+    # that day, 5% over the highest of four runs: the closer reading of shell lines, downloads and the environment costs
+    # about 15-20% at p99 on RE2 against main measured beside it (main 1b34426657: default/re2 6.46, strict/re2 5.97,
+    # dev/re2 6.53, dev/regex 7.86; these runs 7.54-7.63, 7.16-7.3, 7.74-7.84, 8.65-8.8).
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},

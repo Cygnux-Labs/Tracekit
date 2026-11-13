@@ -12,8 +12,8 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
   `handle_tool_errors`, and through `.with_fallbacks()`;
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
   (tracekit_hooks);
-* MCP client: every ClientSession.call_tool goes through TracekitSession, and its list_tools, list_resources and
-  list_prompts are recorded as untrusted input;
+* MCP client: every ClientSession.call_tool goes through TracekitSession, and its read_resource, list_tools,
+  list_resources and list_prompts are recorded as untrusted input;
 * Browser Use: the actions of every Tools built from now on (an Agent builds one) are gated (trace_tools);
 * CrewAI: global tool hooks decide every tool call and block by return value (tracekit.integrations.crewai);
 * Pydantic AI: every Agent built from now on gets the Tracekit capability (tracekit.integrations.pydantic_ai), unless
@@ -266,7 +266,7 @@ def _mcp(run):
 
     from .integrations.mcp import TracekitSession
     methods = {}
-    for name in ("call_tool", "get_prompt", "list_tools", "list_resources", "list_prompts"):
+    for name in ("call_tool", "get_prompt", "read_resource", "list_tools", "list_resources", "list_prompts"):
         orig = getattr(ClientSession, name, None)
         if orig is not None:   # get_prompt is absent on mcp 1.x
             methods[name] = orig

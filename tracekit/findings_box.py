@@ -46,6 +46,7 @@ import posixpath
 import re
 import urllib.parse
 
+from . import constraints
 from .constraints import LATER_RUNS
 from .findings import WRITE_TOOLS
 from .findings_effects import ALL, FETCH, GRACE_S, KINDS, MAX_CITES, _kinds, _t, _under
@@ -60,6 +61,7 @@ SHELLS = frozenset(t for t, k in KINDS.items() if k == ALL)
 # a command that detaches what it runs (coproc: \coproc), or runs it after the line returns (systemd-run, at, batch)
 DETACHERS = frozenset(("setsid", "disown", "coproc")) | LATER_RUNS
 WHATWG_PART = re.compile(r"0x[0-9a-f]*|[0-9]+")
+STATED = {"keep_away": "to keep {} unchanged", "only_change": "to change only {}", "read_only": "to make no changes"}
 WHY = {RULE: ("the agent's own records of its calls (sent from inside the box, where it can skip or forge them) and "
               "the box's door records (decided on the host, outside its reach) disagree: the agent did something it "
               "didn't record, or recorded something the door didn't see",
@@ -108,6 +110,8 @@ REASONS = {
                     "read the box's events for that host (`tkbox events <box>`)"),
     "no_outcome": ("a connection to that host in the call's window has no recorded outcome (its result was lost, or an "
                    "approval it waited on was never answered)", "read the box run's tkbox.gap records"),
+    "no_task": ("no operator task was recorded for the box (tkbox.task), so the box's patch cannot be checked against it",
+                "start the box with --task"),
 }
 CALL_SIDE = frozenset(("agent_run", "no_url", "reused", "box_refusal", "no_outcome"))
 
@@ -301,7 +305,7 @@ def check(run, out, cov, others, opts, deadline, clock):
     lab = label(run.records)
     if not lab:
         return
-    cx, n0 = cov[RULE], len(out["findings"])
+    cx, n0 = cov[RULE], sum(f["verdict"]["rule"] == RULE for f in out["findings"])
 
     def note(status, n=1):
         if status in ("checked", "found"):
@@ -318,7 +322,7 @@ def check(run, out, cov, others, opts, deadline, clock):
         return clock() > deadline
 
     # the box run: its doors and what Box observed
-    door = {"tkbox.box", "tkbox.model.call", "tkbox.egress", "tkbox.gap", "tkbox.channel"}
+    door = {"tkbox.box", "tkbox.model.call", "tkbox.egress", "tkbox.gap", "tkbox.channel", "tkbox.task"}
     bodies, done = _bodies(run.records, lambda r: r["event"]["type"] == "policy.decision" and r["event"]["data"].get(
         "tool") in ("WebFetch", "Write") or r["event"]["type"] == "input.observed" and r["event"]["data"].get(
         "source") in door, content, late)
@@ -345,6 +349,8 @@ def check(run, out, cov, others, opts, deadline, clock):
     # have been one)
     refused = any(s == "tkbox.channel" and (b.get("method") in ("register_run", None) or b.get("folded"))
                   or s == "tkbox.gap" and b.get("kind") == "tkbox.channel" for s, _, b in obs)
+    missing = "no_content" if done else "budget"
+    _check_task(run, out, cov, writes, workspace, bodies, missing)
     if not kids:
         return note("no_agent_account" if whole and run.final and lab[0].get("channel") == "agent" and not refused
                     else "no_agent_runs", len(conns) + len(writes))
@@ -489,7 +495,7 @@ def check(run, out, cov, others, opts, deadline, clock):
             _finding(run, out, [k], "medium", "no_door_event", grace,
                      said + f"no connection to {h} crossed the box's door from the box's start to {grace:g} s after "
                      f"that result (the box run's records up to {k})" + window)
-    cx["found"] += len(out["findings"]) - n0
+    cx["found"] += sum(f["verdict"]["rule"] == RULE for f in out["findings"]) - n0
 
 
 def _finding(run, out, seqs, severity, kind, grace, what):
@@ -500,3 +506,78 @@ def _finding(run, out, seqs, severity, kind, grace, what):
         "cites": [{"run_seq": s, "hash": run.by_seq[s]["hash"]}
                   for s in sorted({s for s in seqs if s is not None})[:MAX_CITES]]})
     out["shown"]["details"].append({"what": what, "tiers": ["observer", "decision"], "labels": [kind]})
+
+
+def _check_task(run, out, cov, writes, workspace, bodies, missing):
+    """TK-X204: of each file of the box's patch against the operator's task (tkbox.task)."""
+    if not writes or "TK-X204" not in cov:
+        return
+    cx = cov["TK-X204"]
+
+    def note(status, n=1):
+        if status in ("checked", "found"):
+            cx["checked"] += n
+            if status == "found":
+                cx["found"] += n
+            cx["tier"].update(("observer", "decision"))
+        elif n:
+            cx["not_checkable"][status] = cx["not_checkable"].get(status, 0) + n
+
+    task_rec = next((r for r in run.records if r["event"]["type"] == "input.observed"
+                     and r["event"]["data"].get("source") == "tkbox.task"
+                     and r["event"]["data"].get("trust") == "trusted"), None)
+    task_seq = task_rec["event"]["run_seq"] if task_rec else None
+    task_body = bodies.get(task_seq) if task_seq is not None else None
+    task_text = task_body.get("task") if isinstance(task_body, dict) else task_body if isinstance(task_body, str) else None
+    task_text = task_text.strip() if isinstance(task_text, str) and task_text.strip() else None
+
+    if task_rec is not None and task_body is None:
+        return note(missing, len(writes))
+
+    task_constraints = constraints.extract(task_text) if task_text else []
+    file_constraints = [c for c in task_constraints if c[0] in ("keep_away", "only_change", "read_only")]
+    only = {obj for kind, obj in file_constraints if kind == "only_change" and obj}
+
+    for w in writes:
+        p = _arg(w, "file_path")
+        if p is None:
+            note(missing)
+            continue
+        p = posixpath.normpath(p)
+        if not workspace or p == workspace or not _under(p, workspace):
+            note("apply_dir")
+            continue
+        rel = posixpath.relpath(p, workspace)
+        if not task_text:
+            note("no_task")
+            continue
+        if not file_constraints:
+            note("checked")
+            continue
+        a = w["args"] if isinstance(w["args"], dict) else {}
+        deleted = bool(a.get("deleted"))
+        f = {"names": constraints.names([rel]), "write": True, "push": False, "network": False}
+        hit = None
+        for kind, obj in file_constraints:
+            broken_name = constraints.breaks(kind, f, only.__contains__ if kind == "only_change" else obj.__eq__ if obj else None)
+            if broken_name:
+                hit = (kind, obj, broken_name)
+                break
+        if hit:
+            kind, obj, broken_name = hit
+            note("found")
+            action = "deleted" if deleted else "changed"
+            target_str = ", ".join(sorted(only)[:3]) if kind == "only_change" else (obj or "")
+            what = f"the box's patch {action} {rel} after the request (record {task_seq}) said {STATED[kind].format(target_str)}"
+            cites = [task_seq, w["dseq"], *([w["rseq"]] if w.get("rseq") is not None else [])]
+            out["findings"].append({
+                "verdict": {"kind": "finding", "rule": "TK-X204", "severity": "high"},
+                "cites": [{"run_seq": s, "hash": run.by_seq[s]["hash"]} for s in sorted(set(cites))[:MAX_CITES]]
+            })
+            out["shown"]["details"].append({
+                "what": what,
+                "tiers": ["observer", "decision"],
+                "labels": [kind]
+            })
+        else:
+            note("checked")

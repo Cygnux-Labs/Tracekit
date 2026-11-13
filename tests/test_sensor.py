@@ -489,6 +489,18 @@ class TestDelivery(Sensed):
         first, second = (c[0][0] for c in imp.client.observe_effect.call_args_list)
         self.assertEqual(first, second)
 
+    def test_the_first_flush_is_a_heartbeat_while_the_clock_reads_under_heartbeat_s(self):
+        """time.monotonic() counts from boot on Linux, and from near 0 in each process on macOS py3.9: an import started
+        then still sends its first heartbeat at once, and the next one HEARTBEAT_S later."""
+        imp = self.importer()
+        imp.client = types.SimpleNamespace(observe_effect=mock.Mock())
+        self.assertTrue(imp.flush(5))
+        self.assertEqual(imp.client.observe_effect.call_count, 1)
+        self.assertTrue(imp.flush(6))
+        self.assertEqual(imp.client.observe_effect.call_count, 1)
+        self.assertTrue(imp.flush(5 + svc.HEARTBEAT_S))
+        self.assertEqual(imp.client.observe_effect.call_count, 2)
+
     def test_past_the_buffer_events_are_a_loss(self):
         imp = self.importer()
         with mock.patch.object(sensor, "MAX_PENDING", 1):

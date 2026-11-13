@@ -191,9 +191,9 @@ class BoxScene:
         if allowed is not None:
             self.steps.append((t + 0.01, len(self.steps), "complete", ("box", tid, "WebFetch", {"url": url}, allowed)))
 
-    def write(self, t, path):
+    def write(self, t, path, deleted=False):
         """A file of the box's patch written back at apply, at `t`."""
-        args = {"file_path": path, "sha256": "0" * 64, "mode": 420, "symlink": False, "deleted": False,
+        args = {"file_path": path, "sha256": "0" * 64, "mode": 420, "symlink": False, "deleted": deleted,
                 "patch_sha256": "1" * 64}
         self.steps += [(t, len(self.steps), "decide", ("box", f"write-{len(self.steps)}", "Write", args)),
                        (t + 0.01, len(self.steps) + 1, "complete", ("box", f"write-{len(self.steps)}", "Write", args,
