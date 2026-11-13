@@ -23,6 +23,7 @@ import adapter_contract as ac
 from tracekit import __version__, agent_hooks, cli, client, doctor, install, parsers
 from tracekit.format.canon import event_hash
 from tracekit.integrations import claude_code, harness_hooks
+from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService, load_policy
@@ -132,6 +133,56 @@ class Mapping(HarnessCase):
 
     def test_goose(self):
         self.check("goose")
+
+    def test_copilot_denies_mcp_names_at_or_above_64_characters(self):
+        prefix = "notes-"
+        payload = {
+            "sessionId": "copilot-mcp-length",
+            "toolCallId": "call_mcp_length_63",
+            "toolName": prefix + "a" * (63 - len(prefix)),
+            "toolArgs": {},
+        }
+        assert self.hook("copilot", payload, "preToolUse")[0] == 0
+        assert self.sent
+
+        for length in (64, 65):
+            with self.subTest(length=length):
+                self.sent.clear()
+                payload = {**payload, "toolCallId": f"call_mcp_length_{length}",
+                           "toolName": prefix + "a" * (length - len(prefix))}
+
+                code, _, error = self.hook("copilot", payload, "preToolUse")
+
+                assert code == 2, error
+                assert "shorten" in error.lower()
+                assert "server" in error.lower()
+                assert "config" in error.lower()
+                assert self.sent == []
+
+    def test_copilot_denies_typed_input_it_cant_read_before_the_signer(self):
+        # #782's review: write_bash types into a running shell and is read as Devin's write_to_process is; with no
+        # input it was decided on a command of None and allowed
+        for tool_args in ({"shellId": "0", "input": "rmx\x7f -rf ~\n"}, {"shellId": "0", "input": "^echo ^\n"},
+                          {"shellId": "0"}):
+            with self.subTest(args=tool_args):
+                self.sent.clear()
+                code, _, error = self.hook("copilot", {"sessionId": "copilot-typed", "toolCallId": "call_typed",
+                                                       "toolName": "write_bash", "toolArgs": tool_args}, "preToolUse")
+                assert code == 2, error
+                assert "Blocked by Tracekit: Copilot's write_bash" in error
+                assert self.sent == []
+
+    def set_signer_policy(self, policy):
+        decisions = []
+
+        def decide(tool, arguments):
+            decision = policy.decide(tool, arguments)
+            decisions.append(decision)
+            verdict = "allow" if decision["verdict"] == "flag" else decision["verdict"]
+            return verdict, decision["rule_ids"]
+
+        self.signer.rule = decide
+        return decisions
 
     def test_goose_execute_javascript_is_denied_before_the_signer(self):
         # goose's Code Mode runs shell calls through dispatch_tool with no PreToolUse hook, so the hook denies
@@ -570,6 +621,61 @@ class Mapping(HarnessCase):
         self.assertEqual((code, json.loads(out)["decision"]), (2, "deny"))
 
 
+class CopilotMCPPolicy(HarnessCase):
+    def test_copilot_denies_mcp_call_when_any_split_is_denied(self):
+        policy = Engine({
+            "tools": {"mcp:*/*": "mcp", "mcp__*": "mcp"},
+            "deny": [{
+                "id": "COPILOT-SPLIT-DENY",
+                "class": "mcp",
+                "tool": r"^mcp(:tracekit-delta/read-file|__tracekit-delta__read-file)$",
+                "pattern": "^",
+            }],
+        })
+        arguments = {"marker": "TRACEKIT_MCP_HYPHEN"}
+
+        assert policy.decide("mcp:tracekit/delta-read-file", arguments)["verdict"] == "allow"
+        assert policy.decide("mcp:tracekit-delta/read-file", arguments)["verdict"] == "deny"
+        assert policy.decide("mcp:tracekit-delta-read/file", arguments)["verdict"] == "allow"
+
+        self.start_signer(policy)
+
+        payload = {
+            "sessionId": "copilot-mcp-splits",
+            "toolCallId": "call_mcp_splits",
+            "toolName": "tracekit-delta-read-file",
+            "toolArgs": arguments,
+        }
+        code, out, error = self.hook("copilot", payload, "preToolUse")
+
+        assert code == 2, error
+        assert "COPILOT-SPLIT-DENY" in error
+        reply = json.loads(out)   # Copilot shows the reason only from this JSON
+        assert reply["permissionDecision"] == "deny"
+        assert "COPILOT-SPLIT-DENY" in reply["permissionDecisionReason"]
+
+    def test_copilot_holds_sanitized_dotted_mcp_tool(self):
+        self.start_signer(load_policy())
+        os.environ[claude_code.WAIT_ENV] = "0"
+
+        payload = {
+            "sessionId": "copilot-mcp-dotted",
+            "toolCallId": "call_mcp_dotted",
+            "toolName": "tracekit-space-get-secret",
+            "toolArgs": {"name": "example-secret"},
+        }
+        code, _, error = self.hook("copilot", payload, "preToolUse")
+
+        assert code == 2, error
+        assert "HELD, nothing ran" in error
+        assert "TK-A037" in error
+
+    def start_signer(self, policy):
+        signer = SignerService(ac.tmpdir(self), policy=policy)
+        self.addCleanup(signer.close)
+        os.environ["TRACEKIT_SIGNER"] = ac._serve(self, signer.handle_frame)
+
+
 class OnTheDevPolicy(HarnessCase):
     """The signer's default policy sees what the mapping gives it: every file of a patch, the input typed into a shell."""
 
@@ -854,8 +960,8 @@ class Installer(unittest.TestCase):
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
-                    # Cursor: and what its model said; agy: its tool events only
-                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2}.get(harness, 5))
+                    # Cursor: and what its model said; agy and Copilot: their tool events only
+                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2, "copilot": 3}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
@@ -879,7 +985,7 @@ class Installer(unittest.TestCase):
                                  "set it to true there for Devin to read Claude Code's hooks, rules, skills, commands "
                                  "and MCP servers again\n")
                     self.assertEqual(out, want)
-                    if harness == "droid":
+                    if harness in ("droid", "copilot"):   # left with no hooks, their own file goes
                         self.assertFalse(os.path.exists(path))
                         continue
                     with open(path) as f:
@@ -1110,7 +1216,6 @@ class Installer(unittest.TestCase):
                         contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
                     self.assertEqual(agent_hooks.entry("gemini"), code)
                 self.assertEqual("deny" in out.getvalue(), denied, out.getvalue())
-
 
 
 class CodexReasoningSummary(unittest.TestCase):

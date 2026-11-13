@@ -503,11 +503,13 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
             mcps = [f"mcp:{server}/{name}"]
         elif tool.startswith("mcp__"):
             # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
-            # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
-            # tool, as before it was named an MCP one (the server packs hold it)
-            # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
+            # ends the server's name, nor Copilot CLI's <server>-<tool> (mcp__<server>-<tool>) which `-`: each of the
+            # first eight of either is tried, and the call is also decided as an unknown tool, as before it was named
+            # an MCP one (the server packs hold it)
+            # lean: a server name of more than seven of its separator reaches the mcp: mappings under no split
             rest = tool[5:]
-            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
+            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for sep in "_-"
+                    for i in [i for i, c in enumerate(rest) if c == sep][:8]]
             d = _stricter(d, policy.decide(tool, args, "unknown", untrusted))
         elif tool == "PowerShell":
             # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a

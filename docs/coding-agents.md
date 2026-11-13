@@ -15,6 +15,7 @@ tracekit init --dev --v2 --agent antigravity   # ~/.gemini/config/hooks.json (se
 tracekit init --dev --v2 --agent crush      # $CRUSH_GLOBAL_CONFIG, else $XDG_CONFIG_HOME (or ~/.config)/crush: crush.json; --project: ./crush.json
 tracekit init --dev --v2 --agent devin      # ~/.config/devin/config.json (Windows %APPDATA%\devin\config.json); --project: .devin/hooks.v1.json
 tracekit init --dev --v2 --agent openhands  # ~/.openhands/hooks.json; --project: .openhands/hooks.json
+tracekit init --dev --v2 --agent copilot    # ~/.copilot/hooks/tracekit.json; --project: .github/hooks/tracekit.json (Copilot CLI 1.0.107 or later)
 # --project writes the project-level file instead; tracekit uninstall --agent X removes Tracekit's hooks and keeps your other settings
 sudo /opt/tracekit/bin/python -I -m tracekit init --v2 --user AGENT --agent codex   # system mode: the signer as its own user
 ```
@@ -28,7 +29,7 @@ edit or turn off) is for Claude Code only, and init refuses it with these agents
 `--v2` and write the same files:
 
 ```bash
-tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, openhands
+tracekit init --dev --agent codex      # v1; or cursor, gemini, qwen, droid, opencode, kilo, goose, antigravity, crush, devin, openhands, copilot
 tracekit demo --agent codex            # the scripted v1 demo, sent as Codex's own hook payloads (also cursor, gemini, opencode, goose)
 ```
 
@@ -187,6 +188,33 @@ hook command isn't wrapped and the terminal is PowerShell, which the policy deci
 ([limits](limits.md#signer-and-capture)). Tested through the released CLI's SDK (1.21.0) `HookManager` with its real
 tools and Tracekit's installer.
 
+GitHub Copilot CLI ([hooks](https://docs.github.com/en/copilot/reference/hooks-configuration)) needs **1.0.107 or
+later**: from that release its `preToolUse`, `postToolUse` and `postToolUseFailure` payloads carry a `toolCallId`, and
+Tracekit blocks a call whose payload has none rather than pair it by guesswork. `init` writes its own hooks file,
+`~/.copilot/hooks/tracekit.json` (`$COPILOT_HOME/hooks/tracekit.json` when that is set; `--project`:
+`.github/hooks/tracekit.json`), with a 600 s `timeout` on `preToolUse`: Copilot's own is 30 s, too short for a person
+to approve, and a call whose hook times out goes on through Copilot's normal permission flow, so Tracekit's answers
+within 540 s. Copilot's payload names
+no event, so the hook's command does, for the v1 hook too. Copilot denies a call when its hook exits with anything but
+0, which Tracekit's does at exit 2, and shows the reason from the hook's JSON (`permissionDecision: deny`). `--project`
+writes this machine's Python path into `.github/`, which is usually committed: init says how to keep the file out of
+the commit. `bash`, `apply_patch`, `view`, `glob`, `rg`, `web_fetch` and `task` are decided as `Bash`, `Edit` (every
+file the patch names), `Read`, `Glob`, `Grep`, `WebFetch` and `Task`, and `web_search` as
+`mcp:github-mcp-server/web_search`, the built-in MCP server's tool it is; `create`, `edit`, `str_replace_editor`,
+`grep`, `powershell`, `write_bash`, `write_powershell` and `write_agent`, the tools Copilot gives other models, as
+`Write`, `Edit`, `Read`, `Write` or `Edit`, `Grep`, `PowerShell`, `Bash` and `PowerShell` (`command` = the typed
+input) and `Task`. Each file tool is decided on the `path` or `paths` it reads, never on another argument beside it.
+Text `write_bash` and `write_powershell` type into a running shell is read as Devin's `write_to_process` is: a
+control character, a history expansion (a `!` before a word, a `^` starting a line) or a line that sets the shell's
+state is denied in the hook, and so is a call with no text; no receipt is taken before what it types runs.
+The payload doesn't say which other tools are MCP ones: Copilot names them `<server>-<tool>`, so a name with a `-` is
+decided as an MCP tool under every split, and the strictest decision stands; a name of 64 characters or more, where
+Copilot cuts names, is denied ([limits](limits.md#policy)). No prompts, session events or model text are recorded.
+Copilot also runs the hooks in a repository's `.claude/settings*.json`, so a project-level Tracekit Claude Code hook
+decides each Copilot call as well ([limits](limits.md#custody-12)). Tested in live Copilot CLI 1.0.107 sessions on Linux
+with the model the test plan offered (Copilot's automatic choice, a GPT model): the tools Copilot gives other models
+are mapped from its bundle, not from captured payloads.
+
 | | Codex CLI | Cursor | Gemini CLI | OpenCode | goose | Qwen Code | Factory Droid | Devin | Cline (CLI and VS Code extension) | gptme | OpenHands |
 |---|---|---|---|---|---|---|---|---| --- | --- |---|
 | Hook events used | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | preToolUse, postToolUse, postToolUseFailure, beforeSubmitPrompt, sessionStart, sessionEnd | BeforeTool, AfterTool, BeforeAgent, SessionStart, SessionEnd | tool.execute.before, tool.execute.after | PreToolUse, PostToolUse, PostToolUseFailure | PreToolUse, PostToolUse, PostToolUseFailure, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd | PreToolUse, PostToolUse, TaskStart, TaskComplete, UserPromptSubmit: one hook file each | `TOOL_CONFIRM`, `TOOL_EXECUTE_POST`, `TURN_PRE`, `SESSION_START`, `SESSION_END` | PreToolUse, PostToolUse, UserPromptSubmit, SessionStart, SessionEnd |
@@ -332,6 +360,7 @@ so why none waits by default:
 | Factory Droid | not documented | to Droid (the model) |
 | Devin | not documented | not documented |
 | OpenHands | nothing (the hook runs before the call; stdout and stderr are read on exit) | the reason to the model |
+| Copilot CLI | not documented | "Denied by preToolUse hook:" and the reason, to you and the model |
 | Antigravity CLI | not known to show anything ([#893](https://github.com/google-antigravity/antigravity-cli/issues/893)) | the `reason` of its JSON deny |
 
 ### When Tracekit stops a call
