@@ -353,8 +353,9 @@ conservative: what can't be told is counted not checkable, never a finding.
    of an open run that may have left a process running (`background`), and every refusal Box made itself
    (`untimed_refusal`: it has no time of its own).
 2. **A file of the box's patch no call explains** (high, `door_unexplained`): it is `/workspace/<path>` in the box,
-   and no write call of the agent's that didn't fail named it. Not checkable: applied to another directory than the
-   box's workspace, or perhaps to one under it (`apply_dir`: a path the agent wrote ends the patch's path), a write
+   and no write call of the agent's that didn't fail named it. Not checkable: the box run has no readable workspace
+   record (`no_workspace`), applied to another directory than the box's workspace, or perhaps to one under it
+   (`apply_dir`: a path the agent wrote ends the patch's path), a write
    call whose arguments aren't known (`no_content`) or that names no path (`no_path`), a shell, MCP or other call that
    writes files without naming them ran (`shell_ran`), a command Box started ran (`host_command`).
 3. **A fetch with no connection** (medium, `no_door_event`): the agent's fetch tool returned ok, and no connection it

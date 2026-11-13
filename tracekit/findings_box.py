@@ -24,7 +24,8 @@ on 443 too for plain http to port 80 (it upgrades http to https); the URL read a
     known), when only a fetch whose arguments aren't known could explain it (no_content). A refusal Box made itself
     has no time of its own: untimed_refusal.
   - a file of the box's patch is explained by a write call of the agent's on that path (/workspace/<path>) that did
-    not fail. Not checkable: the apply directory isn't the box's workspace, or may be a directory under it (apply_dir);
+    not fail. Not checkable: the box run has no readable workspace record (no_workspace); the apply directory isn't
+    the box's workspace, or may be a directory under it (apply_dir);
     a write call's arguments aren't known (no_content) or name no path (no_path); a shell, MCP or other call that
     writes files without naming them ran (shell_ran); a host command as above ran (host_command).
 (b) medium, a fetch call of the agent's that returned ok with no connection it matches from the box's start to its
