@@ -688,8 +688,9 @@ def _slashes(texts):
     """Texts of a shell call, each with a `\\` in it also read as `/`: a Windows path (Git Bash keeps a quoted or
     escaped `\\`, and C:\\x is C:/x, as classes.fs_path reads one). A second reading: it adds matches. The parser's
     texts hold a `\\` only where the shell keeps one; a line it can't read is read as written (_plain), so too."""
-    have = set(texts)
-    return texts + [n for n in dict.fromkeys(t.replace("\\", "/") for t in texts if "\\" in t) if n not in have]
+    more = [t.replace("\\", "/") for t in texts if "\\" in t]
+    have = set(texts) if more else ()
+    return texts + [n for n in dict.fromkeys(more) if n not in have]
 
 
 def _path_forms(targets):
@@ -915,6 +916,8 @@ def _harness_launches(commands, refs=(), learned=None):
     (shell.analyse), its names given a value and variables read with none.
     lean: a variable set anywhere on the line counts for every harness on it; read it per command if that holds a run
     a person needs"""
+    if not any(c["argv"][0] == "env" or _harness(c["argv"]) for c in commands):   # (no harness: nothing to read)
+        return []
     learned = learned or {}
     named = sorted(n for n in _set_names(commands, refs, learned.get("given", ())) if _SETTINGS_VARIABLE.fullmatch(n))
     # a variable with a value the line doesn't give it (from the shell it runs in), or one that may hold a word built
@@ -997,8 +1000,9 @@ def _environment_dump(command, files=()):
     if "ssh" in command.get("via", ()):
         return False
     named = args + list(command.get("in", ()))
-    if any(_ENVIRON_FILE.search(w) or any(re.search(r"(?<![\w.-])%s$" % re.escape(f), w) for f in files)
-           for w in named):
+    joined = "\0".join(named)   # (_ENVIRON_FILE needs "/proc/" or "environ" in a word)
+    if (files or "environ" in joined or "/proc/" in joined) and any(_ENVIRON_FILE.search(w) or any(
+            re.search(r"(?<![\w.-])%s$" % re.escape(f), w) for f in files) for w in named):
         return True
     if prog == "env":
         i = 0
@@ -2802,6 +2806,9 @@ def _code(parsed, work):
     return lines + runs_
 
 
+_QUOTES, _BLANKS = (re.compile(r"['\"]"), re.compile(r"['\"\\]")), re.compile(r"\s+")
+
+
 def _drop_program(line, argv, work):
     """`line` without the program name of the command `argv`, where its words stand in it once (as the parser
     normalised them, or as typed: quotes and backslashes aside), else as it is. Charged to `work` (shell.charge)."""
@@ -2812,8 +2819,8 @@ def _drop_program(line, argv, work):
     at = []
     for m in re.finditer(r"(?<![\w./-])%s(?![\w-])" % re.escape(argv[0]), line):
         shell.charge(work, 4 * len(run))
-        if any(re.sub(r"\s+", " ", re.sub(quote, "", line[m.start():m.start() + 4 * len(run)])).startswith(run)
-               for quote in (r"['\"]", r"['\"\\]")):
+        if any(_BLANKS.sub(" ", quote.sub("", line[m.start():m.start() + 4 * len(run)])).startswith(run)
+               for quote in _QUOTES):
             at.append(m.start())
     return line[:at[0]] + line[at[0] + len(argv[0]):] if len(at) == 1 else line
 

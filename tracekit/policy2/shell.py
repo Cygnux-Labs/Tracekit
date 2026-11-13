@@ -30,6 +30,7 @@ out of the command, only the top level's is cut).
 import ast
 import base64
 import collections
+import functools
 import itertools
 import json
 import math
@@ -2083,6 +2084,9 @@ _SHELL_O = re.compile(r"(?<![^\s;&|(`/])(?:ba)?sh\s+(?:[^\s;&|]+[ \t]+){0,16}?[-
 _ZSH_OPTIONS = re.compile(r"\b(?:un)?setopt\b|\bemulate\b|(?<![^\s;&|(`/])zsh\s+(?:[^\s;&|]+[ \t]+){0,16}?(?:[-+]o|--\w|"
                           r"[-+]\w*[^cilsxvefdnu\s])")
 _BASHOPTS = re.compile(r"\bBASHOPTS\b(?:\+?=([\w:]*)(?=[\s;&|)]|$))?")
+# the text one of _SHOPT, _SHELL_O, _ZSH_OPTIONS and _BASHOPTS, or GLOBIGNORE, needs (a quote or `\` dropped)
+_GLOB_WORDS = ("shopt", "-O", "+O", "setopt", "emulate", "zsh", "BASHOPTS", "GLOBIGNORE")
+_UNQUOTED = str.maketrans("", "", "'\"\\")   # a text without its quotes and backslashes
 
 
 def _glob_options(command, more=frozenset()):
@@ -2094,7 +2098,8 @@ def _glob_options(command, more=frozenset()):
     of its syntax (`@(…)`, `!(…)`), or zsh's (`^x`, `x~y`, `x#`), is unreadable (ParseError): its patterns match more
     than these read."""
     found = set(more)
-    for text in (command, re.sub(r"['\"\\]", "", command)):
+    plain = command.translate(_UNQUOTED)   # (each search below needs one of _GLOB_WORDS in it)
+    for text in (command, plain) if any(w in plain for w in _GLOB_WORDS) else ():
         for m in _SHOPT.finditer(text):
             words = m.group(1).split()
             if any(re.fullmatch(r"-[a-z]*s[a-z]*", w) for w in words):
@@ -5230,10 +5235,11 @@ def _lower_name(word):
     return word[:i] + (name[:-4] if name.endswith(".exe") and len(name) > 4 else name)
 
 
+@functools.lru_cache(maxsize=256)   # (a decision asks it of each command's program many times)
 def base_name(word):
     """The name a word gives a program or file by: its part after the last / or \\ (Windows reads C:\\x\\git.exe so),
-    casefolded and without a .exe (_lower_name). A name bash's reading (after the last /) gives, it gives too."""
-    return _lower_name(word.replace("\\", "/").rsplit("/", 1)[-1])
+    casefolded and without a .exe (as _lower_name). A name bash's reading (after the last /) gives, it gives too."""
+    return _lower_name(word[max(word.rfind("/"), word.rfind("\\")) + 1:])
 
 
 def _programs(words, cmds):
