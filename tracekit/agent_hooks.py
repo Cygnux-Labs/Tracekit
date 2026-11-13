@@ -1,5 +1,6 @@
 """Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush,
-Devin (CLI and Desktop), Cline (CLI and VS Code extension) and GitHub Copilot CLI, on the Claude Code pipeline.
+Devin (CLI and Desktop), Cline (CLI and VS Code extension), GitHub Copilot CLI and CodeBuddy Code, on the Claude
+Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -14,6 +15,7 @@ Devin (CLI and Desktop), Cline (CLI and VS Code extension) and GitHub Copilot CL
     tracekit init --dev --agent devin        # ~/.config/devin/config.json (project: .devin/hooks.v1.json)
     tracekit init --dev --agent cline        # ~/Documents/Cline/Hooks/<event> (project: .clinerules/hooks/<event>)
     tracekit init --dev --agent copilot      # ~/.copilot/hooks/tracekit.json (project: .github/hooks/tracekit.json)
+    tracekit init --dev --agent codebuddy    # ~/.codebuddy/settings.json (project: .codebuddy/settings.json)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -76,6 +78,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             `-` before the hook sees it (server `tracekit space`, tool `read.note`: tracekit-space-read-note), so a
             rule that names a server or tool with one doesn't match, while the rules on a tool's words do; it cuts
             the joined name at 64 characters, and a name that long is denied in the hook
+    CodeBuddy Code sends Claude Code's payloads, event names and tool names; its own NotebookRead and ViewImage
+            -> Read (of the path each reads), LibraryUpload decided as an upload of its file, and DeferExecuteTool as
+            the call it runs
 
     OpenHands  terminal, file_editor, apply_patch, glob, grep, MCP tools
             -> Bash (is_input: text typed into the running command, later), Read (view), Write (create) or Edit (the
@@ -109,7 +114,7 @@ from .policy2.classes import PATH_KEYS, first
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
                "devin": "devin", "cline": "cline", "gptme": "gptme", "openhands": "openhands",
-               "copilot": "copilot"}
+               "copilot": "copilot", "codebuddy": "codebuddy-code"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -297,6 +302,9 @@ CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "UserP
 CLINE_FILE = "PreToolUse.ps1" if os.name == "nt" else "PreToolUse"
 CLINE_PATH_KEYS = ("path", "file_path", "filePath")
 CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))""")   # getHeredocDelimiter
+# CodeBuddy Code's tools are Claude Code's by name and arguments (its bundled code, @tencent-ai/codebuddy-code
+# 2.183.0); of its own, these read a file: each is a Read of the path it reads, never of a decoy beside it
+CODEBUDDY_READS = {"NotebookRead": "notebook_path", "ViewImage": "image_path"}
 
 
 def _each(v, *keys):
@@ -732,6 +740,33 @@ def tool(harness, name, ti):
         # lean: a name that also holds `__` is split there alone, as Claude Code's mcp__<server>__<tool>; try its `-`
         # too if an MCP server ever names a tool with `__`
         return ("mcp__" + name if "-" in name else name), ti
+    if harness == "codebuddy":
+        if name == "DeferExecuteTool" and isinstance(ti.get("toolName"), str):
+            # it runs the deferred tool `toolName` with `params` (an object, or one as a JSON string): decided as that
+            # call, so the call never runs on a reading of the wrapper. That tool's own PreToolUse, under the same call
+            # id, decides it again: the signer takes the decision the call completes as the call's and the other as
+            # superseded, so no gap (service._finish_run).
+            # lean: such a call has two decision records; one needs the signer to answer a repeated decide of an open,
+            # allowed decision with the same arguments from it (it writes one per decide)
+            return tool(harness, ti["toolName"], ti.get("params"))
+        if name in CODEBUDDY_READS:
+            ti["file_path"] = ti.get(CODEBUDDY_READS[name])
+            return "Read", ti
+        if name == "LibraryUpload":   # it sends the file at `path` off the machine: the packs decide it as the upload it
+            # is (TK-D022, TK-F024), on that file, never on a decoy beside it. CodeBuddy parses no URL
+            # (PathUtils.resolveFilePathToWorkDir): it takes `file://`, else `file:`, off the front and opens the rest,
+            # `~/` in the home folder and a relative path in its cwd (`@x` as itself, else as x), decoding nothing. Each
+            # form it may open is decided, and each percent-decoded too
+            path = ti.get("path")
+            if isinstance(path, str):
+                path = path[7:] if path.startswith("file://") else path[5:] if path.startswith("file:") else path
+            forms = [path] if isinstance(path, str) else []
+            forms += [f[1:] for f in forms if f.startswith("@")]
+            forms = list(dict.fromkeys(forms + [urllib.parse.unquote(f) for f in forms]))
+            ti.pop("paths", None)
+            ti["file_path"] = path
+            if len(forms) > 1:
+                ti["paths"] = forms
     return name, ti
 
 
@@ -793,12 +828,13 @@ def normalise(harness, p):
             pass   # an undecided tool may have run without a confirmation preview
         return dict(out, hook_event_name=ev, session_id=p.get("session_id"), tool_use_id=p.get("tool_use_id"),
                     tool_name=name, tool_input=args, tool_response=p.get("tool_response"))
-    if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme", "openhands"):   # Claude Code's payloads;
-        # Qwen Code and Crush add PostToolUseFailure (Crush's payload is Claude Code's own: same field and event names)
+    if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme", "openhands", "codebuddy"):   # Claude Code's
+        # payloads; Qwen Code, Crush and CodeBuddy Code add PostToolUseFailure (Crush's and CodeBuddy's payloads are
+        # Claude Code's own: same field and event names)
         out["session_id"] = p.get("session_id")
         m = {"PreToolUse": "PreToolUse", "PostToolUse": "PostToolUse", "UserPromptSubmit": "UserPromptSubmit",
              "SessionStart": "SessionStart", "SessionEnd": "SessionEnd"}
-        if harness in ("qwen", "crush"):
+        if harness in ("qwen", "crush", "codebuddy"):
             m["PostToolUseFailure"] = "PostToolUseFailure"
         if ev not in m:
             return None
@@ -1334,7 +1370,7 @@ def _reply(harness, stdout, allowed, msg, is_pre):
     elif harness == "copilot" and not allowed and is_pre:
         # Copilot denies the call at any exit but 0, and shows the reason only from this JSON (1.0.107)
         stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": msg or "Blocked by Tracekit"}))
-    elif harness in ("codex", "droid") and not allowed and is_pre:
+    elif harness in ("codex", "droid", "codebuddy") and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                         "permissionDecisionReason": msg or "Blocked by tracekit"}}))
     stdout.flush()
@@ -1353,7 +1389,13 @@ def config_path(harness, project=None, home=None):
     codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
         else os.path.join(base, ".codex")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
+    # CodeBuddy Code reads its user settings from $CODEBUDDY_CONFIG_DIR, and a project's from
+    # $CODEBUDDY_PROJECT_CONFIG_DIR (absolute, or in the project), when each is set to more than blanks
+    moved = os.environ.get("CODEBUDDY_PROJECT_CONFIG_DIR" if project else "CODEBUDDY_CONFIG_DIR", "")
+    codebuddy = os.path.join(project, moved.strip()) if project and moved.strip() else moved \
+        if not home and moved.strip() else os.path.join(base, ".codebuddy")
     return {"codex": os.path.join(codex, "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
+            "codebuddy": os.path.join(codebuddy, "settings.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
             "qwen": os.path.join(base, ".qwen", "settings.json"),
@@ -1781,10 +1823,11 @@ def _command(harness, ev, v2, python):
     # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
     # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
     # can't parse: an interpreter path that needs no quotes goes bare, which both run
-    # assume Droid runs hooks under cmd.exe. goose (sh -c) and Crush keep _hook_command's form, and so does OpenHands
-    # (subprocess.run(shell=True): cmd.exe). Devin doesn't document its Windows shell: a path that needs quotes keeps
-    # cmd.exe's form, and one that doesn't goes bare, which both run
-    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands"):
+    # assume Droid runs hooks under cmd.exe. goose (sh -c), Crush and CodeBuddy Code (Git Bash where it finds one, as
+    # Claude Code) keep _hook_command's form, and so does OpenHands (subprocess.run(shell=True): cmd.exe). Devin
+    # doesn't document its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that doesn't goes
+    # bare, which both run
+    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands", "codebuddy"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
     c = m.group(1) + c[m.end():] if m else c if harness == "devin" else f"& {c}"
@@ -2098,7 +2141,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                   DEVIN_EVENTS if harness == "devin" else OPENHANDS_EVENTS if harness == "openhands" else
                   ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
                   else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
-                  if harness == "qwen" else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
+                  if harness in ("qwen", "codebuddy") else
+                  ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
         tools = {"PreToolUse", "PostToolUse", "PostToolUseFailure", "BeforeTool", "AfterTool"}
 
         def entry(ev):

@@ -42,10 +42,12 @@ Another agent: record its calls with the SDK's run handle ([custom agent](quicks
 | Crush (`tracekit init --dev --v2 --agent crush`) | Experimental | [coding agents](coding-agents.md) |
 | Cline, CLI and VS Code extension (`tracekit init --dev --v2 --agent cline`) | Experimental | [coding agents](coding-agents.md) |
 | GitHub Copilot CLI 1.0.107 or later (`tracekit init --dev --v2 --agent copilot`) | Experimental | [coding agents](coding-agents.md) |
+| CodeBuddy Code (`tracekit init --dev --v2 --agent codebuddy`) | Experimental | [coding agents](coding-agents.md) |
 | Hermes Agent plugin | Experimental | [Hermes Agent](integrations/hermes.md) |
 
 The goose, Qwen Code, Factory Droid, Antigravity CLI and Crush hooks are written to each harness's published hook
-documentation and tested against payloads in that shape, not yet in a live session of the tool.
+documentation and tested against payloads in that shape, not yet in a live session of the tool. CodeBuddy Code's are
+written to its bundled code (2.183.0), with payloads derived from that code, not yet recorded in a live session.
 
 ## Sandboxes, gateways and sensors
 

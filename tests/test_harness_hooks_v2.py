@@ -338,6 +338,64 @@ class Mapping(HarnessCase):
                 self.assertIn(f"OpenHands' {name} call names no", err)
         self.assertEqual(self.sent, [])
 
+    def test_codebuddy(self):
+        self.check("codebuddy")
+
+    def test_codebuddy_records_results_failures_and_prompts_in_the_session_run(self):
+        """CodeBuddy Code sends Claude Code's payloads (its bundled code, 2.183.0): a result and a failure complete the
+        call their tool_use_id decided, and the prompt is recorded in the session's run, which SessionEnd closes."""
+        base = {"session_id": "cb-run", "transcript_path": None, "cwd": "/w"}
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionStart", "source": "startup"})[:2],
+                         (0, ""))
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "UserPromptSubmit", "prompt": "fix the tests",
+                                                 "is_internal_continuation": False})[:2], (0, ""))
+        for tid in ("call_r1", "call_r2"):
+            pre = {**base, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "make test"},
+                   "call_id": tid, "tool_use_id": tid}
+            self.assertEqual(self.hook("codebuddy", pre)[:2], (0, ""))
+        self.hook("codebuddy", {**pre, "hook_event_name": "PostToolUse", "call_id": "call_r1", "tool_use_id": "call_r1",
+                                "tool_response": {"stdout": "ok", "stderr": "", "interrupted": False}})
+        self.hook("codebuddy", {**pre, "hook_event_name": "PostToolUseFailure", "error": "exit 2",
+                                "tool_error_code": "BashExecutionError", "tool_error_name": "", "is_interrupt": False})
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionEnd", "reason": "prompt_input_exit"})[0],
+                         0)
+        run = next(r for r in self.signer._runs.values()
+                   if r["events"][0]["data"]["agent"]["name"] == "codebuddy-code")
+        done = {e["data"]["tool_call_id"]: e["data"]["status"] for e in run["events"] if e["type"] == "tool.result"}
+        self.assertEqual(done, {"call_r1": "ok", "call_r2": "error"})
+        self.assertEqual([e["data"] for e in run["events"] if e["type"] == "input.observed"],
+                         [{"source": "codebuddy-code:UserPromptSubmit", "trust": "trusted"}])
+        self.assertTrue(run["closed"])
+
+    def test_codebuddy_a_held_deferred_call_is_recorded_as_not_run(self):
+        """#761's review: a deferred call the policy holds can't run. The wrapper's PreToolUse waits for the approval
+        and consumes it; the deferred tool's own, under the same call id, finds it used and is blocked. That block
+        completes the call as an error, with its reason: CodeBuddy then sends the wrapper's PostToolUse with only the
+        error result's content, a string (ToolManager.extractRawResponse), which finds nothing left to record
+        (docs/limits.md)."""
+        self.decision = "ask"
+        base = {"session_id": "cb-held", "transcript_path": None, "cwd": "/w"}
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionStart", "source": "startup"})[0], 0)
+        wrapper = ("DeferExecuteTool", {"toolName": "Monitor", "params": json.dumps({"command": "tail -f build.log"})})
+        deferred = ("Monitor", {"command": "tail -f build.log"})
+        self.approve_when_asked()
+        answers = []
+        for name, ti in (wrapper, deferred):
+            answers.append(self.hook("codebuddy", {**base, "hook_event_name": "PreToolUse", "tool_name": name,
+                                                   "tool_input": ti, "call_id": "call_h1", "tool_use_id": "call_h1"}))
+        self.assertEqual([a[0] for a in answers], [0, 2])
+        self.assertIn("NOT APPROVED", json.loads(answers[1][1])["hookSpecificOutput"]["permissionDecisionReason"])
+        blocked = f"PreToolUse:Monitor hook blocked this tool call: {answers[1][2].strip()}"
+        self.assertEqual(self.hook("codebuddy", {
+            **base, "hook_event_name": "PostToolUse", "tool_name": wrapper[0], "tool_input": wrapper[1],
+            "call_id": "call_h1", "tool_use_id": "call_h1", "tool_response": f'Error executing tool "Monitor": {blocked}'})[0],
+            0)
+        run = next(r for r in self.signer._runs.values() if any(
+            e["type"] == "policy.decision" and e["data"]["tool_call_id"] == "call_h1" for e in r["events"]))
+        done = [e["data"] for e in run["events"] if e["type"] == "tool.result"]
+        self.assertEqual([(r["tool_call_id"], r["status"]) for r in done], [("call_h1", "error")])
+        self.assertIn("NOT APPROVED, nothing ran", done[0]["error"])
+
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
         # header and a webfetch with no url are denied in the hook, with no decide request sent
@@ -432,6 +490,17 @@ class Mapping(HarnessCase):
                                              "transcript_path": "/tmp/droid.jsonl", "tool_name": "Execute",
                                              "tool_input": {"command": "ls"}})
         self.assertEqual(code, 0)
+
+    def test_codebuddy_does_not_read_its_transcript(self):
+        """#761's review: CodeBuddy Code's transcript (OpenAI Agents SDK items) is no format said_since reads: it is
+        hashed at each hook, never parsed as Gemini CLI's or Codex's."""
+        with mock.patch.object(harness_hooks, "_read", side_effect=AssertionError("CodeBuddy transcript was read")), \
+                mock.patch.object(claude_code, "_state", wraps=claude_code._state) as state:
+            code, _, err = self.hook("codebuddy", {"session_id": "cb-transcript", "hook_event_name": "PreToolUse",
+                                                   "transcript_path": "/tmp/cb.jsonl", "tool_name": "Bash",
+                                                   "tool_input": {"command": "ls"}, "call_id": "c1", "tool_use_id": "c1"})
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("said", [c.args[-1] for c in state.call_args_list])
 
     def test_droid_missing_session_or_malformed_payload_blocks_the_call(self):
         code, out, err = self.hook("droid", {"hook_event_name": "PreToolUse", "tool_name": "Execute",
@@ -674,6 +743,93 @@ class CopilotMCPPolicy(HarnessCase):
         signer = SignerService(ac.tmpdir(self), policy=policy)
         self.addCleanup(signer.close)
         os.environ["TRACEKIT_SIGNER"] = ac._serve(self, signer.handle_frame)
+
+
+class CodeBuddyDeferredCalls(HarnessCase):
+    """#757's review: CodeBuddy Code's bundled code (2.183.0) sends a deferred tool's call twice under one call id,
+    the DeferExecuteTool wrapper's PreToolUse and the deferred tool's own (or, when its permission check ran the hooks,
+    the deferred tool's twice), then the deferred tool's PostToolUse and the wrapper's. Each is decided as the deferred
+    call; the decision it completes is the call's, and the signer supersedes the other: no decided_not_completed gap."""
+
+    def setUp(self, policy=None):
+        super().setUp()
+        self.dir = ac.tmpdir(self)
+        self.service = SignerService(self.dir, policy=policy or load_policy(), grace_s=0)
+        self.addCleanup(self.service.close)
+        os.environ["TRACEKIT_SIGNER"] = ac._serve(self, self.service.handle_frame)
+
+    def run_session(self, sid, pres, posts):
+        base = {"session_id": sid, "transcript_path": None, "cwd": "/w"}
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionStart", "source": "startup"})[0], 0)
+        for i, (event, name, ti) in enumerate([("PreToolUse", *p) for p in pres] + [("PostToolUse", *p) for p in posts]):
+            payload = {**base, "hook_event_name": event, "tool_name": name, "tool_input": ti, "call_id": "call_d1",
+                       "tool_use_id": "call_d1", **({"tool_response": {"stdout": "ok"}} if event == "PostToolUse" else {})}
+            self.assertEqual(self.hook("codebuddy", payload)[:2], (0, ""), (i, event, name))
+        return self.signed(sid)
+
+    def signed(self, sid):
+        """The signed records of the session's run, once SessionEnd closed it."""
+        run_id = claude_code._load(claude_code._state(sid))["run_id"]
+        self.assertEqual(self.hook("codebuddy", {"session_id": sid, "transcript_path": None, "cwd": "/w",
+                                                 "hook_event_name": "SessionEnd", "reason": "other"})[0], 0)
+        self.service.sweep(time.monotonic() + 1)
+        self.service.close()
+        with open(os.path.join(self.dir, "store", "records.jsonl"), "rb") as f:
+            return [e for e in (json.loads(line)["event"] for line in f.read().splitlines()) if e["run_id"] == run_id]
+
+    def test_a_deferred_call_decided_twice_completes_once_with_no_gap(self):
+        wrapper = ("DeferExecuteTool", {"toolName": "Monitor", "params": json.dumps({"command": "tail -f build.log"})})
+        deferred = ("Monitor", {"command": "tail -f build.log"})
+        for sid, pres in (("cb-wrapper", [wrapper, deferred]), ("cb-twice", [deferred, deferred])):
+            with self.subTest(order=sid):
+                if sid == "cb-twice":   # each order on a signer of its own
+                    self.setUp()
+                events = self.run_session(sid, pres, [deferred, wrapper])
+                decisions = [e for e in events if e["type"] == "policy.decision"]
+                self.assertEqual([(d["data"]["tool"], d["data"]["decision"]) for d in decisions],
+                                 [("Monitor", "allow")] * 2)
+                done = [e["data"] for e in events if e["type"] == "tool.result"]
+                self.assertEqual([(r["tool_use_id"], r["decision_id"]) for r in done],
+                                 [("call_d1", decisions[1]["data"]["decision_id"])])
+                self.assertEqual([e["data"]["kind"] for e in events if e["type"] == "capture.gap"], [])
+                self.assertEqual(events[-1]["type"], "run.final")
+
+    def test_a_held_deferred_call_is_one_error_result_with_no_gap(self):
+        """#761's review: a held deferred call, approved while the wrapper's PreToolUse waits, is refused at the deferred
+        tool's own (its approval is used). That block completes the call as an error under its own decision, which
+        closes the wrapper's too: one error result and no gap, whatever CodeBuddy's PostToolUse then says."""
+        self.setUp(Engine({"ask": [{"id": "R-MON", "tool": "^Monitor$", "pattern": "^"}]}))
+        os.environ[claude_code.WAIT_ENV] = "30"
+
+        def approve():
+            c = Client()
+            try:
+                for _ in range(600):
+                    asked = [a for a in c.call("approval_list")["approvals"] if a["state"] == "requested"]
+                    if asked:
+                        return c.approval_decide({"approval_id": asked[0]["approval_id"], "decision": "approve"})
+                    time.sleep(0.05)
+            finally:
+                c.close()
+        t = threading.Thread(target=approve)
+        t.start()
+        self.addCleanup(t.join, 30)
+        base = {"session_id": "cb-held", "transcript_path": None, "cwd": "/w"}
+        self.assertEqual(self.hook("codebuddy", {**base, "hook_event_name": "SessionStart", "source": "startup"})[0], 0)
+        wrapper = ("DeferExecuteTool", {"toolName": "Monitor", "params": json.dumps({"command": "tail -f build.log"})})
+        self.assertEqual([self.hook("codebuddy", {**base, "hook_event_name": "PreToolUse", "tool_name": name,
+                                                  "tool_input": ti, "call_id": "call_h2", "tool_use_id": "call_h2"})[0]
+                          for name, ti in (wrapper, ("Monitor", {"command": "tail -f build.log"}))], [0, 2])
+        self.assertEqual(self.hook("codebuddy", {
+            **base, "hook_event_name": "PostToolUse", "tool_name": wrapper[0], "tool_input": wrapper[1],
+            "call_id": "call_h2", "tool_use_id": "call_h2",
+            "tool_response": 'Error executing tool "Monitor": PreToolUse:Monitor hook blocked this tool call'})[0], 0)
+        events = self.signed("cb-held")
+        decisions = [e["data"] for e in events if e["type"] == "policy.decision"]
+        self.assertEqual([d["decision"] for d in decisions], ["ask", "ask"])
+        self.assertEqual([(e["data"]["ok"], e["data"]["decision_id"]) for e in events if e["type"] == "tool.result"],
+                         [(False, decisions[1]["decision_id"])])
+        self.assertEqual([e["data"]["kind"] for e in events if e["type"] == "capture.gap"], [])
 
 
 class OnTheDevPolicy(HarnessCase):
@@ -961,13 +1117,14 @@ class Installer(unittest.TestCase):
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
                     # Cursor: and what its model said; agy and Copilot: their tool events only
-                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "antigravity": 2, "copilot": 3}.get(harness, 5))
+                    self.assertEqual(len(cmds), {"cursor": 8, "qwen": 6, "codebuddy": 6, "antigravity": 2, "copilot": 3}.get(harness, 5))
                     cmd = cmds[0]
                     self.assertIn(" -I ", cmd)
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
                     # through its own POSIX shell), OpenHands runs hooks with shell=True (cmd.exe), and Devin's shell
-                    # isn't documented: a path with a space keeps cmd.exe's
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands"):
+                    # isn't documented: a path with a space keeps cmd.exe's. CodeBuddy Code runs them under Git Bash, as
+                    # Claude Code does
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)

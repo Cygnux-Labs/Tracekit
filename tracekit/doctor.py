@@ -106,7 +106,8 @@ def collect(config=None, issuer_key=None):
         agent = _user(h.get("user"))
         home = agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
         plugin = agent and install.plugin_enabled([home])
-        # lean: another coding agent's hook config gets D-HOOKS-EVENT, D-HOOKS-TIMEOUT and the reasoning checks only;
+        # lean: another coding agent's hook config gets D-HOOKS-EVENT, D-HOOKS-TIMEOUT (CodeBuddy Code's D-HOOKS-ORDER
+        # too) and the reasoning checks only;
         # D-HOOKS-PRESENT names it without reading its events, and D-HOOKS-VENV and D-SIGNER-ENV are Claude Code's;
         # until doctor reads them per format
         return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
@@ -466,7 +467,7 @@ def _dev_signer():
 # the environment variables that place a user's hook files (install.user_settings_all, agent_hooks.config_path); `~`
 # is USERPROFILE on Windows
 USER_ENV = ("USERPROFILE" if os.name == "nt" else "HOME", "CLAUDE_CONFIG_DIR", "TRACEKIT_CLIENT_HOME", "CODEX_HOME",
-            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "COPILOT_HOME")
+            "XDG_CONFIG_HOME", "CRUSH_GLOBAL_CONFIG", "COPILOT_HOME", "CODEBUDDY_CONFIG_DIR")
 
 
 def _user_hook_files():
@@ -818,6 +819,13 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             f"{harness} hooks in {path}: the pre-tool hook has no {key}: {json.dumps(block)}, so {harness} runs a call "
             "whose hook can't run, undecided and unrecorded" if lets_past else
             f"each {harness} hook command in {path} names its event", fix, bad=WARN)
+        if harness == "codebuddy":
+            later = _codebuddy_later(home)
+            add("D-HOOKS-ORDER", not later,
+                f"a CodeBuddy Code PreToolUse hook in {' and '.join(later)} runs after Tracekit's, and CodeBuddy takes "
+                "the last hook's permissionDecision: its allow runs a call Tracekit denied" if later else
+                "no other CodeBuddy Code PreToolUse hook runs after Tracekit's",
+                "have no hook that runs after Tracekit's answer permissionDecision allow, or remove it", bad=WARN)
         scale, unit = (1000, "ms") if harness in ("gemini", "qwen") else (1, "s")
         # a timeout the hook doesn't set: agy's and Crush's own default is 30 s
         default = 30 if harness in ("antigravity", "crush", "copilot") else 60
@@ -826,6 +834,33 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         if pre:
             add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S * scale,
                 f"{harness} pre-tool timeout {min(pre)} {unit} in {path}; " + _hook_run(scale, unit), fix, bad=WARN)
+
+
+def _codebuddy_later(home=None):
+    """The settings files with a CodeBuddy Code PreToolUse hook that runs after Tracekit's. CodeBuddy runs the user's
+    settings' hooks (`home`: the agent user's home), then the project's .codebuddy/settings.json and
+    settings.local.json (doctor's working directory's), each in its order, and the last permissionDecision stands.
+    Tracekit's hook is the first that runs its module; after it, any hook but the exact PreToolUse command init writes
+    (v1 or v2, dev or system mode) is named: one that only names the module, in a comment, may answer anything.
+    lean: a plugin's, a skill's or an SDK host's hooks, which run later too, aren't read (docs/limits.md)"""
+    from . import agent_hooks
+    mine = {agent_hooks._command("codebuddy", "PreToolUse", v2, python)
+            for v2 in (True, False) for python in (None, install.OPT_PYTHON)}
+    project = agent_hooks.config_path("codebuddy", os.getcwd())
+    files = [agent_hooks.config_path("codebuddy", home=home) if home else agent_hooks.config_path("codebuddy"),
+             project, os.path.join(os.path.dirname(project), "settings.local.json")]
+    ours, later = False, []
+    for f in dict.fromkeys(files):
+        try:
+            hooks = [h for g in _json(f)["hooks"]["PreToolUse"] for h in g["hooks"]]
+        except (OSError, ValueError, LookupError, TypeError):   # no file, no hooks, or not CodeBuddy's shape
+            continue
+        for h in hooks:
+            cmd = h.get("command") if isinstance(h, dict) else None
+            if ours and not (isinstance(cmd, str) and cmd in mine) and f not in later:
+                later.append(f)
+            ours = ours or agent_hooks._version(cmd) is not None
+    return later
 
 
 def _text(path):

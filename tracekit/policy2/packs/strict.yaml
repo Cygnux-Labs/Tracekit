@@ -6,8 +6,8 @@
 # docs/evaluation.md#e21-policy-robustness gives the false-positive rate measured on E17's and E21's benign calls.
 
 extends: server.yaml
-version: '2026.11-strict-10'
-description: server-hosted agents where installs, pushes, network commands and environment changes wait for a person
+version: '2026.11-strict-11'
+description: server-hosted agents where installs, pushes, network commands, uploads and environment changes wait for a person
 on_parse_error: deny
 
 ask:
@@ -31,3 +31,9 @@ ask:
     label: egress
     reason: a network command
     remedy: Have a person approve the held call, or work from files already in the workspace.
+  - id: TK-F024
+    tool: LibraryUpload
+    pattern: '^'
+    label: egress
+    reason: an upload tool sending a file off the machine
+    remedy: Have a person approve the held call, or keep the file in the workspace.
