@@ -1,7 +1,7 @@
-"""Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin
-and Cline hooks on the v2 signer RPC.
+"""Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush, Devin,
+Cline, gptme, OpenHands, GitHub Copilot CLI and CodeBuddy Code hooks on the v2 signer RPC.
 
-    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin|cline EVENT
+    python -I -m tracekit.integrations.harness_hooks codex|cursor|gemini|opencode|kilo|goose|qwen|droid|antigravity|crush|devin|cline|gptme|openhands|copilot|codebuddy EVENT
     (wired by `tracekit init --dev --v2 --agent NAME`, or as root by `tracekit init --v2 --user AGENT --agent NAME`)
 
 The command names the harness's hook event it is configured for (as its config file names it: PreToolUse, preToolUse,
@@ -57,7 +57,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         # Code before 0.15.0, which ignores a hook's "shell"). The name it starts with is the installed event, else
         # the payload's own event decides
         lead = re.match(r"[A-Za-z][\w.]*", event)
-        event = lead.group() if lead else p.get("hook_event_name") if isinstance(p, dict) else None
+        event = lead.group() if lead else (p.get("hook_event_name") or harness == "openhands" and p.get("event_type")
+                                           if isinstance(p, dict) else None)
     if not isinstance(p, dict) and event:
         pre = event in agent_hooks.PRE
         msg = f"[tracekit] the {event} hook payload is not a JSON object; " + (
@@ -66,7 +67,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
         agent_hooks._reply(harness, stdout, not pre, msg, pre)
         return agent_hooks._exit(harness, 2 if pre else 0, pre)
     p = dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {}
-    is_pre = p.get("hook_event_name") in agent_hooks.PRE or (harness == "goose" and p.get("event") in agent_hooks.PRE)
+    is_pre = p.get("hook_event_name") in agent_hooks.PRE or (harness == "goose" and p.get("event") in agent_hooks.PRE) or (
+        harness == "openhands" and not p.get("hook_event_name") and p.get("event_type") in agent_hooks.PRE)
     err, q = agent_hooks.Tee(stderr), None
     try:
         q = agent_hooks.normalise(harness, p)
@@ -98,7 +100,8 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
 
 def said_since(harness, p, stderr):
     """Record what the model said since the session's last hook (see the module docstring). Never raises."""
-    if harness in ("qwen", "droid", "antigravity", "crush", "devin", "cline"):   # lean: their transcript formats are not read; model text goes unrecorded
+    if harness in ("qwen", "droid", "antigravity", "crush", "devin", "cline", "gptme", "openhands", "copilot",
+                   "codebuddy"):   # lean: their transcript formats are not read; model text goes unrecorded
         return
     sid = (p.get("conversation_id") or p.get("session_id") if harness == "cursor" else
            p.get("session_id") or (os.environ.get("GEMINI_SESSION_ID") if harness == "gemini" else None))

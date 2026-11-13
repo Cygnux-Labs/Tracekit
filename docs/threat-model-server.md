@@ -47,6 +47,11 @@ and classes), I3 (approvals bound to the exact arguments, consumed once). Covere
 `tests/test_signer_approvals.py`, `tests/test_signer_lifecycle.py::TestSignerOnlyRecords`, `tests/test_system_v2.py`,
 and `eval/e8_insider_v2.py` (E8v2.1 decoy signer, E8v2.3 signer down, E8v2.4 policy swap, E8v2.5 self-approval).
 
+The coding pack (inherited by server and strict) holds direct Write/Edit calls that put a secret upload in a CI
+command (`TK-A061`), including GitLab/Azure script lists, Jenkins `sh`, and later `run: |` lines.
+The signer derives the CI content subject from the path and newly written text; a caller cannot supply it.
+This bounded tripwire does not interpret generated workflows or actions; see [limits](limits.md).
+
 ### S2: compromised application code
 
 | | every deployment |

@@ -6,21 +6,22 @@
 #
 # Three things differ from the server pack. Its shadow detection isn't here. A tool no pack maps is flagged, not
 # held: a laptop runs tools and MCP servers no list names; one given a command line or a SQL statement to run is held
-# (TK-A062). And a coding agent's messages to its own agents are class
-# `harness`: Claude Code's Agent and Task prompts, SendMessage, a subagent's SubagentHandback report and its
-# TodoWrite list, and what the hooks map onto those names (Task: Qwen Code's agent, Cursor's Task, OpenCode's and
-# Kilo Code's task, Antigravity CLI's invoke_subagent; TodoWrite: Qwen Code's todo_write, OpenCode's todowrite). Every
+# (TK-A062). And a coding agent's messages to its own agents are class `harness`: Claude Code's Agent and Task
+# prompts, SendMessage, a subagent's SubagentHandback report, its TodoWrite list and a Workflow's script (its agents'
+# calls are each decided by their own hook), and what the hooks map onto those names (Task: Qwen Code's agent,
+# Cursor's Task, OpenCode's and Kilo Code's task, Antigravity CLI's invoke_subagent; TodoWrite: Qwen Code's
+# todo_write, OpenCode's todowrite). Every
 # rule of no class reads them, but their `target` is only the URLs and network addresses they name, not the file
 # names their prose mentions: TK-S004 (a credentials file) and TK-F005 (a secret-looking path) don't read them, as a
 # prompt that names ~/.aws/credentials doesn't open it. TK-S002 still denies a secret's value in one, and TK-S001 the
 # metadata service's address, as a URL or a bare IPv4 address in any form. A SendMessage can leave the machine, so
 # it is flagged (TK-F018); an Agent or Task run remotely is held (TK-F019), as none of its calls are decided here. An
-# app's own tool by one of these names gets the same reading here. Every email, payment and database tool's call and
+# app's own tool by one of these names (Workflow included) gets the same reading here. Every email, payment and database tool's call and
 # every Browser Use action is flagged (TK-F020 to TK-F023), as the coding pack flags an MCP call: the server parts'
 # rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-4'
+version: '2026.11-dev-5'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
 # a call over 64 KiB, which the policy doesn't read, waits for a person (TK-OVERSIZE as an ask) where the server pack's
@@ -36,6 +37,7 @@ tools:
   ToolSearch: harness        # Claude Code: loads tools' schemas by name or by a search (`select:Read,Edit`)
   Skill: harness             # Claude Code: loads a skill's instructions by its name
   SlashCommand: harness      # Claude Code: expands a slash command's prompt (`/review`)
+  Workflow: harness          # Claude Code: a script that runs its agents (each of their calls has its own hook)
 
 deny:
   - id: TK-DEMO-DENY

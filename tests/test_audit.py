@@ -289,6 +289,20 @@ class TestAudit(unittest.TestCase):
             out = _run(str(self.root))[1]
         self.assertTrue(out.endswith("\n  to guard from now on: pip install tracekit-ai, then tracekit init --dev --v2\n"))
 
+    @mock.patch("shutil.which", lambda _: "/usr/local/bin/tracekit")
+    def test_the_guard_line_names_the_calls_files_agent(self):
+        """The 1.7.0 review: audit --agent codex ended with init without --agent, which installs Claude Code's hooks."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("Bash", {"command": "ls"})])
+        for agent in (*agent_hooks.AGENT_NAMES, "claude", None):
+            with self.subTest(agent=agent):
+                code, out, err = _run("--calls", str(self.root / "calls.jsonl"), *(["--agent", agent] if agent else []))
+                self.assertEqual(code, 0, err)
+                flag = f" --agent {agent}" if agent in agent_hooks.AGENT_NAMES else ""   # claude is init's default
+                self.assertTrue(out.endswith(f"\n  to guard from now on: tracekit init --dev --v2{flag}\n"), out)
+        with mock.patch("shutil.which", return_value=None):
+            out = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "codex")[1]
+        self.assertTrue(out.endswith(", then tracekit init --dev --v2 --agent codex\n"), out)
+
     def test_the_default_folder_is_in_claude_config_dir_when_it_is_set(self):
         _write_jsonl(self.root / "config" / "projects" / "p" / "s.jsonl", [_call("Bash", {"command": "rm -rf /"})])
         home = self.root / "home"   # no .claude: a fallback to ~/.claude/projects finds nothing

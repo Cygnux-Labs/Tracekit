@@ -246,11 +246,14 @@ def _matches(r, tool, ti):
 def evaluate(pol, tool, ti, cwd=None):
     """Return {'decision', 'rule_ids', 'reasons', 'flags'}; decision in allow|deny|ask|flag.
     Precedence: deny > ask > flag > allow. A call on several files (a `paths` list, as a patch's) is decided on each
-    one as its file_path: a rule that matches any of them applies."""
+    one as its file_path: a rule that matches any of them applies. Batched shell commands are also read individually."""
     if not isinstance(ti, dict):
         ti = {} if ti is None else {"value": ti}
     paths = ti.get("paths") if FIELD_FOR_TOOL.get(tool) == "file_path" else None
     calls = [ti] + [dict(ti, file_path=p) for p in paths] if isinstance(paths, list) else [ti]
+    commands = ti.get("commands") if tool == "Bash" and "command" not in ti else None
+    if isinstance(commands, list) and all(isinstance(command, str) for command in commands):
+        calls.extend(dict(ti, command=command) for command in commands)
     # Claude Code's Monitor runs its command in the shell Bash uses, and PowerShell is its shell on Windows: a rule
     # applies under either name, so one written for Bash and one for the tool itself both match
     names = [tool] + (["Bash"] if tool in ("Monitor", "PowerShell") else [])

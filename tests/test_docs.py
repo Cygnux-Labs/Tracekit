@@ -183,7 +183,7 @@ class PluginSkills(unittest.TestCase):
         main:skills/tracekit-setup/SKILL.md` in that repository."""
         data = read(os.path.join(ROOT, "plugin", "skills", "tracekit-setup", "SKILL.md")).encode("utf-8")
         self.assertEqual(hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest(),
-                         "e4e4a489b51956e513549e449ca0f7e770ec7ab2")   # tracekit-skills 5b78b59
+                         "f0a515c33554e93dac98c9d8670e3f2c64e99008")   # tracekit-skills 4bda57a (skills/cline-codebuddy)
 
 
 class DocTableCells(unittest.TestCase):
