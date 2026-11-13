@@ -1653,22 +1653,32 @@ _PUBLISH_FLAGS = {"--provenance", "--workspaces", "--ws", "--include-workspace-r
 def _publish_dry_run(argv):
     """Whether a package publish is a dry run, which publishes nothing (npm, pnpm or bun publish, yarn's `npm publish`,
     cargo, uv or poetry publish; not Yarn 1's `yarn publish`, which may ignore a flag it doesn't know and publish): its
-    last --dry-run (bare or =true; not =false, nor --no-dry-run after it) comes before a bare `--`, after no option that
-    may take it as its value, and no word before holds an expansion the line can't resolve."""
+    last --dry-run (bare or =true; not =false, nor --no-dry-run after it, nor followed by `false`) comes before a bare
+    `--`, after no option that may take it as its value, no other spelling nopt reads as it is on the line, and no word
+    before holds an expansion the line can't resolve."""
     if _program(argv) not in _PUBLISHERS or "publish" not in argv[1:4] or _program(argv) == "yarn" and \
             argv[argv.index("publish") - 1] != "npm":
         return False
     last = None
-    for prev, word in zip(argv, argv[1:]):
+    for i, (prev, word) in enumerate(zip(argv, argv[1:]), 1):
         if word == "--":
             break
         if "$" in word or "`" in word:
             return False
-        if word in ("--dry-run", "--no-dry-run") or word.startswith("--dry-run="):
-            if prev.startswith("-") and "=" not in prev and prev not in _PUBLISH_FLAGS and prev != "--dry-run":
-                return False
-            last = word
-    return last in ("--dry-run", "--dry-run=true")
+        name = word.split("=")[0]
+        bare = name.lstrip("-").lower()
+        while bare.startswith("no-"):
+            bare = bare[3:]
+        if not (name.startswith("-") and bare.startswith("dr")):
+            continue
+        # nopt, npm's and pnpm's option parser, reads one dash or three, an abbreviation (`--dry`) and `no-` in any case
+        if name not in ("--dry-run", "--no-dry-run"):
+            return False
+        if prev.startswith("-") and "=" not in prev and prev not in _PUBLISH_FLAGS and prev != "--dry-run":
+            return False
+        last = word, argv[i + 1:i + 2]
+    # nopt also takes a `true` or `false` right after a bare boolean option as its value: `--dry-run false` publishes
+    return last is not None and last[0] in ("--dry-run", "--dry-run=true") and last[1] != ["false"]
 
 
 # kubectl's options that take no word after them: its boolean flags, and those with a value they take only after `=`

@@ -495,11 +495,17 @@ class Routes(unittest.TestCase):
 
     def test_a_publish_dry_run_publishes_nothing(self):
         self.expect(self.bash("npm publish --dry-run", "pnpm publish --dry-run --no-git-checks", "cargo publish --dry-run",
-                              "npm publish --provenance --dry-run", "yarn npm publish --dry-run"), "flag", packs=("dev",))
+                              "npm publish --provenance --dry-run", "yarn npm publish --dry-run",
+                              "npm publish --dry-run true"), "flag", packs=("dev",))
         self.expect(self.bash("npm publish", "npm publish --dry-run=false", "npm publish --dry-run --no-dry-run",
                               "npm publish --tag --dry-run", "npm publish $X --dry-run",
                               # Yarn 1 may ignore a flag it doesn't know and publish (sec08 r3)
-                              "yarn publish --dry-run"), "ask", "TK-A056", packs=("dev",))
+                              "yarn publish --dry-run",
+                              # nopt (npm's and pnpm's parser) takes a following `false` as a boolean's value, and
+                              # reads an abbreviation, one dash and `no-` in any case
+                              "npm publish --dry-run false", "pnpm publish --dry-run false",
+                              "npm publish --dry-run --dry=false", "npm publish --dry-run -dry-run=false",
+                              "npm publish --dry-run --NO-dry-run"), "ask", "TK-A056", packs=("dev",))
 
     def test_the_powershell_tool_is_read_in_any_case(self):
         for (name, backend), e in self.engines.items():
