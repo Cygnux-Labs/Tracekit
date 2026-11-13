@@ -665,6 +665,17 @@ class TestAudit(unittest.TestCase):
         self.assertEqual([(c["verdict"], c["rule_ids"]) for c in json.loads(out)["calls"]],
                          [("deny", ["TK-HOOK-BLOCKED"]), ("allow", [])])
 
+    def test_a_gptme_call_its_hook_cant_read_is_blocked_as_the_hook_blocks_it(self):
+        """A markdown call without an args list, and an MCP call whose content isn't JSON, stopped the whole --agent
+        gptme replay (a plain ValueError). gptme's hook blocks both: audit denies them and replays the rest."""
+        _write_jsonl(self.root / "calls.jsonl", [_line("shell", {"args": ["x"], "content": "ls"}),
+                                                 _line("srv.do", {"args": [], "content": "not json"}),
+                                                 _line("shell", {"args": [], "content": "ls"})])
+        code, out, err = _run("--calls", str(self.root / "calls.jsonl"), "--agent", "gptme", "--json")
+        self.assertEqual(code, 0, err)
+        self.assertEqual([(c["verdict"], c["rule_ids"]) for c in json.loads(out)["calls"]],
+                         [("deny", ["TK-HOOK-BLOCKED"]), ("deny", ["TK-HOOK-BLOCKED"]), ("allow", [])])
+
     def test_a_mapping_bug_is_not_reported_as_the_hook_blocking_the_call(self):
         """#771: only UnreadableCall is a call the hook blocks; any other ValueError from the mapping is a bug that ends
         the replay with its message (exit 2)."""

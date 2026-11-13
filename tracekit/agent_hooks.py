@@ -504,7 +504,10 @@ def _gptme_tool(name, ti):
 
     if "." in name:
         server, _, command = name.partition(".")
-        params = kwargs if kwargs is not None else json.loads(content)
+        try:
+            params = kwargs if kwargs is not None else json.loads(content)
+        except ValueError:
+            raise UnreadableCall("gptme MCP call content isn't JSON") from None
         if not server or not command or not isinstance(params, dict):
             raise UnreadableCall("gptme MCP calls require a qualified tool name and an arguments object")
         return f"mcp__{server}__{command}", params
