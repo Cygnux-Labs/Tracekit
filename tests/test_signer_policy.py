@@ -3115,6 +3115,22 @@ class CodingPack(unittest.TestCase):
             "rm -rf /etcetera", "chmod -r /etc/x", 'git commit -m "Deny rm -rf /etc"', 'grep -rn "rm -rf /usr" docs/',
             'echo "never run rm -rf /var"', 'gh issue comment 1 --body "rm -rf /etc is denied now"'))
 
+    def test_a_system_folder_is_read_past_plain_words_dot_steps_and_case(self):
+        # #783 review: each was only flagged: more than 16 plain words before the folder (TK-D004 reads any number
+        # before a home), a `/./` or `/<folder>/../` step before it, and its name in another case, which macOS's and
+        # Windows' file systems ignore
+        self.every_pack_verdicts([(c, "TK-D014") for c in (
+            "rm -rf a b c d e f g h i j k l m n o p q /etc", "rm -rf " + "src " * 40 + "/usr/*",
+            "rm a b c d e f g h i j k l m n o p q -rf /var", "rm -rf /./etc", "rm -rf /usr/../etc",
+            "rm -rf //tmp//..//./var/", "chmod -R 000 /./usr", "find /./opt -delete", "rm -rf /system",
+            "rm -rf /LIBRARY", "rm -rf /ETC", "rm -rf /Private/Var", "rm -rf 'C:\\WINDOWS'", "rm -rf /c/WINDOWS",
+            "chown -R me /USR/*")])
+        self.not_in_every_pack("TK-D014", (
+            "rm -rf ./var", "chmod -R u+w build/", "rm -rf /var/lib/apt/lists/*", "rm -rf /Applications/Foo.app",
+            "chown -R www-data /var/www", "find /var/log -name '*.log' -delete", "rm -rf /.etc", "rm -rf /tmp/../tmp/x",
+            "rm -rf /usr/../tmp/etc", "rm -rf a b c d e f g h i j k l m n o p q ./etc", "rm -rf /ETC/nginx",
+            "rm -rf 'C:\\WINDOWS\\Temp\\x'"))
+
     def test_pip_reads_an_abbreviated_index_option(self):
         """pip's option parser takes a long option's unique prefix (`--index-u URL` sets the index); the 1.5.2 sweep
         found it allowed."""

@@ -969,6 +969,25 @@ class Speed(unittest.TestCase):
                     budget = self.BUDGET_S * machine_scale()
                     self.assertLess(self.search(rx, f * ((MAX_SUBJECT - 4) // len(f)) + "://", budget), budget)
 
+    def test_a_system_folders_glob_ending_and_plain_words_search_in_linear_time(self):
+        """#783 review: TK-D014 read a pattern after a system folder (`/etc/*/*`) as a repeated group, which the
+        fallback engine backs off in time that grows with the square of its length: 64 KiB of `rm -r /etc/*/*/…x`,
+        `chmod -R /*/*/…x` or `find /etc/*/*/…x -delete` took 450-880 ms. Its generic fillers never built them."""
+        patterns = {rid: p for rid, key, p in pack_patterns() if key == "pattern"}
+        rx = regex.compile(pc.translate(patterns["TK-D014"]), regex.ASCII | regex.V0)
+        n = MAX_SUBJECT - 4
+        for head, unit, tail in (("rm -r /etc", "/*", "x"), ("rm -r /etc", "/?*", "x"), ("rm -r /etc", "/.*", "x"),
+                                 ("rm -r /etc", "*//", "x"), ("rm -r /etc", "/", "x"), ("chmod -R /", "*/", "x"),
+                                 ("chmod -R /", "?*/", "x"), ("chmod -R /", "./", "x"), ("find /etc", "/*", "x -delete"),
+                                 ("git -C /etc", "/*", "x clean"), ("rm -r C:\\Windows", "\\*", "x"),
+                                 ("rm -r /", "./", "x"), ("rm -r /usr/", "./", "x"), ("rm -r /usr", "/", "x"),
+                                 ("rm -rf", " a", " /etcx"), ("rm -rf", " -r", "x"), ("rm", " -f", " -rx"),
+                                 ("find /etc", " -depth", "x")):
+            s = head + unit * ((n - len(head) - len(tail)) // len(unit)) + tail
+            with self.subTest(head=head, unit=unit):
+                budget = self.BUDGET_S * machine_scale()
+                self.assertLess(self.search(rx, s, budget), budget)
+
     def test_adversarial_calls_decide_before_the_fallback_deadline(self):
         """TK-S002's URL scheme rescanned to the end from each word: 64 KiB of `--x` spent the 1 s and denied. TK-D006
         took `http` in each URL for a network command (a 20 KB download script: 0.8 s), TK-F011 a redirection
