@@ -615,10 +615,10 @@ class Harnesses(DaemonCase):
         self.assertEqual([e["data"]["decision"] for e in self.events("cu-paths") if e["type"] == "policy.decision"],
                          ["deny"] * 2)
 
-    def test_broken_input_never_blocks(self):
+    def test_broken_input_follows_the_harness_failure_behavior(self):
         for h in agent_hooks.HARNESSES:
             code, out, _ = self.hook(h, "not json at all")
-            self.assertEqual(code, 0, h)
+            self.assertEqual(code, 2 if h == "gptme" else 0, h)
         p = subprocess.run([sys.executable, "-m", "tracekit.agent_hooks", "nope"], input="{}", capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(p.returncode, 0)
 
@@ -707,6 +707,15 @@ class Harnesses(DaemonCase):
 
 
 class GptmeTools(unittest.TestCase):
+    def test_gptme_native_shell_background_matches_gptme_truth_values(self):
+        for background in (True, "1", "TrUe", "yes", "ON", False, None, 1, "false", " true "):
+            with self.subTest(background=background):
+                call = {"kwargs": {"command": "sleep 1", "background": background}}
+                expected = {"command": "sleep 1"}
+                if background is True or background in ("1", "TrUe", "yes", "ON"):
+                    expected["run_in_background"] = True
+                self.assertEqual(agent_hooks.tool("gptme", "shell", call), ("Bash", expected))
+
     def test_gptme_patch_many_decides_every_prepared_path(self):
         payload = {"args": ["notes.txt", ".claude/settings.json"], "content": "original hunks", "kwargs": None,
                    "patches": [["/work/notes.txt", "patch one"], ["/work/.claude/settings.json", "patch two"]]}
@@ -830,6 +839,7 @@ class GptmeTools(unittest.TestCase):
             plugin["COMMAND"] = install._dev_hook_argv("tracekit.agent_hooks", "entry", ("gptme",))
         self.assertEqual(plugin["COMMAND"][1:3], ["-I", "-c"])
         self.assertIn("entry('gptme')", plugin["COMMAND"][3])
+        plugin["TIMEOUT"] = 600
         invalid = SimpleNamespace(tool="shell", args=["unexpected"], content="printf safe", kwargs=None)
         with mock.patch.dict(os.environ, {"TRACEKIT_FAIL_CLOSED": "0"}):
             action, why = plugin["_confirm"](invalid, None, None)
@@ -837,8 +847,11 @@ class GptmeTools(unittest.TestCase):
         self.assertIn("gptme markdown shell takes no positional arguments", why)
 
         call = SimpleNamespace(tool="py", args=[], content="print(123)", kwargs=None)
-        plugin["_send"] = mock.Mock(return_value=(2, "blocked"))
-        self.assertEqual(plugin["_confirm"](call, None, None)[0], "deny")
+        reason = "Waiting for approval. Run tracekit approvals approve probe-id."
+        plugin["_send"] = mock.Mock(return_value=(2, reason))
+        with self.assertLogs("gptme_bridge_test", level="WARNING") as logs:
+            self.assertEqual(plugin["_confirm"](call, None, None), ("deny", reason))
+        self.assertIn(reason, logs.output[0])
         event, payload = plugin["_send"].call_args.args
         self.assertEqual(event, "PreToolUse")
         self.assertEqual(agent_hooks.tool("gptme", payload["tool_name"], payload["tool_input"]),
@@ -885,6 +898,22 @@ class GptmeTools(unittest.TestCase):
             self.assertEqual(list(path.parent.glob("config.toml.bak-*"))[0].read_bytes(), original)
             self.assertEqual(path.read_bytes(), original + b'\n[plugins]\npaths = ["~/.config/gptme/plugins"]\n')
 
+    def test_gptme_legacy_installer_only_prints_enabled_hint_for_plugin_key(self):
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(sys.modules, {"tomllib": None}):
+            path = Path(directory) / "config.toml"
+            for extra, expect_hint in (("", False), ('\n[other]\nenabled = ["x"]\n', False),
+                                       ('enabled = ["x"]\n', True)):
+                with self.subTest(extra=extra):
+                    config = '[plugins]\npaths = ["~/.config/gptme/plugins"]\n' + extra
+                    path.write_text(config, encoding="utf-8")
+                    out = io.StringIO()
+                    with contextlib.redirect_stdout(out):
+                        agent_hooks.install("gptme", path=str(path), v2=True)
+                    self.assertEqual('include "tracekit"' in out.getvalue(), expect_hint)
+                    self.assertEqual(path.read_text(encoding="utf-8"), config)
+
     def test_gptme_doctor_uses_only_an_external_launcher_and_its_python(self):
         from pathlib import Path
         from tracekit import doctor
@@ -903,7 +932,7 @@ class GptmeTools(unittest.TestCase):
                         which.side_effect = lambda name: found if name == "gptme" else None
                         self.assertIsNone(doctor._gptme_python())
                 python.touch()
-                self.assertEqual(doctor._gptme_python(), str(python))
+                self.assertEqual(doctor._gptme_python(), os.path.realpath(python))
 
 
 class DroidTools(unittest.TestCase):

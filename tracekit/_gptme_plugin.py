@@ -103,7 +103,9 @@ def _confirm(tool_use, preview, workspace):
     # Keep the object alive until post (or session end), so another call cannot reuse its id.
     _calls[id(call)] = (call, payload, code)
     if code:
-        return ConfirmationResult.skip(reason or f"[tracekit] the hook blocked the call (exit {code})")
+        reason = reason or f"[tracekit] the hook blocked the call (exit {code})"
+        _log.warning("%s", reason)
+        return ConfirmationResult.skip(reason)
     # A later gptme confirmation can edit the command after Tracekit decides it.
     return ConfirmationResult.confirm()
 
