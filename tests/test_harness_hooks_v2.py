@@ -396,6 +396,23 @@ class Mapping(HarnessCase):
         self.assertEqual([(r["tool_call_id"], r["status"]) for r in done], [("call_h1", "error")])
         self.assertIn("NOT APPROVED, nothing ran", done[0]["error"])
 
+    def test_kiro(self):
+        self.check("kiro")
+
+    def test_kiro_results_prompts_and_session_events_answer_nothing(self):
+        # Kiro CLI 3.3.0's PostToolUse, UserPromptSubmit, SessionStart and Stop as recorded (no call id; its result a
+        # string); a payload the hook can't read blocks the call (exit 2, Kiro's block)
+        pre = cases("kiro")[0]["payload"]
+        self.assertEqual(self.hook("kiro", pre)[0], 0)
+        base = {"session_id": pre["session_id"], "cwd": pre["cwd"]}
+        for payload in (dict(pre, hook_event_name="PostToolUse", tool_response="Output:\nkiro-rec\r\n\n\nExit Code: 0"),
+                        dict(base, hook_event_name="UserPromptSubmit", prompt="Run echo kiro-rec."),
+                        dict(base, hook_event_name="SessionStart"), dict(base, hook_event_name="Stop")):
+            with self.subTest(event=payload["hook_event_name"]):
+                self.assertEqual(self.hook("kiro", payload)[:2], (0, ""))
+        code, out, err = self.hook("kiro", "not json", "PreToolUse")
+        self.assertEqual((code, out), (2, ""), err)
+
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
         # header and a webfetch with no url are denied in the hook, with no decide request sent

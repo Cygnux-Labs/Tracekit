@@ -1715,6 +1715,18 @@ class CodingPack(unittest.TestCase):
             self.assertIn(e.decide("Bash", {"command": "rm ~/.claude/projects/p/a.jsonl; echo '"})["verdict"],
                           ("ask", "deny"))
 
+    def test_kiros_folder_is_harness_config(self):
+        """#798: Kiro CLI runs the hook files in .kiro/hooks (a project's and ~/.kiro's) and reads its agents, MCP
+        servers and settings from .kiro/."""
+        for pack, engine, e in self.every_pack():
+            for command in ("rm ~/.kiro/hooks/tracekit.json", "echo {} > .kiro/hooks/tracekit.json", "rm -rf .kiro"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for path in ("/home/u/.kiro/hooks/tracekit.json", "/w/.kiro/agents/default.json",
+                         "C:/Users/u/.kiro/settings/mcp.json"):
+                with self.subTest(pack=pack, engine=engine, path=path):
+                    self.assertIn("TK-F009", e.decide("Write", {"file_path": path, "content": "x"})["rule_ids"])
+
     def test_clines_hook_folders_are_harness_config(self):
         """#732's review: Cline runs every hook file in ~/Documents/Cline/Hooks, ~/.cline/hooks, .cline/hooks and
         .clinerules/hooks; deleting .clinerules or a Cline folder as a whole deletes the hooks in it."""
