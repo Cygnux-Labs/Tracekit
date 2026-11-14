@@ -851,8 +851,9 @@ class Speed(unittest.TestCase):
         [pattern] = [p for rid, key, p in pack_patterns() if rid == "TK-A061" and key == "pattern"]
         rx = regex.compile(pc.translate(pattern), regex.ASCII | regex.V0)
         n, budget = MAX_SUBJECT - 16, self.BUDGET_S * machine_scale()
-        for unit in ("|", " | ", "|-x ", ";( ", "; 1 ", "\n- '", "|X=$(", ";sudo -E ", '|curl -d "{\\"',
-                     "|curl -d '{\"a\":\"'", "|curl -d 'x'\"x\"'x'", '|curl -d "${A:-', "|echo $T | base64 -w 0 "):
+        for unit in ("|", " | ", "|-x ", ";( ", "; 1 ", "\n- '", "|X=$(", ";sudo -E ", ";sudo -u root ",
+                     ";bash -c '", '|curl -d "{\\"', "|curl -d '{\"a\":\"'", "|curl -d 'x'\"x\"'x'",
+                     '|curl -d "${A:-', "|echo $T | base64 -w 0 "):
             for tail in ("", "://", " https://x"):
                 s = (unit * (n // len(unit)))[:n - len(tail)] + tail
                 with self.subTest(unit=unit, tail=tail):
