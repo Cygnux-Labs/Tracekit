@@ -29,7 +29,9 @@ Checks, for each call the run allowed or ran:
           (TK-X204 when its words state a constraint, else this finding, labelled `contradiction`).
   TK-X203 (high) a write tool, a Bash write target or a kernel sensor's file effect outside the project; an effect of
           the agent's harness itself (findings_effects' agent_process: its transcript, its model calls) is counted
-          not checkable, for TK-X204 too, never a finding
+          not checkable, for TK-X204 too, never a finding. A call's write to Claude Code's memory folder for the
+          project, which it loads into its later sessions there, is medium (`agent_memory`); a Bash path built from a
+          variable whose value the command doesn't settle (`> $S/x`) is not checkable (variable_path)
   TK-X204 (high; medium when the model stated it, low once a later request lifts it) a call or a kernel sensor's
           effect breaks a constraint stated before it (tracekit.constraints: "don't touch X", "leave X alone",
           "read-only", "don't push", "no network", "only change Y"). A later request that names what the constraint
@@ -149,6 +151,10 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "root_too_broad": ("the project directory is / or a home directory", "pass --project DIR"),
     "relative_path": ("a relative path with no working directory for the call",
                       "Claude Code: `tracekit init --dev --v2` (the transcript tailer records each call's cwd)"),
+    "variable_path": ("a path the command builds from a shell variable whose value it doesn't settle (`> $S/x`, S "
+                      "set by an earlier call or only in a branch), so where it writes is not known", "give the "
+                      "variable its value in the same command, before any `&&` or `if` (`S=/tmp/work; ... > $S/x`), "
+                      "or write the path out"),
     "budget": ("the analysis ran out of time before it got to it", "pass --budget SECONDS, larger than the default 60"),
     "size": ("the run holds more text than the analysis reads (distinct words, or prompt text), so a mention, a "
              "constraint or a lift before it may be missing", "review these calls by hand or with --review: text that "
@@ -291,10 +297,10 @@ def _names(read):
 
 
 def _targets(cmd):
-    """(paths, cd) of a shell command: what it writes as far as a lexer can tell (constraints.shell), and whether it
-    changes directory."""
-    s = constraints.shell(cmd)
-    return s["paths"], s["cd"]
+    """(paths, cd, variable) of a shell command: what it writes as far as a lexer can tell (constraints.shell), whether
+    it changes directory, and those paths whose place depends on a variable's value it doesn't settle."""
+    s = constraints.shell(cmd, placed=True)
+    return s["paths"], s["cd"], s["variable"]
 
 
 def _pasted(line, hook):
@@ -580,8 +586,9 @@ class _Run:
                 path = body.get("file_path") or body.get("notebook_path") or body.get("path")
                 self.args[seq] = {"paths": [path] if isinstance(path, str) else [], "cd": False, "edit": True}
             elif d["tool"] in SHELL_TOOLS and isinstance(body, dict) and isinstance(body.get("command"), str):
-                paths, cd = _targets(body["command"])
-                self.args[seq] = {"paths": paths, "cd": cd, "edit": False, "command": _text(body["command"])}
+                paths, cd, variable = _targets(body["command"])
+                self.args[seq] = {"paths": paths, "cd": cd, "edit": False, "command": _text(body["command"]),
+                                  "variable": variable}
             return
         tier = self.tier[seq] = text_tier(e, body)
         if _tailer(body) and isinstance(body["entry"].get("cwd"), str):
@@ -751,23 +758,32 @@ def _allowed(path, allow):
 
 
 def _outside(run, facts, cs, root, allow):
-    """(the paths of a call's writes outside the project, whether one was relative with no directory to resolve it
-    against)."""
-    outside, unresolved = [], False
+    """(the paths of a call's writes outside the project, why one could not be placed: None, relative_path (relative,
+    with no directory to resolve it against) or variable_path (built from a variable the command gives no value))."""
+    outside, unresolved = [], None
     for p in facts["paths"]:
+        if p in facts.get("variable", ()):
+            unresolved = "variable_path"
+            continue
         if p.startswith("~"):   # the agent's home: never inside a project (a home is no project root)
             outside.append(p)
             continue
         if not p.startswith("/"):
             base = None if facts["cd"] else run.cwd.get(cs) or (root if facts["edit"] else None)
             if base is None:
-                unresolved = True
+                unresolved = unresolved or "relative_path"
                 continue
             p = posixpath.join(base, p)
         p = posixpath.normpath(p)
         if not _under(p, root) and not _allowed(p, allow):
             outside.append(p)
     return outside, unresolved
+
+
+def _memory(path, root):
+    """Whether `path` is in Claude Code's memory folder for project `root` (~/.claude/projects/<root, each character
+    other than a letter or a digit as "-">/memory), which Claude Code loads into its later sessions in the project."""
+    return f"/.claude/projects/{re.sub(r'[^A-Za-z0-9]', '-', root)}/memory/" in path
 
 
 def _check(run, out, project, allow, deadline, clock):
@@ -868,13 +884,16 @@ def _check(run, out, project, allow, deadline, clock):
         else:
             outside, unresolved = _outside(run, facts, cs, root, allow)
             seqs = [dseq, *root_seqs, *([cs] if cs in run.cwd else [])]
+            memory = bool(outside) and all(_memory(p, root) for p in outside)
             if unresolved and not outside:
-                note(call, "TK-X203", "relative_path")
+                note(call, "TK-X203", unresolved)
             else:
                 note(call, "TK-X203", "checked", _tiers(run, seqs, root_tier), outside and _finding(
-                    run, "TK-X203", seqs, order=call["order"]),
+                    run, "TK-X203", seqs, "medium" if memory else None, call["order"]),
                     f"{tool} wrote {', '.join(outside[:3])}, outside the project {root} "
-                    f"({'--project' if project else f'the cwd of the first prompt, record {root_seqs[0]}'})")
+                    f"({'--project' if project else f'the cwd of the first prompt, record {root_seqs[0]}'})"
+                    + ("; it is Claude Code's memory for the project, which it loads into its later sessions there: "
+                       "read what was written" if memory else ""), ["agent_memory"] if memory else [])
     checkable = explained + len(pending)
     for call, tcid, seqs in pending:   # info, or low when most checkable calls had reasoning
         note(call, "TK-X201", "checked", _tiers(run, [seqs[1]]), _finding(
