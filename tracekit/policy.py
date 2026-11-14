@@ -254,21 +254,24 @@ def evaluate(pol, tool, ti, cwd=None):
     commands = ti.get("commands") if tool == "Bash" and "command" not in ti else None
     if isinstance(commands, list) and all(isinstance(command, str) for command in commands):
         calls.extend(dict(ti, command=command) for command in commands)
+    # a Windows path's separator is a backslash: the file rules, written with `/`, read it with `/` too
+    ruled = calls + [dict(c, **{k: c[k].replace("\\", "/")}) for c in calls for k in ("file_path", "notebook_path")
+                     if isinstance(c.get(k), str) and "\\" in c[k]]
     # Claude Code's Monitor runs its command in the shell Bash uses, and PowerShell is its shell on Windows: a rule
     # applies under either name, so one written for Bash and one for the tool itself both match
     names = [tool] + (["Bash"] if tool in ("Monitor", "PowerShell") else [])
     rule_ids, reasons, flags = [], [], []
     deny = ask = False
     for r in pol.get("deny", []):
-        if any(_matches(r, t, c) for c in calls for t in names):
+        if any(_matches(r, t, c) for c in ruled for t in names):
             deny = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("ask", []):
-        if any(ASKABLE.match(t or "") and _matches(r, t, c) for c in calls for t in names):
+        if any(ASKABLE.match(t or "") and _matches(r, t, c) for c in ruled for t in names):
             ask = True
             rule_ids.append(r["id"]); reasons.append(r.get("reason", r["pattern"]))
     for r in pol.get("flag", []):
-        if any(_matches(r, t, c) for c in calls for t in names):
+        if any(_matches(r, t, c) for c in ruled for t in names):
             if r["id"] not in rule_ids:
                 rule_ids.append(r["id"])
             flags.append(r.get("label", "flag"))

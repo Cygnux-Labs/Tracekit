@@ -194,11 +194,16 @@ def _responses(lines):
     return out + [cur] * bool(cur)
 
 
-def _use(item):
-    """The tool use a Codex call item is decided as: the name and arguments of the PreToolUse payload Codex builds for it
-    (core/src/tools/registry.rs:150-160, 943-960; exec_command.rs:499-509; apply_patch.rs:394-398; mcp.rs:114-131,
-    449-457), mapped as agent_hooks.tool maps them; None for a call that fires no PreToolUse."""
-    t, name, cid = item.get("type"), str(item.get("name") or ""), item.get("call_id")
+def _codex_tool(item):
+    """Map one Codex rollout call to the tool and arguments its live PreToolUse hook decides.
+
+    The rollout's response_item is the Responses API item returned by the model, not the
+    PreToolUse payload Codex makes from it. Build the hook payload Codex would send
+    (core/src/tools/registry.rs:150-160, 943-960; exec_command.rs:499-509;
+    apply_patch.rs:394-398; mcp.rs:114-131, 449-457) and apply the live hook's
+    mapping. Audit decides each call in the form Codex's PreToolUse hook gets it.
+    """
+    t, name = item.get("type"), str(item.get("name") or "")
     if t == "custom_tool_call" and name == "apply_patch":
         hook, ti = "apply_patch", {"command": item.get("input")}
     elif t == "function_call" and name and name not in NO_HOOK:
@@ -208,6 +213,8 @@ def _use(item):
         except ValueError:
             ti = raw
         ns = item.get("namespace") or ""
+        if not isinstance(ns, str):
+            ns = ""
         if name == "exec_command":
             if not isinstance(ti, dict) or not isinstance(ti.get("cmd"), str):   # Codex fires no hook for these
                 return None
@@ -219,12 +226,20 @@ def _use(item):
             hook = name if name == "spawn_agent" else ns + name
     else:
         return None
-    if not cid:
+    return agent_hooks.tool("codex", hook, ti)
+
+
+def _use(item):
+    """Describe a Codex call in a model record without exposing its arguments."""
+    if not isinstance(item.get("call_id"), str) or not item["call_id"]:
         return None
-    tool, args = agent_hooks.tool("codex", hook, ti)
-    # coerced: the payload is Codex's rewrite of the model's arguments, so reconciliation compares the tool, not them
-    return {"id": parsers._id(cid), "name": tool[:256] or "?", "executed_by": "client", "args_source": "coerced",
-            "args_digest": event_hash({"tool": tool, "args": args})}
+    mapped = _codex_tool(item)
+    if mapped is None:
+        return None
+    tool, args = mapped
+    # coerced: Codex rewrites the model's arguments for PreToolUse; compare the tool, not args
+    return {"id": parsers._id(item["call_id"]), "name": tool[:256] or "?", "executed_by": "client",
+            "args_source": "coerced", "args_digest": event_hash({"tool": tool, "args": args})}
 
 
 def _send(s, items, model, stderr):

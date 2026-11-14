@@ -2,6 +2,7 @@
 and the exact reason it holds the rest, the attacks it must hold (the agent issuing, widening or extending a grant,
 amounts in other units, payee look-alikes, totals split across calls, an expired or revoked grant), its totals across a
 restart, the operator's ceiling, and what the verifier re-checks in the bundle, forged ones included."""
+import asyncio
 import importlib.util
 import io
 import itertools
@@ -702,6 +703,111 @@ class TestHeldPayment(unittest.TestCase):
         self.assertIn("live", listed)
         self.assertIn("30 of 500 USDC left", listed)
         self.assertIn('"this week\'s two contractors"', listed)
+
+
+@unittest.skipIf(importlib.util.find_spec("agents") is None, "openai-agents not installed")
+class TestAgentSpending(Case):
+    """docs/quickstarts/agent-spending.md's recipe (examples/v2/openai_agents/spending.py) in-process: an OpenAI Agents
+    SDK agent pays through `send_payment` under the dev signer's policy. The first payment is held, the person approves
+    it with the grant `approvals approve --grant` builds, two payments run within it, one past its total is held with
+    the reason, and the bundle verifies with the grant line."""
+    PRINTS, HOSTING = "acct-print-shop", "acct-hosting"
+
+    def setUp(self):
+        super().setUp()
+        # the agent's run, as this process's uid: on the dev signer the person who answers is that uid too
+        self.me = self.s.identity
+        self.reg = self.call("register_run", self.me, agent={"name": "bills"})
+        self.run = {"run_id": self.reg["run_id"], "run_token": self.reg["run_token"]}
+
+    def open(self):
+        s = svc.SignerService(self.dir)   # the dev signer's policy, packs/dev.yaml
+        self.addCleanup(s.close)
+        return s
+
+    def decision(self, call_id):
+        return [e for e in self.records() if e["type"] == "policy.decision"
+                and e["data"]["tool_use_id"] == call_id][-1]
+
+    def test_held_granted_released_held_verified(self):
+        from agents import Agent, Model, ModelResponse, Runner, function_tool, set_tracing_disabled
+        from agents.usage import Usage
+        from openai.types.responses import ResponseFunctionToolCall, ResponseOutputMessage, ResponseOutputText
+
+        from tracekit.integrations.openai_agents import TracekitAgents
+        set_tracing_disabled(True)
+
+        def pay(n, payee, cents):
+            return [ResponseFunctionToolCall(id=f"fc_{n}", call_id=f"call-{n}", type="function_call",
+                                             name="send_payment", status="completed",
+                                             arguments=json.dumps({"payee": payee, "amount": cents, "currency": "USD"}))]
+        replies = [pay(1, self.PRINTS, 3000), pay(2, self.HOSTING, 4500), pay(3, self.PRINTS, 2500),
+                   pay(4, self.HOSTING, 4000),
+                   [ResponseOutputMessage(id="m", type="message", role="assistant", status="completed",
+                                          content=[ResponseOutputText(type="output_text", annotations=[], text="ok")])]]
+
+        class Scripted(Model):
+            async def get_response(self, *a, **kw):
+                return ModelResponse(output=replies.pop(0), usage=Usage(), response_id=None)
+
+            async def stream_response(self, *a, **kw):
+                raise NotImplementedError
+        paid = []
+
+        @function_tool
+        def send_payment(payee: str, amount: int, currency: str) -> str:
+            """Pay `amount` (in cents) of `currency` to `payee`."""
+            paid.append((payee, amount))
+            return "paid"
+        tk = TracekitAgents(self.s, self.reg)
+        agent = Agent(name="bills", model=Scripted(), tools=[tk.tool(send_payment)])
+
+        async def resume(result, answer):
+            for item in result.interruptions:
+                answer(result.context_wrapper.context["tracekit"]["approvals"][item.raw_item.call_id])
+            state = result.to_state()
+            await tk.apply_decisions(state)
+            return await Runner.run(agent, state, hooks=tk)
+
+        def grant(aid):   # tracekit approvals approve AID --grant ..., as the recipe writes it
+            flags = mock.Mock(payee=[self.PRINTS, self.HOSTING], max="50 USD", total="120 USD", for_="1h", count=None,
+                              tool=None, note="the print and hosting bills")
+            self.issued = self.call("grant_issue", self.me, **cli._grant_req(flags, self.run["run_id"], aid))
+            self.call("approval_decide", self.me, approval_id=aid, decision="approve")
+
+        async def flow():
+            result = await Runner.run(agent, "pay the bills", context={}, hooks=tk)
+            self.assertEqual(([i.raw_item.call_id for i in result.interruptions], paid), (["call-1"], []))   # held
+            self.assertEqual(self.decision("call-1")["data"]["decision"], "ask")
+            result = await resume(result, grant)
+            self.assertEqual([i.raw_item.call_id for i in result.interruptions], ["call-4"])
+            self.assertEqual(paid, [(self.PRINTS, 3000), (self.HOSTING, 4500), (self.PRINTS, 2500)])
+            result = await resume(result, lambda aid: self.call("approval_decide", self.me, approval_id=aid,
+                                                                decision="reject"))
+            self.assertEqual((result.interruptions, result.final_output), ([], "ok"))
+
+        asyncio.run(flow())
+        g = self.issued
+        self.assertTrue(g["self_approved"])   # the dev signer can't tell the person from the agent
+        self.assertEqual((g["tools"], g["used"]), (["send_payment"], [3000]))   # the held payment is its first
+        for call_id, payee, cents, left in (("call-2", self.HOSTING, 4500, 45), ("call-3", self.PRINTS, 2500, 20)):
+            d = self.decision(call_id)
+            self.assertEqual((d["data"]["decision"], d["data"]["rule_ids"][-1]), ("flag", "TK-GRANT"))
+            self.assertEqual(d["data"]["reasons"],
+                             [f"within grant {g['grant_id']}: {cents // 100} USD to {payee}; {left} of 120 USD left"])
+            self.assertEqual(d["ext"]["grant"]["fields"], {"amount": cents, "currency": "USD", "payee": payee})
+        d = self.decision("call-4")["data"]
+        self.assertEqual((d["decision"], d["reasons"]),
+                         ("ask", [f"grant {g['grant_id']}: 100 of 120 USD used; this call needs 40 USD"]))
+        self.assertEqual(paid, [(self.PRINTS, 3000), (self.HOSTING, 4500), (self.PRINTS, 2500)])   # call-4 never ran
+        self.assertEqual(self.call("grant_list", self.me, run_id=self.run["run_id"])["grants"][0]["used"], [10000])
+        out, rep, code = self.bundle()
+        self.assertEqual(code, 0, rep.checks)
+        self.assertTrue(rep.integrity.startswith("VERIFIED"), rep.integrity)
+        line = next(c for c in rep.checks if c["check"] == "intent grants")
+        self.assertEqual(line["status"], "pass", line)
+        self.assertTrue(line["detail"].startswith("1 grant(s) (1 self-approved: issued by the run's own user, which "
+                                                  "the agent can be); 2 call(s) released within them"), line)
 
 
 class TestPolicy(unittest.TestCase):

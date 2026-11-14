@@ -24,3 +24,13 @@ tracekit approvals approve <id>      # or: reject <id>
 The first call starts a dev signer in the background (`tracekit down` stops it). The example writes `trust.json` and
 `<run id>.tkb` to the current directory and prints the `tracekit verify` report. Read it in [the
 quickstart](../../../docs/quickstarts/openai-agents.md).
+
+## Spending limits
+
+`spending.py` pays through a `send_payment` tool: the first payment is held, the person approves it with a payment
+grant, the next two run within it, and one past its total is held with the reason. The bundle is the receipt.
+Walkthrough: [spending limits and receipts](../../../docs/quickstarts/agent-spending.md).
+
+```sh
+python examples/v2/openai_agents/spending.py --scripted
+```

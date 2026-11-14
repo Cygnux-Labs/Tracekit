@@ -55,6 +55,10 @@ constraint can only hold more calls, so the agent's own identity adding one (it 
 the signer's cap of file constraints a further one is refused and every write of the run is held from then on, which the
 hook tells the person (exit 1, FULL on stderr, and in the prompt's notice when it prints one).
 
+At Stop (the harness says the model ended its turn; not SubagentStop) an empty trusted observation (source
+<agent>:Stop) marks the end of the turn: `tracekit analyze --v2` ends a denial's task only at one in a run that has
+them, which a line written into the transcript can't produce. A Stop the hook can't record is just missing.
+
 A signer of another Tracekit version than this hook's is told to the person once per session (_skew), on an event the
 hook lets through, with what to run (skew_notice); the client's warning about it is not printed.
 
@@ -205,13 +209,20 @@ def stopped(head, reason=None, person=None, agent=None):
     """What a call Tracekit stopped tells its agent and person, in every harness (each delivers it its own way: _block
     for Claude Code, agent_hooks._reply for the others): `head` (with _rules), the signer's `reason` (Why) and, after
     its INSTEAD, what to do instead; then `person`, the commands that answer a held call, and what the agent does
-    (`agent`, else: with `person`, pass them on and, once approved, make the identical call again; without, tell the
-    person). An Instead step may be the person's (check the payee before approving): the agent takes only its own."""
+    (`agent`, else: with `person`, ask them approve or skip and not reword the call around the hold, but take an
+    Instead step that is the agent's own, first since agent_hooks._reply may cut the end, and, once approved, make the
+    identical call again; without, tell the person). An Instead step may be the person's (check the payee before
+    approving): the agent takes only its own."""
     why, _, instead = (reason or "").partition(INSTEAD)
-    agent = (agent or ("tell the person what this call was for and pass on these commands, then wait for their "
-                       "answer; a subagent puts them in its final report. Once it is approved, make the identical call "
-                       "again." if person else "tell the person what you were doing and why it was blocked.")) + (
-        " If the Instead line is a step you can take yourself, you may take it and say so." if instead else "")
+    own = " If the Instead line is a step you can take yourself, you may take it and say so." if instead else ""
+    if agent is None and person:   # the Instead step is in the rule itself, inside _reply's 500 characters (#816 review)
+        agent = ("ask the person: approve or skip? Don't reword around the hold, but do take an Instead step that's "
+                 "yours and say so; otherwise wait for their answer." if instead else
+                 "ask the person: approve this call or skip it? Don't reword the call to get past the hold; wait for "
+                 "their answer.") + (" Pass on the Person line and say what the call was for; a subagent puts both in "
+                                     "its final report. Once it is approved, make the identical call again.")
+    else:
+        agent = (agent or "tell the person what you were doing and why it was blocked.") + own
     return "\n".join([f"[tracekit] {head}", *([f"Why: {why}"] if why else []),
                       *([f"Instead: {instead}"] if instead else []), *([f"Person: {person}"] if person else []),
                       f"Agent: {agent} Never hide what a call runs to get past the policy: every call is signed and "
@@ -1143,6 +1154,12 @@ def _handle(client, p, event, sid, tid):
                 os.remove(f)
         return 0
     transcript, prompt = _transcript(p), p.get("prompt") if event == "UserPromptSubmit" else None
+    if event == "Stop":   # the harness says the model ended its turn: a signed end-of-turn marker (not SubagentStop)
+        try:
+            _run(client, sid, send="observe", transcript=transcript, source=f"{AGENT}:Stop", trust="trusted", value="")
+            return 0
+        except Exception:   # a Stop it can't record is just missing: the event goes on as any other below
+            pass
     if event == "SessionStart":
         _prune()
     if isinstance(prompt, str) and prompt:   # the harness's submitted prompt, including harness wrappers

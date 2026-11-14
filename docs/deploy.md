@@ -301,7 +301,8 @@ tracekit monitor --log http://signer.internal:9464 --log-key "$(cat log.vkey)" -
 
 Run the monitor on a host the operator doesn't control, with `serve_records: true` in `metrics` ([monitor](monitor.md)).
 
-Remote agents outside Kubernetes use named tokens: [remote clients](remote-ingest.md). Metrics and alerts:
+Remote agents outside Kubernetes use named tokens: [remote clients](remote-ingest.md). A tenant's people download its
+runs over the same API with an `export_run` grant: [downloading a run](remote-ingest.md#downloading-a-run). Metrics and alerts:
 [observability](observability.md). Model calls through the [LLM gateway](gateway.md) and tool calls run by a T2
 [executor](approvals.md#tiers-t1-and-t2-executors) are recorded out of the agent's process.
 

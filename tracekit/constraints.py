@@ -229,6 +229,10 @@ WRITERS = {"tee": "all", "touch": "all", "mkdir": "all", "rm": "all", "rmdir": "
 FORMATTERS = {"prettier": ("--write", "-w"), "gofmt": ("-w",), "eslint": ("--fix",), "clang-format": ("-i",),
               "autopep8": ("-i", "--in-place")}   # rewrite their files in place with one of these flags
 UNREAD = frozenset("$`*?[{")   # a word with one of these (a variable, a glob, a substitution) is no path
+# a word of a command line, and a variable's expansion in it: the parser reads a word with an unset one as if it were
+# empty (`$S/x` as /x)
+WORD = re.compile(r"[^\s;|&<>()]+")
+EXPANSION = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?")
 FIND_NAMES = ("-name", "-iname", "-path", "-ipath", "-wholename")   # what find -delete or -exec acts on
 # the short flag (in a cluster too: cp -vt) by which these commands put their paths in another directory, as do the
 # long ones below and their prefixes (env --ch)
@@ -791,12 +795,16 @@ def _forks(rest):
     return False
 
 
-def shell(cmd):
+def shell(cmd, placed=False):
     """What a shell command does: {"paths": what it writes as far as the policy engine's parser reads it, "dirs": those
     of its paths a recursive rm or rmdir deletes as directories, "cd": it changes directory (cd, pushd, popd, git
     --work-tree), "elsewhere": a command's paths are in another directory, root or host (_elsewhere), "later": a
     command runs its own after the line returns (LATER_RUNS, setsid -f), "push": a git push, "network": a command that
-    reaches the network, "writes": it writes or commits}. `cmd`: a command line, or a shell call's arguments (`command`
+    reaches the network, "writes": it writes or commits, "variable": with `placed`, those of its paths the line builds
+    from a variable it gives no value (`> $S/x`, S set by an earlier call: the parser reads /x, as bash would with S
+    unset) or that only the parser's second readings give (an expansion read as empty, `> $R/a.${c##*:}.py` as
+    /a..py): where it writes depends on values the line doesn't settle (a second parse, of the line as written, when
+    it has second readings)}. `cmd`: a command line, or a shell call's arguments (`command`
     or `cmd` a line or an argv list, `commands` a list of lines), read as the policy engine reads them
     (policy2/shell.py: wrappers, `bash -c`, `eval`, substitutions and pipelines included; a `commands` list joined
     and each entry on its own, Engine._parse: what either reading finds).
@@ -807,17 +815,23 @@ def shell(cmd):
     command substitution is no path; a line the parser can't read (`coproc`, over its size) does nothing, and the
     policy's TK-SHELL-PARSE answers for it. Read scripts the call runs if real writes hide there."""
     out = {"paths": [], "dirs": [], "cd": False, "elsewhere": False, "later": False, "push": False, "network": False,
-           "writes": False}
+           "writes": False, "variable": []}
     args = cmd if isinstance(cmd, dict) else {"command": cmd if isinstance(cmd, str) else ""}
-    cmds, written, read = [], [], False
-    for a in [args, *({"command": c} for c in commands_each(args))]:
+    cmds, written, read, unset, more = [], [], False, set(), False
+    reads = [args, *({"command": c} for c in commands_each(args))]
+    for a in reads:
         try:
-            found, _, _, wrote = _parse(a)[:4]
+            parsed = _parse(a)
         except ParseError:
             continue
-        cmds, written, read = cmds + found, written + wrote, True
+        cmds, written, read = cmds + parsed[0], written + parsed[3], True
+        unset, more = unset | parsed[5]["unresolved"], more or parsed[5]["more"]
     if not read:
         return out
+    text = " ".join(x for v in map(args.get, SHELL_KEYS) for x in ([v] if isinstance(v, str) else v if isinstance(
+        v, list) else ()) if isinstance(x, str)) if placed and unset else ""
+    built = {x for w in WORD.findall(text) if "$" in w for x in [EXPANSION.sub(
+        lambda m: "" if m.group(1) in unset else m.group(0), w).replace('"', "").replace("'", "")] if "$" not in x}
     for c in cmds:
         name, rest = c["argv"][0], c["argv"][1:]
         args = [w for w in rest if not w.startswith("-")]
@@ -825,29 +839,8 @@ def shell(cmd):
             w.split("=", 1)[0] == "--work-tree" for w in rest)
         out["elsewhere"] = out["elsewhere"] or _elsewhere(name, rest)
         out["later"] = out["later"] or name in LATER_RUNS or name == "setsid" and _forks(rest)
-        mode = WRITERS.get(name)
-        if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
-                                           for w in rest):
-            mode = "files"
-        targets = (args if mode == "all" else args[-1:] if mode == "last" and len(args) > 1 else args[:1]
-                   if mode == "first" else args[1:] if mode == "files" else [])
-        sub = next((a for a in args[:2] if a in GIT_WRITES | NET_GIT), None) if name == "git" else \
-            args[0] if args else None
-        if name == "rmdir" or name == "rm" and ("--recursive" in rest or any(
-                w[:1] == "-" and w[1:2] != "-" and set(w) & {"r", "R"} for w in rest)):
-            out["dirs"] += targets   # "rm -r vendor" deletes vendor/ too
-        elif name == "git" and sub in ("rm", "mv", "restore"):
-            targets = args[args.index(sub) + 1:]
-        elif name == "git" and sub == "checkout" and "--" in rest:
-            targets = rest[rest.index("--") + 1:]
-        elif name == "dd":
-            targets = [a[3:] for a in rest if a.startswith("of=")]
-        elif name == "find" and {"-delete", "-exec", "-execdir"} & set(rest):
-            targets = [rest[k + 1] for k, a in enumerate(rest[:-1]) if a in FIND_NAMES]
-        elif set(FORMATTERS.get(name, ())) & set(rest):
-            targets = args
-        elif name == "ruff" and (sub == "format" or sub == "check" and "--fix" in rest):
-            targets = args[1:]
+        targets, sub, dirs = _command_writes(name, rest)
+        out["dirs"] += targets if dirs else []   # "rm -r vendor" deletes vendor/ too
         out["paths"] += targets
         out["push"] = out["push"] or name == "git" and "push" in args
         out["network"] = out["network"] or name in NET_COMMANDS or name == "git" and sub in NET_GIT or (
@@ -858,7 +851,47 @@ def shell(cmd):
     out["writes"] = out["writes"] or bool(written)
     out["paths"] = [t for t in out["paths"] + written if not set(t) & UNREAD]
     out["dirs"] = [t for t in out["dirs"] if not set(t) & UNREAD]
+    if placed and more:   # what the line as written writes, without the second readings
+        plain = set()
+        for a in reads:
+            try:
+                parsed = _parse(a, None, False)
+            except ParseError:
+                continue
+            plain.update(parsed[3], *(_command_writes(c["argv"][0], c["argv"][1:])[0] for c in parsed[0]))
+        built |= set(out["paths"]) - plain
+    out["variable"] = [t for t in out["paths"] if t in built]
     return out
+
+
+def _command_writes(name, rest):
+    """(the paths command `name` with arguments `rest` writes (shell), its sub-command, whether it deletes them as
+    directories: a recursive rm, rmdir)."""
+    args = [w for w in rest if not w.startswith("-")]
+    mode = WRITERS.get(name)
+    if name in ("sed", "perl") and any(w.startswith(("-i", "--in-place")) or w.startswith("-p") and "i" in w
+                                       for w in rest):
+        mode = "files"
+    targets = (args if mode == "all" else args[-1:] if mode == "last" and len(args) > 1 else args[:1]
+               if mode == "first" else args[1:] if mode == "files" else [])
+    sub = next((a for a in args[:2] if a in GIT_WRITES | NET_GIT), None) if name == "git" else \
+        args[0] if args else None
+    if name == "rmdir" or name == "rm" and ("--recursive" in rest or any(
+            w[:1] == "-" and w[1:2] != "-" and set(w) & {"r", "R"} for w in rest)):
+        return targets, sub, True
+    if name == "git" and sub in ("rm", "mv", "restore"):
+        targets = args[args.index(sub) + 1:]
+    elif name == "git" and sub == "checkout" and "--" in rest:
+        targets = rest[rest.index("--") + 1:]
+    elif name == "dd":
+        targets = [a[3:] for a in rest if a.startswith("of=")]
+    elif name == "find" and {"-delete", "-exec", "-execdir"} & set(rest):
+        targets = [rest[k + 1] for k, a in enumerate(rest[:-1]) if a in FIND_NAMES]
+    elif set(FORMATTERS.get(name, ())) & set(rest):
+        targets = args
+    elif name == "ruff" and (sub == "format" or sub == "check" and "--fix" in rest):
+        targets = args[1:]
+    return targets, sub, False
 
 
 def facts(tool, args, cls=None):
