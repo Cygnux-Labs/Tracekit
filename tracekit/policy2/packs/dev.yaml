@@ -41,8 +41,10 @@ tools:
   # Claude Code's tools that act only inside the session (2.1.311's own descriptions): known, so not flagged as
   # unknown tools, and class app, not harness, so every rule that reads the whole call still reads theirs as it did
   # (TK-S002, TK-S004, TK-F005, TK-F012). TK-A062 no longer reads them: they run no command (StructuredOutput's fields
-  # are a subagent's answer in its caller's schema). Artifact and ArtifactData stay unmapped: their writes publish to
-  # claude.ai, so they keep the unknown tool's flag. RemoteTrigger is held (TK-A079)
+  # are a subagent's answer in its caller's schema), so one given a `command` or `sql` field, which TK-A062 held as an
+  # unmapped tool's, isn't held. Artifact, ArtifactData and SendUserFile stay unmapped: their writes publish to
+  # claude.ai or send files off the machine to the user's Claude app, so they keep the unknown tool's flag.
+  # RemoteTrigger is held (TK-A079)
   TaskStop: app              # stops a background task or agent by its id
   TaskCreate: app            # the session's task list
   TaskUpdate: app
@@ -53,7 +55,6 @@ tools:
   CronCreate: app            # schedules a prompt that runs again in this session (/loop); its calls are decided then
   CronDelete: app
   CronList: app
-  SendUserFile: app          # sends files to the session's own user in the Claude app (desktop or phone)
   AskUserQuestion: app       # asks the person multiple-choice questions and waits
   ReadNotifications: app     # reads the session's queued notices (an agent finished, a comment came in)
 

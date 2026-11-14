@@ -1143,13 +1143,19 @@ flag:
     class: shell
     # each command's argv, not the line (a heredoc's or a message's words aren't a command): rm, unlink, shred,
     # truncate, mv, chmod or chown given a target outside the project and the temp folders (an absolute path but one
-    # in /tmp, /private/tmp, /var/folders or /private/var/folders; ~, `..`), the project's root (`.`, `*`, `.*`), its
-    # .git, or a target the line can't tell (a variable, a substitution, find's {}); dd writing one (of=); xargs or
-    # parallel running one (its targets come at run time). A relative target is the project's: deleting a build
-    # output there is no riskier than a Write. lean: a cd elsewhere earlier on the line isn't followed (`cd /etc && rm
-    # x` isn't flagged), and a target after 64 other words isn't read (it keeps the fallback engine fast); read the
-    # line's cd, or further, if that hides a real one
-    pattern: '^(?:xargs|parallel)(?: [^ ]+){0,16}? (?:rm|unlink|shred|truncate|mv|chmod|chown)(?: |$)|^(?:(?:rm|unlink|shred|truncate|mv|chmod|chown)(?: [^ ]+){0,64}? |dd(?: [^ ]+){0,8}? of=)(?:[^ ]*(?:[$`]|\{\})[^ ]*|~[^ ]*|(?:[^ ]*/)?\.\.(?:/[^ ]*)?|(?:[^ ]*/)?\.git(?:/[^ ]*)?|\.(?:/+(?:\.?\*)?)?/*|\.?\*/*|[A-Za-z]:[\\/][^ ]*|/(?:[^ ptv][^ ]*|p(?:[^ r][^ ]*|r(?:[^ i][^ ]*|i(?:[^ v][^ ]*|v(?:[^ a][^ ]*|a(?:[^ t][^ ]*|t(?:[^ e][^ ]*|e(?:[^ /][^ ]*|/(?:[^ tv][^ ]*|t(?:[^ m][^ ]*|m(?:[^ p][^ ]*|p(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?|v(?:[^ a][^ ]*|a(?:[^ r][^ ]*|r(?:[^ /][^ ]*|/(?:[^ f][^ ]*|f(?:[^ o][^ ]*|o(?:[^ l][^ ]*|l(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e(?:[^ r][^ ]*|r(?:[^ s][^ ]*|s(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?|t(?:[^ m][^ ]*|m(?:[^ p][^ ]*|p(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?|v(?:[^ a][^ ]*|a(?:[^ r][^ ]*|r(?:[^ /][^ ]*|/(?:[^ f][^ ]*|f(?:[^ o][^ ]*|o(?:[^ l][^ ]*|l(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e(?:[^ r][^ ]*|r(?:[^ s][^ ]*|s(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?)?)?)?)?)?)?)?)?)?)(?: |$)'
+    # in /tmp, /private/tmp, /var/folders or /private/var/folders; ~, `..`), the project's root (`.`, and a pattern of
+    # only `*`, `?` and `/`: `*`, `**`, `./**`), its .git (and a pattern at the root that may match it, after `./` too:
+    # a name that starts with `.` and holds `*`, `?` or `[`, or starts with `[`: `.*`, `.g*`, `.[!.]*`, `[.]git`), or a
+    # target the line can't tell (a variable, a substitution, find's {}); dd writing one (of=); xargs or parallel
+    # running one (its targets come at run time). A relative target is the project's: deleting a build output there is
+    # no riskier than a Write.
+    # lean: a cd elsewhere earlier on the line isn't followed (`cd /etc && rm x` isn't flagged), nor a link the line
+    # makes to a folder other than a home or root (the parser reads a recursive rm through `ln -s ~ h` as the home's:
+    # `ln -s ~/Documents d && rm -rf d/x` isn't flagged), a pattern for a .git in a folder (`sub/.g*`, a nested
+    # repository's) isn't read (backing off over each `/` of a long path is slow on the fallback engine), and a target
+    # after 64 other words isn't read (it keeps the fallback engine fast); read the line's cd and links, or further, if
+    # that hides a real one
+    pattern: '^(?:xargs|parallel)(?: [^ ]+){0,16}? (?:rm|unlink|shred|truncate|mv|chmod|chown)(?: |$)|^(?:(?:rm|unlink|shred|truncate|mv|chmod|chown)(?: [^ ]+){0,64}? |dd(?: [^ ]+){0,8}? of=)(?:[^ ]*(?:[$`]|\{\})[^ ]*|~[^ ]*|(?:[^ ]*/)?\.\.(?:/[^ ]*)?|(?:[^ ]*/)?\.git(?:/[^ ]*)?|\.(?:/+[*?/]*)?|(?:\./+){0,8}(?:\.[^ /]*[*?\[]|\[)[^ ]*|[*?][*?/]*|[A-Za-z]:[\\/][^ ]*|/(?:[^ ptv][^ ]*|p(?:[^ r][^ ]*|r(?:[^ i][^ ]*|i(?:[^ v][^ ]*|v(?:[^ a][^ ]*|a(?:[^ t][^ ]*|t(?:[^ e][^ ]*|e(?:[^ /][^ ]*|/(?:[^ tv][^ ]*|t(?:[^ m][^ ]*|m(?:[^ p][^ ]*|p(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?|v(?:[^ a][^ ]*|a(?:[^ r][^ ]*|r(?:[^ /][^ ]*|/(?:[^ f][^ ]*|f(?:[^ o][^ ]*|o(?:[^ l][^ ]*|l(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e(?:[^ r][^ ]*|r(?:[^ s][^ ]*|s(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?|t(?:[^ m][^ ]*|m(?:[^ p][^ ]*|p(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?|v(?:[^ a][^ ]*|a(?:[^ r][^ ]*|r(?:[^ /][^ ]*|/(?:[^ f][^ ]*|f(?:[^ o][^ ]*|o(?:[^ l][^ ]*|l(?:[^ d][^ ]*|d(?:[^ e][^ ]*|e(?:[^ r][^ ]*|r(?:[^ s][^ ]*|s(?:[^ /][^ ]*|/(?:/[^ ]*)?)?)?)?)?)?)?)?)?)?)?)?)?)(?: |$)'
     label: destructive
   - id: TK-F004
     class: shell
@@ -1235,12 +1241,14 @@ flag:
     # into a bash or zsh startup file (a redirection's target is its own subject, so its path alone, ~/.bashrc, counts).
     # What a command acts on (its argv, assignments and redirections, as TK-F005 reads them), so each assignment is its
     # own subject: a PATH or PYTHONPATH assignment (a command's prefix, or the shell's own for the rest of the call)
-    # that adds only the project (a relative folder, $PWD), a venv (…/.venv/bin, …/venv/bin) or a toolchain folder
-    # (nvm's node, go, cargo, Homebrew's) to $PATH or $PYTHONPATH isn't flagged; `export` or env given one still is.
+    # that adds only the project (a relative folder, $PWD, so a venv in it: .venv/bin) or a toolchain folder (nvm's
+    # node, go, cargo, Homebrew's) to $PATH or $PYTHONPATH isn't flagged; `export` or env given one still is, and so is
+    # a venv by an absolute path (/tmp/x/venv/bin, another checkout's .venv/bin), which the line can't tell is the
+    # project's.
     # lean: a folder in the project the agent wrote can shadow a program (PATH=bin:$PATH with its own bin/git); a path
     # of more than 32 parts keeps the flag (a bound that keeps the fallback engine fast)
     pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_INSERT_LIBRARIES|DYLD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|PYTHONSTARTUP|NODE_OPTIONS|GIT_SSH_COMMAND)\+?=|\bunset\s+(ANTHROPIC_([A-Z]+_)?BASE_URL|HTTPS?_PROXY)\b|(>>?|\btee(\s+-[^\s]+){0,8}\s)\s*~?/?[^\s>]*?\.(bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b|^~?/?[^\s>]*?\.(?:bashrc|profile|zshrc|zprofile|zshenv|zlogin|bash_profile|bash_login)\b'
-    unless: '^(?:PATH|PYTHONPATH)\+?=(?:\$\{?(?:PATH|PYTHONPATH)\}?|(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,32}/?|(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,31}/?|(?:~|\$\{?HOME\}?)?(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){1,32}/\.?venv/bin/?|(?:~|\$\{?HOME\}?)/(?:\.nvm/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin|go/bin|\.cargo/bin)/?|\$\{?NVM_DIR\}?/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin/?|(?:\$\{?(?:GOPATH|CARGO_HOME)\}?|\$\(go env GOPATH\))/bin/?|/usr/local/go/bin/?|/(?:opt/homebrew|usr/local)/(?:opt/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/)?s?bin/?)(?::(?:\$\{?(?:PATH|PYTHONPATH)\}?|(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,32}/?|(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,31}/?|(?:~|\$\{?HOME\}?)?(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){1,32}/\.?venv/bin/?|(?:~|\$\{?HOME\}?)/(?:\.nvm/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin|go/bin|\.cargo/bin)/?|\$\{?NVM_DIR\}?/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin/?|(?:\$\{?(?:GOPATH|CARGO_HOME)\}?|\$\(go env GOPATH\))/bin/?|/usr/local/go/bin/?|/(?:opt/homebrew|usr/local)/(?:opt/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/)?s?bin/?))*$'
+    unless: '^(?:PATH|PYTHONPATH)\+?=(?:\$\{?(?:PATH|PYTHONPATH)\}?|(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,32}/?|(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,31}/?|(?:~|\$\{?HOME\}?)/(?:\.nvm/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin|go/bin|\.cargo/bin)/?|\$\{?NVM_DIR\}?/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin/?|(?:\$\{?(?:GOPATH|CARGO_HOME)\}?|\$\(go env GOPATH\))/bin/?|/usr/local/go/bin/?|/(?:opt/homebrew|usr/local)/(?:opt/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/)?s?bin/?)(?::(?:\$\{?(?:PATH|PYTHONPATH)\}?|(?:\$\{?PWD\}?|\$\(pwd\)|`pwd`)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,32}/?|(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)(?:/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)){0,31}/?|(?:~|\$\{?HOME\}?)/(?:\.nvm/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin|go/bin|\.cargo/bin)/?|\$\{?NVM_DIR\}?/versions/node/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/bin/?|(?:\$\{?(?:GOPATH|CARGO_HOME)\}?|\$\(go env GOPATH\))/bin/?|/usr/local/go/bin/?|/(?:opt/homebrew|usr/local)/(?:opt/(?:\.?[A-Za-z0-9_@+-][A-Za-z0-9_.@+-]*|\.)/)?s?bin/?))*$'
     label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with
@@ -1253,24 +1261,32 @@ flag:
     # aren't read here (TK-F002 still flags every web call); if TK-F002 is ever only recorded, exempt only calls
     # without sends_to. A subject is read for local URLs up to about 1,000 characters and four URLs (bounds that keep
     # the fallback engine fast): a longer one keeps the flag
-    # A URL spelled with a scheme but no `//` (https:host, https:\\host: a browser reads each as https://host) is
-    # flagged as written, not through the scheme://host/ form a URL is also read as, which carries no query.
+    # A URL spelled with a scheme but no `//` (https:host, https:/host, https:\host: a browser reads each as
+    # https://host) is flagged as written, not through the scheme://host/ form a URL is also read as, which carries no
+    # query. A local URL's host ends at a `/`, `?`, `#` or the subject's end, or at a quote or a blank followed by no
+    # `@`, `.` or `%` (nor a character outside ASCII) up to one of those or the next local URL: a host's userinfo or
+    # name can go on past any other character (http://127.0.0.1;@evil.example/ reaches evil.example). Any other
+    # http, https, ws, wss or ftp URL in the subject keeps the flag, with `//`, one `/` or none (a colon right after a
+    # p or an s, the last letter of each of those schemes, is read as one: `maps:x` next to a local URL keeps it too)
     # lean: a URL with no scheme at all (an http tool given evil.example/?k=v) is read only as that form, so a query
     # in it isn't flagged here; the HTTP clients behind the mapped http tools refuse such a URL (requests, httpx)
     field: target
-    pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://|\b(?:[Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp]):(?:[A-Za-z0-9\[]|\\[/\\]|/\\)'
-    unless: '^(?:[^:]|::*(?:[^/:]|$)|::*/(?:[^/]|$)){0,250}(?:::*//(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?(?:[/?#"''\s<>)\]},;|&]|$)(?:[^:]|::*(?:[^/:]|$)|::*/(?:[^/]|$)){0,250}){1,4}$|^[Hh][Tt][Tt][Pp][Ss]?://[0-9.-]*[A-Za-z][A-Za-z0-9.-]*(?::[0-9]{1,5})?(?:/[^?#\s"''<>\\]*)?(?:#[^\s"''<>\\]*)?$'
+    pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://|\b(?:[Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp]):(?:[^/\s"''<>`]|/[^/\s"''<>`])'
+    unless: '^(?:[^:pPsS]|[pPsS]+[^:pPsS]|:(?::|/:)*/?(?:[^:/pPsS]|[pPsS]+[^:pPsS])){0,250}[pPsS]*(?::+//?(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?(?:(?:["\s](?:[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|[pPsS]+[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|:+(?:[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|[pPsS]+[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~])){0,250}[pPsS]*)?(?:[/?#]|$)(?:[^:pPsS]|[pPsS]+[^:pPsS]|:(?::|/:)*/?(?:[^:/pPsS]|[pPsS]+[^:pPsS])){0,250}[pPsS]*|["\s](?:[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|[pPsS]+[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|:+(?:[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~]|[pPsS]+[\t\n\r -"$&-\-0-9;->A-OQRT-oqrt-~])){0,250}[pPsS]*)){1,4}(?::(?::|/:)*/?[pPsS]*)?$|^[Hh][Tt][Tt][Pp][Ss]?://[0-9.-]*[A-Za-z][A-Za-z0-9.-]*(?::[0-9]{1,5})?(?:/[^?#\s"''<>\\]*)?(?:#[^\s"''<>\\]*)?$'
     label: egress
   - id: TK-F013
     # a network command, whatever it names: `curl host/?k=v` and `nslookup data.example` send data without a URL;
     # HTTPie (http, https), xh, socat, sftp, aria2c and openssl s_client too. Not flagged: curl, wget, HTTPie or xh
     # whose every target is on this machine (http://127.0.0.1:8000/, localhost:3000): each other word an option
     # without `:` or `@` (no proxy URL) or a value without `.`, `:` or `@` (/dev/null, %{http_code}); a word that
-    # may name another host, or a file (-o out.json), keeps the flag. lean: up to 64 words on either side of the URL
-    # (a bound that keeps the fallback engine fast)
+    # may name another host, or a file (-o out.json), keeps the flag, and so does an option that reads more hosts
+    # from a file: curl's -K or --config, wget's -i, --input-file, -e, --execute or --config, alone or in a cluster
+    # (-sK, -qi). lean: up to 64 words on either side of the URL (a bound that keeps the fallback engine fast); a host
+    # named without a dot reads as a value (`-x box`, a bare `box?k=v`: a one-label name the machine resolves), and a
+    # proxy or URL the environment or a startup file gives (http_proxy, ~/.curlrc, ~/.wgetrc) isn't read
     class: shell
     pattern: '^(curl|wget|ssh|scp|sftp|rsync|nc|ncat|netcat|socat|telnet|ftp|dig|nslookup|host|http|https|xh|xhs|aria2c)( |$)|^openssl s_client( |$)'
-    unless: '^(?:curl|wget|https?|xhs?)(?: (?:-[^ :@]*|/[^ .:@]*|[^ .:@/-][^ .:@/]*)){0,64} (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)(?: (?:-[^ :@]*|/[^ .:@]*|[^ .:@/-][^ .:@/]*)| (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)){0,64}$'
+    unless: '^(?:curl|https?|xhs?)(?: (?:-(?:[^ :@K-][^ :@K]*)?|--(?:[^ :@c][^ :@]*|c(?:[^ :@o][^ :@]*|o(?:[^ :@n][^ :@]*|n(?:[^ :@f][^ :@]*)?)?)?)?|/[^ .:@]*|[^ .:@/-][^ .:@/]*)){0,64} (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)(?: (?:-(?:[^ :@K-][^ :@K]*)?|--(?:[^ :@c][^ :@]*|c(?:[^ :@o][^ :@]*|o(?:[^ :@n][^ :@]*|n(?:[^ :@f][^ :@]*)?)?)?)?|/[^ .:@]*|[^ .:@/-][^ .:@/]*)| (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)){0,64}$|^wget(?: (?:-(?:[^ :@ie-][^ :@ie]*)?|--(?:[^ :@cei][^ :@]*|c(?:[^ :@o][^ :@]*|o(?:[^ :@n][^ :@]*|n(?:[^ :@f][^ :@]*)?)?)?|e(?:[^ :@x][^ :@]*|x(?:[^ :@e][^ :@]*)?)?|i(?:[^ :@n][^ :@]*|n(?:[^ :@p][^ :@]*)?)?)?|/[^ .:@]*|[^ .:@/-][^ .:@/]*)){0,64} (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)(?: (?:-(?:[^ :@ie-][^ :@ie]*)?|--(?:[^ :@cei][^ :@]*|c(?:[^ :@o][^ :@]*|o(?:[^ :@n][^ :@]*|n(?:[^ :@f][^ :@]*)?)?)?|e(?:[^ :@x][^ :@]*|x(?:[^ :@e][^ :@]*)?)?|i(?:[^ :@n][^ :@]*|n(?:[^ :@p][^ :@]*)?)?)?|/[^ .:@]*|[^ .:@/-][^ .:@/]*)| (?:(?:[Hh][Tt][Tt][Pp][Ss]?://(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?|(?:[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0):[0-9]{1,5}|(?:127(?:\.[0-9]{1,3}){3}|\[::1\]|0\.0\.0\.0)(?::[0-9]{1,5})?)(?:[/?#][^ ]*)?)){0,64}$'
     label: egress
   - id: TK-F024
     # every call of an upload tool (CodeBuddy Code's LibraryUpload): its file leaves the machine, as one a network
