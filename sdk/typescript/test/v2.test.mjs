@@ -182,7 +182,7 @@ run(srv, {"port": srv.server_address[1], "ca": pki.path, "token": "t" * 40})`);
   assert.ok(await run.complete("h1"));
 });
 
-test("HTTPS: TRACEKIT_API_KEY is the token, a token file wins over it, errors come with their status (Python's server)", { skip: NO_PKI }, async (t) => {
+test("HTTPS: TRACEKIT_API_KEY is the token, a token file wins over it, and no error status is asked for (Python's server)", { skip: NO_PKI }, async (t) => {
   const info = await pyServer(t, PY_FAKE + `
 import os, tempfile
 sys.path.insert(0, ${JSON.stringify(join(ROOT, "tests"))})
@@ -208,9 +208,9 @@ run(srv, {"port": srv.server_address[1], "ca": pki.path, "token": "t" * 40})`);
   const c = new Client({ signer: `https://127.0.0.1:${info.port}` });
   const status = await c.call("status");
   assert.equal(status.rpc_version, RPC_VERSION);
-  assert.equal(status.asked, "http-status");
+  assert.equal(status.asked, null);   // the body says it all: a proxy in front sees 200 for a refusal and acts on none
   process.env.TRACEKIT_SIGNER_TOKEN_FILE = wrong;
-  await assert.rejects(c.call("status"), (e) => e instanceof RPCError && e.code === "unauthenticated");   // a 401's body
+  await assert.rejects(c.call("status"), (e) => e instanceof RPCError && e.code === "unauthenticated");
 });
 
 // An in-test signer on a Unix socket: "pay" asks, "rm" is denied, everything else allowed; approvals are granted after
@@ -449,6 +449,30 @@ test("HTTPS: an event call refused by a rate limit or an outage is sent again as
     await assert.rejects(c.call(method, fields), (e) => e instanceof RPCError && e.code === refusal.code);
     assert.equal(sent.length, 1, method);
   }
+});
+
+test("HTTPS: refusals and lost connections are counted apart; a retry refused as recorded is the first try's outage", async () => {
+  const limit = { error: { code: "quota_exceeded", message: "event rate limit", retry_after_ms: 5 } };
+  const outage = { error: { code: "unavailable", message: "storage refused writes" } };
+  const reused = { error: { code: "client_seq_reused", message: "s/0" } };
+  const decide = (answers) => {
+    const sent = [];
+    const c = https(async (f) => {
+      sent.push(f);
+      const a = answers.shift();   // "lost": the client's own post to a port nothing listens on
+      return a !== "lost" ? a : Object.getPrototypeOf(c.https).post.call(
+        { url: new URL("https://127.0.0.1:1/v2/rpc"), agent: c.https.agent }, f, 1000);
+    });
+    return { sent, call: c.call("decide", event("r1", "c1")) };
+  };
+  // two rate limits and a lost connection are not three lost connections: the refusals that run out are the signer's
+  const mixed = decide([limit, limit, "lost", limit]);
+  await assert.rejects(mixed.call, (e) => e instanceof RPCError && e.code === "quota_exceeded");
+  assert.equal(mixed.sent.length, 4);
+  assert.equal(new Set(mixed.sent.map((f) => `${f.request_id}/${f.stream}/${f.client_seq}`)).size, 1);
+  await assert.rejects(decide([outage, reused]).call,
+    (e) => e instanceof RPCError && e.code === "unavailable" && e.message === "unavailable: storage refused writes");
+  await assert.rejects(decide([reused]).call, (e) => e instanceof RPCError && e.code === "client_seq_reused");
 });
 
 test("HTTPS: an event waiting behind an unanswered one gives up in time and uses its client_seq", async () => {

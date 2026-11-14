@@ -57,7 +57,7 @@ CONNECT_TIMEOUT_S = 2
 JOIN_S = 1   # how long closing a connection waits for each of its threads, which end at once once it is shut down
 KEEP_CALLS = 4096   # decided calls a RunHandle remembers for their `complete`, the oldest forgotten first
 KEEP_RUNS = 65536   # runs a Client keeps an event counter for, the least recently used forgotten first
-RETRIES = 3   # tries of a call: after a lost connection, or an event call's rate limit or outage (_retry_wait)
+RETRIES = 3   # tries of a call while its connection is lost; apart, while the signer refuses an event call (_retry_wait)
 BACKOFF_S, BACKOFF_CAP_S = 0.1, 2.0   # the wait before an event call's second try, doubled for each next, at most
 TRANSFER = "a2a:transfer"   # the tool RunHandle.transfer decides
 _EVENT_METHODS = {m for m, s in rpc_schema.REQUESTS.items() if "client_seq" in s["properties"]}
@@ -152,9 +152,10 @@ def _retry_wait(method, e, tries):
     Only an event call (decide, complete, observe, state_write, model_event) is: the signer refuses a client_seq at or
     below its stream's last recorded one (client_seq_reused) before it writes anything, and rebuilds that from the
     records themselves after a restart or a storage write whose outcome it couldn't tell (`unavailable`), so a retry
-    with the same client_seq is recorded once or refused. Any other call's request_id is remembered in memory only, and
-    forgotten with a batch whose write failed: sent again, it could be recorded twice. A quota_exceeded without
-    retry_after_ms is a size limit the same request never fits."""
+    with the same client_seq is recorded once or refused (then `call` raises that `unavailable`, as without a retry).
+    Refusals and lost connections are counted apart, RETRIES of each. Any other call's request_id is remembered in
+    memory only, and forgotten with a batch whose write failed: sent again, it could be recorded twice. A
+    quota_exceeded without retry_after_ms is a size limit the same request never fits."""
     if method not in _EVENT_METHODS or not (e.code == "unavailable" or e.code == "quota_exceeded"
                                             and e.retry_after_ms is not None):
         return None
@@ -178,8 +179,9 @@ def _check(hello, where):
 
 class _Https:
     """POST /v2/rpc to an HTTPS signer, or a plain HTTP one on a loopback address: one kept-alive connection per thread
-    and host, the bearer token re-read per call. Errors come with their HTTP status (Tracekit-Errors: http-status), and
-    are read from the body whatever it is."""
+    and host, the bearer token re-read per call: the token file's, else $TRACEKIT_API_KEY. Answers are read from the
+    body whatever the HTTP status; the client doesn't ask for error statuses (Tracekit-Errors), so a proxy in front sees
+    200 for a refusal and acts on none (no retry of a 503, no host ejected)."""
 
     def __init__(self, url, token_file=None):
         u = urllib.parse.urlsplit(url)
@@ -189,8 +191,6 @@ class _Https:
         if os.environ.get("TRACEKIT_SIGNER_CERT") and not self.plain:
             self.ctx.load_cert_chain(os.environ["TRACEKIT_SIGNER_CERT"], os.environ.get("TRACEKIT_SIGNER_KEY"))
         self.token_file, self.pid, self.hello = token_file or os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
-        # the token itself, used only without a token file (which wins: it is re-read per call, so rotation works)
-        self.api_key = None if self.token_file else os.environ.get("TRACEKIT_API_KEY", "").strip()
         self.conns = weakref.WeakSet()   # every thread's, for close()
 
     def _host(self, req):
@@ -207,15 +207,15 @@ class _Https:
     def post(self, body, timeout, host=None):
         """The answer frame to `body` from `host` (default the signer's); _ConnectionLost when the request may not have
         arrived, SignerUnavailable on a timeout."""
-        headers = {"Content-Type": "application/json", "Tracekit-Errors": "http-status"}
-        if self.token_file:
+        headers, key = {"Content-Type": "application/json"}, os.environ.get("TRACEKIT_API_KEY", "").strip()
+        if self.token_file:   # wins over an API key: it is re-read per call, so a rotated token is picked up
             try:
                 with open(self.token_file, encoding="utf-8") as f:
                     headers["Authorization"] = "Bearer " + f.read().strip()
             except OSError as e:
                 raise SignerUnavailable(f"cannot read the signer token file: {e}") from None
-        elif self.api_key:
-            headers["Authorization"] = "Bearer " + self.api_key
+        elif key:
+            headers["Authorization"] = "Bearer " + key
         if self.pid != os.getpid():   # a forked child: its own connections
             self.pid, self.local, self.conns = os.getpid(), threading.local(), weakref.WeakSet()
         host = host or self.host
@@ -352,9 +352,9 @@ class Client:
             req.setdefault("request_id", _new_id())
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
         deadline = time.monotonic() + timeout   # for the whole call: its turn, every retry
-        lost = None
+        lost, losses, tries, outage = None, 0, 0, None   # tries: the signer's refusals of an event call (_retry_wait)
         with self._turn(method, req, deadline):
-            for tries in range(1, RETRIES + 1):
+            while losses < RETRIES:
                 left = max(deadline - time.monotonic(), 0.001)
                 try:
                     if self._https:
@@ -367,7 +367,7 @@ class Client:
                     else:
                         reply = self._send(method, req).result(left)
                 except _ConnectionLost as e:
-                    lost = e
+                    lost, losses = e, losses + 1
                     continue
                 except concurrent.futures.TimeoutError:
                     self.close()
@@ -379,9 +379,15 @@ class Client:
                             self._seqs.pop(req.get("run_id"), None)
                             self._order.pop(req.get("run_id"), None)
                     err = RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
+                    if outage and err.code == "client_seq_reused":
+                        # the try the signer answered unavailable was written after all: that answer stands, so the
+                        # caller takes its outage path (a fail mode), as without the retry
+                        raise outage
+                    tries += 1
                     wait = _retry_wait(method, err, tries)
                     if wait is None or tries == RETRIES or time.monotonic() + wait >= deadline:
                         raise err
+                    outage = err if err.code == "unavailable" else outage
                     time.sleep(wait)   # then the same request: its request_id, stream and client_seq
                     continue
                 return reply

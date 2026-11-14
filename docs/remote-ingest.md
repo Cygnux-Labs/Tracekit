@@ -63,8 +63,8 @@ Without a token file, the Python and TypeScript clients take the token itself fr
 export TRACEKIT_SIGNER=https://tracekit.example:8443 TRACEKIT_API_KEY="$TOKEN"
 ```
 
-A token file wins when both are set: it is read on every call, so a rotated token is picked up, and a key left in the
-environment never replaces it. The Python client's `token_file=` argument wins over both. The agent's own commands
+Both read it on every call. A token file wins when both are set: it is read on every call too, so a rotated token is
+picked up, and a key left in the environment never replaces it. The Python client's `token_file=` argument wins over both. The agent's own commands
 inherit the environment, so one that prints it (`env`) puts the key in its transcript; give agents the file.
 
 ## Calling the signer over HTTP
@@ -77,8 +77,10 @@ curl -si https://tracekit.example:8443/v2/rpc -H "Authorization: Bearer $TRACEKI
 ```
 
 A refusal is an error frame, `{"error": {"code", "message", "retry_after_ms"?}}`. With the header
-`Tracekit-Errors: http-status` (both SDKs send it) it comes with its HTTP status; without it, with 200, as it always
-has, for clients that read errors from the body only. The frame is the same either way. A decision is an answer, not an error: `decide` returns allow,
+`Tracekit-Errors: http-status`, for curl and other HTTP clients, it comes with its HTTP status; without it, with 200,
+as it always has, for clients that read errors from the body only. The frame is the same either way. The SDKs read
+the body and don't send the header, so a proxy in front of the signer sees 200 for their refusals and acts on none of
+them (it never retries a 503 or ejects the signer). A decision is an answer, not an error: `decide` returns allow,
 deny or ask with 200.
 
 | Error code | Status |
@@ -102,7 +104,10 @@ or a `quota_exceeded` with `retry_after_ms`, at most three tries within the call
 `retry_after_ms`, or longer (100 ms doubled for each try, at most 2 s, with jitter). The retry is the same request,
 its `request_id`, `stream` and `client_seq`. The signer refuses a `client_seq` it has already recorded before it writes
 anything, and rebuilds that from the records after a restart or a disk error, so a retry is recorded once or refused
-(`client_seq_reused`). No other call is sent again: its `request_id` is remembered in memory only and forgotten with a
+(`client_seq_reused`: a try the signer answered `unavailable` was written after all). Then the SDK raises that first
+`unavailable`, as it did before it retried, so the caller takes its outage path (the run's fail mode). Refusals that
+run out are the signer's error, as before; lost connections are counted apart, three tries of their own, and end in
+`SignerUnavailable`. No other call is sent again: its `request_id` is remembered in memory only and forgotten with a
 write that failed, so a retry after `unavailable` could be recorded twice. Don't let a proxy in front of the signer
 retry its requests either.
 

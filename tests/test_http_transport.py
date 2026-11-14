@@ -2,6 +2,7 @@
 timeouts, per-op authorization, errors as HTTP statuses and request ids, the client's retries, and the cross-tenant
 matrix (E12 core) for k8s_sa and mtls identities."""
 import http.client
+import http.server
 import json
 import os
 import re
@@ -12,10 +13,12 @@ import unittest
 import uuid
 from unittest import mock
 
+import test_gateway as tg
 import test_signer_service as ts
 from cryptography import x509
 from test_identity_k8s import AUD, Jwks, claims, jwt
 from test_identity_mtls import Pki, echo, post, serve, tmpdir
+from tracekit import gateway
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import Client, SignerUnavailable, _Https
@@ -167,18 +170,28 @@ class TestClientUrls(unittest.TestCase):
         url, wrong = f"http://127.0.0.1:{port}", os.path.join(self.d, "wrong")
         with open(wrong, "w") as f:
             f.write("w" * 40)
-        with mock.patch.dict(os.environ, {"TRACEKIT_API_KEY": " " + "t" * 40 + "\n"}):
+        sent = mock.patch.object(http.client.HTTPConnection, "request", autospec=True,
+                                 side_effect=http.client.HTTPConnection.request)
+        with mock.patch.dict(os.environ, {"TRACEKIT_API_KEY": " " + "t" * 40 + "\n"}), sent as request:
             os.environ.pop("TRACEKIT_SIGNER_TOKEN_FILE", None)
             key_only = Client(url, timeout=5)
             argument = Client(url, timeout=5, token_file=wrong)   # an argument wins over the environment
-        self.addCleanup(key_only.close)
-        self.addCleanup(argument.close)
-        self.assertEqual(self.subject(key_only), "http")
-        self.assertEqual(self.subject(self.client(url, TRACEKIT_API_KEY="w" * 40)), "http")   # the file's token
-        for c in (self.client(url, TRACEKIT_SIGNER_TOKEN_FILE=wrong, TRACEKIT_API_KEY="t" * 40), argument):
+            file_env = self.client(url, TRACEKIT_SIGNER_TOKEN_FILE=wrong)   # the file wins over the key
+            self.addCleanup(key_only.close)
+            self.addCleanup(argument.close)
+            self.assertEqual(self.subject(key_only), "http")
+            for c in (file_env, argument):
+                with self.assertRaises(RPCError) as cm:
+                    c.status({})
+                self.assertEqual(cm.exception.code, "unauthenticated")
+            os.environ["TRACEKIT_API_KEY"] = "w" * 40   # read per call, as the token file is
             with self.assertRaises(RPCError) as cm:
-                c.status({})
+                key_only.status({})
             self.assertEqual(cm.exception.code, "unauthenticated")
+            self.assertEqual(self.subject(self.client(url)), "http")   # the file's token, not the key's
+        # the SDK reads errors from the body: it never asks for statuses a proxy in front would act on
+        self.assertTrue(request.call_args_list)
+        self.assertEqual([c for c in request.call_args_list if "Tracekit-Errors" in c.args[4]], [])
 
     def test_a_certificate_that_does_not_verify_is_named(self):
         pki = Pki(self.d)
@@ -213,8 +226,9 @@ def raw(port, body, headers, path="/v2/rpc"):
 
 
 class TestStatuses(unittest.TestCase):
-    """An error frame comes with its HTTP status to a client that asks for it (ASK, as the SDKs do), and with 200 to
-    any other, as before; a decision (allow, deny, ask) is an answer, 200 either way. Every answer has a Request-Id."""
+    """An error frame comes with its HTTP status to a client that asks for it (ASK: curl and other HTTP clients), and
+    with 200 to any other, the SDKs included, as before; a decision (allow, deny, ask) is an answer, 200 either way.
+    Every answer has a Request-Id."""
 
     def setUp(self):
         token = os.path.join(tmpdir(self), "bearer")
@@ -277,14 +291,13 @@ class TestStatuses(unittest.TestCase):
         self.assertEqual((status, deny["decision"], deny["rule_ids"]), (200, "deny", ["TK-ARGS-INVALID"]))
 
     def test_an_old_style_client_still_gets_200_and_reads_the_error_from_the_body(self):
-        """A client from before statuses (the SDKs to 1.6 send no ASK, and read the body whatever the status) gets
-        what it always got."""
+        """A client that doesn't ask (every SDK, which reads the body whatever the status) gets what it always got."""
         port = serve(self, self.cfg, answering_hello(self.s.handle_frame, hello()))
         status, headers, body = raw(port, json.dumps({"method": "approval_get", "approval_id": "apr-none"}), AUTH)
         self.assertEqual((status, json.loads(body)["error"]["code"]), (200, "unknown_approval"))
         self.assertEqual(headers["Connection"], None)   # kept alive, as before
         with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER_TOKEN_FILE": self.cfg["token_file"]}):
-            c = Client(f"http://127.0.0.1:{port}", timeout=5)   # this one asks: the same answer
+            c = Client(f"http://127.0.0.1:{port}", timeout=5)
         self.addCleanup(c.close)
         with self.assertRaises(RPCError) as cm:
             c.approval_get({"approval_id": "apr-none"})
@@ -318,13 +331,14 @@ class TestStatuses(unittest.TestCase):
 
 
 class Flaky(FileStorage):
-    """File storage that fails the append of the batch holding request `fail[0]`'s record, as a disk error does:
-    before writing it ("before"), or after ("after", an fsync error: the signer can't tell whether it is on disk)."""
+    """File storage that fails the append of the next batch holding an event `fail[0](event)` picks, as a disk error
+    does: before writing it ("before"), or after ("after", an fsync error: the signer can't tell whether it is on
+    disk)."""
     fail = (None, None)
 
     def append_batch(self, records):
-        rid, when = self.fail
-        if rid and any(r["event"].get("request_id") == rid for r in records):
+        pick, when = self.fail
+        if pick and any(pick(r["event"]) for r in records):
             self.fail = (None, None)
             if when == "before":
                 raise StorageUnavailable("No space left on device")
@@ -346,7 +360,8 @@ class TestRetries(unittest.TestCase):
             f.write(TOKEN)
         self.d = ts.tmpdir(self)
         self.s = svc.SignerService(self.d, policy=ts.PAY_ASKS, authorize={"token:http": [
-            "register_run", "close_run", "status", *self.EVENTS]},
+            "register_run", "close_run", "status", *self.EVENTS]}, gateways=["token:http"],
+            fail_modes={"default": "closed", "model": "open"},
             open_storage=lambda: Flaky(os.path.join(self.d, "store")))
         self.addCleanup(self.s.close)
         port = serve(self, {"insecure_loopback": True, "authenticators": ["token"], "token_file": token},
@@ -389,6 +404,10 @@ class TestRetries(unittest.TestCase):
     def recorded(self, req):
         return [r["event"] for r in ts.records(self.d) if r["event"].get("request_id") == req["request_id"]]
 
+    def fail_write(self, req, when):
+        """The disk fails the batch holding `req`'s record (Flaky)."""
+        self.s.log.storage.fail = (lambda e: e.get("request_id") == req["request_id"], when)
+
     def test_an_event_call_refused_by_the_rate_limit_is_sent_again_and_recorded_once(self):
         for method, typ in self.EVENTS.items():
             with self.subTest(method):
@@ -405,23 +424,58 @@ class TestRetries(unittest.TestCase):
         for method, typ in self.EVENTS.items():
             with self.subTest(method):
                 req = self.event(method)
-                self.s.log.storage.fail = (req["request_id"], "before")
+                self.fail_write(req, "before")
                 self.assertIn("run_seq", self.c.call(method, req))
                 self.assertEqual([e["type"] for e in self.recorded(req)], [typ])
 
     def test_an_event_call_written_before_the_disk_failed_is_never_recorded_twice(self):
         """The signer answered unavailable without knowing the record was on disk: the retry's client_seq is refused
-        (client_seq_reused), even though the signer's request_id cache forgot the try."""
+        (client_seq_reused), even though the signer's request_id cache forgot the try, and the caller gets the first
+        try's unavailable, as it did before retries: its outage path (a fail mode), never a refusal."""
         for method, typ in self.EVENTS.items():
             with self.subTest(method):
                 req = self.event(method)
-                self.s.log.storage.fail = (req["request_id"], "after")
+                self.fail_write(req, "after")
                 with self.assertRaises(RPCError) as cm:
                     self.c.call(method, req)
-                self.assertEqual(cm.exception.code, "client_seq_reused")
+                self.assertEqual(cm.exception.code, "unavailable")
+                self.assertIn("fsync failed", cm.exception.message)
                 self.assertEqual([e["type"] for e in self.recorded(req)], [typ])
         self.s.close()
         self.assertEqual(svc.fsck(self.d), [])
+
+    def test_a_gateway_takes_its_fail_mode_when_a_written_record_is_answered_unavailable(self):
+        """The LLM gateway, the signer's client through the SDK: an exchange record written though the signer answered
+        unavailable is the gateway's outage path, so a model call the run's fail mode leaves open goes to the
+        provider, as before retries; never "the signer refused the run" (403)."""
+        d = tmpdir(self)
+        up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), tg.Upstream)
+        up.seen, up.reply, up.delay = [], ("json", tg.COMPLETION), 0
+        for name, text in (("provider.key", "provider-key\n"), ("bearer", tg.SECRET)):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(text)
+        with open(os.path.join(d, "gateway.yaml"), "w") as f:
+            json.dump({"http": {"listen": "127.0.0.1:0", "insecure_loopback": True, "authenticators": ["token"],
+                                "token_file": "bearer"}, "upstream": f"http://127.0.0.1:{tg.serve(self, up)}",
+                       "api_key_file": "provider.key", "signer": "unused", "max_body": 4096}, f)
+        port = tg.serve(self, gateway.serve(gateway.load_config(os.path.join(d, "gateway.yaml")), self.c))
+        run = self.c.run("a")
+
+        def post():
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+            self.addCleanup(c.close)
+            c.request("POST", "/v1/chat/completions", json.dumps({"model": "gpt-x", "messages": []}),
+                      {"Authorization": "Bearer " + tg.SECRET, "X-Tracekit-Run": f"{run.run_id}.{run.run_token}"})
+            r = c.getresponse()
+            return r.status, r.read()
+        self.assertEqual(post()[0], 200)   # the signer answered for the run: the gateway knows its fail modes
+        self.s.log.storage.fail = (lambda e: e["type"] == "model.exchange", "after")
+        status, body = post()
+        self.assertEqual(status, 200, body)
+        self.assertEqual(len(up.seen), 2)
+        exchanges = [e["data"]["phase"] for e in (r["event"] for r in ts.records(self.d))
+                     if e["type"] == "model.exchange" and e["run_id"] == run.run_id]
+        self.assertEqual(exchanges, ["request", "response"] * 2)   # each once
 
     def test_no_other_call_is_sent_again(self):
         """Other calls' request_ids are kept in memory only, and lost with a batch whose write failed: a retry could
@@ -436,7 +490,7 @@ class TestRetries(unittest.TestCase):
                     self.c.call(method, {"request_id": uuid.uuid4().hex, **fields})
                 self.assertEqual((cm.exception.code, len(charges)), ("quota_exceeded", 1))
         rid = uuid.uuid4().hex
-        self.s.log.storage.fail = (rid, "before")
+        self.fail_write({"request_id": rid}, "before")
         with self.assertRaises(RPCError) as cm:
             self.c.call("register_run", {"request_id": rid, "agent": {"name": "c"}})
         self.assertEqual(cm.exception.code, "unavailable")

@@ -26,11 +26,12 @@ over MAX_LINE are refused; reads time out like the other transports; connections
 (bounded threads, overall and per address; each request must arrive within its deadline, and so must the next one on a
 kept-alive connection, while answering one, such as an approval_wait, has none).
 
-An RPC refusal is the error frame. A request with the header `Tracekit-Errors: http-status` (ASK; both SDKs send it)
-gets it with its HTTP status (STATUS; `quota_exceeded` without `retry_after_ms`, a size limit, is 413), `Retry-After`
-(whole seconds of `retry_after_ms`) on a 429 or 503, and `WWW-Authenticate: Bearer` on a 401; any other gets status
-200, as since 1.0, for clients that read errors from the body only (the issuer client of signers before this one,
-scripts written to that). A decision, a deny or an ask included, is an answer: 200. Every answer has a `Request-Id` of
+An RPC refusal is the error frame. A request with the header `Tracekit-Errors: http-status` (ASK, for curl and other
+HTTP clients) gets it with its HTTP status (STATUS; `quota_exceeded` without `retry_after_ms`, a size limit, is 413),
+`Retry-After` (whole seconds of `retry_after_ms`) on a 429 or 503, and `WWW-Authenticate: Bearer` on a 401; any other
+gets status 200, as since 1.0, for clients that read errors from the body only: the SDKs, which don't ask, so a proxy
+in front acts on none of their refusals (no retried 503, no host ejected), the issuer client of signers before this
+one, and scripts written to that. A decision, a deny or an ask included, is an answer: 200. Every answer has a `Request-Id` of
 its own, which the INFO line logged for it (logger tracekit.transport.http) names with its status, method, identity,
 error code and time.
 
