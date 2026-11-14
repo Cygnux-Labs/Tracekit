@@ -293,6 +293,16 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
                          (1, 3, 3))
         self.assertFalse([t for t in types if "gap" in t], types)
 
+    def test_a_stop_marker_the_signer_refuses_is_only_missing(self):
+        """The hook's end-of-turn marker at Stop (#835 review, round 4) never blocks: one the signer refuses is just
+        missing (its client_seq is the signer's usual gap of a lost observe), and the next Stop records its own."""
+        self.assertEqual(self.d.hook("SessionStart", None, None, None)[0], 0)
+        with failing("observe", RPCError("quota_exceeded", "events_per_run")):
+            self.assertEqual(self.d.hook("Stop", None, None, None), (0, ""))
+        self.assertEqual(self.d.hook("Stop", None, None, None), (0, ""))
+        evs = self.events(self.d.run())
+        self.assertEqual([e["data"]["source"] for e in evs if e["type"] == "input.observed"], ["claude-code:Stop"])
+
     def test_signer_unreachable_follows_the_runs_fail_mode(self):
         self.set_fail_modes({"default": "closed"})
         with failing("decide", SignerUnavailable("gone")):
