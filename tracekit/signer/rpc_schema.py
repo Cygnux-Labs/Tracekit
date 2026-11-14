@@ -618,11 +618,13 @@ def validate(schema, value):
 
 class RPCError(Exception):
     def __init__(self, code, message, retry_after_ms=None):
-        assert code in ERROR_CODES, code
+        # a client keeps the code it was sent as it came, one a newer signer added included: only the signer's own
+        # errors are held to ERROR_CODES, in wire()
         super().__init__(f"{code}: {message}")
-        self.code, self.message, self.retry_after_ms = code, message[:1024], retry_after_ms
+        self.code, self.message, self.retry_after_ms = code, str(message)[:1024], retry_after_ms
 
     def wire(self):
+        assert self.code in ERROR_CODES, self.code
         e = {"code": self.code, "message": self.message}
         if self.retry_after_ms is not None:
             e["retry_after_ms"] = self.retry_after_ms
