@@ -696,7 +696,8 @@ class _Run:
 def replay(signer, lines, decide_after=(), final=True):
     """Replay session `lines` ([(transcript name, entry)]; ("prompt", its payload) for the hook's UserPromptSubmit;
     ("inject", model_event fields) for an event the agent sends itself; ("decide", a tool_use line) for a call only the
-    hook reported; ("stop", {}) for the hook at Stop) into a new run of `signer`. -> (run_id, records, content) for
+    hook reported; ("stop", {}) for the hook at Stop, its observe's fields overridden by any given) into a new run of
+    `signer`. -> (run_id, records, content) for
     findings_v2.analyze."""
     run = _Run(signer)
     send, sent, calls, forged = tailer._Sender(run, lambda: signer.call("status", {})), {}, {}, 0
@@ -709,7 +710,7 @@ def replay(signer, lines, decide_after=(), final=True):
                 run.call("observe", source=f"claude-code:{source}", trust="untrusted", value=value)
             continue
         if name == "stop":   # the hook at Stop: its end-of-turn marker, as tracekit.integrations.claude_code sends it
-            run.call("observe", source="claude-code:Stop", trust="trusted", value="")
+            run.call("observe", **{"source": "claude-code:Stop", "trust": "trusted", "value": "", **e})
             continue
         if name == "inject":
             run.call("model_event", stream="agent", client_seq=forged, **e)

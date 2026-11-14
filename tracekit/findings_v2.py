@@ -349,7 +349,9 @@ class _Run:
         self.synthetic = self.hooked = False
         self.net_effects, self.requests = [], []   # net and connect effects; agent-reported request records
         self.hook_seqs = []   # the run_seqs of the prompts the hook recorded (signed when the person submitted them)
-        self.stops = []   # the run_seqs of the hook's end-of-turn markers (signed when the harness said the turn ended)
+        # the run_seqs of the hook's end-of-turn markers (signed when the harness said the turn ended): trusted, and of
+        # exactly the run's agent (claude-code:Stop); a look-alike (gptme:tool-undecided:Stop, untrusted) is none
+        self.stops = []
         self.approved = {}   # tool_use_id -> the approval record that approved its call
         self.model_hosts = set()   # the API hosts of the model calls the run recorded: the harness's own traffic
         for r in self.records:
@@ -381,7 +383,8 @@ class _Run:
             elif e["type"] == "input.observed" and str(d.get("source")).endswith(PROMPT_HOOK):
                 self.hooked = True
                 self.hook_seqs.append(e["run_seq"])
-            elif e["type"] == "input.observed" and str(d.get("source")).endswith(STOP_HOOK):
+            elif e["type"] == "input.observed" and d.get("trust") == "trusted" and d.get("source") == \
+                    f"{self.agent}{STOP_HOOK}":
                 self.stops.append(e["run_seq"])
             elif e["type"] == "run.final" and (d.get("coverage") or {}).get("paired_by_args"):
                 self.synthetic = True

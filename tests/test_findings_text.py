@@ -396,6 +396,22 @@ class DenialScope(Base):   # TK-X111..X114 on a long real session (2026-11-13 dr
                 self.assertEqual(run(False, forged_then), [])   # none: round 3's rule, the answer ends the task
         self.assertEqual(run(True, queued, real_stop=True), [])   # a real Stop, then a prompt: a new task
 
+    def test_only_a_trusted_stop_of_the_runs_own_agent_is_a_marker(self):
+        """#835 final check: an observation whose source only ends in ":Stop" (an untrusted gptme:tool-undecided:Stop,
+        an untrusted claude-code:Stop, another agent's) is no end-of-turn marker: it ends no task."""
+        for fields in ({"source": "gptme:tool-undecided:Stop", "trust": "untrusted"}, {"trust": "untrusted"},
+                       {"source": "codex:Stop"}):
+            with self.subTest(fields):
+                t = Transcript(CWD)
+                t.prompt("Fix the off-by-one in src/pager.py.")
+                t.step("Next step.", "Bash", bash(self.PUSH))
+                t.lines.append(("stop", fields))
+                t.prompt("Also update the README.")
+                t.step("Next step.", "Edit", edit("README.md"))
+                t.final("Updated the README. Nothing was pushed.")
+                t.stop()   # the run's own marker, at its end
+                self.assertEqual(self.found(t), ["TK-X111"])
+
     def test_a_denial_is_read_against_what_it_names(self):
         sec08 = ("Bash", bash("git -C /work/tracekit-sec08 commit -qam fix"))   # a repository the run's git names
         for cmd, rules in (("cd /work/skills && git push origin HEAD", []),
