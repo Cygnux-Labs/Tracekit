@@ -318,6 +318,9 @@ class CodingAgentHooks(unittest.TestCase):
                          {"D-HOOKS-EVENT": True, "D-HOOKS-ORDER": True, "D-HOOKS-TIMEOUT": True})
         hooks = agent_hooks._jcode_hooks(True, None)
         self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", ours]})["D-HOOKS-ORDER"][0])
+        other_python = agent_hooks._command("jcode", "PreToolUse", True, "/opt/other/bin/python3")
+        self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", other_python]})["D-HOOKS-ORDER"][0])
+        self.assertFalse(rows({**hooks, "pre_tool": [other_python, "/usr/local/bin/rewriter"]})["D-HOOKS-ORDER"][0])
         for later in ("~/bin/rewrite", "~/bin/rewrite  # tracekit.integrations.harness_hooks"):
             with self.subTest(later=later):
                 ok, detail = rows({**hooks, "pre_tool": [ours, later]})["D-HOOKS-ORDER"]

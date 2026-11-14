@@ -601,19 +601,29 @@ def tool(harness, name, ti):
                 return name, ti
             ti["file_path"], ti["paths"] = files[0], files
             return "Edit", ti
+        if name == "mcp" and ti.get("action") == "connect":
+            if isinstance(ti.get("command"), str) and ti["command"]:
+                args, env = ti.get("args") or [], ti.get("env") or {}
+                if isinstance(args, list) and all(isinstance(a, str) for a in args) and isinstance(env, dict):
+                    command = shlex.join([ti["command"], *args])
+                    assignments = " ".join(shlex.quote(f"{k}={v}") for k, v in env.items())
+                    return "Bash", {"command": (assignments + " " if assignments else "") + command}
+            elif isinstance(ti.get("url"), str) and ti["url"]:
+                return "WebFetch", {"url": ti["url"]}
+            return name, ti
         if name == "mcp_call" or name == "mcp" and ti.get("action") == "call":   # {server, tool, arguments}: decided as
             # the tool it calls, on its own arguments
             # lean: named as sent; jcode's own mcp__<server>__<tool> turns each character outside [A-Za-z0-9_] into _
             # (dispatch_name), so a rule on a server or tool with one matches one form only; match both if that bites
             server, called, args = ti.get("server"), ti.get("tool"), ti.get("arguments")
             if isinstance(server, str) and server and isinstance(called, str) and called:
-                return f"mcp__{server}__{called}", dict(args) if isinstance(args, dict) else {}
+                return f"mcp__{server}__{called}", dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
             return name, ti
         if name == "batch":   # every call in it reaches its own pre_tool gate under its own name (tool/mod.rs execute):
             # the batch is decided, and recorded, as the tools it runs, never again on their arguments, which would
             # decide each call twice and could hold it twice
             calls = ti.get("tool_calls")
-            return name, {"tool_calls": [{"tool": c.get("tool")} for c in calls if isinstance(c, dict)]
+            return name, {"tool_calls": [{"tool": c.get("tool", c.get("name"))} for c in calls if isinstance(c, dict)]
                           if isinstance(calls, list) else []}
         return JCODE_TOOLS.get(name, name), ti
     if harness == "codex":
@@ -1962,6 +1972,14 @@ def _install_jcode(path, uninstall=False, v2=False, python=None):
             raw = files.read(d, name)
             text = "" if raw is None else raw.decode("utf-8")
             ours = JCODE_TABLE.search(text)
+            if not ours:
+                unmarked = [line for line in text.splitlines() if _version(line)]
+                if unmarked:
+                    print(f"{path} has unmarked Tracekit hook commands (jcode's config save removes comments); "
+                          "Tracekit did not change it. Remove these Tracekit commands from [hooks] by hand, "
+                          "keeping other commands and timeout settings" + (" before running init again" if not uninstall else "")
+                          + ":\n  " + "\n  ".join(unmarked))
+                    return path
             if ours:
                 removed = {_version(c) for c in re.findall(r'(?m)^\w+ = (".*")$', ours.group())} - {None}
             rest = text[:ours.start()] + text[ours.end():] if ours else text
@@ -2047,7 +2065,13 @@ def _command(harness, ev, v2, python):
     """The command of Tracekit's hook for `ev` (python: see install._hook_command). The v2 hook names its event, so it
     can block a pre-tool payload it cannot read; agy's and Copilot's payloads name none, so their v1 hooks do too
     (without it a v1 hook reads no event from the payload, and lets the call run undecided)."""
-    from .install import _hook_command
+    from .install import _dev_hook_argv, _hook_command
+    if harness == "jcode" and os.name == "nt":
+        module = V2_MODULE if v2 else "tracekit.agent_hooks"
+        args = (harness, ev) if v2 else (harness,)
+        argv = [python, "-I", "-m", module, *args] if python else _dev_hook_argv(module, "entry", args)
+        # jcode's parser consumes backslashes even inside double quotes; shlex's single-quote form preserves them.
+        return shlex.join(argv)
     c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
                       (harness, ev) if v2 or harness in ("antigravity", "copilot") else (harness,), python, ev in PRE,
                       harness == "antigravity")
