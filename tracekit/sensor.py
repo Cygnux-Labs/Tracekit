@@ -183,7 +183,7 @@ class Import:
         self.pending = collections.deque()   # effects not yet sent, oldest first
         self.lost = collections.Counter()   # loss -> times, not yet sent
         self.sending = None   # the call in flight: sent again, same request_id, until the signer takes it
-        self.beat = 0.0   # monotonic time of the last call the signer took
+        self.beat = None   # monotonic time of the last call the signer took: None until the first flush
         self.skipped = collections.Counter()   # why -> events skipped
 
     def add(self, line):
@@ -233,7 +233,7 @@ class Import:
                         size += len(json.dumps(effects[-1]))
                     lost = "; ".join(f"{n} x {why}" for why, n in self.lost.items())[:1024]
                     self.lost.clear()
-                    if not effects and not lost and now - self.beat < HEARTBEAT_S:
+                    if not effects and not lost and self.beat is not None and now - self.beat < HEARTBEAT_S:
                         return True
                     self.sending = {"request_id": "sn-" + uuid.uuid4().hex, "instance": self.instance,
                                     "sensor": self.sensor, "callers": self.callers, "effects": effects,

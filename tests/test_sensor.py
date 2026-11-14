@@ -527,6 +527,14 @@ class TestCommand(unittest.TestCase):
         good = self.config("sensor: tetragon\nsigner: x\nruns:\n  - match: {uid: 1000}\n    caller: uid:1000\n")
         self.assertEqual(sensor.main(["import", "--config", good, "--follow", "/nonexistent/tetragon.log"]), 2)
 
+    def test_the_first_flush_sends_a_heartbeat_on_a_young_clock(self):
+        sent = []
+        imp = sensor.Import(types.SimpleNamespace(observe_effect=sent.append), "tetragon", RUNS)
+        self.assertTrue(imp.flush(now=5.0))
+        self.assertEqual((len(sent), sent[0]["effects"]), (1, []))
+        self.assertTrue(imp.flush(now=6.0))   # the 30 s spacing holds after the first heartbeat
+        self.assertEqual(len(sent), 1)
+
     def test_run_sends_a_file_and_returns(self):
         sent = []
         imp = sensor.Import(types.SimpleNamespace(observe_effect=sent.append), "tetragon", RUNS)
