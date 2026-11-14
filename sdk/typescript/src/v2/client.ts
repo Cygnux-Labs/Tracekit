@@ -149,9 +149,9 @@ class Conn {
   }
 }
 
-function open(sock: Socket): Promise<Socket> {
+function open(sock: Socket, timeoutMs = CONNECT_TIMEOUT_MS): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    sock.setTimeout(CONNECT_TIMEOUT_MS, () => sock.destroy(new Error("connect timed out")));
+    sock.setTimeout(timeoutMs, () => sock.destroy(new Error("connect timed out")));
     sock.once("connect", () => {
       sock.setTimeout(0);
       resolve(sock);
@@ -170,7 +170,8 @@ function check(hello: Frame, where: string) {
 }
 
 /** A connection to the signer at `path` (a Unix socket or tcp://host:port) and its hello, after the version check. */
-export async function connect(path: string, token?: string): Promise<{ conn: Conn; hello: Frame }> {
+export async function connect(path: string, token?: string, timeoutMs = CONNECT_TIMEOUT_MS): Promise<{ conn: Conn; hello: Frame }> {
+  const deadline = Date.now() + timeoutMs, leftMs = () => Math.max(deadline - Date.now(), 1);
   let conn: Conn | undefined, hello: Frame;
   try {
     if (path.startsWith("tcp://")) {
@@ -179,22 +180,22 @@ export async function connect(path: string, token?: string): Promise<{ conn: Con
         throw new SignerUnavailable(`${path}: tcp:// signers must be on loopback (127.0.0.1, ::1 or localhost)`);
       token ||= process.env.TRACEKIT_SIGNER_TOKEN;
       if (!token) throw new SignerUnavailable(`${path}: tcp:// signers need TRACEKIT_SIGNER_TOKEN`);
-      conn = new Conn(await open(createConnection({ host, port: Number(hostPort.slice(k + 1)) })));
+      conn = new Conn(await open(createConnection({ host, port: Number(hostPort.slice(k + 1)) }), leftMs()));
       // the signer proves it holds the token over our nonce before we prove it over its own (transport/tcp_dev.py)
       const nonce = randomBytes(16).toString("hex");
-      const reply = await withTimeout(conn.send({ method: "hello", nonce }), CONNECT_TIMEOUT_MS, () => conn!.sock.destroy());
+      const reply = await withTimeout(conn.send({ method: "hello", nonce }), leftMs(), () => conn!.sock.destroy());
       const proof = Buffer.from(String(reply.proof)), want = Buffer.from(hmac(token, "signer", nonce));
       if (proof.length !== want.length || !timingSafeEqual(proof, want)) throw new Error("dev token proof mismatch");
       if (typeof reply.nonce !== "string" || reply.nonce.length < 16 || reply.nonce.length > 128)
         throw new Error("handshake needs a nonce of 16-128 characters");
       conn.write({ proof: hmac(token, "client", reply.nonce) });
     } else if (process.platform !== "win32") {
-      conn = new Conn(await open(createConnection(path)));
+      conn = new Conn(await open(createConnection(path), leftMs()));
     } else {
       throw new SignerUnavailable(`this platform has no Unix sockets: name the signer tcp://host:port, not ${path}`);
     }
     const c = conn;
-    hello = await withTimeout(c.send({ method: "hello" }), CONNECT_TIMEOUT_MS, () => c.sock.destroy());
+    hello = await withTimeout(c.send({ method: "hello" }), leftMs(), () => c.sock.destroy());
   } catch (e) {
     conn?.sock.destroy();
     if (e instanceof SignerUnavailable && !conn) throw e;
@@ -341,13 +342,14 @@ class Https {
   }
 
   async rpc(frame: Frame, timeoutMs: number): Promise<Frame> {
+    const deadline = Date.now() + timeoutMs;
     if (!this.hello) {
       const hello = await this.post({ method: "hello" }, timeoutMs);
       if (hello.error) throw new RPCError(hello.error.code, hello.error.message ?? "");
       check(hello, this.url.origin);
       this.hello = hello;
     }
-    return this.post(frame, timeoutMs);
+    return this.post(frame, Math.max(deadline - Date.now(), 1));
   }
 }
 
@@ -450,7 +452,11 @@ export class Client {
     let losses = 0, tries = 0, outage: RPCError | null = null;
     try {
       while (losses < RETRIES) {
-        const left = Math.max(deadline - Date.now(), 1);
+        const left = deadline - Date.now();
+        if (left <= 0) {
+          frame();
+          throw new SignerUnavailable(`no answer from the signer within ${timeout / 1000}s`);
+        }
         let reply: Frame;
         try {
           if (this.https) {
@@ -459,8 +465,13 @@ export class Client {
           } else if ("timeout_ms" in schema.properties) {
             reply = await this.poll(frame(), left);
           } else {
-            const conn = await this.connection();
-            reply = await withTimeout(conn.send(frame()), left, () => conn.sock.destroy());
+            const conn = await this.connection(left);
+            const rem = deadline - Date.now();
+            if (rem <= 0) {
+              frame();
+              throw new SignerUnavailable(`no answer from the signer within ${timeout / 1000}s`);
+            }
+            reply = await withTimeout(conn.send(frame()), rem, () => conn.sock.destroy());
           }
         } catch (e) {
           if (e instanceof ConnectionLost) {
@@ -512,17 +523,20 @@ export class Client {
 
   /** One request on a connection of its own, closed after the answer. */
   private async poll(frame: Frame, timeout: number): Promise<Frame> {
-    const { conn } = await this.dial();
+    const deadline = Date.now() + timeout;
+    const { conn } = await this.dial(Math.min(CONNECT_TIMEOUT_MS, timeout));
     try {
-      return await withTimeout(conn.send(frame), timeout, () => {});
+      const rem = deadline - Date.now();
+      if (rem <= 0) throw new SignerUnavailable(`no answer from the signer within ${timeout / 1000}s`);
+      return await withTimeout(conn.send(frame), rem, () => {});
     } finally {
       conn.sock.destroy();
     }
   }
 
-  private connection(): Promise<Conn> {
+  private connection(timeoutMs = CONNECT_TIMEOUT_MS): Promise<Conn> {
     if (!this.conn) {
-      const p: Promise<Conn> = this.dial().then(({ conn }) => {
+      const p: Promise<Conn> = this.dial(timeoutMs).then(({ conn }) => {
         conn.sock.on("close", () => this.conn === p && (this.conn = null));
         return conn;
       }, (e) => {
@@ -534,18 +548,22 @@ export class Client {
     return this.conn;
   }
 
-  private async dial() {
+  private async dial(timeoutMs = CONNECT_TIMEOUT_MS) {
+    const connectTimeout = Math.min(CONNECT_TIMEOUT_MS, timeoutMs);
     let c;
     if (this.signer) {
-      c = await connect(this.signer);
+      c = await connect(this.signer, undefined, connectTimeout);
     } else {
-      const d = devRuntimeDir();
+      const deadline = Date.now() + timeoutMs, d = devRuntimeDir();
       try {
-        c = await connect(...devAddress(d));
+        const [addr, tok] = devAddress(d);
+        c = await connect(addr, tok, connectTimeout);
       } catch (e) {
         if (!(e instanceof SignerUnavailable || e instanceof Incompatible && e.older)) throw e;
+        if (Date.now() >= deadline) throw e;
         await startDevSigner();   // `tracekit up` replaces a dev signer from before an upgrade
-        c = await connect(...devAddress(d));
+        const [addr, tok] = devAddress(d);
+        c = await connect(addr, tok, Math.min(CONNECT_TIMEOUT_MS, Math.max(deadline - Date.now(), 1)));
       }
     }
     this.hello = c.hello;
