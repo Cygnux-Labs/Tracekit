@@ -42,7 +42,7 @@ tools:
   # unknown tools, and class app, not harness, so every rule that reads the whole call still reads theirs as it did
   # (TK-S002, TK-S004, TK-F005, TK-F012). TK-A062 no longer reads them: they run no command (StructuredOutput's fields
   # are a subagent's answer in its caller's schema). Artifact and ArtifactData stay unmapped: their writes publish to
-  # claude.ai, so they keep the unknown tool's flag
+  # claude.ai, so they keep the unknown tool's flag. RemoteTrigger is held (TK-A079)
   TaskStop: app              # stops a background task or agent by its id
   TaskCreate: app            # the session's task list
   TaskUpdate: app
@@ -145,6 +145,16 @@ ask:
     reason: a subagent that runs where Tracekit doesn't decide its calls
     remedy: Have a person approve the held call, or run the subagent locally, where each of its calls is decided.
     rationale: A remote subagent's tool calls aren't decided or recorded here; a person confirms what it is sent to do.
+  - id: TK-A079
+    tool: RemoteTrigger
+    # Claude Code's routines (/schedule): a create, update, run or webhook trigger starts or changes a cloud agent, as
+    # TK-F019's remote subagent; list, get, list_runs and get_run_log only read (still flagged: an unmapped tool). The
+    # whole call as sorted-key JSON, so only its own top-level action exempts it
+    pattern: '^'
+    unless: '^\{"action":"(?:list|get|list_runs|get_run_log)"[,}]'
+    reason: a cloud routine that runs where Tracekit doesn't decide its calls
+    remedy: Have a person approve the held call, or run the task in this session, where each of its calls is decided.
+    rationale: A routine runs Claude Code in the cloud on a schedule or an event; none of its tool calls are decided or recorded here, so a person confirms what it is set up to do.
   - id: TK-DEMO-ASK
     tool: '(mcp:[^/]+/)?tracekit_demo_ask'
     pattern: '^'

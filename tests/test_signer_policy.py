@@ -86,7 +86,7 @@ class Packs(unittest.TestCase):
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
         self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-A062", "TK-F019",
-                                                                   "TK-DEMO-ASK")], server["ask"])
+                                                                   "TK-A079", "TK-DEMO-ASK")], server["ask"])
         # the server pack keeps the wider forms of the flags its detection counts (TK-F003, TK-F005, TK-F012, TK-F013);
         # the laptop has no detection, and the coding pack's narrower ones
         wide = ("TK-F003", "TK-F005", "TK-F012", "TK-F013")
@@ -134,7 +134,8 @@ class Packs(unittest.TestCase):
                 ("mcp__claude-in-chrome__read_page", {"tabId": 7}, ("allow", [])),
                 ("mcp__github__list_issues", {"owner": "o", "repo": "r"}, ("allow", [])),
                 ("mcp__claude-in-chrome__navigate", {"url": "https://example.com/?q=1", "tabId": 7}, ("flag", ["TK-F012"])),
-                ("mcp__github__create_issue", {"owner": "o", "repo": "r", "title": "t"}, ("flag", ["TK-F006"]))):
+                ("mcp__github__create_issue", {"owner": "o", "repo": "r", "title": "t"}, ("flag", ["TK-F006"])),
+                ("RemoteTrigger", {"action": "create", "body": {}}, ("ask", ["TK-A079", "TK-UNKNOWN-TOOL"]))):
             with self.subTest(tool=tool, args=args):
                 d = svc.evaluate(e, tool, args)[0]
                 self.assertEqual((d["verdict"], sorted(d["rule_ids"])), (want[0], sorted(want[1])))
