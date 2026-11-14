@@ -887,8 +887,9 @@ class Codex(unittest.TestCase):
     def test_the_text_names_codex_on_a_codex_only_week_and_does_not_say_nothing_yet(self):
         body = tips.build([], codex=self.week(), now=NOW)
         out = tips.text(body, "store", root=None)
-        self.assertIn("Codex CLI's sessions", out)
-        self.assertIn(f"{body['codex_root']}: 1 file, 300 steps", out)
+        flat = " ".join(out.split())   # the temp path's length differs by platform, so wrap points do too
+        self.assertIn("Codex CLI's sessions", flat)
+        self.assertIn(f"{body['codex_root']}: 1 file, 300 steps", flat)
         self.assertNotIn("nothing yet", out)
 
 
