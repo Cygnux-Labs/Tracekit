@@ -853,7 +853,8 @@ class Speed(unittest.TestCase):
         n, budget = MAX_SUBJECT - 16, self.BUDGET_S * machine_scale()
         for unit in ("|", " | ", "|-x ", ";( ", "; 1 ", "\n- '", "|X=$(", ";sudo -E ", ";sudo -u root ",
                      ";bash -c '", '|curl -d "{\\"', "|curl -d '{\"a\":\"'", "|curl -d 'x'\"x\"'x'",
-                     '|curl -d "${A:-', "|echo $T | base64 -w 0 "):
+                     '|curl -d "${A:-', "|echo $T | base64 -w 0 ", "|-x -x -x -x -x -x -x -x -x -x -x -x ",
+                     ';sudo -u "$U" ', "|bash -o x ", "|bash -c -- ", "|/usr/bin/env ", "|a/", "|-x env "):
             for tail in ("", "://", " https://x"):
                 s = (unit * (n // len(unit)))[:n - len(tail)] + tail
                 with self.subTest(unit=unit, tail=tail):
