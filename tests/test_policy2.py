@@ -1281,7 +1281,8 @@ class Shell(unittest.TestCase):
             "npm ci && npm run build && npm test": [["npm", "ci"], ["npm", "run", "build"], ["npm", "test"]],
             "ls -la | grep foo | wc -l": [["ls", "-la"], ["grep", "foo"], ["wc", "-l"]],
             "python3 -m pip install -e '.[dev]'": [["python3", "-m", "pip", "install", "-e", ".[dev]"]],
-            "for f in *.py; do black $f; done": [["black", "$f"], ["black"]],   # and as bash runs it when $f is empty
+            # and as the pattern written in, and as bash runs it when $f is empty
+            "for f in *.py; do black $f; done": [["black", "$f"], ["black", "*.py"], ["black"]],
             "if [ -f x ]; then make; fi": [["[", "-f", "x", "]"], ["make"]],
             "(cd sub && make) > log 2>&1 &": [["cd", "sub"], ["make"]],
             "echo hi # sudo id": [["echo", "hi"]],
