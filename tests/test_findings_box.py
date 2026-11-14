@@ -850,6 +850,43 @@ class BoxPatchTaskConstraints(Base):
         self.assertEqual(self.found_x204(out), [])
         self.assertEqual(self.cov_x204(out), (0, 0, {"no_task": 1}))
 
+        text = findings_v2.render(out)
+        self.assertIn("TK-X204 for 1 patch file: no operator task", text)
+        self.assertNotIn("TK-X204 for 1 call:", text)
+
+    def test_no_workspace_is_not_an_apply_directory_mismatch(self):
+        b = self.box
+        b.steps.clear()   # omit tkbox.box before any records are signed
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Fix bugs"}, trust="trusted")
+        b.write(30.0, f"{PROJ}/app.py")
+        b.write(30.1, f"{PROJ}/other.py")
+        out = self.analyze()
+        self.assertEqual(self.cov_x204(out), (0, 0, {"no_workspace": 2}))
+        self.assertEqual(self.cov(out), (0, 0, {"no_workspace": 2}))
+        self.assertEqual(out["findings"], [])
+        text = findings_v2.render(out)
+        self.assertIn("TK-X204 for 2 patch files:", text)
+        self.assertIn("TK-X212 for 2 door events:", text)
+
+    def test_unread_task_content_counts_patch_files(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Fix bugs"}, trust="trusted")
+        b.write(30.0, f"{PROJ}/app.py")
+        out = self.analyze(content=False)
+        self.assertEqual(self.cov_x204(out), (0, 0, {"no_content": 1}))
+        self.assertIn("TK-X204 for 1 patch file:", findings_v2.render(out))
+
+    def test_budget_counts_patch_files(self):
+        b = self.box
+        b.agent(1.0)
+        b.observe(0.1, "tkbox.task", {"task": "Fix bugs"}, trust="trusted")
+        b.write(30.0, f"{PROJ}/app.py")
+        out = self.analyze(budget_s=-1)
+        self.assertEqual(self.cov_x204(out), (0, 0, {"budget": 1}))
+        self.assertIn("TK-X204 for 1 patch file:", findings_v2.render(out))
+
     def test_apply_dir_is_not_checkable(self):
         b = self.box
         b.agent(1.0)

@@ -23,6 +23,7 @@ event call the signer refuses with `quota_exceeded` (a rate or count limit: one 
 is sent again as it was, within the call's timeout (_retry_wait); no other call is. The client writes nothing to disk.
 """
 import asyncio
+import base64
 import collections
 import concurrent.futures
 import contextlib
@@ -344,6 +345,43 @@ class Client:
         """`parent`: the RunHandle of the run that starts this one (a sub-agent's run); the signer records the link."""
         return self.call("register_run", {**(req or {}), **(
             {"parent": {"run_id": parent.run_id, "run_token": parent.run_token}} if parent else {})})
+
+    def export_bundle(self, run_id):
+        """The .tkb bundle of run `run_id` of this identity's tenant, the bytes `tracekit export --v2 --run` writes
+        from the signer's store (export_run, an `authorize` grant), one chunk per call. A download the signer can't
+        go on with (a newer checkpoint since it began) starts again, RETRIES times at most; while the signer is busy or
+        no checkpoint covers the run yet, it waits as the signer says, until the client's timeout. It holds no more
+        than the size the signer names, and refuses a size over the format's limit."""
+        from tracekit.verify.v2 import MAX_TOTAL
+        deadline, restarts = time.monotonic() + self.timeout, 0
+        while True:
+            try:
+                out = self.export_run({"run_id": run_id})
+                if out["size"] > MAX_TOTAL:
+                    raise SignerUnavailable(f"the signer names a bundle of {out['size']} bytes, over the format's "
+                                            f"{MAX_TOTAL >> 20} MiB: refused")
+                data = bytearray(base64.b64decode(out["data"]))
+                while len(data) < out["size"]:
+                    more = self.export_run({"run_id": run_id, "digest": out["digest"], "offset": len(data)})
+                    chunk = base64.b64decode(more["data"])
+                    if not chunk or more["offset"] != len(data) or more["size"] != out["size"] or \
+                            len(data) + len(chunk) > out["size"]:
+                        raise SignerUnavailable(f"the signer sent {len(chunk)} bytes at {more['offset']} of a bundle "
+                                                f"of {more['size']}, after {len(data)} of {out['size']}")
+                    data += chunk
+            except RPCError as e:
+                wait = (e.retry_after_ms or 0) / 1000
+                if e.code == "conflict" and restarts < RETRIES:
+                    restarts += 1
+                    continue
+                if e.code != "unavailable" or not wait or time.monotonic() + wait > deadline:
+                    raise
+                time.sleep(wait)
+                continue
+            if len(data) != out["size"] or "sha256:" + hashlib.sha256(data).hexdigest() != out["digest"]:
+                raise SignerUnavailable(f"the bundle of run {run_id} did not arrive whole: {len(data)} bytes, not the "
+                                        f"{out['size']} with digest {out['digest']} the signer named")
+            return bytes(data)
 
     def call(self, method, req=None, **fields):
         """`req` as a dict, or its fields as keywords (as RunHandle.call takes them)."""

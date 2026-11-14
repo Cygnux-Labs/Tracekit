@@ -8,6 +8,7 @@
     said = tracekit_said(signer, run)   # optional: what the model said before each call
     async for message in query(prompt="...", options=options):
         await said(message)
+    signer.close_run({"run_id": run["run_id"], "run_token": run["run_token"]})   # the CLI sends no SessionEnd
 
 The gate is the PreToolUse hook, not `can_use_tool`: the CLI skips `can_use_tool` for every call its permission mode or
 allow rules approve, while PreToolUse runs for every call. `deny` blocks the call with the reason, which the model
@@ -15,7 +16,9 @@ gets as the tool's error result, and the session goes on. `ask` holds the call i
 the signer, for at most APPROVAL_WAIT_S, below the hook's own timeout (HOOK_TIMEOUT_S, set on the matcher); a call not
 approved by then is blocked. Every call that is not denied runs only after the signer's `approval_consume` agrees; an
 approval with a T2 executor runs the arguments it returns (the hook's `updatedInput`).
-PostToolUse and PostToolUseFailure complete the call against its decision; SessionEnd closes the run. The tools of
+PostToolUse and PostToolUseFailure complete the call against its decision. The CLI doesn't send the SDK's hooks
+SessionEnd (checked with claude-agent-sdk 0.2.165 and 0.2.181, CLI 2.1.294 and 2.1.323), so the app closes the run
+after its message loop (`close_run`); the SessionEnd hook closes it should a CLI send one. The tools of
 the tool executor's server are left to the executor when the app hands the hooks the `mcp_servers` it gives
 ClaudeAgentOptions and the server under `tracekit-executor` there is the in-process one executor_tools.claude_agent_sdk
 built: for its actions' exact tool names, the hook only notes the call's tool_use_id for the server's handler, which
@@ -176,6 +179,7 @@ def tracekit_hooks(signer, run, mcp_servers=None):
 
     return {"PreToolUse": [HookMatcher(hooks=[pre], timeout=HOOK_TIMEOUT_S)],
             "PostToolUse": [HookMatcher(hooks=[post])], "PostToolUseFailure": [HookMatcher(hooks=[post])],
+            # not a HookEvent the SDK lists, and the CLI sends it no SessionEnd (2.1.323): the app closes the run
             "SessionEnd": [HookMatcher(hooks=[end])]}
 
 

@@ -88,7 +88,7 @@ class Fuse(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         self.dir = tmpdir(self)
-        grants = sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR) + [svc.CONTENT_READ]
+        grants = sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR) + [svc.CONTENT_READ]
         self.s = svc.SignerService(self.dir, policy=Engine(POLICY), grace_s=0, content=self.content,
                                    authorize={"token:http": grants,
                                               svc._dev_identity(): sorted(svc.DEFAULT_GRANTS | {svc.CONTENT_READ})})
