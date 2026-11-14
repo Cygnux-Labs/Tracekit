@@ -2033,21 +2033,34 @@ class CrushTools(unittest.TestCase):
 
 class KiroTools(unittest.TestCase):
     def test_tools_map_onto_the_policy_vocabulary_on_the_path_each_reads(self):
-        # as Kiro CLI 3.3.0 sends them (tests/data/harness/kiro.json); the 2.x names its migration notes keep
+        # as Kiro CLI 3.3.0 sends them (tests/data/harness/kiro.json); execute_bash, Linux's and macOS's shell, is built
         for name, ti, want, path in (
                 ("execute_bash", {"command": "ls"}, "Bash", None), ("execute_pwsh", {"command": "dir"}, "Bash", None),
-                ("shell", {"command": "ls"}, "Bash", None), ("read_file", {"path": "/w/a"}, "Read", "/w/a"),
+                ("read_file", {"path": "/w/a"}, "Read", "/w/a"),
                 ("fs_write", {"path": "/w/a", "text": "x"}, "Write", "/w/a"),
                 ("fs_append", {"path": "/w/a", "text": "x"}, "Write", "/w/a"),
                 ("str_replace", {"path": "/w/a", "oldStr": "a", "newStr": "b"}, "Edit", "/w/a"),
                 ("delete_file", {"targetFile": "/w/a"}, "Edit", "/w/a"), ("list_directory", {"path": "/w"}, "LS", "/w"),
                 ("grep_search", {"query": "x", "path": "/w"}, "Grep", "/w"),
+                ("list_directory", {}, "LS", None), ("grep_search", {"query": "x", "file_path": "/w/b"}, "Grep", None),
                 ("file_search", {"query": "x"}, "Glob", None),
                 ("web_fetch", {"url": "https://x.example"}, "WebFetch", None),
-                ("remote_web_search", {"query": "x"}, "WebSearch", None), ("invoke_sub_agent", {}, "Task", None)):
-            with self.subTest(tool=name):
+                ("remote_web_search", {"query": "x"}, "WebSearch", None), ("invoke_sub_agent", {}, "Task", None),
+                ("code", {"operation": "lookup_symbols", "symbols": ["f"], "path": "/w/a.py"}, "Read", "/w/a.py"),
+                ("code", {"operation": "diagnostics", "file_path": "/w/a.py"}, "Read", "/w/a.py"),
+                ("code", {"operation": "pattern_rewrite", "file_path": "/w/a.py", "pattern": "a", "replacement": "b"},
+                 "Edit", "/w/a.py"),
+                # the 2.x names are no hook ids on CLI V3, and init refuses a 2.x CLI: unknown tools, as they are
+                ("shell", {"command": "ls"}, "shell", None), ("write", {"path": "/w/a"}, "write", None)):
+            with self.subTest(tool=name, ti=ti):
                 tool, args = agent_hooks.tool("kiro", name, ti)
                 self.assertEqual((tool, args.get("file_path")), (want, path))
+        # code names its file in `file_path` or `path`: both are decided, and pattern_rewrite as an Edit's strings
+        args = agent_hooks.tool("kiro", "code", {"operation": "pattern_rewrite", "file_path": "/w/a.py",
+                                                 "path": "/home/u/.kiro/settings.json", "pattern": "a",
+                                                 "replacement": "b"})[1]
+        self.assertEqual((args["paths"], args["old_string"], args["new_string"]),
+                         (["/w/a.py", "/home/u/.kiro/settings.json"], "a", "b"))
         # the path the tool reads decides: a decoy `file_path`, `path` or `paths` beside it never does
         for name, ti in (("delete_file", {"targetFile": "/home/u/.ssh/id_rsa", "path": "/w/a", "file_path": "/w/a"}),
                          ("read_file", {"path": "/home/u/.ssh/id_rsa", "file_path": "/w/a", "paths": ["/w/a"]})):
@@ -2073,7 +2086,25 @@ class KiroTools(unittest.TestCase):
                 self.assertIn(f"Kiro's {name} call has no", why or "")
         self.assertIsNone(agent_hooks._blocked("kiro", {"tool_name": "delete_file",
                                                         "tool_input": {"targetFile": "/w/a"}}))
-        self.assertIsNone(agent_hooks._blocked("kiro", {"tool_name": "file_search", "tool_input": {"query": "x"}}))
+        # a listing or a search with no path reads the working directory
+        for name, ti in (("file_search", {"query": "x"}), ("grep_search", {"query": "x"}), ("list_directory", {})):
+            self.assertIsNone(agent_hooks._blocked("kiro", {"tool_name": name, "tool_input": ti}), name)
+
+    def test_tools_that_run_what_no_hook_decides_are_blocked_in_the_hook(self):
+        def blocked(name, ti):
+            p = {"tool_name": name, "tool_input": ti}
+            return agent_hooks._blocked("kiro", p, json.dumps(p))
+        self.assertIn("createHook writes a hook", blocked("createHook", {"actionType": "command", "command": "echo x",
+                                                                        "id": "x", "name": "x", "trigger": "PreToolUse"}))
+        for name in ("subagent/reviewer", "kiro_powers"):
+            self.assertIn("hasn't been recorded", blocked(name, {}), name)
+        # the code tool: its recorded operations are decided; any other, and a rewrite naming no file, are denied
+        for op in agent_hooks.KIRO_CODE_READS + agent_hooks.KIRO_CODE_EDITS:
+            self.assertIsNone(blocked("code", {"operation": op, "file_path": "/w/a.py"}), op)
+        for ti in ({"operation": "rename_symbol", "file_path": "/w/a.py"}, {"operation": None}, {},
+                   {"operation": "pattern_rewrite", "pattern": "a", "replacement": "b"}):
+            self.assertIn("Blocked by Tracekit: Kiro's code", blocked("code", ti) or "", ti)
+        self.assertIsNone(blocked("invoke_sub_agent", {"name": "general-task-execution", "prompt": "x"}))
 
     def test_events_are_claude_codes_and_calls_are_paired_without_an_id(self):
         d = tempfile.mkdtemp()
@@ -3164,6 +3195,7 @@ class Installer(unittest.TestCase):
             self.assertNotIn("matcher", h)   # every tool
             self.assertIn("tracekit.agent_hooks", h["action"]["command"])
             self.assertIn("kiro", h["action"]["command"])
+            self.assertRegex(h["action"]["command"], rf"\b{ev}\b")   # v1 too: an unreadable pre-tool payload blocks
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             agent_hooks.install("kiro", d, v2=True, python="/opt/tracekit/python")
@@ -3174,10 +3206,11 @@ class Installer(unittest.TestCase):
             agent_hooks.install("kiro", d, uninstall=True)
             agent_hooks.install("kiro", d, uninstall=True)   # nothing left to remove
         self.assertFalse(os.path.exists(path))
-        # a file there with a hook of a person's is left as it is
+        # a file there with a hook of a person's is left as it is: told by its command, whatever its name
         mine = {"version": "v1", "hooks": [{"name": "lint", "trigger": "PostToolUse",
                                             "action": {"type": "command", "command": "npm run lint"}}]}
-        for theirs in (mine, {"theme": "dark"}):   # a person's hook, or anything else but Tracekit's hooks
+        named = {"version": "v1", "hooks": [dict(mine["hooks"][0], name="tracekit-lint")]}
+        for theirs in (mine, named, {"theme": "dark"}):   # a person's hook, or anything else but Tracekit's hooks
             with open(path, "w") as f:
                 json.dump(theirs, f)
             for uninstall in (False, True):
@@ -3186,18 +3219,26 @@ class Installer(unittest.TestCase):
             with open(path) as f:
                 self.assertEqual(json.load(f), theirs)
 
-    def test_kiro_init_says_when_its_cli_reads_no_user_hooks(self):
-        # ~/.kiro/hooks is read from Kiro CLI V3 on; a project's .kiro/hooks by every release
+    def test_kiro_init_refuses_a_cli_before_3(self):
+        # the .kiro/hooks files, a project's and ~/.kiro's, came with Kiro CLI V3: a 2.x CLI reads neither, so init
+        # refuses it on both paths and writes nothing; a version it can't read doesn't stop it
+        from tracekit.install import SettingsError
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         patch_env(self, HOME=d, USERPROFILE=d)
-        for version, warned in (((2, 9, 0), True), ((3, 3, 0), False), (None, False)):
-            out = io.StringIO()
-            with self.subTest(version=version), contextlib.redirect_stdout(out), \
-                    mock.patch.object(agent_hooks, "kiro_version", return_value=version):
-                agent_hooks.install("kiro", python="/opt/tracekit/python")
-                agent_hooks.install("kiro", os.path.join(d, "p"), python="/opt/tracekit/python")   # a project's
-                self.assertEqual(out.getvalue().count("only from 3.0"), int(warned))
+        for version, refused in (((2, 9, 0), True), ((3, 3, 0), False), (None, False)):
+            for project in (None, os.path.join(d, "p", str(version))):
+                with self.subTest(version=version, project=project), contextlib.redirect_stdout(io.StringIO()), \
+                        mock.patch.object(agent_hooks, "kiro_version", return_value=version):
+                    path = agent_hooks.config_path("kiro", project)
+                    if refused:
+                        with self.assertRaisesRegex(SettingsError, "came with CLI V3"):
+                            agent_hooks.install("kiro", project, python="/opt/tracekit/python")
+                        self.assertFalse(os.path.exists(path))
+                    else:
+                        agent_hooks.install("kiro", project, python="/opt/tracekit/python")
+                        self.assertTrue(os.path.exists(path))
+                        agent_hooks.install("kiro", project, uninstall=True)
         done = subprocess.CompletedProcess([], 0, "kiro-cli 3.3.0\n", "")   # what 3.3.0 prints
         with mock.patch.object(subprocess, "run", return_value=done):
             self.assertEqual(agent_hooks.kiro_version(), (3, 3, 0))

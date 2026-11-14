@@ -618,6 +618,32 @@ class DroidHooks(unittest.TestCase):
             self.assertIn("60 s", row["detail"])
 
 
+class KiroHooks(unittest.TestCase):
+    def test_kiro_hooks_kiro_skips_and_a_cli_before_3_are_warned_about_on_either_path(self):
+        from tracekit import agent_hooks
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d, "USERPROFILE": d}), \
+                mock.patch("os.getcwd", return_value=d), \
+                mock.patch.object(agent_hooks, "kiro_version", return_value=(3, 3, 0)):
+            path = agent_hooks.config_path("kiro", os.path.join(d, "p"))   # a project's
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent_hooks.install("kiro", os.path.join(d, "p"), v2=True)
+
+            def rows():
+                return [r for r in doctor.v2_checks({"data_dir": d}, "dev", harnesses={"kiro": path})
+                        if r["id"] in ("D-HOOKS-EVENT", "D-HOOKS-TIMEOUT")]
+            self.assertEqual({r["status"] for r in rows()}, {"ok"}, rows())
+            with mock.patch.object(agent_hooks, "kiro_version", return_value=(2, 9, 0)):
+                self.assertTrue(any(r["status"] == "warn" and "came with CLI V3" in r["detail"] for r in rows()))
+            with open(path) as f:
+                config = json.load(f)
+            config["hooks"][0]["enabled"] = False   # PreToolUse: Kiro skips it
+            with open(path, "w") as f:
+                json.dump(config, f)
+            warned = [r["detail"] for r in rows() if r["status"] == "warn"]
+            self.assertTrue(any('PreToolUse hook(s) are "enabled": false' in w for w in warned), warned)
+            self.assertTrue(any("no Tracekit v2 hook on the pre-tool event" in w for w in warned), warned)
+
+
 class AntigravityHooks(unittest.TestCase):
     def test_agy_hooks_under_tracekits_hook_name_are_found_and_checked_in_seconds(self):
         # agy's hooks.json maps each hook's name to its events: Tracekit's are under AGY_HOOK, not `hooks`, and an

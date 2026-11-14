@@ -400,18 +400,65 @@ class Mapping(HarnessCase):
         self.check("kiro")
 
     def test_kiro_results_prompts_and_session_events_answer_nothing(self):
-        # Kiro CLI 3.3.0's PostToolUse, UserPromptSubmit, SessionStart and Stop as recorded (no call id; its result a
-        # string); a payload the hook can't read blocks the call (exit 2, Kiro's block)
-        pre = cases("kiro")[0]["payload"]
+        # Kiro CLI 3.3.0's SessionStart, UserPromptSubmit, PostToolUse (no call id; its result a string) and Stop as
+        # recorded (tests/data/harness/kiro_events.json); SessionEnd, which `chat --no-interactive` never fired, is
+        # built. A payload the hook can't read blocks the call (exit 2, Kiro's block)
+        with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+        post = rec["PostToolUse"]
+        pre = {k: v for k, v in post.items() if k != "tool_response"} | {"hook_event_name": "PreToolUse"}
         self.assertEqual(self.hook("kiro", pre)[0], 0)
-        base = {"session_id": pre["session_id"], "cwd": pre["cwd"]}
-        for payload in (dict(pre, hook_event_name="PostToolUse", tool_response="Output:\nkiro-rec\r\n\n\nExit Code: 0"),
-                        dict(base, hook_event_name="UserPromptSubmit", prompt="Run echo kiro-rec."),
-                        dict(base, hook_event_name="SessionStart"), dict(base, hook_event_name="Stop")):
+        built = {"session_id": post["session_id"], "cwd": post["cwd"], "hook_event_name": "SessionEnd"}
+        for payload in (rec["SessionStart"], rec["UserPromptSubmit"], post, rec["Stop"], built):
             with self.subTest(event=payload["hook_event_name"]):
                 self.assertEqual(self.hook("kiro", payload)[:2], (0, ""))
         code, out, err = self.hook("kiro", "not json", "PreToolUse")
         self.assertEqual((code, out), (2, ""), err)
+
+    def test_kiro_calls_denied_in_the_hook_never_reach_the_signer(self):
+        # recorded on 3.3.0: createHook writes a hook whose command no Tracekit hook decides
+        with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
+            (create,) = json.load(f)["denied_in_hook"]
+        built = [dict(create, tool_name=name, tool_input=ti) for name, ti in (
+            ("subagent/reviewer", {"prompt": "x"}), ("kiro_powers", {"action": "list"}),
+            ("code", {"operation": "rename_symbol", "file_path": "C:\\work\\kiro-rec\\sample.py", "new_name": "x"}),
+            ("code", {"operation": "pattern_rewrite", "pattern": "a", "replacement": "b"}))]
+        for payload in (create, *built):
+            with self.subTest(tool=payload["tool_name"], ti=payload["tool_input"]):
+                code, out, err = self.hook("kiro", payload)
+                self.assertEqual((code, out), (2, ""), err)
+                self.assertIn("Blocked by Tracekit: Kiro's", err)
+        self.assertEqual(self.sent, [])
+
+    def test_kiro_windows_pre_tool_command_fails_closed_under_cmd(self):
+        # Kiro runs a Windows hook under cmd.exe and the call on any exit but 2: a v2 PreToolUse hook that can't start
+        # exits 2; the other events, and a v1 hook, keep their command as it is
+        d = ac.tmpdir(self)
+        with mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", r"C:\Python311\python.exe"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for v2 in (True, False):
+                agent_hooks.install("kiro", d, v2=v2)
+                with open(agent_hooks.config_path("kiro", d)) as f:
+                    cmds = {h["trigger"]: h["action"]["command"] for h in json.load(f)["hooks"]}
+                for ev, c in cmds.items():
+                    with self.subTest(v2=v2, event=ev):
+                        self.assertEqual(c.endswith("& exit 2)"), v2 and ev == "PreToolUse", c)
+                        self.assertRegex(c, rf"\b{ev}\b")   # v1 too: a pre-tool payload it can't read is blocked
+
+    @unittest.skipUnless(os.name == "nt", "Kiro runs Windows hooks under cmd.exe")
+    def test_kiro_cmd_blocks_a_tool_call_whose_hook_cannot_start(self):
+        d = ac.tmpdir(self)
+        with mock.patch.object(sys, "executable", os.path.join(d, "gone", "python.exe")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("kiro", d, v2=True)
+        with open(agent_hooks.config_path("kiro", d)) as f:
+            cmds = {h["trigger"]: h["action"]["command"] for h in json.load(f)["hooks"]}
+        for ev, c in cmds.items():
+            with self.subTest(event=ev):
+                p = subprocess.run(c, shell=True, input="{}", capture_output=True, text=True, timeout=30)
+                self.assertEqual(p.returncode == 2, ev == "PreToolUse", (p.returncode, p.stderr))
+        p = subprocess.run(cmds["PreToolUse"], shell=True, input="{}", capture_output=True, text=True, timeout=30)
+        self.assertIn("call blocked (fail-closed)", p.stderr)
 
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file

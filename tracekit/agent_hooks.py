@@ -327,19 +327,28 @@ CLINE_EVENTS = ("PreToolUse", "PostToolUse", "TaskStart", "TaskComplete", "UserP
 CLINE_FILE = "PreToolUse.ps1" if os.name == "nt" else "PreToolUse"
 CLINE_PATH_KEYS = ("path", "file_path", "filePath")
 # Kiro CLI's built-in tools (kiro.dev/docs/tools), as hooks receive them on CLI 3.3.0: the V3 ids (execute_pwsh on
-# Windows), and the 2.x names its migration notes say still work. Each file tool reads its own key (KIRO_PATH_ARG):
-# delete_file reads `targetFile`, not `path`. A delete is an Edit, as Cursor's is: the file rules read it
-KIRO_TOOLS = {"execute_bash": "Bash", "execute_pwsh": "Bash", "shell": "Bash", "read_file": "Read", "read": "Read",
-              "fs_write": "Write", "fs_append": "Write", "write": "Write", "str_replace": "Edit", "delete_file": "Edit",
-              "list_directory": "LS", "file_search": "Glob", "grep_search": "Grep", "web_fetch": "WebFetch",
-              "remote_web_search": "WebSearch", "invoke_sub_agent": "Task"}
+# Windows; the 2.x names, shell, read, write, are no hook ids, and a 2.x CLI reads no hook file Tracekit writes). Each
+# file tool reads its own key (KIRO_PATH_ARG): delete_file reads `targetFile`, not `path`. A delete is an Edit, as
+# Cursor's is: the file rules read it. invoke_sub_agent is a Task: the sub-agent's own calls fire the session's hooks
+# (recorded on 3.3.0, in the same session)
+KIRO_TOOLS = {"execute_bash": "Bash", "execute_pwsh": "Bash", "read_file": "Read", "fs_write": "Write",
+              "fs_append": "Write", "str_replace": "Edit", "delete_file": "Edit", "list_directory": "LS",
+              "file_search": "Glob", "grep_search": "Grep", "web_fetch": "WebFetch", "remote_web_search": "WebSearch",
+              "invoke_sub_agent": "Task"}
 KIRO_PATH_ARG = {"read_file": "path", "fs_write": "path", "fs_append": "path", "str_replace": "path",
                  "delete_file": "targetFile", "list_directory": "path", "grep_search": "path"}
-# the argument a Kiro call is decided on: a call without it as a string is denied in the hook (_blocked)
-KIRO_DECIDED_ON = {**KIRO_PATH_ARG, "execute_bash": "command", "execute_pwsh": "command", "web_fetch": "url"}
+# the argument a Kiro call is decided on: a call without it as a string is denied in the hook (_blocked). A listing or
+# a search without a path reads the working directory, as Claude Code's LS and Grep do
+KIRO_DECIDED_ON = {**{k: v for k, v in KIRO_PATH_ARG.items() if k not in ("list_directory", "grep_search")},
+                   "execute_bash": "command", "execute_pwsh": "command", "web_fetch": "url"}
+# the code tool's operations recorded on 3.3.0: these read the file they name (lookup_symbols's `path`, the others'
+# `file_path`), and pattern_rewrite edits it (`pattern` to `replacement`). Any other operation (an LSP rename, a
+# format) is denied in the hook until it is recorded (_blocked_tool)
+KIRO_CODE_READS = ("lookup_symbols", "get_document_symbols", "pattern_search", "find_references", "diagnostics")
+KIRO_CODE_EDITS = ("pattern_rewrite",)
 KIRO_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
-KIRO_OLD = ("Kiro CLI {} runs the hook files in ~/.kiro/hooks only from 3.0: upgrade it, or install Tracekit's hooks "
-            "in a project's .kiro/hooks with --project")
+KIRO_OLD = ("Kiro CLI {} doesn't run hook files from .kiro/hooks, which came with CLI V3 (3.0): upgrade Kiro CLI, then "
+            "run init again")
 CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_./-]+))""")   # getHeredocDelimiter
 # CodeBuddy Code's tools are Claude Code's by name and arguments (its bundled code, @tencent-ai/codebuddy-code
 # 2.183.0); of its own, these read a file: each is a Read of the path it reads, never of a decoy beside it
@@ -784,7 +793,22 @@ def tool(harness, name, ti):
             return "mcp__" + name[4:], ti
         if name in KIRO_PATH_ARG:   # the path the tool itself reads decides, never a decoy beside it
             ti.pop("paths", None)
-            ti["file_path"] = ti.get(KIRO_PATH_ARG[name])
+            path = ti.get(KIRO_PATH_ARG[name])
+            ti.pop("file_path", None)
+            if path is not None:   # a listing or a search without one reads the working directory
+                ti["file_path"] = path
+        if name == "code":   # a read, or pattern_rewrite's edit, of every file it names (`file_path` or `path`)
+            files = list(dict.fromkeys(v for v in (ti.get("file_path"), ti.get("path")) if isinstance(v, str) and v))
+            ti.pop("paths", None)
+            ti.pop("file_path", None)
+            if files:
+                ti["file_path"] = files[0]
+            if len(files) > 1:
+                ti["paths"] = files
+            if ti.get("operation") in KIRO_CODE_EDITS:
+                ti.update(old_string=ti.get("pattern"), new_string=ti.get("replacement"))
+                return "Edit", ti
+            return "Read", ti
         if name in ("fs_write", "fs_append") and "text" in ti:   # what it writes, as a Write's content
             ti["content"] = ti["text"]
         if name == "str_replace":
@@ -1160,6 +1184,32 @@ def _odd_arg_name(v):
     return None
 
 
+def _blocked_kiro(tool_name, raw=""):
+    """The reason a Kiro CLI call is denied in the hook itself, else None: a hook it would create, a sub-agent or power
+    no recording shows running hooks, or a code tool operation not recorded."""
+    if tool_name == "createHook":
+        return ("Blocked by Tracekit: Kiro's createHook writes a hook whose command runs at Kiro's events, and no "
+                "Tracekit hook decides that command; a person adds hooks to .kiro/hooks themselves.")
+    if tool_name.startswith("subagent/") or tool_name == "kiro_powers":
+        return (f"Blocked by Tracekit: Kiro's {tool_name} hasn't been recorded, so Tracekit doesn't know whether the "
+                "calls it makes run Kiro's hooks; use invoke_sub_agent, or make each call itself.")
+    if tool_name != "code":
+        return None
+    try:
+        ti = _input(dict(json.loads(raw)).get("tool_input")) if raw.strip() else {}
+    except (ValueError, TypeError):
+        ti = {}
+    op = ti.get("operation")
+    if op not in KIRO_CODE_READS + KIRO_CODE_EDITS:
+        return (f"Blocked by Tracekit: Kiro's code tool operation {str(op)[:64]!r} hasn't been recorded, so Tracekit "
+                "doesn't know which files it changes; read the code with a recorded operation and edit it with "
+                "str_replace or fs_write.")
+    if op in KIRO_CODE_EDITS and not any(isinstance(ti.get(k), str) and ti.get(k) for k in ("file_path", "path")):
+        return (f"Blocked by Tracekit: Kiro's code {op} names no file, so it may rewrite any file in the workspace, "
+                "the agent's settings and hooks too; give it the file to rewrite.")
+    return None
+
+
 def _blocked_tool(harness, tool_name, raw=""):
     """The reason a tool call is denied in the hook itself, else None: a tool that runs calls the hook never sees, or
     a Crush input the tool may read otherwise than Tracekit. tool_name: the harness's own name for the tool, before it
@@ -1176,6 +1226,8 @@ def _blocked_tool(harness, tool_name, raw=""):
                 "isn't in the call, so Tracekit can't decide what it runs. It is on only with "
                 '"experimental": {"native_notebook_tools": true} in kilo.json; leave that off and run code through '
                 "bash instead.")
+    if harness == "kiro":
+        return _blocked_kiro(tool_name, raw)
     if harness != "crush":
         return None
     if tool_name.casefold() in CRUSH_SUBAGENTS:   # as its argument names, Crush may match a tool's name ignoring case
@@ -1901,12 +1953,18 @@ def _read(path):
 
 def _command(harness, ev, v2, python):
     """The command of Tracekit's hook for `ev` (python: see install._hook_command). The v2 hook names its event, so it
-    can block a pre-tool payload it cannot read; agy's and Copilot's payloads name none, so their v1 hooks do too
-    (without it a v1 hook reads no event from the payload, and lets the call run undecided)."""
+    can block a pre-tool payload it cannot read; agy's, Copilot's and Kiro's v1 hooks name it too (agy's and Copilot's
+    payloads name none: without it a v1 hook reads no event from the payload, and lets the call run undecided)."""
     from .install import _hook_command
     c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
-                      (harness, ev) if v2 or harness in ("antigravity", "copilot") else (harness,), python, ev in PRE,
-                      harness == "antigravity")
+                      (harness, ev) if v2 or harness in ("antigravity", "copilot", "kiro") else (harness,), python,
+                      ev in PRE, harness == "antigravity")
+    # Kiro CLI runs a Windows hook under cmd.exe and the call on any exit but 2: a v2 PreToolUse hook that can't run
+    # (Tracekit uninstalled, a moved venv: 1 or 9009) exits 2, as install._blocking makes it elsewhere; 0 and 2 (the
+    # hook's own answers) pass as they are. cmd.exe reads `if errorlevel N` (N or more) when it runs, not as it parses
+    if os.name == "nt" and harness == "kiro" and v2 and ev in PRE and not python:
+        why = "echo tracekit: the hook could not run; call blocked ^(fail-closed^) 1>&2"
+        return c + f" || ((if errorlevel 3 ({why}) else if not errorlevel 2 ({why})) & exit 2)"
     # on Windows, Codex and Gemini CLI run a hook's command under PowerShell (Codex under cmd.exe when PowerShell
     # isn't found or the session has no single local environment), and Qwen Code under the PowerShell its hook's
     # "shell" names (install). PowerShell runs a quoted program path only through its call operator, which cmd.exe
@@ -2037,18 +2095,25 @@ def kiro_version():
 
 def _install_kiro(path, uninstall=False, v2=False, python=None):
     """Tracekit's own Kiro hook file: {"version": "v1", "hooks": [...]}, one hook per event named tracekit-<event>, with
-    no matcher (every tool). Uninstall removes the file; a file there that holds anything but Tracekit's hooks is left
-    as it is."""
+    no matcher (every tool). Uninstall removes the file; a file there that holds anything but Tracekit's hooks (a hook
+    whose command isn't Tracekit's, whatever its name) is left as it is. A Kiro CLI before 3.0 reads no .kiro/hooks
+    file, so init refuses it, user-level or --project."""
     from .install import SettingsError, _atomic_write_json, _backup_changed
     path = os.path.abspath(path)
     if uninstall and not os.path.exists(path):
         return path
     s, txt = _read(path)
     hooks = s.get("hooks", [])
-    if txt is not None and not (set(s) <= {"version", "hooks"} and isinstance(hooks, list) and all(
-            isinstance(h, dict) and str(h.get("name")).startswith("tracekit-") for h in hooks)):
+
+    def ours(h):
+        return isinstance(h, dict) and isinstance(h.get("action"), dict) and \
+            _version(h["action"].get("command")) is not None
+    if txt is not None and not (set(s) <= {"version", "hooks"} and isinstance(hooks, list) and all(map(ours, hooks))):
         raise SettingsError(f"{path} holds more than Tracekit's hooks; Tracekit did not change it.")
-    removed = {_version(h["action"].get("command")) for h in hooks if isinstance(h.get("action"), dict)} - {None}
+    removed = {_version(h["action"].get("command")) for h in hooks} - {None}
+    version = None if uninstall else kiro_version()
+    if version and version < (3,):
+        raise SettingsError(KIRO_OLD.format(".".join(map(str, version))) + "; Tracekit did not change " + path + ".")
     if uninstall:
         _backup_changed(path, txt, None)
         os.unlink(path)
@@ -2061,9 +2126,6 @@ def _install_kiro(path, uninstall=False, v2=False, python=None):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if _backup_changed(path, txt, new):
             _atomic_write_json(path, new)
-        version = kiro_version() if path == os.path.abspath(config_path("kiro")) else None
-        if version and version < (3,):
-            print(KIRO_OLD.format(".".join(map(str, version))))
     _said(path, removed, uninstall, v2)
     return path
 
