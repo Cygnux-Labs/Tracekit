@@ -63,6 +63,7 @@ experimental.
 | Codex CLI, Cursor, Gemini CLI and OpenCode 1.x hooks (checked against recorded hook payloads, OpenCode's written in its documented shape, not the live tools) | [coding agents](coding-agents.md) |
 | GitHub Copilot CLI hooks (1.0.107 or later; run in live Copilot CLI 1.0.107 sessions on Linux with the one model the test plan offered, the tools Copilot gives other models mapped from its bundle; not on Windows, in the VS Code agent or the cloud agent) | [coding agents](coding-agents.md) |
 | goose, Qwen Code, Factory Droid, Antigravity CLI, Crush and Devin hooks (written to each harness's published hook documentation and tested against payloads in that shape, not the live tools), and Kilo Code's plugin (OpenCode's, run with the Kilo CLI 7.8.18 on Linux, not in its VS Code extension) | [coding agents](coding-agents.md) |
+| Kiro CLI hooks (checked against payloads recorded from Kiro CLI 3.3.0 on Windows 11) | [coding agents](coding-agents.md) |
 | Cline hooks (checked against payloads recorded from Cline CLI 3.0.74 and the VS Code extension 4.1.26 on Linux, each driven by a scripted model) | [coding agents](coding-agents.md) |
 | CodeBuddy Code hooks (written to its bundled code, 2.183.0, and tested against payloads derived from that code, not a live CodeBuddy session) | [coding agents](coding-agents.md) |
 | The gptme plugin (checked against hook payloads recorded from gptme 0.36.0 on WSL2, driven by a scripted model) | [coding agents](coding-agents.md) |
