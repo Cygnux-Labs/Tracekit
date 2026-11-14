@@ -184,11 +184,11 @@ def run(record=False):
     # Every gate was recorded again (--record) on 2026-11-13 for the 1.7.0 release: default's amandeavor pool holds one
     # more harmless call, `curl --dry-run …` (curl has no such option, and curl's reader holds a download whose options
     # it doesn't know as unread), and the closer reading of shell lines, downloads and the environment costs about
-    # 12-19% at p99 against main measured beside it, once the decision path's own costs were cut with no decision
-    # changed (medians of three runs side by side, main 5dd9eba90d: default 6.39 / 7.65, strict 6.02 / 7.26, dev 6.65 /
-    # 7.73 on RE2 / regex; this code 7.49 / 8.29, 7.1 / 7.93, 7.67 / 8.55). Each max_p99_ref is 5% over the highest of
-    # that day's four runs (--record);
-    # the results file's latency rows are its first run's.
+    # 13-20% at p99 against main measured beside it, once the decision path's own costs were cut with no decision
+    # changed and loop values and patterns were read (medians of three runs side by side, main 5dd9eba90d: default
+    # 6.22 / 7.35, strict 5.91 / 7.06, dev 6.47 / 7.49 on RE2 / regex; this code 7.58 / 8.35, 7.15 / 8.01, 7.83 /
+    # 8.62). Each max_p99_ref is 5% over the highest of that day's four runs (--record, 2026-11-14 for the loop and
+    # pattern readings, a held-out call more caught); the results file's latency rows are its first run's.
     out["gates"] = keep(old, {
         "machine": out["machine"],
         "min_heldout_recall": {n: p["heldout"]["recall"] for n, p in out["profiles"].items() if "heldout" in p},
