@@ -1,5 +1,5 @@
-"""Browser Use (tested with browser-use 0.13.11): every action the agent's Tools run (navigate, click, input, extract,
-upload_file, evaluate, custom actions) is decided by the signer before it runs and recorded after.
+"""Browser Use (tested with browser-use 0.13.11 and 1.x): every action the agent's Tools run (navigate, click, input,
+extract, upload_file, evaluate, custom actions) is decided by the signer before it runs and recorded after.
 
     from browser_use import Agent, Tools
     from tracekit.integrations.browser_use import trace_tools
@@ -21,6 +21,7 @@ ActionResult with the refusal as its error, and the run goes on. `ask` waits for
 the signer's copy.
 """
 import asyncio
+import contextvars
 import functools
 import hashlib
 import re
@@ -30,7 +31,7 @@ from html.entities import html5
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations.held import HeldCalls
-from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
+from tracekit.sdk.client import Refused, SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Action blocked by policy: "
@@ -97,12 +98,19 @@ def _wrap(tools, actions):
     return tools
 
 
+_DECIDED_CELL = contextvars.ContextVar("tracekit_decided_cell", default=None)   # the code a python call just decided
+
+
 def _wire_1x(actions):
     """Gate every 1.0 tool call, the `python` cell included, through `actions`: BrowserLoop.wrap_tool_execute sees
-    each call before Browser Loop's own early return for `python`, and records it after. One run per process, as
+    each call before Browser Loop's own early return for `python`, and records it after. The `finish_from_repl`
+    delivery is an output tool, which skips that hook, and runs as Repl.call('eval', ...); a python cell also runs as
+    Repl.call('exec', ...), which today only the tool calls: both ops are decided at Repl.call, and the tool marks the
+    cell it decided in a context variable so that exec runs without a second decision. One run per process, as
     instrument() is one run per process: a second, distinct run is refused rather than silently replacing the first."""
     from browser_use.agent.loop import BrowserLoop
-    from pydantic_ai import ToolDenied
+    from browser_use.repl.session import Repl
+    from pydantic_ai import ModelRetry, ToolDenied
     from pydantic_ai.exceptions import SkipToolExecution
 
     original = BrowserLoop.wrap_tool_execute
@@ -111,37 +119,91 @@ def _wire_1x(actions):
         return
     if owner is not None:
         raise RuntimeError("browser-use: one Tracekit run per process gates 1.0 calls; the seam is already wired")
+    original_call = Repl.call
 
     async def wrap_tool_execute(self, ctx, *, call, tool_def, args, handler):
         if getattr(ctx.deps, "finalizing", False) and getattr(tool_def, "kind", None) == "function":
             return await original(self, ctx, call=call, tool_def=tool_def, args=args, handler=handler)   # not run
-        secrets = sorted(((v, n) for n, v, _ in getattr(getattr(ctx.deps, "repl", None), "secrets", ()) or ()
-                          if isinstance(v, str) and v), key=lambda p: -len(p[0]))
+        repl = getattr(ctx.deps, "repl", None)
+        secrets = _repl_secrets(repl)
+
+        async def execute(params):
+            # Repl.call sees this code again, from the tool's handler: its exec is not decided a second time
+            token = _DECIDED_CELL.set(params.get("code")) if call.tool_name == "python" else None
+            try:
+                return await original(self, ctx, call=call, tool_def=tool_def, args=params, handler=handler)
+            finally:
+                if token is not None:
+                    _DECIDED_CELL.reset(token)
+
         params = dict(args or {})
         call_args = await actions.arguments(call.tool_name, params, secrets)
         tool, call_id, why, d, run = await actions.decide(call.tool_name, call_args)
         if why is not None:
             raise SkipToolExecution(ToolDenied(BLOCKED + why))
         if d is None:   # the signer unreachable and the run fails open: the call runs unrecorded
-            return await original(self, ctx, call=call, tool_def=tool_def, args=params, handler=handler)
+            return await execute(params)
         if run != call_args:   # the signer's copy (T2) differs from what was sent: its params run
             params = {k: v for k, v in run.items() if k not in ("page_url", "typed_secrets")}
         req = {"tool_call_id": call_id, "decision_id": d["decision_id"],
-               # complete() must match the decision's commitment, made on call_args (0.13 digests run post-T2)
-               "args_digest": event_hash({"tool": tool, "args": call_args})}
+               # complete() must match the decision's commitment: the args the signer decided (its copy under T2)
+               "args_digest": event_hash({"tool": tool, "args": run})}
         try:
-            out = await original(self, ctx, call=call, tool_def=tool_def, args=params, handler=handler)
+            out = await execute(params)
         except Exception as e:
             await actions._complete(call_id, req, status="error",
                                     error=_mask(f"{type(e).__name__}: {e}", secrets)[:4096])
             raise
+        failed = getattr(out, "error", None)
+        if call.tool_name == "python":   # a cell that raises returns its traceback in the text, not an error result
+            failed = failed or getattr(repl, "tracekit_cell_error", None)
+            repl.tracekit_cell_error = None
         dump = out.model_dump(mode="json", exclude_none=True) if hasattr(out, "model_dump") else out
-        await actions._complete(call_id, req, status="error" if getattr(out, "error", None) else "ok",
+        await actions._complete(call_id, req, status="error" if failed else "ok",
                                 result=result_field(d.get("send_result"), _mask(dump, secrets)))
         return out
 
+    async def call(self, op, code, timeout):
+        if op == "exec" and _DECIDED_CELL.get() == code:   # the python cell wrap_tool_execute decided
+            r = await original_call(self, op, code, timeout)
+            self.tracekit_cell_error = r.get("error") or None   # that call's completion: the error is text
+            return r
+        action, key = ("python", "code") if op == "exec" else ("finish_from_repl", "expression")
+        secrets = _repl_secrets(self)
+        call_args = await actions.arguments(action, {key: code}, secrets)
+        tool, call_id, why, d, run = await actions.decide(action, call_args)
+        if why is not None:
+            # not run. The delivery's refusal goes back to the model, which can deliver another way, as a refused
+            # action goes on; an exec has no model to hand it to, so it raises.
+            if op == "eval":
+                raise ModelRetry(BLOCKED + why)
+            raise Refused(BLOCKED + why)
+        if d is None:   # the signer unreachable and the run fails open: the code runs unrecorded
+            return await original_call(self, op, code, timeout)
+        if run != call_args:   # the signer's copy (T2) is what runs
+            code = run.get(key, code)
+        req = {"tool_call_id": call_id, "decision_id": d["decision_id"],
+               "args_digest": event_hash({"tool": tool, "args": run})}
+        try:
+            r = await original_call(self, op, code, timeout)
+        except Exception as e:
+            await actions._complete(call_id, req, status="error",
+                                    error=_mask(f"{type(e).__name__}: {e}", secrets)[:4096])
+            raise
+        await actions._complete(call_id, req, status="error" if r.get("error") else "ok",
+                                result=result_field(d.get("send_result"), _mask(r, secrets)))
+        return r
+
     wrap_tool_execute.tracekit_actions = actions
+    call.tracekit_actions = actions
     BrowserLoop.wrap_tool_execute = wrap_tool_execute
+    Repl.call = call
+
+
+def _repl_secrets(repl):
+    """[(value, name)] of a 1.0 Repl's secrets, longest value first."""
+    return sorted(((v, n) for n, v, _ in getattr(repl, "secrets", ()) or () if isinstance(v, str) and v),
+                  key=lambda p: -len(p[0]))
 
 
 def _secrets(sensitive_data):
@@ -178,6 +240,16 @@ def _written(value):
             forms.add(r"\+")
         out.append("(?:" + "|".join(sorted(forms, key=lambda f: (-len(f), f))) + ")")
     return re.compile("".join(out))
+
+
+def _jsonable(x):
+    """A call's params as JSON data: a 0.x action with a `param_model` hands the signer a validated model, which is not
+    serialisable as it is."""
+    try:
+        from pydantic_core import to_jsonable_python
+    except ImportError:   # no pydantic installed: the params are already plain data
+        return x
+    return to_jsonable_python(x)
 
 
 def _mask(x, secrets):
@@ -254,7 +326,7 @@ class _Actions(HeldCalls):
     async def arguments(self, action, params, secrets, page_url=""):
         """What the signer decides: the params with each secret value masked, the page URL, and the digest of each
         secret the action types (a revealed salt then lets an auditor confirm it)."""
-        args = _mask({**(params or {}), "page_url": page_url}, secrets)
+        args = _mask({**_jsonable(params), "page_url": page_url}, secrets)
         # Registry._replace_sensitive_data fills a <secret>name</secret> placeholder, and a param that is exactly a name
         typed = {n for s in _strings(args) for n in _PLACEHOLDER.findall(s) + [s]}
         # lean: a domain-scoped name gets the digest of its value on every domain; match page_url to the domain

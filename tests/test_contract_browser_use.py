@@ -179,6 +179,80 @@ class Driver:
                 "continued": r is not None, "raised": self.out.get("raised"), "approval_id": None}
 
 
+class Driver1x:
+    """The 0.13 stand-in's 1.0 counterpart: drives the BrowserLoop hook the seam wraps, as Pydantic AI calls it, on a
+    thread so an ask can pause it. One seam per process, so it is wired once and restored after the test."""
+    SKIP = {**Driver.SKIP,
+            "retry": "Pydantic AI hands a retried call back to the model as a new call with its own id: each call the "
+                     "seam sees is decided once"}
+
+    def __init__(self, case, signer_path, **kw):
+        from browser_use.agent.loop import BrowserLoop
+        from browser_use.repl.session import Repl
+        patch = mock.patch.dict(sys.modules, BU_MODULES)
+        patch.start()
+        case.addCleanup(patch.stop)
+        client = Client(signer_path)
+        case.addCleanup(client.close)
+        self.signer, self.kw, self.secrets, self.ran_with = Recording(client), kw, None, []
+        r = client.register_run({"agent": {"name": "contract"}})
+        self._run = {"run_id": r["run_id"], "run_token": r["run_token"]}
+        case.addCleanup(setattr, BrowserLoop, "wrap_tool_execute", BrowserLoop.wrap_tool_execute)
+        case.addCleanup(setattr, Repl, "call", Repl.call)
+        trace_tools(types.SimpleNamespace(functions=[]), self.signer, self._run, **kw)
+
+    def run(self):
+        return self._run
+
+    def call(self, tool, args, tcid="call-1", mode="sync"):
+        from browser_use.agent.loop import BrowserLoop
+        from pydantic_ai.exceptions import SkipToolExecution
+        ac.RAN.clear()
+        self.out = {}
+        secrets = [(name, v, None) for k, v in (self.secrets or {}).items()
+                   for name, v in (v.items() if isinstance(v, dict) else {k: v}.items())]   # Repl.secrets' shape
+        ctx = types.SimpleNamespace(deps=types.SimpleNamespace(
+            finalizing=False, repl=types.SimpleNamespace(secrets=secrets)))
+
+        async def handler(seen):
+            self.ran_with.append(seen)
+            return ACTIONS[tool](**seen)
+
+        def go():
+            try:
+                self.out["result"] = asyncio.run(BrowserLoop().wrap_tool_execute(
+                    ctx, call=types.SimpleNamespace(tool_name=tool, tool_call_id=tcid),
+                    tool_def=types.SimpleNamespace(kind="function"), args=args, handler=handler))
+            except SkipToolExecution as e:   # Pydantic AI hands the model the refusal as the call's result
+                self.out["denied"] = e.result.message
+            except Exception as e:
+                self.out["raised"] = f"{type(e).__name__}: {e}"
+        self.waiting = threading.Thread(target=go)
+        self.waiting.start()
+        while self.waiting.is_alive():
+            aid = next((a["approval_id"] for a in self.signer.signer.approval_list({"run_id": self._run["run_id"]})[
+                "approvals"] if a["state"] == "requested"), None)
+            if aid:
+                return {"ran": [], "seen": None, "is_error": False, "continued": False, "raised": None,
+                        "approval_id": aid}
+            time.sleep(0.02)
+        return self.finish()
+
+    def resume(self, hint=ac.HINT, replay=False):
+        self.waiting.join(60)
+        return self.finish()
+
+    def finish(self):
+        if "denied" in self.out:
+            return {"ran": list(ac.RAN), "seen": self.out["denied"], "is_error": True, "continued": True,
+                    "raised": None, "approval_id": None}
+        r = self.out.get("result")
+        error = getattr(r, "error", None)   # Browser Loop's own refusal, an ActionResult
+        seen = error or getattr(r, "extracted_content", r)
+        return {"ran": list(ac.RAN), "seen": seen, "is_error": bool(error), "continued": r is not None,
+                "raised": self.out.get("raised"), "approval_id": None}
+
+
 def _sha(value):
     return "sha256:" + hashlib.sha256(value.encode()).hexdigest()
 
@@ -394,6 +468,35 @@ class TestOnRealSigner(BrowserUseContract, ac.OnReal, unittest.TestCase):
         self.assertEqual((opens(PW), opens("hunter3")), (True, False))
 
 
+@unittest.skipUnless(HAVE_BU and BU_1X, "browser-use 1.0 not installed (pip install 'browser-use==1.0.2')")
+class BrowserUse1xContract(ac.Contract):
+    driver = Driver1x
+
+    def decided_args(self):
+        return [json.loads(req)["args"] for method, req in self.d.signer.sent if method == "decide"]
+
+    def test_secret_values_reach_the_action_but_never_the_signer(self):
+        """1.0 hands a custom action no secret values (the model types them in a cell with type_secret): the value the
+        model writes runs, Browser Use refuses a placeholder, and the signer only ever sees the placeholder."""
+        self.d.secrets = SECRETS
+        self.d.call("input", {"index": 4, "text": PW})                        # the value itself, written out
+        refused = self.d.call("input", {"index": 5, "text": "<secret>pw</secret>"}, "call-2")
+        self.assertEqual([p["text"] for p in self.d.ran_with], [PW])
+        self.assertTrue(refused["is_error"])
+        self.assertIn("custom tools do not receive secret values", refused["seen"])
+        self.assertEqual([a["text"] for a in self.decided_args()], ["<secret>pw</secret>"] * 2)
+        self.assertNotIn(PW, json.dumps(self.d.signer.sent))
+        self.assert_bound(2)
+
+
+class Test1xOnFakeSigner(BrowserUse1xContract, ac.OnFake, unittest.TestCase):
+    pass
+
+
+class Test1xOnRealSigner(BrowserUse1xContract, ac.OnReal, unittest.TestCase):
+    pass
+
+
 class Masking(unittest.TestCase):
     """A sensitive_data value in each form a URL, a page or JSON may write it in goes back to its placeholder."""
 
@@ -565,6 +668,19 @@ class OnRealTools(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_BU and BU_1X, "browser-use 1.0 not installed (pip install 'browser-use==1.0.2')")
 class OnRealTools1x(unittest.TestCase):
+    def patched(self):
+        """Restores the process-wide patches trace_tools installs on 1.0."""
+        from browser_use.agent.loop import BrowserLoop
+        from browser_use.repl.session import Repl
+        self.addCleanup(setattr, BrowserLoop, "wrap_tool_execute", BrowserLoop.wrap_tool_execute)
+        self.addCleanup(setattr, Repl, "call", Repl.call)
+
+    def wire(self, rule):
+        """The signer and run for `trace_tools`, with the process-wide patches restored after the test."""
+        self.patched()
+        fake = FakeSigner(rule)
+        return Recording(fake), fake.register_run({"request_id": "r1", "agent": {"name": "bu1"}})
+
     def test_actions_and_python_cells_are_gated(self):
         from browser_use import Tools
         from browser_use.agent.loop import BrowserLoop
@@ -582,9 +698,8 @@ class OnRealTools1x(unittest.TestCase):
         def rule(tool, args):   # Browser Loop's own tools, prefixed as the adapter records them
             return {"wipe": ("deny", ["R-WIPE"]), "python": ("deny", ["R-PY"])}.get(
                 re.split("[/:]", tool)[-1], ("allow", []))
-        fake = FakeSigner(rule)
-        signer = Recording(fake)
-        trace_tools(tools, signer, fake.register_run({"request_id": "r1", "agent": {"name": "bu1"}}))
+        signer, run = self.wire(rule)
+        trace_tools(tools, signer, run)
         ctx = types.SimpleNamespace(deps=types.SimpleNamespace(
             finalizing=False, repl=types.SimpleNamespace(secrets=[("pw", PW, None)])))
         ran = []
@@ -611,3 +726,126 @@ class OnRealTools1x(unittest.TestCase):
             {"path": "/", "page_url": ""},
             {"code": "print(1)", "page_url": ""}])
         self.assertNotIn(PW, json.dumps(signer.sent))
+
+    def test_the_delivery_is_decided_and_a_cell_that_raises_is_an_error(self):
+        """finish_from_repl is an output tool (no wrap_tool_execute) and runs as Repl.call('eval', ...): decided and
+        completed there; a python cell that raises comes back as text, and its outcome is an error."""
+        from browser_use import Tools
+        from browser_use.agent.loop import BrowserLoop
+        from browser_use.repl.session import Repl
+        from pydantic_ai import ModelRetry
+        ran = []
+
+        async def worker(self, op, code, timeout):   # stands in for the worker process
+            ran.append(code)
+            return {"value": PW if code == PW else None, "output": "", "images": [],
+                    "error": "ZeroDivisionError: division by zero" if code == "1/0" else None}
+        real = Repl.call   # wire() records the worker as the value to restore: this cleanup runs after it
+        Repl.call = worker   # the seam wraps this, as it wraps the real one
+        self.addCleanup(setattr, Repl, "call", real)
+        signer, run = self.wire(lambda tool, args: ("deny", ["R-FIN"]) if args.get("expression") == "card"
+                                else ("allow", []))
+        trace_tools(Tools(), signer, run)
+        repl = types.SimpleNamespace(secrets=[("pw", PW, None)])
+
+        self.assertEqual(asyncio.run(Repl.call(repl, "eval", PW, 5))["value"], PW)   # the delivery runs
+        with self.assertRaises(ModelRetry):
+            asyncio.run(Repl.call(repl, "eval", "card", 5))
+        self.assertNotIn("card", ran)   # a refused expression never runs
+
+        ctx = types.SimpleNamespace(deps=types.SimpleNamespace(finalizing=False, repl=repl))
+
+        def run_cell(code):
+            async def handler(seen):
+                return [await Repl.call(repl, "exec", seen["code"], 5)]   # what python() returns
+            call = types.SimpleNamespace(tool_name="python", tool_call_id="id-python")
+            return asyncio.run(BrowserLoop().wrap_tool_execute(
+                ctx, call=call, tool_def=types.SimpleNamespace(kind="function"), args={"code": code},
+                handler=handler))
+        self.assertIn("ZeroDivisionError", run_cell("1/0")[0]["error"])
+        run_cell("print(1)")
+        decided = [json.loads(r) for m, r in signer.sent if m == "decide"]
+        self.assertEqual([d["tool"] for d in decided], ["browser_use:finish_from_repl", "browser_use:finish_from_repl",
+                                                        "browser_use:python", "browser_use:python"])
+        self.assertEqual(decided[0]["args"], {"expression": "<secret>pw</secret>", "page_url": "",
+                                              "typed_secrets": {"pw": [_sha(PW)]}})
+        completed = [json.loads(r) for m, r in signer.sent if m == "complete"]
+        self.assertEqual([c["status"] for c in completed], ["ok", "error", "ok"])
+        self.assertNotIn(PW, json.dumps(signer.sent))
+
+    def test_an_exec_outside_the_python_tool_is_decided_too(self):
+        """Repl.call gates both ops: an exec no python tool call decided (today nothing else calls one; a release that
+        adds a caller runs it decided) is a python cell to the signer, and a deny-all policy keeps it from running."""
+        from browser_use import Tools
+        from browser_use.repl.session import Repl
+        from tracekit.sdk.client import Refused
+        ran = []
+
+        async def worker(self, op, code, timeout):
+            ran.append(code)
+            return {"value": None, "output": "", "images": [], "error": None}
+        real = Repl.call   # wire() records the worker as the value to restore: this cleanup runs after it
+        Repl.call = worker
+        self.addCleanup(setattr, Repl, "call", real)
+        signer, run = self.wire(lambda tool, args: ("deny", ["R-EXEC"]))
+        trace_tools(Tools(), signer, run)
+        repl = types.SimpleNamespace(secrets=[])
+
+        with self.assertRaises(Refused):
+            asyncio.run(Repl.call(repl, "exec", "wipe", 5))
+        self.assertEqual(ran, [])   # a refused exec never ran
+        decided = [json.loads(r) for m, r in signer.sent if m == "decide"]
+        self.assertEqual([(d["tool"], d["args"]) for d in decided],
+                         [("browser_use:python", {"code": "wipe", "page_url": ""})])
+        self.assertEqual([m for m, r in signer.sent if m == "complete"], [])
+
+    def test_a_param_model_action_reaches_the_signer_as_json(self):
+        """1.0 still accepts 0.x's param_model, and Pydantic AI validates the arguments into the model: the signer gets
+        its fields as JSON, and the action still gets the model."""
+        from browser_use import Tools
+        from browser_use.agent.loop import BrowserLoop
+        from pydantic import BaseModel
+
+        class Item(BaseModel):
+            text: str
+        tools = Tools()
+
+        @tools.action("Fill a field.", param_model=Item)
+        async def fill(item: Item):
+            return f"filled {item.text}"
+        signer, run = self.wire(lambda tool, args: ("allow", []))
+        trace_tools(tools, signer, run)
+        seen = []
+
+        async def handler(args):   # the validated arguments pydantic-ai hands the tool
+            seen.append(args)
+            return "ran"
+        ctx = types.SimpleNamespace(deps=types.SimpleNamespace(finalizing=False, repl=types.SimpleNamespace(secrets=[])))
+        asyncio.run(BrowserLoop().wrap_tool_execute(
+            ctx, call=types.SimpleNamespace(tool_name="fill", tool_call_id="id-fill"),
+            tool_def=types.SimpleNamespace(kind="function"), args={"item": Item(text="it's")}, handler=handler))
+        decided = [json.loads(r) for m, r in signer.sent if m == "decide"]
+        self.assertEqual(decided[0]["args"], {"item": {"text": "it's"}, "page_url": ""})
+        self.assertIsInstance(seen[0]["item"], Item)
+
+    def test_an_unreachable_signer_refuses_the_call_and_runs_nothing(self):
+        """The fail mode for browser calls is closed: a call the signer cannot decide never runs."""
+        from browser_use import Tools
+        from browser_use.agent.loop import BrowserLoop
+        from pydantic_ai.exceptions import SkipToolExecution
+        from tracekit.sdk.client import SignerUnavailable
+
+        class Down:
+            def decide(self, req):
+                raise SignerUnavailable("the signer is unreachable")
+        self.patched()
+        tools = Tools()
+        trace_tools(tools, Down(), {"run_id": "r1", "run_token": "t1"})
+        ctx = types.SimpleNamespace(deps=types.SimpleNamespace(finalizing=False, repl=types.SimpleNamespace(secrets=[])))
+
+        async def handler(seen):
+            raise AssertionError("a call no signer decided ran")
+        with self.assertRaises(SkipToolExecution):
+            asyncio.run(BrowserLoop().wrap_tool_execute(
+                ctx, call=types.SimpleNamespace(tool_name="python", tool_call_id="id-python"),
+                tool_def=types.SimpleNamespace(kind="function"), args={"code": "print(1)"}, handler=handler))

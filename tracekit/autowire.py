@@ -309,12 +309,8 @@ def _browser_use(run):
     # every Tools shares one signer stream: a run allows 64 (quotas.streams_per_run)
     actions = browser_use._actions(run.client, run.registered)
     if not hasattr(Tools, "act"):   # 1.0: actions are Pydantic AI tools, called through BrowserLoop
-        try:
-            browser_use._wire_1x(actions)
-        except ImportError:   # a stand-in for the 0.13 registry, not a browser-use package
-            pass
-        else:
-            return
+        browser_use._wire_1x(actions)
+        return
     init = Tools.__init__
 
     @functools.wraps(init)
