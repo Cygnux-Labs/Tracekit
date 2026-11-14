@@ -561,6 +561,8 @@ class Engine:
         if cls == "shell" and field == "line":   # (and each publish as its program's: _published)
             return Engine._subjects(cls, "command", args, fields, parsed) + _slashes(parsed[1]) + list(dict.fromkeys(
                 p for c in parsed[0] if (p := _published(c["argv"]))))
+        if cls == "fs" and field == "ci_workflow" and isinstance(fields.get(field), str):   # and its wrappers unwrapped
+            return list(dict.fromkeys([fields[field], shell.unwrapped(fields[field])]))
         if field is None:
             return [canonical(args)]
         if cls == "fs" and field == "path" and isinstance(args.get("paths"), list):   # a call on several files

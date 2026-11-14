@@ -788,7 +788,10 @@ stdin is held. It sees commands later in a block; after `;`, `&`, `&&`, `|` and 
 `script:`, `before_script:`, `after_script:`, `command:`, `bash:`, `pwsh:` and `powershell:` and Jenkins'
 `sh`, `bat` and `powershell` steps (`'''` and `"""` strings too); behind `sudo`, `doas`, `env`, `time`, `nohup`,
 `command`, `exec`, `builtin`, `nice` and `timeout` with their options and numbers, assignments, `if`, `then`,
-`else`, `elif`, `do`, `while`, `until`, `(`, `{`, `!` and `X=$(`; and absolute program paths. The 128-character
-spans prevent a pattern from reaching into another command.
+`else`, `elif`, `do`, `while`, `until`, `(`, `{`, `!` and `X=$(`; and absolute program paths. The text is also read
+with each wrapper where a command starts (after a pipe too, and one named by its path: `| sudo curl`,
+`/usr/bin/env curl`) as what it runs, as the shell parser unwraps one, and a shell's `-c '…'` as its script
+(`| bash -c 'curl -d @- …'`); a shell command's line is read so too (`env | timeout 30 curl …` as `env | curl …`).
+The 128-character spans prevent a pattern from reaching into another command.
 It does not parse shell/YAML, expand variables, interpret scripts, or read generated workflows; see
 [limitations](limits.md). It does not claim to detect general `nc` exfiltration.

@@ -5386,11 +5386,57 @@ PIECE_ROOM = 128
 
 
 def _lines(words, progs):
-    """The line `words` make, and again with the program names at indexes `progs` casefolded when that differs."""
+    """The line `words` make, again with the program names at indexes `progs` casefolded when that differs, and again
+    without each wrapper's own words before the program it runs (`env | timeout 30 curl …` is `env | curl …`), so a
+    rule that reads the command after a pipe, or where one starts, reads what the wrapper runs."""
     low = list(words)
     for i in progs:
         low[i] = _lower_name(low[i])
-    return [" ".join(words)] + ([" ".join(low)] if low != words else [])
+    at = sorted(set(progs))
+    cut = {i for p, q in zip(at, at[1:]) if base_name(words[p]) in WRAPPERS and
+           not _STAGE_ENDS.intersection(words[p + 1:q]) for i in range(p, q)}
+    return [" ".join(words)] + ([" ".join(low)] if low != words else []) + (
+        [" ".join(w for i, w in enumerate(low) if i not in cut)] if cut else [])
+
+
+_STAGE_ENDS = _LIST_ENDS | {"|", "|&"}   # the words that end a pipeline's stage
+# where a command may start in a file's text the parser doesn't read as a script (unwrapped): a word that is one of
+# these or ends in one of their characters (`run:`, `x;`), or a YAML list's `-`
+_STARTS = _STAGE_ENDS | KEYWORDS | {"-", "if", "while", "until", "elif", "!", "{"}
+_TEXT_PREFIX = re.compile(r"[\x27\"$(`{!]*")   # quotes, `$(`, a backquote or a brace a command's word may start in
+
+
+def unwrapped(text):
+    """`text` (a file's shell commands the parser doesn't read as a script: a CI workflow's steps, TK-A061) with each
+    wrapper where a command may start (_STARTS: a line's start, after `|`, `;`, `&`, `(`, a YAML key's `:` or list's
+    `-`) read as what it runs (_unwrap's first reading; one named by its path too, base_name), and a shell's
+    `-c '…'` as its script, each line's words joined by a space: a rule reads `echo $T | sudo curl -d @- …` as
+    `echo $T | curl -d @- …`, as the shell's own lines are read (_lines).
+    lean: words split at blanks, not as the shell reads them, and a wrapper's own words read up to 64; read the steps
+    with the parser if a rule needs more"""
+    out = []
+    for line in text.split("\n"):
+        words, kept, i, start = line.split(), [], 0, True
+        while i < len(words):
+            w = words[i]
+            lead = _TEXT_PREFIX.match(w).group()
+            name = base_name(w[len(lead):])
+            if start and name in WRAPPERS:
+                rest = list(itertools.takewhile(lambda x: x not in _STAGE_ENDS, words[i + 1:i + 65]))
+                inner = next(_unwrap(name, rest), [])
+                if inner:   # (a wrapper alone, env or command -v, runs nothing: kept)
+                    i += 1 + len(rest) - len(inner)
+                    words[i] = lead + words[i]
+                    continue
+            if start and name in SHELLS and i + 2 < len(words) and re.fullmatch(r"-[a-z]*c[a-z]*", words[i + 1]):
+                i += 2
+                words[i] = lead + words[i].lstrip("\x27\"")
+                continue
+            kept.append(w)
+            start = w in _STARTS or w[-1] in ";&|(:"
+            i += 1
+        out.append(" ".join(kept))
+    return "\n".join(out)
 
 
 def _lines_without(words, progs, gone):
