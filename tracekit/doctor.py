@@ -212,8 +212,16 @@ def _dev_settings():
 
 def _harness_hooks(harness, config):
     """{event: [hook groups]} of a coding agent's hook config: Droid's file is the event map (a Devin project's
-    hooks.v1.json too), agy's names each hook's (Tracekit's is agent_hooks.AGY_HOOK), the others' is under `hooks`."""
+    hooks.v1.json too), agy's names each hook's (Tracekit's is agent_hooks.AGY_HOOK), Kiro's is a list of hooks, each
+    naming its event (`trigger`) and its command (`action`), less those Kiro skips (`"enabled": false`), the others'
+    is under `hooks`."""
     from . import agent_hooks
+    if harness == "kiro":
+        out = {}
+        for h in config.get("hooks") or ():
+            if isinstance(h, dict) and isinstance(h.get("action"), dict) and h.get("enabled") is not False:
+                out.setdefault(h.get("trigger"), []).append({**h, "command": h["action"].get("command")})
+        return out
     if harness == "droid":
         return {ev: config[ev] for ev in agent_hooks.DROID_EVENTS if ev in config}
     if harness == "devin" and "hooks" not in config:
@@ -810,6 +818,20 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness == "antigravity":
             _agy_runs(add, path, home or os.path.expanduser("~"), fix)
+        if harness == "kiro":
+            version = agent_hooks.kiro_version()
+            old = version is not None and version < (3,)
+            add("D-HOOKS-EVENT", not old,
+                agent_hooks.KIRO_OLD.format(".".join(map(str, version))) if old else
+                f"Kiro CLI {'.'.join(map(str, version)) if version else '(version unread)'} runs the hook files in "
+                f"{os.path.dirname(path)}", "upgrade Kiro CLI to 3.0 or later", bad=WARN)
+            with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+                off = sorted({h.get("trigger") for h in (_json(path) or {}).get("hooks") or ()
+                              if isinstance(h, dict) and h.get("enabled") is False and isinstance(h.get("action"), dict)
+                              and agent_hooks._version(h["action"].get("command")) is not None})
+                add("D-HOOKS-EVENT", not off,
+                    f'Tracekit\'s Kiro {", ".join(map(str, off))} hook(s) are "enabled": false in {path}, so Kiro '
+                    "skips them" if off else f"Tracekit's Kiro hooks in {path} are enabled", fix, bad=WARN)
         try:
             hooks = _harness_hooks(harness, _config(harness, path))
             cmds = [(ev, h) for ev, groups in hooks.items() for g in groups
