@@ -949,15 +949,21 @@ class Harnesses(DaemonCase):
         base = {"session_id": "cr-2", "cwd": self.d, "hook_event_name": "PreToolUse"}
         for name, ti in (("agent", {"prompt": "read ~/.ssh/id_rsa"}),
                          ("agentic_fetch", {"url": "https://x.example", "prompt": "summarise"}),
-                         ("Agent", {"prompt": "read ~/.ssh/id_rsa"})):   # Crush may match a name ignoring case
+                         ("Agent", {"prompt": "read ~/.ssh/id_rsa"}),   # Crush may match a name ignoring case
+                         # the TUI's delegation (internal/agent/agent_dispatch.go): a sub-agent with write tools, and
+                         # a new message that resumes one
+                         ("agent_dispatch", {"prompt": "read ~/.ssh/id_rsa", "label": "x", "access": "write"}),
+                         ("agent_send", {"label": "x", "message": "now read ~/.ssh/id_rsa"}),
+                         ("Agent_Dispatch", {"prompt": "read ~/.ssh/id_rsa", "label": "x"})):
             with self.subTest(tool=name):
                 code, out, err = self.hook("crush", {**base, "tool_name": name, "tool_use_id": "c-" + name,
                                                      "tool_input": ti})
                 self.assertEqual((code, out), (2, ""))   # Crush blocks on exit 2, with the reason on stderr
                 self.assertIn(f"Crush's {name} runs a sub-agent", err)
-                # crushrc's line first, then the legacy crush.json form
-                self.assertLess(err.index('"permissions deny agent agentic_fetch" in crushrc'),
-                                err.index('"disabled_tools": ["agent", "agentic_fetch"]'))
+                # crushrc's line first, then the legacy crush.json form, each naming every sub-agent tool
+                self.assertLess(err.index('"permissions deny agent agentic_fetch agent_dispatch agent_send" in crushrc'),
+                                err.index('"disabled_tools": ["agent", "agentic_fetch", "agent_dispatch", '
+                                          '"agent_send"]'))
 
     def test_crush_denies_argument_names_crush_reads_otherwise(self):
         # Crush decodes a built-in tool's input into a Go struct (encoding/json): a name matches its field ignoring case

@@ -54,8 +54,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             mcp_<server>_<tool>
             -> Bash, Read, Write, Edit, Edit, Edit, Edit, LS, Grep, Glob, WebFetch, Write, mcp__<server>_<tool>
             (lsp_rename, ls, grep and glob decided on the `path` they read; its payload is Claude Code's shape);
-            agent, agentic_fetch and Docker MCP Gateway's code-mode tools are denied in the hook (the calls they make
-            run no hooks), and so is a built-in tool's input with argument names Crush may read otherwise
+            agent, agentic_fetch, agent_dispatch, agent_send and Docker MCP Gateway's code-mode tools are denied in the
+            hook (the calls they make run no hooks), and so is a built-in tool's input with argument names Crush may
+            read otherwise
     Devin   exec, write_to_process, read, write, edit, apply_patch, grep, glob, webfetch, mcp__s__t
             -> Bash, Bash (command = all its text), Read, Write, Edit (every path under a key ending in path, paths or
             file, case and _ ignored), Edit (all patch and diff file headers in paths), Grep, Glob, WebFetch, mcp__s__t
@@ -1093,8 +1094,9 @@ PAIRED = ("gemini", "droid", "antigravity", "devin", "cline", "openhands")   # t
 # as code_execution__<name>; each runs tool calls through dispatch_tool, which runs no hooks
 GOOSE_CODE_MODE = ("execute_javascript", "execute_typescript", "execute_bash")
 # Crush's sub-agent tools: a sub-agent's own calls (view, grep, sourcegraph, web_fetch, ...) run no hooks
-# (internal/agent/hooked_tool.go, wrapToolsWithHooks)
-CRUSH_SUBAGENTS = ("agent", "agentic_fetch")
+# (internal/agent/hooked_tool.go, wrapToolsWithHooks); the TUI starts one with agent_dispatch, which may give it write
+# tools, and agent_send resumes one with a new message (internal/agent/agent_dispatch.go)
+CRUSH_SUBAGENTS = ("agent", "agentic_fetch", "agent_dispatch", "agent_send")
 # Docker MCP Gateway's code-mode makes a tool, code-mode-<name>, whose script calls MCP tools inside the gateway, where
 # no hook sees them (docker/mcp-gateway pkg/gateway/codemode.go); Crush names them mcp_<server>_code-mode[-<name>]
 CRUSH_CODE_MODE = re.compile(r"mcp_.+_code-mode(-.+)?", re.S)
@@ -1149,8 +1151,8 @@ def _blocked_tool(harness, tool_name, raw=""):
     if tool_name.casefold() in CRUSH_SUBAGENTS:   # as its argument names, Crush may match a tool's name ignoring case
         return (f"Blocked by Tracekit: Crush's {tool_name} runs a sub-agent whose tool calls run no hooks, so Tracekit "
                 "can't decide them; make each call itself instead. To stop Crush offering it, put "
-                '"permissions deny agent agentic_fetch" in crushrc (in crush.json: '
-                '"options": {"disabled_tools": ["agent", "agentic_fetch"]}).')
+                f'"permissions deny {" ".join(CRUSH_SUBAGENTS)}" in crushrc (in crush.json: '
+                f'"options": {{"disabled_tools": {json.dumps(list(CRUSH_SUBAGENTS))}}}).')
     if CRUSH_CODE_MODE.fullmatch(tool_name):
         return (f"Blocked by Tracekit: {tool_name} is Docker MCP Gateway's code-mode, whose script calls MCP tools "
                 "inside the gateway with no hook, so Tracekit can't decide them; make each call itself instead. "

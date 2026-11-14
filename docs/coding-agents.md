@@ -84,8 +84,10 @@ untrusted. That joined name doesn't split the server from the tool: the signer t
 server's end, so the shipped packs' MCP rules and `mcp:<server>/<tool>` mappings read it, and holds it as an unknown
 tool on the server packs, but a rule of your own written for `mcp__<server>__<tool>` doesn't match it
 ([limits](limits.md)). Crush runs no hooks
-inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself; put `permissions deny agent agentic_fetch`
-in `crushrc` (in `crush.json`: `"options": {"disabled_tools": ["agent", "agentic_fetch"]}`) so Crush doesn't offer
+inside a sub-agent, so the hook denies `agent` and `agentic_fetch` itself, and the TUI's `agent_dispatch` and
+`agent_send`, which start and resume one; put `permissions deny agent agentic_fetch agent_dispatch agent_send` in
+`crushrc` (in `crush.json`:
+`"options": {"disabled_tools": ["agent", "agentic_fetch", "agent_dispatch", "agent_send"]}`) so Crush doesn't offer
 them. It denies
 Docker MCP Gateway's `code-mode` tools too (`mcp_<server>_code-mode` and the `code-mode-<name>` tools it makes), whose
 scripts call MCP tools inside the gateway, where no hook sees them. Crush reads a built-in tool's argument names ignoring case and lets a later repeat win unless

@@ -419,16 +419,18 @@ class Mapping(HarnessCase):
 
     def test_crush_sub_agents_are_denied_before_the_signer(self):
         # Crush runs no hooks inside a sub-agent (internal/agent/hooked_tool.go), so the hook denies agent and
-        # agentic_fetch itself, before any decide request is sent, and says how to turn them off
-        for i, name in enumerate(("agent", "agentic_fetch")):
+        # agentic_fetch itself, and the TUI's agent_dispatch and agent_send, before any decide request is sent, and says
+        # how to turn them off
+        for i, name in enumerate(("agent", "agentic_fetch", "agent_dispatch", "agent_send")):
             with self.subTest(tool=name):
                 code, out, err = self.hook("crush", {"session_id": "cr-9", "cwd": "/w", "hook_event_name": "PreToolUse",
                                                      "tool_name": name, "tool_use_id": f"call_{i}",
-                                                     "tool_input": {"prompt": "p", "url": "https://x.example"}})
+                                                     "tool_input": {"prompt": "p", "label": "x", "message": "m"}})
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn(f"Crush's {name}", err)
-                self.assertLess(err.index('"permissions deny agent agentic_fetch" in crushrc'),
-                                err.index('"disabled_tools": ["agent", "agentic_fetch"]'))
+                self.assertLess(err.index('"permissions deny agent agentic_fetch agent_dispatch agent_send" in crushrc'),
+                                err.index('"disabled_tools": ["agent", "agentic_fetch", "agent_dispatch", '
+                                          '"agent_send"]'))
                 self.assertEqual(self.sent, [])
 
     def test_crush_argument_names_crush_reads_otherwise_are_denied_before_the_signer(self):
