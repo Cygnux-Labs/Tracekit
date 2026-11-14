@@ -82,6 +82,7 @@ team: `customer`; a third party: `public`) on infrastructure you can't change, p
 write the stack with that class:
 
 ```sh
+# in the source checkout, as above: from /srv/tracekit, python -m doesn't find it
 sudo "$(command -v python3)" -m tracekit deploy compose --dir /srv/tracekit --witness-class customer
 ```
 

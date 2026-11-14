@@ -118,11 +118,13 @@ def collect(config=None, issuer_key=None):
                                                  h.get("settings") if h.get("agent") == "gemini" else None),
                          harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
                          else None, no_hooks=h.get("no_hooks") is True)
-        if h.get("no_hooks") is True or plugin and agent_name == "claude":
-            # init was told --no-hooks, or the Claude Code plugin's hooks are in place: the re-init a fix names says so
-            # too, or it writes init's hooks (beside the plugin's, which decides each call twice)
-            rows = [dict(r, fix=r["fix"].replace(REINIT, REINIT + " --no-hooks")) for r in rows]
-        return out + rows
+        # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or the Claude Code plugin's
+        # hooks are in place (else it writes init's hooks beside the plugin's, which decides each call twice); not over
+        # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off
+        again = (f" --agent {agent_name}" if agent_name != "claude" else "") + (
+            " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude"
+            and settings not in install.MANAGED_SETTINGS.values() else "")
+        return out + [dict(r, fix=r["fix"].replace(REINIT, REINIT + again)) for r in rows]
     if sc:
         return out
     from . import agent_hooks
@@ -786,7 +788,7 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
-        fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
+        fix = REINIT if prod else f"tracekit init --dev --v2 --agent {harness}"   # collect() adds system init's agent
         if harness == "gptme":
             if not prod:
                 ok, detail = _gptme_load_check(path)

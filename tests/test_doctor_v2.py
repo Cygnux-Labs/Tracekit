@@ -157,7 +157,7 @@ class CodingAgentHooks(unittest.TestCase):
             json.dump(settings, f)
         got = {r["id"]: r for r in doctor.v2_checks(
             {"data_dir": self.d}, "production", harnesses={harness: path})}
-        self.assertEqual(got["D-HOOKS-EVENT"]["fix"], doctor.REINIT + f" --agent {harness}")
+        self.assertEqual(got["D-HOOKS-EVENT"]["fix"], doctor.REINIT)   # collect() adds --agent (NoHooksChosen)
 
     def test_cursor_fail_closed_on_an_event_but_a_tool_call_warns(self):
         # Cursor blocks the event when a failClosed hook can't run: a person's prompt (beforeSubmitPrompt) too
@@ -905,21 +905,25 @@ class NoHooksChosen(unittest.TestCase):
             got = next(r for r in doctor.v2_checks({"data_dir": d}, no_hooks=chosen) if r["id"] == "D-HOOKS-PRESENT")
             self.assertEqual((got["status"], got["detail"]), want)
 
-    def test_the_reinit_fix_keeps_no_hooks_where_init_was_told_it_or_the_plugin_hooks(self):
+    def test_the_reinit_fix_keeps_inits_agent_and_no_hooks(self):
         """Doctor's re-init fix had no --no-hooks, while plugin/README.md runs system init with it: a plugin user who
         followed the fix got init's hooks beside the plugin's (D-HOOKS-PRESENT then warned), and an SDK agent's
-        host got Claude Code hooks it had declined (#464)."""
+        host got Claude Code hooks it had declined (#464). Not over init --managed's hooks: --no-hooks there removed
+        them, leaving the plugin's, which the agent's user can turn off. Nor did it name init's agent, so another
+        coding agent's host was set up again for Claude Code."""
         row = doctor.result("D-TAILER-CONFIG", "warn", "detail", doctor.REINIT)
         plugin = ("/home/a/.claude/settings.json", install.PLUGIN)
-        for hooks, enabled, want in (({"no_hooks": True}, None, True), ({}, plugin, True),
-                                     ({"agent": "codex"}, plugin, False), ({}, None, False)):
+        for hooks, enabled, want in (({"no_hooks": True}, None, " --no-hooks"), ({}, plugin, " --no-hooks"),
+                                     ({"agent": "codex"}, plugin, " --agent codex"), ({}, None, ""),
+                                     ({"settings": install.MANAGED_SETTINGS["linux"]}, plugin, ""),
+                                     ({"agent": "codex", "no_hooks": True}, None, " --agent codex --no-hooks")):
             sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **hooks}}
             with self.subTest(hooks=hooks, plugin=enabled), \
                     mock.patch.object(doctor.client, "system_config", return_value=sc), \
                     mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
                     mock.patch.object(install, "plugin_enabled", return_value=enabled), \
                     mock.patch.object(doctor, "v2_checks", return_value=[row]):
-                self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + " --no-hooks" * want)
+                self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + want)
 
 
 class FirstDay(unittest.TestCase):
