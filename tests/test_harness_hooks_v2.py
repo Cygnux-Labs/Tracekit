@@ -1371,10 +1371,14 @@ class Installer(unittest.TestCase):
                     with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True, json_deny=False: old(run, unless, json_deny=json_deny)):
                         init()   # as init before 1.3 wrote it
                     init()
-                    with open(path) as f:
-                        blob = json.load(f)
-                    hooks = [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
-                             for g in groups for h in (g["hooks"] if "hooks" in g else [g])]
+                    if harness == "jcode":
+                        table = agent_hooks.jcode_config(path)["hooks"]
+                        hooks = [(ev, {"command": table[key]}) for key, ev in agent_hooks.JCODE_EVENTS.items()]
+                    else:
+                        with open(path) as f:
+                            blob = json.load(f)
+                        hooks = [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
+                                 for g in groups for h in (g["hooks"] if "hooks" in g else [g])]
                     for ev, h in hooks:
                         p = subprocess.run(h["command"], shell=True, input="{}", capture_output=True, text=True,
                                            timeout=30)

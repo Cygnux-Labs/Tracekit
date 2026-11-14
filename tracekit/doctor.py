@@ -841,12 +841,13 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
                 "no other CodeBuddy Code PreToolUse hook runs after Tracekit's",
                 "have no hook that runs after Tracekit's answer permissionDecision allow, or remove it", bad=WARN)
         if harness == "jcode":   # jcode runs its gates in order, and one's updatedInput replaces the input the next
-            # gates get and the tool runs with. Tracekit's is the exact command init writes (one that only names its
-            # module may answer anything), as for CodeBuddy Code
+            # gates get and the tool runs with. Find the first Tracekit module even under another interpreter;
+            # any later gate but an exact command init writes may rewrite the call, as for CodeBuddy Code
             gates = [h["command"] for h in hooks.get("PreToolUse", ())]
             mine = {agent_hooks._command("jcode", "PreToolUse", v2, python)
                     for v2 in (True, False) for python in (None, install.OPT_PYTHON)}
-            after = [c for c in gates[next((i for i, c in enumerate(gates) if c in mine), len(gates)):] if c not in mine]
+            start = next((i + 1 for i, c in enumerate(gates) if agent_hooks._version(c) is not None), len(gates))
+            after = [c for c in gates[start:] if c not in mine]
             add("D-HOOKS-ORDER", not after,
                 f"{len(after)} jcode pre_tool command(s) in {path} run after Tracekit's: a gate's updatedInput replaces "
                 "the input of the call Tracekit decided" if after else "Tracekit's is the last jcode pre_tool command",
