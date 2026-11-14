@@ -31,10 +31,10 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` is a Claude Code transcripts' folder (Cursor's with `--agent cursor`, Cline's with `--agent cline`, and
-  another agent's once it has a reader); a folder that doesn't exist is an error (exit 2). With no ROOT and no
-  `--calls`, audit reads every known
-  agent's default folder that exists (see [What it reads](#what-it-reads)), and exits 2 when there is none.
+- `ROOT` is a Claude Code transcripts' folder (Cursor's with `--agent cursor`, Cline's with `--agent cline`,
+  Gemini CLI's with `--agent gemini`, and another agent's once it has a reader); a folder that doesn't exist is
+  an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's default folder that exists
+  (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
   file: a pipe (as `<(...)` gives) goes to `--calls -`. A file it can't open, or `--calls -` with no standard input,
   exits 2 with the reason; for a FILE that isn't a regular file, what it is: a directory, a pipe, a symlink (audit
@@ -46,8 +46,9 @@ denied and held calls (--all for every call):
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
   `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with
-  `--calls`. An agent with no reader (every agent but `claude`, `cursor` and `cline`) needs `--calls FILE`, and
-  `--agent claude`, `cursor` or `cline` a ROOT or `--calls FILE`: without them it exits 2.
+  `--calls`. An agent with no reader (every agent but `claude`, `cursor`, `cline` and `gemini`) needs
+  `--calls FILE`, and `--agent claude`, `cursor`, `cline` or `gemini` a ROOT or `--calls FILE`: without them it
+  exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
   without a timestamp is kept. A `--since` that isn't in the past, or that no date can name, exits 2.
@@ -78,6 +79,7 @@ One reader per agent, each with its default folder:
 | `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
 | `cursor` | `~/.cursor/projects` |
 | `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
+| `gemini` | `$GEMINI_CLI_HOME/.gemini/tmp` when it is set, else `~/.gemini/tmp` |
 
 The line after the policy, `read:`, names each agent read, its folder (the calls file's path, or `-`, with
 `--calls`), and its calls and sessions; `--json` has the same under `agents`, and gives each call its `agent`. An
@@ -110,6 +112,24 @@ it, so every command of a `run_commands` and every file of a `read_files` is dec
 deny by `TK-HOOK-BLOCKED`. A message's `ts` is its time, else the file's modification time. The task's id is its
 session. A file that isn't JSON of that shape counts as one malformed entry. A call an older task wrote as XML in the
 message's text, rather than as a `tool_use` block, isn't read.
+
+Gemini CLI's reader reads each project's `chats` folder under its tmp folder (give that, `~/.gemini`, one project's
+folder or its `chats` folder as ROOT; any other folder is refused, naming the one to give): `<project>/chats/session-*.jsonl` (JSON
+lines, since Gemini CLI 0.39), `<project>/chats/session-*.json` (one JSON object a session, before 0.39), and a
+subagent's `<project>/chats/<parent session id>/<id>.jsonl` (`<id>.json` before 0.39), which counts under its parent's
+session. The project's other files are not read, whatever the project is named. Tool calls are in a message's
+`toolCalls`, and in a `$set` line's full history; Gemini CLI writes a message again each time it updates, so a call
+counts once, by its id, as its last copy has it. A call stays counted after a `$rewindTo`: the conversation dropped it,
+but the agent made it. Each call is decided as Gemini CLI's Tracekit hook decides it, so `run_shell_command` is decided
+as `Bash`. A record whose messages or tool calls aren't the lists and objects Gemini CLI writes counts as one malformed
+entry.
+
+Two kinds of Gemini CLI session aren't in the default folder. When Gemini CLI runs in its macOS Seatbelt sandbox (turned
+on with `-s` or `GEMINI_SANDBOX`, which sets `SANDBOX=sandbox-exec` inside it), its runtime state, sessions included, is
+in `~/.cache/.gemini/tmp` (under `$GEMINI_CLI_HOME` when that is set): read it with `tracekit audit
+~/.cache/.gemini/tmp --agent gemini`. And Gemini CLI deletes sessions older than 30 days by default
+(`general.sessionRetention`), so older calls can't be audited: set a longer `general.sessionRetention.maxAge` in its
+settings to keep them.
 
 The readers follow no symlink. Files and folders they can't read are counted and skipped, and so is a line that isn't
 JSON.
