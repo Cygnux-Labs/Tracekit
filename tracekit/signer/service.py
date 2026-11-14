@@ -327,8 +327,8 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, provenance, \
-    public_witness, yamlmini
+from tracekit import __version__, bundle_v2, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, \
+    provenance, public_witness, yamlmini
 from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
@@ -351,7 +351,7 @@ from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
-from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
+from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageCorrupt, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
@@ -440,9 +440,20 @@ OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
 # heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's;
-# channel_open: a box_daemons identity's alone, whatever `authorize` lists
+# channel_open: a box_daemons identity's alone, whatever `authorize` lists; export_run: any run of the caller's tenant
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
-                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open"}) | OPERATOR
+                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open",
+                           "export_run"}) | OPERATOR
+EXPORT_CHUNK = (MAX_LINE - 4096) // 4 * 3   # bundle bytes per export_run answer: their base64 fits one frame
+# what an identity granted export_run may also call: calls that write nothing, so no agent's identity downloads runs
+EXPORT_READS = frozenset({"status", "read", "approval_get", "approval_list", "grant_list", "incident_list",
+                          "incident_show"})
+# export_run: bundles kept whole in memory for their later chunks, in all and per tenant; one unused for EXPORT_IDLE_S
+# may be dropped for another tenant's. Bundles built at once, one per tenant; builds per identity and per tenant.
+# lean: fixed sizes and rates; make them config keys, or spill bundles to disk, once tenants download large runs at once
+EXPORT_KEPT_BYTES, EXPORT_TENANT_BYTES, EXPORT_IDLE_S = 1 << 30, 1 << 28, 300
+EXPORT_BUILDS, EXPORT_RETRY_MS = 2, 1000
+EXPORT_RATES = Limits(events_per_s=1 / 6, burst=10), Limits(events_per_s=1 / 2, burst=30)   # per identity, per tenant
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
 CONTENT_SWEEP_S = 3600.0
@@ -503,11 +514,13 @@ def evaluate(policy, tool, args, hint=None, untrusted=None):
             mcps = [f"mcp:{server}/{name}"]
         elif tool.startswith("mcp__"):
             # Gemini CLI's mcp_<server>_<tool> (agent_hooks names it mcp__<server>_<tool>) doesn't say which `_`
-            # ends the server's name: each of the first eight is tried, and the call is also decided as an unknown
-            # tool, as before it was named an MCP one (the server packs hold it)
-            # lean: a server name of more than seven underscores reaches the mcp: mappings under no split
+            # ends the server's name, nor Copilot CLI's <server>-<tool> (mcp__<server>-<tool>) which `-`: each of the
+            # first eight of either is tried, and the call is also decided as an unknown tool, as before it was named
+            # an MCP one (the server packs hold it)
+            # lean: a server name of more than seven of its separator reaches the mcp: mappings under no split
             rest = tool[5:]
-            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for i in [i for i, c in enumerate(rest) if c == "_"][:8]]
+            mcps = [f"mcp:{rest[:i]}/{rest[i + 1:]}" for sep in "_-"
+                    for i in [i for i, c in enumerate(rest) if c == sep][:8]]
             d = _stricter(d, policy.decide(tool, args, "unknown", untrusted))
         elif tool == "PowerShell":
             # Claude Code's PowerShell tool is an unknown tool (held on the server packs), and is also read as a
@@ -929,6 +942,20 @@ class SignerService:
             raise ValueError(f"authorize grants {', '.join(both)} both register_run and containment's operator calls: "
                              "an agent's identity can't operate its own containment; give operators an identity of "
                              f"their own ({wiki_url('docs/incidents.md')})")
+        exporters = [k for k, m in authorize.items() if "export_run" in m]
+        both = [f"{k} ({', '.join(sorted(w))})" for k in sorted(exporters)
+                if (w := set(authorize[k]) - EXPORT_READS - {"export_run"})]
+        if both:
+            raise ValueError(f"authorize grants export_run with calls that write: {'; '.join(both)}. An identity an "
+                             "agent writes through would download every run of its tenant and the policy they cite; "
+                             f"export_run goes with {', '.join(sorted(EXPORT_READS))} only, so give the people who "
+                             f"download runs an identity of their own ({wiki_url('docs/remote-ingest.md')})")
+        # a token or OIDC identity can carry its tenant (a token's --tenant, an issuer's tenant claim): checked per call
+        loose = sorted(k for k in exporters if k.split(":", 1)[0] not in ("token", "oidc", "person", "group")
+                       and lookup(dict(tenants or {}), k) is None)
+        if loose:
+            raise ValueError(f"authorize grants export_run to {', '.join(loose)}, which `tenants` gives no tenant: "
+                             "export_run reads the caller's own tenant, never the default one; map each in `tenants`")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
@@ -1030,6 +1057,10 @@ class SignerService:
         self._passkeys_lock = threading.Lock()
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
+        # export_run: run key -> {latest: the latest note's size when built, sha, data, used: monotonic}, least recently
+        # used first; tenant -> the run it is building; and the build rates per identity and per tenant (EXPORT_RATES)
+        self._exports, self._exports_lock, self._building = collections.OrderedDict(), threading.Lock(), {}
+        self._export_quotas = tuple(Quotas(r) for r in EXPORT_RATES)
         self._stop, self._nudged, self._checkpointing = threading.Event(), threading.Event(), threading.Lock()
         self.origin = origin or f"tracekit.local/{self.log.log_id}"
         self.contact, self.witnesses = contact or self.origin, list(witnesses)
@@ -1241,16 +1272,21 @@ class SignerService:
         if self._is_agent(identity) and method not in AGENT_METHODS:   # whatever its groups or prefixes are granted
             raise RPCError("forbidden", f"{subject(identity)[:256]} is an agent approver: it is not authorized for "
                                         f"{method}")
-        found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
-        granted = {m for g in found for m in g}
-        if not found and not self._is_agent(identity):   # unconfigured: a uid or the dev token (scoped by DevToken)
-            granted = DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
-        if identity.scheme == "box":   # a box's agent channel, whatever the config says
-            granted = CHANNEL_METHODS
-        elif method == "channel_open":   # a Box daemon's, never an authorize grant
+        granted = self._granted(identity)
+        if method == "channel_open" and identity.scheme != "box":   # a Box daemon's, never an authorize grant
             granted = {method} if subject(identity) in self.box_daemons else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
+
+    def _granted(self, identity):
+        """What `identity` may call: its `authorize` entries together; unconfigured, a uid's or the dev token's
+        defaults (DevToken scopes the token); a box's agent channel, its methods whatever the config says."""
+        if identity.scheme == "box":
+            return CHANNEL_METHODS
+        found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
+        if not found and not self._is_agent(identity):
+            return DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else frozenset()
+        return {m for g in found for m in g}
 
     def _is_agent(self, identity):
         return subject(identity) in self._agents
@@ -2265,10 +2301,14 @@ class SignerService:
             raise RPCError("forbidden", "not from the run's harness process")
 
     def _tenant_of(self, identity):
-        """The identity's tenant: `tenants`, else the tenant its named token was issued for (or its OIDC issuer's
-        tenant claim, or a box channel's box run's), else the default."""
+        """The identity's tenant: its own (_own_tenant), else the default."""
+        return self._own_tenant(identity) or self.tenant
+
+    def _own_tenant(self, identity):
+        """`tenants`' tenant for the identity, else the tenant its named token was issued for (or its OIDC issuer's
+        tenant claim, or a box channel's box run's), else None."""
         token = identity.claims.get("tenant") if identity.scheme in ("token", "oidc", "box") else None
-        return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token or self.tenant
+        return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token
 
     def _certified(self, tenant):
         """RPCError forbidden for a tenant the record key's certificate does not cover: its records would not verify."""
@@ -3011,7 +3051,7 @@ class SignerService:
         # the provenance index: only an untrusted tool's results (any other tool may echo what the agent put in its
         # arguments, which would launder an injected value into trusted content), read before redaction (HMACs in
         # memory only), so a value next to a secret's label still counts. A digest instead of the result: partial.
-        tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: decided before a restart
+        tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: no decision record names it
         keys, overflow, missing = [], False, False
         if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool):
             keys, overflow = self._keys({k: req[k] for k in ("result", "error") if k in req})
@@ -4631,6 +4671,128 @@ class SignerService:
         except (OSError, StorageUnavailable) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         return {"events": events, "next_seq": next_seq}
+
+    def _export_run(self, identity, req):
+        """Bytes `offset` on of the .tkb bundle of run `run_id` of the caller's tenant: with `digest`, of that bundle,
+        kept since a chunk before (else conflict: the download starts again); else of its bundle now, kept since the
+        latest checkpoint or built. The tenant is the identity's own (_export_tenant), so another tenant's run is
+        refused as a run that doesn't exist. No build waits for another: one at a time per tenant and EXPORT_BUILDS in
+        all, else unavailable; each spends one of the identity's and one of the tenant's (EXPORT_RATES)."""
+        key, digest = (self._export_tenant(identity), req["run_id"]), req.get("digest")
+        if key not in self.log.runs:
+            raise RPCError("unknown_run", req["run_id"])
+        self.quotas.take_event(identity)
+        # read before the lock (a query on Postgres), and only for a new download: a chunk names its bundle
+        latest = None if digest else (self.log.storage.checkpoint_latest() or (0,))[0]
+        with self._exports_lock:   # never held while a bundle is built
+            kept = self._exports.get(key)
+            if digest is not None and (kept is None or kept["sha"] != digest):
+                raise RPCError("conflict", f"the signer no longer holds that bundle of run {key[1]} (a newer checkpoint, "
+                                           "or unused too long): download it again from its first chunk")
+            if kept is not None and (digest is not None or kept["latest"] == latest):
+                kept["used"] = time.monotonic()
+                self._exports.move_to_end(key)
+            elif key[0] in self._building or len(self._building) >= EXPORT_BUILDS:
+                raise RPCError("unavailable", "the signer is building " + (
+                    "another bundle of your tenant" if key[0] in self._building else
+                    "as many bundles as it builds at once") + ": ask again", retry_after_ms=EXPORT_RETRY_MS)
+            else:
+                for spend in (0, 1):   # check both, then spend both
+                    for quotas, bucket, whose in zip(self._export_quotas, (quota_key(identity), key[0]),
+                                                     ("your identity's", "your tenant's")):
+                        quotas.take(bucket, f"{whose} bundle builds are spent for now (export_run)", spend)
+                self._building[key[0]], kept = key[1], None
+        if kept is None:
+            try:
+                data = self._export_bytes(key)
+                kept = {"latest": latest, "sha": "sha256:" + hashlib.sha256(data).hexdigest(), "data": data,
+                        "used": time.monotonic()}
+                with self._exports_lock:
+                    self._keep(key, kept)
+            finally:
+                with self._exports_lock:
+                    del self._building[key[0]]
+        offset, data = req.get("offset", 0), kept["data"]
+        if offset > len(data):
+            raise RPCError("invalid_request", f"offset {offset} is past the bundle's {len(data)} bytes")
+        return {"digest": kept["sha"], "size": len(data), "offset": offset,
+                "data": base64.b64encode(data[offset:offset + EXPORT_CHUNK]).decode("ascii")}
+
+    def _export_tenant(self, identity):
+        """The tenant export_run reads: the caller's own, as `tenants` or its token or OIDC issuer names it, never the
+        default one. An identity its keys together also grant a call that writes (beyond EXPORT_READS: the startup
+        check sees each `authorize` entry alone) may be one an agent writes through: refused."""
+        writes = self._granted(identity) - EXPORT_READS - {"export_run"}
+        if writes:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is also granted calls that write "
+                                        f"({', '.join(sorted(writes))[:512]}): runs are downloaded by an identity that "
+                                        "only reads")
+        tenant = self._own_tenant(identity)
+        if tenant is None:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} has no tenant of its own: export_run needs one, from "
+                                        "`tenants` or a token issued with --tenant")
+        return tenant
+
+    def _keep(self, key, entry):
+        """Keep bundle `entry` of run `key` for its later chunks (under _exports_lock), within EXPORT_TENANT_BYTES for
+        its tenant and EXPORT_KEPT_BYTES in all: bundles unused for EXPORT_IDLE_S go first, then the tenant's own,
+        least recently used first. Another tenant's bundle in use is never dropped: when those leave no room,
+        unavailable, with nothing dropped."""
+        size = len(entry["data"])
+        if size > EXPORT_TENANT_BYTES:
+            raise RPCError("quota_exceeded", f"the bundle of run {key[1]} is {size >> 20} MiB, over the "
+                                             f"{EXPORT_TENANT_BYTES >> 20} MiB a tenant's downloads may hold: ask the "
+                                             "signer's operator for it")
+        idle = [k for k, e in self._exports.items() if entry["used"] - e["used"] > EXPORT_IDLE_S]
+        if sum(len(e["data"]) for k, e in self._exports.items() if k[0] != key[0] and k not in idle) + size > \
+                EXPORT_KEPT_BYTES:
+            raise RPCError("unavailable", "the signer holds as many bundles as it keeps, for other tenants' downloads: "
+                                          "ask again", retry_after_ms=EXPORT_RETRY_MS)
+        for k in [*idle, key]:
+            self._exports.pop(k, None)
+
+        def held(tenant=None):
+            return sum(len(e["data"]) for k, e in self._exports.items() if tenant in (None, k[0]))
+        mine = [k for k in self._exports if k[0] == key[0]]
+        while held(key[0]) + size > EXPORT_TENANT_BYTES or held() + size > EXPORT_KEPT_BYTES:
+            del self._exports[mine.pop(0)]
+        self._exports[key] = entry
+
+    def _export_bytes(self, key):
+        """The .tkb bytes of run `key`, as `tracekit export --v2 --run` writes them from this signer's store: read to
+        the note bundle_v2.covering picks, by a reader opened after it, with the compiled policies its records cite.
+        While no note covers the run's last record: a nudge, and unavailable with a retry hint."""
+        cfg = {"data_dir": self.data_dir, "storage": self.storage_config}
+        try:
+            r = reader(cfg)
+            try:
+                run = r.runs.get(key)
+                note = run and bundle_v2.covering(r, run["seqs"][-1])
+            finally:
+                r.close()
+            if not note:
+                self._nudged.set()
+                raise RPCError("unavailable", f"no checkpoint covers run {key[1]} yet; the signer is writing one: ask "
+                                              "again", retry_after_ms=int(CHECKPOINT_MIN_S * 1000))
+            # lean: each reader indexes the whole store, O(records), as the operator's export does; keep one open and
+            # update() it once exports are frequent on a large store
+            r = reader(cfg)   # opened after the note: holds its records
+            try:
+                files, _ = bundle_v2.bundle(r, *key, note[1], policy_dir=os.path.join(self.data_dir, "policies"))
+            finally:
+                r.close()
+        except ValueError as e:   # over the format's limits
+            raise RPCError("quota_exceeded", str(e)) from None
+        except (OSError, StorageUnavailable, StorageCorrupt) as e:
+            raise RPCError("unavailable", f"storage read failed: {e}") from None
+        # lean: refused whole; per-tenant record keys or a blinded tenant list in certificates is a format change
+        named = {t for line in files["keys/records.jsonl"].splitlines()
+                 for k in json.loads(line)["event"]["data"].get("keys", ()) if "cert" in k
+                 for t in k["cert"]["certificate"]["cert"]["tenants"]}
+        if named - {key[0]}:
+            raise RPCError("forbidden", "a bundle of this signer holds its record-key certificates, which name tenants "
+                                        "other than yours: ask the signer's operator to export the run")
+        return bundle_v2.zipped(files)
 
     def _checkpoint_nudge(self, identity, req):
         self._nudged.set()
