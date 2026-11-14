@@ -10,19 +10,23 @@ after the action it records the outcome. It works with any object that implement
 ## Install
 
 ```bash
-pip install tracekit-ai "browser-use>=0.13.11,<0.14"
+pip install tracekit-ai "browser-use>=0.13.11,<1.1"
 ```
 
-Python 3.11 or newer (browser-use's own requirement). Every push tests the adapter against a stand-in for Browser Use's
-action registry; its contract against the real library runs nightly, with the newest browser-use release, so a
-release outside 0.13 may be what it last ran against. Browser Use is imported only to build the result of a refused
-action and to read its action timeout.
+Python 3.11 or newer (browser-use's own requirement). Tested with 0.13.11, 1.0.2 and 1.0.3. Every push runs the 0.13
+adapter contract; the 1.0 one, over `BrowserLoop` and `Repl.call` on the real classes, runs in the nightly
+adapter-contract job against browser-use `@latest`. On 0.13 the adapter wraps
+the action registry; on 1.0 it wraps `BrowserLoop.wrap_tool_execute`, which every function tool, the `python` cell
+included, passes through, and `Repl.call`, which runs the `finish_from_repl` delivery (an output tool gets no tool
+hook) and every cell as `exec`. Browser Use is imported only to build the result of a refused action, to read its
+action timeout and, on 1.0, to find those seams.
 
 ## Setup
 
-`import tracekit; tracekit.instrument()` before the agent is built wires it all: every `Tools` built afterwards (an
-`Agent` builds one when you pass none) has its actions gated, all on one signer stream, and Browser Use's model calls
-through the OpenAI, Anthropic and Google Gen AI SDKs are recorded (autotrace). By hand:
+`import tracekit; tracekit.instrument()` before the agent is built wires it all: on 0.13 every `Tools` built afterwards
+(an `Agent` builds one when you pass none) has its actions gated; on 1.0 every function tool Browser Loop runs, the
+`python` cell included, is. All of them are on one signer stream, and Browser Use's model calls through the OpenAI,
+Anthropic and Google Gen AI SDKs are recorded (autotrace). By hand:
 
 ```python
 import tracekit.autotrace
@@ -40,9 +44,12 @@ await agent.run()
 run.close()
 ```
 
-`trace_tools(tools, signer, registered)` takes any signer RPC client and its `register_run` response. Wrap each
-`Tools` once, and don't also call `instrument()` in the same process: the action would be decided twice. Actions run
-through any other registry are not seen. Model calls can also go through the [LLM gateway](../gateway.md).
+`trace_tools(tools, signer, registered)` takes any signer RPC client and its `register_run` response. On 0.13, wrap
+each `Tools` once, and don't also call `instrument()` in the same process: the action would be decided twice. On 1.0
+the seam is Browser Loop itself, one per process: `trace_tools` returns the `Tools` it was given, and a second run
+(or `instrument()` after `trace_tools`) is refused (raised, or under `instrument()` reported as not wired) rather than
+silently replacing the first. Actions run through any other registry are not seen. Model calls can also go through
+the [LLM gateway](../gateway.md).
 
 Observe the task as `trusted` from your application: the hosts, addresses and values it names then count as trusted,
 and provenance holds only what a page alone brought in ([policy](../policy-v2.md#provenance-untrusted-and-from-untrusted)).
@@ -55,9 +62,24 @@ and provenance holds only what a page alone brought in ([policy](../policy-v2.md
 | before the action runs | `decide` | a fresh `tool_call_id`, the tool as `browser_use:<action>`, `tool_class_hint: browser`, the args below (`parsed`) |
 | right before it runs | `approval_consume` | the same call and args, and the approval id when the action waited for one |
 | after it runs | `complete` | `status` `ok`, or `error` for an `ActionResult` with an error; the result (a page's content is untrusted, so the signer indexes it for provenance), or the exception type and message |
+| on 1.0, before the delivery runs | `decide` | a fresh `tool_call_id`, `browser_use:finish_from_repl`, its source (`expression`) as args |
+| after the delivery ran | `complete` | `status` `ok`, or `error` when the expression raised |
 
-The args are the action's params plus `page_url`, the URL of the page the action ran on: empty when there is none, or
-when Browser Use doesn't say within 2 s (an allowlist rule never exempts an empty `page_url`).
+On 1.0, the `python` cell is a tool like the others: its decide names it `browser_use:python` and reads the cell's
+source (`code`), not the browser calls the cell makes when it runs. A cell that raises is completed as `error`: Browser
+Use hands the traceback to the model as the cell's text, so the completion carries the text and the error status. The
+`finish_from_repl` delivery is an output tool, which Pydantic AI runs without the tool hook above: it is decided and
+completed at `Repl.call`, which is where its expression runs. `Repl.call` gates both ops it runs. The `python` cell's
+`exec` is the one the tool hook just decided: it marks that cell's code in a context variable, and the `exec` runs
+without a second decision. An `exec` from anywhere else, which a later release could add, is decided as
+`browser_use:python` before it runs. 1.0's `Session`, the agent's deps, holds the REPL and the run's state but no
+browser session, so no page is observed and `page_url` is always `""`. The shipped packs allow every cell and every
+delivery until a source reader lands: to hold one, write your own rule for `browser_use:python` or
+`browser_use:finish_from_repl`.
+
+The args are the action's params plus `page_url`, the URL of the page the action ran on: empty when there is none,
+when Browser Use doesn't say within 2 s, or on 1.0, whose `Session` has no browser session (an allowlist rule never
+exempts an empty `page_url`).
 
 The page is observed so that a host the agent reached without naming it (a link it clicked in a mail) is in the run's
 provenance index: typing there, or navigating there with data in the query string, is then held by TK-P003 unless your
@@ -90,7 +112,9 @@ digest as `[REDACTED:typed_secret]`.
 
 - **allow**: the action runs.
 - **deny**: the action is skipped. The agent gets an `ActionResult` whose error is
-  `Action blocked by policy: <rule ids>`, and the run goes on.
+  `Action blocked by policy: <rule ids>`, and the run goes on. On 1.0 a refused `finish_from_repl` is not delivered:
+  the model is told `Action blocked by policy: <rule ids>` and the run goes on, so it can deliver another way. A
+  refused `exec` no python tool call decided raises `tracekit.Refused` and does not run.
 - **ask**: the adapter opens an approval in the signer and holds the action while it waits for a person, up to
   `approval_wait_s` seconds. Browser Use cancels an action at its own action timeout (`BROWSER_USE_ACTION_TIMEOUT_S`,
   180 s by default), the wait included, so the wait is by default, and at most, five sixths of it (150 s), leaving
@@ -206,3 +230,6 @@ carries no model call id, so they are not linked to the actions. Which framework
 - What the page itself does (scripts, redirects after a click) is not an action and is not seen.
 - A link's target the model never read (an `href` Browser Use doesn't show it) enters the provenance index only once
   the agent is on that page (its URL is in the next step's browser state).
+- On 1.0, no page is observed and `page_url` is empty, and a `python` cell's browser calls run inside the cell, not as
+  actions: Tracekit decides the cell's source and records its outcome, not each call it makes. The same goes for the
+  `finish_from_repl` expression: its source is decided, not the calls it makes.
