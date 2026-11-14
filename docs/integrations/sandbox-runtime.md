@@ -91,7 +91,8 @@ Each request is decided as the tool `srt:request`, class `http`, with these argu
   isn't a path (absolute-form `https://host/path`, or `*`) is refused (`400`).
 - `body` is the SHA-256 of the request body. It is there for a request other than GET, HEAD or OPTIONS whose headers
   announce a body. Tracekit asks srt-proxy for the body (up to 32 MiB) and refuses a longer one (`413`).
-- The policy's `http` rules apply. The dev pack allows every request and flags it (`TK-F002`, `TK-F012`). The
+- The policy's `http` rules apply. The dev pack allows every request and flags it (`TK-F002`; `TK-F012` too, unless its
+  URL is on this machine or a plain one: a host name and no query string). The
   server pack denies internal addresses and names (`TK-N001`, `TK-N003`) and data sent outside its allowlist
   (`TK-N002`) ([policy](../policy-v2.md#packs-shipped)). Write `ask` rules for the requests a person should see. A
   policy that extends no shipped pack maps the tool itself (`tools: {'srt:request': http}`).

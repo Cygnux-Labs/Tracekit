@@ -86,10 +86,20 @@ class Packs(unittest.TestCase):
         self.assertEqual(dev["extends"], server["extends"])   # the same parts
         self.assertEqual([r for r in dev["deny"] if r["id"] != "TK-DEMO-DENY"], server["deny"])
         self.assertEqual([r for r in dev["ask"] if r["id"] not in ("TK-A032", "TK-A056", "TK-A062", "TK-F019",
-                                                                   "TK-DEMO-ASK")], server["ask"])
-        self.assertEqual(dev["flag"][:len(server["flag"])], server["flag"])
-        self.assertEqual([r["id"] for r in dev["flag"][len(server["flag"]):]], ["TK-F018", "TK-F020", "TK-F021",
-                                                                                     "TK-F022", "TK-F023"])
+                                                                   "TK-A079", "TK-DEMO-ASK")], server["ask"])
+        # the server pack keeps the wider forms of the flags its detection counts (TK-F003, TK-F005, TK-F012, TK-F013);
+        # the laptop has no detection, and the coding pack's narrower ones
+        wide = ("TK-F003", "TK-F005", "TK-F012", "TK-F013")
+        coding = {r["id"]: r for r in pc.build(os.path.join(PACKS, "coding.yaml"))[0]["flag"]}
+        self.assertEqual([r["id"] for r in server["flag"][-4:]], list(wide))
+        self.assertEqual([(r.get("field"), "unless" in r) for r in server["flag"][-4:]],
+                         [("line", False), ("target", True), ("target", False), (None, False)])   # F005: the templates'
+        self.assertTrue(all(r != coding[r["id"]] for r in server["flag"][-4:]))
+        self.assertEqual([r for r in dev["flag"] if r["id"] in wide], [coding[i] for i in wide])
+        mine = [r for r in server["flag"] if r["id"] not in wide]
+        self.assertEqual([r for r in dev["flag"] if r["id"] not in wide][:len(mine)], mine)
+        self.assertEqual([r["id"] for r in dev["flag"] if r["id"] not in wide][len(mine):],
+                         ["TK-F018", "TK-F020", "TK-F021", "TK-F022", "TK-F023"])
         self.assertEqual((dev["unknown_tools"], server["unknown_tools"]), ("flag", "ask"))
         self.assertFalse({"sequences", "limits", "respond"} & set(dev))   # no detection: no `detect` on its decisions
         e = Engine(dev)
@@ -113,6 +123,22 @@ class Packs(unittest.TestCase):
                 self.assertIn(Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0]).decide(tool, args)["verdict"],
                               ("ask",) if tool == "run_sql" else ("allow", "flag"))
         self.assertEqual(e.decide("SomeUnmappedTool", {"x": 1})["verdict"], "flag")
+
+    def test_the_signer_flags_a_local_page_and_a_read_through_none_of_an_mcp_calls_names(self):
+        """The flag-noise report (2026-11-14): one session's browser testing of 127.0.0.1 was 369 of 587 flagged calls on
+        normal projects. The signer decides an MCP call under its mcp:<server>/<name> and bare names too; none of them
+        flags a navigation to this machine or a tool that reads, and a write or a page elsewhere still flags."""
+        e = Engine(pc.build(svc.DEFAULT_POLICY)[0])
+        for tool, args, want in (
+                ("mcp__claude-in-chrome__navigate", {"url": "http://127.0.0.1:8000/", "tabId": 7}, ("allow", [])),
+                ("mcp__claude-in-chrome__read_page", {"tabId": 7}, ("allow", [])),
+                ("mcp__github__list_issues", {"owner": "o", "repo": "r"}, ("allow", [])),
+                ("mcp__claude-in-chrome__navigate", {"url": "https://example.com/?q=1", "tabId": 7}, ("flag", ["TK-F012"])),
+                ("mcp__github__create_issue", {"owner": "o", "repo": "r", "title": "t"}, ("flag", ["TK-F006"])),
+                ("RemoteTrigger", {"action": "create", "body": {}}, ("ask", ["TK-A079", "TK-UNKNOWN-TOOL"]))):
+            with self.subTest(tool=tool, args=args):
+                d = svc.evaluate(e, tool, args)[0]
+                self.assertEqual((d["verdict"], sorted(d["rule_ids"])), (want[0], sorted(want[1])))
 
     def test_a_harness_message_is_read_for_secrets_and_addresses_not_file_names(self):
         """Review of #605: the harness class skipped every rule of no class, so a secret in a SendMessage or an Agent
@@ -162,7 +188,9 @@ class Packs(unittest.TestCase):
             self.assertEqual(e.decide(tool, {})["verdict"], "deny")
         for tool in ("tracekit_demo_ask", "mcp:demo/tracekit_demo_ask"):
             self.assertEqual(e.decide(tool, {})["verdict"], "ask")
-        self.assertEqual(e.decide("mcp:demo/list_files", {})["verdict"], "flag")
+        # TK-F006 flags an MCP tool that writes or sends, not one whose name says it reads (the flag-noise report)
+        self.assertEqual(e.decide("mcp:demo/write_file", {})["verdict"], "flag")
+        self.assertEqual(e.decide("mcp:demo/list_files", {})["verdict"], "allow")
 
     def test_srt_requests_are_http_calls_in_every_pack(self):
         for name in ("dev.yaml", "coding.yaml", "server.yaml"):
@@ -4009,8 +4037,10 @@ class CodingPack(unittest.TestCase):
         credentials file written and TK-A011 and TK-A013 a startup item or hook. They are `effects` now, which only the
         rules that read them see: each decision here is the one before the tags (fc022a1), on both engines."""
         before = {   # (verdict, rule ids) at fc022a1: the coding pack's, the server pack's
-            "rm .env": (("flag", ["TK-F003", "TK-F005"]),) * 2,
-            "rm -f ./.env.test": (("flag", ["TK-F003", "TK-F005"]),) * 2,
+            # (the coding pack's TK-F003 reads a target in the project as the project's since the flag-noise report;
+            # the server pack keeps the wider TK-F003 its delete-burst limit counts)
+            "rm .env": (("flag", ["TK-F005"]), ("flag", ["TK-F003", "TK-F005"])),
+            "rm -f ./.env.test": (("flag", ["TK-F005"]), ("flag", ["TK-F003", "TK-F005"])),
             "rm ~/.ssh/id_rsa": (("flag", ["TK-F001", "TK-F003", "TK-F005"]),
                                  ("deny", ["TK-S004", "TK-F001", "TK-F003", "TK-F005"])),
             "rm .git/hooks/pre-commit": (("flag", ["TK-F003"]),) * 2,
@@ -4774,7 +4804,9 @@ class PackReading(unittest.TestCase):
                                 ("get_refund", {"id": "re_FAKE"}, "payment"), ("issue_receipt", {"order": "A-1"}, "payment")):
             with self.subTest(tool=tool):
                 self.assertEqual(self.server.decide(tool, args, cls)["verdict"], "allow")
-        self.assertEqual(self.server.decide("mcp:billing/get_refund", {"id": "re_FAKE"})["verdict"], "flag")
+        # an MCP tool whose name says it reads isn't flagged (TK-F006 since the flag-noise report); one that writes is
+        self.assertEqual(self.server.decide("mcp:billing/get_refund", {"id": "re_FAKE"})["verdict"], "allow")
+        self.assertEqual(self.server.decide("mcp:billing/update_refund", {"id": "re_FAKE"})["verdict"], "flag")
 
     def test_a_large_write_waits_for_a_person_on_the_laptop_pack_and_is_denied_on_a_server(self):
         """#604: the laptop pack has the server pack's TK-S002, which reads a Write's content for a secret: content
@@ -5617,7 +5649,17 @@ class StrictPack(unittest.TestCase):
         self.assertEqual(sorted(mine), ["TK-F004", "TK-F011", "TK-F013", "TK-F024"])
         for rid, r in mine.items():
             keys = ("pattern", "label") + tuple(k for k in ("field", "tool") if k in r or k in coding[rid])
+            if rid == "TK-F011":   # the coding pack's flag reads each assignment now (`target`) and adds a startup
+                # file named as a redirection's target alone; strict holds the wider form it always had
+                self.assertTrue(coding[rid]["pattern"].startswith(r["pattern"] + "|"))
+                self.assertEqual((r["field"], coding[rid]["field"]), ("command", "target"))
+                continue
             self.assertEqual({k: r.get(k) for k in keys}, {k: coding[rid].get(k) for k in keys})
+            # and without the coding pack's exemption of a request to this machine (TK-F013's unless)
+            self.assertNotIn("unless", r)
+        # the flags strict keeps wide: TK-F006 its own, the others through the server pack
+        flags = {r["id"]: r for r in self.pol["flag"]}
+        self.assertEqual((flags["TK-F006"]["pattern"], flags["TK-F003"].get("field")), (".*", "line"))
         self.assertNotIn("TK-F004", [r["id"] for r in self.pol["flag"]])
 
     def test_holds_denies_and_what_stays_a_flag(self):
