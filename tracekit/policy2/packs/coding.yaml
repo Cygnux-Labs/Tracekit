@@ -1096,6 +1096,8 @@ ask:
     # .clinerules/hooks and Documents/Cline/Hooks. $XDG_CONFIG_HOME/opencode and /kilo, and the folder
     # $XDG_CONFIG_HOME itself, are matched by the variable's name. The agy, goose, Droid and Devin paths are TK-F009's,
     # and a delete of a whole .agents folder (agy's hooks.json with it), or .clinerules or Cline folder (its hooks).
+    # So is .agents/skills/ (a project's or the home's), whose skills OpenHands runs each !`cmd` line of: a shell write's
+    # text isn't read, so every one there is held (a file tool's only with a !`cmd`: TK-A083).
     # PowerShell's profiles are TK-F009's, and
     # $PROFILE by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other
     # three), in any case.
@@ -1106,7 +1108,7 @@ ask:
     # only the worktree (`x/`, `x/.`, `x//`).
     # lean: a worktree path with more than 32 parts after the worktree is flagged, so the search for a `..` stays
     # bounded and the fallback engine linear; read deeper if a real worktree nests further
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|openhands|copilot)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\.github[/\\](?:hooks(?:[/\\]|$)|copilot[/\\]settings[^/\\]*\.json$)|etc[/\\]github-copilot(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.(?:claude|codebuddy)(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|(?:plugins|recipes|agents)(?:[/\\]|$))|\.goose[/\\](?:recipes|agents)(?:[/\\]|$)|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin|gptme)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|gptme(\.local)?\.toml$|\.claude\.json$|\$\{?(?:QWEN_HOME|CODEBUDDY_CONFIG_DIR|CODEBUDDY_PROJECT_CONFIG_DIR)\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?(?:\.(?:codex|gemini|opencode|kilo|kilocode|qwen|factory|devin|cline|openhands|copilot)(?:[/\\]|$)|(?:\.clinerules[/\\]hooks|cline[/\\]hooks)(?:[/\\]|$)|\.github[/\\](?:hooks(?:[/\\]|$)|copilot[/\\]settings[^/\\]*\.json$)|etc[/\\]github-copilot(?:[/\\]|$)|\$\{?(?:XDG_CONFIG_HOME|xdg_config_home)\}?(?:[/\\](?:opencode|kilo)(?:[/\\]|$)|[/\\]?$)|\.(?:claude|codebuddy)(?:$|[/\\](?:[^w]|w[^o]|wo[^r]|wor[^k]|work[^t]|workt[^r]|worktr[^e]|worktre[^e]|worktree[^s]|worktrees[^/\\]|(?:w(?:o(?:r(?:k(?:t(?:r(?:e(?:e(?:s)?)?)?)?)?)?)?)?)?$|worktrees[/\\](?:[./\\]|[^/\\]*$|[^/\\]*[/\\][/\\.]*$|[^/\\]*(?:[/\\][^/\\]*){0,31}?[/\\]\.\.(?:[/\\]|$)|(?:[^/\\]*[/\\]){0,32}?[^/\\$`*?\[{]*[$`*?\[{]|[^/\\]*(?:[/\\][^/\\]*){32})))|\.agents[/\\](?:hooks\.json$|(?:plugins|recipes|agents|skills)(?:[/\\]|$))|\.goose[/\\](?:recipes|agents)(?:[/\\]|$)|(?:\.config[/\\](?:opencode|kilo|goose|crush|devin|gptme)|block[/\\]goose[/\\]config|appdata[/\\]roaming[/\\]devin)(?:[/\\]|$)|(?:crush\.json|\.crush\.json|crushrc|\.crushrc)$|(?:opencode|kilo)\.jsonc?$|gptme(\.local)?\.toml$|\.claude\.json$|\$\{?(?:QWEN_HOME|CODEBUDDY_CONFIG_DIR|CODEBUDDY_PROJECT_CONFIG_DIR)\}?(?:[/\\]|$)|(?:(?:documents|onedrive[^/\\]*[/\\][^/\\]+)[/\\](?:windows)?powershell|windowspowershell[/\\]v1\.0|powershell[/\\]7(?:-preview)?|\.config[/\\]powershell)[/\\][^/\\]*profile\.ps1$)|^(?:WRITE_TARGET|DELETE_TARGET):\$\{?(?:global:)?profile\}?(?:\.(?:currentuserallhosts|currentusercurrenthost|allusersallhosts|alluserscurrenthost))?$|^DELETE_TARGET:(?:[\w\W]*?[/\\])?(?:\.agents|\.clinerules|cline)[/\\]*$|^(?:WRITE_TARGET|DELETE_TARGET):[\w\W]*?(?:\.cursor[/\\](?:hooks|mcp)\.json|managed-settings|\.mcp\.json)'
     # Claude Code's memory notes, as TK-D008 reads them
     unless: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[\w\W]*?[/\\])?\.claude[/\\]projects[/\\][^/\\]+[/\\]memory[/\\][^/\\]+\.md$'
     label: harness_config
@@ -1114,25 +1116,9 @@ ask:
     remedy: Have a person approve the held call; a person changes the agent's settings, hooks and plugins.
     rationale: TK-F009 for the shell.
 
-  # --- commands a harness runs from a file it loads: goose's recipes, OpenHands' skills
-  - id: TK-A081
-    tool: delegate
-    field: source
-    # goose's delegate with a `source` runs that recipe or sub-agent, first starting the stdio extensions it names (a
-    # recipe's `extensions:` cmd and args), commands goose runs with no hook (platform_extensions/summon.rs); a
-    # delegate with only `instructions` names none. A source of any value is held
-    pattern: '^'
-    reason: running a goose recipe, whose extensions are commands goose starts unchecked
-    remedy: Have a person read the recipe's extensions and approve the held call; run commands through the shell tool, which Tracekit decides.
-    rationale: A recipe's stdio extensions start processes no hook decides; a person confirms the recipe first.
-  - id: TK-A082
-    tool: invoke_skill
-    # OpenHands' invoke_skill renders a loaded skill, running each !`cmd` in it with shell=True (openhands-sdk
-    # skills/execute.py): the commands are in the skill's file, not the call, so no rule reads them
-    pattern: '^'
-    reason: running an OpenHands skill, whose inline commands run unchecked
-    remedy: Have a person read the skill and approve the held call; run its commands through the terminal tool, which Tracekit decides.
-    rationale: The commands a skill runs aren't in the call; a person confirms the skill first.
+  # --- a skill that runs commands, written: the commands a harness runs from a file it loads are held when the file is
+  # written (goose's recipes, TK-F009 and TK-F015; an OpenHands skill, TK-F015 and this rule), and running one is
+  # flagged (TK-F025, TK-F026), as running a script the repository already has isn't held
   - id: TK-A083
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
@@ -1265,3 +1251,17 @@ flag:
     tool: LibraryUpload
     pattern: '^'
     label: egress
+  - id: TK-F025
+    tool: delegate
+    field: source
+    # goose's delegate with a `source` runs that recipe or sub-agent, first starting the stdio extensions it names (a
+    # recipe's `extensions:` cmd and args), commands goose runs with no hook (platform_extensions/summon.rs); a
+    # delegate with only `instructions` names none. Writing a recipe where goose loads it is held (TK-F009, TK-F015)
+    pattern: '^'
+    label: recipe_run
+  - id: TK-F026
+    tool: invoke_skill
+    # OpenHands' invoke_skill renders a loaded skill, running each !`cmd` in it with shell=True (openhands-sdk
+    # skills/execute.py): the commands are in the skill's file, not the call. Writing one is held (TK-A083, TK-F015)
+    pattern: '^'
+    label: skill_run

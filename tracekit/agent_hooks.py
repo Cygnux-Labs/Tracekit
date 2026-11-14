@@ -115,7 +115,7 @@ import urllib.parse
 from . import __version__, hook as H
 from .core import canon
 from .locking import lock_file, unlock_file
-from .policy2.classes import PATH_KEYS, first
+from .policy2.classes import _CI_WORKFLOW, PATH_KEYS, first, fs_forms
 
 # each harness, with the agent name its runs record: the one list init, uninstall and doctor take theirs from
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
@@ -174,10 +174,12 @@ CURSOR_EDITS = {"StrReplace": ("Edit", "path"), "search_replace": ("Edit", "file
                 "delete_file": ("Edit", "target_file"), "EditNotebook": ("NotebookEdit", "target_notebook"),
                 "edit_notebook": ("NotebookEdit", "target_notebook")}
 CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath", "target_notebook")
-# OpenCode 2.x names bash `shell` and task `subagent`, and its read, write and edit read `path` (1.x: `filePath`)
+# OpenCode 2.x names bash `shell` and task `subagent`, and its read, write and edit read `path` (1.x: `filePath`); its
+# experimental_image_generate writes `path`, and reads its `images` as Kilo's generate_image reads `image` (tool())
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
                   "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
-                  "task": "Task", "todowrite": "TodoWrite", "shell": "Bash", "subagent": "Task"}
+                  "task": "Task", "todowrite": "TodoWrite", "shell": "Bash", "subagent": "Task",
+                  "experimental_image_generate": "Write"}
 # goose's hooks guide, Tool Input Keys: the path a tool itself reads decides, as for OpenCode (read_image reads
 # `source`, not `path`: a decoy `path` beside it must not move the decision)
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
@@ -211,6 +213,12 @@ AGY_ARGS = {"run_command": {"command": "CommandLine", "dangerouslyDisableSandbox
 # documented, so what they run can't be decided
 AGY_BLOCKED = {"send_command_input": "types input into a running command",
                "run_workflow": "runs a Python workflow script, which starts sub-agents"}
+# what an agy write or edit puts in its file, for the rules that read a write's text (TK-A061): every string it sends
+# but its path, as the Write's content or the Edit's new_string, since agy's names for the text aren't all documented
+# (CodeContent, Content, ReplacementContent, ReplacementChunks, ...); _blocked denies a CI workflow write with none.
+# lean: an edit's old text (TargetContent) is read too, so an edit that removes a CI line is held as one that adds it
+AGY_TEXT = {**dict.fromkeys(("write_to_file", "write_file"), "content"),
+            **dict.fromkeys(("replace_file_content", "multi_replace_file_content", "edit_file"), "new_string")}
 AGY_HOOK = "tracekit"   # the name Tracekit's hook has in agy's hooks.json, which maps each hook's name to its events
 AGY_EVENTS = ("PreToolUse", "PostToolUse")
 # Crush's built-in tools (internal/agent/tools/*.go): its payload and event names are Claude Code's, its tool names are
@@ -308,7 +316,8 @@ OPENHANDS_DECIDED_ON = {**{t: k for t, k in OPENHANDS_PATH_ARG.items()},
 # Codex reads a hunk header from the line with its Unicode whitespace trimmed (codex-rs/apply-patch), so one may be indented
 # lean: an indented header line inside an Update hunk is context to Codex but a path here: decided too, never missed
 PATCH_FILE = re.compile(r"^[^\S\n]*\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
-OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path"}
+OPENCODE_PATH_ARG = {"read": "filePath", "write": "filePath", "edit": "filePath", "glob": "path", "grep": "path",
+                     "experimental_image_generate": "path"}
 # OpenCode's patch parser takes any header line starting with the marker and trims the rest as JS trim() does
 OPENCODE_PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to):(.*)$", re.M)
 # Kilo Code is built on OpenCode and loads the same plugin. Its tools are OpenCode's, with the same names and arguments,
@@ -576,8 +585,9 @@ def tool(harness, name, ti):
             path = ti.get(OPENHANDS_PATH_ARG[name])
             ti["paths"] = [path] if isinstance(path, str) and path else []
             ti["file_path"] = ti["paths"][0] if ti["paths"] else None
-            if name == "file_editor":
-                return {"view": "Read", "create": "Write"}.get(ti.get("command"), "Edit"), ti
+            if name == "file_editor":   # a command that isn't text is denied in _blocked
+                c = ti.get("command")
+                return {"view": "Read", "create": "Write"}.get(c, "Edit") if isinstance(c, str) else "Edit", ti
         if name == "terminal" and isinstance(ti.get("command"), str):
             # the terminal is interactive (bash in tmux): text typed into the command running, a key, and a line left
             # open run with what comes before or after them, which this call alone doesn't show; the engine holds a
@@ -720,12 +730,16 @@ def tool(harness, name, ti):
                 ti["file_path"] = ti["paths"][0]
         if harness == "kilo" and name == "notebook_edit":   # v1 decides a NotebookEdit on its notebook_path
             ti["notebook_path"] = ti["file_path"]
-        if harness == "kilo" and name == "generate_image":
+        if (harness, name) in (("kilo", "generate_image"), ("opencode", "experimental_image_generate")):
             ti["paths"] = []   # a `paths` sent beside it is dropped, as Kilo drops it
-            if isinstance(ti.get("image"), str):   # its `image`, an existing file, is read and sent to the image
-                # provider: decided as a Read of it, with the `path` it writes (Kilo gives that an image extension)
-                ti["file_path"] = ti["image"]
-                ti["paths"] = [ti["image"]] + ([ti["path"]] if isinstance(ti.get("path"), str) else [])
+            # Kilo's `image` and OpenCode 2.x's `images`, files read and sent to the image provider: decided as a Read
+            # of each, with the `path` it writes (an image extension is given to it)
+            # lean: an http(s) image OpenCode downloads is decided as a path, not by the fetch rules
+            images = ti.get("image" if harness == "kilo" else "images")
+            images = [i for i in (images if isinstance(images, list) else [images]) if isinstance(i, str)]
+            if images:
+                ti["file_path"] = images[0]
+                ti["paths"] = images + ([ti["path"]] if isinstance(ti.get("path"), str) else [])
                 return "Read", ti
         if name in ("apply_patch", "patch"):   # every file OpenCode's parser finds, whatever paths the model sent (patch:
             # 1.0's tool, off by default, with the same parser and argument); releases of 2026-01-18 to 2026-02-23
@@ -761,7 +775,12 @@ def tool(harness, name, ti):
         if name == "manage_task" and str(ti.get("Action")).casefold() == "send_input":
             ti["command"] = ti.get("Input")
             return "Bash", ti
+        if name in AGY_TEXT:
+            paths = {AGY_ARGS[name]["file_path"].casefold(), *PATH_KEYS, "paths"}
+            text = "\n".join(s for k, v in ti.items() if k.casefold() not in paths for s in _strings(v))
         ti.update({ours: ti.get(theirs) for ours, theirs in AGY_ARGS.get(name, {}).items()})
+        if name in AGY_TEXT and text:
+            ti[AGY_TEXT[name]] = text
         return AGY_TOOLS.get(name, name), ti
     if harness == "crush":
         if name.startswith("mcp_"):   # Crush names an MCP tool mcp_<server>_<tool> (internal/agent/tools/mcp-tools.go)
@@ -816,7 +835,8 @@ def tool(harness, name, ti):
         return CLINE_TOOLS.get(name, name), ti
     if harness == "copilot":
         if name == "str_replace_editor":   # one tool for viewing, creating and editing: decided as the one it does
-            name = COPILOT_EDITOR.get(ti.get("command"), "edit")
+            c = ti.get("command")
+            name = COPILOT_EDITOR.get(c, "edit") if isinstance(c, str) else "edit"
         if name == "apply_patch":   # the patch is the arguments, or their `input` or `patch`
             files = [f.strip() for f in PATCH_FILE.findall("\n".join(_strings(ti)))]
             if not files or not all(files):
@@ -1306,7 +1326,14 @@ def _blocked(harness, p, raw=""):
             return (f"Blocked by Tracekit: agy's {name} {AGY_BLOCKED[name.casefold()]}, and Tracekit doesn't read its "
                     "arguments yet, so it can't decide what the call runs; run each command with run_command (or type "
                     "into a background command with manage_task's send_input), which Tracekit decides.")
-        return _blocked_agy_args(name, call.get("args"))
+        reason = _blocked_agy_args(name, call.get("args"))
+        if reason is None and name.casefold() in AGY_TEXT:   # a CI workflow write is decided on its text (TK-A061)
+            ti = tool(harness, name, (p.get("toolCall") if isinstance(p.get("toolCall"), dict) else {}).get("args"))[1]
+            if not ti.get(AGY_TEXT[name.casefold()]) and any(
+                    _CI_WORKFLOW.search(f.casefold()) for f in fs_forms(ti.get("file_path"))):
+                reason = (f"Blocked by Tracekit: agy's {name[:64]} writes a CI workflow file but sends no text Tracekit "
+                          "can read, so it can't decide what the workflow will run; send the file's text.")
+        return reason
     name = _named(harness, str(p.get("tool_name") or ""))
     twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
         raw.strip() else None
@@ -1314,6 +1341,10 @@ def _blocked(harness, p, raw=""):
         return (f"Blocked by Tracekit: Devin's {name[:64]} call sends an argument more than once (case ignored): "
                 f"{twice[:64]!r}. json.loads keeps its last value and Devin's decoder may keep another, so Tracekit "
                 "can't be sure it decides the arguments the tool runs with; send each argument once.")
+    if harness == "openhands" and name == "file_editor" and not isinstance(_input(p.get("tool_input")).get("command"),
+                                                                           str):
+        return ("Blocked by Tracekit: OpenHands' file_editor call's command isn't text (view, create, str_replace, "
+                "insert or undo_edit), so Tracekit can't tell whether it reads, creates or edits its file.")
     if harness == "openhands" and name in OPENHANDS_DECIDED_ON and not tool(harness, name, p.get("tool_input"))[1].get(
             "file_path"):
         sent = ", ".join(k for k, v in _input(p.get("tool_input")).items() if v is not None and k != "kind")[:200]

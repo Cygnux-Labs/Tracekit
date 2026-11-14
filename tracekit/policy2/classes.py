@@ -357,8 +357,12 @@ def extract(cls, tool, args, limit=None):
         content = first(args, "content", "new_string", "new_source", "edits")
         out = {"path": fs_path(path) if isinstance(path, str) else path, "op": FS_OPS.get(tool) or args.get("op"),
                "content_digest": None if content is None else event_hash(content)}
-        # Only newly written CI text: neither removed Edit text nor an unrelated large file is an ask subject.
-        written = args.get({"Write": "content", "Edit": "new_string"}.get(tool))
+        # Only newly written CI text: neither removed Edit text nor an unrelated large file is an ask subject. Under each
+        # harness's name for it (OpenHands' and Copilot's file_text and new_str, OpenCode's newString, Cursor's
+        # contents), every one sent, so a decoy under one name never hides the text under another
+        written = "\n".join(args[k] for k in {"Write": ("content", "file_text", "contents"),
+                                              "Edit": ("new_string", "new_str", "newString")}.get(tool, ())
+                            if isinstance(args.get(k), str)) or None
         if isinstance(written, str) and any(_CI_WORKFLOW.search(p.casefold()) for p in fs_forms(path)):
             if all(m[1] for m in _CI_PUBLIC_SHA.finditer(written)):
                 written = _CI_PUBLIC_SHA.sub("GITHUB_SHA", written)

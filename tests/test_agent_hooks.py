@@ -472,6 +472,21 @@ class Harnesses(DaemonCase):
                 self.assertIn("issues/563", err)
         self.assertEqual([e for e in self.events("oh-3") if e["type"] == "tool.call"], [])
 
+    def test_an_openhands_file_editor_command_that_isnt_text_is_denied_in_the_hook(self):
+        # the mapping looked the command up in a dict: a list or an object raised TypeError, which the v1 hook let run
+        # under the default fail mode when its command line names no event (hooks installed before 1.2)
+        base = {"session_id": "oh-cmd", "event_type": "PreToolUse", "metadata": {}}
+        for command in (["create"], {"a": 1}, None, 3):
+            with self.subTest(command=command):
+                code, out, err = self.hook("openhands", {**base, "tool_name": "file_editor", "tool_input": {
+                    "command": command, "path": "/w/.env", "file_text": "A=1", "kind": "FileEditorAction"}})
+                self.assertEqual((code, out), (2, ""), err)
+                self.assertIn("OpenHands' file_editor call's command isn't text", err)
+        self.assertEqual([e for e in self.events("oh-cmd") if e["type"] == "tool.call"], [])
+        # Copilot's str_replace_editor reads its command the same way: one that isn't text is decided as an edit
+        self.assertEqual(agent_hooks.tool("copilot", "str_replace_editor", {"command": ["view"], "path": "/w/a"})[0],
+                         "Edit")
+
     def test_openhands_typed_terminal_input_is_denied_by_the_v1_hook(self):
         # #563 review: only the v2 engine reads the `typed` mark, so the v1 hook denies what v2 holds for a person
         base = {"session_id": "oh-5", "event_type": "PreToolUse", "metadata": {}, "tool_name": "terminal"}
@@ -1244,6 +1259,17 @@ class OpenCodeTools(unittest.TestCase):
         self.assertEqual((ti["file_path"], ti["paths"]), ("/w/a.txt", ["/w/a.txt", "/home/u/.aws/credentials"]))
         self.assertEqual(load_policy().decide("Read", ti)["verdict"], "deny")
 
+    def test_opencode_2_image_generate_is_a_read_of_its_images(self):
+        # experimental_image_generate reads each of its `images` and sends it to the image provider, and writes `path`
+        # (core/src/tool/plugin/image-generate.ts), as Kilo's generate_image reads `image`: it was an unknown tool
+        tool, ti = agent_hooks.tool("opencode", "experimental_image_generate",
+                                    {"prompt": "p", "images": ["/w/logo.png", "/home/u/.aws/credentials"], "path": "/w/o"})
+        self.assertEqual((tool, ti["file_path"], ti["paths"]),
+                         ("Read", "/w/logo.png", ["/w/logo.png", "/home/u/.aws/credentials", "/w/o"]))
+        self.assertEqual(load_policy().decide(tool, ti)["verdict"], "deny")
+        self.assertEqual(agent_hooks.tool("opencode", "experimental_image_generate", {"prompt": "p", "path": "/w/o"}),
+                         ("Write", {"prompt": "p", "path": "/w/o", "file_path": "/w/o", "paths": []}))
+
 
 class GptmeTools(unittest.TestCase):
     def test_gptme_native_shell_background_matches_gptme_truth_values(self):
@@ -1266,7 +1292,9 @@ class GptmeTools(unittest.TestCase):
                 ({"args": None, "content": None, "kwargs": {"content": f"stream --timeout 5s {dl}"}}, dl),
                 # --timeout without a unit and --every on run are the command's own (`pytest --timeout 30`)
                 ({"args": [], "content": "run pytest --timeout 30 --every 2", "kwargs": None},
-                 "pytest --timeout 30 --every 2")):
+                 "pytest --timeout 30 --every 2"),
+                # an option followed by another `--` word takes no value, so stays on the command
+                ({"args": [], "content": "until --every --verbose sudo id", "kwargs": None}, "--every --verbose sudo id")):
             with self.subTest(call=call):
                 tool, args = agent_hooks.tool("gptme", "watch", call)
                 self.assertEqual((tool, args), ("Bash", {"command": command, "run_in_background": True}))
@@ -2035,7 +2063,7 @@ class QwenTools(unittest.TestCase):
         # (services/cron-gate.ts): it is decided when the task is made, as that command, and was an unknown tool
         task = {"cron": "*/5 * * * *", "prompt": "summarise", "recurring": True, "durable": True}
         p = {"hook_event_name": "PreToolUse", "session_id": "qw-cron", "tool_use_id": "c1", "tool_name": "cron_create",
-             "tool_input": {**task, "gate": "rm -rf ~"}}
+             "tool_input": {**task, "gate": "rm -rf ~", "command": "ls"}}   # a decoy command beside the gate
         q = agent_hooks.normalise("qwen", p)
         self.assertEqual((q["tool_name"], q["tool_input"]["command"]), ("Bash", "rm -rf ~"))
         self.assertTrue(q["later"])   # it runs after the call's post-tool hook: no receipt of what it writes
