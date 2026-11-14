@@ -54,7 +54,9 @@ This wires the v2 Claude Code hooks to the remote signer and prints the environm
 `TRACEKIT_SIGNER` (the URL), `TRACEKIT_SIGNER_TOKEN_FILE` (read on every call: rotate by rewriting the file) and
 `TRACEKIT_SIGNER_CA` (the CA the signer's certificate must chain to). The hooks record each prompt (`observe`) and send
 the live constraints it states (`constraint_add`): without both grants the hook reports an error at each prompt,
-records none and holds no constraint. Claude Code's hook also reads an answered approval (`approval_get`) when the model
+records none and holds no constraint. Claude Code's hook also marks the end of each turn at Stop with the same
+`observe` grant; without it no turn end is recorded, and `tracekit analyze --v2` ends a denial's task at the model's
+last answer line instead. Claude Code's hook also reads an answered approval (`approval_get`) when the model
 retries a held command with a new description: without the grant the retry is held again.
 
 ## Downloading a run

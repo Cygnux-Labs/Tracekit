@@ -193,6 +193,16 @@ class HookV2(unittest.TestCase):
              len(json.dumps(["<task-notification>x</task-notification>"]))),
         ])
 
+    def test_stop_records_a_signed_end_of_turn_marker_and_subagent_stop_none(self):
+        """`tracekit analyze --v2` ends a denial's task at the hook's Stop marker (#835 review, round 4): a Stop is
+        recorded, a SubagentStop (a sub-agent's turn, inside the main one) is not."""
+        self.assertEqual(self.hook("SessionStart")[0], 0)
+        self.assertEqual(self.hook("SubagentStop")[0], 0)
+        self.assertEqual(self.hook("Stop")[0], 0)
+        observed = [e["data"] for e in self.events() if e["type"] == "input.observed"]
+        self.assertEqual([(x["source"], x["trust"], x["output"]["size"]) for x in observed],
+                         [("claude-code:Stop", "trusted", len(json.dumps("")))])
+
     def test_early_closed_wrappers_keep_from_untrusted_provenance(self):
         policy = os.path.join(self.dir, "server.yaml")
         with open(policy, "w") as f:
@@ -915,10 +925,10 @@ class HookV2(unittest.TestCase):
         for event in ("Stop", "UserPromptSubmit"):
             self.assertEqual(self.hook(event), (0, ""))
         run = self.run_handle()
-        self.assertEqual(run.call("read")["events"][-1]["type"], "policy.decision")
+        self.assertNotIn("tool.result", [e["type"] for e in run.call("read")["events"]])   # not completed at Stop
         self.assertEqual(self.hook("SessionEnd", reason="exit"), (0, ""))
         types = [e["type"] for e in run.call("read")["events"]]
-        self.assertEqual(types[-3:], ["policy.decision", "tool.result", "run.closing"])
+        self.assertEqual(types[-2:], ["tool.result", "run.closing"])
         result = run.call("read")["events"][-2]["data"]
         self.assertEqual((result["ok"], result["tool_use_id"]), (False, "t1"))
 
