@@ -159,6 +159,9 @@ _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": 
                  "verify-model": "tracekit verify-model"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 GRANTS = "intent grants (tracekit grant, approvals approve --grant)"   # experimental, as their --help ends
+SIGNER_HELP = ("the signer: its Unix socket, tcp://host:port, or https://host:port (http:// on a loopback "
+               "address) with its token in TRACEKIT_SIGNER_TOKEN_FILE or TRACEKIT_API_KEY (default: $TRACEKIT_SIGNER, "
+               "the system signer in system mode, else the same-user dev signer)")
 
 
 def main(argv=None):
@@ -484,7 +487,7 @@ def _parser():
 
     p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`, "
                        "`approvals slack serve --config slack.yaml`")
-    p.add_argument("--signer", help="the signer's Unix socket or tcp://host:port (default: the same-user dev signer)")
+    p.add_argument("--signer", help=SIGNER_HELP)
     acts = p.add_subparsers(dest="action", required=True)
     q = acts.add_parser("list", help="approvals, those waiting for an answer first, newest first, each with what its "
                         "call runs")
@@ -512,7 +515,7 @@ def _parser():
                        "for one run: `grant add|list|revoke` (docs/intent-grants.md)",
                        epilog=f"{GRANTS} is experimental: it works and is tested, but may change "
                               f"({wiki_url('docs/support.md')})")
-    p.add_argument("--signer", help="the signer's Unix socket or tcp://host:port (default: the same-user dev signer)")
+    p.add_argument("--signer", help=SIGNER_HELP)
     acts = p.add_subparsers(dest="action", required=True)
     q = acts.add_parser("add", help="grant a run's agent payments within limits, without a stop for each one")
     q.add_argument("--run", required=True, help="the run's id (tracekit view, or approvals show)")

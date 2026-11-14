@@ -24,8 +24,15 @@ an address's limit only the credentials checked locally (a client certificate, a
 needs another service (a TokenReview, an OIDC issuer's keys). Refusals carry only the error, never log state. Bodies
 over MAX_LINE are refused; reads time out like the other transports; connections are served by tracekit.netserver
 (bounded threads, overall and per address; each request must arrive within its deadline, and so must the next one on a
-kept-alive connection, while answering one, such as an approval_wait, has none). RPC refusals are answered with status
-200 and the error frame.
+kept-alive connection, while answering one, such as an approval_wait, has none).
+
+An RPC refusal is the error frame. A request with the header `Tracekit-Errors: http-status` (ASK; both SDKs send it)
+gets it with its HTTP status (STATUS; `quota_exceeded` without `retry_after_ms`, a size limit, is 413), `Retry-After`
+(whole seconds of `retry_after_ms`) on a 429 or 503, and `WWW-Authenticate: Bearer` on a 401; any other gets status
+200, as since 1.0, for clients that read errors from the body only (the issuer client of signers before this one,
+scripts written to that). A decision, a deny or an ask included, is an answer: 200. Every answer has a `Request-Id` of
+its own, which the INFO line logged for it (logger tracekit.transport.http) names with its status, method, identity,
+error code and time.
 
 With `otlp` (the signer's `otlp` config section), `POST /v1/traces` takes OTLP/HTTP (protobuf or JSON, bodies up to
 otlp_wire.MAX_BODY) from the same authenticators: the caller is authenticated before its body is read, and answered
@@ -33,8 +40,12 @@ otlp_wire.MAX_BODY) from the same authenticators: the caller is authenticated be
 grant.
 """
 import json
+import logging
+import math
 import os
+import secrets
 import ssl
+import time
 from http.server import BaseHTTPRequestHandler
 
 from tracekit.identity.k8s_sa import K8sSaAuthenticator
@@ -44,11 +55,17 @@ from tracekit.identity.token import BearerToken, TokenStore
 from tracekit.netserver import Lines, Server, body_length, read_body
 from tracekit.otlp_wire import MAX_BODY as OTLP_MAX_BODY
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.transport import READ_TIMEOUT_S, loopback, parse_frame
 
 PATH = "/v2/rpc"
 OTLP_PATH = "/v1/traces"
+ASK = ("Tracekit-Errors", "http-status")
+STATUS = {"invalid_request": 400, "unauthenticated": 401, "forbidden": 403, "run_token_invalid": 403,
+          "unknown_run": 404, "unknown_tool_call": 404, "unknown_decision": 404, "unknown_approval": 404,
+          "unknown_incident": 404, "run_exists": 409, "run_closed": 409, "conflict": 409, "client_seq_reused": 409,
+          "args_mismatch": 409, "approval_not_pending": 409, "quota_exceeded": 429, "unavailable": 503}
+log = logging.getLogger(__name__)
 KEYS = {"listen", "cert", "key", "client_ca", "authenticators", "k8s_sa", "oidc", "token_file", "tokens",
         "insecure_loopback"}
 AUTHENTICATORS = {"k8s_sa", "mtls", "oidc", "token"}
@@ -126,6 +143,16 @@ def resolve(cfg, base):
         cfg["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in cfg["client_ca"].items()}
 
 
+def _status(e):
+    """(HTTP status, headers) of refusal `e` for a client that asks (ASK)."""
+    if e.code == "quota_exceeded" and e.retry_after_ms is None:
+        return 413, {}   # a size limit: the same request never fits, so no 429 that says to send it again
+    status = STATUS[e.code]
+    if status in (429, 503) and e.retry_after_ms is not None:
+        return status, {"Retry-After": str(math.ceil(e.retry_after_ms / 1000))}
+    return status, {"WWW-Authenticate": "Bearer"} if status == 401 else {}
+
+
 class _Handler(Lines, BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"   # keep-alive
 
@@ -134,8 +161,25 @@ class _Handler(Lines, BaseHTTPRequestHandler):
         super().setup()
 
     def handle_one_request(self):
+        # this request's Request-Id, and what its log line names besides (log_request)
+        self.request_id, self.call = "req_" + secrets.token_hex(12), {}
         self.server.restart_deadline()
         super().handle_one_request()
+
+    def parse_request(self):
+        self.call["start"] = time.monotonic()   # its first line is in
+        return super().parse_request()
+
+    def send_response(self, code, message=None):
+        super().send_response(code, message)
+        self.send_header("Request-Id", self.request_id)
+
+    def log_request(self, code="-", size="-"):
+        """One INFO line per answer: its Request-Id, status, RPC method, identity, error code and time taken."""
+        c, start = self.call, self.call.get("start")
+        who = c.get("identity") and repr(f"{c['identity'].scheme}:{c['identity'].subject}"[:256])
+        log.info("%s %d %s %s %s %s", self.request_id, int(code), c.get("method") or "-", who or "-",
+                 c.get("error") or "-", f"{round((time.monotonic() - start) * 1000)}ms" if start else "-")
 
     def do_POST(self):
         otlp = self.path == OTLP_PATH and self.server.otlp
@@ -150,8 +194,9 @@ class _Handler(Lines, BaseHTTPRequestHandler):
         if n > limit:
             return self._reply(413, RPCError("quota_exceeded", f"body longer than {limit} bytes").wire(), close=True)
         if otlp:
+            self.call["method"] = "otlp_import"
             try:   # who asks, before reading what they send
-                identity = self.server.authenticate(self, {"method": "otlp_import"})
+                identity = self.call["identity"] = self.server.authenticate(self, {"method": "otlp_import"})
             except RPCError as e:
                 return self._reply({"unauthenticated": 401, "quota_exceeded": 429}.get(e.code, 403), e.wire(), close=True)
         body = read_body(self, n)
@@ -166,13 +211,22 @@ class _Handler(Lines, BaseHTTPRequestHandler):
                 return self._reply(403, e.wire(), close=True)
         try:
             frame = parse_frame(body)
-            out = self.server.handle_frame(self.server.authenticate(self, frame), frame)
+            method = frame.get("method")
+            known = isinstance(method, str) and (method in REQUESTS or method == "hello")
+            self.call["method"] = method if known else None
+            identity = self.call["identity"] = self.server.authenticate(self, frame)
+            out = self.server.handle_frame(identity, frame)
         except RPCError as e:
+            if self.headers.get(ASK[0], "").strip().lower() == ASK[1]:
+                status, headers = _status(e)
+                return self._reply(status, e.wire(), headers)
             out = e.wire()
         self._reply(200, out)
 
-    def _reply(self, status, obj, close=False):
-        self._send(status, {"Content-Type": "application/json"},
+    def _reply(self, status, obj, headers=None, close=False):
+        if isinstance(obj.get("error"), dict):   # an error frame: its code goes in the log line
+            self.call["error"] = obj["error"].get("code")
+        self._send(status, {"Content-Type": "application/json", **(headers or {})},
                    json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode(), close)
 
     def _send(self, status, headers, data, close=False):

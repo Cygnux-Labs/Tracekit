@@ -8,17 +8,19 @@
 
 The signer is the Unix socket in `$TRACEKIT_SIGNER`, `tcp://host:port` with `$TRACEKIT_SIGNER_TOKEN` (the dev
 transport), or an `https://host:port` URL (each call is one POST /v2/rpc; `$TRACEKIT_SIGNER_TOKEN_FILE` names a bearer
-token file, re-read per call so a rotated service-account token is picked up; `$TRACEKIT_SIGNER_CERT`/`_KEY` a client
-certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA), or `http://` on a loopback address, which the
-signer's `insecure_loopback` listener serves. In system mode (`tracekit init --v2`) the signer is the one the
-root-owned /etc/tracekit/client.json names. Without either, a same-user dev signer is found or started
-(tracekit/sdk/autospawn.py). Requests go out in order on one connection and the signer answers them in order, so any
-number of threads can have calls in flight; a call that may block (`approval_wait`) gets a connection of its own so it
-holds up no one. Every request is validated against the RPC contract, and its size against the signer's frame limit,
-before it is sent. Calls that change state carry a `request_id`; a call whose connection drops is resent with the same
-id, which the signer answers with its original response. Event calls carry this process's `stream` and a `client_seq`
-that grows by one per event of a run; a run's events go out one at a time, each once the one before it is answered,
-so they reach the signer in client_seq order on every transport and retry. The client writes nothing to disk.
+token file, re-read per call so a rotated service-account token is picked up, else `$TRACEKIT_API_KEY` is the token
+itself; `$TRACEKIT_SIGNER_CERT`/`_KEY` a client certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA), or
+`http://` on a loopback address, which the signer's `insecure_loopback` listener serves. In system mode (`tracekit
+init --v2`) the signer is the one the root-owned /etc/tracekit/client.json names. Without either, a same-user dev
+signer is found or started (tracekit/sdk/autospawn.py). Requests go out in order on one connection and the signer
+answers them in order, so any number of threads can have calls in flight; a call that may block (`approval_wait`) gets
+a connection of its own so it holds up no one. Every request is validated against the RPC contract, and its size
+against the signer's frame limit, before it is sent. Calls that change state carry a `request_id`; a call whose
+connection drops is resent with the same id, which the signer answers with its original response. Event calls carry
+this process's `stream` and a `client_seq` that grows by one per event of a run; a run's events go out one at a time,
+each once the one before it is answered, so they reach the signer in client_seq order on every transport and retry. An
+event call the signer refuses with `quota_exceeded` (a rate or count limit: one with `retry_after_ms`) or `unavailable`
+is sent again as it was, within the call's timeout (_retry_wait); no other call is. The client writes nothing to disk.
 """
 import asyncio
 import collections
@@ -30,6 +32,7 @@ import http.client
 import json
 import os
 import queue
+import random
 import re
 import socket
 import ssl
@@ -54,7 +57,8 @@ CONNECT_TIMEOUT_S = 2
 JOIN_S = 1   # how long closing a connection waits for each of its threads, which end at once once it is shut down
 KEEP_CALLS = 4096   # decided calls a RunHandle remembers for their `complete`, the oldest forgotten first
 KEEP_RUNS = 65536   # runs a Client keeps an event counter for, the least recently used forgotten first
-RETRIES = 3
+RETRIES = 3   # tries of a call: after a lost connection, or an event call's rate limit or outage (_retry_wait)
+BACKOFF_S, BACKOFF_CAP_S = 0.1, 2.0   # the wait before an event call's second try, doubled for each next, at most
 TRANSFER = "a2a:transfer"   # the tool RunHandle.transfer decides
 _EVENT_METHODS = {m for m, s in rpc_schema.REQUESTS.items() if "client_seq" in s["properties"]}
 _LONG_POLLS = {m for m, s in rpc_schema.REQUESTS.items() if "timeout_ms" in s["properties"]}
@@ -143,6 +147,21 @@ def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
     return sock, rfile, hello
 
 
+def _retry_wait(method, e, tries):
+    """Seconds to wait before sending `method` again after its `tries`th try was refused with `e`; None: not again.
+    Only an event call (decide, complete, observe, state_write, model_event) is: the signer refuses a client_seq at or
+    below its stream's last recorded one (client_seq_reused) before it writes anything, and rebuilds that from the
+    records themselves after a restart or a storage write whose outcome it couldn't tell (`unavailable`), so a retry
+    with the same client_seq is recorded once or refused. Any other call's request_id is remembered in memory only, and
+    forgotten with a batch whose write failed: sent again, it could be recorded twice. A quota_exceeded without
+    retry_after_ms is a size limit the same request never fits."""
+    if method not in _EVENT_METHODS or not (e.code == "unavailable" or e.code == "quota_exceeded"
+                                            and e.retry_after_ms is not None):
+        return None
+    backoff = min(BACKOFF_CAP_S, BACKOFF_S * 2 ** (tries - 1)) * random.uniform(0.5, 1)   # jitter: no herd
+    return max((e.retry_after_ms or 0) / 1000, backoff)
+
+
 def _check(hello, where):
     """Refuses a signer whose `hello` names no protocol range holding this client's."""
     proto = (hello or {}).get("proto")
@@ -159,7 +178,8 @@ def _check(hello, where):
 
 class _Https:
     """POST /v2/rpc to an HTTPS signer, or a plain HTTP one on a loopback address: one kept-alive connection per thread
-    and host, the bearer token re-read per call."""
+    and host, the bearer token re-read per call. Errors come with their HTTP status (Tracekit-Errors: http-status), and
+    are read from the body whatever it is."""
 
     def __init__(self, url, token_file=None):
         u = urllib.parse.urlsplit(url)
@@ -169,6 +189,8 @@ class _Https:
         if os.environ.get("TRACEKIT_SIGNER_CERT") and not self.plain:
             self.ctx.load_cert_chain(os.environ["TRACEKIT_SIGNER_CERT"], os.environ.get("TRACEKIT_SIGNER_KEY"))
         self.token_file, self.pid, self.hello = token_file or os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
+        # the token itself, used only without a token file (which wins: it is re-read per call, so rotation works)
+        self.api_key = None if self.token_file else os.environ.get("TRACEKIT_API_KEY", "").strip()
         self.conns = weakref.WeakSet()   # every thread's, for close()
 
     def _host(self, req):
@@ -185,13 +207,15 @@ class _Https:
     def post(self, body, timeout, host=None):
         """The answer frame to `body` from `host` (default the signer's); _ConnectionLost when the request may not have
         arrived, SignerUnavailable on a timeout."""
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "Tracekit-Errors": "http-status"}
         if self.token_file:
             try:
                 with open(self.token_file, encoding="utf-8") as f:
                     headers["Authorization"] = "Bearer " + f.read().strip()
             except OSError as e:
                 raise SignerUnavailable(f"cannot read the signer token file: {e}") from None
+        elif self.api_key:
+            headers["Authorization"] = "Bearer " + self.api_key
         if self.pid != os.getpid():   # a forked child: its own connections
             self.pid, self.local, self.conns = os.getpid(), threading.local(), weakref.WeakSet()
         host = host or self.host
@@ -330,7 +354,7 @@ class Client:
         deadline = time.monotonic() + timeout   # for the whole call: its turn, every retry
         lost = None
         with self._turn(method, req, deadline):
-            for _ in range(RETRIES):
+            for tries in range(1, RETRIES + 1):
                 left = max(deadline - time.monotonic(), 0.001)
                 try:
                     if self._https:
@@ -354,7 +378,12 @@ class Client:
                         with self._lock:
                             self._seqs.pop(req.get("run_id"), None)
                             self._order.pop(req.get("run_id"), None)
-                    raise RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
+                    err = RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
+                    wait = _retry_wait(method, err, tries)
+                    if wait is None or tries == RETRIES or time.monotonic() + wait >= deadline:
+                        raise err
+                    time.sleep(wait)   # then the same request: its request_id, stream and client_seq
+                    continue
                 return reply
             last = f" (last: {lost})" if str(lost) else ""
             raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times{last}")

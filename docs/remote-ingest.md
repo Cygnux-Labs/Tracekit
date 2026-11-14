@@ -57,6 +57,55 @@ the live constraints it states (`constraint_add`): without both grants the hook 
 records none and holds no constraint. Claude Code's hook also reads an answered approval (`approval_get`) when the model
 retries a held command with a new description: without the grant the retry is held again.
 
+Without a token file, the Python and TypeScript clients take the token itself from `TRACEKIT_API_KEY`:
+
+```bash
+export TRACEKIT_SIGNER=https://tracekit.example:8443 TRACEKIT_API_KEY="$TOKEN"
+```
+
+A token file wins when both are set: it is read on every call, so a rotated token is picked up, and a key left in the
+environment never replaces it. The Python client's `token_file=` argument wins over both. The agent's own commands
+inherit the environment, so one that prints it (`env`) puts the key in its transcript; give agents the file.
+
+## Calling the signer over HTTP
+
+Each call is one `POST /v2/rpc` with a JSON frame, `{"method": ..., ...}`, and the answer is one JSON frame:
+
+```bash
+curl -si https://tracekit.example:8443/v2/rpc -H "Authorization: Bearer $TRACEKIT_API_KEY" \
+  -H 'Tracekit-Errors: http-status' -d '{"method": "status"}'
+```
+
+A refusal is an error frame, `{"error": {"code", "message", "retry_after_ms"?}}`. With the header
+`Tracekit-Errors: http-status` (both SDKs send it) it comes with its HTTP status; without it, with 200, as it always
+has, for clients that read errors from the body only. The frame is the same either way. A decision is an answer, not an error: `decide` returns allow,
+deny or ask with 200.
+
+| Error code | Status |
+|---|---|
+| `invalid_request` | 400 |
+| `unauthenticated` | 401, with `WWW-Authenticate: Bearer` |
+| `forbidden`, `run_token_invalid` | 403 |
+| `unknown_run`, `unknown_tool_call`, `unknown_decision`, `unknown_approval`, `unknown_incident` | 404 |
+| `run_exists`, `run_closed`, `conflict`, `client_seq_reused`, `args_mismatch`, `approval_not_pending` | 409 |
+| `quota_exceeded` with `retry_after_ms` (a rate or count limit) | 429, with `Retry-After` |
+| `quota_exceeded` without it (a size limit: the same request never fits) | 413 |
+| `unavailable` | 503, with `Retry-After` when the signer gives `retry_after_ms` |
+
+`Retry-After` is `retry_after_ms` rounded up to whole seconds; the frame keeps the milliseconds. Every answer carries a
+`Request-Id` header (`req_` and 24 hex digits) of its own, not the `request_id` a call sends: the signer logs one line
+per answer at INFO on the `tracekit.transport.http` logger with that id, the status, method, identity, error code and
+time taken.
+
+The SDKs send an event call (`decide`, `complete`, `observe`, `state_write`, `model_event`) again after `unavailable`
+or a `quota_exceeded` with `retry_after_ms`, at most three tries within the call's timeout: they wait
+`retry_after_ms`, or longer (100 ms doubled for each try, at most 2 s, with jitter). The retry is the same request,
+its `request_id`, `stream` and `client_seq`. The signer refuses a `client_seq` it has already recorded before it writes
+anything, and rebuilds that from the records after a restart or a disk error, so a retry is recorded once or refused
+(`client_seq_reused`). No other call is sent again: its `request_id` is remembered in memory only and forgotten with a
+write that failed, so a retry after `unavailable` could be recorded twice. Don't let a proxy in front of the signer
+retry its requests either.
+
 ## What changes in the evidence
 
 | Property | Local caller | Remote caller |

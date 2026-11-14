@@ -1,22 +1,29 @@
 """The signer over HTTPS (tracekit/transport/http.py, sdk/client.py https://): config checks, body size and read
-timeouts, per-op authorization, and the cross-tenant matrix (E12 core) for k8s_sa and mtls identities."""
+timeouts, per-op authorization, errors as HTTP statuses and request ids, the client's retries, and the cross-tenant
+matrix (E12 core) for k8s_sa and mtls identities."""
 import http.client
+import json
 import os
+import re
 import socket
 import ssl
 import time
 import unittest
+import uuid
 from unittest import mock
 
 import test_signer_service as ts
 from cryptography import x509
 from test_identity_k8s import AUD, Jwks, claims, jwt
 from test_identity_mtls import Pki, echo, post, serve, tmpdir
+from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import Client, SignerUnavailable, _Https
-from tracekit.signer import service as svc
+from tracekit.signer import pipeline, service as svc
 from tracekit.signer.quotas import MAX_LINE
-from tracekit.signer.rpc_schema import REQUESTS, RPCError
+from tracekit.signer.rpc_schema import ERROR_CODES, REQUESTS, RPCError
+from tracekit.storage.base import StorageUnavailable
+from tracekit.storage.file import FileStorage
 from tracekit.transport import answering_hello, hello
 from tracekit.transport import http as tk_http
 
@@ -154,6 +161,25 @@ class TestClientUrls(unittest.TestCase):
                          ["127.0.0.1", "127.0.0.1"])
         self.assertEqual(_Https("https://127.0.0.1:8443")._host({"run_id": "127-5.ab"}), "127-5.0.0.1")   # TLS: routed
 
+    def test_an_api_key_is_the_token_and_a_token_file_wins_over_it(self):
+        port = serve(self, {"insecure_loopback": True, "authenticators": ["token"], "token_file": self.token},
+                     self.handle)
+        url, wrong = f"http://127.0.0.1:{port}", os.path.join(self.d, "wrong")
+        with open(wrong, "w") as f:
+            f.write("w" * 40)
+        with mock.patch.dict(os.environ, {"TRACEKIT_API_KEY": " " + "t" * 40 + "\n"}):
+            os.environ.pop("TRACEKIT_SIGNER_TOKEN_FILE", None)
+            key_only = Client(url, timeout=5)
+            argument = Client(url, timeout=5, token_file=wrong)   # an argument wins over the environment
+        self.addCleanup(key_only.close)
+        self.addCleanup(argument.close)
+        self.assertEqual(self.subject(key_only), "http")
+        self.assertEqual(self.subject(self.client(url, TRACEKIT_API_KEY="w" * 40)), "http")   # the file's token
+        for c in (self.client(url, TRACEKIT_SIGNER_TOKEN_FILE=wrong, TRACEKIT_API_KEY="t" * 40), argument):
+            with self.assertRaises(RPCError) as cm:
+                c.status({})
+            self.assertEqual(cm.exception.code, "unauthenticated")
+
     def test_a_certificate_that_does_not_verify_is_named(self):
         pki = Pki(self.d)
         cert, key = pki.issue("server")
@@ -163,6 +189,258 @@ class TestClientUrls(unittest.TestCase):
                                                        "not verify .*set TRACEKIT_SIGNER_CA"):
             self.client(f"https://127.0.0.1:{port}").status({})
         self.assertEqual(self.subject(self.client(f"https://127.0.0.1:{port}", TRACEKIT_SIGNER_CA=pki.path)), "http")
+
+
+TOKEN = "t" * 40
+AUTH, ASK = {"Authorization": "Bearer " + TOKEN}, {"Tracekit-Errors": "http-status"}
+# the status a client that asks (ASK) gets for each error code; the body is the error frame either way
+STATUSES = {"invalid_request": 400, "unauthenticated": 401, "forbidden": 403, "run_token_invalid": 403,
+            "unknown_run": 404, "unknown_tool_call": 404, "unknown_decision": 404, "unknown_approval": 404,
+            "unknown_incident": 404, "run_exists": 409, "run_closed": 409, "conflict": 409, "client_seq_reused": 409,
+            "args_mismatch": 409, "approval_not_pending": 409, "quota_exceeded": 429, "unavailable": 503}
+
+
+def raw(port, body, headers, path="/v2/rpc"):
+    """(status, headers, body) of one request to a plain-HTTP loopback signer, as any HTTP client sends it; `body` None:
+    a GET."""
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        c.request("GET" if body is None else "POST", path, body, headers)
+        r = c.getresponse()
+        return r.status, r.headers, r.read()
+    finally:
+        c.close()
+
+
+class TestStatuses(unittest.TestCase):
+    """An error frame comes with its HTTP status to a client that asks for it (ASK, as the SDKs do), and with 200 to
+    any other, as before; a decision (allow, deny, ask) is an answer, 200 either way. Every answer has a Request-Id."""
+
+    def setUp(self):
+        token = os.path.join(tmpdir(self), "bearer")
+        with open(token, "w") as f:
+            f.write(TOKEN)
+        self.cfg = {"insecure_loopback": True, "authenticators": ["token"], "token_file": token}
+        self.s = svc.SignerService(ts.tmpdir(self), policy=ts.PAY_ASKS, authorize={
+            "token:http": ["status", "register_run", "decide", "approval_get"]})
+        self.addCleanup(self.s.close)
+
+    def test_each_error_code_is_its_status_to_a_client_that_asks_and_200_to_any_other(self):
+        def refuse(identity, frame):
+            raise RPCError(frame["code"], "refused", frame.get("retry_after_ms"))
+        port = serve(self, self.cfg, refuse)
+        self.assertEqual(set(STATUSES), set(ERROR_CODES))
+        for code, status in STATUSES.items():
+            body = json.dumps({"method": "x", "code": code, **(
+                {"retry_after_ms": 1500} if code in ("quota_exceeded", "unavailable") else {})})
+            with self.subTest(code):
+                asked, old = raw(port, body, {**AUTH, **ASK}), raw(port, body, AUTH)
+                self.assertEqual((asked[0], old[0]), (status, 200))
+                self.assertEqual(asked[2], old[2])
+                self.assertEqual(json.loads(asked[2])["error"], {"code": code, "message": "refused", **(
+                    {"retry_after_ms": 1500} if status in (429, 503) else {})})
+                self.assertEqual(asked[1]["Retry-After"], "2" if status in (429, 503) else None)
+                self.assertEqual(asked[1]["WWW-Authenticate"], "Bearer" if status == 401 else None)
+                self.assertIsNone(old[1]["Retry-After"])
+        # a size limit (no retry_after_ms): the same request never fits, so no 429 that tells a client to send it again
+        size = raw(port, json.dumps({"method": "x", "code": "quota_exceeded"}), {**AUTH, **ASK})
+        self.assertEqual((size[0], size[1]["Retry-After"]), (413, None))
+
+    def test_a_signer_answers_refusals_with_their_status_and_decisions_with_200(self):
+        port = serve(self, self.cfg, answering_hello(self.s.handle_frame, hello()))
+
+        def call(frame, headers=None):
+            status, _, body = raw(port, frame if isinstance(frame, bytes) else json.dumps(frame),
+                                  headers or {**AUTH, **ASK})
+            return status, json.loads(body)
+        status, reg = call({"method": "register_run", "request_id": "r1", "agent": {"name": "a"}})
+        self.assertEqual(status, 200)
+        ev = {"method": "decide", "run_id": reg["run_id"], "run_token": reg["run_token"], "stream": "s",
+              "tool": "pay", "args_source": "parsed", "args": {"amount": 5}}
+        for want, code, frame, headers in [
+                (400, "invalid_request", b"{not json", None),
+                (400, "invalid_request", {"method": "decide"}, None),
+                (401, "unauthenticated", {"method": "status"}, {"Authorization": "Bearer " + "w" * 40, **ASK}),
+                (403, "forbidden", {"method": "incident_list"}, None),
+                (403, "run_token_invalid", {**ev, "request_id": "d0", "client_seq": 0, "tool_call_id": "c0",
+                                            "run_token": reg["run_token"] + "x"}, None),
+                (404, "unknown_approval", {"method": "approval_get", "approval_id": "apr-none"}, None),
+                (409, "conflict", {"method": "register_run", "request_id": "r1", "agent": {"name": "b"}}, None)]:
+            with self.subTest(code):
+                status, out = call(frame, headers)
+                self.assertEqual((status, out["error"]["code"]), (want, code))
+                self.assertEqual(call(frame, {k: v for k, v in (headers or AUTH).items() if k not in ASK}), (200, out))
+        status, ask = call({**ev, "request_id": "d1", "client_seq": 0, "tool_call_id": "c1"})
+        self.assertEqual((status, ask["decision"]), (200, "ask"))
+        status, deny = call({**ev, "request_id": "d2", "client_seq": 1, "tool_call_id": "c2", "args_source": "raw",
+                             "args": "{"})
+        self.assertEqual((status, deny["decision"], deny["rule_ids"]), (200, "deny", ["TK-ARGS-INVALID"]))
+
+    def test_an_old_style_client_still_gets_200_and_reads_the_error_from_the_body(self):
+        """A client from before statuses (the SDKs to 1.6 send no ASK, and read the body whatever the status) gets
+        what it always got."""
+        port = serve(self, self.cfg, answering_hello(self.s.handle_frame, hello()))
+        status, headers, body = raw(port, json.dumps({"method": "approval_get", "approval_id": "apr-none"}), AUTH)
+        self.assertEqual((status, json.loads(body)["error"]["code"]), (200, "unknown_approval"))
+        self.assertEqual(headers["Connection"], None)   # kept alive, as before
+        with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER_TOKEN_FILE": self.cfg["token_file"]}):
+            c = Client(f"http://127.0.0.1:{port}", timeout=5)   # this one asks: the same answer
+        self.addCleanup(c.close)
+        with self.assertRaises(RPCError) as cm:
+            c.approval_get({"approval_id": "apr-none"})
+        self.assertEqual(cm.exception.code, "unknown_approval")
+        self.assertEqual(c.status({})["identity"]["subject"], "http")
+
+    def test_every_answer_has_a_request_id_of_its_own_which_the_log_names(self):
+        port = serve(self, self.cfg, answering_hello(self.s.handle_frame, hello()))
+        with self.assertLogs("tracekit.transport.http", "INFO") as logs:
+            answers = [raw(port, json.dumps({"method": "status"}), AUTH),
+                       raw(port, json.dumps({"method": "status"}), ASK),
+                       raw(port, b"{", AUTH),
+                       raw(port, b"{}", AUTH, path="/v2/other"),
+                       raw(port, None, AUTH)]
+            c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            self.addCleanup(c.close)
+            c.putrequest("POST", "/v2/rpc")
+            c.putheader("Content-Length", str(MAX_LINE + 1))
+            c.endheaders()
+            r = c.getresponse()
+            answers.append((r.status, r.headers, r.read()))
+        self.assertEqual([a[0] for a in answers], [200, 401, 200, 404, 501, 413])
+        ids = [a[1]["Request-Id"] for a in answers]
+        self.assertTrue(all(re.fullmatch(r"req_[0-9a-f]{24}", i or "") for i in ids), ids)
+        self.assertEqual(len(set(ids)), len(ids))
+        for i, line in zip(ids, logs.output):
+            self.assertIn(i, line)
+        self.assertRegex(logs.output[0], r" 200 status 'token:http' - \d+ms$")
+        self.assertRegex(logs.output[1], r" 401 status - unauthenticated \d+ms$")
+        self.assertRegex(logs.output[2], r" 200 - - invalid_request \d+ms$")
+
+
+class Flaky(FileStorage):
+    """File storage that fails the append of the batch holding request `fail[0]`'s record, as a disk error does:
+    before writing it ("before"), or after ("after", an fsync error: the signer can't tell whether it is on disk)."""
+    fail = (None, None)
+
+    def append_batch(self, records):
+        rid, when = self.fail
+        if rid and any(r["event"].get("request_id") == rid for r in records):
+            self.fail = (None, None)
+            if when == "before":
+                raise StorageUnavailable("No space left on device")
+            super().append_batch(records)
+            raise StorageUnavailable("fsync failed")
+        super().append_batch(records)
+
+
+class TestRetries(unittest.TestCase):
+    """The Python client sends an event call (decide, complete, observe, state_write, model_event) again, with its
+    request_id and client_seq, after a rate limit or an outage, and the signer records it once; any other call is not
+    sent again."""
+    EVENTS = {"decide": "policy.decision", "complete": "tool.result", "observe": "input.observed",
+              "state_write": "state.write", "model_event": "model.exchange"}
+
+    def setUp(self):
+        token = os.path.join(tmpdir(self), "bearer")
+        with open(token, "w") as f:
+            f.write(TOKEN)
+        self.d = ts.tmpdir(self)
+        self.s = svc.SignerService(self.d, policy=ts.PAY_ASKS, authorize={"token:http": [
+            "register_run", "close_run", "status", *self.EVENTS]},
+            open_storage=lambda: Flaky(os.path.join(self.d, "store")))
+        self.addCleanup(self.s.close)
+        port = serve(self, {"insecure_loopback": True, "authenticators": ["token"], "token_file": token},
+                     answering_hello(self.s.handle_frame, hello()))
+        with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER_TOKEN_FILE": token}):
+            self.c = Client(f"http://127.0.0.1:{port}", timeout=10)
+        self.addCleanup(self.c.close)
+        recover = mock.patch.object(pipeline, "RECOVER_S", 0.05)   # an outage's retry_after_ms, and its recovery
+        recover.start()
+        self.addCleanup(recover.stop)
+
+    def event(self, method):
+        """A `method` request in a run of its own (a decided call first, for a complete)."""
+        run = self.c.run("a")
+        req = {"request_id": uuid.uuid4().hex, "run_id": run.run_id, "run_token": run.run_token}
+        if method == "complete":
+            d = run.decide("c1", "Bash", {"command": "ls"})
+            return {**req, "tool_call_id": "c1", "decision_id": d["decision_id"], "status": "ok",
+                    "args_digest": event_hash({"tool": "Bash", "args": {"command": "ls"}})}
+        return {**req, **{
+            "decide": {"tool_call_id": "c1", "tool": "Bash", "args_source": "parsed", "args": {"command": "ls"}},
+            "observe": {"value": "a mail", "source": "mail", "trust": "untrusted"},
+            "state_write": {"key": "k", "value_digest": "sha256:" + "0" * 64},
+            "model_event": {"provider": "openai", "model": "m", "phase": "request"}}[method]}
+
+    def refuse_once(self, retry_after_ms=5):
+        """The signer's rate limit refuses the next call, as it does before writing anything; -> each charge."""
+        real, charges = self.s.quotas.take_event, []
+
+        def take(*a):
+            charges.append(a)
+            if len(charges) == 1:
+                raise RPCError("quota_exceeded", "event rate limit", retry_after_ms=retry_after_ms)
+            return real(*a)
+        patch = mock.patch.object(self.s.quotas, "take_event", take)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return charges
+
+    def recorded(self, req):
+        return [r["event"] for r in ts.records(self.d) if r["event"].get("request_id") == req["request_id"]]
+
+    def test_an_event_call_refused_by_the_rate_limit_is_sent_again_and_recorded_once(self):
+        for method, typ in self.EVENTS.items():
+            with self.subTest(method):
+                req = self.event(method)
+                charges = self.refuse_once()
+                self.assertIn("run_seq", self.c.call(method, req))
+                self.assertEqual(len(charges), 2)
+                self.assertEqual([(e["type"], e["client_seq"]) for e in self.recorded(req)], [(typ, mock.ANY)])
+                gaps = [r["event"] for r in ts.records(self.d) if r["event"]["type"] == "capture.gap"
+                        and r["event"]["run_id"] == req["run_id"]]
+                self.assertEqual(gaps, [])   # the same client_seq: no client_counter_gap
+
+    def test_an_event_call_the_disk_refused_is_sent_again_and_recorded_once(self):
+        for method, typ in self.EVENTS.items():
+            with self.subTest(method):
+                req = self.event(method)
+                self.s.log.storage.fail = (req["request_id"], "before")
+                self.assertIn("run_seq", self.c.call(method, req))
+                self.assertEqual([e["type"] for e in self.recorded(req)], [typ])
+
+    def test_an_event_call_written_before_the_disk_failed_is_never_recorded_twice(self):
+        """The signer answered unavailable without knowing the record was on disk: the retry's client_seq is refused
+        (client_seq_reused), even though the signer's request_id cache forgot the try."""
+        for method, typ in self.EVENTS.items():
+            with self.subTest(method):
+                req = self.event(method)
+                self.s.log.storage.fail = (req["request_id"], "after")
+                with self.assertRaises(RPCError) as cm:
+                    self.c.call(method, req)
+                self.assertEqual(cm.exception.code, "client_seq_reused")
+                self.assertEqual([e["type"] for e in self.recorded(req)], [typ])
+        self.s.close()
+        self.assertEqual(svc.fsck(self.d), [])
+
+    def test_no_other_call_is_sent_again(self):
+        """Other calls' request_ids are kept in memory only, and lost with a batch whose write failed: a retry could
+        record them twice. A size limit (quota_exceeded without retry_after_ms) is never sent again either."""
+        run, req = self.c.run("a"), self.event("decide")
+        for method, fields, retry_after_ms in [("register_run", {"agent": {"name": "b"}}, 5),
+                                               ("close_run", {"run_id": run.run_id, "run_token": run.run_token}, 5),
+                                               ("decide", req, None)]:
+            with self.subTest(method):
+                charges = self.refuse_once(retry_after_ms)
+                with self.assertRaises(RPCError) as cm:
+                    self.c.call(method, {"request_id": uuid.uuid4().hex, **fields})
+                self.assertEqual((cm.exception.code, len(charges)), ("quota_exceeded", 1))
+        rid = uuid.uuid4().hex
+        self.s.log.storage.fail = (rid, "before")
+        with self.assertRaises(RPCError) as cm:
+            self.c.call("register_run", {"request_id": rid, "agent": {"name": "c"}})
+        self.assertEqual(cm.exception.code, "unavailable")
+        self.assertEqual(self.recorded({"request_id": rid}), [])
 
 
 class TestAuthorization(unittest.TestCase):
