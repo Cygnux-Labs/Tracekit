@@ -5168,6 +5168,16 @@ class QuietFlags(unittest.TestCase):
             self.assertEqual(e.decide("StructuredOutput", {"report": "cat /root/.aws/credentials"})["verdict"], "deny")
             self.assertEqual(e.decide("AskUserQuestion", {"q": "ghp_" + "a" * 36})["verdict"], "deny")
 
+    def test_remote_trigger_is_held_unless_it_only_reads(self):
+        for e in self.packs["dev"]:
+            for args in ({"action": "create", "body": {}}, {"action": "run", "trigger_id": "t"}, {},
+                         {"aa": 1, "action": "list"}, {"action": "update", "body": {"action": "list"}}):
+                with self.subTest(args=args, engine=e.engine):
+                    self.assertEqual(e.decide("RemoteTrigger", args)["verdict"], "ask")
+            for args in ({"action": "list"}, {"action": "get_run_log", "session_id": "s"}):
+                with self.subTest(args=args, engine=e.engine):
+                    self.assertEqual(e.decide("RemoteTrigger", args)["rule_ids"], ["TK-UNKNOWN-TOOL"])
+
     def test_the_server_pack_keeps_the_flags_its_detection_counts(self):
         # TK-Q001 counts secrets_access then egress, TK-L002 destructive: those rules read on the server pack what they
         # read before, while TK-F006 and TK-F011, whose labels no detection reads, are narrowed there too
