@@ -2803,6 +2803,32 @@ class CodingPack(unittest.TestCase):
                 with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
                     self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
 
+    def test_open_interpreter_config_changes_are_harness_config_in_every_pack(self):
+        # #698: Open Interpreter reads its hooks.json and the hooks' trust (config.toml) from ~/.openinterpreter
+        # ($INTERPRETER_HOME) and a project's .openinterpreter/; near names and reads stay unflagged
+        paths = ("/repo/.openinterpreter/hooks.json", ".openinterpreter/config.toml",
+                 "/home/u/.openinterpreter/hooks.json", "/home/u/.openinterpreter/config.toml",
+                 r"C:\Users\u\.openinterpreter\hooks.json")
+        commands = ("echo '{}' > .openinterpreter/hooks.json", "sed -i s/600/1/ ~/.openinterpreter/hooks.json",
+                    "rm -rf ~/.openinterpreter", 'echo x > "$INTERPRETER_HOME/config.toml"',
+                    "tee ${INTERPRETER_HOME}/hooks.json", 'rm -rf "$INTERPRETER_HOME"')
+        benign = [("Bash", {"command": c}) for c in (
+            "cat ~/.openinterpreter/hooks.json", "ls .openinterpreter", "echo x > .openinterpreter-old/x",
+            "interpreter --version", 'cat "$INTERPRETER_HOME/config.toml"')]
+        benign += [("Read", {"file_path": path}) for path in paths]
+        benign += [("Write", {"file_path": "/repo/src/openinterpreter/x.py", "content": "{}"})]
+        for pack, engine, e in self.every_pack():
+            for path in paths:
+                for tool in ("Write", "Edit"):
+                    with self.subTest(pack=pack, engine=engine, tool=tool, path=path):
+                        self.assertIn("TK-F009", e.decide(tool, {"file_path": path})["rule_ids"])
+            for command in commands:
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, args in benign:
+                with self.subTest(pack=pack, engine=engine, tool=tool, args=args):
+                    self.assertFalse({"TK-F009", "TK-F015"} & set(e.decide(tool, args)["rule_ids"]))
+
     def test_crush_config_changes_are_harness_config_in_every_pack(self):
         # #348: a write or delete of Crush's project or user config (crush.json, .crush.json, crushrc, .crushrc and
         # ~/.config/crush/) could remove Tracekit's hook; near names and reads stay unflagged

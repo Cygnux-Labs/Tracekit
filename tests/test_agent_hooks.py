@@ -2241,7 +2241,7 @@ class HarnessList(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         patch_env(self, HOME=d, USERPROFILE=d, XDG_CONFIG_HOME=None, CODEX_HOME=None, CRUSH_GLOBAL_CONFIG=None,
-                  CODEBUDDY_CONFIG_DIR=None)
+                  CODEBUDDY_CONFIG_DIR=None, INTERPRETER_HOME=None)
         with mock.patch("os.getcwd", return_value=d):
             for harness in agent_hooks.HARNESSES:
                 with self.subTest(harness=harness):
@@ -2757,7 +2757,7 @@ class Installer(unittest.TestCase):
             ev, bad = {"cursor": "preToolUse", "codex": "PreToolUse", "gemini": "BeforeTool", "goose": "PreToolUse", "qwen": "PreToolUse",
                        "droid": "PreToolUse", "antigravity": "PreToolUse", "crush": "PreToolUse",
                        "devin": "PreToolUse", "openhands": "PreToolUse", "codebuddy": "PreToolUse",
-                       "copilot": "preToolUse"}[h], {"command": "echo mine"}
+                       "copilot": "preToolUse", "interpreter": "PreToolUse"}[h], {"command": "echo mine"}
             path = agent_hooks.config_path(h, d)
             os.makedirs(os.path.dirname(path), exist_ok=True)
             config = {ev: bad} if h in ("droid", "devin") else {

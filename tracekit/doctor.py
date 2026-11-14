@@ -141,17 +141,19 @@ def collect(config=None, issuer_key=None):
                                        os.path.join(project, "settings.local.json"), _managed()],
                      gemini_settings=_gemini(os.path.expanduser("~"),
                                              os.path.join(os.getcwd(), ".gemini", "settings.json")))
-    if "codex" not in harnesses:   # v1 Codex hooks (init --dev --agent codex) run only once trusted, as v2 ones do
+    for trusting in agent_hooks.TRUSTING:   # their v1 hooks (init --dev --agent codex) run only once trusted, as v2 do
+        if trusting in harnesses:
+            continue
         paths = {}   # one file once: from $HOME the user's and the project's are the same
-        for p in (agent_hooks.config_path("codex"), agent_hooks.config_path("codex", os.getcwd())):
+        for p in (agent_hooks.config_path(trusting), agent_hooks.config_path(trusting, os.getcwd())):
             paths.setdefault(os.path.realpath(p), p)
         for path in paths.values():
             try:
-                hooks = _harness_hooks("codex", _json(path) or {})
+                hooks = _harness_hooks(trusting, _json(path) or {})
             except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a hook config: not this one
                 continue
             _codex_trust(lambda id, ok, detail, fix, bad=FAIL: rows.append(result(id, OK if ok else bad, detail, fix)),
-                         path, hooks if isinstance(hooks, dict) else {}, None, WARN)
+                         path, hooks if isinstance(hooks, dict) else {}, None, WARN, trusting)
     if "gptme" not in harnesses:
         path = agent_hooks.config_path("gptme")
         bridge = agent_hooks._gptme_hook_path(path)
@@ -668,14 +670,18 @@ def _codex_hash(ev, group, hook):
                                                  ensure_ascii=False).encode()).hexdigest()
 
 
-def _codex_trust(add, path, hooks, home, bad):
+def _codex_trust(add, path, hooks, home, bad, harness="codex"):
     """D-CODEX-HOOK-TRUST: whether Codex runs Tracekit's hooks, v2 or v1, in `path` (a Codex hooks.json, read as
     `hooks`). Codex runs a hook that isn't managed only once a person trusted it as it is now, and records that in the
     user's config.toml ($CODEX_HOME's, else ~/.codex's; `home`: the agent user's, whose ~/.codex it is) as
     [hooks.state."<hooks.json path>:<event>:<group>:<handler>"] trusted_hash (_codex_hash; enabled = false for a hook
     turned off). Interactive codex asks at startup for a hook that is new or changed; `codex exec` skips it without a
-    word (learn.chatgpt.com/docs/hooks; codex-rs/hooks hook_key and engine/discovery.rs)."""
+    word (learn.chatgpt.com/docs/hooks; codex-rs/hooks hook_key and engine/discovery.rs). harness "interpreter":
+    D-INTERPRETER-HOOK-TRUST, Open Interpreter's, which keeps the same trust in its own home's config.toml (0.0.61,
+    recorded: a trusted_hash written from _codex_hash runs the hook)."""
     from . import agent_hooks
+    name, cmd, _ = agent_hooks.TRUSTING[harness]
+    check = "D-CODEX-HOOK-TRUST" if harness == "codex" else "D-INTERPRETER-HOOK-TRUST"
     keys = {f"{os.path.abspath(path)}:{re.sub(r'(?<!^)(?=[A-Z])', '_', ev).lower()}:{g}:{h}":
             (ev, _codex_hash(ev, group, hook))
             for ev, groups in hooks.items() for g, group in enumerate(groups if isinstance(groups, list) else ())
@@ -684,7 +690,7 @@ def _codex_trust(add, path, hooks, home, bad):
             if isinstance(hook, dict) and agent_hooks._version(hook.get("command"))}
     if not keys:   # D-HOOKS-EVENT says there are none
         return
-    store, state, why = agent_hooks.codex_trust_store(home), {}, None
+    store, state, why = agent_hooks.codex_trust_store(home, harness), {}, None
     try:
         import tomllib   # Python 3.11 and newer
         state = tomllib.loads(install.agent_file(store).decode("utf-8")).get("hooks", {}).get("state", {})
@@ -693,7 +699,7 @@ def _codex_trust(add, path, hooks, home, bad):
     except FileNotFoundError:   # no config.toml: Codex recorded no trust
         pass
     except ImportError:
-        why = "Python 3.11 or newer reads Codex's config.toml, this is " + sys.version.split()[0]
+        why = f"Python 3.11 or newer reads {name}'s config.toml, this is " + sys.version.split()[0]
     except (OSError, ValueError, AttributeError) as e:   # unreadable, not TOML, or not of tables
         why = f"{store}: {e}"
     entry = {k: state.get(k) if isinstance(state.get(k), dict) else {} for k in keys}
@@ -702,26 +708,26 @@ def _codex_trust(add, path, hooks, home, bad):
                       and s["trusted_hash"] != keys[k][1]})
     unsure = sorted({keys[k][0] for k, s in entry.items() if s.get("trusted_hash") and not keys[k][1]})
     off = sorted({keys[k][0] for k, s in entry.items() if s.get("enabled") is False})
-    step = (f"run codex in a terminal, type /hooks and trust Tracekit's hooks (from {path}); Codex asks again "
+    step = (f"run {cmd} in a terminal, type /hooks and trust Tracekit's hooks (from {path}); {name} asks again "
             "whenever they change, as after tracekit init")
-    silent = "so no Codex call is decided or recorded (interactive codex asks at startup; `codex exec` doesn't)"
+    silent = f"so no {name} call is decided or recorded (interactive {cmd} asks at startup; `{cmd} exec` doesn't)"
     if why:
-        add("D-CODEX-HOOK-TRUST", False, f"can't confirm that Codex trusts Tracekit's hooks in {path} ({why}): Codex "
-            "runs a hook only once a person trusted it, and `codex exec` skips one without a word", step, bad=WARN)
+        add(check, False, f"can't confirm that {name} trusts Tracekit's hooks in {path} ({why}): {name} runs a hook "
+            f"only once a person trusted it, and `{cmd} exec` skips one without a word", step, bad=WARN)
         return
     if unsure and not (untrusted or changed or off):
-        add("D-CODEX-HOOK-TRUST", False, f"Codex's trust is recorded for Tracekit's hooks in {path} ({store}); doctor "
-            f"can't confirm it's for these exact hooks: the {', '.join(unsure)} hook(s) have settings Tracekit doesn't "
-            "write, whose hash doctor doesn't rebuild", step, bad=WARN)
+        add(check, False, f"{name}'s trust is recorded for Tracekit's hooks in {path} ({store}); doctor can't confirm "
+            f"it's for these exact hooks: the {', '.join(unsure)} hook(s) have settings Tracekit doesn't write, whose "
+            "hash doctor doesn't rebuild", step, bad=WARN)
         return
-    add("D-CODEX-HOOK-TRUST", not (untrusted or changed or off),
-        f"Codex skips Tracekit's {', '.join(untrusted)} hook(s) in {path}: nobody trusted them in Codex ({store} "
+    add(check, not (untrusted or changed or off),
+        f"{name} skips Tracekit's {', '.join(untrusted)} hook(s) in {path}: nobody trusted them in {name} ({store} "
         f"records no trust), {silent}" if untrusted else
-        f"Codex skips Tracekit's {', '.join(changed)} hook(s) in {path}: they changed since a person trusted them "
+        f"{name} skips Tracekit's {', '.join(changed)} hook(s) in {path}: they changed since a person trusted them "
         f"(the trust {store} records is for an earlier version of them, as after tracekit init), {silent}" if changed
-        else f"Tracekit's {', '.join(off)} hook(s) in {path} are turned off in Codex's /hooks ({store}): Codex runs "
-        "none of them" if off else f"Codex trusts each of Tracekit's hooks in {path} as they are now ({store})",
-        step if untrusted or changed else "run codex in a terminal, type /hooks and turn Tracekit's hooks back on",
+        else f"Tracekit's {', '.join(off)} hook(s) in {path} are turned off in {name}'s /hooks ({store}): {name} runs "
+        "none of them" if off else f"{name} trusts each of Tracekit's hooks in {path} as they are now ({store})",
+        step if untrusted or changed else f"run {cmd} in a terminal, type /hooks and turn Tracekit's hooks back on",
         bad=bad)
 
 
@@ -804,8 +810,8 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
         except (OSError, ValueError, AttributeError, TypeError) as e:
             add("D-HOOKS-EVENT", False, f"cannot check {harness} hooks in {path}: {e}", fix, bad=WARN)
             continue
-        if harness == "codex":
-            _codex_trust(add, path, hooks, home, FAIL if prod else WARN)
+        if harness in agent_hooks.TRUSTING:
+            _codex_trust(add, path, hooks, home, FAIL if prod else WARN, harness)
         if harness == "openhands":
             _openhands_checks(add, path, home, fix)
         unnamed =sorted({ev for ev, h in cmds if not re.search(rf"\b{re.escape(ev)}\b", h["command"])})
