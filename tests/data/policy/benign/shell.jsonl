@@ -300,6 +300,7 @@
 {"tool": "Bash", "args": {"command": "CONTAINER_HOST=unix:///run/podman/podman.sock podman-compose up"}, "expect": "allow", "note": "podman-compose with an explicit socket"}
 {"tool": "Bash", "args": {"command": "export CONTAINER_HOST=unix:///run/podman/podman.sock && podman ps"}, "expect": "allow", "note": "exporting the Podman socket for podman"}
 {"tool": "Bash", "args": {"command": "grep CONTAINER_HOST=unix:// compose.yaml"}, "expect": "allow", "note": "searching for the Podman socket setting"}
+{"tool": "Bash", "args": {"command": "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remote ps"}, "expect": "allow", "note": "podman-remote with an explicit socket (#828)"}
 {"tool": "Bash", "args": {"command": "echo 'export PATH=$PATH:~/bin' >> ~/.bashrc"}, "expect": "allow", "note": "an ordinary startup-file edit stays as it is (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'alias ll=ls' >> ~/.bashrc"}, "expect": "allow", "note": "an alias in bashrc stays as it is (#750)"}
 {"tool": "Bash", "args": {"command": "crontab -l"}, "expect": "allow", "note": "listing the user's crontab (#750)"}
