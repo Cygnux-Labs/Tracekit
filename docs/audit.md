@@ -31,8 +31,8 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` is a Claude Code transcripts' folder (Cursor's with `--agent cursor`, Cline's with `--agent cline`,
-  Gemini CLI's with `--agent gemini`, and another agent's once it has a reader); a folder that doesn't exist is
+- `ROOT` is a Claude Code transcripts' folder (Codex's with `--agent codex`, Cursor's with `--agent cursor`,
+  Cline's with `--agent cline`, Gemini CLI's with `--agent gemini`, and another agent's once it has a reader); a folder that doesn't exist is
   an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's default folder that exists
   (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
@@ -46,8 +46,8 @@ denied and held calls (--all for every call):
   them, so `run_shell_command` or `Shell` is decided as `Bash`. A line the mapping can't take (nested too deep) counts
   as malformed. Without `--agent`, names are taken as Tracekit's (`Bash`, `Write`, `Edit`, `Read`, `WebFetch`,
   `mcp__<server>__<tool>`). With ROOT, it names the reader that reads ROOT, and its calls are mapped as with
-  `--calls`. An agent with no reader (every agent but `claude`, `cursor`, `cline` and `gemini`) needs
-  `--calls FILE`, and `--agent claude`, `cursor`, `cline` or `gemini` a ROOT or `--calls FILE`: without them it
+  `--calls`. An agent with no reader (every agent but `claude`, `codex`, `cursor`, `cline` and `gemini`) needs
+  `--calls FILE`, and `--agent claude`, `codex`, `cursor`, `cline` or `gemini` a ROOT or `--calls FILE`: without them it
   exits 2.
 - `--policy` selects a policy file (default: the dev pack, `tracekit/policy2/packs/dev.yaml`).
 - `--since` limits the replay (e.g. `7d`, `24h`, `30m`, or an ISO-8601 time, UTC unless it gives an offset); a call
@@ -77,6 +77,7 @@ One reader per agent, each with its default folder:
 | Agent | Default folder |
 |---|---|
 | `claude` | `$CLAUDE_CONFIG_DIR/projects` when it is set, else `~/.claude/projects` |
+| `codex` | `$CODEX_HOME/sessions` when it is set, else `~/.codex/sessions` |
 | `cursor` | `~/.cursor/projects` |
 | `cline` | `$CLINE_SESSION_DATA_DIR`, else `$CLINE_DATA_DIR/sessions`, else `~/.cline/data/sessions` (`$CLINE_DIR` moves `~/.cline`); and, for tasks from before Cline 4.0, `saoudrizwan.claude-dev/tasks` in VS Code's global storage: `~/Library/Application Support/Code/User/globalStorage` (macOS), `~/.config/Code/User/globalStorage` (Linux), `%APPDATA%\Code\User\globalStorage` (Windows) |
 | `gemini` | `$GEMINI_CLI_HOME/.gemini/tmp` when it is set, else `~/.gemini/tmp` |
@@ -91,6 +92,15 @@ Claude Code's reader reads every `.jsonl` file under its folder, at any depth: e
 under that session. Each line is a JSON object; assistant messages may contain `tool_use` blocks. A tool use whose id
 was read already (a resumed or forked session's file repeats the calls it copied) counts once. The reader reuses
 `tracekit.hook.transcript_entries` and the policy engine from `tracekit.policy2.engine`.
+
+Codex's reader reads `rollout-*.jsonl` files under `$CODEX_HOME/sessions/YYYY/MM/DD/` when `CODEX_HOME` is set, else
+`~/.codex/sessions/YYYY/MM/DD/`. To replay Codex only, use `tracekit audit "$CODEX_HOME/sessions" --agent codex --since 7d`,
+or `tracekit audit ~/.codex/sessions --agent codex --since 7d` when `CODEX_HOME` is unset. Each `response_item` call
+is rebuilt as the PreToolUse payload Codex sends for it (`exec_command` arrives as `Bash` with its `cmd` as `command`,
+and MCP tools arrive as `mcp__<server>__<tool>`), then decided as Tracekit's Codex hook decides that payload
+(`apply_patch` as an `Edit` of the files its patch names). Calls without a matching PreToolUse hook, such as
+`write_stdin`, are skipped. Repeated calls with the same id and mapped contents count once; calls with no valid id
+are counted without deduplication.
 
 Cursor's reader reads the agent transcripts Cursor writes for each chat, of its IDE's agent and of the `cursor-agent`
 CLI: `<project>/agent-transcripts/<id>/<id>.jsonl` under its folder (an older build's flat `<id>.jsonl`, and a
