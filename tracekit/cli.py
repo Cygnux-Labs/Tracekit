@@ -1554,7 +1554,10 @@ def _stop_lines(c, x):
         engine["TK-SHELL-PARSE"] = ENGINE_REASONS["TK-SHELL-PARSE"]["causes"].get(cause) or engine["TK-SHELL-PARSE"]
     rules = [(i, known.get(i) or engine.get(i) or {"reason": view.ENGINE_RULES.get(i, "")})
              for i in x["rule_ids"] if i != "TK-UNKNOWN-TOOL" and i not in flags]
-    why = "; ".join(f"{r['reason']} ({i})" for i, r in rules if r.get("reason"))
+    held, grant_ids = (None, []) if c.signer else _held_decision(x)   # the approval's own signed decision and the
+    # grants it was checked against, from the signer's records; None leaves today's output
+    recorded = (held.get("data") or {}).get("reasons") or [] if held else []
+    why = "; ".join([*recorded, *(f"{r['reason']} ({i})" for i, r in rules if r.get("reason"))])
     instead = " ".join(dict.fromkeys(r["remedy"] for _, r in rules if r.get("remedy")))
     left = _expires_left(x)
     cmd = approvals_cmd(c.signer)
@@ -1568,7 +1571,7 @@ def _stop_lines(c, x):
             *([f"answer      `{cmd} approve {x['approval_id']}` to allow it once, `{cmd} reject {x['approval_id']}` "
                "to refuse it" + ("; in the agent's Claude Code session, with a leading `! `" if bang else "")]
               if x["state"] == "requested" else []),
-            *_grant_hint(x, reasons.policies.get(x["policy_hash"], {}), flags, cmd),
+            *_grant_hint(c, x, reasons.policies.get(x["policy_hash"], {}), flags, cmd, recorded, grant_ids),
             f"record      tracekit view --approval {x['approval_id']}"
             + (" (with the --config or --data-dir of this signer)" if c.signer else ""),
             f"a false alarm? tracekit feedback --harmless {x['approval_id']}{cmd.removeprefix('tracekit approvals')}"]
@@ -1594,25 +1597,93 @@ def _claude_code_run(run_id):
     return False
 
 
-def _grant_hint(x, pol, flags, cmd):
+def _held_decision(x):
+    """(The `policy.decision` record approval `x` was requested for, the ids of its run's intent grants recorded
+    before it in issue order): its signed `approval.request` record names both the decision (`decision_id`) and the
+    run, so a second decision under the same call id, or another tenant's run of the same id, can't pass as its
+    approval's. Read from the same-user dev signer's store the way `tracekit view` reads records; (None, []) when
+    unreadable (another signer, no store, no such record), which leaves `approvals show` what it prints today."""
+    from .signer.service import reader as open_reader, signer_config
+    from .storage.base import StorageCorrupt, StorageUnavailable
+    try:
+        r = open_reader(signer_config(None))
+        try:
+            hit = None
+            for key in list(r.runs):
+                for rec in r.iter_run(*key):
+                    e = rec["event"]
+                    if e["type"] == "approval.request" and (e.get("data") or {}).get("approval_id") == \
+                            x["approval_id"]:
+                        hit = key, (e.get("data") or {}).get("decision_id")
+                        break
+                if hit:
+                    break
+            if hit is None:
+                return None, []
+            key, did = hit
+            grants, held = [], None
+            for rec in r.iter_run(*key):   # in run order: a grant recorded before the decision was checked against
+                e = rec["event"]
+                if e["type"] == "ext" and (e.get("data") or {}).get("name") == "intent.grant":
+                    grants.append((e.get("run_seq"), (e.get("data") or {}).get("id")))
+                elif e["type"] == "policy.decision" and (e.get("data") or {}).get("decision_id") == did:
+                    held = e
+            if held is None:
+                return None, []
+            return held, [g for seq, g in grants if g and seq is not None and seq < held["run_seq"]]
+        finally:
+            r.close()
+    except (OSError, ValueError, StorageCorrupt, StorageUnavailable, KeyError, TypeError):
+        return None, []
+
+
+def _live_grant(c, x, reasons, grant_ids):
+    """The first of the grants held call `x`'s decision was checked against (its run's `intent.grant` records before
+    it, in issue order) that is still live and covers the call's tool: the one `approvals show` names. None when no
+    grant held the call (the signed reason doesn't start with one), when none is live, or when the signer won't
+    say. The ids come from the run's own records, never from the reason's text, so nothing an agent writes (a
+    quoted payee included) can add one, and another tenant's grant can't be named."""
+    from .sdk.client import Incompatible, SignerUnavailable
+    from .signer.rpc_schema import RPCError
+    if not reasons or not reasons[0].startswith("grant g-") or not grant_ids:
+        return None
+    try:
+        gs = {e["grant_id"]: e for e in c.grant_list({"run_id": x["run_id"]})["grants"]}
+    except (Incompatible, SignerUnavailable, RPCError, KeyError, TypeError):
+        return None
+    for gid in grant_ids:
+        e = gs.get(gid)
+        if e is not None and e["state"] == "live" and x["tool"] in e["tools"]:
+            return gid, e
+    return None
+
+
+def _grant_hint(c, x, pol, flags, cmd, reasons, grant_ids):
     """What `approvals show` says about granting calls like held call `x` (docs/intent-grants.md), when every rule that
-    held it opts into a grant in its policy `pol`: how the grant reads the call, and a command that approves it and
-    grants the run more like it, with limits from this call for the person to edit; [] otherwise."""
+    held it opts into a grant in its policy `pol`: how the grant reads the call, which grant the decision's signed
+    `reasons` name and what it has left while it is live, and a command that approves it and grants the run more like
+    it, with limits from this call for the person to edit; [] otherwise."""
     from . import grants
     opted = {r["id"]: (r.get("approval") or {}).get("grant") for r in pol.get("ask", [])}
     intents = {opted.get(i) for i in x["rule_ids"] if i not in flags}
     if x["state"] != "requested" or len(intents) != 1 or None in intents:
         return []
-    fields, why = grants.read(intents.pop(), _args(x))
+    intent = intents.pop()
+    fields, why = grants.read(intent, _args(x))
     if fields is None:
         return [f"grant       a payment grant can't read this call ({why}): approve it on its own"]
     amount, cur = grants.show(fields["amount"], fields["currency"]), fields["currency"]
     line = f"grant       a payment grant reads it as {amount} to {json.dumps(fields['payee'])}"
     if cur not in grants.DECIMALS:
         return [line + f"; tracekit doesn't know {cur}'s minor units, so approve it on its own"]
-    return [line + "; to approve it and let more payments like it run, set your own limits:",
-            f"            {cmd} approve {x['approval_id']} --grant --payee {fields['payee']} --max '{amount}' "
-            f"--total '{grants.show(fields['amount'] * 5, cur)}' --for 1h"]
+    command = (f"            {cmd} approve {x['approval_id']} --grant --payee {fields['payee']} --max '{amount}' "
+               f"--total '{grants.show(fields['amount'] * 5, cur)}' --for 1h")
+    live = _live_grant(c, x, reasons, grant_ids)
+    if live is not None:   # name the live grant that held the call and what it has left, not a new grant as if none
+        gid, e = live   # were live
+        return [f"{line}; grant {gid} is live: {grants.words(e['grant'], e['limits'], e['used'])}",
+                "            it held this call: approve it on its own, or add room with a new grant:", command]
+    return [line + "; to approve it and let more payments like it run, set your own limits:", command]
 
 
 def _approvals(a):
