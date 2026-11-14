@@ -21,7 +21,7 @@ from unittest import mock
 
 import adapter_contract as ac
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
-from tracekit import cli, install, privacy
+from tracekit import agent_hooks, cli, install, privacy
 from tracekit.bundle_v2 import export
 from tracekit.client import client_home
 from tracekit.format.canon import event_hash
@@ -42,8 +42,10 @@ HOOK = install._hook_command(install.V2_HOOK).replace(" -I ", " -I -X faulthandl
 # an Instead step
 OWN_STEP = ("If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs "
             "to get past the policy: every call is signed and kept.")
-HELD_AGENT = ("tell the person what this call was for and pass on these commands, then wait for their answer; a "
-              "subagent puts them in its final report. Once it is approved, make the identical call again. " + OWN_STEP)
+HELD_AGENT = ("ask the person: approve or skip? Don't reword around the hold, but do take an Instead step that's yours "
+              "and say so; otherwise wait for their answer. Pass on the Person line and say what the call was for; a "
+              "subagent puts both in its final report. Once it is approved, make the identical call again. Never hide "
+              "what a call runs to get past the policy: every call is signed and kept.")
 BLOCKED_AGENT = "tell the person what you were doing and why it was blocked. " + OWN_STEP
 
 
@@ -1870,6 +1872,32 @@ class HoldLine(unittest.TestCase):
                 self.assertEqual(self.waits, [0])   # one look, to see whether an agent approved it already
                 self.assertEqual(json.loads(out), {"systemMessage": held, "hookSpecificOutput": {
                     "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": held}})
+
+    def test_a_held_call_asks_the_person_approve_or_skip(self):
+        """#816: 63 of 70 holds in #815 expired, the agent rewording the call or moving on: the held message asks the
+        person one question, next to the command that approves the call, and says not to reword it around the hold."""
+        _, lines, _ = self.pre("force push.", wait="")
+        held = "\n".join(lines)
+        for said in ("`! tracekit approvals approve apr-1`", "ask the person: approve this call or skip it?",
+                     "Don't reword the call to get past the hold; wait for their answer.", "Never hide what a call runs"):
+            self.assertIn(said, held)
+        self.assertNotIn("Instead", held)
+
+    def test_a_held_call_with_an_instead_step_lets_the_agent_take_it(self):
+        """#816 review: TK-SHELL-PARSE, the most common hold, says to split the command into plain ones, and that is
+        what got through in #815; "don't reword the call" first, and the Instead step only at the end, told the agent
+        to stop doing it. With an Instead line the one rule says to take its step when it is the agent's own."""
+        _, lines, _ = self.pre("the parser can't read this command. Instead: Split it into plain commands; pipes, &&, "
+                               "if, for, case and functions are read.", wait="")
+        held = "\n".join(lines)
+        self.assertIn("Don't reword around the hold, but do take an Instead step that's yours and say so; otherwise "
+                      "wait for their answer.", held)
+        self.assertEqual(held.count("Instead step"), 1)   # one rule, said once
+        # and both halves survive the 500 characters another harness's reply is cut to
+        out = io.StringIO()
+        agent_hooks._reply("codex", out, False, held.replace("! tracekit", "tracekit"), True)
+        cut = json.loads(out.getvalue())["hookSpecificOutput"]["permissionDecisionReason"]
+        self.assertIn("Don't reword around the hold, but do take an Instead step that's yours", cut)
 
     def test_a_retry_in_an_agents_veto_delay_says_it_is_approved_and_how_long_to_wait(self):
         """An agent approver's approval reads `requested` while people may still revoke it: the held retry said to

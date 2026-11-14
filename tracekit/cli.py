@@ -454,8 +454,8 @@ def _parser():
                        "calls, holds, denies and flags by rule, gaps, integrity (--since, --json, --share)",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (Claude Code and Cursor transcripts, Cline tasks, "
-                       "Gemini CLI sessions, or a calls file) through the policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
+    p = sub.add_parser("audit", help="replay your coding agents' past tool calls (their transcripts, see docs/audit.md, or a calls file) "
+                       "through the policy and count what it would have held or denied; read-only, not a signed record", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("tips", help="what each step of your coding agents cost and how to cut it, as tracekit view's "
                        "TIPS page says it, from the dev signer's store and Claude Code's transcripts (--since, --json)",
@@ -536,7 +536,9 @@ def _parser():
     p.add_argument("--otel-header", action="append", default=[], metavar="KEY=VALUE",
                    help="header for --otel-endpoint (repeatable; also read from OTEL_EXPORTER_OTLP_HEADERS)")
     p.add_argument("--home", help="signer home to read the ledger from")
-    p.add_argument("--v2", action="store_true", help="format v2, from the v2 signer's store (with --run or --run-set)")
+    p.add_argument("--v2", action="store_true", help="format v2, from the v2 signer's store (with --run or --run-set); "
+                   "with $TRACEKIT_SIGNER an https:// URL and none of --dev, --config or --data-dir, a run of your "
+                   "identity's tenant from that signer over its API (--run only)")
     p.add_argument("--run-set", action="store_true", help="with --v2: the tenant's run-set, every registry leaf up to "
                    "its latest registry checkpoint and the runs finalised in it (reads the signer's keys/)")
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
@@ -1219,7 +1221,7 @@ def _export_v2(a, show=print):
     import time
 
     from .bundle_v2 import about as about_run
-    from .bundle_v2 import export
+    from .bundle_v2 import covering, export
     from .format import registry
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
@@ -1230,6 +1232,9 @@ def _export_v2(a, show=print):
         print("tracekit export --v2: needs --run RUN_ID or --run-set, and one of --dev, --config or --data-dir at most",
               file=sys.stderr)
         return 2
+    if not (a.dev or a.config or a.data_dir) and os.environ.get("TRACEKIT_SIGNER", "").startswith(("https://",
+                                                                                                    "http://")):
+        return _export_remote(a, show)
     reader = None
 
     def reopen():   # a reader opened now holds every record and note written before
@@ -1262,17 +1267,7 @@ def _export_v2(a, show=print):
             raise ValueError(f"no run {a.run!r} of tenant {tenant!r} in the store")
         about = about_run(reader, tenant, a.run) if a.with_findings else []
         last = max(reader.runs[(tenant, r)]["seqs"][-1] for r in [a.run, *about])
-
-        def signers(n):
-            return {line.split(" ")[1] for line in n.split("\n\n", 1)[1].splitlines()}
-
-        def covering():   # the newest anchored note covering the run with every cosigner of the newest note, else that
-            note = reader.checkpoint_latest()
-            for x in reader.anchors()[-1:]:
-                if x["size"] > last and note and x["size"] < note[0] and signers(x["note"]) >= signers(note[1]):
-                    return x["size"], x["note"]
-            return note if note and note[0] > last else None
-        note = covering()
+        note = covering(reader, last)
         if note is None:
             if a.data_dir:
                 raise ValueError(f"no checkpoint covers run {a.run!r} yet, and a data dir names no signer to ask for "
@@ -1289,7 +1284,7 @@ def _export_v2(a, show=print):
                 raise ValueError(f"no checkpoint covers run {a.run!r} yet and no signer answered to write one ({e}); "
                                  "start the signer and export again") from None
             deadline = time.monotonic() + NUDGE_WAIT_S
-            while (note := covering()) is None and time.monotonic() < deadline:
+            while (note := covering(reader, last)) is None and time.monotonic() < deadline:
                 time.sleep(0.1)
                 reopen()
             if note is None:
@@ -1306,6 +1301,35 @@ def _export_v2(a, show=print):
         if reader:
             reader.close()
     show(_exported(a, info, f"run {a.run}" + (f" and {len(about)} findings or replay run(s) about it" if about else "")))
+    return 0
+
+
+def _export_remote(a, show=print):
+    """`tracekit export --v2 --run ID` from the signer $TRACEKIT_SIGNER names by URL, as the identity its token
+    ($TRACEKIT_SIGNER_TOKEN_FILE) or certificate proves: a run of that identity's tenant, the bytes the operator's
+    export of the run writes (export_run, an `authorize` grant)."""
+    from .bundle_v2 import write_atomic
+    from .sdk.client import Client, Incompatible, SignerUnavailable
+    from .signer.rpc_schema import RPCError
+    if not a.run or a.run_set or a.with_findings or a.tenant or a.otel or a.otel_endpoint:
+        print("tracekit export --v2 from the signer $TRACEKIT_SIGNER names: --run RUN_ID, a run of your identity's "
+              "tenant; --run-set, --with-findings, --tenant and --otel go with the operator's --config", file=sys.stderr)
+        return 2
+    c = None
+    try:
+        c = Client()
+        data = c.export_bundle(a.run)
+        write_atomic(a.out, data)
+    except (OSError, SignerUnavailable, Incompatible, RPCError) as e:
+        print(f"tracekit export: {e}", file=sys.stderr)
+        return 1
+    finally:
+        if c:
+            c.close()
+    show(json.dumps({"bundle": a.out, "run": a.run, "signer": c.signer, "bytes": len(data)}, indent=2) if a.json else
+         f"wrote {a.out}: run {a.run} from {c.signer}, {len(data):,} bytes\n"
+         "next, verify it against the trust config that pins the signer's log key, which its operator gives you "
+         f"(tracekit signer trust):\n  tracekit verify {_quote(a.out)} --trust trust.json")
     return 0
 
 

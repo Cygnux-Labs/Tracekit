@@ -28,6 +28,9 @@ is why it needs `--experimental-macos`), Windows, and the Claude Code plugin loa
 
 ## macOS system mode
 
+Run init as root from a root-owned clone of the release ([laptop system mode](deploy.md#laptop-system-mode) has the
+clone steps), in the clone's directory:
+
 ```bash
 sudo /usr/bin/python3 -m tracekit init --experimental-macos --user "$USER"
 ```

@@ -125,8 +125,8 @@ class Gateway(unittest.TestCase):
                                          if rule["id"] == "R-ROUTE" else rule for rule in POLICY["deny"]])
         self.s = svc.SignerService(self.dir, policy=Engine(policy), gateways=["mtls:spiffe://acme/*"], grace_s=0,
                                    tenants={f"{OTHER.scheme}:{OTHER.subject}": "beta"},
-                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
-                                              "token:other": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
+                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR),
+                                              "token:other": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/a2a": ["decide", "complete", "approval_request",
                                                                          "approval_wait", "approval_consume",
                                                                          "observe"]})
