@@ -330,7 +330,8 @@ CLINE_PATH_KEYS = ("path", "file_path", "filePath")
 # Windows; the 2.x names, shell, read, write, are no hook ids, and a 2.x CLI reads no hook file Tracekit writes). Each
 # file tool reads its own key (KIRO_PATH_ARG): delete_file reads `targetFile`, not `path`. A delete is an Edit, as
 # Cursor's is: the file rules read it. invoke_sub_agent is a Task: the sub-agent's own calls fire the session's hooks
-# (recorded on 3.3.0, in the same session)
+# (recorded on 3.3.0, in the same session). Its `contextFiles` ([{"path": …}]) reach the sub-agent with no read_file of
+# them (recorded): a non-empty list is denied in the hook (_blocked_kiro), and the sub-agent reads what it needs
 KIRO_TOOLS = {"execute_bash": "Bash", "execute_pwsh": "Bash", "read_file": "Read", "fs_write": "Write",
               "fs_append": "Write", "str_replace": "Edit", "delete_file": "Edit", "list_directory": "LS",
               "file_search": "Glob", "grep_search": "Grep", "web_fetch": "WebFetch", "remote_web_search": "WebSearch",
@@ -342,8 +343,9 @@ KIRO_PATH_ARG = {"read_file": "path", "fs_write": "path", "fs_append": "path", "
 KIRO_DECIDED_ON = {**{k: v for k, v in KIRO_PATH_ARG.items() if k not in ("list_directory", "grep_search")},
                    "execute_bash": "command", "execute_pwsh": "command", "web_fetch": "url"}
 # the code tool's operations recorded on 3.3.0: these read the file they name (lookup_symbols's `path`, the others'
-# `file_path`), and pattern_rewrite edits it (`pattern` to `replacement`). Any other operation (an LSP rename, a
-# format) is denied in the hook until it is recorded (_blocked_tool)
+# `file_path`), and pattern_rewrite is decided as an edit of it (`pattern` to `replacement`), though on 3.3.0 it only
+# previews ("Always previews — use write tools to apply"; recorded on a folder too: nothing changed). Any other
+# operation (an LSP rename, a format) is denied in the hook until it is recorded (_blocked_tool)
 KIRO_CODE_READS = ("lookup_symbols", "get_document_symbols", "pattern_search", "find_references", "diagnostics")
 KIRO_CODE_EDITS = ("pattern_rewrite",)
 KIRO_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
@@ -1186,19 +1188,25 @@ def _odd_arg_name(v):
 
 def _blocked_kiro(tool_name, raw=""):
     """The reason a Kiro CLI call is denied in the hook itself, else None: a hook it would create, a sub-agent or power
-    no recording shows running hooks, or a code tool operation not recorded."""
+    no recording shows running hooks, a sub-agent handed files no hook reads, or a code tool operation not recorded."""
     if tool_name == "createHook":
         return ("Blocked by Tracekit: Kiro's createHook writes a hook whose command runs at Kiro's events, and no "
                 "Tracekit hook decides that command; a person adds hooks to .kiro/hooks themselves.")
     if tool_name.startswith("subagent/") or tool_name == "kiro_powers":
         return (f"Blocked by Tracekit: Kiro's {tool_name} hasn't been recorded, so Tracekit doesn't know whether the "
                 "calls it makes run Kiro's hooks; use invoke_sub_agent, or make each call itself.")
-    if tool_name != "code":
+    if tool_name not in ("code", "invoke_sub_agent"):
         return None
     try:
         ti = _input(dict(json.loads(raw)).get("tool_input")) if raw.strip() else {}
     except (ValueError, TypeError):
         ti = {}
+    if tool_name == "invoke_sub_agent":
+        if ti.get("contextFiles") in (None, []):
+            return None
+        return ("Blocked by Tracekit: Kiro's invoke_sub_agent hands the sub-agent its contextFiles with no read "
+                "Tracekit decides; name the files in the prompt instead, and the sub-agent's read_file of each is "
+                "decided.")
     op = ti.get("operation")
     if op not in KIRO_CODE_READS + KIRO_CODE_EDITS:
         return (f"Blocked by Tracekit: Kiro's code tool operation {str(op)[:64]!r} hasn't been recorded, so Tracekit "

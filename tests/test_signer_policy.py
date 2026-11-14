@@ -1726,6 +1726,11 @@ class CodingPack(unittest.TestCase):
                          "C:/Users/u/.kiro/settings/mcp.json"):
                 with self.subTest(pack=pack, engine=engine, path=path):
                     self.assertIn("TK-F009", e.decide("Write", {"file_path": path, "content": "x"})["rule_ids"])
+            # #825's review: Kiro's code pattern_rewrite takes a folder, decided as an Edit of it
+            for path in ("/w/.kiro", r"C:\work\kiro-rec\.kiro"):
+                with self.subTest(pack=pack, engine=engine, folder=path):
+                    self.assertIn("TK-F009", e.decide("Edit", {"file_path": path, "old_string": "a",
+                                                               "new_string": "b"})["rule_ids"])
 
     def test_clines_hook_folders_are_harness_config(self):
         """#732's review: Cline runs every hook file in ~/Documents/Cline/Hooks, ~/.cline/hooks, .cline/hooks and
