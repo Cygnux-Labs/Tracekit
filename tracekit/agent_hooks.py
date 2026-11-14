@@ -1,5 +1,5 @@
 """Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush,
-Devin (CLI and Desktop), Cline (CLI and VS Code extension), GitHub Copilot CLI and CodeBuddy Code, on the Claude
+Devin (CLI and Desktop), Cline (CLI and VS Code extension), GitHub Copilot CLI, CodeBuddy Code and jcode, on the Claude
 Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
@@ -16,7 +16,8 @@ Code pipeline.
     tracekit init --dev --agent cline        # ~/Documents/Cline/Hooks/<event> (project: .clinerules/hooks/<event>)
     tracekit init --dev --agent copilot      # ~/.copilot/hooks/tracekit.json (project: .github/hooks/tracekit.json)
     tracekit init --dev --agent codebuddy    # ~/.codebuddy/settings.json (project: .codebuddy/settings.json)
-    (add --project to write the project-level file instead)
+    tracekit init --dev --agent jcode        # the [hooks] table of ~/.jcode/config.toml ($JCODE_HOME/config.toml)
+    (add --project to write the project-level file instead; not for jcode, which reads its user config only)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
 policy gate before the tool runs (deny blocks, ask holds for approval), the same signed events, the same transcript
@@ -91,11 +92,18 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             is Claude Code's under other keys (event_type, working_dir, message), and tool_input's `kind` is dropped;
             a file_editor with no path or an apply_patch with no file header is denied in the hook
 
+    jcode   bash, read, write, edit, apply_patch, webfetch, mcp__<server>__<tool>, mcp (action call), mcp_call
+            -> Bash, Read, Write, Edit, Edit (every file a Codex patch header or a unified diff's ---/+++ names),
+            WebFetch, mcp__<server>__<tool> as named, and for mcp and mcp_call mcp__<server>__<tool> with the call's
+            `arguments`; its payload is environment variables (JCODE_HOOK_*) and the full input on stdin (jcode_payload).
+            batch is decided as a call of its own: each call in it reaches its own pre_tool gate under its own name
 
-What each harness exposes decides what Tracekit can see: Gemini CLI, Droid, Devin, OpenHands and Cline's VS Code
-extension do not give tool calls an id, so pre and post events are paired by (tool, arguments) in order, and Antigravity
-CLI's by (step index, tool, arguments); Cursor and Qwen Code report failures through postToolUseFailure, and OpenHands
-with is_error in its tool_response.
+
+What each harness exposes decides what Tracekit can see: Gemini CLI, Droid, Devin, OpenHands, jcode and Cline's VS Code
+extension do not give tool calls an id before they run, so pre and post events are paired by (tool, arguments) in order
+(jcode's by its 16 KB copy of the input, the only one both of its events carry), and Antigravity CLI's by (step index,
+tool, arguments); Cursor and Qwen Code report failures through postToolUseFailure, OpenHands with is_error in its
+tool_response, and jcode with JCODE_HOOK_STATUS=error.
 Reasoning capture reads Claude Code's transcript format only and is off for these harnesses."""
 import contextlib
 import hashlib
@@ -117,7 +125,7 @@ from .policy2.classes import PATH_KEYS, first
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
                "devin": "devin", "cline": "cline", "gptme": "gptme", "openhands": "openhands",
-               "copilot": "copilot", "codebuddy": "codebuddy-code"}
+               "copilot": "copilot", "codebuddy": "codebuddy-code", "jcode": "jcode"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -219,6 +227,8 @@ DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart",
 # without `_` ends in path, paths or file
 DEVIN_PATH_KEY = re.compile(r"(?:path|paths|file)$")
 # a unified diff's file names: --- a/x and +++ b/x (up to a tab, where diff -u puts the time), and diff --git a/x b/x
+# a name a shell reads as a variable in an assignment (NAME=value)
+SHELL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+)$)", re.M)
 
 
@@ -239,6 +249,14 @@ def _diff_names(name):
         except (UnicodeError, ValueError, DeprecationWarning):   # a bad escape (\q) warns, or raises under -W error
             pass
     return [re.sub(r"^[ab]/", "", n) for n in names]
+
+
+def _patch_files(text):
+    """Every file a patch in `text` names: Codex's headers (*** Add, Update or Delete File:, *** Move to:) and a unified
+    diff's (---, +++, diff --git), in order, each once."""
+    return list(dict.fromkeys([f.strip() for f in PATCH_FILE.findall(text)] + [
+        n for a, b in DIFF_FILE.findall(text) for f in ([a.strip()] if a else b.split()) if f not in ("", "/dev/null")
+        for n in _diff_names(f)]))
 # what each of these Devin tools is decided on: a call that sends none of it is denied in the hook (_blocked)
 DEVIN_DECIDED_ON = {**dict.fromkeys(("read", "write", "edit"),
                                     "path under a key ending in path, paths or file (case and _ ignored)"),
@@ -323,6 +341,14 @@ CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9
 # CodeBuddy Code's tools are Claude Code's by name and arguments (its bundled code, @tencent-ai/codebuddy-code
 # 2.183.0); of its own, these read a file: each is a Read of the path it reads, never of a decoy beside it
 CODEBUDDY_READS = {"NotebookRead": "notebook_path", "ViewImage": "image_path"}
+# jcode's tools (crates/jcode-app-core/src/tool): file tools read `file_path`, apply_patch `patch_text` (a call named
+# `patch` reaches the hook as apply_patch). open, browser and mcp_search stay unmapped: unknown tools, flagged, their
+# whole arguments read by the policy
+JCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
+               "webfetch": "WebFetch"}
+# its hook events (JCODE_HOOK_EVENT) Tracekit records, as Claude Code names them; turn_start and turn_end carry no prompt
+JCODE_EVENTS = {"pre_tool": "PreToolUse", "post_tool": "PostToolUse", "session_start": "SessionStart",
+                "session_end": "SessionEnd"}
 
 
 def _each(v, *keys):
@@ -548,11 +574,8 @@ def tool(harness, name, ti):
         name, files = _named(harness, name), None
         if name == ("ApplyPatch" if harness == "droid" else "apply_patch"):   # every file a patch header names,
             text = "\n".join(_strings(ti))   # whichever argument holds it
-            files = [f.strip() for f in PATCH_FILE.findall(text)]
-            if harness == "devin":   # its patch format isn't documented: a unified diff's files are decided too
-                files = list(dict.fromkeys(files + [n for a, b in DIFF_FILE.findall(text)
-                                                    for f in ([a.strip()] if a else b.split())
-                                                    if f not in ("", "/dev/null") for n in _diff_names(f)]))
+            # Devin's patch format isn't documented: a unified diff's files are decided too
+            files = _patch_files(text) if harness == "devin" else [f.strip() for f in PATCH_FILE.findall(text)]
         elif harness == "devin" and name in ("read", "write", "edit"):
             # every path under a key Devin's tool may read (v2 decides the first path key and `paths`, v1 `file_path`
             # and `paths`), so a decoy `file_path` beside the path the tool reads never replaces it
@@ -572,6 +595,41 @@ def tool(harness, name, ti):
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
         return (DROID_TOOLS if harness == "droid" else DEVIN_TOOLS).get(name, name), ti
+    if harness == "jcode":
+        if name == "apply_patch":   # `patch_text`, in Codex's format or a unified diff: every file it names decides,
+            # never a decoy path beside it. A patch that names none is left unmapped, an unknown tool, as Cursor's is
+            files = _patch_files(ti["patch_text"]) if isinstance(ti.get("patch_text"), str) else []
+            if not files:
+                return name, ti
+            ti["file_path"], ti["paths"] = files[0], files
+            return "Edit", ti
+        if name == "mcp" and ti.get("action") == "connect":
+            if isinstance(ti.get("command"), str) and ti["command"]:
+                args, env = ti.get("args") or [], ti.get("env") or {}
+                if isinstance(args, list) and all(isinstance(a, str) for a in args) and isinstance(env, dict):
+                    command = shlex.join([ti["command"], *args])
+                    # only the value is quoted: a quoted 'X=a b' is a program name to a shell, not an assignment
+                    # (a key that isn't a shell name can't be written as one; the hook blocks it, _blocked)
+                    assignments = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items())
+                    return "Bash", {"command": (assignments + " " if assignments else "") + command}
+            elif isinstance(ti.get("url"), str) and ti["url"]:
+                return "WebFetch", {"url": ti["url"]}
+            return name, ti
+        if name == "mcp_call" or name == "mcp" and ti.get("action") == "call":   # {server, tool, arguments}: decided as
+            # the tool it calls, on its own arguments
+            # lean: named as sent; jcode's own mcp__<server>__<tool> turns each character outside [A-Za-z0-9_] into _
+            # (dispatch_name), so a rule on a server or tool with one matches one form only; match both if that bites
+            server, called, args = ti.get("server"), ti.get("tool"), ti.get("arguments")
+            if isinstance(server, str) and server and isinstance(called, str) and called:
+                return f"mcp__{server}__{called}", dict(args) if isinstance(args, dict) else {} if args is None else {"arguments": args}
+            return name, ti
+        if name == "batch":   # every call in it reaches its own pre_tool gate under its own name (tool/mod.rs execute):
+            # the batch is decided, and recorded, as the tools it runs, never again on their arguments, which would
+            # decide each call twice and could hold it twice
+            calls = ti.get("tool_calls")
+            return name, {"tool_calls": [{"tool": c.get("tool", c.get("name"))} for c in calls if isinstance(c, dict)]
+                          if isinstance(calls, list) else []}
+        return JCODE_TOOLS.get(name, name), ti
     if harness == "codex":
         if name == "apply_patch":
             patch = ti.get("patch") or ti.get("input") or ti.get("command") or ""
@@ -918,6 +976,27 @@ def normalise(harness, p):
         if ev == "SessionEnd":
             out["reason"] = p.get("reason") or "session end"
         return out
+    if harness == "jcode":   # jcode_payload's shape: Claude Code's names, read from jcode's environment and stdin
+        out["session_id"] = p.get("session_id")
+        if ev not in JCODE_EVENTS.values():
+            return None
+        out["hook_event_name"] = ev
+        if ev in ("PreToolUse", "PostToolUse"):
+            raw = str(p.get("tool_name") or "?")
+            out["tool_name"], out["tool_input"] = tool(harness, raw, p.get("tool_input"))
+            # no call id before the call: paired on jcode's 16 KB copy of the input, which both events carry cut at the
+            # same place (post_tool never gets the whole input, so a longer one would never pair on it)
+            text = p.get("tool_input_text")
+            out["tool_use_id"] = out["session_id"] and _paired_ids(
+                harness, out["session_id"], raw, {"input": text if isinstance(text, str) else canon(p.get("tool_input"))},
+                "pre" if ev == "PreToolUse" else "post")
+            if ev == "PostToolUse":   # post_tool carries no output, only its size: no result is recorded
+                out["tool_response"] = None
+                if p.get("status") == "error":   # a tool error; a command that exits non-zero is `ok`
+                    out["hook_event_name"], out["error"] = "PostToolUseFailure", p.get("error") or "the call failed"
+        if ev == "SessionEnd":
+            out["reason"] = p.get("reason") or "session end"
+        return out
     if harness == "cursor":
         out["session_id"] = p.get("conversation_id") or p.get("session_id")
         if ev in ("preToolUse", "postToolUse", "postToolUseFailure"):
@@ -1086,7 +1165,8 @@ class Tee(io.StringIO):
 
 PRE = ("PreToolUse", "preToolUse", "BeforeTool", "tool.execute.before")
 STOPPED_LINES = ("Why: ", "Instead: ", "Person: ", "Agent: ")   # how the lines after a stop's first go on (stopped)
-PAIRED = ("gemini", "droid", "antigravity", "devin", "cline", "openhands")   # the harnesses whose call ids _paired_ids makes
+PAIRED = ("gemini", "droid", "antigravity", "devin", "cline", "openhands", "jcode")   # the harnesses whose call ids
+# _paired_ids makes
 
 
 # goose's Code Mode tools: execute_typescript and execute_bash before goose 1.56, execute_javascript since, also
@@ -1290,6 +1370,14 @@ def _blocked(harness, p, raw=""):
             reason = _typed(f"Copilot's {cname}", v)
             if reason:
                 return reason
+    elif harness == "jcode" and name == "mcp":
+        ti = _input(p.get("tool_input"))
+        env = ti.get("env") if ti.get("action") == "connect" else None
+        odd = next((k for k in env if not SHELL_NAME.fullmatch(str(k))), None) if isinstance(env, dict) else None
+        if odd is not None:
+            return (f"Blocked by Tracekit: jcode's mcp connect sets the environment variable {str(odd)[:64]!r}, which "
+                    "isn't a shell name, so Tracekit can't decide the command it starts as a shell line; use names "
+                    "of letters, digits and _ that don't start with a digit.")
     return _blocked_tool(harness, name, raw)
 
 
@@ -1434,6 +1522,9 @@ def config_path(harness, project=None, home=None):
     base = project or home or os.path.expanduser("~")
     if harness == "gptme":
         return os.path.join(home or os.path.expanduser("~"), ".config", "gptme", "config.toml")
+    if harness == "jcode":   # $JCODE_HOME/config.toml when it is set, else ~/.jcode/config.toml (jcode-base config.rs)
+        return os.path.join((None if home else os.environ.get("JCODE_HOME")) or
+                            os.path.join(home or os.path.expanduser("~"), ".jcode"), "config.toml")
     codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
         else os.path.join(base, ".codex")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
@@ -1843,6 +1934,129 @@ def _install_gptme(path, uninstall, v2, python):
     return path
 
 
+JCODE_BEGIN = "# >>> Tracekit's jcode hooks: tracekit uninstall --agent jcode removes this table"
+JCODE_END = "# <<< Tracekit's jcode hooks"
+JCODE_TABLE = re.compile(r"(?m)^" + re.escape(JCODE_BEGIN) + r"\r?\n(?:.*\r?\n)*?" + re.escape(JCODE_END) + r"(?:\r?\n|\Z)")
+# jcode lets a call run when its gate times out (pre_tool_timeout_ms, 5 s by default): set above the hook's own wait for
+# an approval (claude_code.APPROVAL_WAIT_S). One setting for every gate
+JCODE_TIMEOUT_MS = 600_000
+
+
+def _jcode_hooks(v2, python):
+    """Tracekit's [hooks] table for jcode, as {key: value}: the gate and each observer, then the gate's timeout."""
+    return {**{key: _command("jcode", ev, v2, python) for key, ev in JCODE_EVENTS.items()},
+            "pre_tool_timeout_ms": JCODE_TIMEOUT_MS}
+
+
+def _jcode_lines(hooks):
+    """{key: value} as TOML lines (a JSON string is a TOML basic string)."""
+    return [f"{k} = {json.dumps(v)}" for k, v in hooks.items()]
+
+
+def _jcode_has_hooks(text, path):
+    """Whether jcode's config.toml `text` has a hooks table already (a [hooks] header, or a hooks key)."""
+    from .install import SettingsError
+    try:
+        import tomllib
+    except ImportError:
+        # lean: on Python 3.9/3.10 the table is found by its header or a dotted key; a TOML parser reads the rest
+        return bool(re.search(r'''(?m)^\s*(?:\[\s*["']?hooks["']?\s*[\].]|["']?hooks["']?\s*[.=])''', text))
+    try:
+        return "hooks" in tomllib.loads(text)
+    except ValueError as e:
+        raise SettingsError(f"{path} is not valid TOML; Tracekit did not change it: {e}") from e
+
+
+def _install_jcode(path, uninstall=False, v2=False, python=None):
+    """Tracekit's [hooks] table in jcode's config.toml `path`, between its markers: appended, after a backup, when the
+    file has no hooks table, else the lines to add are printed and nothing changes (init's own table is replaced);
+    uninstall removes only Tracekit's table. jcode re-reads the table on a config reload. -> the file's path."""
+    from .deploy import files
+    from .install import SettingsError
+    path, name = os.path.abspath(path), os.path.basename(path)
+    if uninstall and not os.path.exists(path):
+        return path
+    hooks, removed = _jcode_hooks(v2, python), set()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        d = files.open_dir(os.path.dirname(path))
+        try:
+            raw = files.read(d, name)
+            text = "" if raw is None else raw.decode("utf-8")
+            ours = JCODE_TABLE.search(text)
+            if not ours:
+                unmarked = [line for line in text.splitlines() if _version(line)]
+                if unmarked:
+                    print(f"{path} has unmarked Tracekit hook commands (jcode's config save removes comments); "
+                          "Tracekit did not change it. Remove these Tracekit commands from [hooks] by hand, "
+                          "keeping other commands and timeout settings" + (" before running init again" if not uninstall else "")
+                          + ":\n  " + "\n  ".join(unmarked))
+                    return path
+            if ours:
+                removed = {_version(c) for c in re.findall(r'(?m)^\w+ = (".*")$', ours.group())} - {None}
+            rest = text[:ours.start()] + text[ours.end():] if ours else text
+            if uninstall:
+                new = rest.rstrip("\r\n") + "\n" if rest.strip() else ""
+            elif _jcode_has_hooks(rest, path):
+                # lean: an existing table is left to the person; merge into it with a TOML editor if init must
+                print(f"{path} has a hooks table already; Tracekit did not change it. Add these lines to it, with "
+                      "Tracekit's command last in pre_tool (a gate after it can rewrite the call it decided; make "
+                      "pre_tool a list to keep yours):\n  " + "\n  ".join(_jcode_lines(hooks)) + "\n"
+                      "pre_tool_timeout_ms is the timeout of every jcode gate, not only Tracekit's.")
+                return path
+            else:
+                new = (rest.rstrip("\r\n") + "\n\n" if rest.strip() else "") + "\n".join(
+                    [JCODE_BEGIN, "[hooks]", *_jcode_lines(hooks), JCODE_END]) + "\n"
+                _check_jcode_toml(new, path, hooks)
+            if new != text:
+                mode = os.stat(path).st_mode & 0o777 if raw is not None else 0o600
+                if raw is not None:
+                    files.backup(d, name, raw)
+                files.write(d, name, new.encode("utf-8"), mode)
+        finally:
+            files.close(d)
+    except files.UnsafePath as e:
+        raise SettingsError(f"{path}: {e}; Tracekit did not change it.") from e
+    except (OSError, UnicodeDecodeError) as e:
+        raise SettingsError(f"{path} can't be read ({e}); Tracekit did not change it.") from e
+    if not uninstall and not ours:
+        print(f"pre_tool_timeout_ms = {JCODE_TIMEOUT_MS} set in {path}: jcode lets a call run when a gate times out, "
+              "and the setting is the timeout of every jcode gate, not only Tracekit's")
+    _said(path, removed, uninstall, v2)
+    return path
+
+
+def jcode_config(path):
+    """The parsed config.toml of jcode at `path` (OSError when it can't be read, ValueError when it isn't TOML).
+    Without a TOML parser (Python 3.9/3.10) only Tracekit's own table is read, as init writes it."""
+    with open(path, "rb") as f:
+        text = f.read().decode("utf-8")
+    try:
+        import tomllib
+    except ImportError:
+        ours = JCODE_TABLE.search(text)
+        lines = ours.group().splitlines()[2:-1] if ours else []
+        return {"hooks": {k: json.loads(v) for k, _, v in (line.partition(" = ") for line in lines)}} if ours else {}
+    return tomllib.loads(text)
+
+
+def _check_jcode_toml(text, path, hooks):
+    """SettingsError unless `text`, config.toml with Tracekit's table appended, parses with that table as its hooks
+    (a file that ends inside a multi-line string or array would swallow it)."""
+    from .install import SettingsError
+    try:
+        import tomllib
+    except ImportError:   # lean: Python 3.9/3.10 have no TOML parser; the append is unchecked there
+        return
+    try:
+        ok = tomllib.loads(text).get("hooks") == hooks
+    except ValueError:
+        ok = False
+    if not ok:
+        raise SettingsError(f"{path} is TOML Tracekit can't add its [hooks] table to safely; Tracekit did not change "
+                            "it. Add the table yourself:\n  " + "\n  ".join(["[hooks]", *_jcode_lines(hooks)]))
+
+
 def _read(path):
     """(the JSON object in the hook config `path`, its text), or ({}, None) when there is no file."""
     from .install import SettingsError
@@ -1863,7 +2077,13 @@ def _command(harness, ev, v2, python):
     """The command of Tracekit's hook for `ev` (python: see install._hook_command). The v2 hook names its event, so it
     can block a pre-tool payload it cannot read; agy's and Copilot's payloads name none, so their v1 hooks do too
     (without it a v1 hook reads no event from the payload, and lets the call run undecided)."""
-    from .install import _hook_command
+    from .install import _dev_hook_argv, _hook_command
+    if harness == "jcode" and os.name == "nt":
+        module = V2_MODULE if v2 else "tracekit.agent_hooks"
+        args = (harness, ev) if v2 else (harness,)
+        argv = [python, "-I", "-m", module, *args] if python else _dev_hook_argv(module, "entry", args)
+        # jcode's parser consumes backslashes even inside double quotes; shlex's single-quote form preserves them.
+        return shlex.join(argv)
     c = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry",
                       (harness, ev) if v2 or harness in ("antigravity", "copilot") else (harness,), python, ev in PRE,
                       harness == "antigravity")
@@ -1875,7 +2095,8 @@ def _command(harness, ev, v2, python):
     # Claude Code) keep _hook_command's form, and so does OpenHands (subprocess.run(shell=True): cmd.exe). Devin
     # doesn't document its Windows shell: a path that needs quotes keeps cmd.exe's form, and one that doesn't goes
     # bare, which both run
-    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands", "codebuddy"):
+    # jcode parses a hook's command shell-style and runs it directly, with no shell, on Windows too
+    if os.name != "nt" or harness in ("cursor", "droid", "goose", "crush", "openhands", "codebuddy", "jcode"):
         return c
     m = re.match(r'"([A-Za-z0-9_.:\\-]+)"', c)   # cmd.exe ends a program word at /
     c = m.group(1) + c[m.end():] if m else c if harness == "devin" else f"& {c}"
@@ -2136,6 +2357,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     path = path or config_path(harness, project)
     if harness == "gptme":
         return _install_gptme(path, uninstall, v2, python)
+    if harness == "jcode":
+        return _install_jcode(path, uninstall, v2, python)
     if harness in PLUGIN_TOOLS:
         return _install_opencode(path, uninstall, v2, python, harness)
     if harness == "goose":
@@ -2303,6 +2526,28 @@ def stdin_text():
     return sys.stdin.buffer.read().decode("utf-8-sig", "replace") if hasattr(sys.stdin, "buffer") else sys.stdin.read()
 
 
+def jcode_payload(stdin, env=None):
+    """jcode's hook payload as JSON text in Claude Code's field names. jcode sends a gate (pre_tool) the full tool input
+    on stdin and everything else in JCODE_HOOK_* variables (docs/HOOKS.md). The
+    separate variables are read, not JCODE_HOOK_PAYLOAD, which is cut at 16 KB with the input inside it. An observer's
+    stdin is null (hooks.rs), so reading it never waits. A post_tool input longer than 16 KB is cut
+    (JCODE_HOOK_TOOL_INPUT): it is read as the text it is."""
+    env = os.environ if env is None else env
+    ev = env.get("JCODE_HOOK_EVENT", "")
+    p = {"hook_event_name": JCODE_EVENTS.get(ev, ev), "session_id": env.get("JCODE_HOOK_SESSION_ID"),
+         "cwd": env.get("JCODE_HOOK_CWD"), "model": env.get("JCODE_HOOK_MODEL")}
+    if ev in ("pre_tool", "post_tool"):
+        text = env.get("JCODE_HOOK_TOOL_INPUT", "")
+        p.update(tool_name=env.get("JCODE_HOOK_TOOL_NAME"), tool_input_text=text,
+                 tool_input=stdin if ev == "pre_tool" and stdin.strip() else text)
+    if ev == "post_tool":
+        p.update(tool_call_id=env.get("JCODE_HOOK_TOOL_CALL_ID"), status=env.get("JCODE_HOOK_STATUS"),
+                 error=env.get("JCODE_HOOK_ERROR"))
+    if ev == "session_end":
+        p["reason"] = env.get("JCODE_HOOK_SOURCE")
+    return json.dumps(p)
+
+
 def entry(harness=None, event=None):
     """event: the hook event the command names (OpenCode's plugin does), or None."""
     harness = harness or (sys.argv[1] if len(sys.argv) > 1 else "")
@@ -2316,6 +2561,8 @@ def entry(harness=None, event=None):
     raw = ""
     try:
         raw = stdin_text()
+        if harness == "jcode":
+            raw = jcode_payload(raw)
         return run(harness, raw, event=event)
     except Exception as e:
         try:
