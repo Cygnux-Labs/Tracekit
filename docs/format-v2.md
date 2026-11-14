@@ -580,6 +580,7 @@ them, all critical; from 1.4.0 the bundle layouts it reads, critical too (`layou
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
 | 1.4.0 | `constraint.added` | `effect.observed`: `sensor`, `denied`; `review`: `cites`; `model.exchange`: `said_only`; `capture.gap`: `sensor` | `capture.gap` `kind`: `constraint_refused` | `amended`, `openshell.policy`; and the slot itself (`ext` fields, `ext` records: critical) |
 | 1.6.0 | — | — | `ext` `self_approved`: `true` (an `intent.grant` the run's own user issued: a self-approval, which makes the assurance `dev`) | `box`: on `run.registered`, `{id, image_digest, allow, engine, channel?}`, the label of a Tracekit Box box's run (a `box_daemons` uid's) and, copied with `parent_run`, of each run its agent channel registered; the signer takes the engine from its config. Read as `boxed agent`: `PROOF AGAINST THE BOXED AGENT (micro-VM)` and no more; `intent.grant` and `intent.revoked` (`ext` records of source `signer`) and `grant` (on a `policy.decision`), a person's [intent grant](intent-grants.md) and the payments it released |
+| 1.8.0 | — | — | — | `approval.decision`: on `approval.consumed`, the `policy.decision` of the same run, `tool_call_id` and attempt that the approval was used for (a string id); checked by `approval decision` (warning when the bundle doesn't hold it before the consume) |
 
 Layouts (critical): 1.4.0 adds `run parts`, a run in parts (above).
 
@@ -770,6 +771,10 @@ line and verdict is in [verdicts](verdicts.md).
     (its connections and file writes) are the record of what it could do.`), `Before you run anything the box wrote,
     review it: code you run on this machine can reach the key.`, and `anchored by <name> (<class>) at <time>` per
     pinned cosignature, oldest first.
+    `approval.decision` (1.8.0): `approval decision`, passing with `n record(s) name a policy.decision of their run,
+    call id and attempt before them`, or a warning listing the first five records where an
+    `approval.consumed`'s `ext.approval.decision` is no string, or names no `policy.decision` of the same run,
+    `tool_call_id` and attempt that comes before the consume.
 11. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED` (every check this verifier implements
     passed), `VERIFIED TO HEAD n (open)` for one open
     run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,

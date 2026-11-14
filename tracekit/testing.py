@@ -45,6 +45,7 @@ class FakeSigner:
         self._runs = {}
         self._approvals = {}
         self._index = {}       # (run_id, tool_call_id, attempt) -> approval_id
+        self._approval_decision = {}   # approval_id -> the decision it was requested for
 
     def _id(self, prefix):
         self._n += 1
@@ -79,14 +80,14 @@ class FakeSigner:
         if req["client_seq"] <= run["streams"].get(req["stream"], -1):
             raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")
 
-    def _append(self, run, typ, data, req=None):
+    def _append(self, run, typ, data, req=None, ext=None):
         if req is not None:   # an event call: record skipped client_seq values as a gap, then advance
             last = run["streams"].get(req["stream"], -1)
             if req["client_seq"] > last + 1:
                 self._append(run, "capture.gap", {"kind": "client_counter_gap", "stream": req["stream"],
                                                   "from": last + 1, "to": req["client_seq"] - 1})
             run["streams"][req["stream"]] = req["client_seq"]
-        ev = {"run_seq": len(run["events"]), "type": typ, "data": data}
+        ev = {"run_seq": len(run["events"]), "type": typ, "data": data, **({"ext": ext} if ext else {})}
         ev["event_hash"] = event_hash(ev)
         run["events"].append(ev)
         return ev["run_seq"]
@@ -131,10 +132,11 @@ class FakeSigner:
             self._check_seq(run, req)
             args, digest = _digest(req)
             decision, rule_ids = self.rule(req["tool"], args) if digest else ("deny", ["TK-ARGS-INVALID"])
+            decision_id = self._id("dec")
             run["calls"][req["tool_call_id"]] = {"args_digest": digest, "decision": decision, "rule_ids": rule_ids,
                                                  "attempt": req.get("attempt", 0), "tool": req["tool"],
-                                                 "args_source": req["args_source"], "args": req["args"]}
-            decision_id = self._id("dec")
+                                                 "args_source": req["args_source"], "args": req["args"],
+                                                 "decision_id": decision_id}
             run["decisions"][decision_id] = (req["tool_call_id"], req.get("attempt", 0), digest, decision)
             seq = self._append(run, "policy.decision", {"tool_call_id": req["tool_call_id"], "tool": req["tool"],
                                                       "decision_id": decision_id,
@@ -215,6 +217,7 @@ class FakeSigner:
                 "expires_at": expires_at, "state": "requested",
                 **({"reason": privacy.redact(req["reason"], dotenv)[0]} if "reason" in req else {}),
                 "executor": "t2" if self.t2 & set(call["rule_ids"]) else "t1", "exec_args": call["args"]}
+            self._approval_decision[approval_id] = call["decision_id"]
             a["binding_digest"] = event_hash({"v": 1, "approval_id": approval_id, "nonce": self._id("nonce"),
                                               **{k: a[k] for k in ("run_id", "tool_call_id", "attempt", "tool",
                                                                    "args_digest", "args_source", "policy_hash",
@@ -251,8 +254,8 @@ class FakeSigner:
         run `run_id` with the tool, arguments and rules of `call`, an `ask`, whose own call has no result (it ran
         anyway, so it used the approval up). Unlike the real one it checks no expiry (approvals here never expire),
         policy hash (one fixed policy), gateway (`via`) or veto delay: this signer has none of them. Nor does it keep
-        the order of answers (the real one reuses no yes once a later no answered the same call) or which decision
-        consumed an approval (the real one has a call completed twice on one approval ran against the policy)."""
+        the order of answers (the real one reuses no yes once a later no answered the same call), and a call completed
+        twice on one approval is not a policy gap here."""
         ran = {e["data"]["tool_call_id"] for e in self._runs[run_id]["events"] if e["type"] == "tool.result"}
         found = [aid for aid, a in self._approvals.items() if a["run_id"] == run_id and a["state"] == "approved"
                  and a["tool"] == call["tool"] and a["args_digest"] == call["args_digest"]
@@ -284,7 +287,13 @@ class FakeSigner:
             else:
                 a["state"], a["used_by"] = "consumed", (req["tool_call_id"], attempt)
                 self._index[k] = aid   # the call that ran under it, an earlier attempt's or its own
-                self._append(run, "approval.consumed", {"approval_id": aid})
+                ext = None
+                if call and call.get("decision_id") and call.get("attempt") == attempt \
+                        and call.get("args_digest") == digest:
+                    ext = {"approval.decision": call["decision_id"]}
+                elif self._approval_decision.get(aid) and a["attempt"] == attempt:
+                    ext = {"approval.decision": self._approval_decision[aid]}
+                self._append(run, "approval.consumed", {"approval_id": aid}, ext=ext)
                 out = {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
                 if a["executor"] == "t2":   # the real arguments, never the approver's redacted copy
                     x = a["exec_args"]

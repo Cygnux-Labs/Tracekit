@@ -106,25 +106,38 @@ def _call_id(r: Dict[str, Any]) -> Optional[str]:
 def held_calls(recs: List[Dict[str, Any]]):
     """(folds, owners) of a run's records. owners: approval_id -> the run_seq of the decision its request was for (the
     latest decision under the request's call id and attempt). folds: run_seq -> the held call's run_seq, for each decision
-    that is the held call's retry with its own id (LangGraph's resume). A consume names a call id and attempt, not a
-    decision, so a decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it has
-    no approval request of its own; no binding_mismatch of the held call's approval comes after it; a consume of that
-    approval under the id does. When in doubt a decision is a call of its own: a call shown twice is a small fault, a
-    deny hidden under an approved call a serious one."""
+    that is the held call's retry with its own id (LangGraph's resume). A consume whose ext.approval.decision names a
+    decision (format 1.8) folds exactly that decision; one without it names a call id and attempt, not a decision, so a
+    decision is that retry only when all hold: it asks, for the held call's tool, id and attempt; it has no approval
+    request of its own; no binding_mismatch of the held call's approval comes after it; a consume of that approval under
+    the id does. When in doubt a decision is a call of its own: a call shown twice is a small fault, a deny hidden under
+    an approved call a serious one."""
     decs, owners, mism, cons = {}, {}, {}, {}   # (id, attempt) -> its decisions; approval_id -> (its owner, key)
+    named, dec_by_id = {}, {}                   # approval_id -> the decisions its consumes name; decision_id -> it
     for r in recs:
         e, t, d = r["event"], r["event"]["type"], r["event"]["data"]
         key = (_call_id(r), e.get("attempt"))
         if t == "policy.decision":
             decs.setdefault(key, []).append((e["run_seq"], d.get("tool"), d.get("decision")))
+            if d.get("decision_id"):
+                dec_by_id[d["decision_id"]] = (e["run_seq"], key, d.get("tool"), d.get("decision"))
         elif t == "approval.request" and decs.get(key):
             owners[d.get("approval_id")] = decs[key][-1], key
         elif t == "approval.binding_mismatch":
             mism[d.get("approval_id")] = e["run_seq"]   # the latest
         elif t == "approval.consumed":
             cons.setdefault(d.get("approval_id"), []).append((e["run_seq"], key))
+            ext = e.get("ext") if isinstance(e.get("ext"), dict) else {}
+            if isinstance(ext.get("approval.decision"), str):
+                named.setdefault(d.get("approval_id"), []).append(ext["approval.decision"])
     folds, own = {}, {o[0][0] for o in owners.values()}
     for aid, ((h, tool, _), key) in owners.items():
+        if aid in named:   # the consume names its decision (format 1.8): the named ask folds; another kind stays visible
+            for did in named[aid]:
+                seq, dkey, dtool, decision = dec_by_id.get(did, (None, None, None, None))
+                if seq is not None and seq > h and dkey == key and dtool == tool and decision == "ask" and seq not in own:
+                    folds[seq] = h
+            continue
         for seq, dtool, decision in decs[key]:
             if seq > h and decision == "ask" and dtool == tool and seq not in own and mism.get(aid, -1) < seq \
                     and any(c > seq and k == key for c, k in cons.get(aid, ())):

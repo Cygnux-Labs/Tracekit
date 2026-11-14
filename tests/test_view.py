@@ -476,6 +476,42 @@ class Translate(unittest.TestCase):
         self.assertEqual((dict(rv["decisions"]), rv["retries"], dict(rv["permissions"]), dict(rv["holds"])),
                          ({"ask": 1}, 1, {"approved · ran": 1}, {"approved · ran": 1}))
 
+    def test_a_consume_that_names_its_decision_folds_exactly_that_one(self):
+        """Format 1.8's ext.approval.decision: the consume names its decision, so the other ask of the same id and
+        attempt stays a call of its own (not answered), rather than the five-condition rule folding the last ask."""
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
+               "policy_hash": SERVER_HASH}
+        recs = [*self.HELD, self.approved(4),
+                v2rec(5, "policy.decision", ask, tool_call_id="c1"),
+                v2rec(6, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1"),
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d2"}),
+                v2rec(8, "tool.result", {"tool_use_id": "c1", "ok": True, "decision_id": "d2"}, tool_call_id="c1"),
+                v2rec(9, "run.final", {"head_run_seq": 9})]
+        rv = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")
+        self.assertEqual((dict(rv["decisions"]), rv["retries"], dict(rv["permissions"]), dict(rv["holds"])),
+                         ({"ask": 2}, 1, {"approved · ran": 1, "not answered": 1},
+                          {"approved · ran": 1, "not answered": 1}))
+
+    def test_the_page_folds_the_decision_a_consume_names(self):
+        """The page's foldsOf reads the same ext name: the named retry folds into the held call, the unnamed ask stays."""
+        ask = {"tool_use_id": "c1", "tool": "Bash", "decision": "ask", "rule_ids": ["TK-A032"],
+               "policy_hash": SERVER_HASH}
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}),
+                v2rec(2, "policy.decision", ask, tool_call_id="c1"),
+                v2rec(3, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-A032"],
+                                              "binding": {"tool": "Bash", "tool_call_id": "c1"}}, tool_call_id="c1"),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve"}),
+                v2rec(5, "policy.decision", ask, tool_call_id="c1"),
+                v2rec(6, "policy.decision", {**ask, "decision_id": "d2"}, tool_call_id="c1"),
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d2"})]
+        out = json.loads(page_js(["foldsOf", "FOLDS", "callKey"], f"""
+            const rows = {json.dumps(self.feed(*recs))};
+            foldsOf(rows, FOLDS);
+            process.stdout.write(JSON.stringify([...FOLDS].map(([a, b]) => [a.v2.run_seq, b.v2.run_seq])));"""))
+        self.assertEqual(out, [[6, 2]])
+
     def test_a_refused_use_is_the_call_of_its_own_attempt(self):
         """Attempt 0 approved, attempt 1 asked with its own request, then attempt 0's approval was refused for changed
         arguments: the review filed the refusal under the id's latest call (attempt 1) while the page and HORIZON file it

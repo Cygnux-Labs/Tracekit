@@ -171,6 +171,12 @@ class TestSchemaV2(unittest.TestCase):
                 missing.pop(next(iter(data)))
                 self.assertTrue(schema.validate(ev(t, missing)))
 
+    def test_an_approval_consumed_may_carry_its_decision_in_ext(self):
+        """Format 1.8's non-critical slot: the decision is an ext name, not a closed data field."""
+        self.assertEqual(schema.validate(ev("approval.consumed", {"approval_id": "ap-1"},
+                                             ext={"approval.decision": "dec-1"})), [])
+        self.assertTrue(schema.validate(ev("approval.consumed", {"approval_id": "ap-1", "decision_id": "dec-1"})))
+
     def test_new_fields(self):
         good = ev(tenant="acme", tenant_attested=False, principal="u@x", principal_attested=False, request_id="r-1",
                   stream="s-1", client_seq=4, tool_call_id="call_1", attempt=0, step=2, run_seq=1, run_prev_hash=H,

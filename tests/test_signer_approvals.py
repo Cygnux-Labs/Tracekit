@@ -41,6 +41,16 @@ class Scenarios(rc.Harness):
             req["approval_id_hint"] = hint
         return self.call("approval_consume", req)
 
+    def stored(self, typ):
+        """The signed event of `typ`, from the signer's store where the test holds it (the read RPC keeps `data` only)."""
+        signer = self.signer
+        if hasattr(signer, "log"):   # the service in process
+            return next(r["event"] for r in signer.log.storage.iter_run("default", self.run_id)
+                        if r["event"]["type"] == typ)
+        if hasattr(signer, "_runs"):   # FakeSigner
+            return next(e for e in signer._runs[self.run_id]["events"] if e["type"] == typ)
+        return next(e for e in self.read() if e["type"] == typ)
+
     def refused_with(self, code, out):
         self.assertEqual((out["ok"], out["rule_ids"]), (False, [code]), out)
 
@@ -186,6 +196,46 @@ class Scenarios(rc.Harness):
         types = self.types()
         self.assertEqual((types.count("approval.consumed"), types.count("approval.request")), (1, 3))
         self.assertNotIn("capture.gap", types)   # tc-3 ran under a consumed approval
+        used = self.stored("approval.consumed")
+        if "ext" in used:   # the read RPC of a service over its socket keeps data only
+            self.assertEqual(used["ext"]["approval.decision"], d["decision_id"])   # the retry's, not the held call's
+
+    def test_a_retry_of_the_held_calls_own_id_names_its_decision(self):
+        """LangGraph sends the held call again under its own id: the consume names that decision, not the held one."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        _, d, _ = self.retry(tcid="tc-1")
+        self.assertTrue(self.consume(tcid="tc-1", hint=aid)["ok"])
+        used = self.stored("approval.consumed")
+        if "ext" not in used:
+            self.skipTest("a client's read RPC keeps data only; the service test covers the signer's ext")
+        self.assertEqual(used["ext"]["approval.decision"], d["decision_id"])
+
+    def test_a_changed_arguments_decision_does_not_take_the_consumes_decision_id(self):
+        """The call was decided again with other arguments, then the approval was used with the approved ones: the
+        consume names the decision it ran (the held one), not the changed decision that was never approved."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        held = next(e["data"]["decision_id"] for e in self.read() if e["type"] == "policy.decision")
+        self.decide(tool="pay", args=dict(PAY, cents=999))
+        self.assertTrue(self.consume(hint=aid)["ok"])
+        used = self.stored("approval.consumed")
+        if "ext" not in used:
+            self.skipTest("a client's read RPC keeps data only; the service test covers the signer's ext")
+        self.assertEqual(used["ext"]["approval.decision"], held)
+
+    def test_a_consume_names_a_decision_of_its_attempt(self):
+        """Attempt 1 was decided with the same arguments after attempt 0 was approved: attempt 0's consume names
+        attempt 0's decision, not the later attempt's."""
+        aid = self.ask(PAY)
+        self.approve(aid)
+        held = next(e["data"]["decision_id"] for e in self.read() if e["type"] == "policy.decision")
+        self.decide(tool="pay", args=PAY, tcid="tc-1", attempt=1)
+        self.assertTrue(self.consume(tcid="tc-1", hint=aid)["ok"])
+        used = self.stored("approval.consumed")
+        if "ext" not in used:
+            self.skipTest("a client's read RPC keeps data only; the service test covers the signer's ext")
+        self.assertEqual(used["ext"]["approval.decision"], held)
 
     def test_the_first_attempt_run_anyway_after_its_retry_used_the_approval_ran_against_the_policy(self):
         """A retry consumed the approval and ran; the blocked first attempt's own result (an agent that ran it in spite
@@ -581,13 +631,15 @@ class TestRealSigner(unittest.TestCase):
         self.assertEqual(self.retry("tc-2", 1)["approval_id"], aid)
         self.assertTrue(self.consume(tool_call_id="tc-2", approval_id_hint=aid)["ok"])
         self.restart()   # the snapshot keeps which call ran under it
+        did = self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-2"]["decision_id"]
         self.s.complete({"request_id": "c2", **self.run, "stream": "s", "client_seq": 2, "tool_call_id": "tc-2",
-                         "decision_id": self.s.log.runs[("default", self.run["run_id"])]["calls"]["tc-2"]["decision_id"],
+                         "decision_id": did,
                          "args_digest": event_hash({"tool": "pay", "args": PAY}), "status": "ok"})
         es = self.events()
         self.assertNotIn("capture.gap", [e["type"] for e in es])
         used = next(e for e in es if e["type"] == "approval.consumed")
-        self.assertEqual((used["tool_call_id"], used["data"]), ("tc-2", {"approval_id": aid}))
+        self.assertEqual((used["tool_call_id"], used["data"], used["ext"]),
+                         ("tc-2", {"approval_id": aid}, {"approval.decision": did}))
 
     def test_an_expired_approval_is_never_used_by_a_retry(self):
         aid = self.pending()

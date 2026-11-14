@@ -412,6 +412,25 @@ class Holds(unittest.TestCase):
         self.assertEqual(built["tips"][2]["where"], [{"where": "main session", "answered": 2, "open": 1,
                                                       "blocked_s": 0, "joined": 0}])
 
+    def test_a_consume_names_the_decision_it_ran_under(self):
+        """ext.approval.decision: the named ask folds into the held call; an unnamed ask of the same call id stays a
+        hold of its own, as the run review counts it (the five-condition rule folded both)."""
+        ask = lambda seq, did=None: v2rec(seq, "policy.decision", {   # noqa: E731
+            "tool_use_id": "c1", "tool": "pay", "decision": "ask", **({"decision_id": did} if did else {})})
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "claude-code"}}), ask(2),
+                v2rec(3, "approval.request", {"approval_id": "apr-1",
+                                              "binding": {"tool": "pay", "tool_call_id": "c1"}}),
+                v2rec(4, "approval", {"tool_use_id": "c1", "approval_id": "apr-1", "decision": "approve",
+                                      "approver": "uid:501"}),
+                ask(5), ask(6, "d3"),
+                v2rec(7, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c1",
+                      ext={"approval.decision": "d3"}),
+                v2rec(8, "run.final", {"head_run_seq": 8})]
+        reviewed = view.review(recs, mock.Mock(integrity="VERIFIED", assurance="dev"), "verified")["holds"]
+        built = tips.build(rows(*recs), None, NOW)
+        self.assertEqual(dict(reviewed), {"approved · ran": 1, "not answered": 1})
+        self.assertEqual(built["sources"]["signed"]["holds"], 2)
+
     def test_a_rule_that_only_also_matched_is_not_named_as_one_that_held(self):
         """The 1.6.0 review: a flag rule that also matched a held call was counted as a rule that held it, where the
         report places each rule by its policy section (report._placed)."""

@@ -441,6 +441,7 @@ class Translator(observe.Translator):
     def feed(self, rec):
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
+        ext = e.get("ext") if isinstance(e.get("ext"), dict) else {}
         out = self._v2(e, rec, t, d)
         call = d.get("tool_use_id") or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")
         asked = self.requests.get(d.get("approval_id"), ("", [], None))[2]
@@ -452,6 +453,8 @@ class Translator(observe.Translator):
                 **({"attempt": e["attempt"]} if e.get("attempt") is not None else {}),
                 **({"approval_id": d["approval_id"]} if d.get("approval_id") else {}),
                 **({"decision_id": d["decision_id"]} if t == "tool.result" and d.get("decision_id") else {}),
+                **({"decision_id": ext["approval.decision"]} if t == "approval.consumed"
+                   and isinstance(ext.get("approval.decision"), str) else {}),
                 # the gateway or tool executor that wrote a call's result (tier T2), not the agent
                 **({"via": d["via"]} if t == "tool.result" and d.get("via") else {})}
         for x in out:

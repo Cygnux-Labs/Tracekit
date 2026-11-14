@@ -1658,6 +1658,38 @@ class TestExt(Case):
                                  field, record)
                 self.assert_fails(out, "signatures")
 
+    def test_an_approval_decision_names_a_decision_of_its_call(self):
+        """ext.approval.decision (1.8.0): the consume's name is a policy.decision of its run, call id and attempt that
+        comes before it. A name the bundle doesn't hold there is a warning, not a failure (an ext name is not critical)."""
+        def bundle(ext, decision_tcid="t1", decision_attempt=0, consume_tcid="t1", consume_attempt=0, after=False):
+            log = self.log(f"approval-decision-{ext}-{decision_tcid}-{decision_attempt}-{consume_tcid}-{consume_attempt}"
+                           + ("-after" if after else "-before"))
+            log.epoch(KEY1)
+            log.register()
+            decision = ("policy.decision", {"tool_use_id": decision_tcid, "decision": "ask", "rule_ids": ["PAY"],
+                                            "decision_id": "d1"}, {"tool_call_id": decision_tcid,
+                                                                   "attempt": decision_attempt})
+            consume = ("approval.consumed", {"approval_id": "apr-1"}, {"tool_call_id": consume_tcid,
+                                                                       "attempt": consume_attempt,
+                                                                       "ext": {"approval.decision": ext}})
+            for typ, data, fields in ([consume, decision] if after else [decision, consume]):
+                log.add(typ, data, **fields)
+            log.final()
+            out = os.path.join(self.d, f"approval-decision-{random.random()}.tkb")
+            export(log.store, "acme", "run-a", log.note(), out)
+            rep, code = self.verify(out)
+            return code, next(c for c in rep.checks if c["check"] == "approval decision")
+
+        code, check = bundle("d1")
+        self.assertEqual((code, check["status"]), (0, "pass"))
+        for name, kw in (("no such decision", {"ext": "d2"}), ("another tool call id", {"consume_tcid": "t2"}),
+                         ("another attempt", {"consume_attempt": 1}), ("after the consume", {"after": True}),
+                         ("not a string", {"ext": 1})):
+            with self.subTest(name):
+                code, check = bundle(kw.pop("ext", "d1"), **kw)
+                self.assertEqual(code, 0)
+                self.assertEqual(check["status"], "warn")
+
     def test_an_ext_interpretation_adds_only_its_own_lines(self):
         """What may go in ext: every line a verifier that doesn't interpret a name prints stays true without it, so the
         report with the name's interpretation off is the full report minus that name's own lines, with its `not
