@@ -26,3 +26,8 @@ reference page covers the rest.
 | OpenTelemetry | | [otel.md](../otel.md) |
 | Sandboxes, MCP gateways and kernel sensors | | [integrations](../integrations.md#sandboxes-gateways-and-sensors) |
 | Any other agent | [custom.md](custom.md) | |
+
+## Recipes
+
+- [Spending limits and receipts for any agent](agent-spending.md): an agent's payments held until a person grants
+  them within limits, and the run kept as a receipt anyone can verify offline (intent grants, experimental).
