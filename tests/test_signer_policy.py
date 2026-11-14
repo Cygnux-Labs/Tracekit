@@ -397,6 +397,42 @@ class CodingPack(unittest.TestCase):
                         self.assertEqual(result["verdict"], "ask", result)
                     self.assertNotIn("nondeterministic", result)
 
+    def test_wiping_a_disk_or_filesystem_asks(self):
+        """#748: writing to a block device erases everything on it, so dd to one, making a filesystem on one,
+        shredding or wiping one, and diskutil's erase and zero wait for a person in every pack, as does any
+        command whose write target is a device (a redirection, cp, tee); a disk image file is an ordinary
+        file and none of these is held."""
+        wipes = ["dd if=/dev/zero of=/dev/sda bs=1M", "mkfs.ext4 /dev/sda1", "shred -n 3 -z /dev/sdb",
+                 "wipefs -a /dev/sdb", "dd if=/dev/urandom of=/dev/nvme0n1 bs=1M", "mkswap /dev/mmcblk0p1",
+                 "mke2fs /dev/vda", "diskutil eraseDisk JHFS+ Wiped /dev/disk2", "diskutil zeroDisk /dev/disk3",
+                 "dd if=img of=/dev/rdisk2 bs=1m", "newfs_hfs /dev/rdisk3s1",
+                 "diskutil erasedisk JHFS+ Wiped disk2", "diskutil ZERODISK /dev/disk3",
+                 "diskutil secureErase 0 /dev/disk2", "diskutil randomDisk /dev/disk2",
+                 "diskutil reformat /dev/disk2s1",
+                 "dd if=/dev/zero of=//dev/sda", "dd if=/dev/zero of=/dev//sda",
+                 "dd if=/dev/zero of=/dev/./sda",
+                 "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"]
+        # The write-target twin (TK-A080) reads the effects, not the command form: any command
+        # whose target is a device is held, however it is spelled or reached.
+        target_wipes = ["cat ubuntu.iso > /dev/sdb", "cp ubuntu.iso /dev/sdb",
+                        "head -c 1G /dev/zero > /dev/sda", "tee /dev/sda < image.bin"]
+        benign = ["dd if=disk.img of=backup.img bs=4M", "dd if=/dev/urandom of=key.bin bs=32 count=1",
+                  "mkfs.ext4 disk.img", "shred -u secrets.txt", "lsblk", "diskutil list",
+                  "dd if=/dev/sda of=backup.img bs=4M", "wipefs backup.img",
+                  "dd if=/dev/zero of=/dev/null bs=1M count=1", "echo hello > /dev/stdout"]
+        for pack, backend, engine in self.every_pack():
+            for command in wipes + benign:
+                with self.subTest(pack=pack, backend=backend, command=command):
+                    result = engine.decide("Bash", {"command": command})
+                    self.assertEqual("TK-A079" in result["rule_ids"], command in wipes, result)
+                    if command in wipes:
+                        self.assertEqual(result["verdict"], "ask", result)
+            for command in target_wipes + benign:
+                with self.subTest(pack=pack, backend=backend, command=command):
+                    result = engine.decide("Bash", {"command": command})
+                    self.assertEqual("TK-A080" in result["rule_ids"], command in target_wipes, result)
+                    if command in target_wipes:
+                        self.assertEqual(result["verdict"], "ask", result)
     def test_container_escape_moves_ask(self):
         held = ["curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json",
                 "curl -s --unix-socket /var/run/docker.sock -X POST http://localhost/containers/create "
