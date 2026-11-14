@@ -74,6 +74,20 @@ decision is signed as `flag` with `TK-GRANT`, and says what it released and what
 Why: grant g-2f9deebdfc669a5b: payee "0x3333333333333333333333333333333333333333" is not one of "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222"; moving money through an MCP tool (sending, transferring or converting money, or a refund)
 ```
 
+`tracekit approvals show` says the same reason, from the call's signed decision, and its grant line names the live
+grant and what it has left instead of offering a new one as if none were live:
+
+```text
+$ tracekit approvals show apr-…
+approval    apr-… (requested)
+tool        "mcp__payments__send_money"
+why         grant g-2f9deebdfc669a5b: payee "0x3333333333333333333333333333333333333333" is not one of "0x1111111111111111111111111111111111111111", "0x2222222222222222222222222222222222222222"; moving money through an MCP tool (sending, transferring or converting money, or a refund) (TK-A044)
+...
+grant       a payment grant reads it as 20 USDC to "0x3333333333333333333333333333333333333333"; grant g-2f9deebdfc669a5b is live: to 0x1111111111111111111111111111111111111111, 0x2222222222222222222222222222222222222222, up to 200 USDC each, 30 of 500 USDC left
+            it held this call: approve it on its own, or add room with a new grant:
+            tracekit approvals approve apr-… --grant --payee 0x3333333333333333333333333333333333333333 --max '20 USDC' --total '100 USDC' --for 1h
+```
+
 **6. The grant, as it stands.**
 
 ```text
@@ -97,7 +111,7 @@ and each payment it released reads `WITHIN GRANT`, with the payment and what the
 
 | Command | What it does |
 |---|---|
-| `tracekit approvals show ID` | For a held payment, how a grant reads it (amount, currency, payee) and a command to approve it with a grant, limits taken from the call for you to edit; or why a grant can't read it |
+| `tracekit approvals show ID` | For a held payment, how a grant reads it (amount, currency, payee) and a command to approve it with a grant, limits taken from the call for you to edit, or why a grant can't read it; with the dev signer, also the held call's own reasons from its signed decision and which live grant holds it with what it has left |
 | `tracekit approvals approve ID --grant LIMITS` | Issues a grant from the held call, then approves the call: the call is the grant's first payment, and its tool one the grant covers |
 | `tracekit grant add --run RUN --tool TOOL LIMITS` | Issues a grant for a run before it asks, covering the tools you name |
 | `tracekit grant list [--run RUN] [--json]` | The grants of the open runs you may see: who issued each, its tools and limits, what is left, and its state (`live`, `used_up`, `expired`, `revoked`) |
