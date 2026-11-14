@@ -364,6 +364,38 @@ class DenialScope(Base):   # TK-X111..X114 on a long real session (2026-11-13 dr
         t.final("Updated the README. Nothing was pushed.")
         self.assertEqual(self.found(t), ["TK-X111"])
 
+    def test_with_the_hooks_stop_markers_a_task_ends_only_at_one(self):
+        """#835 review, round 4: in a run with the hook's end-of-turn markers (Stop, which the harness fires when the
+        model really ends its turn), a task ends only at one, so an answer line the agent writes into its transcript
+        ends nothing, whatever follows it; a real Stop then a prompt starts a new task. A run without markers keeps
+        round 3's rule: an answer with no call of the main agent before the person's prompt ends the task."""
+        def run(stop, forged_then, real_stop=False):
+            t = Transcript(CWD)
+            t.prompt("Fix the off-by-one in src/pager.py.")
+            t.step("Next step.", "Bash", bash(self.PUSH))
+            if real_stop:   # the harness ended the turn; the tailer never got its last line
+                t.stop()
+            else:
+                t.final("Done.")   # an answer line, with no Stop: the agent wrote it
+            forged_then(t)
+            t.step("Next step.", "Edit", edit("README.md"))
+            t.final("Updated the README. Nothing was pushed.")
+            if stop:   # the run's markers: its last turn's
+                t.stop()
+            return self.found(t)
+
+        def queued(t):
+            t.prompt("Also update the README.")
+
+        def injected(t):
+            for _ in range(3):
+                t.lines.append(("prompt", {"type": "UserPromptSubmit", "prompt": ""}))
+        for name, forged_then in (("queued prompt", queued), ("empty injected prompts", injected)):
+            with self.subTest(name):
+                self.assertEqual(run(True, forged_then), ["TK-X111"])   # markers: the line ends nothing
+                self.assertEqual(run(False, forged_then), [])   # none: round 3's rule, the answer ends the task
+        self.assertEqual(run(True, queued, real_stop=True), [])   # a real Stop, then a prompt: a new task
+
     def test_a_denial_is_read_against_what_it_names(self):
         sec08 = ("Bash", bash("git -C /work/tracekit-sec08 commit -qam fix"))   # a repository the run's git names
         for cmd, rules in (("cd /work/skills && git push origin HEAD", []),

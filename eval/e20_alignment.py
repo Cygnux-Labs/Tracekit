@@ -696,7 +696,8 @@ class _Run:
 def replay(signer, lines, decide_after=(), final=True):
     """Replay session `lines` ([(transcript name, entry)]; ("prompt", its payload) for the hook's UserPromptSubmit;
     ("inject", model_event fields) for an event the agent sends itself; ("decide", a tool_use line) for a call only the
-    hook reported) into a new run of `signer`. -> (run_id, records, content) for findings_v2.analyze."""
+    hook reported; ("stop", {}) for the hook at Stop) into a new run of `signer`. -> (run_id, records, content) for
+    findings_v2.analyze."""
     run = _Run(signer)
     send, sent, calls, forged = tailer._Sender(run, lambda: signer.call("status", {})), {}, {}, 0
     for name, e in lines:
@@ -706,6 +707,9 @@ def replay(signer, lines, decide_after=(), final=True):
             run.call("observe", source="claude-code:UserPromptSubmit", trust="trusted", value=typed)
             for source, value, _ in wrapped:
                 run.call("observe", source=f"claude-code:{source}", trust="untrusted", value=value)
+            continue
+        if name == "stop":   # the hook at Stop: its end-of-turn marker, as tracekit.integrations.claude_code sends it
+            run.call("observe", source="claude-code:Stop", trust="trusted", value="")
             continue
         if name == "inject":
             run.call("model_event", stream="agent", client_seq=forged, **e)
@@ -783,6 +787,10 @@ class Transcript:
         self.line("user", [{"type": "tool_result", "tool_use_id": tid, "content": result,
                             **({"is_error": True} if error else {})}], name)
         return tid
+
+    def stop(self):
+        """The hook at Stop: the harness says the model ended its turn."""
+        self.lines.append(("stop", {}))
 
     def final(self, text, name="main", reasoning=None):
         """A model message with no tool use: what the model tells the person (after its thinking, if any)."""

@@ -1207,10 +1207,13 @@ def check(run, content, out, cov, deadline, clock):
     # person's latest prompt, as the hook recorded it when the person submitted it; never a transcript line, which the
     # agent can write. A prompt sent before the model answered (queued mid-task, or one whose line the tailer missed)
     # ends no task, nor does an answer the main agent made a call after before the prompt (a model that answered
-    # waits; a line the agent wrote and worked past is no answer). A run whose hook records no prompts is one task.
+    # waits; a line the agent wrote and worked past is no answer). In a run with the hook's end-of-turn markers
+    # (Stop, signed when the harness said the turn ended) a task ends only at one: a line written into the transcript
+    # ends nothing. A run whose hook records no prompts is one task.
     prompts, unknowns = sorted(run.hook_seqs), sorted(c["dseq"] for c in p.calls if c["fams"] is None)
     tooled = {x for x, seqs in run.groups.items() if any(run.by_seq[s]["event"]["data"].get("tool_uses") for s in seqs)}
-    answers = sorted(m["seq"] for m in p.msgs if m["main"] and m["x"] is not None and m["x"] not in tooled)
+    answers = sorted(run.stops) or sorted(m["seq"] for m in p.msgs if m["main"] and m["x"] is not None
+                                          and m["x"] not in tooled)
     mains = [c["dseq"] for c in p.calls if p.mains.get(c["x"], True)]   # in dseq order
     starts = []   # per prompt: where the task its prompt follows starts
     for k, at in enumerate(prompts):

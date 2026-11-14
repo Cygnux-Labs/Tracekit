@@ -55,6 +55,10 @@ constraint can only hold more calls, so the agent's own identity adding one (it 
 the signer's cap of file constraints a further one is refused and every write of the run is held from then on, which the
 hook tells the person (exit 1, FULL on stderr, and in the prompt's notice when it prints one).
 
+At Stop (the harness says the model ended its turn; not SubagentStop) an empty trusted observation (source
+<agent>:Stop) marks the end of the turn: `tracekit analyze --v2` ends a denial's task only at one in a run that has
+them, which a line written into the transcript can't produce. A Stop the hook can't record is just missing.
+
 A signer of another Tracekit version than this hook's is told to the person once per session (_skew), on an event the
 hook lets through, with what to run (skew_notice); the client's warning about it is not printed.
 
@@ -1150,6 +1154,12 @@ def _handle(client, p, event, sid, tid):
                 os.remove(f)
         return 0
     transcript, prompt = _transcript(p), p.get("prompt") if event == "UserPromptSubmit" else None
+    if event == "Stop":   # the harness says the model ended its turn: a signed end-of-turn marker (not SubagentStop)
+        try:
+            _run(client, sid, send="observe", transcript=transcript, source=f"{AGENT}:Stop", trust="trusted", value="")
+            return 0
+        except Exception:   # a Stop it can't record is just missing: the event goes on as any other below
+            pass
     if event == "SessionStart":
         _prune()
     if isinstance(prompt, str) and prompt:   # the harness's submitted prompt, including harness wrappers

@@ -176,6 +176,7 @@ CHECKS = ("TK-X201", "TK-X202", "TK-X203", "TK-X204", "TK-X208", *findings_text.
           *findings_box.CHECKS)
 STOPS = ("budget", "size")   # not checkable because the analysis stopped short: the result is INCOMPLETE
 PROMPT_HOOK = ":UserPromptSubmit"   # an input.observed source: <agent>:UserPromptSubmit, the hook's prompt
+STOP_HOOK = ":Stop"   # an input.observed source: <agent>:Stop, the hook's end-of-turn marker (claude_code)
 FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorability classes, best first
 TIERS = ("operator", "observer", "gateway", "decision", "harness", "sdk", "transcript")   # trust, best first
 TEXT_TIERS = ("transcript", "sdk", "harness", "gateway")   # weakest first: a finding names the weakest text it relied on
@@ -348,6 +349,7 @@ class _Run:
         self.synthetic = self.hooked = False
         self.net_effects, self.requests = [], []   # net and connect effects; agent-reported request records
         self.hook_seqs = []   # the run_seqs of the prompts the hook recorded (signed when the person submitted them)
+        self.stops = []   # the run_seqs of the hook's end-of-turn markers (signed when the harness said the turn ended)
         self.approved = {}   # tool_use_id -> the approval record that approved its call
         self.model_hosts = set()   # the API hosts of the model calls the run recorded: the harness's own traffic
         for r in self.records:
@@ -379,6 +381,8 @@ class _Run:
             elif e["type"] == "input.observed" and str(d.get("source")).endswith(PROMPT_HOOK):
                 self.hooked = True
                 self.hook_seqs.append(e["run_seq"])
+            elif e["type"] == "input.observed" and str(d.get("source")).endswith(STOP_HOOK):
+                self.stops.append(e["run_seq"])
             elif e["type"] == "run.final" and (d.get("coverage") or {}).get("paired_by_args"):
                 self.synthetic = True
         self.ran = {c: v for c, v in self.calls.items()
