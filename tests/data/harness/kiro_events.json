@@ -1,0 +1,63 @@
+{
+ "_note": "Kiro CLI 3.3.0 on Windows 11, recorded with a stand-in hook (stdin to a file); paths redacted to C:\\work\\kiro-rec. Not recorded: SessionEnd (kiro-cli chat --no-interactive fires none), execute_bash (Windows sends execute_pwsh); tests build those.",
+ "SessionStart": {
+  "session_id": "sess_cd670c62-dec2-430b-a51d-26e4bd0434ea",
+  "hook_event_name": "SessionStart",
+  "cwd": "C:\\work\\kiro-rec"
+ },
+ "UserPromptSubmit": {
+  "session_id": "sess_cd670c62-dec2-430b-a51d-26e4bd0434ea",
+  "hook_event_name": "UserPromptSubmit",
+  "cwd": "C:\\work\\kiro-rec",
+  "prompt": "Run exactly this shell command once and nothing else: echo kiro-rec. Then reply DONE."
+ },
+ "PostToolUse": {
+  "session_id": "sess_cd670c62-dec2-430b-a51d-26e4bd0434ea",
+  "hook_event_name": "PostToolUse",
+  "cwd": "C:\\work\\kiro-rec",
+  "tool_name": "execute_pwsh",
+  "tool_input": {
+   "command": "echo kiro-rec",
+   "description": "Print kiro-rec to stdout",
+   "cwd": null,
+   "run_in_background": false,
+   "timeout": null
+  },
+  "tool_response": "Output:\nkiro-rec\r\n\n\nExit Code: 0"
+ },
+ "PostToolUse_sub_agent": {
+  "session_id": "sess_17a65171-8892-41f6-b46b-b24fcdd8ebd5",
+  "hook_event_name": "PostToolUse",
+  "cwd": "C:\\work\\kiro-rec",
+  "tool_name": "invoke_sub_agent",
+  "tool_input": {
+   "name": "general-task-execution",
+   "prompt": "Run the shell command \"echo kiro-rec\" and report its exact stdout output. Do not modify any files. Just run the command and report the output.",
+   "explanation": "Delegating a simple shell command execution to a sub-agent as requested, so its output can be reported back.",
+   "preset": null,
+   "contextFiles": [],
+   "specTask": null
+  },
+  "tool_response": "The exact stdout output of the command `echo kiro-rec` is:\n\n```\nkiro-rec\n```\n\nExit code: 0. No files were modified."
+ },
+ "Stop": {
+  "session_id": "sess_cd670c62-dec2-430b-a51d-26e4bd0434ea",
+  "hook_event_name": "Stop",
+  "cwd": "C:\\work\\kiro-rec"
+ },
+ "denied_in_hook": [
+  {
+   "session_id": "sess_17a65171-8892-41f6-b46b-b24fcdd8ebd5",
+   "hook_event_name": "PreToolUse",
+   "cwd": "C:\\work\\kiro-rec",
+   "tool_name": "createHook",
+   "tool_input": {
+    "actionType": "command",
+    "command": "echo kiro-rec",
+    "id": "rec-probe",
+    "name": "rec-probe",
+    "trigger": "PreToolUse"
+   }
+  }
+ ]
+}
