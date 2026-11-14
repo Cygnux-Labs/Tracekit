@@ -414,6 +414,17 @@ class Transports(unittest.TestCase):
         self.addCleanup(patch.stop)
         return Client("https://signer.test:8443", timeout=timeout)
 
+    def test_an_error_code_this_client_doesnt_know_is_an_rpc_error(self):
+        """A newer signer can answer with an error code this client's ERROR_CODES lacks: the client raised
+        AssertionError, which callers that catch RPCError don't handle. It is an RPCError with that code; the signer's
+        own errors are still held to ERROR_CODES when they are sent."""
+        c = self.https(lambda frame: {"error": {"code": "a_newer_signers_code", "message": "no", "retry_after_ms": 5}})
+        with self.assertRaises(RPCError) as raised:
+            c.decide({**EVENT, "run_id": "r1", "tool_call_id": "c1", "args": {}})
+        self.assertEqual((raised.exception.code, raised.exception.retry_after_ms), ("a_newer_signers_code", 5))
+        with self.assertRaises(AssertionError):
+            RPCError("a_newer_signers_code", "no").wire()
+
     def test_a_runs_events_reach_an_https_signer_in_client_seq_order(self):
         arrived = collections.defaultdict(list)
 
