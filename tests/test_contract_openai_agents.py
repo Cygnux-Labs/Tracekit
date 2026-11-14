@@ -234,6 +234,23 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         self.assertEqual((types.count("approval.consumed"), types.count("tool.result")), (1, 1))
         self.assertEqual(types.count("model.exchange"), 2)   # T3: the shell call, then "done"
 
+    def test_apply_decisions_reads_every_page_of_approvals(self):
+        ctx = mock.Mock(context={})
+        for i in range(100):   # fill approval_list's first page (its default limit) with decided approvals
+            self.assertTrue(asyncio.run(self.tk._ask(ctx, f"pad-{i}", "pay", {"commands": ["make pay"]})))
+            self.client.approval_decide({"approval_id": ctx.context["tracekit"]["approvals"][f"pad-{i}"],
+                                         "decision": "reject"})
+        call = ResponseFunctionShellToolCall(id="sh_1", call_id="sh-1", type="shell_call", status="completed",
+                                             action={"commands": ["make pay"]})
+        a, res = self.go(call, ShellTool(name="pay", executor=lambda req: self.ran.append(req.data.action.commands)
+                                         or "paid"))
+        aid = res.context_wrapper.context["tracekit"]["approvals"]["sh-1"]
+        self.client.approval_decide({"approval_id": aid, "decision": "approve"})
+        state = res.to_state()
+        self.assertEqual(asyncio.run(self.tk.apply_decisions(state)), [])   # #842: the 101st approval was unread
+        res = Runner.run_sync(a, state, hooks=self.tk)
+        self.assertEqual((self.ran, res.final_output), ([["make pay"]], "done"))
+
     def test_apply_patch_runs_when_allowed_and_refuses_an_ask(self):
         class Editor:
             def create_file(_, op):

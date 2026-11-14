@@ -357,7 +357,7 @@ function contract(name, Driver, serve, skip) {
     const paused = async (tcid = "call-1") => {
       const out = d.call("pay", PAY, tcid);
       for (let i = 0; i < 500; i++) {
-        const a = (await client.call("approval_list", { run_id: run.runId })).approvals.find((x) => x.tool_call_id === tcid && x.state === "requested");
+        const a = (await client.call("approval_list", { run_id: run.runId, state: "requested" })).approvals.find((x) => x.tool_call_id === tcid && x.state === "requested");
         if (a) {
           if (!d.skip.saved_state) assert.deepEqual(await out, outcome({ paused: true }));
           return a.approval_id;
@@ -424,6 +424,14 @@ function contract(name, Driver, serve, skip) {
       assert.deepEqual(await d.resume(), outcome({ ran: ["pay"], seen: "paid 1500" }));
       assert.equal((await recorded("approval.consumed")).length, 1);
       await bound();
+    });
+
+    it("ask, approved after a page of other approvals: runs once (#842)", async (t) => {
+      await setup(t);
+      if (d.skip.saved_state) return t.skip(d.skip.saved_state);
+      for (let i = 0; i < 100; i++) await decideApproval(await paused(`pad-${i}`), "reject");   // approval_list's first page
+      await decideApproval(await paused());
+      assert.deepEqual(await d.resume(), outcome({ ran: ["pay"], seen: "paid 1500" }));
     });
 
     it("T2: the agent changed the arguments after the approval: the signer's copy runs and completes", async (t) => {
@@ -623,6 +631,47 @@ describe("a run per conversation (withRun)", () => {
     const where = (m) => Object.fromEntries(frames.filter((f) => f.method === m).map((f) => [f.tool_call_id, f.run_id]));
     const want = { ca: a.runId, cb: b.runId, cx: base.runId };
     assert.deepEqual([where("decide"), where("approval_consume"), where("complete")], [want, want, want]);
+  });
+});
+
+describe("approval_list pagination across pages (#842)", () => {
+  async function setup(t) {
+    const oldest = { approval_id: "apr-1", tool_call_id: "call-1", state: "rejected" };
+    const rest = [{ approval_id: "apr-2", tool_call_id: "call-2", state: "approved" }];
+    const signer = await fakeSigner({
+      override: (f) => f.method === "approval_list" && (f.cursor
+        ? { approvals: rest, next_cursor: null }
+        : { approvals: [oldest], next_cursor: oldest.approval_id }),
+    });
+    const client = new Client({ signer: signer.path });
+    t.after(() => (client.close(), signer.stop()));
+    return client.registerRun("paging");
+  }
+
+  it("applyDecisions (OpenAI Agents) finds approvals on the second page", async (t) => {
+    const run = await setup(t), tk = new TracekitAgents(run);
+    const approved = [], rejected = [];
+    const interruptions = [{ rawItem: { callId: "call-1" } }, { rawItem: { callId: "call-2" } }];
+    const state = {
+      getInterruptions: () => interruptions,
+      approve: (i) => approved.push(i),
+      reject: (i, r) => rejected.push([i, r]),
+    };
+    assert.deepEqual(await tk.applyDecisions(state), []);
+    assert.deepEqual(approved, [interruptions[1]]);
+    assert.deepEqual(rejected, [[interruptions[0], { message: "Tool call rejected in Tracekit" }]]);
+  });
+
+  it("approvalResponses (Vercel AI) finds approvals on the second page", async (t) => {
+    const run = await setup(t), tk = tracekitAI(run);
+    const reqs = [
+      { type: "tool-approval-request", approvalId: "aitxt-1", toolCallId: "call-1" },
+      { type: "tool-approval-request", approvalId: "aitxt-2", toolCallId: "call-2" },
+    ];
+    assert.deepEqual(await tk.approvalResponses(reqs), [
+      { type: "tool-approval-response", approvalId: "aitxt-1", approved: false, reason: "Tool call rejected in Tracekit" },
+      { type: "tool-approval-response", approvalId: "aitxt-2", approved: true },
+    ]);
   });
 });
 
