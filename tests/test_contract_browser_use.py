@@ -799,6 +799,111 @@ class OnRealTools1x(unittest.TestCase):
                          [("browser_use:python", {"code": "wipe", "page_url": ""})])
         self.assertEqual([m for m, r in signer.sent if m == "complete"], [])
 
+    def test_an_unreachable_signer_refuses_a_delivery_and_a_cell_at_repl_call(self):
+        """Repl.call is the only seam a delivery and a bare exec go through: like the tool hook, a call the signer
+        cannot decide never runs."""
+        from browser_use import Tools
+        from browser_use.repl.session import Repl
+        from pydantic_ai import ModelRetry
+        from tracekit.sdk.client import Refused
+
+        class Down:
+            def decide(self, req):
+                raise SignerUnavailable("the signer is unreachable")
+        ran = []
+
+        async def worker(self, op, code, timeout):
+            ran.append(code)
+            return {"value": None, "output": "", "images": [], "error": None}
+        real = Repl.call   # wire() records the worker as the value to restore: this cleanup runs after it
+        Repl.call = worker
+        self.addCleanup(setattr, Repl, "call", real)
+        self.patched()
+        trace_tools(Tools(), Down(), {"run_id": "r1", "run_token": "t1"})
+        repl = types.SimpleNamespace(secrets=[])
+
+        with self.assertRaises(ModelRetry):
+            asyncio.run(Repl.call(repl, "eval", "card", 5))
+        with self.assertRaises(Refused):
+            asyncio.run(Repl.call(repl, "exec", "print(1)", 5))
+        self.assertEqual(ran, [])
+
+    def test_an_exec_of_other_code_inside_the_python_tool_is_decided(self):
+        """The tool marks the one cell it decided; a handler that execs other code gets it decided under
+        browser_use:python rather than run on the strength of the tool's decision."""
+        from browser_use import Tools
+        from browser_use.agent.loop import BrowserLoop
+        from browser_use.repl.session import Repl
+        ran = []
+
+        async def worker(self, op, code, timeout):
+            ran.append(code)
+            return {"value": None, "output": "", "images": [], "error": None}
+        real = Repl.call   # wire() records the worker as the value to restore: this cleanup runs after it
+        Repl.call = worker
+        self.addCleanup(setattr, Repl, "call", real)
+        signer, run = self.wire(lambda tool, args: ("allow", []))
+        trace_tools(Tools(), signer, run)
+        repl = types.SimpleNamespace(secrets=[])
+        ctx = types.SimpleNamespace(deps=types.SimpleNamespace(finalizing=False, repl=repl))
+
+        async def handler(seen):
+            return [await Repl.call(repl, "exec", "print(2)", 5)]   # not the cell the tool decided
+        asyncio.run(BrowserLoop().wrap_tool_execute(
+            ctx, call=types.SimpleNamespace(tool_name="python", tool_call_id="id-python"),
+            tool_def=types.SimpleNamespace(kind="function"), args={"code": "print(1)"}, handler=handler))
+        self.assertEqual(ran, ["print(2)"])
+        decided = [json.loads(r) for m, r in signer.sent if m == "decide"]
+        self.assertEqual([(d["tool"], d["args"]["code"]) for d in decided],
+                         [("browser_use:python", "print(1)"), ("browser_use:python", "print(2)")])
+        self.assertEqual([m for m, r in signer.sent if m == "complete"], ["complete", "complete"])
+
+    def test_t2_runs_the_signers_copy_at_repl_call(self):
+        """A T2 approval's consume returns the signer's copy: Repl.call runs that expression (the framework's own
+        changed after the approval) and completes the call for it."""
+        from browser_use import Tools
+        from browser_use.repl.session import Repl
+        approved = {"expression": "approved", "page_url": ""}
+        ran = []
+
+        async def worker(self, op, code, timeout):
+            ran.append(code)
+            return {"value": code, "output": "", "images": [], "error": None}
+        real = Repl.call   # wire() records the worker as the value to restore: this cleanup runs after it
+        Repl.call = worker
+        self.addCleanup(setattr, Repl, "call", real)
+        self.patched()
+        fake = FakeSigner(lambda tool, args: ("ask", ["R-PAY"]), t2=["R-PAY"])
+
+        class T2(Recording):   # the signer decides and consumes its own copy of the arguments
+            def __getattr__(self, method):
+                def call(req):
+                    self.sent.append((method, json.dumps(req)))
+                    if method in ("decide", "approval_consume"):
+                        req = dict(req, args=approved)
+                    return getattr(self.signer, method)(req)
+                return call
+        signer, run = T2(fake), fake.register_run({"request_id": "r1", "agent": {"name": "bu1"}})
+        trace_tools(Tools(), signer, run)
+        repl, out = types.SimpleNamespace(secrets=[]), {}
+
+        def go():
+            out["r"] = asyncio.run(Repl.call(repl, "eval", "pwn", 5))
+        t = threading.Thread(target=go)
+        t.start()
+        while t.is_alive():   # approve the copy the signer holds while the call waits
+            aid = next((a["approval_id"] for a in fake.approval_list({"run_id": run["run_id"]})["approvals"]
+                        if a["state"] == "requested"), None)
+            if aid:
+                fake.approval_decide({"request_id": "approve-t2", "approval_id": aid, "decision": "approve"})
+                break
+            time.sleep(0.02)
+        t.join(30)
+        self.assertEqual((ran, out["r"]["value"]), (["approved"], "approved"))
+        [done] = [json.loads(r) for m, r in signer.sent if m == "complete"]
+        self.assertEqual(done["args_digest"],
+                         event_hash({"tool": "browser_use:finish_from_repl", "args": approved}))
+
     def test_a_param_model_action_reaches_the_signer_as_json(self):
         """1.0 still accepts 0.x's param_model, and Pydantic AI validates the arguments into the model: the signer gets
         its fields as JSON, and the action still gets the model."""

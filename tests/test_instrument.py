@@ -14,7 +14,7 @@ import types
 import unittest
 import warnings
 import weakref
-from importlib import metadata
+from importlib import metadata, util
 from unittest import mock
 
 from adapter_contract import OnReal
@@ -37,6 +37,11 @@ def installed(requirements):
     except metadata.PackageNotFoundError:
         return False
     return sys.version_info >= (3, 10)
+
+
+class FakeTracekit:   # stands in for the capability: autowire's isinstance() needs a type, not a mock
+    def __init__(self, run):
+        self.run = run
 
 
 class DevSigner(unittest.TestCase):
@@ -330,10 +335,27 @@ class TestInstrument(unittest.TestCase):
         self.assertEqual([(method, req.get("tool")) for method, req in sent],
                          [("decide", "browser_use:echo"), ("approval_consume", "browser_use:echo"), ("complete", None)])
 
+    @staticmethod
+    def fake_browser_use(wired):
+        """Browser Use's package as pydantic-ai finds it, with the 1.0 seam marked wired or not."""
+        package, agent, loop = (types.ModuleType("browser_use"), types.ModuleType("browser_use.agent"),
+                                types.ModuleType("browser_use.agent.loop"))
+
+        class Tools:
+            pass
+
+        class BrowserLoop:
+            async def wrap_tool_execute(self, *a, **kw):
+                pass
+        if wired:
+            BrowserLoop.wrap_tool_execute.tracekit_actions = object()
+        package.Tools, loop.BrowserLoop = Tools, BrowserLoop
+        return {"browser_use": package, "browser_use.agent": agent, "browser_use.agent.loop": loop}
+
     def test_pydantic_ai_leaves_browser_uses_agent_alone(self):
         """Browser Use's agent is gated by BrowserLoop, which names its cells browser_use:*: the capability would decide
         every call a second time, so that agent is built with the capabilities it was given."""
-        if not installed(("pydantic-ai",)):
+        if util.find_spec("pydantic_ai") is None:   # the distribution is pydantic-ai-slim under browser-use
             self.skipTest("pydantic-ai not installed")
 
         class Session:   # Browser Use's own agent deps
@@ -344,13 +366,42 @@ class TestInstrument(unittest.TestCase):
         class Agent:
             def __init__(self, *a, capabilities=None, **kw):
                 seen.append(capabilities)
-        with mock.patch("pydantic_ai.Agent", Agent), mock.patch("tracekit.integrations.pydantic_ai.Tracekit"):
+        with mock.patch.dict(sys.modules, self.fake_browser_use(True)), \
+                mock.patch("pydantic_ai.Agent", Agent), \
+                mock.patch("tracekit.integrations.pydantic_ai.Tracekit", FakeTracekit):
             autowire._pydantic_ai(mock.Mock(registered={"run_id": "r", "run_token": "t"}))
             Agent(deps_type=Session, capabilities=[cap])
             Agent(deps_type=int)
         self.assertEqual(seen[0], [cap])
         self.assertEqual(len(seen[1]), 1)
         self.assertIsNot(seen[1][0], cap)
+
+    def test_a_failed_1x_wiring_keeps_the_pydantic_ai_capability(self):
+        """The capability is left off only while BrowserLoop's seam is installed: if wiring failed, it is the one thing
+        deciding the agent's calls."""
+        if util.find_spec("pydantic_ai") is None:
+            self.skipTest("pydantic-ai not installed")
+        from tracekit.integrations import browser_use as bu
+
+        class Session:   # Browser Use's own agent deps
+            pass
+        Session.__module__ = "browser_use.agent.loop"
+        cap, seen = object(), []
+
+        class Agent:
+            def __init__(self, *a, capabilities=None, **kw):
+                seen.append(capabilities)
+        run = mock.Mock(registered={"run_id": "r", "run_token": "t"})
+        with mock.patch.dict(sys.modules, self.fake_browser_use(False)), \
+                mock.patch.object(bu, "_wire_1x", side_effect=ImportError("browser_use.repl.session moved")), \
+                mock.patch("pydantic_ai.Agent", Agent), \
+                mock.patch("tracekit.integrations.pydantic_ai.Tracekit", FakeTracekit):
+            with self.assertRaises(ImportError):   # instrument() warns and continues past this
+                autowire._browser_use(run)
+            autowire._pydantic_ai(run)
+            Agent(deps_type=Session, capabilities=[cap])
+        self.assertEqual(len(seen[0]), 2)
+        self.assertIs(seen[0][0], cap)
 
     def test_an_mcp_1_session_is_named_by_its_initialize_result(self):
         if not installed(AGENTS["mcp"][0]):

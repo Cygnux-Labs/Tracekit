@@ -320,6 +320,15 @@ def _browser_use(run):
     Tools.__init__ = gated
 
 
+def _browser_use_wired():
+    """Whether the 1.0 seam is installed: its wrapper carries the actions it decides with."""
+    try:
+        from browser_use.agent.loop import BrowserLoop
+    except ImportError:
+        return False
+    return getattr(BrowserLoop.wrap_tool_execute, "tracekit_actions", None) is not None
+
+
 def _pydantic_ai(run):
     from pydantic_ai import Agent
 
@@ -329,9 +338,10 @@ def _pydantic_ai(run):
     @functools.wraps(init)
     def wired(self, *a, capabilities=None, **kw):
         deps = kw.get("deps_type")
-        if getattr(deps, "__module__", "").startswith("browser_use."):
+        if getattr(deps, "__module__", "").startswith("browser_use.") and _browser_use_wired():
             # Browser Use's internal agent is gated by its own integration (BrowserLoop), which decides its `python`
             # cell as `browser_use:python`; this capability would decide the same call again, under a generic name.
+            # While the seam is not wired, it is the only thing that decides that agent's calls.
             init(self, *a, capabilities=capabilities, **kw)
         elif not any(isinstance(c, Tracekit) for c in capabilities or ()):   # one given by hand decides alone
             init(self, *a, capabilities=[*(capabilities or ()), Tracekit(run)], **kw)

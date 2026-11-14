@@ -13,8 +13,9 @@ after the action it records the outcome. It works with any object that implement
 pip install tracekit-ai "browser-use>=0.13.11,<1.1"
 ```
 
-Python 3.11 or newer (browser-use's own requirement). Tested with 0.13.11, 1.0.2 and 1.0.3. Every push runs the adapter
-contract against both: the 0.13 stand-in, and 1.0's `BrowserLoop` hook on the real classes. On 0.13 the adapter wraps
+Python 3.11 or newer (browser-use's own requirement). Tested with 0.13.11, 1.0.2 and 1.0.3. Every push runs the 0.13
+adapter contract; the 1.0 one, over `BrowserLoop` and `Repl.call` on the real classes, runs in the nightly
+adapter-contract job against browser-use `@latest`. On 0.13 the adapter wraps
 the action registry; on 1.0 it wraps `BrowserLoop.wrap_tool_execute`, which every function tool, the `python` cell
 included, passes through, and `Repl.call`, which runs the `finish_from_repl` delivery (an output tool gets no tool
 hook) and every cell as `exec`. Browser Use is imported only to build the result of a refused action, to read its
@@ -72,8 +73,9 @@ completed at `Repl.call`, which is where its expression runs. `Repl.call` gates 
 `exec` is the one the tool hook just decided: it marks that cell's code in a context variable, and the `exec` runs
 without a second decision. An `exec` from anywhere else, which a later release could add, is decided as
 `browser_use:python` before it runs. 1.0's `Session`, the agent's deps, holds the REPL and the run's state but no
-browser session, so no page is observed and `page_url` is always `""`: the `TK-B011` typing allowlist never exempts it
-(every `input` asks), so on 1.0 a page adds nothing to provenance.
+browser session, so no page is observed and `page_url` is always `""`. The shipped packs allow every cell and every
+delivery until a source reader lands: to hold one, write your own rule for `browser_use:python` or
+`browser_use:finish_from_repl`.
 
 The args are the action's params plus `page_url`, the URL of the page the action ran on: empty when there is none,
 when Browser Use doesn't say within 2 s, or on 1.0, whose `Session` has no browser session (an allowlist rule never
