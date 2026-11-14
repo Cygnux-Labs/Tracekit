@@ -307,7 +307,9 @@ class CodingAgentHooks(unittest.TestCase):
         def rows(table=None):
             if table is not None:
                 with open(path, "w", encoding="utf-8") as f:
-                    f.write("[hooks]\n" + "\n".join(agent_hooks._jcode_lines(table)) + "\n")
+                    # between Tracekit's markers, so Python 3.9 (no tomllib) reads it too
+                    f.write("\n".join([agent_hooks.JCODE_BEGIN, "[hooks]", *agent_hooks._jcode_lines(table),
+                                       agent_hooks.JCODE_END]) + "\n")
             got = {}
             doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: got.setdefault(rid, (ok, detail)),
                                         {"jcode": path}, False, self.d)

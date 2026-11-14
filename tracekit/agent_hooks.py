@@ -227,6 +227,8 @@ DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart",
 # without `_` ends in path, paths or file
 DEVIN_PATH_KEY = re.compile(r"(?:path|paths|file)$")
 # a unified diff's file names: --- a/x and +++ b/x (up to a tab, where diff -u puts the time), and diff --git a/x b/x
+# a name a shell reads as a variable in an assignment (NAME=value)
+SHELL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+)$)", re.M)
 
 
@@ -606,7 +608,9 @@ def tool(harness, name, ti):
                 args, env = ti.get("args") or [], ti.get("env") or {}
                 if isinstance(args, list) and all(isinstance(a, str) for a in args) and isinstance(env, dict):
                     command = shlex.join([ti["command"], *args])
-                    assignments = " ".join(shlex.quote(f"{k}={v}") for k, v in env.items())
+                    # only the value is quoted: a quoted 'X=a b' is a program name to a shell, not an assignment
+                    # (a key that isn't a shell name can't be written as one; the hook blocks it, _blocked)
+                    assignments = " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items())
                     return "Bash", {"command": (assignments + " " if assignments else "") + command}
             elif isinstance(ti.get("url"), str) and ti["url"]:
                 return "WebFetch", {"url": ti["url"]}
@@ -1366,6 +1370,14 @@ def _blocked(harness, p, raw=""):
             reason = _typed(f"Copilot's {cname}", v)
             if reason:
                 return reason
+    elif harness == "jcode" and name == "mcp":
+        ti = _input(p.get("tool_input"))
+        env = ti.get("env") if ti.get("action") == "connect" else None
+        odd = next((k for k in env if not SHELL_NAME.fullmatch(str(k))), None) if isinstance(env, dict) else None
+        if odd is not None:
+            return (f"Blocked by Tracekit: jcode's mcp connect sets the environment variable {str(odd)[:64]!r}, which "
+                    "isn't a shell name, so Tracekit can't decide the command it starts as a shell line; use names "
+                    "of letters, digits and _ that don't start with a digit.")
     return _blocked_tool(harness, name, raw)
 
 
