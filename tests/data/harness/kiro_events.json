@@ -58,6 +58,24 @@
     "name": "rec-probe",
     "trigger": "PreToolUse"
    }
+  },
+  {
+   "session_id": "sess_0cd7c8da-37ba-4979-9795-3057e2fdcbc8",
+   "hook_event_name": "PreToolUse",
+   "cwd": "C:\\work\\kiro-rec",
+   "tool_name": "invoke_sub_agent",
+   "tool_input": {
+    "name": "general-task-execution",
+    "prompt": "Summarise the file sample.py in one sentence. Do not modify any file, and do not run any command. Just read the file and return a single-sentence summary.",
+    "explanation": "The user asked for sample.py to be summarised by a sub-agent with no file modifications and no command execution, as the second of two recorded tool inputs.",
+    "preset": null,
+    "contextFiles": [
+     {
+      "path": "C:\\work\\kiro-rec\\sample.py"
+     }
+    ],
+    "specTask": null
+   }
   }
  ]
 }

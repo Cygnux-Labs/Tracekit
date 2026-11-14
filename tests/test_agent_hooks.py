@@ -2050,6 +2050,9 @@ class KiroTools(unittest.TestCase):
                 ("code", {"operation": "diagnostics", "file_path": "/w/a.py"}, "Read", "/w/a.py"),
                 ("code", {"operation": "pattern_rewrite", "file_path": "/w/a.py", "pattern": "a", "replacement": "b"},
                  "Edit", "/w/a.py"),
+                # a folder (recorded on 3.3.0, where it only previews): an Edit of the folder, which a folder rule reads
+                ("code", {"operation": "pattern_rewrite", "path": "/w/.kiro", "pattern": "a", "replacement": "b"},
+                 "Edit", "/w/.kiro"),
                 # the 2.x names are no hook ids on CLI V3, and init refuses a 2.x CLI: unknown tools, as they are
                 ("shell", {"command": "ls"}, "shell", None), ("write", {"path": "/w/a"}, "write", None)):
             with self.subTest(tool=name, ti=ti):
@@ -2105,6 +2108,12 @@ class KiroTools(unittest.TestCase):
                    {"operation": "pattern_rewrite", "pattern": "a", "replacement": "b"}):
             self.assertIn("Blocked by Tracekit: Kiro's code", blocked("code", ti) or "", ti)
         self.assertIsNone(blocked("invoke_sub_agent", {"name": "general-task-execution", "prompt": "x"}))
+        # #825's review: contextFiles reach the sub-agent with no read_file of them (recorded), so a .env in them would
+        # be read undecided; an empty list (recorded) or none passes
+        for files in ([{"path": "/w/.env"}], [{"path": "/w/a.py"}], ["/w/.env"], "/w/.env"):
+            self.assertIn("contextFiles", blocked("invoke_sub_agent", {"name": "x", "prompt": "x",
+                                                                       "contextFiles": files}) or "", files)
+        self.assertIsNone(blocked("invoke_sub_agent", {"name": "x", "prompt": "x", "contextFiles": []}))
 
     def test_events_are_claude_codes_and_calls_are_paired_without_an_id(self):
         d = tempfile.mkdtemp()

@@ -142,10 +142,14 @@ on macOS and Linux `install._blocking` wraps it, and on Windows, where Kiro runs
 `|| (… & exit 2)` ([limits](limits.md#signer-and-capture)). `delete_file` names its file `targetFile`, not `path`: each
 file tool is decided on the key it reads, never a decoy beside it, and a file, shell or fetch call without it is
 denied in the hook (a listing or a search without a path reads the working directory). `invoke_sub_agent` is decided
-as `Task`: the sub-agent's own calls fire the session's hooks (recorded). The `code` tool's recorded operations are
+as `Task`: the sub-agent's own calls fire the session's hooks (recorded). Its `contextFiles` (`[{"path": …}]`) reach
+the sub-agent with no `read_file` of them (recorded), so a call that names any is denied in the hook: the agent names
+the files in the prompt instead, and the sub-agent's read of each is decided. The `code` tool's recorded operations are
 decided as a `Read` of the file they name (`lookup_symbols`, `get_document_symbols`, `pattern_search`,
-`find_references`, `diagnostics`) or, for `pattern_rewrite`, an `Edit` of it; any other operation (an LSP rename, a
-format), and a rewrite that names no file, is denied in the hook. `createHook`, which writes a hook whose command no
+`find_references`, `diagnostics`) or, for `pattern_rewrite`, an `Edit` of it, or of the folder it names; any other
+operation (an LSP rename, a format), and a rewrite that names no file, is denied in the hook. On 3.3.0
+`pattern_rewrite` only previews: its schema says "Always previews — use write tools to apply", and a rewrite recorded on
+a folder changed no file. `createHook`, which writes a hook whose command no
 Tracekit hook decides, is denied, and so are `subagent/<agent>` and `kiro_powers`, which haven't been recorded.
 Kiro joins an MCP server's name and its tool's with `_` (`mcp_<server>_<tool>`), so a server named with `_` can't be
 split off: the call is decided as `mcp__<server>_<tool>`, whole. Before a deferred tool's first call, Kiro calls

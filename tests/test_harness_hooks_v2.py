@@ -416,14 +416,16 @@ class Mapping(HarnessCase):
         self.assertEqual((code, out), (2, ""), err)
 
     def test_kiro_calls_denied_in_the_hook_never_reach_the_signer(self):
-        # recorded on 3.3.0: createHook writes a hook whose command no Tracekit hook decides
+        # recorded on 3.3.0: createHook writes a hook whose command no Tracekit hook decides, and invoke_sub_agent hands
+        # the sub-agent its contextFiles with no read_file of them
         with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
-            (create,) = json.load(f)["denied_in_hook"]
+            recorded = json.load(f)["denied_in_hook"]
+        create = recorded[0]
         built = [dict(create, tool_name=name, tool_input=ti) for name, ti in (
             ("subagent/reviewer", {"prompt": "x"}), ("kiro_powers", {"action": "list"}),
             ("code", {"operation": "rename_symbol", "file_path": "C:\\work\\kiro-rec\\sample.py", "new_name": "x"}),
             ("code", {"operation": "pattern_rewrite", "pattern": "a", "replacement": "b"}))]
-        for payload in (create, *built):
+        for payload in (*recorded, *built):
             with self.subTest(tool=payload["tool_name"], ti=payload["tool_input"]):
                 code, out, err = self.hook("kiro", payload)
                 self.assertEqual((code, out), (2, ""), err)
