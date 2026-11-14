@@ -37,8 +37,9 @@ signer.close_run({"run_id": run["run_id"], "run_token": run["run_token"]})
 
 Register the run when the session starts and close it after the message loop. The CLI doesn't send the SDK's hooks
 `SessionEnd` (checked with claude-agent-sdk 0.2.165 and 0.2.181, CLI 2.1.294 and 2.1.323), so a run the app leaves open
-ends only at the signer's idle timeout (`idle_s`, an hour by default), with no reason recorded. The hooks still close
-it at `SessionEnd` if a CLI sends one; `tracekit.instrument()` closes its run when the process exits.
+closes only at the signer's idle timeout (`idle_s`, an hour by default), with the reason `idle_timeout` rather than
+the session's own. The hooks still close it at `SessionEnd` if a CLI sends one; `tracekit.instrument()` closes its run
+when the process exits.
 
 To add hooks of your own, extend the lists in the mapping. Tools run in the CLI subprocess under their Claude Code
 names (`Bash`, `Edit`, `Write`, ...), so the signer's coding packs apply to them as they do to the Claude Code hook.
