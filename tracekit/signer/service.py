@@ -445,6 +445,9 @@ NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_e
                            "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open",
                            "export_run"}) | OPERATOR
 EXPORT_CHUNK = (MAX_LINE - 4096) // 4 * 3   # bundle bytes per export_run answer: their base64 fits one frame
+# what an identity granted export_run may also call: calls that write nothing, so no agent's identity downloads runs
+EXPORT_READS = frozenset({"status", "read", "approval_get", "approval_list", "grant_list", "incident_list",
+                          "incident_show"})
 # export_run: bundles kept whole in memory for their later chunks, in all and per tenant; one unused for EXPORT_IDLE_S
 # may be dropped for another tenant's. Bundles built at once, one per tenant; builds per identity and per tenant.
 # lean: fixed sizes and rates; make them config keys, or spill bundles to disk, once tenants download large runs at once
@@ -940,10 +943,12 @@ class SignerService:
                              "an agent's identity can't operate its own containment; give operators an identity of "
                              f"their own ({wiki_url('docs/incidents.md')})")
         exporters = [k for k, m in authorize.items() if "export_run" in m]
-        both = sorted(k for k in exporters if "register_run" in authorize[k])
+        both = [f"{k} ({', '.join(sorted(w))})" for k in sorted(exporters)
+                if (w := set(authorize[k]) - EXPORT_READS - {"export_run"})]
         if both:
-            raise ValueError(f"authorize grants {', '.join(both)} both register_run and export_run: an agent's identity "
-                             "would download every run of its tenant and the policy they cite; give the people who "
+            raise ValueError(f"authorize grants export_run with calls that write: {'; '.join(both)}. An identity an "
+                             "agent writes through would download every run of its tenant and the policy they cite; "
+                             f"export_run goes with {', '.join(sorted(EXPORT_READS))} only, so give the people who "
                              f"download runs an identity of their own ({wiki_url('docs/remote-ingest.md')})")
         # a token or OIDC identity can carry its tenant (a token's --tenant, an issuer's tenant claim): checked per call
         loose = sorted(k for k in exporters if k.split(":", 1)[0] not in ("token", "oidc", "person", "group")
@@ -1267,16 +1272,21 @@ class SignerService:
         if self._is_agent(identity) and method not in AGENT_METHODS:   # whatever its groups or prefixes are granted
             raise RPCError("forbidden", f"{subject(identity)[:256]} is an agent approver: it is not authorized for "
                                         f"{method}")
-        found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
-        granted = {m for g in found for m in g}
-        if not found and not self._is_agent(identity):   # unconfigured: a uid or the dev token (scoped by DevToken)
-            granted = DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
-        if identity.scheme == "box":   # a box's agent channel, whatever the config says
-            granted = CHANNEL_METHODS
-        elif method == "channel_open":   # a Box daemon's, never an authorize grant
+        granted = self._granted(identity)
+        if method == "channel_open" and identity.scheme != "box":   # a Box daemon's, never an authorize grant
             granted = {method} if subject(identity) in self.box_daemons else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
+
+    def _granted(self, identity):
+        """What `identity` may call: its `authorize` entries together; unconfigured, a uid's or the dev token's
+        defaults (DevToken scopes the token); a box's agent channel, its methods whatever the config says."""
+        if identity.scheme == "box":
+            return CHANNEL_METHODS
+        found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
+        if not found and not self._is_agent(identity):
+            return DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else frozenset()
+        return {m for g in found for m in g}
 
     def _is_agent(self, identity):
         return subject(identity) in self._agents
@@ -4672,8 +4682,10 @@ class SignerService:
         if key not in self.log.runs:
             raise RPCError("unknown_run", req["run_id"])
         self.quotas.take_event(identity)
+        # read before the lock (a query on Postgres), and only for a new download: a chunk names its bundle
+        latest = None if digest else (self.log.storage.checkpoint_latest() or (0,))[0]
         with self._exports_lock:   # never held while a bundle is built
-            latest, kept = (self.log.storage.checkpoint_latest() or (0,))[0], self._exports.get(key)
+            kept = self._exports.get(key)
             if digest is not None and (kept is None or kept["sha"] != digest):
                 raise RPCError("conflict", f"the signer no longer holds that bundle of run {key[1]} (a newer checkpoint, "
                                            "or unused too long): download it again from its first chunk")
@@ -4681,8 +4693,9 @@ class SignerService:
                 kept["used"] = time.monotonic()
                 self._exports.move_to_end(key)
             elif key[0] in self._building or len(self._building) >= EXPORT_BUILDS:
-                raise RPCError("unavailable", "the signer is building another bundle" + (
-                    " of your tenant" if key[0] in self._building else "s") + ": ask again", retry_after_ms=EXPORT_RETRY_MS)
+                raise RPCError("unavailable", "the signer is building " + (
+                    "another bundle of your tenant" if key[0] in self._building else
+                    "as many bundles as it builds at once") + ": ask again", retry_after_ms=EXPORT_RETRY_MS)
             else:
                 for spend in (0, 1):   # check both, then spend both
                     for quotas, bucket, whose in zip(self._export_quotas, (quota_key(identity), key[0]),
@@ -4707,15 +4720,13 @@ class SignerService:
 
     def _export_tenant(self, identity):
         """The tenant export_run reads: the caller's own, as `tenants` or its token or OIDC issuer names it, never the
-        default one. An identity its keys together also grant register_run (the startup check sees each `authorize`
-        entry alone) is an agent's: refused."""
-        try:
-            self._grant(identity, "register_run")
-        except RPCError:
-            pass
-        else:
-            raise RPCError("forbidden", f"{subject(identity)[:256]} is also granted register_run: runs are downloaded by "
-                                        "an identity that runs no agent")
+        default one. An identity its keys together also grant a call that writes (beyond EXPORT_READS: the startup
+        check sees each `authorize` entry alone) may be one an agent writes through: refused."""
+        writes = self._granted(identity) - EXPORT_READS - {"export_run"}
+        if writes:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is also granted calls that write "
+                                        f"({', '.join(sorted(writes))[:512]}): runs are downloaded by an identity that "
+                                        "only reads")
         tenant = self._own_tenant(identity)
         if tenant is None:
             raise RPCError("forbidden", f"{subject(identity)[:256]} has no tenant of its own: export_run needs one, from "
@@ -4725,24 +4736,26 @@ class SignerService:
     def _keep(self, key, entry):
         """Keep bundle `entry` of run `key` for its later chunks (under _exports_lock), within EXPORT_TENANT_BYTES for
         its tenant and EXPORT_KEPT_BYTES in all: bundles unused for EXPORT_IDLE_S go first, then the tenant's own,
-        least recently used first. Another tenant's bundle in use is never dropped: then unavailable."""
+        least recently used first. Another tenant's bundle in use is never dropped: when those leave no room,
+        unavailable, with nothing dropped."""
         size = len(entry["data"])
         if size > EXPORT_TENANT_BYTES:
             raise RPCError("quota_exceeded", f"the bundle of run {key[1]} is {size >> 20} MiB, over the "
                                              f"{EXPORT_TENANT_BYTES >> 20} MiB a tenant's downloads may hold: ask the "
                                              "signer's operator for it")
-        self._exports.pop(key, None)
-        for k in [k for k, e in self._exports.items() if entry["used"] - e["used"] > EXPORT_IDLE_S]:
-            del self._exports[k]
+        idle = [k for k, e in self._exports.items() if entry["used"] - e["used"] > EXPORT_IDLE_S]
+        if sum(len(e["data"]) for k, e in self._exports.items() if k[0] != key[0] and k not in idle) + size > \
+                EXPORT_KEPT_BYTES:
+            raise RPCError("unavailable", "the signer holds as many bundles as it keeps, for other tenants' downloads: "
+                                          "ask again", retry_after_ms=EXPORT_RETRY_MS)
+        for k in [*idle, key]:
+            self._exports.pop(k, None)
 
         def held(tenant=None):
             return sum(len(e["data"]) for k, e in self._exports.items() if tenant in (None, k[0]))
         mine = [k for k in self._exports if k[0] == key[0]]
-        while mine and (held(key[0]) + size > EXPORT_TENANT_BYTES or held() + size > EXPORT_KEPT_BYTES):
+        while held(key[0]) + size > EXPORT_TENANT_BYTES or held() + size > EXPORT_KEPT_BYTES:
             del self._exports[mine.pop(0)]
-        if held() + size > EXPORT_KEPT_BYTES:
-            raise RPCError("unavailable", "the signer holds as many bundles as it keeps, for other tenants' downloads: "
-                                          "ask again", retry_after_ms=EXPORT_RETRY_MS)
         self._exports[key] = entry
 
     def _export_bytes(self, key):

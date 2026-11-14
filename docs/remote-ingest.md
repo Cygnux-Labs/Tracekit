@@ -89,9 +89,11 @@ tracekit verify run.tkb --trust trust.json   # the trust config the signer's ope
   signer's default tenant. An identity with neither is refused, and the signer doesn't start when `authorize` grants
   `export_run` to an identity that can carry no tenant and `tenants` names none. Another tenant's run is refused as
   `unknown_run`, as a run that doesn't exist is.
-- No identity has `export_run` unless `authorize` lists it, the dev signer's included, and never with `register_run`:
-  the signer doesn't start with both in one entry, and refuses an identity its entries grant both. An identity with
-  it can download any run of its tenant.
+- No identity has `export_run` unless `authorize` lists it, the dev signer's included, and only with calls that write
+  nothing (`status`, `read`, `approval_get`, `approval_list`, `grant_list`, `incident_list`, `incident_show`), so no
+  identity an agent writes through downloads runs: the signer doesn't start when one entry grants it with any other
+  call, and refuses an identity its entries together grant one. An identity with it can download any run of its
+  tenant.
 - The signer builds a bundle at a time per tenant, two at once in all, at a limited rate per identity and per tenant,
   and keeps the bundles it built in memory for their later chunks, with a share per tenant. When it is busy it answers
   `unavailable` with a time to ask again, which the client follows until its timeout.

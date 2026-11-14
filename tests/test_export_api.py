@@ -224,6 +224,21 @@ class TestExportRun(unittest.TestCase):
             self.assertEqual(self.export(self.A, mine, digest=first["digest"])["data"], first["data"])
         self.assertEqual(built.call_count, 0)
 
+    def test_the_latest_note_is_read_outside_the_lock_and_never_for_a_chunk(self):
+        """It was read under the export lock on every call: on Postgres, a query every chunk waited behind."""
+        mine = self.agent_run("agent-a", "acme")
+        self.settle()
+        real, held = self.s.log.storage.checkpoint_latest, []
+
+        def latest(*a):
+            if threading.current_thread() is threading.main_thread():   # not the signer's own checkpoint thread
+                held.append(self.s._exports_lock.locked())
+            return real(*a)
+        with mock.patch.object(self.s.log.storage, "checkpoint_latest", side_effect=latest):
+            first = self.export(self.A, mine)
+            self.export(self.A, mine, digest=first["digest"], offset=0)
+        self.assertEqual(held, [False])
+
     def test_a_build_waits_for_no_other(self):
         """One lock was held while any bundle was built: every other tenant's export queued behind it."""
         mine, other = self.agent_run("agent-a", "acme"), self.agent_run("agent-a", "acme")
@@ -243,9 +258,12 @@ class TestExportRun(unittest.TestCase):
             t0 = time.monotonic()
             self.assertGreater(self.export(self.B, theirs)["size"], 0)   # another tenant's builds at once
             for run_id in (mine, other):   # the same tenant's: told to ask again, never queued
-                self.assertEqual(self.refused("unavailable", self.A2, run_id).retry_after_ms, svc.EXPORT_RETRY_MS)
+                e = self.refused("unavailable", self.A2, run_id)
+                self.assertEqual((e.message, e.retry_after_ms), ("the signer is building another bundle of your "
+                                                                 "tenant: ask again", svc.EXPORT_RETRY_MS))
             with mock.patch.object(svc, "EXPORT_BUILDS", 1):   # past the builds at once: the same
-                self.refused("unavailable", self.B, more)
+                self.assertEqual(self.refused("unavailable", self.B, more).message,
+                                 "the signer is building as many bundles as it builds at once: ask again")
             self.assertLess(time.monotonic() - t0, 5)
             release.set()
             t.join(10)
@@ -275,6 +293,7 @@ class TestExportRun(unittest.TestCase):
             self.export(self.A, runs[3], digest=digests[3])
             with mock.patch.object(svc, "EXPORT_KEPT_BYTES", int(1.5 * size)):   # full of beta.co's download in use
                 self.refused("unavailable", self.A, runs[4])
+                self.export(self.A, runs[3], digest=digests[3])   # nothing of acme's dropped for a refused one
                 self.export(self.B, theirs, digest=begun["digest"])
                 with mock.patch.object(svc, "EXPORT_IDLE_S", -1):   # unused that long: it may go
                     self.export(self.A, runs[4])
@@ -287,17 +306,28 @@ class TestExportRun(unittest.TestCase):
         self.settle()
         e = self.refused("forbidden", CallerIdentity("token", "no-tenant", True), mine)   # not the default tenant's runs
         self.assertIn("no tenant of its own", e.message)
-        # an OIDC person's keys together: export_run as a person, register_run as a group member
-        self.s.authorize.update({"person:alice": ["export_run"], "group:corp/agents": ["register_run"]})
+        # an OIDC person's keys together: export_run as a person, a call that writes as a group member (a run delegated
+        # to it, an OTLP importer: not register_run), refused; calls that only read, accepted
         alice = CallerIdentity("oidc", "corp/alice", True, {"person": "alice", "groups": ["corp/agents"],
                                                             "tenant": "acme"})
-        self.assertIn("also granted register_run", self.refused("forbidden", alice, mine).message)
-        for authorize, why in (({"token:agent-x": ["register_run", "export_run"]}, "both register_run and export_run"),
+        self.s.authorize["person:alice"] = ["export_run"]
+        for writes in (["decide", "complete", "model_event"], ["otlp_import"], ["register_run"]):
+            self.s.authorize["group:corp/agents"] = writes
+            with self.subTest(writes):
+                self.assertIn(f"also granted calls that write ({', '.join(sorted(writes))})",
+                              self.refused("forbidden", alice, mine).message)
+        self.s.authorize["group:corp/agents"] = ["status", "read", "approval_list"]
+        self.assertGreater(self.export(alice, mine)["size"], 0)
+        for authorize, why in (({"token:sub": ["decide", "complete", "model_event", "export_run"]},
+                                r"calls that write: token:sub \(complete, decide, model_event\)"),
+                               ({"token:app": ["otlp_import", "export_run"]}, r"token:app \(otlp_import\)"),
+                               ({"token:agent-x": ["register_run", "export_run"]}, r"token:agent-x \(register_run\)"),
                                ({"uid:1001": ["export_run"]}, "gives no tenant"),
                                ({"mtls:spiffe://acme/*": ["export_run"]}, "gives no tenant")):
             with self.subTest(authorize), self.assertRaisesRegex(ValueError, why):   # at startup
                 svc.SignerService(ts.tmpdir(self), authorize=authorize)
-        svc.SignerService(ts.tmpdir(self), authorize={"uid:1001": ["export_run"]}, tenants={"uid:1001": "acme"}).close()
+        svc.SignerService(ts.tmpdir(self), tenants={"uid:1001": "acme"}, authorize={
+            "uid:1001": ["export_run", *sorted(svc.EXPORT_READS)]}).close()   # every call that only reads
 
     def test_the_client_holds_no_more_than_the_size_named(self):
         c = Client(self.url, timeout=5, token_file=self.token("owner-a", "acme"))
