@@ -435,7 +435,7 @@ DEFAULT_GRANTS = frozenset({
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding", "review_finding", "constraint_add", "pcm_sign", "pcm_grant", "pcm_delegate",
-    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke"})
+    "pcm_evidence", "grant_issue", "grant_list", "grant_revoke", "call_state"})
 OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
@@ -3076,6 +3076,9 @@ class SignerService:
                                                      **({"via": holder[0]} if gw else {})},
                            tool_call_id=tcid, attempt=attempt, **top)
             written.append(seq)
+            latest = run["calls"].get(tcid)
+            if latest and latest["attempt"] == attempt:   # what call_state answers
+                tx.set(latest, "ended", [seq, req["status"] == "ok"])
             comparable = req["status"] == "ok" and "result" in req and "error" not in req   # no result: nothing to compare
             tx.set(run["results"], tcid, run["results"].get(tcid, [])[1 - RESULTS_PER_CALL:] + [
                 [did, output["hash"], comparable, output["redacted"], None]])
@@ -3784,6 +3787,8 @@ class SignerService:
                     "approved_commitment": a["commitment"],
                     "args_commitment": self._commit("approval.binding_mismatch:" + sid, digest), "salt_id": sid},
                         source="signer", **top)
+                if call and call["attempt"] == attempt:   # what call_state answers
+                    tx.set(call, "refused", ["TK-APPROVAL-MISMATCH"])
                 return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid,
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":
@@ -3808,6 +3813,8 @@ class SignerService:
                     tx.set(a, "used_by", [tcid, attempt, call["decision_id"]])
                 # under this call's tool_call_id; the approval.request it names has the earlier attempt's
                 tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                if call and call["attempt"] == attempt and call.get("refused"):   # a refused consume before it
+                    tx.set(call, "refused", None)
                 rec = run.get("rec")
                 if rec is not None:   # an approved call explains what it was decided for (reconcile.explained)
                     if tcid in rec["l2"]:
@@ -3819,6 +3826,8 @@ class SignerService:
             if a is not None:
                 data["approval_id"] = aid
             tx.emit(run, "approval.refused", data, source="signer", **top)
+            if call and call["attempt"] == attempt:   # what call_state answers
+                tx.set(call, "refused", [why[0]])
             return {"ok": False, **{k: v for k, v in data.items() if k != "tool_use_id"}}
         out = self.log.submit(identity, "approval_consume", req, fn, key)
         if "args" in out:   # T2: the approved copy; a retry, which the cache answers, opened the same commitment
@@ -4671,6 +4680,38 @@ class SignerService:
         except (OSError, StorageUnavailable) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         return {"events": events, "next_seq": next_seq}
+
+    def _call_state(self, identity, req):
+        """What the signer recorded of the latest attempt of a call of the run: its decision, its approval and whether
+        this attempt consumed it, a refused consume, and its result; {} for a call never decided. The LangChain gate
+        reads it to go on with a ToolNode's calls when the node runs again after a resume, in any process. Writes
+        nothing."""
+        key, tcid = self._authorize(identity, req), req["tool_call_id"]
+
+        def state(tx):
+            call = self.log.runs[key].get("calls", {}).get(tcid)
+            if call is None:
+                return {}
+            attempt = call["attempt"]
+            out = {"attempt": attempt, "decision": "allow" if call["decision"] == "flag" else call["decision"],
+                   "decision_id": call["decision_id"], "rule_ids": call["rule_ids"]}
+            if call["decision"] in ("deny", "ask") and (why := self._reasons(call["rule_ids"])[:1024]):
+                out["reason"] = why
+            if call.get("tool") and self.policy.untrusted_results(call["tool"]):
+                out["send_result"] = True
+            if "args_digest" in req:
+                out["same_args"] = self._same(call, req["args_digest"])
+            aid = self.log.approval_index.get((*key, tcid, attempt))
+            a = self.log.approvals.get(aid)
+            if a is not None:
+                out.update(approval_id=aid, approval="requested" if _waiting(a, time.time()) else a["state"],
+                           consumed=a["state"] == "consumed" and ran(a)[:2] == (tcid, attempt))
+            if call.get("refused"):
+                out["refused"] = call["refused"]
+            if call.get("ended"):
+                out["result"] = {"run_seq": call["ended"][0], "ok": call["ended"][1]}
+            return out
+        return self.log.write(state)
 
     def _export_run(self, identity, req):
         """Bytes `offset` on of the .tkb bundle of run `run_id` of the caller's tenant: with `digest`, of that bundle,

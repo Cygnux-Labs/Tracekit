@@ -1,6 +1,8 @@
-"""The signer RPC contract, version 23: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 24: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 23 adds `export_run` (docs/remote-ingest.md): a run
+Frozen: a change to any schema here is a new RPC_VERSION. Version 24 adds `call_state` (a read under the run token):
+what the signer recorded of a call's latest attempt, which the LangChain gate reads to go on with a ToolNode's calls
+after a resume (tracekit.integrations.langchain). Version 23 adds `export_run` (docs/remote-ingest.md): a run
 of the caller's tenant as the .tkb bundle the operator's `tracekit export --v2` writes, in chunks that each fit a frame.
 Version 22 adds intent grants (docs/intent-grants.md):
 `grant_issue` (a person approves a kind of costly call once, within limits, for one run), `grant_list` and
@@ -40,7 +42,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 23
+RPC_VERSION = 24
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -481,6 +483,10 @@ REQUESTS = {
     # a run of the caller's tenant as its .tkb bundle (version 23; an `authorize` grant, never a default), from byte
     # `offset` on: with `digest`, of that bundle (a download's later chunks), else of its bundle at the latest checkpoint
     "export_run": _obj(["run_id"], run_id=ID, offset=SEQ, digest=DIGEST),
+    # what the signer recorded of the call's latest attempt (version 24); `args_digest` (sha256(JCS({tool, args})))
+    # asks whether those are the arguments it was decided for
+    "call_state": _obj(["run_id", "run_token", "tool_call_id"], run_id=ID, run_token=TOKEN, tool_call_id=ID,
+                       args_digest=DIGEST),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -612,6 +618,14 @@ RESPONSES = {
     # frame (the transport's 1 MiB)
     "export_run": _obj(["digest", "size", "offset", "data"], digest=DIGEST, size=SEQ, offset=SEQ,
                        data=_str(1 << 20, pattern=r"^[A-Za-z0-9+/]*={0,2}" + _END)),
+    # {} when the run never decided the call; else its latest attempt's decision (as decide answered it), whether
+    # `args_digest` opens it (`same_args`), its approval and whether this attempt consumed it, a refused consume's rule
+    # ids, and its tool.result
+    "call_state": _obj([], attempt=SEQ, decision={"enum": ["allow", "deny", "ask"]}, decision_id=ID,
+                       rule_ids=RULE_IDS, reason=REASON, send_result={"const": True},
+                       same_args={"type": "boolean"}, approval_id=ID, approval=APPROVAL_STATE,
+                       consumed={"type": "boolean"}, refused=RULE_IDS,
+                       result=_obj(["run_seq", "ok"], run_seq=SEQ, ok={"type": "boolean"})),
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -694,3 +708,4 @@ class SignerAPI(Protocol):
     def grant_list(self, req: dict) -> dict: ...
     def grant_revoke(self, req: dict) -> dict: ...
     def export_run(self, req: dict) -> dict: ...
+    def call_state(self, req: dict) -> dict: ...

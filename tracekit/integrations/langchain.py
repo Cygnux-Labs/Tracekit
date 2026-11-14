@@ -7,9 +7,13 @@
                                                         fail_modes=run.get("fail_modes"))])
 
 `deny` replaces the call with an error ToolMessage and the run goes on. `ask` pauses the run with LangGraph
-`interrupt()`; resume it with `Command(resume={"approval_id": ...})`. Every call that is not denied runs only after the
-signer's `approval_consume` agrees, so an approval is checked by the signer, never by the saved state; an approval with
-a T2 executor runs the arguments the consume returns. `ask` needs a checkpointer: without one the call is denied.
+`interrupt()`; resume it with `Command(resume={"approval_id": ...})`. The pause comes first in every pass of its node,
+so a tool's own interrupt() gets the person's answer. A ToolNode with several calls of one message plans them together
+first and pauses once when any asks (the payload's `approvals` lists them); a call that ended isn't run again, and in
+another process the gate reads what each did from the signer (call_state). Every call that is not denied runs only
+after the signer's `approval_consume` agrees, once, so an approval is checked by the signer, never by the saved state;
+an approval with a T2 executor runs the arguments the consume returns. `ask` needs a checkpointer: without one the call
+is denied.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open` for the tool's class (as the signer's default policy classes it), else it is refused. Any other failure to
@@ -32,6 +36,7 @@ A response that can't be recorded only warns. A `tracekit_tool_node` graph has n
 recorded by `tracekit.instrument()` or the LLM gateway.
 """
 import asyncio
+import contextvars
 import copy
 import hashlib
 import itertools
@@ -45,6 +50,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
 from langchain_core.runnables.fallbacks import RunnableWithFallbacks
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph._internal._constants import CONFIG_KEY_SCRATCHPAD
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.constants import CONFIG_KEY_CHECKPOINTER
 from langgraph.errors import GraphBubbleUp
@@ -60,6 +66,12 @@ from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_fi
 from tracekit.signer.rpc_schema import RPCError
 
 
+# the held pass a ToolNode task runs (TracekitMiddleware._pass): `ns`, the task's checkpoint namespace (a tool may run a
+# graph of its own), `plans`, {tool_call_id: its plan}; under ainvoke, `node`, `left`, the node's calls not ended yet,
+# and `done`, set once none is (pass_arun_one)
+_PASS = contextvars.ContextVar("tracekit_tool_node_pass", default=None)
+
+
 class TracekitMiddleware(AgentMiddleware):
     def __init__(self, signer, run_id, run_token, fail_modes=None):
         """`signer` is any `SignerAPI`; `run_id`/`run_token` (and `fail_modes`) come from its `register_run`."""
@@ -71,6 +83,12 @@ class TracekitMiddleware(AgentMiddleware):
         self.stream, self._seq, self._lock = "langchain-" + uuid.uuid4().hex, itertools.count(), threading.Lock()
         # lean: one entry per executed tool call for the middleware's life; prune at run end if agents run for days
         self._attempts = {}   # tool_call_id -> the attempt its next execution is (a retry runs the same call again)
+        # (checkpoint_ns of its node task, tool_call_id) -> a call's plan (_new) while its task may run again: each
+        # call of a held pass until its node ends, a single call whose tool paused the run until it goes on. What this
+        # process did; a resume in another process reads what the signer recorded (_recorded)
+        # lean: a task never run again (a thread left paused, a node that raised for good) keeps its entries for the
+        # middleware's life; drop them by age if agents leave many threads that way
+        self._plans = {}
         self.said = said.Said(lambda **f: self._send("model_event", **f), lambda: signer.status({}))
 
     def _send(self, method, **kw):
@@ -80,8 +98,8 @@ class TracekitMiddleware(AgentMiddleware):
             return getattr(self.signer, method)({
                 "request_id": uuid.uuid4().hex, **self.run, "stream": self.stream, "client_seq": next(self._seq), **kw})
 
-    def _event(self, method, call, **kw):
-        return self._send(method, tool_call_id=call["id"], attempt=self._attempts.get(call["id"], 0), **kw)
+    def _event(self, method, call, attempt, **kw):
+        return self._send(method, tool_call_id=call["id"], attempt=attempt, **kw)
 
     def wrap_model_call(self, request, handler):
         out = handler(request)
@@ -93,50 +111,177 @@ class TracekitMiddleware(AgentMiddleware):
         await asyncio.to_thread(self.said, *_said(request, out))
         return out
 
-    def _gate(self, request):
-        """(the error ToolMessage that replaces a refused call or None when it may run, the decision or None)"""
-        call, hint = request.tool_call, None
-        attempt = self._attempts.get(call["id"], 0)
+    def _new(self, call, config, attempt):
+        """A call's plan, decided now: `decide`, and `approval_request` when it asks. A plan's `state`: `decide` (the
+        signer's approval_consume comes before it runs), `run` (consumed, or unrecorded: the signer unreachable and the
+        run failing open), `paused` (its tool paused the run after its consume: it goes on, consumed once), `open`
+        (consumed and not ended, as the signer recorded it: paused, or cut off), `done` (`out` is what the model reads),
+        `raised` (its tool raised: a retry runs it as a new attempt)."""
+        digest = event_hash({"tool": call["name"], "args": call["args"]})
+        p = {"attempt": attempt, "d": None, "digest": digest, "entry": None, "state": "decide", "out": None}
         self.said.decided(call["id"])   # the call its recorded response left for now
         try:   # LangChain hands over JSON-decoded args, never the model's raw string
-            d = self._event("decide", call, tool=call["name"], args_source="parsed", args=call["args"])
+            d = self._event("decide", call, attempt, tool=call["name"], args_source="parsed", args=call["args"])
         except SignerUnavailable as e:   # the run's fail mode for the tool's class
-            open_ = fail_open(self.fail_modes, _tool_class(call["name"]))
-            return (None if open_ else self._refusal(call, f"signer unavailable: {e}")), None
+            if fail_open(self.fail_modes, _tool_class(call["name"])):
+                p["state"] = "run"
+                return p
+            return _done(p, self._refusal(call, f"signer unavailable: {e}"))
         except RPCError as e:
-            return self._refusal(call, f"signer refused the call: {e}"), None
+            return _done(p, self._refusal(call, f"signer refused the call: {e}"))
+        p["d"], d["args_digest"] = d, digest
         if d["decision"] == "deny":
-            return self._refusal(call, refusal(d) or "deny"), d
-        d["args_digest"] = event_hash({"tool": call["name"], "args": call["args"]})
-        try:
-            if d["decision"] == "ask":
-                if request.runtime.config["configurable"].get(CONFIG_KEY_CHECKPOINTER) is None:
-                    return self._refusal(call, "approval required, and the agent has no checkpointer to wait for it"), d
-                # the signer keeps one approval per call attempt, so the re-run on resume (even in another process)
-                # gets the same approval back
+            return _done(p, self._refusal(call, refusal(d) or "deny"))
+        if d["decision"] == "ask":
+            if config["configurable"].get(CONFIG_KEY_CHECKPOINTER) is None:
+                why = "approval required, and the agent has no checkpointer to wait for it"
+                return _done(p, self._refusal(call, why))
+            try:   # the signer keeps one approval per call attempt: the re-run on resume, in any process, gets it back
                 apr = self.signer.approval_request({"request_id": uuid.uuid4().hex, **self.run,
                                                     "tool_call_id": call["id"], "attempt": attempt})
-                resume = interrupt({"tracekit": {"approval_id": apr["approval_id"], "tool_call_id": call["id"],
-                                                 "tool": call["name"], "rule_ids": d["rule_ids"]}})
-                hint = resume.get("approval_id") if isinstance(resume, dict) else None
-            # every call, allowed or approved: the saved state can't vouch that no approval is needed
+            except (RPCError, SignerUnavailable) as e:
+                return _done(p, self._refusal(call, str(e)))
+            p["entry"] = _entry(call, d, apr["approval_id"])
+        return p
+
+    def _consume(self, call, p, hint):
+        """approval_consume, the signer's last word before the call runs (every call, allowed or approved: the saved
+        state can't vouch that no approval is needed): `p` runs, or is done with the refusal. An approval with a T2
+        executor runs the arguments the consume returns."""
+        try:
             c = self.signer.approval_consume({"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"],
-                                              "attempt": attempt, "tool": call["name"], "args_source": "parsed",
+                                              "attempt": p["attempt"], "tool": call["name"], "args_source": "parsed",
                                               "args": call["args"], **({"approval_id_hint": hint} if hint else {})})
         except (RPCError, SignerUnavailable) as e:   # e.g. a hint that is not an id at all
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
-        if c["ok"]:
-            if "args" in c:   # T2: the signer's copy is what runs
-                d["args"], d["args_digest"] = c["args"], event_hash({"tool": call["name"], "args": c["args"]})
-            return None, d
-        return self._refusal(call, refusal(c, c.get("approval_id"))), d
+        if not c["ok"]:
+            return _done(p, self._refusal(call, refusal(c, c.get("approval_id"))))
+        if "args" in c:   # T2: the signer's copy is what runs
+            p["d"]["args"], p["d"]["args_digest"] = c["args"], event_hash({"tool": call["name"], "args": c["args"]})
+        p["state"] = "run"
+        return p
+
+    def _recorded(self, call):
+        """The plan of a call as the signer recorded its latest attempt (call_state), for its node task run again after
+        a resume, in this process or another; None when the signer never decided it, can't say, or the call raised (a
+        retry runs it as a new attempt). A result comes back as a stand-in: the signer keeps a commitment to it, not
+        the result."""
+        digest = event_hash({"tool": call["name"], "args": call["args"]})
+        try:
+            s = self.signer.call_state({**self.run, "tool_call_id": call["id"], "args_digest": digest})
+        except (RPCError, SignerUnavailable):   # decided again (_new), and judged by the signer then
+            return None
+        if "attempt" not in s:
+            return None
+        if "result" in s and not s["result"]["ok"]:
+            self._attempts[call["id"]] = s["attempt"] + 1
+            return None
+        d = {k: s[k] for k in ("decision", "decision_id", "rule_ids", "reason", "send_result") if k in s}
+        p = {"attempt": s["attempt"], "d": dict(d, args_digest=digest), "digest": digest, "state": "decide",
+             "out": None, "entry": _entry(call, d, s["approval_id"]) if "approval_id" in s else None}
+        if "result" in s:
+            return _done(p, ToolMessage(f"ran; its result is recorded at run_seq {s['result']['run_seq']}",
+                                        tool_call_id=call["id"], name=call["name"]))
+        if d["decision"] == "deny":
+            return _done(p, self._refusal(call, refusal(d) or "deny"))
+        if "refused" in s:
+            return _done(p, self._refusal(call, refusal({"rule_ids": s["refused"]}, s.get("approval_id"))))
+        if s.get("consumed") and s.get("same_args"):
+            p["state"] = "open"
+        return p
+
+    @staticmethod
+    def _opened(plans, answered, asked):
+        """A call consumed and not ended (`open`) goes on, consumed once, when the run answered a tool's own pause since
+        (`answered`, the task's answers, counts more than the gate's pause, when any call `asked`): its tool paused the
+        run. Else it was cut off, and the signer refuses it (approval_consume: TK-APPROVAL-CONSUMED)."""
+        for p in plans:
+            if p["state"] == "open":
+                p["state"] = "paused" if answered > bool(asked) else "decide"
+
+    @staticmethod
+    def _pause(entries):
+        """interrupt() for the approvals of `entries`, the first one's at the top and all in `approvals`."""
+        return interrupt({"tracekit": {**entries[0], "approvals": entries}})
+
+    def _pass(self, calls, config):
+        """{tool_call_id: plan} of a held pass: a ToolNode running several calls of one model message in one node task,
+        which LangGraph runs again from its start on each resume (and RetryPolicy retry) and whose interrupt() calls it
+        pairs with resume values by the order they are reached. Each call's plan is established first: what this
+        process planned, else what the signer recorded (a resume, maybe in another process), else decided now. Then the
+        pass pauses once, before any tool runs, when any call asked, answered or not, so a tool's own interrupt() comes
+        after it and gets the person's answer. Then each call allowed or approved is consumed (approval_consume, under
+        its own approval) and one refused is done. A call that ended isn't decided, consumed or run again."""
+        ns, answered, plans = _ns(config), _answered(config), {}
+        for call in calls:
+            p = self._plans.get((ns, call["id"]))
+            if p is None and answered:
+                p = self._recorded(call)
+            if p is None or p["state"] == "raised":
+                p = self._new(call, config, self._attempts.get(call["id"], 0))
+            plans[call["id"]] = self._plans[ns, call["id"]] = p
+        asked = [p["entry"] for p in plans.values() if p["entry"]]
+        self._opened(plans.values(), answered, asked)
+        if asked:
+            self._pause(asked)   # raises until the run resumes; the resume value is not used
+        for call in calls:
+            if plans[call["id"]]["state"] == "decide":
+                p = plans[call["id"]]
+                self._consume(call, p, p["entry"] and p["entry"]["approval_id"])
+        return plans
+
+    def _forget(self, config):
+        """The node task of `config` ended: none of its calls runs again."""
+        ns = _ns(config)
+        for key in [k for k in list(self._plans) if k[0] == ns]:
+            del self._plans[key]
+
+    def _gate(self, request):
+        """(the ToolMessage that replaces the call, None when it may run; its plan). A call of a held pass has its plan
+        (_pass). A single call is decided, paused for when it asks, and consumed in each pass of its node, as the
+        resume hint names its approval; one whose tool paused the run after its consume goes on, consumed once."""
+        call, config = request.tool_call, request.runtime.config
+        held = _PASS.get()
+        if held is not None and held["ns"] == _ns(config) and call["id"] in held["plans"]:
+            p = held["plans"][call["id"]]
+            if p["state"] != "done" and event_hash({"tool": call["name"], "args": call["args"]}) != p["digest"]:
+                _done(p, self._refusal(call, "the call's arguments changed after the decision"))   # an outer wrapper's
+            return p["out"], p
+        key, answered = (_ns(config), call["id"]), _answered(config)
+        p = self._plans.pop(key, None)
+        if p is None and answered:
+            p = self._recorded(call)
+            if p is not None:
+                self._opened([p], answered, [p["entry"]] if p["entry"] else [])
+                p = p if p["state"] == "paused" else None
+        if p is None:
+            p = self._new(call, config, self._attempts.get(call["id"], 0))
+        hint = None
+        if p["entry"] is not None:   # in every pass of its node, so a tool's own interrupt() comes after it
+            resume = self._pause([p["entry"]])
+            hint = resume.get("approval_id") if isinstance(resume, dict) else None
+        if p["state"] == "decide":
+            self._consume(call, p, hint)
+        return p["out"], p
 
     def _refusal(self, call, why):
         return ToolMessage(f"Tool call blocked by policy: {why}", tool_call_id=call["id"], name=call["name"],
                            status="error")
 
-    def _complete(self, call, decision, out=None, exc=None):
+    def _paused(self, request, p):
+        """The call's tool paused the run (interrupt(), a handoff): it goes on when its node runs again, an approved
+        call under its one consume, an allowed one consumed again."""
+        if p["d"] is not None:
+            p["state"] = "decide" if p["d"]["decision"] == "allow" else "paused"
+        self._plans[_ns(request.runtime.config), request.tool_call["id"]] = p
+
+    def _complete(self, call, p, out=None, exc=None):
         """Records the outcome; never raises, so the tool's result or exception reaches the framework unchanged."""
+        if exc is None:
+            _done(p, out)
+        else:
+            p["state"] = "raised"
+        decision = p["d"]
         if decision is None:   # ran unrecorded: the signer was unreachable and the run fails open
             return
         fields = {"status": "ok"}
@@ -149,58 +294,83 @@ class TracekitMiddleware(AgentMiddleware):
         if event_hash({"tool": call["name"], "args": call["args"]}) != decision["args_digest"]:
             fields.update(status="error", error="the call's arguments changed after the decision")
         try:
-            self._event("complete", call, decision_id=decision["decision_id"], args_digest=decision["args_digest"],
-                        **fields)
+            self._event("complete", call, p["attempt"], decision_id=decision["decision_id"],
+                        args_digest=decision["args_digest"], **fields)
         except Exception as e:
             warnings.warn(f"tracekit: outcome of tool call {call['id']} not recorded: {e}", stacklevel=2)
-        self._attempts[call["id"]] = self._attempts.get(call["id"], 0) + 1
+        self._attempts[call["id"]] = p["attempt"] + 1
 
     # lean: wrap_tool_call's signer calls block; awrap_tool_call runs them in a worker thread (issue #680)
     def wrap_tool_call(self, request, handler):
-        if _executor(request):   # the executor decides it, under the model's id for the call
+        if _executor(request.tool):   # the executor decides it, under the model's id for the call
             self.said.decided(request.tool_call["id"])
             token = CALL_ID.set(request.tool_call["id"])
             try:
                 return handler(request)
             finally:
                 CALL_ID.reset(token)
-        blocked, d = self._gate(request)
+        blocked, p = self._gate(request)
         if blocked is not None:
             return blocked
-        if d is not None and "args" in d:
-            request = request.override(tool_call={**request.tool_call, "args": d["args"]})
+        if p["d"] is not None and "args" in p["d"]:
+            request = request.override(tool_call={**request.tool_call, "args": p["d"]["args"]})
         try:
             out = handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
+            self._paused(request, p)
             raise
         except Exception as e:
-            self._complete(request.tool_call, d, exc=e)
+            self._complete(request.tool_call, p, exc=e)
             raise
-        self._complete(request.tool_call, d, out)
+        self._complete(request.tool_call, p, out)
         return out
 
     async def awrap_tool_call(self, request, handler):
-        if _executor(request):
+        if _executor(request.tool):
             await asyncio.to_thread(self.said.decided, request.tool_call["id"])
             token = CALL_ID.set(request.tool_call["id"])
             try:
                 return await handler(request)
             finally:
                 CALL_ID.reset(token)
-        blocked, d = await asyncio.to_thread(self._gate, request)
+        blocked, p = await asyncio.to_thread(self._gate, request)
         if blocked is not None:
             return blocked
-        if d is not None and "args" in d:
-            request = request.override(tool_call={**request.tool_call, "args": d["args"]})
+        if p["d"] is not None and "args" in p["d"]:
+            request = request.override(tool_call={**request.tool_call, "args": p["d"]["args"]})
         try:
             out = await handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
+            self._paused(request, p)
             raise
         except Exception as e:
-            await asyncio.to_thread(self._complete, request.tool_call, d, exc=e)
+            await asyncio.to_thread(self._complete, request.tool_call, p, exc=e)
             raise
-        await asyncio.to_thread(self._complete, request.tool_call, d, out)
+        await asyncio.to_thread(self._complete, request.tool_call, p, out)
         return out
+
+
+def _done(p, out):
+    """Plan `p` is done: the model reads `out` (a refusal, or what the call gave) in each pass of its node."""
+    p.update(state="done", out=out)
+    return p
+
+
+def _entry(call, d, approval_id):
+    """A call's approval as the pause shows it (TracekitMiddleware._pause)."""
+    return {"approval_id": approval_id, "tool_call_id": call["id"], "tool": call["name"], "rule_ids": d["rule_ids"]}
+
+
+def _ns(config):
+    """The checkpoint namespace of the node task `config` runs, the same in each pass of it."""
+    return config.get("configurable", {}).get("checkpoint_ns")
+
+
+def _answered(config):
+    """How many interrupt() calls of the node task the run has answered: its resume values, which LangGraph pairs with
+    the task's interrupt() calls by their order when it runs the task again from its start; 0 if it never paused."""
+    s = config.get("configurable", {}).get(CONFIG_KEY_SCRATCHPAD)
+    return len(s.resume) + (s.get_null_resume() is not None) if s is not None else 0
 
 
 def _said(request, out):
@@ -232,9 +402,9 @@ def _said(request, out):
     return items(), meta.get("model_name"), meta.get("model_provider")
 
 
-def _executor(request):
-    """Whether the call is to a tool executor's tool (executor_tools), which the executor decides and records (T2)."""
-    return bool((getattr(request.tool, "metadata", None) or {}).get(EXECUTOR))
+def _executor(tool):
+    """Whether `tool` is a tool executor's (executor_tools), whose calls the executor decides and records (T2)."""
+    return bool((getattr(tool, "metadata", None) or {}).get(EXECUTOR))
 
 
 def pausing(flag):
@@ -296,8 +466,76 @@ def with_fallbacks(self, fallbacks, **kw):
     return _Fallbacks(runnable=self, fallbacks=fallbacks, **kw)
 
 
+def _held(node, input):
+    """(the gate, the calls) of a pass of ToolNode `node` its gate holds (TracekitMiddleware._pass): two or more calls
+    of one model message that aren't a tool executor's, while the node's wrapper is still the gate's (`tracekit why`'s
+    replay copy serves recorded results instead); else (None, None)."""
+    gate, wrap = getattr(node, "_tracekit", (None, None))
+    if gate is None or node._wrap_tool_call is not wrap:
+        return None, None
+    calls = [c for c in node._parse_input(input)[0] if not _executor(node.tools_by_name.get(c["name"]))]
+    return (gate, calls) if len(calls) > 1 else (None, None)
+
+
+_TOOL_NODE = ToolNode._func, ToolNode._afunc, ToolNode._arun_one
+
+
+def pass_func(self, input, config, runtime):
+    """ToolNode._func, a held pass's calls planned together first (_held); each call's gate finds its plan in _PASS.
+    Its threads all end before it raises a call's pause or error."""
+    gate, calls = _held(self, input)
+    if gate is None:
+        return _TOOL_NODE[0](self, input, config, runtime)
+    token, ended = _PASS.set({"ns": _ns(config), "plans": gate._pass(calls, config)}), False
+    try:
+        out, ended = _TOOL_NODE[0](self, input, config, runtime), True
+    finally:
+        _PASS.reset(token)
+        if ended or not _ns(config):   # the node ended, or ran outside a graph: none of its calls runs again
+            gate._forget(config)
+    return out
+
+
+async def pass_afunc(self, input, config, runtime):
+    """ToolNode._afunc, as pass_func; the signer calls in a worker thread."""
+    gate, calls = _held(self, input)
+    if gate is None:
+        return await _TOOL_NODE[1](self, input, config, runtime)
+    plans = await asyncio.to_thread(gate._pass, calls, config)
+    token, ended = _PASS.set({"ns": _ns(config), "plans": plans, "node": self, "left": len(self._parse_input(input)[0]),
+                              "done": asyncio.Event()}), False
+    try:
+        out, ended = await _TOOL_NODE[1](self, input, config, runtime), True
+    finally:
+        _PASS.reset(token)
+        if ended or not _ns(config):
+            gate._forget(config)
+    return out
+
+
+async def pass_arun_one(self, call, input_type, tool_runtime):
+    """ToolNode._arun_one; in a held pass, a call that raises (a pause, an error) waits until every call of the node
+    has ended, so asyncio.gather cuts none of them off mid-run."""
+    held, raised = _PASS.get(), None
+    if held is None or held.get("node") is not self:
+        return await _TOOL_NODE[2](self, call, input_type, tool_runtime)
+    try:
+        out = await _TOOL_NODE[2](self, call, input_type, tool_runtime)
+    except Exception as e:
+        raised = e
+    finally:
+        held["left"] -= 1
+        if not held["left"]:
+            held["done"].set()
+    if raised is not None:
+        await held["done"].wait()
+        raise raised
+    return out
+
+
 class _GatedToolNode(ToolNode):
     with_fallbacks = with_fallbacks
+    _func, _afunc, _arun_one = pass_func, pass_afunc, pass_arun_one
 
 
 def tracekit_tool_node(tools, signer, run, **kw):
@@ -306,7 +544,9 @@ def tracekit_tool_node(tools, signer, run, **kw):
     gate = TracekitMiddleware(signer, run["run_id"], run["run_token"], run.get("fail_modes"))
     if "handle_tool_errors" in kw:
         kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
-    return _GatedToolNode(tools, wrap_tool_call=gate.wrap_tool_call, awrap_tool_call=gate.awrap_tool_call, **kw)
+    node = _GatedToolNode(tools, wrap_tool_call=gate.wrap_tool_call, awrap_tool_call=gate.awrap_tool_call, **kw)
+    node._tracekit = gate, node._wrap_tool_call   # the gate holds the node's passes while this is its wrapper (_held)
+    return node
 
 
 _SERDE = JsonPlusSerializer()

@@ -63,9 +63,10 @@ def new_run(tenant, run_id):
 # which no findings or replay run may be about (SignerService._register_run)
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
               "tails", "replay")
-# a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
+# a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold);
+# `refused`: the rule ids of a refused consume of its attempt; `ended`: [run_seq, ok] of its attempt's tool.result
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "tool", "nondeterministic",
-             "detect_ids", "via", "caller")
+             "detect_ids", "via", "caller", "refused", "ended")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
 NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
@@ -625,11 +626,18 @@ class RecordLog:
                         [d["decision_id"], out["hash"], d.get("ok") is True and out.get("size") != NO_RESULT,
                          out.get("redacted") is True, None]]
                 run["decisions"].pop(e["data"]["decision_id"], None)
+                latest = run["calls"].get(e.get("tool_call_id"))
+                if latest and latest["attempt"] == e.get("attempt", 0):   # SignerService._complete
+                    latest["ended"] = [e["run_seq"], e["data"].get("ok") is True]
                 used = (e["tool_call_id"], e.get("attempt", 0))
                 a = approvals.get(index.get((e["tenant"], e["run_id"], *used)))
                 if a and a["state"] == "consumed" and ran(a)[:2] == used:   # it ran under it (Service._complete)
                     # lean: by call and attempt; the writer also checks the arguments against the approval's
                     run["decisions"].pop(ran(a)[2], None)
+            elif e["type"] in ("approval.refused", "approval.binding_mismatch"):   # SignerService._approval_consume
+                latest = run["calls"].get(e.get("tool_call_id"))
+                if latest and latest["attempt"] == e.get("attempt", 0):
+                    latest["refused"] = e["data"].get("rule_ids") or ["TK-APPROVAL-MISMATCH"]
             elif e["type"] == "approval.request":
                 a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"], e["ts"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
@@ -644,6 +652,9 @@ class RecordLog:
                 if e["type"] == "approval.consumed" and used != [a["tool_call_id"], a["attempt"]]:   # a later call's
                     a["used_by"] = [*used, (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)
                     index[(e["tenant"], e["run_id"], *used)] = e["data"]["approval_id"]
+                latest = run["calls"].get(used[0])
+                if e["type"] == "approval.consumed" and latest and latest["attempt"] == used[1]:
+                    latest["refused"] = None   # a refused consume before it (SignerService._approval_consume)
             elif e["type"] == "ext" and e["data"].get("name") == "pcm.grant" and e["data"].get("approval_id"):
                 approvals[e["data"]["approval_id"]]["granted"] = True   # Service._pcm_grant: one grant per approval
             if not run["final"]:
