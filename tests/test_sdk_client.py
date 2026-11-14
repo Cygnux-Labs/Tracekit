@@ -4,6 +4,7 @@ import asyncio
 import collections
 import contextlib
 import datetime
+import http.server
 import io
 import json
 import os
@@ -517,10 +518,85 @@ class Transports(unittest.TestCase):
             raise client._ConnectionLost("reset")
         c = self.https(answer, timeout=0.1)
         t = time.monotonic()
-        with self.assertRaises(client.SignerUnavailable):
+        with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.1s"):
             c.decide({**EVENT, "tool_call_id": "c1", "args": {}})
         self.assertEqual(len(sent), 1)
         self.assertLess(time.monotonic() - t, 0.5)
+
+    def test_timed_out_call_before_first_try_uses_its_client_seq(self):
+        seen = []
+        c = self.https(lambda frame: seen.append(frame["client_seq"]) or {"ok": True}, timeout=0)
+        with self.assertRaisesRegex(client.SignerUnavailable, r"within 0s"):
+            c.decide({**EVENT, "tool_call_id": "c1", "args": {}})
+        c.timeout = 2
+        c.decide({**EVENT, "tool_call_id": "c2", "args": {}})
+        self.assertEqual(seen, [1])
+
+    def test_slow_http_hello_bounds_call_and_reports_call_timeout(self):
+        calls, done = [], threading.Event()
+        self.addCleanup(done.set)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *_):
+                pass
+
+            def do_POST(self):
+                req = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if req["method"] == "hello":
+                    time.sleep(0.35)
+                    body = json.dumps(HELLO).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                else:
+                    calls.append(req["method"])
+                    done.wait(5)
+
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = Client(f"http://127.0.0.1:{srv.server_address[1]}", timeout=0.5)
+        self.addCleanup(c.close)
+        t = time.monotonic()
+        with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.5s"):
+            c.status()
+        self.assertLess(time.monotonic() - t, 0.75)
+        self.assertEqual(calls, ["status"])
+
+    def test_slow_dial_does_not_send_past_deadline(self):
+        from tracekit.identity.token import DevToken
+        from tracekit.signer.rpc_schema import REQUESTS
+        from tracekit.transport.tcp_dev import TcpDevServer
+        seen = []
+        ep = os.path.join(tempfile.mkdtemp(), "ep.json")
+        self.addCleanup(shutil.rmtree, os.path.dirname(ep), True)
+        srv = TcpDevServer(ep, DevToken("dev", [*REQUESTS, "hello"], ttl_s=600),
+                           lambda _, f: HELLO if f["method"] == "hello"
+                           else seen.append(f.get("client_seq")) or {"ok": True})
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        port = json.load(open(ep))["port"]
+        real_connect = client.connect
+
+        def slow_connect(path, timeout=client.CONNECT_TIMEOUT_S, token=None):
+            out = real_connect(path, timeout=timeout, token=token)
+            time.sleep(0.25)
+            return out
+
+        c = Client(f"tcp://127.0.0.1:{port}", timeout=0.15, token=srv.token.secret)
+        self.addCleanup(c.close)
+        with mock.patch.object(client, "connect", side_effect=slow_connect):
+            with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.15s"):
+                c.decide({**EVENT, "tool_call_id": "c1", "args": {}})
+        self.assertEqual(seen, [])
+        c.timeout = 2
+        c.decide({**EVENT, "tool_call_id": "c2", "args": {}})
+        self.assertEqual(seen, [1])
 
     def test_stalled_tcp_connect_stops_within_call_timeout(self):
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -680,9 +756,68 @@ class FakeSigners(unittest.TestCase):
     def test_a_long_poll_without_an_answer_is_not_sent_again(self):
         frames = self.stalled()
         c = Client(self.path, timeout=0.3)
-        with self.assertRaises(client.SignerUnavailable):
+        with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.3s"):
             c.approval_wait({"run_id": "r1", "run_token": "t", "approval_id": "a1", "timeout_ms": 0})
         self.assertEqual([f["method"] for f in frames], ["approval_wait"])
+
+    def test_retry_after_dropped_unix_connection_stops_on_slow_reconnect_hello(self):
+        srv, frames, held, stop = socket.socket(socket.AF_UNIX), [], [], threading.Event()
+        srv.bind(self.path)
+        srv.listen()
+        self.addCleanup(lambda: [s.close() for s in held + [srv]])
+
+        def serve():
+            with contextlib.suppress(OSError):
+                for idx in (1, 2):
+                    conn, _ = srv.accept()
+                    held.append(conn)
+                    with conn.makefile("rb") as rfile:
+                        rfile.readline()
+                        if idx == 2:
+                            stop.wait(1.5)
+                        conn.sendall((json.dumps(HELLO) + "\n").encode())
+                        if idx == 1:
+                            frames.append(json.loads(rfile.readline() or "null"))
+                            conn.shutdown(socket.SHUT_RDWR)
+        threading.Thread(target=serve, daemon=True).start()
+        c = Client(self.path, timeout=0.5)
+        self.addCleanup(c.close)
+        self.addCleanup(stop.set)
+        t = time.monotonic()
+        with self.assertRaises(client.SignerUnavailable):
+            c.status({})
+        self.assertLess(time.monotonic() - t, 1.0)
+        self.assertEqual(len(frames), 1)
+
+    def test_reconnect_after_slow_hello_bounds_answer_wait(self):
+        srv, held, stop = socket.socket(socket.AF_UNIX), [], threading.Event()
+        srv.bind(self.path)
+        srv.listen()
+        self.addCleanup(lambda: [s.close() for s in held + [srv]])
+
+        def serve():
+            with contextlib.suppress(OSError):
+                for idx in (1, 2):
+                    conn, _ = srv.accept()
+                    held.append(conn)
+                    with conn.makefile("rb") as rfile:
+                        rfile.readline()
+                        if idx == 2:
+                            stop.wait(0.35)
+                        conn.sendall((json.dumps(HELLO) + "\n").encode())
+                        rfile.readline()
+                        if idx == 1:
+                            conn.shutdown(socket.SHUT_RDWR)
+                        else:
+                            stop.wait(5)
+        threading.Thread(target=serve, daemon=True).start()
+        c = Client(self.path, timeout=0.5)
+        self.addCleanup(c.close)
+        self.addCleanup(stop.set)
+        t = time.monotonic()
+        with self.assertRaisesRegex(client.SignerUnavailable, r"within 0\.5s"):
+            c.status({})
+        self.assertLess(time.monotonic() - t, 0.75)
 
     def test_a_forked_child_does_not_inherit_a_held_lock(self):
         code = f"""if 1:

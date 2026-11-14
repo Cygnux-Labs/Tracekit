@@ -51,6 +51,8 @@ export class SignerUnavailable extends Error {
   name = "SignerUnavailable";
 }
 
+class TimeoutUnavailable extends SignerUnavailable {}
+
 /** The signer answered but does not speak this client's protocol version. It is left running. */
 export class Incompatible extends Error {
   name = "Incompatible";
@@ -95,7 +97,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, onTimeout: () => void): Promi
   const t = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       onTimeout();
-      reject(new SignerUnavailable(`no answer from the signer within ${ms / 1000}s`));
+      reject(new TimeoutUnavailable(`no answer from the signer within ${ms / 1000}s`));
     }, ms);
   });
   return Promise.race([p, t]).finally(() => clearTimeout(timer));
@@ -199,7 +201,8 @@ export async function connect(path: string, token?: string, timeoutMs = CONNECT_
   } catch (e) {
     conn?.sock.destroy();
     if (e instanceof SignerUnavailable && !conn) throw e;
-    throw new SignerUnavailable(`no signer answering at ${path}: ${(e as Error).message}`);
+    const msg = `no signer answering at ${path}: ${(e as Error).message}`;
+    throw e instanceof TimeoutUnavailable ? new TimeoutUnavailable(msg) : new SignerUnavailable(msg);
   }
   try {
     check(hello, path);
@@ -333,7 +336,7 @@ class Https {
         });
       });
       req.on("timeout", () => {
-        reject(new SignerUnavailable(`no answer from the signer within ${timeoutMs / 1000}s`));
+        reject(new TimeoutUnavailable(`no answer from the signer within ${timeoutMs / 1000}s`));
         req.destroy();
       });
       req.on("error", () => reject(new ConnectionLost()));
@@ -349,7 +352,9 @@ class Https {
       check(hello, this.url.origin);
       this.hello = hello;
     }
-    return this.post(frame, Math.max(deadline - Date.now(), 1));
+    const rem = deadline - Date.now();
+    if (rem <= 0) throw new TimeoutUnavailable(`no answer from the signer within ${timeoutMs / 1000}s`);
+    return this.post(frame, rem);
   }
 }
 
@@ -465,7 +470,7 @@ export class Client {
           } else if ("timeout_ms" in schema.properties) {
             reply = await this.poll(frame(), left);
           } else {
-            const conn = await this.connection(left);
+            const conn = await withTimeout(this.connection(), left, () => {});
             const rem = deadline - Date.now();
             if (rem <= 0) {
               frame();
@@ -479,6 +484,7 @@ export class Client {
             continue;
           }
           if (e instanceof SignerUnavailable) frame();   // used up: the signer's client_counter_gap covers a call it never saw
+          if (e instanceof TimeoutUnavailable) throw new SignerUnavailable(`no answer from the signer within ${timeout / 1000}s`);
           throw e;
         }
         if (reply.error) {
@@ -527,16 +533,16 @@ export class Client {
     const { conn } = await this.dial(Math.min(CONNECT_TIMEOUT_MS, timeout));
     try {
       const rem = deadline - Date.now();
-      if (rem <= 0) throw new SignerUnavailable(`no answer from the signer within ${timeout / 1000}s`);
+      if (rem <= 0) throw new TimeoutUnavailable(`no answer from the signer within ${timeout / 1000}s`);
       return await withTimeout(conn.send(frame), rem, () => {});
     } finally {
       conn.sock.destroy();
     }
   }
 
-  private connection(timeoutMs = CONNECT_TIMEOUT_MS): Promise<Conn> {
+  private connection(): Promise<Conn> {
     if (!this.conn) {
-      const p: Promise<Conn> = this.dial(timeoutMs).then(({ conn }) => {
+      const p: Promise<Conn> = this.dial().then(({ conn }) => {
         conn.sock.on("close", () => this.conn === p && (this.conn = null));
         return conn;
       }, (e) => {
@@ -549,21 +555,17 @@ export class Client {
   }
 
   private async dial(timeoutMs = CONNECT_TIMEOUT_MS) {
-    const connectTimeout = Math.min(CONNECT_TIMEOUT_MS, timeoutMs);
     let c;
     if (this.signer) {
-      c = await connect(this.signer, undefined, connectTimeout);
+      c = await connect(this.signer, undefined, Math.min(CONNECT_TIMEOUT_MS, timeoutMs));
     } else {
-      const deadline = Date.now() + timeoutMs, d = devRuntimeDir();
+      const d = devRuntimeDir();
       try {
-        const [addr, tok] = devAddress(d);
-        c = await connect(addr, tok, connectTimeout);
+        c = await connect(...devAddress(d));
       } catch (e) {
         if (!(e instanceof SignerUnavailable || e instanceof Incompatible && e.older)) throw e;
-        if (Date.now() >= deadline) throw e;
         await startDevSigner();   // `tracekit up` replaces a dev signer from before an upgrade
-        const [addr, tok] = devAddress(d);
-        c = await connect(addr, tok, Math.min(CONNECT_TIMEOUT_MS, Math.max(deadline - Date.now(), 1)));
+        c = await connect(...devAddress(d));
       }
     }
     this.hello = c.hello;

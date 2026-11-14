@@ -90,6 +90,10 @@ class _ConnectionLost(Exception):
     """The request may not have arrived; its message says why."""
 
 
+class _TimeoutUnavailable(SignerUnavailable):
+    """Timed out waiting on a transport/call deadline; Client.call re-raises with the call's timeout."""
+
+
 def _new_id():
     return uuid.uuid4().hex
 
@@ -134,7 +138,10 @@ def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
             rfile = sock.makefile("rb")
         else:
             raise SignerUnavailable(f"this platform has no Unix sockets: name the signer tcp://host:port, not {path}")
-        sock.settimeout(max(deadline - time.monotonic(), 0.001))
+        rem = deadline - time.monotonic()
+        if rem <= 0:
+            raise TimeoutError("timed out")
+        sock.settimeout(rem)
         write_frame(sock, {"method": "hello"})
         hello = read_frame(rfile)
     except (OSError, RPCError, ValueError) as e:
@@ -237,7 +244,7 @@ class _Https:
             return parse_frame(conn.getresponse().read())
         except socket.timeout:
             conn.close()   # reopened by the next request
-            raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
+            raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s") from None
         except ssl.SSLCertVerificationError as e:   # not a lost connection: no retry would verify
             conn.close()
             raise SignerUnavailable(f"the TLS certificate of the signer at {self.url} did not verify "
@@ -258,7 +265,10 @@ class _Https:
                 raise RPCError(e.get("code"), e.get("message", ""))
             _check(hello, self.url)
             self.hello = hello
-        return self.post(body, max(deadline - time.monotonic(), 0.001), self._host(req))
+        rem = deadline - time.monotonic()
+        if rem <= 0:
+            raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s")
+        return self.post(body, rem, self._host(req))
 
     def close(self):
         for conn in list(self.conns):
@@ -398,6 +408,8 @@ class Client:
             while losses < RETRIES:
                 left = deadline - time.monotonic()
                 if left <= 0:
+                    with self._lock:
+                        self._prepare(method, req)
                     raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from lost
                 try:
                     if self._https:
@@ -408,10 +420,12 @@ class Client:
                     elif method in _LONG_POLLS:
                         reply = self._poll(method, req, left)
                     else:
-                        reply = self._send(method, req, left).result(max(deadline - time.monotonic(), 0.001))
+                        reply = self._send(method, req, left, deadline).result(max(deadline - time.monotonic(), 0))
                 except _ConnectionLost as e:
                     lost, losses = e, losses + 1
                     continue
+                except _TimeoutUnavailable:
+                    raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
                 except concurrent.futures.TimeoutError:
                     self.close()
                     raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
@@ -495,9 +509,11 @@ class Client:
             self._order.pop(run_id, None)
         return data
 
-    def _send(self, method, req, timeout=CONNECT_TIMEOUT_S):
+    def _send(self, method, req, timeout=CONNECT_TIMEOUT_S, deadline=None):
         with self._lock:
             data = self._prepare(method, req, lambda: self._ensure_conn(timeout))
+            if deadline is not None and deadline - time.monotonic() <= 0:
+                raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s")
             fut = concurrent.futures.Future()
             self._conn.pending.append(fut)
             self._conn.out.put(data + b"\n")
@@ -517,16 +533,17 @@ class Client:
         if left <= 0:
             rfile.close()
             sock.close()
-            raise SignerUnavailable(f"no answer from the signer within {timeout:g}s")
+            raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s")
         sock.settimeout(left)
         try:
             sock.sendall(data + b"\n")
             reply = read_frame(rfile)
         except socket.timeout:
-            raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
+            raise _TimeoutUnavailable(f"no answer from the signer within {timeout:g}s") from None
         except (OSError, RPCError):
             reply = None
         finally:
+            rfile.close()
             sock.close()
         if reply is None:
             raise _ConnectionLost()
@@ -537,7 +554,7 @@ class Client:
             sock, rfile, self.hello = connect(self.signer, timeout=min(CONNECT_TIMEOUT_S, timeout), token=self.token)
         else:
             from tracekit.sdk import autospawn
-            sock, rfile, self.hello = autospawn.ensure(timeout=min(10, timeout))
+            sock, rfile, self.hello = autospawn.ensure()
         return sock, rfile
 
     def _connect(self, timeout=CONNECT_TIMEOUT_S):
