@@ -1035,7 +1035,9 @@ class Speed(unittest.TestCase):
                 ("execute_sql", {"sql": "SELECT program FROM jobs; " + "COPY " * (n // 5)}),
                 ("Bash", {"command": ";DOCKER_HOST=unix://" * (n // 20)}),
                 ("Bash", {"command": "curl -api.sock " + "podman-machine-" * (n // 15)}),
-                ("Bash", {"command": ";nice -n 5 nohup CONTAINER_HOST=unix://" * (n // 39)})]:
+                ("Bash", {"command": ";nice -n 5 nohup CONTAINER_HOST=unix://" * (n // 39)}),
+                ("Bash", {"command": "install " + "-m " * (n // 3)}),
+                ("Bash", {"command": "setcap " + "cap_setuid," * (n // 11)})]:
             with self.subTest(args=str(args)[:40]):
                 start = time.perf_counter()
                 d = e.decide(tool, args)

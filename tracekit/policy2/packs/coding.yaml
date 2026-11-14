@@ -1020,15 +1020,18 @@ ask:
   - id: TK-A077
     class: shell
     field: argv
-    # chmod's setuid or setgid bit in its mode, the first word after up to eight options: an s that a + or = adds, in
-    # any clause of a comma list and among other letters (u+s, +sx, g+s,u+x, u=rwxs, u-x+s), or a numeric mode whose
-    # setuid/setgid digit is set (4 digits starting with 2 to 7, also with leading zeros, + or =: 4755, 04755, =2755).
-    # Removing it (u-s) and the sticky bit alone (1777) stay unheld. lean: eight options, as for TK-A075; read more if
-    # a real call has more
-    pattern: '^chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)'
-    reason: setting the setuid or setgid bit on a file
-    remedy: Have a person set the bit; a program that runs as its owner or group needs a person's review.
-    rationale: A setuid or setgid file runs with its owner's rights on every run; a person confirms it.
+    # chmod's or install's (-m / --mode) setuid or setgid bit in its mode, after up to eight options/words: an s that
+    # a + or = adds, in any clause of a comma list and among other letters (u+s, +sx, g+s,u+x, u=rwxs, u-x+s), or a
+    # numeric mode whose setuid/setgid digit is set (4 digits starting with 2 to 7, also with leading zeros, + or =:
+    # 4755, 04755, =2755); and setcap granting cap_setuid, cap_setgid or cap_sys_admin (+ or = with e, i or p flags,
+    # also in a comma-separated list, any case) after up to sixteen words. Removing it (chmod u-s, install -m u-s,
+    # setcap -r / cap_setuid-ep), the sticky bit alone (1777) and setcap -v (verify only) stay unheld. lean: bounded
+    # word prefixes and capability clause length (up to 256 chars after the cap) keep the fallback engine linear
+    pattern: '^(?:chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|install(?: [^ ]+){0,8}? (?:-[a-zA-Z]*m ?|--mode[ =])(?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|setcap(?: [^ ]+){0,16}? (?:[A-Za-z0-9_,=+-]*,)?(?:[Cc][Aa][Pp]_(?:[Ss][Ee][Tt][Uu][Ii][Dd]|[Ss][Ee][Tt][Gg][Ii][Dd]|[Ss][Yy][Ss]_[Aa][Dd][Mm][Ii][Nn]))(?:,[A-Za-z0-9_,]{1,256})?[+=][EeIiPp]+)'
+    unless: '^setcap(?: -(?:q|n [^ ]+)){0,4} -(?:q?v|vq)(?: |$)'
+    reason: setting the setuid or setgid bit or privileged file capabilities
+    remedy: Have a person set the bit or capabilities; a program that runs with elevated privileges needs a person's review.
+    rationale: A setuid, setgid or capability-enabled file runs with elevated rights on every run; a person confirms it.
   - id: TK-A078
     class: shell
     field: line
