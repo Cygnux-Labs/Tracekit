@@ -424,6 +424,34 @@ def _strings(value):
             yield from _strings(child)
 
 
+# gptme's watch verbs that run a command (tools/watch.py), each with the watch's own options it takes off the words
+WATCH_OPTS = {"run": ("timeout",), "stream": ("timeout",), "until": ("every", "timeout")}
+
+
+def _gptme_watch(text):
+    """The command line gptme's `watch run|until|stream <cmd>` runs with shell=True (tools/watch.py _watch), else None:
+    the words after the verb, without the watch's own options (_parse_opts: `--name value` or `--name=value`, a
+    --timeout only with a unit), joined by shlex.join."""
+    try:
+        verb, *rest = shlex.split(text) or [None]
+    except ValueError:   # gptme can't split it either, and runs nothing
+        return None
+    if verb not in WATCH_OPTS:
+        return None
+    words, i = [], 0
+    while i < len(rest):
+        key, eq, value = rest[i][2:].partition("=")
+        if not eq:
+            value = rest[i + 1] if i + 1 < len(rest) and not rest[i + 1].startswith("--") else None
+        if rest[i].startswith("--") and key in WATCH_OPTS[verb] and value is not None and (
+                key != "timeout" or re.fullmatch(r"\d+(?:\.\d+)?(?:ms|s|m|h)", value.strip())):
+            i += 1 if eq else 2
+            continue
+        words.append(rest[i])
+        i += 1
+    return shlex.join(words) or None
+
+
 def _gptme_tool(name, ti):
     args, content, kwargs = ti.get("args"), ti.get("content"), ti.get("kwargs")
     if kwargs is not None:
@@ -472,6 +500,13 @@ def _gptme_tool(name, ti):
         command = kwargs.get("command") if kwargs is not None else content
         if isinstance(command, str) and command.lstrip().startswith("load"):
             return "mcp__gptme__load", {"command": command}
+
+    if name == "watch":   # run, until and stream start their command and return while it runs (until: again at each
+        # poll), so its effects come after the call's post-tool hook
+        text = kwargs.get("content") if kwargs is not None else content
+        command = _gptme_watch(text) if isinstance(text, str) else None
+        if command:
+            return "Bash", {"command": command, "run_in_background": True}
 
     if name in ("shell", "ipython"):
         key = "command" if name == "shell" else "code"
