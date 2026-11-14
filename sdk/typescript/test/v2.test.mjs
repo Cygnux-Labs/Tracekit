@@ -215,7 +215,7 @@ run(srv, {"port": srv.server_address[1], "ca": pki.path, "token": "t" * 40})`);
 
 // An in-test signer on a Unix socket: "pay" asks, "rm" is denied, everything else allowed; approvals are granted after
 // 300 ms. `handle(frame)` may answer first. `frames` records each request with the number of its connection.
-async function fake(t, { hello = { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 }, failModes = { default: "closed" }, handle = () => null, path = join(tmp(t), "s.sock") } = {}) {
+async function fake(t, { hello = { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 }, failModes = { default: "closed" }, handle = () => null, path = join(tmp(t), "s.sock"), timeoutMs } = {}) {
   const frames = [], socks = new Set();
   let seq = 0, conns = 0;
   const answer = async (f) => {
@@ -240,14 +240,18 @@ async function fake(t, { hello = { proto: [RPC_VERSION, RPC_VERSION], version: "
         const f = JSON.parse(buf.slice(0, n));
         buf = buf.slice(n + 1);
         if (f.method !== "hello") frames.push({ ...f, conn });
-        queue = queue.then(async () => sock.write(JSON.stringify(f.method === "hello" ? hello : (await handle(f)) || (await answer(f))) + "\n"));
+        queue = queue.then(async () => {
+          const out = f.method === "hello" ? (typeof hello === "function" ? await hello(conn) : hello)
+            : (await handle(f, sock)) || (await answer(f));
+          if (!sock.destroyed) sock.write(JSON.stringify(out) + "\n");
+        });
       }
     });
   });
   await new Promise((r) => server.listen(path, r));
   const stop = () => new Promise((r) => { server.close(r); socks.forEach((s) => s.destroy()); });
   t.after(stop);
-  return { client: new Client({ signer: path }), frames, stop, path };
+  return { client: new Client({ signer: path, timeoutMs }), frames, stop, path };
 }
 
 test("fake: decide, complete, deny and continue; requests are validated before they are sent", async (t) => {
@@ -406,7 +410,8 @@ test("fake: a request that is not JSON takes no answer and no client_seq", async
 /** A Client of an HTTPS signer whose requests `answer(frame)` answers, in place of the network. */
 function https(answer, timeoutMs) {
   const c = new Client({ signer: "https://signer.test:8443", timeoutMs });
-  c.https.post = async (f) => (f.method === "hello" ? { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 } : answer(f));
+  c.https.post = async (f, ms, reportedMs) =>
+    (f.method === "hello" ? { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 } : answer(f, ms, reportedMs));
   return c;
 }
 const event = (run_id, tool_call_id) => ({ run_id, run_token: "t", tool_call_id, tool: "Bash", args: {}, args_source: "parsed" });
@@ -489,6 +494,98 @@ test("HTTPS: an event waiting behind an unanswered one gives up in time and uses
   await slow;
   await c.call("decide", event("r1", "next"));
   assert.deepEqual(arrived, [0, 2]);   // 1, the call that gave up, is the signer's client_counter_gap
+});
+
+test("HTTPS: a lost connection past the call's timeout is not retried and names the call's timeout", async (t) => {
+  const postTo = (c, port, f, ms, reportedMs) => Object.getPrototypeOf(c.https).post.call(
+    { url: new URL(`https://127.0.0.1:${port}/v2/rpc`), agent: c.https.agent }, f, ms, reportedMs);
+  const socks = new Set(), drop = createServer((s) => s.destroy()), hung = createServer((s) => { socks.add(s); });
+  await Promise.all([new Promise((r) => drop.listen(0, "127.0.0.1", r)), new Promise((r) => hung.listen(0, "127.0.0.1", r))]);
+  t.after(() => { drop.close(); hung.close(); socks.forEach((s) => s.destroy()); });
+  const sent = [];
+  const c = https(async (f) => {
+    sent.push(f);
+    await sleep(600);
+    return postTo(c, drop.address().port, f, 1000);
+  }, 500);
+  let start = Date.now();
+  await assert.rejects(c.call("status"),
+    (e) => e instanceof SignerUnavailable && e.message === "no answer from the signer within 0.5s");
+  assert.ok(Date.now() - start < 1000);
+  assert.deepEqual(sent.map((f) => f.method), ["status"]);
+
+  let tries = 0;
+  const c2 = https(async (f, ms, reportedMs) => {
+    if (++tries === 1) {
+      await sleep(200);
+      return postTo(c2, drop.address().port, f, 1000);
+    }
+    return postTo(c2, hung.address().port, f, ms, reportedMs);
+  }, 500);
+  start = Date.now();
+  await assert.rejects(c2.call("status"),
+    (e) => e instanceof SignerUnavailable && e.message === "no answer from the signer within 0.5s");
+  assert.ok(Date.now() - start < 1000);
+  assert.equal(tries, 2);
+});
+
+test("fake: a retry after a lost connection stays within the call's timeout", async (t) => {
+  const { client, frames } = await fake(t, {
+    timeoutMs: 500,
+    hello: async (conn) => {
+      if (conn > 1) await sleep(1500);
+      return { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 };
+    },
+    handle: (_f, sock) => { sock.destroy(); },
+  });
+  const start = Date.now();
+  await assert.rejects(client.call("status"), SignerUnavailable);
+  assert.ok(Date.now() - start < 1000);
+  assert.deepEqual(frames.map((f) => f.method), ["status"]);
+});
+
+test("TCP dev transport: a retry after a lost connection stays within the call's timeout", { skip: NO_PY }, async (t) => {
+  const info = await pyServer(t, `
+import contextlib, json, os, socket, sys, tempfile, threading, time
+from tracekit.identity.token import DevToken
+from tracekit.signer.rpc_schema import REQUESTS
+from tracekit.transport import hello
+from tracekit.transport.tcp_dev import TcpDevServer
+d = tempfile.mkdtemp()
+ep, frames = os.path.join(d, "endpoint.json"), os.path.join(d, "frames.jsonl")
+tok = DevToken("dev", [*REQUESTS, "hello"], ttl_s=600)
+local, hellos = threading.local(), 0
+class Tok:
+    secret = tok.secret
+    @staticmethod
+    def authenticate(conn, frame):
+        local.conn = conn
+        return tok.authenticate(conn, frame)
+def handle(_, frame):
+    global hellos
+    if frame["method"] == "hello":
+        hellos += 1
+        if hellos > 1:
+            time.sleep(1.5)
+        return hello()
+    with open(frames, "a") as f:
+        f.write(json.dumps(frame) + "\\n")
+    with contextlib.suppress(OSError):
+        local.conn.shutdown(socket.SHUT_RDWR)
+    local.conn.close()
+    return {}
+srv = TcpDevServer(ep, Tok, handle)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+print(json.dumps({**json.load(open(ep)), "frames": frames}), flush=True)
+sys.stdin.read()`);
+  process.env.TRACEKIT_SIGNER_TOKEN = info.token;
+  t.after(() => delete process.env.TRACEKIT_SIGNER_TOKEN);
+  const c = new Client({ signer: `tcp://127.0.0.1:${info.port}`, timeoutMs: 500 });
+  const start = Date.now();
+  await assert.rejects(c.call("status"), SignerUnavailable);
+  assert.ok(Date.now() - start < 1000);
+  const seen = readFileSync(info.frames, "utf8").trim().split("\n").map((l) => JSON.parse(l).method);
+  assert.deepEqual(seen, ["status"]);
 });
 
 test("fake: a signer of another protocol version is refused", async (t) => {

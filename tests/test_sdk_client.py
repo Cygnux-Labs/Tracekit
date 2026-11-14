@@ -508,6 +508,100 @@ class Transports(unittest.TestCase):
             c.close()
         self.assertEqual([conn.close.call_count for conn in conns], [1, 1])
 
+    def test_a_lost_https_connection_past_the_deadline_is_not_retried(self):
+        sent = []
+
+        def answer(frame):
+            sent.append(frame)
+            time.sleep(0.6)
+            raise client._ConnectionLost("reset")
+        c, t = self.https(answer, timeout=0.5), time.monotonic()
+        with self.assertRaises(client.SignerUnavailable) as cm:
+            c.status({})
+        self.assertLess(time.monotonic() - t, 1)
+        self.assertEqual([f["method"] for f in sent], ["status"])
+        self.assertEqual(str(cm.exception), "no answer from the signer within 0.5s")
+
+        srv, held = socket.socket(), []
+        srv.bind(("127.0.0.1", 0))
+        srv.listen()
+        self.addCleanup(lambda: [s.close() for s in held + [srv]])
+
+        def read_req(rfile):
+            length = 0
+            for line in iter(rfile.readline, b""):
+                if line == b"\r\n":
+                    break
+                if line.lower().startswith(b"content-length:"):
+                    length = int(line.split(b":", 1)[1])
+            rfile.read(length)
+
+        def stall_second():
+            body = json.dumps(HELLO).encode()
+            with contextlib.suppress(OSError):
+                conn, _ = srv.accept()
+                held.extend((conn, rfile := conn.makefile("rb")))
+                read_req(rfile)   # hello
+                conn.sendall(f"HTTP/1.1 200 OK\r\nContent-Length: {len(body)}\r\n\r\n".encode() + body)
+                read_req(rfile)   # first status: lost after 0.2s
+                time.sleep(0.2)
+                conn.shutdown(socket.SHUT_RDWR)
+                conn.close()
+                conn2, _ = srv.accept()   # retry: accepted, never answered
+                held.append(conn2)
+        threading.Thread(target=stall_second, daemon=True).start()
+        plain = Client(f"http://127.0.0.1:{srv.getsockname()[1]}", timeout=0.5)
+        self.addCleanup(plain.close)
+        t = time.monotonic()
+        with self.assertRaises(client.SignerUnavailable) as cm:
+            plain.status({})
+        self.assertLess(time.monotonic() - t, 1)
+        self.assertEqual(str(cm.exception), "no answer from the signer within 0.5s")
+
+    def test_a_tcp_retry_after_a_lost_connection_stays_within_the_calls_timeout(self):
+        from tracekit.identity.token import DevToken
+        from tracekit.signer.rpc_schema import REQUESTS
+        from tracekit.transport.tcp_dev import TcpDevServer
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        ep = os.path.join(d, "endpoint.json")
+        token = DevToken("dev", [*REQUESTS, "hello"], ttl_s=600)
+        local, frames, hellos = threading.local(), [], 0
+
+        class Tok:
+            secret = token.secret
+
+            @staticmethod
+            def authenticate(conn, frame):
+                local.conn = conn
+                return token.authenticate(conn, frame)
+
+        def handle(_, frame):
+            nonlocal hellos
+            if frame["method"] == "hello":
+                hellos += 1
+                if hellos > 1:
+                    time.sleep(1.5)
+                return HELLO
+            frames.append(frame)
+            with contextlib.suppress(OSError):
+                local.conn.shutdown(socket.SHUT_RDWR)
+            local.conn.close()
+            return {"rpc_version": RPC_VERSION}
+        server = TcpDevServer(ep, Tok, handle)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with open(ep) as f:
+            info = json.load(f)
+        c = Client(f"tcp://127.0.0.1:{info['port']}", timeout=0.5, token=info["token"])
+        self.addCleanup(c.close)
+        t = time.monotonic()
+        with self.assertRaises(client.SignerUnavailable):
+            c.status({})
+        self.assertLess(time.monotonic() - t, 1)
+        self.assertEqual([f["method"] for f in frames], ["status"])
+
 
 HELLO = {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.getpid()}
 EVENT = {"run_id": "r1", "run_token": "t", "tool": "Bash", "args_source": "parsed"}
@@ -648,6 +742,40 @@ class FakeSigners(unittest.TestCase):
         with self.assertRaises(client.SignerUnavailable):
             c.approval_wait({"run_id": "r1", "run_token": "t", "approval_id": "a1", "timeout_ms": 0})
         self.assertEqual([f["method"] for f in frames], ["approval_wait"])
+
+    def test_a_retry_after_a_lost_connection_stays_within_the_calls_timeout(self):
+        srv, frames, held, conns = socket.socket(socket.AF_UNIX), [], [], 0
+        srv.bind(self.path)
+        srv.listen()
+
+        def serve():
+            nonlocal conns
+            with contextlib.suppress(OSError):
+                while True:
+                    conn, _ = srv.accept()
+                    conns += 1
+                    n = conns
+                    held.append(conn)
+                    rfile = conn.makefile("rb")
+                    rfile.readline()
+                    if n > 1:
+                        time.sleep(1.5)
+                    conn.sendall((json.dumps(HELLO) + "\n").encode())
+                    line = rfile.readline()
+                    if line:
+                        frames.append(json.loads(line))
+                    with contextlib.suppress(OSError):
+                        conn.shutdown(socket.SHUT_RDWR)
+                    conn.close()
+                    rfile.close()
+        threading.Thread(target=serve, daemon=True).start()
+        self.addCleanup(lambda: [s.close() for s in held + [srv]])
+        c, t = Client(self.path, timeout=0.5), time.monotonic()
+        self.addCleanup(c.close)
+        with self.assertRaises(client.SignerUnavailable):
+            c.status({})
+        self.assertLess(time.monotonic() - t, 1)
+        self.assertEqual([f["method"] for f in frames], ["status"])
 
     def test_a_forked_child_does_not_inherit_a_held_lock(self):
         code = f"""if 1:

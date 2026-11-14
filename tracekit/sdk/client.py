@@ -90,6 +90,10 @@ class _ConnectionLost(Exception):
     """The request may not have arrived; its message says why."""
 
 
+class _TimedOut(SignerUnavailable):
+    """A step ran out of the call's remaining time; `call` raises SignerUnavailable naming the call's full timeout."""
+
+
 def _new_id():
     return uuid.uuid4().hex
 
@@ -116,7 +120,7 @@ def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
     """(socket, rfile, hello) for the signer at `path`, after checking its protocol range. `path` is a Unix socket, or
     `tcp://host:port` for a signer on the loopback TCP transport, which must prove it holds `token`
     ($TRACEKIT_SIGNER_TOKEN when None; "" is none) before we prove it too (transport/tcp_dev.py)."""
-    sock = None
+    sock, rfile, deadline = None, None, time.monotonic() + timeout
     try:
         if path.startswith("tcp://"):
             host, _, port = path[len("tcp://"):].rpartition(":")
@@ -125,25 +129,36 @@ def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
             token = token if token is not None else os.environ.get("TRACEKIT_SIGNER_TOKEN")
             if not token:
                 raise SignerUnavailable(f"{path}: tcp:// signers need TRACEKIT_SIGNER_TOKEN")
+            if timeout <= 0:
+                raise socket.timeout("timed out")
             sock, rfile = tcp_dev.dial(host, int(port), token, timeout)
         elif hasattr(socket, "AF_UNIX"):
+            if timeout <= 0:
+                raise socket.timeout("timed out")
             sock = socket.socket(socket.AF_UNIX)
             sock.settimeout(timeout)
             sock.connect(path)
             rfile = sock.makefile("rb")
         else:
             raise SignerUnavailable(f"this platform has no Unix sockets: name the signer tcp://host:port, not {path}")
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise socket.timeout("timed out")
+        sock.settimeout(left)
         write_frame(sock, {"method": "hello"})
         hello = read_frame(rfile)
     except (OSError, RPCError, ValueError) as e:
         if sock:
             sock.close()
+        if rfile:
+            rfile.close()
         raise SignerUnavailable(f"no signer answering at {path}: {e}") from None
     sock.settimeout(None)
     try:
         _check(hello, path)
     except Incompatible:
         sock.close()
+        rfile.close()
         raise
     return sock, rfile, hello
 
@@ -227,6 +242,8 @@ class _Https:
             conn = self.local.conns[host] = (http.client.HTTPConnection(host, self.port) if self.plain else
                                              http.client.HTTPSConnection(host, self.port, context=self.ctx))
             self.conns.add(conn)
+        if timeout <= 0:
+            raise _TimedOut(f"no answer from the signer within {timeout:g}s")
         conn.timeout = timeout
         if conn.sock:
             conn.sock.settimeout(timeout)
@@ -235,7 +252,7 @@ class _Https:
             return parse_frame(conn.getresponse().read())
         except socket.timeout:
             conn.close()   # reopened by the next request
-            raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
+            raise _TimedOut(f"no answer from the signer within {timeout:g}s") from None
         except ssl.SSLCertVerificationError as e:   # not a lost connection: no retry would verify
             conn.close()
             raise SignerUnavailable(f"the TLS certificate of the signer at {self.url} did not verify "
@@ -244,18 +261,24 @@ class _Https:
             conn.close()
             raise _ConnectionLost(f"{type(e).__name__}: {e}") from None
 
-    def rpc(self, req, body, timeout):
+    def rpc(self, req, body, deadline):
         if self.plain and not loopback(self.host):   # the token and the frames would cross the network in clear
             raise SignerUnavailable(f"{self.url}: plain http:// signers must be on a loopback address (127.0.0.1, "
                                     "::1); use https:// for any other")
         if self.hello is None:
-            hello = self.post(_encode("hello", {}), timeout)
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise _TimedOut()
+            hello = self.post(_encode("hello", {}), left)
             if "error" in hello:
                 e = hello["error"]
                 raise RPCError(e.get("code"), e.get("message", ""))
             _check(hello, self.url)
             self.hello = hello
-        return self.post(body, timeout, self._host(req))
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise _TimedOut()
+        return self.post(body, left, self._host(req))
 
     def close(self):
         for conn in list(self.conns):
@@ -308,7 +331,7 @@ _clients = weakref.WeakSet()
 def _after_fork():
     """A forked child starts with fresh locks: one that another thread of the parent held would never be released."""
     for c in list(_clients):
-        c._lock, c._order = threading.Lock(), {}
+        c._lock, c._local, c._order = threading.Lock(), threading.local(), {}
 
 
 if hasattr(os, "register_at_fork"):
@@ -327,6 +350,7 @@ class Client:
         http = (self.signer or "").startswith(("https://", "http://"))
         self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
+        self._local = threading.local()
         self._pid = self._conn = None
         # run_id -> its next client_seq, the least recently used first (a long poll answered run_closed may come
         # before any event)
@@ -390,47 +414,61 @@ class Client:
             req.setdefault("request_id", _new_id())
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
         deadline = time.monotonic() + timeout   # for the whole call: its turn, every retry
-        lost, losses, tries, outage = None, 0, 0, None   # tries: the signer's refusals of an event call (_retry_wait)
+        # tries: the signer's refusals of an event call (_retry_wait)
+        lost, losses, tries, outage, refused = None, 0, 0, None, None
         with self._turn(method, req, deadline):
-            while losses < RETRIES:
-                left = max(deadline - time.monotonic(), 0.001)
-                try:
-                    if self._https:
-                        with self._lock:
-                            body = self._prepare(method, req)
-                        reply = self._https.rpc(req, body, left)
-                        self.hello = self._https.hello
-                    elif method in _LONG_POLLS:
-                        reply = self._poll(method, req, left)
-                    else:
-                        reply = self._send(method, req).result(left)
-                except _ConnectionLost as e:
-                    lost, losses = e, losses + 1
-                    continue
-                except concurrent.futures.TimeoutError:
-                    self.close()
-                    raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
-                if "error" in reply:
-                    e = reply["error"]
-                    if e.get("code") in ("run_closed", "unknown_run"):   # no more events for it: drop its counter
-                        with self._lock:
-                            self._seqs.pop(req.get("run_id"), None)
-                            self._order.pop(req.get("run_id"), None)
-                    err = RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
-                    if outage and err.code == "client_seq_reused":
-                        # the try the signer answered unavailable was written after all: that answer stands, so the
-                        # caller takes its outage path (a fail mode), as without the retry
-                        raise outage
-                    tries += 1
-                    wait = _retry_wait(method, err, tries)
-                    if wait is None or tries == RETRIES or time.monotonic() + wait >= deadline:
-                        raise err
-                    outage = err if err.code == "unavailable" else outage
-                    time.sleep(wait)   # then the same request: its request_id, stream and client_seq
-                    continue
-                return reply
-            last = f" (last: {lost})" if str(lost) else ""
-            raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times{last}")
+            prev = getattr(self._local, "deadline", None)
+            self._local.deadline = deadline
+            try:
+                while losses < RETRIES:
+                    try:
+                        if (losses or refused) and time.monotonic() >= deadline:
+                            if refused:
+                                raise refused
+                            raise _TimedOut()
+                        refused = None
+                        if self._https:
+                            with self._lock:
+                                body = self._prepare(method, req)
+                            reply = self._https.rpc(req, body, deadline)
+                            self.hello = self._https.hello
+                        elif method in _LONG_POLLS:
+                            reply = self._poll(method, req, deadline - time.monotonic())
+                        else:
+                            fut = self._send(method, req)
+                            reply = fut.result(max(deadline - time.monotonic(), 0))
+                    except _ConnectionLost as e:
+                        lost, losses = e, losses + 1
+                        continue
+                    except _TimedOut:
+                        raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
+                    except concurrent.futures.TimeoutError:
+                        self.close()
+                        raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
+                    if "error" in reply:
+                        e = reply["error"]
+                        if e.get("code") in ("run_closed", "unknown_run"):   # no more events for it: drop its counter
+                            with self._lock:
+                                self._seqs.pop(req.get("run_id"), None)
+                                self._order.pop(req.get("run_id"), None)
+                        err = RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
+                        if outage and err.code == "client_seq_reused":
+                            # the try the signer answered unavailable was written after all: that answer stands, so the
+                            # caller takes its outage path (a fail mode), as without the retry
+                            raise outage
+                        tries += 1
+                        wait = _retry_wait(method, err, tries)
+                        if wait is None or tries == RETRIES or time.monotonic() + wait >= deadline:
+                            raise err
+                        outage = err if err.code == "unavailable" else outage
+                        refused = err
+                        time.sleep(wait)   # then the same request: its request_id, stream and client_seq
+                        continue
+                    return reply
+                last = f" (last: {lost})" if str(lost) else ""
+                raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times{last}")
+            finally:
+                self._local.deadline = prev
 
     def close(self):
         with self._lock:
@@ -499,38 +537,50 @@ class Client:
             return fut
 
     def _ensure_conn(self):
+        deadline = getattr(self._local, "deadline", None)
         if self._conn is None:
-            self._conn = self._connect()
+            self._conn = self._connect(deadline)
+        if deadline is not None and time.monotonic() >= deadline:
+            raise _TimedOut()
 
     def _poll(self, method, req, timeout):
         """One request on a connection of its own, closed after the answer."""
+        deadline = time.monotonic() + timeout
         _validate(method, req)
         data = _encode(method, req)
-        sock, rfile = self._dial()
-        sock.settimeout(timeout)
+        sock, rfile = self._dial(deadline)
         try:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise _TimedOut(f"no answer from the signer within {timeout:g}s")
+            sock.settimeout(left)
             sock.sendall(data + b"\n")
             reply = read_frame(rfile)
         except socket.timeout:
-            raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
+            raise _TimedOut(f"no answer from the signer within {timeout:g}s") from None
         except (OSError, RPCError):
             reply = None
         finally:
             sock.close()
+            rfile.close()
         if reply is None:
             raise _ConnectionLost()
         return reply
 
-    def _dial(self):
+    def _dial(self, deadline=None):
+        left = None if deadline is None else deadline - time.monotonic()
+        if left is not None and left <= 0:
+            raise _TimedOut()
         if self.signer:
-            sock, rfile, self.hello = connect(self.signer, token=self.token)
+            timeout = CONNECT_TIMEOUT_S if left is None else min(CONNECT_TIMEOUT_S, left)
+            sock, rfile, self.hello = connect(self.signer, timeout=timeout, token=self.token)
         else:
             from tracekit.sdk import autospawn
             sock, rfile, self.hello = autospawn.ensure()
         return sock, rfile
 
-    def _connect(self):
-        conn = _Conn(*self._dial())
+    def _connect(self, deadline=None):
+        conn = _Conn(*self._dial(deadline))
         conn.fin = weakref.finalize(self, conn.close)   # its reader detaches it: a dead connection is not kept alive
         # the threads hold the client weakly: a Client dropped without close() is collected, and its connection with it
         conn.threads = (threading.Thread(target=Client._read, args=(weakref.ref(self), conn), daemon=True,
