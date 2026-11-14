@@ -296,6 +296,36 @@ class CodingAgentHooks(unittest.TestCase):
             json.dump(settings, f)
         self.assertIn(user, later()[2])
 
+    def test_jcode_hooks_are_read_from_its_toml_and_a_gate_after_tracekits_is_named(self):
+        """#720: jcode's hooks are a [hooks] table in config.toml, one gate timeout for every pre_tool command; its
+        gates run in order and one's updatedInput replaces the input the next ones decide and the tool runs with."""
+        path = os.path.join(self.d, "jh", "config.toml")
+        with contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("jcode", path=path, v2=True)
+        ours = agent_hooks._command("jcode", "PreToolUse", True, None)
+
+        def rows(table=None):
+            if table is not None:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("[hooks]\n" + "\n".join(agent_hooks._jcode_lines(table)) + "\n")
+            got = {}
+            doctor._harness_hook_checks(lambda rid, ok, detail, fix, bad=None: got.setdefault(rid, (ok, detail)),
+                                        {"jcode": path}, False, self.d)
+            return got
+
+        got = rows()
+        self.assertEqual({k: v[0] for k, v in got.items()},
+                         {"D-HOOKS-EVENT": True, "D-HOOKS-ORDER": True, "D-HOOKS-TIMEOUT": True})
+        hooks = agent_hooks._jcode_hooks(True, None)
+        self.assertTrue(rows({**hooks, "pre_tool": ["~/bin/policy", ours]})["D-HOOKS-ORDER"][0])
+        for later in ("~/bin/rewrite", "~/bin/rewrite  # tracekit.integrations.harness_hooks"):
+            with self.subTest(later=later):
+                ok, detail = rows({**hooks, "pre_tool": [ours, later]})["D-HOOKS-ORDER"]
+                self.assertFalse(ok)
+                self.assertIn("1 jcode pre_tool command(s)", detail)
+        no_timeout = {k: v for k, v in hooks.items() if k != "pre_tool_timeout_ms"}   # jcode's default: 5 s
+        self.assertFalse(rows(no_timeout)["D-HOOKS-TIMEOUT"][0])
+
     def test_a_missing_pre_tool_timeout_is_read_as_the_harness_default(self):
         # agy and Crush wait 30 s for a hook that sets no timeout, not the 60 s the others wait: the warning states theirs
         from tracekit import agent_hooks

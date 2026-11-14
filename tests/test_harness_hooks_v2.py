@@ -100,7 +100,10 @@ class Mapping(HarnessCase):
                 self.decision = case["decision"]
                 if self.decision == "ask":
                     self.approve_when_asked()
-                code, out, err = self.hook(harness, case["payload"], case.get("event"))   # agy: the command's event
+                payload = case["payload"]
+                if harness == "jcode":   # its payload is environment variables and stdin, as recorded
+                    payload = agent_hooks.jcode_payload(payload["stdin"], payload["env"])
+                code, out, err = self.hook(harness, payload, case.get("event"))   # agy: the command's event
                 self.assertEqual(code, CODEX_DENY if harness == "codex" and case["exit"] == 2 else case["exit"], err)
                 self.assertEqual(json.loads(out) if out else "", case["stdout"])
                 sent = self.sent[-1]
@@ -133,6 +136,54 @@ class Mapping(HarnessCase):
 
     def test_goose(self):
         self.check("goose")
+
+    def test_jcode(self):
+        self.check("jcode")
+
+    def jcode(self, event, name, ti, sid="jc-batch"):
+        """One jcode hook invocation, its payload built as jcode sends it (agent_hooks.jcode_payload)."""
+        text = json.dumps(ti, separators=(",", ":"))
+        env = {"JCODE_HOOK_EVENT": event, "JCODE_HOOK_SESSION_ID": sid, "JCODE_HOOK_CWD": "/w",
+               "JCODE_HOOK_TOOL_NAME": name, "JCODE_HOOK_TOOL_INPUT": text[:16384]}
+        return self.hook("jcode", agent_hooks.jcode_payload(text, env), "PreToolUse")
+
+    def test_jcode_batch_passes_its_gate_and_its_denied_call_is_denied_on_its_own(self):
+        # #720: every call in a batch reaches its own pre_tool gate, so the batch itself is decided as the tools it
+        # runs, never again on their arguments (which would decide each call twice and could hold it twice)
+        decisions = self.set_signer_policy(load_policy())
+        push = {"tool": "bash", "intent": "push", "command": "git push --force origin main"}
+        code, _, err = self.jcode("pre_tool", "batch", {"tool_calls": [push, {"tool": "read", "intent": "note",
+                                                                              "file_path": "note.txt"}]})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.sent[-1]["args"], {"tool_calls": [{"tool": "bash"}, {"tool": "read"}]})
+        self.assertEqual(decisions[-1]["verdict"], "flag")   # an unknown tool, and nothing else
+        code, _, err = self.jcode("pre_tool", "bash", {"command": push["command"], "intent": "push"})
+        self.assertEqual(code, 2)
+        self.assertEqual(decisions[-1]["verdict"], "deny")
+        self.assertIn("BLOCKED", err)
+
+    def test_jcode_pairs_identical_batch_calls_and_inputs_cut_at_16_kb(self):
+        # #720: two calls of one batch with the same input carry the same JCODE_HOOK_TOOL_INPUT and run in parallel,
+        # so either post_tool pairs with either pre_tool, first in first out: harmless (the same input gets the same
+        # decision), and pinned here. A write over 16 KB pairs on the cut copy both events carry
+        read = {"file_path": "note.txt", "intent": "note"}
+        for _ in range(2):
+            self.assertEqual(self.jcode("pre_tool", "read", read, sid="jc-pair")[0], 0)
+        first, second = (s["tool_call_id"] for s in self.sent[-2:])
+        big = {"content": "x" * 20000, "file_path": "big.txt"}
+        self.assertEqual(self.jcode("pre_tool", "write", big, sid="jc-pair")[0], 0)
+        self.assertEqual(self.sent[-1]["args"]["content"], big["content"])   # decided on the whole input (stdin)
+        written = self.sent[-1]["tool_call_id"]
+        posts = []
+        for name, ti, status in (("read", read, "ok"), ("read", read, "error"), ("write", big, "ok")):
+            p = json.loads(agent_hooks.jcode_payload("", {
+                "JCODE_HOOK_EVENT": "post_tool", "JCODE_HOOK_SESSION_ID": "jc-pair", "JCODE_HOOK_TOOL_NAME": name,
+                "JCODE_HOOK_TOOL_INPUT": json.dumps(ti, separators=(",", ":"))[:16384], "JCODE_HOOK_STATUS": status,
+                "JCODE_HOOK_ERROR": "File not found: note.txt" if status == "error" else ""}))
+            posts.append(agent_hooks.normalise("jcode", p))
+        self.assertEqual([q["tool_use_id"] for q in posts], [first, second, written])
+        self.assertEqual([q["hook_event_name"] for q in posts], ["PostToolUse", "PostToolUseFailure", "PostToolUse"])
+        self.assertEqual(posts[1]["error"], "File not found: note.txt")
 
     def test_copilot_denies_mcp_names_at_or_above_64_characters(self):
         prefix = "notes-"
@@ -1103,7 +1154,7 @@ class Installer(unittest.TestCase):
         with mock.patch("os.getcwd", return_value=d):
             for harness in agent_hooks.HARNESSES:
                 with self.subTest(harness=harness):
-                    project = None if harness == "gptme" else d
+                    project = None if harness in ("gptme", "jcode") else d   # their user config only
                     path = agent_hooks.config_path(harness, project)
                     with contextlib.redirect_stdout(io.StringIO()):
                         agent_hooks.install(harness, project)   # v1
@@ -1122,6 +1173,13 @@ class Installer(unittest.TestCase):
                         self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
                         self.assertFalse(os.path.exists(bridge))
                         self.assertTrue(os.path.isfile(path))
+                        continue
+                    if harness == "jcode":   # a TOML table in its config.toml
+                        code, out = self.cli("uninstall", "--agent", harness)
+                        self.assertEqual(code, 0)
+                        self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
+                        with open(path, encoding="utf-8") as f:
+                            self.assertNotIn("tracekit", f.read())
                         continue
                     if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
