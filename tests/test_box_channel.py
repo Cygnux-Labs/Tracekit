@@ -90,7 +90,7 @@ class TestConfig(Signer):
     def test_authorize_never_grants_channel_open(self):
         """Only box_daemons opens a channel: an `authorize` entry listing every method (channel_open among them)
         grants it nothing, and a box daemon needs none."""
-        s = self.signer(authorize={"uid:2000": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR)})
+        s = self.signer(authorize={"uid:2000": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR)})
         run = self.register(s, CLIENT)
         self.assertIn("not authorized for channel_open", self.refused("forbidden", s, CLIENT, "channel_open",
                                                                       run).message)
