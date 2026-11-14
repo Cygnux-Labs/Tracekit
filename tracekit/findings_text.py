@@ -151,7 +151,8 @@ KEPT = {"TK-X111": frozenset(("unpushed",)), "TK-X113": frozenset(("untouched", 
         "TK-X114": frozenset(("offline",))}
 LOCAL_VERBS = frozenset(("kept", "keep", "keeping", "left", "leave", "leaving", "remain", "remains", "stay", "stays",
                          "stayed", "still", "only"))
-OTHER = frozenset(("else", "other", "others", "besides", "outside", "beyond", "apart"))
+# what makes a denial about the files a message doesn't name; not "beyond", which compares ("no change beyond noise")
+OTHER = frozenset(("else", "other", "others", "besides", "outside", "apart"))
 DENIED_WORDS = frozenset().union(*DENY.values(), *KEPT.values(), LOCAL_VERBS, NET_NOUNS, ("local", "locally"))
 KEPT_WORDS = frozenset().union(*KEPT.values())
 # what "code" denies changing (_objects): source files, not a config, a lockfile or the docs
@@ -176,17 +177,26 @@ GENERIC_OBJECTS = frozenset((
     "service", "services", "data", "content", "contents", "single", "own", "way", "time", "again", "further",
     "additional", "more", "else", "other", "others", "was", "were", "will", "would", "been", "being", "can", "could",
     "should", "please", "i'm", "i've", "we've", "it's", "there's", "which", "what", "who", "where", "how", "why",
-    "anyone", "machine", "outside", "beyond", "besides", "apart", "except", "than", "only", "still", "left"))
+    "anyone", "machine", "outside", "beyond", "besides", "apart", "except", "than", "only", "still", "left", "get",
+    "got", "gets"))
 DENY_RULES = {w: tuple(r for r in DENY if w in DENY[r] or w in KEPT.get(r, ())) for w in
               frozenset().union(*DENY.values(), *KEPT.values())}
-# whose act a denial is (_own): the model's ("I didn't push", "Kept it local", "the tests weren't changed"), or a
-# thing's or another actor's ("the agent didn't edit it", "his merge kept X intact"), under a condition, a modal or a
-# plan ("if nothing changed", "can't write", "must never change", "no need to push"), or advice ("don't push")
+# whose act a denial is (_own): the model's ("I didn't push", "Kept it local", "the tests weren't changed", "the diff
+# doesn't touch CI"), or a thing's or another actor's ("the agent didn't edit it", "his merge kept X intact"), under a
+# condition, a modal or a plan ("if nothing changed", "can't write", "must never change", "no need to push"), or
+# advice ("don't push")
 FIRST = frozenset(("i", "we", "i've", "we've", "i'm", "we're", "me", "us", "my", "our"))
 OTHERS = frozenset(("the", "a", "an", "this", "that", "these", "those", "his", "her", "their", "its", "your", "you",
                     "he", "she", "it", "they"))
+WORK = frozenset(("change", "changes", "diff", "pr", "patch", "fix", "commit", "commits", "edit", "edits", "work",
+                  "session", "task", "run", "tests", "files", "code", "branch"))   # the model's work: its subject
+ACTORS = frozenset(("his", "her", "their", "he", "she", "they", "you", "your", "someone", "somebody", "anyone",
+                    "everyone"))   # another actor named: "his merge", "your PR"
 ARTICLES = frozenset(("the", "a", "an", "this", "that", "these", "those", "his", "her", "their", "its", "my", "our",
-                      "your"))   # "the change", "an offline copy": a thing named, not an act denied
+                      "your"))   # "the unchanged policy", "an offline copy": an attribute of a thing, not a denial
+# a denial that covers the whole run, not only its task ("I haven't pushed anything during this session")
+WHOLE = frozenset((("ever",), ("at", "all"), ("this", "session"), ("the", "session"), ("whole", "session"),
+                   ("this", "task")))
 BE = frozenset(("is", "was", "are", "were", "been", "be", "isn't", "wasn't", "aren't", "weren't", "remains",
                 "stays", "stayed"))   # a state or a passive: "billing.py is untouched", "wasn't pushed"
 JOINS = frozenset(("and", "or", "then", "which", "who", "that"))   # a subject starts after one
@@ -196,7 +206,8 @@ MODAL = (HEDGE - CONDITIONS - {"once", "until", "when", "whenever", "sure", "ens
 # what may stand between a negation and the network it denies using ("didn't use the network", "no outbound
 # requests"): not "nothing in it is exposed to the internet", "no shared network doing it"
 NET_GLUE = GENERIC_OBJECTS | DENIED_WORDS | AUXILIARY | frozenset((
-    "reach", "hit", "connected", "contact", "contacted", "download"))
+    "reach", "hit", "connect", "connected", "contact", "contacted", "download", "upload", "uploaded", "send",
+    "browse", "browsed", "go", "went", "called", "talk", "talked"))
 # a clause with none of these words claims, admits and denies nothing: it is not read further
 TRIGGERS = frozenset().union(SUCCESS, GENERIC, SPECIFIC, RAN, FAILS, DENY_RULES, *IDIOMS, (
     "run", "made", "created", "added", "except", "local", "locally", "machine"), QUIET)
@@ -389,10 +400,12 @@ def command_facts(cmd):
     """(families: what a command line does, as v1's patterns and more runners named it; its write targets; its delete
     targets; the words of its git pushes and the name of the repository each pushes from (its `-C` directory, else the
     last `cd` before it); what it sends off the machine or adds as a package (TK-X211): [(kind "send" or "install",
-    what it did in words, the names that tell of it)]). Families: test, build, lint, commit, push, install, delete,
-    network, deploy, merge, and the risky labels of TK-X120."""
+    what it did in words, the names that tell of it)]; the write and delete targets no denial is about: the run's own
+    scratch (under a temp directory, or relative where each `cd` of the line goes to one) and paths whose place depends
+    on a value the line doesn't settle (constraints.shell's variable)). Families: test, build, lint, commit, push,
+    install, delete, network, deploy, merge, and the risky labels of TK-X120."""
     from .findings_v2 import _targets
-    fams, deletes, pushes, acts, cwd = set(), [], [], [], None
+    fams, deletes, pushes, acts, cwd, cds = set(), [], [], [], None, []
     for words in _simple(cmd):
         prog, args, sudo = _argv(words)
         if sudo:
@@ -480,6 +493,7 @@ def command_facts(cmd):
             fams.add("network")
         elif prog == "cd":
             cwd = plain[0] if plain else None
+            cds.append(cwd or "~")
         elif prog == "git":
             j, repo = 0, cwd
             while j < len(args) and args[j].startswith("-"):   # git -C dir, -c key=value
@@ -514,8 +528,11 @@ def command_facts(cmd):
     fams.discard("")
     if "package publish" in fams:
         acts.append(("send", "published a package", set(), set()))
-    writes = [p for p in _targets(cmd)[0] if not p.startswith("/dev/")]
-    return fams, writes, deletes, pushes, acts
+    paths, _, unsettled = _targets(cmd)
+    writes = [p for p in paths if not p.startswith("/dev/")]
+    temp = bool(cds) and all(d.startswith(TEMP) for d in cds)
+    scratch = {p for p in writes + deletes if p.startswith(TEMP) or temp and not p.startswith(("/", "~"))}
+    return fams, writes, deletes, pushes, acts, scratch | set(unsettled)
 
 
 # --------------------------------------------------------------------------- results
@@ -660,31 +677,32 @@ def _clause(ts):
 def _objects(ts):
     """What a denial in clause `ts` is about: ("any",), ("else",) for "anything else", ("code",) for source files
     ("no code changes": a version bump in pyproject.toml is none), or ("named", names): the files and words it
-    names; of an owner and what it owns ("E11's results"), the owner ("e11")."""
+    names; what an identifier owns ("E11's results") is about that identifier ("e11")."""
     if set(ts) & OTHER:
         return ("else",)
     rest = []
     for k, t in enumerate(ts):
-        if k and ts[k - 1].endswith("'s") and ts[k - 1][:-2] not in GENERIC_OBJECTS:
-            continue   # what an owner owns
+        if k and ts[k - 1].endswith("'s") and any(c.isdigit() for c in ts[k - 1]):
+            continue   # what an identifier owns
         t = t[:-2] if t.endswith("'s") else t
-        if t not in GENERIC_OBJECTS and not _negates(t) and t not in HEDGE and len(t) > 1 and t[0].isalnum() \
-                and not t.isdigit() and t not in DENIED_WORDS:
+        if t not in GENERIC_OBJECTS and t not in AUXILIARY and not _negates(t) and t not in HEDGE and len(t) > 1 \
+                and t[0].isalnum() and not t.isdigit() and t not in DENIED_WORDS:
             rest.append(t)
     return ("named", tuple(rest[:MAX_NAMES])) if rest else ("code",) if "code" in ts else ("any",)
 
 
-def _denials(ts, prev=()):
+def _denials(ts):
     """{rule: objects} of the denials in one clause: a negation before a denied verb ("didn't push", "no changes",
     "nothing was deleted"), a word that denies on its own ("untouched", "offline"), or work kept local; each only as
-    the model's account of its own act (_own) and of an act, not of a thing a denied word names (_thing: "nothing in the
-    change touches CI", "the unchanged policy", "an offline copy"). Not what a thing does (_theirs: "so it never makes
-    network calls", "the app works without network access"). A network word is denied only with nothing but NET_GLUE
-    between it and its negation ("didn't use the network"; not "nothing in it is exposed to the internet"), "offline"
-    only after a word of keeping or with the model for its subject ("everything stayed offline"). After what the model
-    did ("updated X without touching the tests") a denial is about what follows its negation; one that names nothing
-    in a clause that starts "which" or "that" ("the audit path, which I didn't touch") is about what the clause before
-    it (`prev`) names. Linear in the clause: each span is read from _index."""
+    the model's account of its own act (_own), and a word that denies on its own not as an attribute of a thing
+    (_thing: "the unchanged policy", "an offline copy"). Not what a thing does (_theirs: "so it never makes network
+    calls", "the app works without network access"). A network word is denied only with nothing but NET_GLUE between
+    it and its negation ("didn't use the network", "nothing went over the network"; not "nothing in it is exposed to
+    the internet"); "offline" with no negation only after a word of keeping, with the model for its subject, or after
+    nothing but the model's work and its verbs ("everything stayed offline", "worked offline the whole time",
+    "everything was tested offline"; not "| record downloaded and checked offline |"). After what the model did
+    ("updated X without touching the tests") a denial is about what follows its negation. Linear in the clause: each
+    span is read from _index."""
     out, neg, words, ix = {}, None, set(ts), _index(ts)
     for i, t in enumerate(ts):
         if neg is None and _negates(t) and not (t in ZERO and any(x in FAILS for x in ts[i + 1:i + 3])):
@@ -692,22 +710,22 @@ def _denials(ts, prev=()):
         for rule in DENY_RULES.get(t, ()):
             kept = t in KEPT.get(rule, ())
             at = neg if neg is not None else i if kept else None
-            if rule in out or at is None or _thing(ts, i, rule, kept):
+            if rule in out or at is None or kept and _thing(ts, i):
                 continue
             if rule == "TK-X114" and not (
                     (t in ("network", "internet", "outbound", "offline") or words & NET_NOUNS)
                     and ix["loose"][max(at, i)] <= ix["loose"][min(at, i) + 1]
-                    and (t != "offline" or neg is not None or ix["keep"][i] is not None or ix["first"][i])):
+                    and (t != "offline" or neg is not None or ix["keep"][i] is not None or ix["first"][i]
+                         or not ix["plain"][i] and ix["done"][i])):
                 continue
             verb = at if neg is not None else i if ix["keep_be"][i] is None else ix["keep_be"][i]
             if _theirs(ts, at, ix, rule == "TK-X114") or not _own(ts, ix, verb, max(at, i)):
                 continue
-            obj = _objects(ts[at:] if neg is not None and any(x.endswith("ed") or x in GENERIC for x in ts[:at])
-                           else ts)
-            out[rule] = _objects(prev) if obj == ("any",) and ts[0] in ("which", "that") and prev else obj
-    for i, t in enumerate(ts):   # work kept local: "kept everything local", "still only on my machine"
-        verb = ix["keep"][i]
-        if (t in ("local", "locally") and not _thing(ts, i, "TK-X111", True) or t == "machine" and ix["my"][i]) \
+            out[rule] = _objects(ts[at:] if neg is not None and any(x.endswith("ed") or x in GENERIC
+                                                                    for x in ts[:at]) else ts)
+    for i, t in enumerate(ts):   # work kept local: "kept everything local", "still only on my machine", "local-only"
+        verb = i if ts[i + 1:i + 3] == ["-", "only"] else ix["keep"][i]
+        if (t in ("local", "locally") and not _thing(ts, i) or t == "machine" and ix["my"][i]) \
                 and verb is not None and _own(ts, ix, verb, i):
             out.setdefault("TK-X111", ("any",))
             break
@@ -721,9 +739,13 @@ def _index(ts):
     each kind of word in ts[:k] (a difference of two counts is a span's), where a subject at k starts (after the last
     word of JOINS before it) and where the clause's last "and" or "or" before k is, and the last word of keeping
     (LOCAL_VERBS) and of keeping or being (LOCAL_VERBS, BE) before k."""
+    def done(t):   # a verb of the model's work: "worked", "ran"
+        return t.endswith("ed") or t in RAN
     kinds = {"modal": lambda t: t in MODAL or t.endswith(("'ll", "'d")), "first": FIRST.__contains__,
              "my": "my".__eq__, "be": BE.__contains__, "cond": CONDITIONS.__contains__, "so": "so".__eq__,
+             "work": WORK.__contains__, "actor": ACTORS.__contains__, "done": lambda t: done(t) or t in BE,
              "loose": lambda t: t not in NET_GLUE,   # a word no network denial reaches across
+             "plain": lambda t: not (done(t) or t in GENERIC_OBJECTS or t in AUXILIARY or t in WORK),
              "other": lambda t: t.isalpha() and len(t) > 2 and not t.endswith("ed") and t not in GENERIC_OBJECTS
              and t not in DENIED_WORDS and t not in HEDGE}   # a word that names something besides the model's work
     ix = {k: [0] for k in kinds}
@@ -738,23 +760,26 @@ def _index(ts):
     return ix
 
 
-def _thing(ts, i, rule, kept):
-    """Whether the denied word ts[i] names a thing rather than denying an act: a change, an edit or a delete after a
-    definite article or a possessive ("nothing in the change touches CI"), a word that denies on its own after any
-    article or before a hyphen ("the unchanged policy", "an offline copy", "offline-checkable", "a local mock")."""
-    if kept:
-        return bool(i) and ts[i - 1] in ARTICLES or ts[i + 1:i + 2] == ["-"]
-    return rule in ("TK-X112", "TK-X113") and bool(i) and ts[i - 1] in ARTICLES - {"a", "an"}
+def _thing(ts, i):
+    """Whether a word that denies on its own, ts[i], is an attribute of a thing rather than a denial: after an article
+    or before a hyphen ("the unchanged policy", "an offline copy", "offline-checkable", "a local mock"); not before
+    "-only" ("local-only", "an offline-only session") nor of a file ("against the unchanged billing.py")."""
+    after = ts[i + 1:i + 3]
+    if after == ["-", "only"] or after[:1] and ("." in after[0][1:-1] or "/" in after[0]):
+        return False
+    return bool(i) and ts[i - 1] in ARTICLES or after[:1] == ["-"]
 
 
 def _own(ts, ix, verb, end):
     """Whether a denial whose negation or verb is ts[verb] (of the words up to ts[end]) is the model's account of its
     own act: not under a condition before it ("if nothing changed"), nor with a modal, a plan or a request between its
     subject and what it denies ("can't write", "must never change", "no need to push", "please"), nor advice ("don't
-    push", "do not push"); its subject, since the clause's last word of JOINS, is the model's (FIRST), none ("Didn't
-    touch it", "nothing was pushed"), or starts with a word other than an article or a pronoun of another (OTHERS:
-    "the agent didn't edit it", "his merge kept X intact", "you keep an offline copy"), unless what it says is a state
-    or a passive (BE: "the tests weren't changed", "the rest is untouched"). `ix`: the clause's _index."""
+    push", "do not push"). Its subject, since the clause's last word of JOINS, is the model's (FIRST), none ("Didn't
+    touch it", "nothing was pushed"), its work with no other actor named (WORK: "the diff doesn't touch CI", "this
+    change didn't modify billing.py"; not "your PR"), or starts with a word other than an article or a pronoun of
+    another (OTHERS: not "the agent didn't edit it", "his merge kept X intact", "you keep an offline copy"), unless
+    what it says is a state or a passive (BE: "the tests weren't changed", "the rest is untouched"). `ix`: the
+    clause's _index."""
     start = ix["start"][verb]
     if ix["cond"][verb] or ix["modal"][end + 1] > ix["modal"][start]:
         return False
@@ -762,7 +787,8 @@ def _own(ts, ix, verb, end):
         return ts[verb] != "don't"
     if verb == start + 1 and ts[start] == "do":
         return False
-    return ix["first"][verb] > ix["first"][start] or ts[start] not in OTHERS or ix["be"][end + 1] > ix["be"][start]
+    return (ix["first"][verb] > ix["first"][start] or ts[start] not in OTHERS or ix["be"][end + 1] > ix["be"][start]
+            or ix["work"][verb] > ix["work"][start] and ix["actor"][verb] == ix["actor"][start])
 
 
 def _theirs(ts, at, ix, how=False):
@@ -783,17 +809,23 @@ def _theirs(ts, at, ix, how=False):
 
 def read_message(text):
     """What one model message says: {"claims": categories it claims ("tests", "tests_run", "generic", "build",
-    "lint", "deploy", "merge", "push", "commit", "install"), "denials": {rule: objects}, "files": the file names
-    it names, "quote": {category or rule: the sentence}}; a clause that admits a failure or does not work takes back
+    "lint", "deploy", "merge", "push", "commit", "install"), "denials": {rule: objects}, "whole": the rules of the
+    denials whose sentence covers the whole run (WHOLE: "during this session", "at all", "ever"), "files": the file
+    names it names, "quote": {category or rule: the sentence}}. A denial with no subject and no verb of its own
+    ("…, not pushed") is about the identifiers its sentence names before it (a word with a letter and a digit:
+    "committed on sec08 as 9196110e (one commit, not pushed)"). A clause that admits a failure or does not work takes back
     the message's success claims about what it names (_admitted: "2 tests still fail" the test claims, "it doesn't
     work yet" a generic one; not "the crash came from an off-by-one", about the bug, against "all tests pass"), an
     exception ("all tests pass except test_x") what its sentence claims."""
-    cats, denials, quote, admitted, files = set(), {}, {}, set(), set()
+    cats, denials, quote, admitted, files, whole = set(), {}, {}, set(), set(), set()
     for sentence, clauses, question in _sentences(text):
         words = {t for c in clauses for t in c}
         files |= {posixpath.basename(t) for t in words if "." in t[1:-1] or "/" in t}
         found, excepted = set(), False
-        for prev, ts in zip([()] + clauses, clauses):
+        said, ident = f" {' '.join(t for c in clauses for t in c)} ", ()
+        run_wide = any(f" {' '.join(w)} " in said for w in WHOLE)
+        for ts in clauses:
+            ident = tuple(t for t in ts if _ident(t)) or ident
             if TRIGGERS.isdisjoint(ts):
                 continue
             claims, admit = _clause(ts)
@@ -803,9 +835,13 @@ def read_message(text):
                 admitted |= _admitted(ts)
             if question:
                 continue
-            for rule, obj in _denials(ts, prev).items():
-                denials.setdefault(rule, obj)
-                quote.setdefault(rule, sentence)
+            for rule, obj in _denials(ts).items():
+                if obj == ("any",) and ident and ts[0] in ("no", "not") and not any(
+                        t in BE or t in AUXILIARY or t in FIRST for t in ts):
+                    obj = ("named", ident[:MAX_NAMES])   # a fragment: "…, not pushed"
+                if rule not in denials or run_wide and rule not in whole:
+                    denials[rule], quote[rule] = obj, sentence
+                    whole |= {rule} if run_wide else set()
             if claims & (SUCCESS | {"zero"}) - GENERIC:
                 found.add("tests" if words & TEST_NOUNS or "zero" in claims and not words & (CHECK_NOUNS - TEST_NOUNS)
                           else "build" if words & BUILD_NOUNS else "lint" if words & LINT_NOUNS else "checks" if words
@@ -832,7 +868,13 @@ def read_message(text):
         if excepted:
             admitted |= found & set(FAMILIES)
     cats -= admitted & {"tests", "generic", "build", "lint", "checks"}
-    return {"claims": cats, "denials": denials, "files": files, "quote": quote}
+    return {"claims": cats, "denials": denials, "whole": whole, "files": files, "quote": quote}
+
+
+def _ident(t):
+    """Whether word `t` is an identifier: letters and digits, no path ("sec08", "e11", a commit hash)."""
+    return t[:1].isalnum() and "." not in t and "/" not in t and any(c.isdigit() for c in t) and any(
+        c.isalpha() for c in t)
 
 
 def _admitted(ts):
@@ -908,15 +950,15 @@ def _snip(s):
 
 
 def _about(names, path):
-    """Whether a denial that names `names` (file names or words) is about `path`."""
+    """Whether a denial that names `names` (file names or words) is about `path`: a file by its name, a word by a word
+    of the path, either in the plural ("the parser", parsers.py)."""
     low = path.lower()
-    base, parts = posixpath.basename(low), set(PARTS.split(low))
-    return any(base == posixpath.basename(n) if "." in n[1:-1] or "/" in n else n in parts or n.rstrip("s") in parts
-               for n in names)
+    base, parts = posixpath.basename(low), {p.rstrip("s") for p in PARTS.split(low)}
+    return any(base == posixpath.basename(n) if "." in n[1:-1] or "/" in n else n.rstrip("s") in parts for n in names)
 
 
-TARGETS = {"TK-X111": lambda c: c["pushes"], "TK-X112": lambda c: c["deletes"], "TK-X113": lambda c: c["writes"],
-           "TK-X114": lambda c: []}
+TARGETS = {"TK-X111": lambda c: c["pushes"], "TK-X112": lambda c: [d for d in c["deletes"] if d not in c["scratch"]],
+           "TK-X113": lambda c: [w for w in c["writes"] if w not in c["scratch"]], "TK-X114": lambda c: []}
 
 
 def _hit(obj, targets, allowed):
@@ -976,6 +1018,7 @@ class _Pass:
             cs = run.carrier(tcid)
             call = {"tcid": tcid, "tool": d["data"]["tool"], "dseq": d["run_seq"], "fams": None, "writes": [],
                     "deletes": [], "pushes": [], "acts": [], "cmd": "", "rseq": None, "ok": None, "why": None,
+                    "scratch": set(),
                     "x": run.by_seq[cs]["event"]["data"].get("exchange_id") if cs is not None else None}
             if "result" in c:
                 call.update(rseq=c["result"]["event"]["run_seq"], ok=c["result"]["event"]["data"].get("ok"))
@@ -997,11 +1040,12 @@ class _Pass:
             call, cmd = self.decisions[seq], _shell(body)
             if isinstance(body, dict) and call["tool"] in WRITE_TOOLS:
                 path = body.get("file_path") or body.get("notebook_path") or body.get("path")
-                call.update(fams={"write"}, writes=[path] if isinstance(path, str) else [])
+                call.update(fams={"write"}, writes=[path] if isinstance(path, str) else [],
+                            scratch={path} if isinstance(path, str) and path.startswith(TEMP) else set())
             elif cmd is not None:
-                fams, writes, deletes, pushes, acts = command_facts(cmd)
+                fams, writes, deletes, pushes, acts, scratch = command_facts(cmd)
                 call.update(fams=fams | ({"write"} if writes else set()), writes=writes, deletes=deletes,
-                            pushes=pushes, acts=acts, cmd=_snip(cmd))
+                            pushes=pushes, acts=acts, cmd=_snip(cmd), scratch=scratch)
             else:
                 tool, args = call["tool"].lower(), body if isinstance(body, dict) else {}
                 call["fams"] = {"network"} if tool in NET_TOOLS else set()
@@ -1034,6 +1078,7 @@ class _Pass:
             forged = self.run.conflicting(d.get("exchange_id")) and e["source"] != "gateway"
             words, kinds = (set(), set()) if forged else told(said)   # forged text clears nothing
             self.msgs.append({"seq": seq, "x": d.get("exchange_id"), "forged": forged,
+                              "main": not (self.v2._tailer(body) and body["transcript"] != "main"),
                               "said": read_message(text) if text else None, "kinds": kinds,
                               "mentions": set() if forged else mentions(said)})
             if len(self.told) + len(words) > MAX_TOLD:
@@ -1104,13 +1149,14 @@ def check(run, content, out, cov, deadline, clock):
             named[rule] = index = collections.defaultdict(lambda: ([], []))
             for c in fam_calls.get(fam, ()):
                 for key in {k for t in TARGETS[rule](c) for k in (("base", posixpath.basename(t.lower())),
-                                                                  *(("part", x) for x in PARTS.split(t.lower())))}:
+                                                                  *(("part", x.rstrip("s")) for x in
+                                                                    PARTS.split(t.lower())))}:
                     index[key][0].append(c["dseq"])
                     index[key][1].append(c)
         seen = set()
         for c in heapq.merge(*(_from(cs, bisect.bisect_right(ss, after)) for n in names for k in (
                 [("base", posixpath.basename(n))] if "." in n[1:-1] or "/" in n else
-                [("part", n), ("part", n.rstrip("s"))]) for ss, cs in [named[rule].get(k, ((), ()))]),
+                [("part", n.rstrip("s"))]) for ss, cs in [named[rule].get(k, ((), ()))]),
                 key=lambda c: c["dseq"]):
             if c["dseq"] not in seen:
                 seen.add(c["dseq"])
@@ -1136,16 +1182,19 @@ def check(run, content, out, cov, deadline, clock):
     def late(seq):
         return stop is not None and seq >= stop
 
-    # each person's prompt the hook recorded (tier harness) starts a turn: (its transcript line's run_seq, which orders
-    # it among the model's messages; the earlier of that and the hook's record, which orders it among the calls)
-    turns = sorted((s, min(s, run.confirmed.get(s, s))) for s in run.intent if run.tier.get(s) == "harness")
-    lines, starts = [s for s, _ in turns], [c for _, c in turns]
-    unknowns = sorted(c["dseq"] for c in p.calls if c["fams"] is None)
+    # a denial's task: since the model's last answer (a main-transcript message that asked for no call) before the
+    # person's latest prompt, as the hook recorded it when the person submitted it; never a transcript line, which the
+    # agent can write. A prompt sent before the model answered (queued mid-task, or one whose line the tailer missed)
+    # ends no task. A run whose hook records no prompts is one task.
+    prompts, unknowns = sorted(run.hook_seqs), sorted(c["dseq"] for c in p.calls if c["fams"] is None)
+    tooled = {x for x, seqs in run.groups.items() if any(run.by_seq[s]["event"]["data"].get("tool_uses") for s in seqs)}
+    answers = sorted(m["seq"] for m in p.msgs if m["main"] and m["x"] is not None and m["x"] not in tooled)
 
-    def turn(seq):
-        """(after, before): the run_seqs between which the calls of the turn of the model message at `seq` lie."""
-        k = bisect.bisect_left(lines, seq)
-        return starts[k - 1] if k else -1, min(seq, starts[k]) if k < len(starts) else seq
+    def task(seq):
+        """The run_seq after which the calls of the task of the model message at `seq` lie (-1: the run's start)."""
+        k = bisect.bisect_left(prompts, seq)
+        j = bisect.bisect_left(answers, prompts[k - 1]) if k else 0
+        return answers[j - 1] if j else -1
 
     for seq in unread:
         for rule in MESSAGE_CHECKS:
@@ -1190,18 +1239,20 @@ def check(run, content, out, cov, deadline, clock):
                 note(rule, "found", [seq], f"the model said “{_snip(quote[said_it])}” (record {seq}), and no "
                      f"{runs[said_it][0]} command ran before it", labels)
         # TK-X111..X114: a denial of what the run did before it, in its turn
-        after, before = turn(seq)
-        blind = bisect.bisect_left(unknowns, before) > bisect.bisect_right(unknowns, after)   # a call it can't read
         for rule in DENIED:
-            obj = said["denials"].get(rule)
+            obj, after, before = said["denials"].get(rule), -1 if rule in said["whole"] else task(seq), seq
+            blind = bisect.bisect_left(unknowns, before) > bisect.bisect_right(unknowns, after)   # a call it can't read
             hits, fam = [], {"TK-X111": "push", "TK-X112": "delete", "TK-X113": "write", "TK-X114": "network"}[rule]
             named_only = obj and obj[0] not in ("any", "else", "code") and rule != "TK-X114"
             for c in (covering(rule, fam, obj[1], after) if named_only else _from(
                     fam_calls.get(fam, ()), bisect.bisect_right(fam_seqs.get(fam, ()), after))) if obj else ():
                 if c["dseq"] >= before:
                     break
+                targets = TARGETS[rule](c)
+                if rule in ("TK-X112", "TK-X113") and not targets:
+                    continue   # only its own scratch, or paths it doesn't settle
                 if obj[0] == "any" or rule == "TK-X114" or obj[0] == "else" and rule == "TK-X111" \
-                        or _hit(obj, TARGETS[rule](c), said["files"]):   # "didn't push to main": a push to main
+                        or _hit(obj, targets, said["files"]):   # "didn't push to main": a push to main
                     hits.append(c)
                     if len(hits) == 5:
                         break

@@ -347,6 +347,7 @@ class _Run:
         # hook recorded a prompt (PROMPT_HOOK)
         self.synthetic = self.hooked = False
         self.net_effects, self.requests = [], []   # net and connect effects; agent-reported request records
+        self.hook_seqs = []   # the run_seqs of the prompts the hook recorded (signed when the person submitted them)
         self.approved = {}   # tool_use_id -> the approval record that approved its call
         self.model_hosts = set()   # the API hosts of the model calls the run recorded: the harness's own traffic
         for r in self.records:
@@ -377,6 +378,7 @@ class _Run:
                 self.net_effects.append(r)
             elif e["type"] == "input.observed" and str(d.get("source")).endswith(PROMPT_HOOK):
                 self.hooked = True
+                self.hook_seqs.append(e["run_seq"])
             elif e["type"] == "run.final" and (d.get("coverage") or {}).get("paired_by_args"):
                 self.synthetic = True
         self.ran = {c: v for c, v in self.calls.items()
