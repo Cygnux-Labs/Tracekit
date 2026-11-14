@@ -156,7 +156,7 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
             "dbus-run-session": (("--config-file", "--dbus-daemon"), 0),
             "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
             "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
-            "pnpx": (("-p", "--package"), 0),
+            "pnpx": (("-p", "--package"), 0), "corepack": ((), 0),
             "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
             "uvx": (UV_OPTS, 0),
             "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
@@ -917,7 +917,8 @@ def parse(command):
     return analyse(command)[0]
 
 
-def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None, globs=frozenset()):
+def analyse(command, persistent_target=None, readings=True, work=None, downloads=False, aliases=None, globs=frozenset(),
+            pieces=True):
     """(the commands, the normalised lines, the other words that name something, the files redirections write, the
     code, what else it learned: _learned). `readings`: False reads the line only as written, without its second
     readings (_Parser.simple). `work`: a budget ([characters parsed]) several parses share, MAX_WORK in all.
@@ -925,8 +926,9 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
     the aliases the line defines ({name: [values]}), read wherever a command has the name (_Parser.emit): bash may
     parse a use after its definition runs (a trap's action, a later line), so the line is read again with them until
     it defines no more; `globs`: the glob options its commands set (_globs_set), read again with them until it sets no
-    more. A line with a NUL is unread: no shell reads one (bash's strings end there; a spawn refuses
-    one), and a terminal's typed text holds one where keys put text in it the hook can't read (agent_hooks.UNKNOWN)."""
+    more. `pieces`: False reads no loop value's own reading (_Parser.pieces). A line with a NUL is unread: no shell
+    reads one (bash's strings end there; a spawn refuses one), and a terminal's typed text holds one where keys put text
+    in it the hook can't read (agent_hooks.UNKNOWN)."""
     if "\x00" in command:
         raise ParseError("a NUL character")
     ctx = {"cmds": [], "lines": [], "refs": [], "written": [], "kept": [], "kept_batches": [], "always_cut": [],
@@ -946,7 +948,10 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
            # one it can't read), each literal it gives a variable anywhere, and each command with what its unquoted
            # expansions may expand to and the variables they read whose literals it doesn't know there (_made_text)
            "assigns": False, "defaults": {}, "ifs_values": [], "given": {}, "split_values": [], "exports": set(),
-           "globopts": _glob_options(command, globs)}
+           "globopts": _glob_options(command, globs),
+           # each loop value's own reading (_Parser.pieces): its lines and code, what they cost, and whether the budget
+           # left them out
+           "pieces": pieces, "piece_lines": [], "piece_batches": [], "piece_work": 0, "pieces_cut": False}
     # A literal can become an arithmetic variable name on the same line. Read
     # substitutions inside its array index when that line has an arithmetic
     # evaluation context; bash re-expands that index while evaluating it.
@@ -1016,11 +1021,13 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
         raise
     again = None
     if ctx["aliases"] != (aliases or {}):
-        again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"], globs)
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, ctx["aliases"], globs, pieces)
     elif ctx["functions"] and not ctx["downloads"] and _may_download(ctx):
-        again = analyse(command, persistent_target, readings, ctx["work"], downloads=True, aliases=aliases, globs=globs)
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads=True, aliases=aliases, globs=globs,
+                        pieces=pieces)
     elif not (more := _globs_set(ctx["cmds"])) <= ctx["globopts"]:
-        again = analyse(command, persistent_target, readings, ctx["work"], downloads, aliases, ctx["globopts"] | more)
+        again = analyse(command, persistent_target, readings, ctx["work"], downloads, aliases, ctx["globopts"] | more,
+                        pieces)
     if again is not None:
         again[5]["more"] |= ctx["more"]   # (what this reading read decided how the line is read again)
         return again
@@ -1048,6 +1055,16 @@ def analyse(command, persistent_target=None, readings=True, work=None, downloads
         words = ["" if i in blank else w for i, w in enumerate(words)]
         ctx["kept"] += _lines(words, progs) + [x for gone in gones for x in _lines_without(
             words, progs, {i: t for i, t in gone.items() if i not in blank})]
+    # each loop value's own reading (_Parser.pieces), read after the line as it was, in what its budget leaves: past
+    # it, none is, and the line as it was is held (pieces_cut: TK-SHELL-PARSE), never looser than it
+    ctx["pieces_cut"] |= ctx["work"][0] + ctx["piece_work"] > MAX_WORK
+    if not ctx["pieces_cut"]:
+        ctx["work"][0] += ctx["piece_work"]
+        ctx["lines"] += ctx["piece_lines"]
+        for words, progs, data_steps, gone in ctx["piece_batches"]:
+            blank = {i for indexes, step in data_steps if step.get("cut") for i in indexes}
+            ctx["kept"] += _lines_without(["" if i in blank else w for i, w in enumerate(words)], progs,
+                                          {i: t for i, t in gone.items() if i not in blank})
     code, at = [], 0
     for a, b in sorted(ctx["cut"]):   # each cut a space, so the text on either side doesn't join
         code += [command[at:a], " "]
@@ -1542,10 +1559,12 @@ def _learned(ctx):
     variable (or exported one: set, read, declare …), and the names an export of literal names exported; whether a
     second reading (`readings`) read anything the line as written doesn't (more: without it,
     analyse(readings=False) is the same parse); the names of the functions it defines; each name the line gives a
-    value (an assignment, a loop's variable), with the literals it may get."""
+    value (an assignment, a loop's variable), with the literals it may get; whether its loop values' own readings were
+    read (pieces) or the budget left them out (pieces_cut)."""
     return {"read": ctx["read"], "assigned": ctx["assigned"], "unresolved": ctx["unresolved"],
             "any_set": ctx["any_set"], "exports": ctx["exports"], "more": ctx["more"],
-            "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()}}
+            "functions": list(ctx["functions"]), "given": {k: list(v) for k, v in ctx["given"].items()},
+            "pieces": bool(ctx.get("piece_lines")) and not ctx.get("pieces_cut"), "pieces_cut": ctx.get("pieces_cut", False)}
 
 
 def analyse_argv(argv, readings=True, work=None, downloads=False):
@@ -2077,23 +2096,22 @@ _METADATA = {"ls", "stat", "du", "chmod", "chown", "chgrp"}
 _SHOPT = re.compile(r"\bshopt\b([^;&|\n]*)")
 _EXTGLOB = re.compile(r"[?*+@!]\(")
 _GLOB_OPTIONS = {"dotglob", "nocaseglob", "extglob"}
-# a shell started with shell options (bash -O x, +O; zsh's -o x, --globdots, its letters: -4 is GLOB_DOTS), bash's
-# BASHOPTS, and zsh's setopt, unsetopt and emulate; in at most 16 words after the shell's name, so each search stays
-# linear (_globs_set reads every word of the commands the parse finds)
-_SHELL_O = re.compile(r"(?<![^\s;&|(`/])(?:ba)?sh\s+(?:[^\s;&|]+[ \t]+){0,16}?[-+]O\s*(\S*)")
+# zsh's setopt, unsetopt and emulate, and a zsh started with options (-o x, --globdots, its letters: -4 is GLOB_DOTS),
+# in at most 16 words after the shell's name, so each search stays linear: a line that may set any, which writes a
+# pattern of zsh's syntax, is unreadable (_glob_options; _globs_set reads them and bash -O, as the parse finds them)
 _ZSH_OPTIONS = re.compile(r"\b(?:un)?setopt\b|\bemulate\b|(?<![^\s;&|(`/])zsh\s+(?:[^\s;&|]+[ \t]+){0,16}?(?:[-+]o|--\w|"
                           r"[-+]\w*[^cilsxvefdnu\s])")
 _BASHOPTS = re.compile(r"\bBASHOPTS\b(?:\+?=([\w:]*)(?=[\s;&|)]|$))?")
-# the text one of _SHOPT, _SHELL_O, _ZSH_OPTIONS and _BASHOPTS, or GLOBIGNORE, needs (a quote or `\` dropped)
-_GLOB_WORDS = ("shopt", "-O", "+O", "setopt", "emulate", "zsh", "BASHOPTS", "GLOBIGNORE")
+# the text one of _SHOPT and _BASHOPTS, or GLOBIGNORE, needs (a quote or `\` dropped)
+_GLOB_WORDS = ("shopt", "BASHOPTS", "GLOBIGNORE")
 _UNQUOTED = str.maketrans("", "", "'\"\\")   # a text without its quotes and backslashes
 
 
 def _glob_options(command, more=frozenset()):
     """The shell options `command` sets that change what its patterns match (dotglob, nocaseglob, extglob), read
-    anywhere on it, as written and with its quotes and escapes gone (`shopt -s dot''glob` is dotglob), with `more`, the
-    ones its commands set (_globs_set): shopt -s, bash -O and BASHOPTS by name, a GLOBIGNORE in any form (set, it
-    turns dotglob on). One set in a way the parser can't read (a name in a variable, zsh's setopt or options) is
+    anywhere on it, as written and with its quotes and escapes gone (`shopt -s dot''glob` is dotglob): shopt -s and
+    BASHOPTS by name, a GLOBIGNORE in any form (set, it turns dotglob on); with `more`, the ones its commands set
+    (_globs_set: shopt -s, bash -O, zsh's). One set in a way the parser can't read (a name in a variable, zsh's setopt or options) is
     "unread", so its patterns are read with every option (_unglob). A line that may set extglob and writes a pattern
     of its syntax (`@(…)`, `!(…)`), or zsh's (`^x`, `x~y`, `x#`), is unreadable (ParseError): its patterns match more
     than these read."""
@@ -2104,13 +2122,10 @@ def _glob_options(command, more=frozenset()):
             words = m.group(1).split()
             if any(re.fullmatch(r"-[a-z]*s[a-z]*", w) for w in words):
                 found |= {w if re.fullmatch(r"[A-Za-z_]\w*", w) else "unread" for w in words if not w.startswith("-")}
-        found |= {w if re.fullmatch(r"[A-Za-z_]\w*", w) else "unread" for w in _SHELL_O.findall(text)}
         found |= {n for m in _BASHOPTS.finditer(text) for n in (m.group(1).split(":") if m.group(1) is not None
                                                                  else ["unread"])}
         if "GLOBIGNORE" in text:
             found.add("dotglob")
-        if _ZSH_OPTIONS.search(text):
-            found.add("unread")
     found &= _GLOB_OPTIONS | {"unread"}
     if found & {"extglob", "unread"} and _EXTGLOB.search(command) or "unread" in found and _ZSH_OPTIONS.search(
             command) and re.search(r"(?:^|[\s/])\^|\w~|\S#", command):
@@ -2703,7 +2718,7 @@ class _Parser:
         self.data = set()   # indexes in self.out whose data words are blanked when their step is cut
         self.data_steps = []
         self.gone = [{} for _ in range(12)]   # each second reading's text of the words in self.out it changes (None: gone)
-        self.pieces = []   # (a command's start and end in self.out, a reading of its pipeline alone, as gone's: flush)
+        self.pieces = []   # (a command's start and end in self.out, the loop values a reading of it is, gone's: flush)
         self.unwrapped = set()   # emit(): (pipeline, wrapper, what it may run) read where an option may take a value
         # the variables bash expands to a non-empty value here, which no second reading empties: $PWD (bash sets it),
         # one the line gave a literal (`D=build; rm -rf "$D"/`) and a for loop's over literal words, in its body;
@@ -2729,6 +2744,45 @@ class _Parser:
 
     def charge(self, n):
         charge(self.ctx["work"], n)
+
+    def reading_pieces(self):
+        """Whether loop values' own readings (pieces) are read: asked for (analyse) and not yet past the budget."""
+        return bool(self.ctx.get("pieces")) and not self.ctx["pieces_cut"]
+
+    def piece_charge(self, n):
+        """Spend `n` on loop values' own readings (pieces), apart from the line's budget: whether any is still read
+        (False once they would take the line past MAX_WORK, and none is: analyse)."""
+        ctx = self.ctx
+        if self.reading_pieces():
+            ctx["piece_work"] += n
+            ctx["pieces_cut"] = ctx["work"][0] + ctx["piece_work"] > MAX_WORK
+            return not ctx["pieces_cut"]
+        return False
+
+    def list_at(self, at):
+        """Where the and-or list holding self.out's word `at` starts (after _LIST_ENDS' word before it)."""
+        while at and self.out[at - 1] not in _LIST_ENDS:
+            at -= 1
+        return at
+
+    def stages(self, at, step):
+        """Where a loop value's line (pieces) starts (step -1, from a command's start `at` in self.out) or ends (1,
+        from its end): the words before or after it in its pipeline stage, and the whole stages next to it within
+        PIECE_ROOM characters, in its and-or list (_LIST_ENDS)."""
+        out, room, ends = self.out, PIECE_ROOM, _LIST_ENDS | {"|", "|&"}
+
+        def edge(i):   # from a boundary `i` (a slice index), past the words of the stage there to its pipe or list end
+            while (0 < i if step < 0 else i < len(out)) and out[i - 1 if step < 0 else i] not in ends:
+                i += step
+            return i
+        at = edge(at)
+        while (0 < at if step < 0 else at < len(out)) and out[at - 1 if step < 0 else at] in ("|", "|&"):
+            nxt = edge(at + step)   # the next stage, with its pipe
+            room -= sum(len(w) + 1 for w in (out[nxt:at] if step < 0 else out[at:nxt]))
+            if room < 0:
+                break
+            at = nxt
+        return at
 
     def line_substitutes(self):
         """Whether the line of the text that self.i is on holds a `$(` or a backquote (dollar's arithmetic check),
@@ -2971,19 +3025,23 @@ class _Parser:
             more += _lines_without(self.out, self.progs, gone)
         self.ctx["lines"] += _lines(self.out, self.progs) + more
         self.ctx["kept_batches"].append((self.out.copy(), self.progs.copy(), self.data_steps.copy(), gones))
-        progs = set(self.progs)
-        for begin, end, gone in self.pieces:   # a reading of one command's pipeline alone (simple): from the and-or
-            while begin and self.out[begin - 1] not in _LIST_ENDS:   # list's separator before it to the one after
-                begin -= 1
-            while end < len(self.out) and self.out[end] not in _LIST_ENDS:
-                end += 1
+        # each loop value's reading (pieces): in each and-or list, one line of what its commands' readings change, with
+        # their pipeline's stages around them (stages), read only in what the budget leaves (piece_charge)
+        progs, values = set(self.progs), {}
+        for at, begin, end, key, gone in self.pieces:
+            v = values.setdefault((at, key), [begin, end, {}])
+            v[0], v[1] = min(v[0], begin), max(v[1], end)
+            v[2].update(gone)
+        for begin, end, gone in values.values():
+            begin, end = self.stages(begin, -1), self.stages(end, 1)
             words = self.out[begin:end]
+            if not self.piece_charge(2 * sum(map(len, words))):   # (here and again for the code: analyse)
+                break
             at = [i - begin for i in range(begin, end) if i in progs]
-            gone = {i - begin: t for i, t in gone.items() if begin <= i < end}
-            self.charge(2 * sum(map(len, words)))
-            self.ctx["lines"] += _lines_without(words, at, gone)
-            self.ctx["kept_batches"].append((words, at, [({i - begin for i in indexes if begin <= i < end}, step)
-                                                         for indexes, step in self.data_steps], [gone]))
+            gone = {i - begin: t for i, t in gone.items()}
+            self.ctx["piece_lines"] += _lines_without(words, at, gone)
+            self.ctx["piece_batches"].append((words, at, [({i - begin for i in indexes if begin <= i < end}, step)
+                                                          for indexes, step in self.data_steps], gone))
 
     def blank(self):
         s = self.s
@@ -3193,7 +3251,8 @@ class _Parser:
                 self.ctx["steps"][-1]["piped_on"] = True
 
     def simple(self, pid, piped=False, stage=0):
-        begin, targets = len(self.out), []   # where it starts in self.out; (where a redirection's target is, its slots)
+        # where it starts in self.out, and its and-or list (list_at); (where a redirection's target is, its slots)
+        begin, seg, targets = len(self.out), None, []
         words, globs, names, strings, docs, idx, spans, here, exps = [], [], [], [], [], [], [], [], []
         first = len(self.ctx["cmds"])   # the commands its substitutions run, then its own, follow
         self.piped = piped
@@ -3374,6 +3433,14 @@ class _Parser:
                 made = self.header_braces(raw) if g and "{" in self.bare and not re.search(r"[$`]", raw) else None
                 if made is not None:
                     header += made
+                    continue
+                # a pattern is each name it matches: read as the pattern written in the body would be, as written and
+                # as each name it may make (_unglob), and as empty, as a value the line can't name is (second readings,
+                # as the pattern's own names are); on a line that makes files, it may match one the line names
+                if g and not re.search(r"[$`]", raw) and not self.ctx["files"]:
+                    made = _unglob(text, self.ctx["globopts"], self.ctx["work"]) + [""] if self.ctx["readings"] else []
+                    self.ctx["more"] |= bool(made)
+                    header += [text] + made
                     continue
                 # a word whose every expansion is a variable's one known literal (word(): given) is that literal
                 header.append(None if g or re.search(r"[$`]", text) or re.search(r"[$`]", raw) and not self.given
@@ -3613,14 +3680,14 @@ class _Parser:
         # and with each name a bracket pattern can make (possible, as the empty readings: `cat key[s]` may be `cat keys`)
         self.ctx["more"] |= self.ctx["readings"] and any(patterns)   # (a name a pattern makes, below)
         extra = itertools.chain(  # built one at a time, each charged (below) before the next; None: a word gone
-            combos,
-            ([w if t is None else None if not t and a else t for t, w, a in zip(texts, words, alones)]
-             for texts in self.fill(slots, True)),
-            (words[:i] + [c] + words[i + 1:] for i, p in enumerate(patterns) if p and self.ctx["readings"]
+            ((None, texts) for texts in combos),   # (each with the loop values it reads, None for no value's)
+            ((env, [w if t is None else None if not t and a else t for t, w, a in zip(texts, words, alones)])
+             for env, texts in self.fill(slots, True, True)),
+            ((None, words[:i] + [c] + words[i + 1:]) for i, p in enumerate(patterns) if p and self.ctx["readings"]
              for c in (_brackets(words[i]) if words[0] in _METADATA else
                        _unglob(words[i], self.ctx["globopts"], self.ctx["work"]))))
         glob = any(globs)
-        for k, texts in enumerate(extra, 12):
+        for k, (env, texts) in enumerate(extra, 12):
             self.charge(len(texts))
             # each word's words in alt (kept: the word each is of): none for a word gone, the words bash splits a word
             # into (a tuple: fill's)
@@ -3629,14 +3696,15 @@ class _Parser:
                 alt = [f for t in texts if t is not None for f in ((t,) if isinstance(t, str) else t)]
             else:
                 kept, alt = range(len(texts)), texts
-            # past the 4th, a literal's or a pattern's reading is a line of the command's pipeline alone (flush), so a
+            # past the 4th, a literal's or a pattern's reading is the line of its values alone (flush's pieces), so a
             # loop over hundreds of words doesn't read its whole script again for each
             read = {idx[i]: " ".join(t) if isinstance(t, tuple) else t for i, t in enumerate(texts) if t != words[i]}
             if k < 16 + len(combos):
                 self.gone += [{} for _ in range(k + 1 - len(self.gone))]
                 self.gone[k].update(read)
-            else:
-                self.pieces.append((begin, len(self.out), read))
+            elif self.reading_pieces():
+                seg = self.list_at(begin) if seg is None else seg
+                self.pieces.append((seg, begin, len(self.out), (begin, k) if env is None else env, read))
             if alt and (key := tuple(alt)) not in seen and not data:
                 seen.add(key)
                 self.charge(sum(map(len, alt)))
@@ -3645,14 +3713,25 @@ class _Parser:
                                                             for f, i in zip(alt, kept)])
                 cmds += more
                 self.progs += [idx[kept[j]] for j in _programs(alt, more)]
-        # and a redirection's target as bash opens it with each literal a known variable in it may hold, the command's
-        # words in the same reading (`for f in a ~/.bashrc; do echo … >> "$f"; done` writes ~/.bashrc), each a line of
-        # the command's pipeline alone (flush)
-        at = idx + [i for i, _ in targets]
-        for texts in self.fill(slots + [s for _, s in targets], True) if targets else ():
-            self.pieces.append((begin, len(self.out), {
-                at[i]: None if not t and i < len(alones) and alones[i] else " ".join(t) if isinstance(t, tuple) else t
-                for i, t in enumerate(texts) if t is not None}))
+        # and a redirection's target as bash opens it with each literal a known variable in it may hold, with the words
+        # that read only those variables in the same reading (`for f in a ~/.bashrc; do echo … >> "$f"; done` writes
+        # ~/.bashrc): one reading a value, joined with the other commands' readings of it (flush's pieces), not each
+        # way the line's variables combine
+        # lean: a word that also reads another loop's variable is read as written there (`echo "$p" >> "$f"` over two
+        # loops is not read with both values at once); read them together if a rule needs both
+        for place, s in targets if self.reading_pieces() else ():
+            names = sorted({p[0] for p in s if isinstance(p, tuple)})
+            for values in itertools.product(*(self.known.get(n, ()) for n in names)):
+                env = dict(zip(names, values))
+                read = {place: "".join(env[p[0]] if isinstance(p, tuple) else p for p in s)}
+                for i, w in enumerate(slots):
+                    if w and {p[0] for p in w if isinstance(p, tuple)} <= env.keys():
+                        t = _fields([(env[p[0]], not p[1]) if isinstance(p, tuple) else (p, False) for p in w])
+                        read[idx[i]] = None if not t and alones[i] else " ".join(t) if isinstance(t, tuple) else t
+                if not self.reading_pieces():
+                    break
+                seg = self.list_at(begin) if seg is None else seg
+                self.pieces.append((seg, begin, len(self.out), frozenset(env.items()), read))
         self.known = outer
         # bash sets $_ to the last word of each simple command it runs, OPTARG to an option's value getopts reads: each
         # literal one may be the value later on the line (given), where TK-D012 also denies one in the action position
@@ -3775,11 +3854,12 @@ class _Parser:
         self.track_redefinitions(cmds)
         return consumed
 
-    def fill(self, slots, split=False):
+    def fill(self, slots, split=False, keyed=False):
         """Each way the known variables word() found in the words' `slots` (None: a word with none) may be set at
         once, as the words' texts (None for a word with none): `for f in a b` sets $f to a, then to b. Values alike
         (`for f in a a`) give one list, made once and charged each time. With `split`, a word an unquoted literal
-        with a blank splits is the tuple of words bash makes of it (_fields)."""
+        with a blank splits is the tuple of words bash makes of it (_fields). `keyed`: each as (the values it gives,
+        as a frozenset of (name, value), its texts)."""
         names = sorted({p[0] for s in slots if s for p in s if isinstance(p, tuple)})
         if not names:
             return []
@@ -3791,7 +3871,7 @@ class _Parser:
                                 if split else "".join(env[p[0]] if isinstance(p, tuple) else p for p in s)) for s in slots]
                 made[values] = texts, sum(len(t) if isinstance(t, str) else sum(map(len, t)) for t in texts if t)
             texts, n = made[values]
-            out.append(texts)
+            out.append((frozenset(zip(names, values)), texts) if keyed else texts)
             self.charge(n)
         return out
 
@@ -5228,17 +5308,19 @@ class _Parser:
 
 
 def _lower_name(word):
-    """`word` with the name after its last / or \\ casefolded and without a `.exe` (Windows runs git.exe for git; macOS
-    runs /bin/sh for `ſh`, its file system folding case as casefold does): the directories keep their case."""
+    """`word` with the name after its last / or \\ casefolded and without a `.exe`, `.cmd`, `.bat` or `.ps1` (Windows
+    runs git.exe for git, and npm's npm.cmd or npm.ps1 shim for npm, as a package's other commands; macOS runs /bin/sh
+    for `ſh`, its file system folding case as casefold does): the directories keep their case."""
     i = max(word.rfind("/"), word.rfind("\\")) + 1
     name = word[i:].casefold()
-    return word[:i] + (name[:-4] if name.endswith(".exe") and len(name) > 4 else name)
+    return word[:i] + (name[:-4] if name.endswith((".exe", ".cmd", ".bat", ".ps1")) and len(name) > 4 else name)
 
 
 @functools.lru_cache(maxsize=256)   # (a decision asks it of each command's program many times)
 def base_name(word):
     """The name a word gives a program or file by: its part after the last / or \\ (Windows reads C:\\x\\git.exe so),
-    casefolded and without a .exe (as _lower_name). A name bash's reading (after the last /) gives, it gives too."""
+    casefolded and without a Windows program's extension (as _lower_name). A name bash's reading (after the last /)
+    gives, it gives too."""
     return _lower_name(word[max(word.rfind("/"), word.rfind("\\")) + 1:])
 
 
@@ -5256,6 +5338,10 @@ def _programs(words, cmds):
 
 
 _LIST_ENDS = frozenset((";", "&", "&&", "||", "(", ")"))   # the words of a line between its and-or lists (flush)
+# how far around a loop value's commands its own line reads their pipeline's other stages (_Parser.stages)
+# lean: a rule that needs a stage further off reads it in the line's first four readings only; read the whole pipeline
+# if one does (each value's line then costs that whole pipeline)
+PIECE_ROOM = 128
 
 
 def _lines(words, progs):

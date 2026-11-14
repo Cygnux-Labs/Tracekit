@@ -1654,6 +1654,26 @@ class Shell(unittest.TestCase):
             self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), e.engine)
             self.assertEqual(d["verdict"], "allow")
 
+    def test_a_long_loop_over_a_long_pipeline_decides_within_the_parse_budget(self):
+        """The 1.7.0 review of cc01549d: each loop word's own reading took its whole pipeline (`&&` keeps the loop
+        above short), so 700 words over 20 stages spent the budget and were held. Each now reads the stages within
+        PIECE_ROOM of its command, in what the budget leaves after the line as written; past it, the line as written
+        decides, held: a deny after the loop stays one."""
+        pol = pc.build(os.path.join(PACKS, "dev.yaml"))[0]
+
+        def loop(n, stages):
+            return "for f in " + " ".join(f"v{i}" for i in range(n)) + '; do cat "$f"' + " | tr a-z A-Z" * stages + \
+                "; done"
+        for e in (Engine(pol), Engine(pol, "regex")):
+            for cmd, want in ((loop(700, 20), ("allow", [])), (loop(2000, 40), ("ask", ["TK-SHELL-PARSE"])),
+                              (loop(2000, 40) + "; printf x > ~/.ssh/authorized_keys", ("deny", ["TK-D023"]))):
+                with self.subTest(engine=e.engine, words=cmd[:40]):
+                    start = time.perf_counter()
+                    d = e.decide("Bash", {"command": cmd})
+                    self.assertLess(time.perf_counter() - start, PARSE_S * SLOWER * machine_scale(), e.engine)
+                    self.assertEqual(d["verdict"], want[0])
+                    self.assertTrue(set(want[1]) <= set(d["rule_ids"]), d)
+
     def test_redirections_to_bracket_patterns_decide_within_the_budget(self):
         """63 KiB of `>>a[bc][de][fg][hi]N` took 5 s to decide (1.5.2: 0.1 s): each pattern's 16 names were made
         uncharged, and the shell targets were deduplicated against a list. The names count toward the parse budget,

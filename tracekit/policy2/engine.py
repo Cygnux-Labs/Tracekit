@@ -258,7 +258,7 @@ class Engine:
             self._names[tool_re, name] = got
         return got
 
-    def decide(self, tool, args, cls=None, untrusted=None, _hidden=0, _budget=None):
+    def decide(self, tool, args, cls=None, untrusted=None, _hidden=0, _budget=None, _pieces=True):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
         (`oversize`: the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the class the
         policy maps the tool to. `untrusted(subject, field)`: the hits of the subject's values that only
@@ -270,7 +270,9 @@ class Engine:
         arguments this call is (two levels are read), where a text the parser can't read is no command. A decision
         has one budget (`_budget`: its work and its deadline), which everything it reads shares: its parse, its other
         readings, what it reads of a line the parser can't read (_plain) and each argument it reads as a command
-        (DECISION_COST each). Once it is spent nothing more is read, and the call is held (TK-SHELL-PARSE, budget)."""
+        (DECISION_COST each). Once it is spent nothing more is read, and the call is held (TK-SHELL-PARSE, budget).
+        Loop values' own readings (shell's pieces, `_pieces`) are read last, in what the budget leaves: one that spends
+        it holds the call as the line read without them decides it, never looser."""
         args = args if isinstance(args, dict) else {"value": args}
         cls = cls or self.tool_class(tool)
         fields = classes.extract(cls, tool, args, MAX_SUBJECT)
@@ -282,7 +284,7 @@ class Engine:
         if cls == "a2a" and fields.get("unreadable"):
             hits["deny"].append("TK-A2A-NAME")   # a name with spellings its rules can't see (classes.a2a_fields)
         parsed, oversize, on_parse_error = ([], [], [], [], []), [], self.policy.get("on_parse_error", "ask")
-        cause = None
+        cause, pieces_read = None, False
         work, deadline = _budget or ([0], [REGEX_TIMEOUT_S])   # (shell.charge; _backend)
         if cls == "http" and isinstance(args.get("urls"), list) and len(args["urls"]) > MAX_URLS:
             hits["deny"].append("TK-OVERSIZE")
@@ -293,7 +295,7 @@ class Engine:
                 hits["deny"].append("TK-OVERSIZE")
                 oversize.append("the shell command")
             else:
-                parsed, unread = self._parse(args, command, work, fallback=not _hidden)
+                parsed, unread = self._parse(args, command, work, fallback=not _hidden, pieces=_pieces)
                 if _hidden and unread:   # (the parser can't read it as a command)
                     return {"verdict": "allow", "rule_ids": [], "policy_hash": self.policy_hash, "engine": self.engine,
                             "unparsed": True}
@@ -307,6 +309,10 @@ class Engine:
                 if unread or held:
                     hits[on_parse_error].append("TK-SHELL-PARSE")
                     cause = unread or _unread_cause(held)
+                elif parsed[5:] and parsed[5].get("pieces_cut"):   # loop values the budget left unread
+                    hits[on_parse_error].append("TK-SHELL-PARSE")
+                    cause = "budget"
+                pieces_read = bool(parsed[5:] and parsed[5].get("pieces"))
                 # a hook's mark for text typed into a command already running, a key or a line left open
                 # (agent_hooks: OpenHands' terminal): it runs with what comes before or after it, which this call
                 # alone doesn't show. Only ever holds: a call without the mark is decided as before
@@ -410,7 +416,7 @@ class Engine:
         same = len(parsed) > 5 and not parsed[5]["more"]
         if cls == "shell" and on_parse_error == "ask" and written and not nondeterministic and not _hidden and not same \
                 and (not isinstance(command, str) or _SECOND.search(command)):
-            parsed, memo = self._parse(args, command, work, readings=False)[0], {}
+            parsed, memo = self._parse(args, command, work, readings=False, pieces=_pieces)[0], {}
             for entry in written:
                 try:
                     if hit(entry, parsed, memo, []) is None and work[0] <= shell.MAX_WORK:
@@ -428,7 +434,7 @@ class Engine:
                 for t in (text, *text.split(None, 1)[1:]):   # without its first word where that can't be read
                     work[0] += DECISION_COST
                     inner = {} if work[0] > shell.MAX_WORK else self.decide(
-                        tool, {"command": t}, "shell", untrusted, _hidden + 1, (work, deadline))
+                        tool, {"command": t}, "shell", untrusted, _hidden + 1, (work, deadline), _pieces)
                     nondeterministic |= bool(inner.get("nondeterministic"))
                     for rid in inner.get("rule_ids", ()):
                         if rid in self._deny_ids and rid not in hits["deny"] and rid not in hits["ask"]:
@@ -456,31 +462,38 @@ class Engine:
             out["oversize"] = oversize
         if cause:
             out["unread"] = cause
+        if (spent or work[0] > shell.MAX_WORK) and pieces_read and _budget is None:
+            # the loop values' own readings left the rest of the reading no budget: held, and never looser than the
+            # line read without them
+            base = self.decide(tool, args, cls, untrusted, _hidden, None, False)
+            out["verdict"] = max(out["verdict"], base["verdict"], key=("allow", *reversed(SECTIONS)).index)
+            out["rule_ids"] = list(dict.fromkeys(base["rule_ids"] + out["rule_ids"]))
+            out.update((k, base[k]) for k in ("nondeterministic", "oversize") if k in base and k not in out)
         return out
 
-    def _parse(self, args, command, work, readings=True, fallback=True):
+    def _parse(self, args, command, work, readings=True, fallback=True, pieces=True):
         """(shell.analyse() of a shell call, or what _plain() reads of one the parser can't read; why it can't, its
         ParseError's cause, else None). `readings`: False reads the command only as written (shell.analyse); `work`:
         the decision's budget (shell.charge), which _plain() spends too. `fallback`: False leaves _plain() out (None
         in its place), for a caller that only asks whether the command reads. A `commands` list is read joined, as one
         shell runs it (LangChain's ShellTool), and each entry on its own too, as its own shell runs it (OpenAI's shell
         tool, Cline's run_commands), where an open quote, a trailing \\ or a here-doc in one can't hide the next: the
-        call is decided on what either reading finds."""
-        parts = [self._parse_one(args, command, work, readings, fallback)]
+        call is decided on what either reading finds. `pieces`: shell.analyse's."""
+        parts = [self._parse_one(args, command, work, readings, fallback, pieces)]
         for c in commands_each(args):
-            parts.append(self._parse_one({"command": c}, c, work, readings, fallback))
+            parts.append(self._parse_one({"command": c}, c, work, readings, fallback, pieces))
         return parts[0] if len(parts) == 1 else (None if any(p is None for p, _ in parts) else
                                                  joined_readings([p for p, _ in parts]),
                                                  next((c for _, c in parts if c), None))
 
-    def _parse_one(self, args, command, work, readings=True, fallback=True):
+    def _parse_one(self, args, command, work, readings=True, fallback=True, pieces=True):
         """_parse's reading of one shell call as written."""
         # a file a line writes text into, as written and resolved (_normal: C:\u\.bashrc is C:/u/.bashrc)
         target = (lambda t: any(p.search(_text(f.casefold())) for f in {t, _normal(t)}
                                 for p in self._persistent_targets)) if self._persistent_targets else None
         start = work[0]
         try:
-            return _shell(args, target, readings, work), None
+            return _shell(args, target, readings, work, pieces), None
         except shell.ParseError as e:
             if not fallback:
                 return None, e.cause
@@ -545,8 +558,9 @@ class Engine:
                 if " " in "".join(c["argv"][:-1])] + [
                 " ".join(UNKNOWN_WORD if (m := _BARE_VARIABLE.fullmatch(w)) and m.group(1) in unknown else w
                          for w in c["argv"]) for c in parsed[0] if unknown and "$" in "".join(c["argv"])]))
-        if cls == "shell" and field == "line":
-            return Engine._subjects(cls, "command", args, fields, parsed) + _slashes(parsed[1])
+        if cls == "shell" and field == "line":   # (and each publish as its program's: _published)
+            return Engine._subjects(cls, "command", args, fields, parsed) + _slashes(parsed[1]) + list(dict.fromkeys(
+                p for c in parsed[0] if (p := _published(c["argv"]))))
         if field is None:
             return [canonical(args)]
         if cls == "fs" and field == "path" and isinstance(args.get("paths"), list):   # a call on several files
@@ -735,7 +749,7 @@ def joined_readings(parts):
     return tuple(out)
 
 
-def _shell(args, persistent_target=None, readings=True, work=None):
+def _shell(args, persistent_target=None, readings=True, work=None, pieces=True):
     """shell.analyse() of a shell call: (commands, normalised lines, other words that name something, files
     redirections write, code). `command` or `cmd` is a command line or an argv list; `commands` (OpenAI's shell tool)
     a list of command lines. Anything else, or more than one of them, raises ParseError."""
@@ -745,9 +759,9 @@ def _shell(args, persistent_target=None, readings=True, work=None):
     value = args[present[0]] if present else ""
     strings = isinstance(value, list) and value and all(isinstance(a, str) for a in value)
     if isinstance(value, str):
-        return shell.analyse(value, persistent_target, readings, work)
+        return shell.analyse(value, persistent_target, readings, work, pieces=pieces)
     if strings and present == ["commands"]:
-        return shell.analyse("\n".join(value), persistent_target, readings, work)
+        return shell.analyse("\n".join(value), persistent_target, readings, work, pieces=pieces)
     if strings:
         return shell.analyse_argv(value, readings, work)
     raise shell.ParseError("the command is neither a string nor a list of strings")
@@ -823,16 +837,18 @@ _JS_RUNTIMES = ("node", "nodejs", "bun", "deno", "tsx")
 # home, config, settings or data variable (CLAUDE_CONFIG_DIR, CODEX_HOME, HERMES_HOME, OPENCODE_CONFIG,
 # OPENHANDS_WORK_DIR, GOOSE_PATH_ROOT, CRUSH_GLOBAL_DATA, COPILOT_HOME, CODEBUDDY_CONFIG_DIR, CLAUDE_CODE_SIMPLE, as
 # --bare sets it; gptme has none of its own: ~/.config/gptme, or $XDG_CONFIG_HOME/gptme); an option that loads other
-# settings or none (claude --settings, --setting-sources and --bare; --config, --config-dir (copilot's), --profile, but
-# not gptme's, which profiles the run; codex's -p, and its -c only for a key of its hooks, notify,
-# sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`): -c
+# settings or none (claude --settings, --setting-sources and --bare; --config, --profile, but not gptme's --profile,
+# which profiles the run: _NOT_SETTINGS; copilot's --config-dir: _SETTINGS_OWN; codex's -p, and its -c only for a key
+# of its hooks, notify, sandbox, approvals or profiles, read in its whole value (`-c 'features={hooks=false}'`): -c
 # model_reasoning_effort=high is no such key, and codex's --disable of such a feature); hermes's -p
 _SETTINGS_VARIABLE = re.compile(r"HOME|USERPROFILE|XDG_CONFIG_HOME|(?:CLAUDE|CODEX|GEMINI|QWEN|OPENCODE|KILO|KILOCODE|"
                                 r"GOOSE|FACTORY|DROID|ANTIGRAVITY|AGY|CRUSH|DEVIN|HERMES|CLINE|OPENHANDS|CURSOR|COPILOT|"
                                 r"CODEBUDDY)_\w*(?:HOME|CONFIG|SETTING|DIR|PROFILE|SIMPLE|PLUGIN|PATH|ROOT|DATA)\w*",
                                 re.I)
-_SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|config-dir|profile)(?:=[\w\W]*)?|--bare")
+_SETTINGS_OPTION = re.compile(r"--(?:settings|setting-sources|config|profile)(?:=[\w\W]*)?|--bare")
 _SETTINGS_SHORT = {"codex": ("-c", "-p"), "hermes": ("-p",)}
+_SETTINGS_OWN = {"copilot": ("--config-dir",)}   # a long option one harness alone reads so (also as --x=value)
+_NOT_SETTINGS = {"gptme": ("--profile",)}   # a _SETTINGS_OPTION a harness reads as no settings (in any form)
 _SETTINGS_KEY = re.compile(r"(?<![^\W_])(?:hooks?|notify|sandbox|approvals?|profiles?)(?![^\W_])", re.I)
 # the builtins that set a variable from their words (read's names, printf -v's, an assignment word)
 _SETS_VARIABLE = ("env", "export", "declare", "typeset", "local", "readonly", "read", "printf", "mapfile",
@@ -916,7 +932,7 @@ def _harness_launches(commands, refs=(), learned=None):
     (shell.analyse), its names given a value and variables read with none.
     lean: a variable set anywhere on the line counts for every harness on it; read it per command if that holds a run
     a person needs"""
-    if not any(c["argv"][0] == "env" or _harness(c["argv"]) for c in commands):   # (no harness: nothing to read)
+    if not any(_harness(c["argv"]) for c in commands):   # (no harness: nothing to read; env's, the parse unwraps)
         return []
     learned = learned or {}
     named = sorted(n for n in _set_names(commands, refs, learned.get("given", ())) if _SETTINGS_VARIABLE.fullmatch(n))
@@ -944,9 +960,10 @@ def _harness_launches(commands, refs=(), learned=None):
         args = argv[1:]
         def value(i, a, at):   # an option's value, in its word (after `at`) or the next
             return a[at:].removeprefix("=") or (args[i + 1] if i + 1 < len(args) else "")
-        options = [a for i, a in enumerate(args) if _SETTINGS_OPTION.fullmatch(a) and not (
-            exe == "codex" and a.startswith("--config") and not _SETTINGS_KEY.search(value(i, a, 8))) and not (
-            exe == "gptme" and a == "--profile")]
+        options = [a for i, a in enumerate(args) if (
+            _SETTINGS_OPTION.fullmatch(a) or a.partition("=")[0] in _SETTINGS_OWN.get(exe, ())) and not (
+            exe == "codex" and a.startswith("--config") and not _SETTINGS_KEY.search(value(i, a, 8))) and
+            a.partition("=")[0] not in _NOT_SETTINGS.get(exe, ())]
         short = _SETTINGS_SHORT.get(exe, ())
         options += [a for i, a in enumerate(args) if a[:2] in short and not (exe == "codex" and a[:2] == "-c" and not
                     _SETTINGS_KEY.search(value(i, a, 2)))]
@@ -1534,7 +1551,9 @@ def _pushes(commands):
     one `PUSH:<why> <word>` subject each, none for a push of named branches other than main and master; a gh or hub
     api call also percent-decoded (_gh_api), and GitHub's REST API through curl, wget, HTTPie or xh as gh api's is
     read (_github_rest); a kubectl dry run (_kubectl_dry_run) or a publish's (_publish_dry_run) as `DRYRUN:<argv>`,
-    unless xargs, parallel, find -exec or fd -x runs it, which may add any word to it (`false`, --dry-run=none)."""
+    unless xargs, parallel, find -exec or fd -x runs it, which may add any word to it (`false`, --dry-run=none); each
+    also with its program as its base name (_program), where that differs, and a publish as `<program> publish`
+    (_published)."""
     out, replaced = [], None
     for command in commands:
         argv = command["argv"]
@@ -1550,8 +1569,12 @@ def _pushes(commands):
         elif not {"xargs", "gxargs", "parallel"} & runner:
             replaced = None   # (the word was that runner's only)
         push = _git_push(argv)
-        out += push if push is not None else [
-            "DRYRUN:" * (not runner and (_kubectl_dry_run(argv) or _publish_dry_run(argv))) + " ".join(argv)]
+        dry = "DRYRUN:" * (not runner and (_kubectl_dry_run(argv) or _publish_dry_run(argv)))
+        # (and with its program by name, as its file's base name gives it: npm.cmd is npm, /usr/bin/npm npm; and a
+        # publish after any options as its program's publish: _published)
+        out += push if push is not None else [dry + " ".join(argv)] + [
+            dry + " ".join([_program(argv), *argv[1:]])] * (_program(argv) != argv[0]) + [
+            dry + p for p in [_published(argv)] if p]
         if push is None and _program(argv) in ("gh", "hub") and argv[1:2] == ["api"]:
             given = replaced if {"xargs", "gxargs", "parallel"} & runner else None
             out += [s for s in _gh_api(argv, given, bool(runner)) if s not in out]
@@ -1714,6 +1737,32 @@ _PUBLISHERS = {"npm", "pnpm", "yarn", "bun", "cargo", "uv", "poetry"}
 _PUBLISH_FLAGS = {"--provenance", "--workspaces", "--ws", "--include-workspace-root", "--ignore-scripts", "--json",
                   "--force", "-f", "--quiet", "-q", "--silent", "--verbose", "-v", "--no-git-checks", "--recursive",
                   "-r", "--build", "--allow-dirty", "--no-verify", "--locked", "--frozen", "--offline"}
+
+
+def _published(argv):
+    """`<program> publish` for a command that publishes a package, after any number of options (each with a value
+    or not, read in one pass, where a pattern bounds them: TK-A056, TK-F004): _PUBLISHERS' publish, npm's pu to publi,
+    cargo's after a +toolchain, pnpm's recursive, multi or m publish, yarn's npm publish and its workspaces foreach's
+    publish; else None. The push and line fields read it beside the command as written."""
+    prog, words = _program(argv), argv[1:]
+    if prog not in _PUBLISHERS:
+        return None
+    if prog == "cargo" and words[:1] and words[0].startswith("+"):
+        words = words[1:]
+    i, valued = 0, False   # (valued: the word before is an option, so this one may be its value)
+    while i < len(words):
+        w, rest = words[i], words[i + 1:i + 2]
+        if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi") or prog == "pnpm" and \
+                w in ("recursive", "multi", "m") and rest == ["publish"] or prog == "yarn" and w == "npm" and \
+                rest == ["publish"]:
+            return f"{prog} publish"
+        if prog == "yarn" and words[i:i + 2] == ["workspaces", "foreach"]:
+            return _published(["yarn", *words[i + 2:]])
+        if not w.startswith("-") and not valued:
+            return None
+        valued = w.startswith("-")
+        i += 1
+    return None
 
 
 def _publish_dry_run(argv):
