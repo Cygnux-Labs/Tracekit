@@ -226,9 +226,9 @@ DEVIN_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart",
 # ignoring case, as Go's encoding/json does (K and ſ fold to k and s; so does str.casefold): the key casefolded and
 # without `_` ends in path, paths or file
 DEVIN_PATH_KEY = re.compile(r"(?:path|paths|file)$")
-# a unified diff's file names: --- a/x and +++ b/x (up to a tab, where diff -u puts the time), and diff --git a/x b/x
 # a name a shell reads as a variable in an assignment (NAME=value)
 SHELL_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# a unified diff's file names: --- a/x and +++ b/x (up to a tab, where diff -u puts the time), and diff --git a/x b/x
 DIFF_FILE = re.compile(r"^(?:(?:---|\+\+\+) ([^\t\n]+)|diff --git (.+)$)", re.M)
 
 
