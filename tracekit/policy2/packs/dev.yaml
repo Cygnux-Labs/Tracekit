@@ -21,7 +21,7 @@
 # rules for them hold only the harmful forms.
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml,
           server-core.yaml]
-version: '2026.11-dev-5'
+version: '2026.11-dev-6'
 description: dev default (the server pack's rules, unmapped tools flagged, uploads to cloud storage held, a demo deny and a demo ask)
 unknown_tools: flag
 # a call over 64 KiB, which the policy doesn't read, waits for a person (TK-OVERSIZE as an ask) where the server pack's
@@ -38,6 +38,24 @@ tools:
   Skill: harness             # Claude Code: loads a skill's instructions by its name
   SlashCommand: harness      # Claude Code: expands a slash command's prompt (`/review`)
   Workflow: harness          # Claude Code: a script that runs its agents (each of their calls has its own hook)
+  # Claude Code's tools that act only inside the session (2.1.311's own descriptions): known, so not flagged as
+  # unknown tools, and class app, not harness, so every rule that reads the whole call still reads theirs as it did
+  # (TK-S002, TK-S004, TK-F005, TK-F012). TK-A062 no longer reads them: they run no command (StructuredOutput's fields
+  # are a subagent's answer in its caller's schema). Artifact and ArtifactData stay unmapped: their writes publish to
+  # claude.ai, so they keep the unknown tool's flag
+  TaskStop: app              # stops a background task or agent by its id
+  TaskCreate: app            # the session's task list
+  TaskUpdate: app
+  TaskList: app
+  TaskGet: app
+  StructuredOutput: app      # a subagent's or workflow agent's result, as JSON in its caller's schema
+  ListAgents: app            # lists the session's running agents
+  CronCreate: app            # schedules a prompt that runs again in this session (/loop); its calls are decided then
+  CronDelete: app
+  CronList: app
+  SendUserFile: app          # sends files to the session's own user in the Claude app (desktop or phone)
+  AskUserQuestion: app       # asks the person multiple-choice questions and waits
+  ReadNotifications: app     # reads the session's queued notices (an agent finished, a comment came in)
 
 deny:
   - id: TK-DEMO-DENY
