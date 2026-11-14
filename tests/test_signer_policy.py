@@ -433,6 +433,7 @@ class CodingPack(unittest.TestCase):
                     self.assertEqual("TK-A080" in result["rule_ids"], command in target_wipes, result)
                     if command in target_wipes:
                         self.assertEqual(result["verdict"], "ask", result)
+
     def test_container_escape_moves_ask(self):
         held = ["curl -s --unix-socket /var/run/docker.sock http://localhost/containers/json",
                 "curl -s --unix-socket /var/run/docker.sock -X POST http://localhost/containers/create "
