@@ -110,14 +110,21 @@ def collect(config=None, issuer_key=None):
         # too) and the reasoning checks only;
         # D-HOOKS-PRESENT names it without reading its events, and D-HOOKS-VENV and D-SIGNER-ENV are Claude Code's;
         # until doctor reads them per format
-        return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
-                               signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
-                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
-                               sandbox_settings=[p for p in (home, settings, _managed()) if p],
-                               gemini_settings=_gemini(agent and agent.pw_dir,
-                                                        h.get("settings") if h.get("agent") == "gemini" else None),
-                               harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
-                               else None, no_hooks=h.get("no_hooks") is True)
+        rows = v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
+                         signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
+                         client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
+                         sandbox_settings=[p for p in (home, settings, _managed()) if p],
+                         gemini_settings=_gemini(agent and agent.pw_dir,
+                                                 h.get("settings") if h.get("agent") == "gemini" else None),
+                         harnesses={agent_name: h["settings"]} if agent_name != "claude" and h.get("settings")
+                         else None, no_hooks=h.get("no_hooks") is True)
+        # the re-init a fix names keeps init's agent, and --no-hooks where init was told it or the Claude Code plugin's
+        # hooks are in place (else it writes init's hooks beside the plugin's, which decides each call twice); not over
+        # init --managed's hooks: it would drop them for the plugin's, which the agent's user can turn off
+        again = (f" --agent {agent_name}" if agent_name != "claude" else "") + (
+            " --no-hooks" if h.get("no_hooks") is True or plugin and agent_name == "claude"
+            and settings not in install.MANAGED_SETTINGS.values() else "")
+        return out + [dict(r, fix=r["fix"].replace(REINIT, REINIT + again)) for r in rows]
     if sc:
         return out
     from . import agent_hooks
@@ -781,7 +788,7 @@ def _harness_hook_checks(add, harnesses, prod, home=None):
             continue
         if harness not in agent_hooks.HARNESSES or harness in agent_hooks.PLUGIN_TOOLS:   # a JavaScript plugin
             continue
-        fix = REINIT + f" --agent {harness}" if prod else f"tracekit init --dev --v2 --agent {harness}"
+        fix = REINIT if prod else f"tracekit init --dev --v2 --agent {harness}"   # collect() adds system init's agent
         if harness == "gptme":
             if not prod:
                 ok, detail = _gptme_load_check(path)
