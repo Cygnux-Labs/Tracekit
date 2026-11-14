@@ -57,6 +57,40 @@ the live constraints it states (`constraint_add`): without both grants the hook 
 records none and holds no constraint. Claude Code's hook also reads an answered approval (`approval_get`) when the model
 retries a held command with a new description: without the grant the retry is held again.
 
+## Downloading a run
+
+Whoever owns a tenant's runs can download one as a `.tkb` bundle over the same API, with no access to the signer's
+host. The operator grants `export_run` to an identity of that tenant, best one of its own rather than the agent's:
+
+```yaml
+authorize:
+  "token:acme-audit": [export_run]
+tenants:
+  "token:acme-audit": acme    # or give the token a tenant with --tenant
+```
+
+```bash
+export TRACEKIT_SIGNER=https://tracekit.example:8443 TRACEKIT_SIGNER_TOKEN_FILE=/etc/tracekit/audit-token
+export TRACEKIT_SIGNER_CA=signer-ca.pem
+tracekit export --v2 --run <run id> -o run.tkb
+tracekit verify run.tkb --trust trust.json   # the trust config the signer's operator gives you
+```
+
+- The file is the one the operator's `tracekit export --v2 --config signer.yaml --run <run id>` writes from the same
+  checkpoint, byte for byte: the run's records (commitments, not the content vault's content), the signer's key records
+  (public keys), inclusion proofs, the checkpoint note, and the compiled policy where the run's records cite one. No
+  verification code. Of the rest of the signer it shows what every bundle of it does: the log's size and hashes, and
+  its key records, which with a [record-key issuer](issuer.md) carry the certificate's list of tenants.
+- The tenant is the caller's own, from its identity. Another tenant's run is refused as `unknown_run`, as a run that
+  doesn't exist is.
+- No identity has `export_run` unless `authorize` lists it, the dev signer's included. An identity with it can download
+  any run of its tenant.
+- A run still open is exported up to the latest checkpoint. When no checkpoint covers the run yet, the signer writes one
+  and the client asks again a second later, until its timeout.
+- Verify against a trust config you got from the operator or your own sources, not from the signer that sent the bundle.
+- One run per download; `--run-set`, `--with-findings` and `--otel` stay with the operator's export. From Python,
+  `Client().export_bundle(run_id)` returns the bundle's bytes. Limits: [deployment](limits.md#deployment).
+
 ## What changes in the evidence
 
 | Property | Local caller | Remote caller |

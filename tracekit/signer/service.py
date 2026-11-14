@@ -327,8 +327,8 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, provenance, \
-    public_witness, yamlmini
+from tracekit import __version__, bundle_v2, constraints, crypto, harness_helper, merkle, otlp, pcm, privacy, \
+    provenance, public_witness, yamlmini
 from tracekit import grants as grantlib
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
@@ -351,7 +351,7 @@ from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas, key as quota_key
 from tracekit.signer.rpc_schema import INSTEAD, REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
-from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
+from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageCorrupt, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
@@ -440,9 +440,12 @@ OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run
                       "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
 # heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's;
-# channel_open: a box_daemons identity's alone, whatever `authorize` lists
+# channel_open: a box_daemons identity's alone, whatever `authorize` lists; export_run: any run of the caller's tenant
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
-                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open"}) | OPERATOR
+                           "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open",
+                           "export_run"}) | OPERATOR
+EXPORT_CHUNK = (MAX_LINE - 4096) // 4 * 3   # bundle bytes per export_run answer: their base64 fits one frame
+EXPORTS_KEPT = 4   # bundles export_run keeps whole in memory for their later chunks, the least recently used dropped
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
 CONTENT_SWEEP_S = 3600.0
@@ -1032,6 +1035,8 @@ class SignerService:
         self._passkeys_lock = threading.Lock()
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
+        # run key -> (the latest note's size then, digest, bytes) of the bundles export_run built last
+        self._exports, self._exports_lock = collections.OrderedDict(), threading.Lock()
         self._stop, self._nudged, self._checkpointing = threading.Event(), threading.Event(), threading.Lock()
         self.origin = origin or f"tracekit.local/{self.log.log_id}"
         self.contact, self.witnesses = contact or self.origin, list(witnesses)
@@ -4633,6 +4638,64 @@ class SignerService:
         except (OSError, StorageUnavailable) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         return {"events": events, "next_seq": next_seq}
+
+    def _export_run(self, identity, req):
+        """Bytes `offset` on of the .tkb bundle of run `run_id` of the caller's tenant: with `digest`, of that bundle
+        (kept from a chunk before, else built again, which must give it), else of its bundle now (one kept since the
+        latest checkpoint, else built). The tenant is the identity's, so another tenant's run is refused as a run that
+        doesn't exist."""
+        key, digest = (self._tenant_of(identity), req["run_id"]), req.get("digest")
+        if key not in self.log.runs:
+            raise RPCError("unknown_run", req["run_id"])
+        # lean: one bundle built at a time and EXPORTS_KEPT held whole in memory; spill them to disk once tenants
+        # download large runs at once
+        with self._exports_lock:
+            latest, kept = (self.log.storage.checkpoint_latest() or (0,))[0], self._exports.get(key)
+            if kept is None or kept[1] != digest and (digest or kept[0] != latest):
+                self.quotas.take_event(identity)
+                data = self._export_bytes(key)
+                kept = self._exports[key] = (latest, "sha256:" + hashlib.sha256(data).hexdigest(), data)
+            self._exports.move_to_end(key)
+            while len(self._exports) > EXPORTS_KEPT:
+                self._exports.popitem(last=False)
+        _, sha, data = kept
+        if digest not in (None, sha):
+            raise RPCError("conflict", f"the bundle of run {key[1]} changed since this download began (a newer "
+                                       "checkpoint): download it again from its first chunk")
+        offset = req.get("offset", 0)
+        if offset > len(data):
+            raise RPCError("invalid_request", f"offset {offset} is past the bundle's {len(data)} bytes")
+        return {"digest": sha, "size": len(data), "offset": offset,
+                "data": base64.b64encode(data[offset:offset + EXPORT_CHUNK]).decode("ascii")}
+
+    def _export_bytes(self, key):
+        """The .tkb bytes of run `key`, as `tracekit export --v2 --run` writes them from this signer's store: read to
+        the note bundle_v2.covering picks, by a reader opened after it, with the compiled policies its records cite.
+        While no note covers the run's last record: a nudge, and unavailable with a retry hint."""
+        cfg = {"data_dir": self.data_dir, "storage": self.storage_config}
+        try:
+            r = reader(cfg)
+            try:
+                run = r.runs.get(key)
+                note = run and bundle_v2.covering(r, run["seqs"][-1])
+            finally:
+                r.close()
+            if not note:
+                self._nudged.set()
+                raise RPCError("unavailable", f"no checkpoint covers run {key[1]} yet; the signer is writing one: ask "
+                                              "again", retry_after_ms=int(CHECKPOINT_MIN_S * 1000))
+            # lean: each reader indexes the whole store, O(records), as the operator's export does; keep one open and
+            # update() it once exports are frequent on a large store
+            r = reader(cfg)   # opened after the note: holds its records
+            try:
+                files, _ = bundle_v2.bundle(r, *key, note[1], policy_dir=os.path.join(self.data_dir, "policies"))
+            finally:
+                r.close()
+        except ValueError as e:   # over the format's limits
+            raise RPCError("quota_exceeded", str(e)) from None
+        except (OSError, StorageUnavailable, StorageCorrupt) as e:
+            raise RPCError("unavailable", f"storage read failed: {e}") from None
+        return bundle_v2.zipped(files)
 
     def _checkpoint_nudge(self, identity, req):
         self._nudged.set()

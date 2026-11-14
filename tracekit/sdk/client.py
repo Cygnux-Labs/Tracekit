@@ -21,6 +21,7 @@ that grows by one per event of a run; a run's events go out one at a time, each 
 so they reach the signer in client_seq order on every transport and retry. The client writes nothing to disk.
 """
 import asyncio
+import base64
 import collections
 import concurrent.futures
 import contextlib
@@ -320,6 +321,36 @@ class Client:
         """`parent`: the RunHandle of the run that starts this one (a sub-agent's run); the signer records the link."""
         return self.call("register_run", {**(req or {}), **(
             {"parent": {"run_id": parent.run_id, "run_token": parent.run_token}} if parent else {})})
+
+    def export_bundle(self, run_id):
+        """The .tkb bundle of run `run_id` of this identity's tenant, the bytes `tracekit export --v2 --run` writes
+        from the signer's store (export_run, an `authorize` grant), one chunk per call. A download the signer can't
+        go on with (a newer checkpoint since it began) starts again, RETRIES times at most; while no checkpoint covers
+        the run yet, it waits as the signer says, until the client's timeout."""
+        deadline, restarts = time.monotonic() + self.timeout, 0
+        while True:
+            try:
+                out = self.export_run({"run_id": run_id})
+                parts = [base64.b64decode(out["data"])]
+                while (got := sum(map(len, parts))) < out["size"]:
+                    more = self.export_run({"run_id": run_id, "digest": out["digest"], "offset": got})
+                    if not more["data"]:
+                        raise SignerUnavailable(f"the signer sent {got} of the bundle's {out['size']} bytes, then none")
+                    parts.append(base64.b64decode(more["data"]))
+            except RPCError as e:
+                wait = (e.retry_after_ms or 0) / 1000
+                if e.code == "conflict" and restarts < RETRIES:
+                    restarts += 1
+                    continue
+                if e.code != "unavailable" or not wait or time.monotonic() + wait > deadline:
+                    raise
+                time.sleep(wait)
+                continue
+            data = b"".join(parts)
+            if len(data) != out["size"] or "sha256:" + hashlib.sha256(data).hexdigest() != out["digest"]:
+                raise SignerUnavailable(f"the bundle of run {run_id} did not arrive whole: {len(data)} bytes, not the "
+                                        f"{out['size']} with digest {out['digest']} the signer named")
+            return data
 
     def call(self, method, req=None, **fields):
         """`req` as a dict, or its fields as keywords (as RunHandle.call takes them)."""

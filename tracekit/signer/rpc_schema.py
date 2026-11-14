@@ -1,6 +1,8 @@
-"""The signer RPC contract, version 22: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 23: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 22 adds intent grants (docs/intent-grants.md):
+Frozen: a change to any schema here is a new RPC_VERSION. Version 23 adds `export_run` (docs/remote-ingest.md): a run
+of the caller's tenant as the .tkb bundle the operator's `tracekit export --v2` writes, in chunks that each fit a frame.
+Version 22 adds intent grants (docs/intent-grants.md):
 `grant_issue` (a person approves a kind of costly call once, within limits, for one run), `grant_list` and
 `grant_revoke`. Version 21 adds Tracekit Box's agent channel (experimental):
 register_run's `box` (a `box_daemons` identity's box run: its id, image digest and allowlist names, which the signer
@@ -38,7 +40,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 22
+RPC_VERSION = 23
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -476,6 +478,9 @@ REQUESTS = {
                         description=_str(512), tools=_TOOLS),
     "grant_list": _obj([], run_id=ID),
     "grant_revoke": _obj(["request_id", "grant_id"], request_id=ID, grant_id=GRANT_ID, reason=REASON),
+    # a run of the caller's tenant as its .tkb bundle (version 23; an `authorize` grant, never a default), from byte
+    # `offset` on: with `digest`, of that bundle (a download's later chunks), else of its bundle at the latest checkpoint
+    "export_run": _obj(["run_id"], run_id=ID, offset=SEQ, digest=DIGEST),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -603,6 +608,10 @@ RESPONSES = {
                         self_approved={"type": "boolean"}, run_seq=SEQ),
     "grant_list": _obj(["grants"], grants={"type": "array", "maxItems": 1000, "items": _GRANT_VIEW}),
     "grant_revoke": _obj(["grant_id", "run_id", "run_seq"], grant_id=GRANT_ID, run_id=ID, run_seq=SEQ),
+    # the bundle's `size` bytes and sha256 `digest`, and `data`: base64 of its bytes from `offset`, as many as fit a
+    # frame (the transport's 1 MiB)
+    "export_run": _obj(["digest", "size", "offset", "data"], digest=DIGEST, size=SEQ, offset=SEQ,
+                       data=_str(1 << 20, pattern=r"^[A-Za-z0-9+/]*={0,2}" + _END)),
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -682,3 +691,4 @@ class SignerAPI(Protocol):
     def grant_issue(self, req: dict) -> dict: ...
     def grant_list(self, req: dict) -> dict: ...
     def grant_revoke(self, req: dict) -> dict: ...
+    def export_run(self, req: dict) -> dict: ...

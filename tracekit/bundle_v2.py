@@ -39,6 +39,7 @@ No views, no code, no trust configuration: the verifier pins its own. Never cont
 records hold commitments only."""
 import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -240,20 +241,45 @@ def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=No
     tenant (`about`: the run's findings and replay runs). `policy_dir`: where the signer keeps its compiled policies
     (<data_dir>/policies), to bundle those cited_policies names."""
     files, info = bundle(storage, tenant, run_id, note, run_set, tenant_salt, with_runs, policy_dir)
-    tmp = out_path + ".tmp"
+    write_atomic(out_path, zipped(files))
+    return {"bundle": out_path, **info}
+
+
+def write_atomic(path, data):
+    """Write `data` to `path` through a synced temporary file: a reader sees the old file or the whole new one."""
+    tmp = path + ".tmp"
     try:
         with open(tmp, "wb") as f:
-            with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
-                for n, b in files.items():
-                    z.writestr(zip_entry(n), b)
+            f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, out_path)
+        os.replace(tmp, path)
     except BaseException:
         if os.path.exists(tmp):
             os.unlink(tmp)
         raise
-    return {"bundle": out_path, **info}
+
+
+def zipped(files):
+    """The .tkb bytes of a bundle's `files` ({name: bytes}, as bundle() returns them), the same for the same files."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for n, b in files.items():
+            z.writestr(zip_entry(n), b)
+    return buf.getvalue()
+
+
+def covering(storage, last):
+    """(size, note) of the checkpoint a run's export reads to, `last` the seq of the run's last record: the newest
+    note covering it, or the latest anchored note when it covers it too, is older than the newest and carries every
+    cosigner the newest does; None while no note covers it yet."""
+    def signers(n):
+        return {line.split(" ")[1] for line in n.split("\n\n", 1)[1].splitlines()}
+    note = storage.checkpoint_latest()
+    for x in storage.anchors()[-1:]:
+        if x["size"] > last and note and x["size"] < note[0] and signers(x["note"]) >= signers(note[1]):
+            return x["size"], x["note"]
+    return note if note and note[0] > last else None
 
 
 def zip_entry(name):
