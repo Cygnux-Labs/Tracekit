@@ -1171,14 +1171,16 @@ flag:
     # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
     # shell, file and MCP tool counts, not only the coding agents' own; writes included. A target that is one env
     # template path (no space: never a whole command) is exempt. A name counts as a path: its own part of one (after
-    # the start, a `/`, a space, a quote, `=` or `:`, and up to the end, a `/`, a space or a quote: .env, .env.local,
-    # prod.env, ~/.netrc), and `credentials` only after a `/`, with an extension or as a folder (~/.aws/credentials,
-    # credentials.json, credentials/), so a word in code or prose (process.env.X, get_credentials, "the credentials")
-    # isn't. lean: a bare `credentials` file named without a path (`cat credentials`) isn't flagged either, nor an env
-    # file's name over 255 characters or with more than eight suffixes (.env.a.b.…: bounds that keep the fallback
-    # engine fast)
+    # the start, a `/` or `\`, a space, a quote, `=`, `:` or curl's `@`, and up to the end, a `/`, a space or a quote:
+    # .env, .env.local, .env-local, .env~, prod.env, ~/.netrc, .netrc.bak), and `credentials` only after a `/`, with an
+    # extension, as a folder or at the end of a file's name (~/.aws/credentials, credentials.json, credentials/,
+    # .git-credentials, .credentials.json, application_default_credentials.json, credentials.tfrc.json: a second
+    # extension only if .json, so credentials.example.yaml is a template); id_rsa, .ssh/ and .aws/ anywhere. So a word
+    # in code or prose (process.env.X, get_credentials(), "the credentials") isn't. lean: a bare `credentials` file
+    # named without a path (`cat credentials`) isn't flagged either, nor an env file's name over 255 characters or with
+    # more than eight suffixes (.env.a.b.…: bounds that keep the fallback engine fast)
     field: target
-    pattern: '(?:^|[/\s"''=:]|\\[nrt])(?:\.env(?:\.[A-Za-z0-9_-]+){0,8}(?:$|[/\s"''\\])|[A-Za-z0-9_.-]{1,255}\.env(?:$|[/\s"''\\])|id_rsa|\.ssh/|\.aws/|\.netrc(?:$|[/\s"''\\])|credentials(?:\.[A-Za-z0-9_-]+(?:$|[/\s"''\\])|/))|/credentials(?:\.[A-Za-z0-9_-]+)?(?:$|[/\s"''\\])|^credentials$'
+    pattern: '(?:^|[/\s"''=:@]|\\[nrt])(?:\.env(?:[.-][A-Za-z0-9_]+){0,8}~?(?:$|[/\s"''\\])|[A-Za-z0-9_.-]{1,255}\.env~?(?:$|[/\s"''\\])|\.netrc(?:[.-][A-Za-z0-9_]+){0,8}~?(?:$|[/\s"''\\])|credentials(?:\.[A-Za-z0-9_-]+(?:\.json)?(?:$|[/\s"''\\])|/))|id_rsa|\.ssh[/\\]|\.aws[/\\]|[A-Za-z0-9_.-]credentials(?:\.[A-Za-z0-9_-]+)?(?:\.json)?(?:$|[/\s"''\\])|[/\\]credentials(?:\.[A-Za-z0-9_-]+)?(?:\.json)?(?:$|[/\s"''\\])|^credentials$'
     unless: '^([^ ]*?/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
