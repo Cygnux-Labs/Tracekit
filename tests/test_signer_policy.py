@@ -1747,6 +1747,24 @@ class CodingPack(unittest.TestCase):
                     self.assertIn("TK-F009", e.decide("Write", {"file_path": path, "content": "{}"})["rule_ids"])
             self.assertNotIn("TK-F009", e.decide("Write", {"file_path": "/w/codebuddy.md", "content": "x"})["rule_ids"])
 
+    def test_jcodes_config_is_harness_config(self):
+        """#720: jcode reads its hooks from the [hooks] table of ~/.jcode/config.toml, or $JCODE_HOME/config.toml, and
+        re-reads them on a config reload without a restart: a write there is held, as for the other harnesses, and
+        $JCODE_HOME is matched by name."""
+        from tracekit import agent_hooks
+        for pack, engine, e in self.every_pack():
+            for command in ("echo '[hooks]' >> ~/.jcode/config.toml", "rm -rf ~/.jcode",
+                            "cp mine.toml $JCODE_HOME/config.toml", "sed -i /pre_tool/d ${JCODE_HOME}/config.toml"):
+                with self.subTest(pack=pack, engine=engine, command=command):
+                    self.assertIn("TK-F015", e.decide("Bash", {"command": command})["rule_ids"])
+            for tool, ti in (("Write", {"file_path": "/home/u/.jcode/config.toml", "content": "[hooks]"}),
+                             ("Write", {"file_path": "/home/u/.JCode/config.toml", "content": "[hooks]"}),
+                             agent_hooks.tool("jcode", "apply_patch", {
+                                 "patch_text": "--- a/.jcode/config.toml\n+++ b/.jcode/config.toml\n@@\n-a\n+b\n"})):
+                with self.subTest(pack=pack, engine=engine, tool=tool, path=ti["file_path"]):
+                    self.assertIn("TK-F009", e.decide(tool, ti)["rule_ids"])
+            self.assertNotIn("TK-F009", e.decide("Write", {"file_path": "/w/jcode.md", "content": "x"})["rule_ids"])
+
     def test_an_upload_tools_file_is_decided_as_the_shell_upload_of_it(self):
         """#757's review: CodeBuddy Code's LibraryUpload sends the file at its path off the machine, so it is decided
         as an upload, not a Read: on every pack its verdict is the strictest of a shell upload of the same file (curl -T,
