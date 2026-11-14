@@ -119,7 +119,7 @@ class Gateway(unittest.TestCase):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(self.dir, tenants={OTHER.scheme + ":" + OTHER.subject: "beta"},
                                    gateways=["mtls:spiffe://acme/*"], gateway_mandatory=self.mandatory,
-                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
+                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/gateway": ["model_event", "status"]},
                                    grace_s=60, idle_s=600, content=self.content, verify_tool_results=self.verify)
         self.closed = False
@@ -272,7 +272,7 @@ class TestContentVault(Gateway):
             self.assertEqual(self.post({"model": "gpt-x", "messages": [], "stream": stream})[0], 200)
         seqs = [r["event"]["run_seq"] for r in self.s.log.storage.iter_run("default", self.run["run_id"])
                 if r["event"]["type"] == "model.exchange"]
-        self.s.authorize["token:http"] = sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR) + ["content_read"]
+        self.s.authorize["token:http"] = sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR) + ["content_read"]
         items = self.s.call(AGENT, "content_get", {"run_id": self.run["run_id"], "seqs": seqs, "purpose": "t"})["items"]
         got = [i["content"] for i in items]
         self.assertEqual(got[:3], [{"model": "gpt-x", "messages": [], "stream": False}, COMPLETION,
@@ -327,7 +327,7 @@ class TestOddBodiesVaultOn(TestOddBodiesVaultOff):
         self.assertEqual(self.post(json.loads(raw))[0], 200)
         [req] = [r["event"] for r in self.s.log.storage.iter_run("default", self.run["run_id"])
                  if r["event"]["type"] == "model.exchange" and r["event"]["data"]["phase"] == "request"]
-        self.s.authorize["token:http"] = sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR) + ["content_read"]
+        self.s.authorize["token:http"] = sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR) + ["content_read"]
         [item] = self.s.call(AGENT, "content_get", {"run_id": self.run["run_id"], "seqs": [req["run_seq"]],
                                                     "purpose": "t"})["items"]
         self.assertEqual(item, {"seq": req["run_seq"], "state": "not_retained"})
@@ -975,7 +975,7 @@ class TestShowReasoningVault(Gateway):
         self.assertEqual(self.post(THINKING, path="/v1/messages")[0], 200)
         [seq] = [r["event"]["run_seq"] for r in self.s.log.storage.iter_run("default", self.run["run_id"])
                  if r["event"]["type"] == "model.exchange" and r["event"]["data"]["phase"] == "request"]
-        self.s.authorize["token:http"] = sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR) + ["content_read"]
+        self.s.authorize["token:http"] = sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR) + ["content_read"]
         [item] = self.s.call(AGENT, "content_get", {"run_id": self.run["run_id"], "seqs": [seq], "purpose": "t"})["items"]
         self.assertEqual(item["content"], json.loads(self.up.seen[0][1]))
         self.assertEqual(item["content"]["thinking"], {"type": "adaptive", "display": "summarized"})
