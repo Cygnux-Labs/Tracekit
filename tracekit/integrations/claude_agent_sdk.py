@@ -45,13 +45,14 @@ import rfc8785
 from claude_agent_sdk import AssistantMessage, HookMatcher, TextBlock, ThinkingBlock, ToolUseBlock
 
 from tracekit.format.canon import event_hash
-from tracekit.integrations import executor_tools, said
+from tracekit.integrations import executor_tools, said, version_check
 from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
 from tracekit.sdk.client import SignerUnavailable, fail_open, refusal, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
+_FRAMEWORK = version_check.framework("claude-agent-sdk")
 EXECUTOR_TOOL = f"mcp__{SERVER}__"   # the tool executor's actions, as the model names them
 HOOK_TIMEOUT_S = 600     # the SDK's default (60 s) is too short to wait for a person
 APPROVAL_WAIT_S = 540    # below HOOK_TIMEOUT_S, so the hook answers before the CLI gives up on it
@@ -110,6 +111,7 @@ def tracekit_hooks(signer, run, mcp_servers=None):
     """The `hooks=` mapping for ClaudeAgentOptions. `signer` is a tracekit Client or any `SignerAPI`; `run` is its
     `register_run` response (`run_id`, `run_token`); `mcp_servers`: the mapping given ClaudeAgentOptions, when it holds
     a tool executor's server. To add hooks of your own, extend the lists."""
+    version_check.warn_untested(*_FRAMEWORK)
     rpc, calls = _Run(signer, run), {}   # calls: tool_use_id -> (decision_id, args_digest), from Pre to PostToolUse
 
     async def pre(inp, tool_use_id, ctx):
@@ -220,6 +222,7 @@ class TracekitSessionStore:
     between two writes (seen on `load`, when a session resumes) makes the signer record a `state_tamper` gap."""
 
     def __init__(self, store, signer, run):
+        version_check.warn_untested(*_FRAMEWORK)
         self._store, self._rpc = store, _Run(signer, run)
         # lean: one digest per transcript for the store's life; prune at session end if one process serves many
         self._digests = {}   # what the store holds now; None once an entry is not canonical JSON (not committed)

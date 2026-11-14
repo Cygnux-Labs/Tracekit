@@ -432,6 +432,7 @@ def instrument(agent=None):
     `agent` names the run (default: $TRACEKIT_AGENT, else the script's name)."""
     from . import autotrace
     from .client import SYSTEM_CONFIG
+    from .integrations import version_check
     from .sdk.client import Client, SignerUnavailable, current_run
     from .signer.rpc_schema import REQUESTS, RPCError
     if agent is not None and not isinstance(agent, str):
@@ -461,14 +462,18 @@ def instrument(agent=None):
         atexit.register(_close, run)
         _STATE["run"] = run   # before wiring: an instrument() called while a framework is imported gets this run
         for (label, dist, lo, hi, req, page, wire), version in found:
+            untested = not lo <= _release(version) < hi
+            claimed = untested and version_check.claim(label)
             try:
                 wire(run)
             except Exception as e:
+                if claimed:
+                    version_check.unclaim(label)
                 warnings.warn(f"tracekit.instrument(): {label} {version} not wired ({type(e).__name__}: {e}). "
                               f"Tracekit is tested with {req}: install those, or wire it by hand "
                               f"({wiki_url(f'docs/{page}.md')})", stacklevel=2)
                 continue
-            if not lo <= _release(version) < hi:
+            if claimed:
                 warnings.warn(f"tracekit.instrument(): {_untested_warning(label, version, req)}", stacklevel=2)
         autotrace.instrument(run)
         return run
