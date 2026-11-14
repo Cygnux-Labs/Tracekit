@@ -1745,44 +1745,28 @@ def _published(argv):
     """`<program> publish` for a command that publishes a package, after any number of options (each with a value
     or not, read in one pass, where a pattern bounds them: TK-A056, TK-F004): _PUBLISHERS' publish (a program
     corepack or a package runner names with its version too: npm@10), npm's pu to publi, cargo's after a +toolchain,
-    pnpm's after recursive, multi or m, yarn's npm publish (after its workspaces foreach), and the publish of the
-    command a package manager's exec, x or dlx (shell.RUNNERS: after pnpm's options too) runs, and of a wrapper or
-    runner that command is (npx, env, rustup run: the parser unwraps the line's own), after its options and a `--`
-    (shell._unwrap's first reading); else None. The push and line fields read it beside the command as written."""
-
-    def runs(name, at):   # where what the wrapper or runner `name` at `at` runs starts, or None
-        window = argv[at:at + 65]   # (each word read at most a window's times: linear)
-        inner = next(shell._unwrap(name, window), [])
-        return at + len(window) - len(inner) if inner else None
-
-    i, ran = 0, False   # (the program's word: each command an exec runs in turn, and whether one did)
-    while i is not None and i < len(argv):
-        name = shell.base_name(argv[i])
-        if (prog := name.partition("@")[0]) not in _PUBLISHERS:
-            i = None if not ran else runs(name, i + 1) if name in shell.WRAPPERS else runs(name, i + 1) if \
-                name in shell.RUNNERS and argv[i + 1:i + 2] != [] and argv[i + 1] in shell.RUNNERS[name][0] else None
+    pnpm's after recursive, multi or m, and yarn's npm publish (after its workspaces foreach); else None. The command
+    a package manager's exec, x or dlx runs, and a wrapper's, are commands of their own the parser gives
+    (shell.runner_at, shell._unwrap). The push and line fields read it beside the command as written."""
+    prog = shell.base_name(argv[0]).partition("@")[0] if argv else ""
+    if prog not in _PUBLISHERS:
+        return None
+    i = 1 + (prog == "cargo" and argv[1:2] != [] and argv[1].startswith("+"))
+    valued = False   # (the word before is an option, so this one may be its value)
+    while i < len(argv):
+        w = argv[i]
+        if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi") or prog == "yarn" and \
+                argv[i:i + 2] == ["npm", "publish"]:
+            return f"{prog} publish"
+        skip = 2 if prog == "yarn" and argv[i:i + 2] == ["workspaces", "foreach"] else \
+            1 if prog == "pnpm" and w in ("recursive", "multi", "m") else 0
+        if skip:   # its command follows, after options of its own
+            i, valued = i + skip, False
             continue
-        i += 1 + (prog == "cargo" and argv[i + 1:i + 2] != [] and argv[i + 1].startswith("+"))
-        valued = False   # (the word before is an option, so this one may be its value)
-        while i < len(argv):
-            w = argv[i]
-            if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi") or prog == "yarn" and \
-                    argv[i:i + 2] == ["npm", "publish"]:
-                return f"{prog} publish"
-            if prog in shell.RUNNERS and w in shell.RUNNERS[prog][0]:   # its exec, x or dlx: what that runs
-                i, ran = runs(prog, i), True
-                break
-            skip = 2 if prog == "yarn" and argv[i:i + 2] == ["workspaces", "foreach"] else \
-                1 if prog == "pnpm" and w in ("recursive", "multi", "m") else 0
-            if skip:   # its command follows, after options of its own
-                i, valued = i + skip, False
-                continue
-            if not w.startswith("-") and not valued:
-                return None
-            valued = w.startswith("-")
-            i += 1
-        else:
+        if not w.startswith("-") and not valued:
             return None
+        valued = w.startswith("-")
+        i += 1
     return None
 
 
@@ -2906,7 +2890,7 @@ def _may_run_input(argv):
     on its own (TK-D002's system(), the parser's sed e), and so is what a wrapper or runner runs (env, nice, xargs:
     the parser gives it as a command of its own)."""
     name, args = argv[0], argv[1:]
-    if name in shell.WRAPPERS or name in shell.RUNNERS and args[:1] and args[0] in shell.RUNNERS[name][0]:
+    if name in shell.WRAPPERS or name in shell.RUNNERS and shell.runner_at(name, args) is not None:
         return False
     if name in shell.SHELLS:
         return shell._shell_mode(args)[0] == "stdin"
