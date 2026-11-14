@@ -15,7 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -587,7 +587,8 @@ class Command(unittest.TestCase):
         in the folder setUp wrote: before growing()'s session and the store's records."""
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(svc, "dev_data_dir", return_value=self.cfg["data_dir"]), \
-                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc}), \
+                mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": self.cc,
+                                             "CODEX_HOME": os.path.join(self.cc, "no-codex")}), \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = cli.main(["tips", "--since", "2026-10-01", *args])
         return code, out.getvalue(), err.getvalue()
@@ -633,7 +634,7 @@ class Command(unittest.TestCase):
         code, out, err = self.tips("--json")
         self.assertEqual(code, 0, err)
         got = json.loads(out)
-        self.assertEqual(list(got), ["window", "prices", "root", "sources", "tips"])
+        self.assertEqual(list(got), ["window", "prices", "root", "codex_root", "sources", "tips"])
         self.assertEqual([(t["id"], t["ok"]) for t in got["tips"]], [("context", True), ("cache", False),
                                                                      ("holds", True)])
         self.assertEqual((got["sources"]["signed"]["holds"], got["sources"]["transcripts"]["files"]), (1, 1))
@@ -778,6 +779,118 @@ class Page(unittest.TestCase):
         self.assertIn('data-copy="tracekit approvals list"', out[1])
         self.assertIn('data-page="approvals"', out[1])
         self.assertIn("not measured", out[1])
+
+
+def rollout(mid, source="cli", model="gpt-6-astra"):
+    """A rollout file's first lines: its session_meta (id `mid`, source `source`) and turn_context."""
+    return [{"timestamp": "2026-10-10T09:00:00.000Z", "ordinal": 0, "type": "session_meta",
+             "payload": {"session_id": "root-thread", "id": mid, "cwd": "/tmp", "originator": "codex-tui",
+                         "cli_version": "0.159.2", "source": source}},
+            {"timestamp": "2026-10-10T09:00:00.100Z", "ordinal": 1, "type": "turn_context",
+             "payload": {"model": model, "cwd": "/tmp"}}]
+
+
+def usage(i, cached, write=3_000, out=200):
+    """One token_usage_record a step: `cached` tokens read from cache, `write` written, nothing else on input —
+    input_tokens counts the cached and written ones too, as Codex's records do (100 in = 40 cached + 60 written)."""
+    at = datetime(2026, 10, 10, 9, 0, 10, tzinfo=timezone.utc) + timedelta(seconds=30 * i)
+    return {"timestamp": at.strftime("%Y-%m-%dT%H:%M:%SZ"), "type": "token_usage_record",
+            "payload": {"thread_id": "t1", "turn_id": f"turn{i}", "session_id": "root-thread",
+                        "response_id": f"resp_fix_{i:04d}",
+                        "usage": {"input_tokens": cached + write, "cached_input_tokens": cached,
+                                  "cache_write_input_tokens": write, "output_tokens": out,
+                                  "reasoning_output_tokens": 80, "total_tokens": cached + write + out}}}
+
+
+class Codex(unittest.TestCase):
+    """Codex CLI's session files (made-up rollouts, built inline under YYYY/MM/DD as Codex writes them): the context
+    tip works for a Codex-only week; the cache tip can't, because a session record names no cache lifetime."""
+
+    def week(self, model="gpt-6-astra"):
+        d = tmp(self)
+        write_jsonl(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T09-00-10-9f0c9a11.jsonl"),
+                    rollout("9f0c9a11-0000-4000-8000-000000000001", model=model) +
+                    [usage(i, 60_000 + 3_000 * i) for i in range(300)])
+        return d
+
+    def test_a_codex_only_week_reads_the_sessions_and_gets_the_context_tip(self):
+        body = tips.build([], codex=self.week(), now=NOW)
+        self.assertEqual(body["sources"]["codex"]["files"], 1)
+        self.assertEqual((body["sources"]["codex"]["agents"], body["sources"]["codex"]["steps"]), (1, 300))
+        t = body["tips"][0]
+        self.assertTrue(t["ok"], t.get("why"))
+        self.assertEqual(t["from"], "Codex's session files (read-only)")
+        self.assertEqual(t["agent"], "session 9f0c9a11")
+        self.assertTrue(t["title"].startswith("Trim the history it sends at about 400k tokens"))
+        self.assertIsNone(t["fix"]["copy"])   # /compact is a Claude Code command
+        self.assertGreater(t["saving"]["usd"], 0)   # priced at gpt-6-astra's dollars, never guessed
+        self.assertTrue(any("gpt-6-astra" in m for m in t["math"]))
+
+    def test_cached_and_written_tokens_are_not_counted_twice(self):
+        agents, _files, _bad = tips.read_codex_sessions(self.week(), 0)
+        s = next(iter(agents.values()))["steps"][1]   # 63_000 cached + 3_000 written, no input of its own
+        self.assertEqual((s["in"], s["cr"], s["w"]), (0, 63_000, 3_000))
+        # the same step's dollars, exactly: gpt-6-astra's 63_000 cache reads at 1 and 3_000 writes at 12.5 per million
+        self.assertEqual(tips._input_usd(s, tips._RATES.rate(s["model"])), (63_000 * 1 + 3_000 * 12.5) / 1e6)
+
+    def test_the_codex_root_honors_the_env_and_falls_back_to_dot_codex_under_home(self):
+        from tracekit import audit
+        home = tmp(self)
+        os.makedirs(os.path.join(home, ".codex", "sessions"))
+        with mock.patch.dict(os.environ, {"HOME": home}, clear=False):
+            os.environ.pop("CODEX_HOME", None)
+            self.assertEqual(audit.codex_root(), os.path.join(home, ".codex", "sessions"))
+        os.environ["CODEX_HOME"] = os.path.join(home, "elsewhere")
+        try:
+            self.assertEqual(audit.codex_root(), os.path.join(home, "elsewhere", "sessions"))
+        finally:
+            del os.environ["CODEX_HOME"]
+
+    def test_the_cache_tip_is_left_off_for_codex_whose_records_name_no_cache_lifetime(self):
+        t = tips.build([], codex=self.week(), now=NOW)["tips"][1]
+        self.assertFalse(t["ok"])
+        self.assertIn("Codex's session files name no lifetime", t["why"])
+
+    def test_a_subagents_file_stays_its_own_agent_and_a_bad_line_stops_nothing(self):
+        d = self.week()
+        write_jsonl(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T10-00-00-2222eeee.jsonl"),
+                    rollout("2222eeee-0000-4000-8000-000000000002", source={"subagent": {"id": "sa-1"}}) +
+                    [{"timestamp": "2026-10-10T09:00:20Z", "type": "token_usage_record", "payload": "not an object"},
+                     {"timestamp": "2026-10-10T09:00:30Z", "type": "token_usage_record",
+                      "payload": {"response_id": "resp_ok_0", "usage": {"input_tokens": 4_300, "cached_input_tokens": 1_000,
+                                                                        "cache_write_input_tokens": 3_300,
+                                                                        "output_tokens": 50}}}])
+        with open(os.path.join(d, "2026", "10", "10", "rollout-2026-10-10T11-00-00-3333.jsonl"), "w") as f:
+            f.write("[" * 100_000 + "\n")   # a line nested past what json.loads takes
+        agents, files, bad = tips.read_codex_sessions(d, 0)
+        self.assertEqual(files, 3)
+        self.assertEqual(len(agents), 2)   # the root thread's id in the subagent's file merges nothing
+        kinds = {a["kind"] for a in agents.values()}
+        self.assertEqual(kinds, {"main", "subagent"})
+        sub = next(a for a in agents.values() if a["kind"] == "subagent")
+        self.assertEqual(len(sub["steps"]), 1)   # the record whose payload isn't an object stops nothing
+        self.assertEqual((sub["steps"][0]["in"], sub["steps"][0]["cr"], sub["steps"][0]["w"]), (0, 1_000, 3_300))
+
+    def test_a_codex_model_with_no_price_shows_the_tips_no_price_note(self):
+        body = tips.build([], codex=self.week(model="gpt-made-up"), now=NOW)
+        self.assertEqual(body["sources"]["codex"]["steps"], 300)   # the tokens are shown
+        t = body["tips"][0]
+        self.assertFalse(t["ok"])
+        self.assertIn("No price for gpt-made-up", t["why"])
+
+    def test_the_models_codex_runs_today_all_have_a_price(self):
+        for m in ("gpt-6-astra", "gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-sol", "gpt-6.1-terra", "gpt-5.6-terra",
+                  "gpt-6-luna", "gpt-5.6-luna"):
+            t = tips.build([], codex=self.week(model=m), now=NOW)["tips"][0]
+            self.assertTrue(t["ok"], (m, t.get("why")))   # no "No price for …" note
+
+    def test_the_text_names_codex_on_a_codex_only_week_and_does_not_say_nothing_yet(self):
+        body = tips.build([], codex=self.week(), now=NOW)
+        out = tips.text(body, "store", root=None)
+        flat = " ".join(out.split())   # the temp path's length differs by platform, so wrap points do too
+        self.assertIn("Codex CLI's sessions", flat)
+        self.assertIn(f"{body['codex_root']}: 1 file, 300 steps", flat)
+        self.assertNotIn("nothing yet", out)
 
 
 if __name__ == "__main__":
