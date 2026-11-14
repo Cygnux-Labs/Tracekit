@@ -178,7 +178,8 @@ so a held call that nobody answers is denied before the 600 s are up, and the ag
 once it is approved. `tool_input` is the tool's Action (with its class name under `kind`, which is dropped); a
 `file_editor` (or a gemini-preset file tool) with no path or an `apply_patch` with no file header is denied in the hook.
 **`task` and `delegate` are denied in the hook**: they run a sub-agent with no hooks, so its calls would go undecided
-and unrecorded. **The terminal is interactive** (bash in tmux): text typed into the command running (`is_input: true`),
+and unrecorded. **`invoke_skill` is held for a person** (`TK-A082`): it runs each `` !`cmd` `` line of the skill with
+no hook, and a write of a skill under `.agents/skills/` with such a line is held too (`TK-A083`). **The terminal is interactive** (bash in tmux): text typed into the command running (`is_input: true`),
 a key name (`UP`, `TAB`, `ENTER`, `C-r`, which it sends as keystrokes), a command with a control character in it
 (tmux types it as a key: `^U` erases the line before it, `\r` is an Enter, a tab completes the word before it) and a line left open (a trailing `\`) run
 with what came before or comes after them, so the hook marks each `typed` and the policy holds it for a person
@@ -312,7 +313,10 @@ OpenCode (1.x) sends no session or prompt events to plugins: its run closes at t
 goose support is experimental: tested through goose's hook payloads and Tracekit's installer, not yet in a live goose
 session. It needs goose 1.48.0 or later (when `on_failure` arrived). goose runs hooks with `sh -c` on every platform,
 so on Windows it needs `sh` on PATH (Git Bash); without it every call is blocked. Code Mode (`execute_javascript`,
-and `execute_typescript` or `execute_bash` before goose 1.56) is denied: it runs tool calls no goose hook sees.
+and `execute_typescript` or `execute_bash` before goose 1.56) is denied: it runs tool calls no goose hook sees. A
+`delegate` that names a recipe or sub-agent (`source`) is held for a person (`TK-A081`), and so is a write into the
+folders goose loads them from (`recipes/` and `agents/` under `.goose/` or `.agents/`): goose starts a recipe's stdio
+extensions, the commands it names, with no hook ([limits](limits.md#signer-and-capture)).
 
 goose's installed hooks likewise carry no session or prompt events (only PreToolUse, PostToolUse and PostToolUseFailure are installed), so no prompts, live constraints or model text are recorded for goose, and goose sends no tool result or error text with its post-tool events ([limits](limits.md#signer-and-capture)).
 
