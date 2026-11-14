@@ -587,3 +587,38 @@ test("instrument() rejects, never throws, when its client can't be built", async
     if (before === undefined) delete process.env.TRACEKIT_SIGNER_CA; else process.env.TRACEKIT_SIGNER_CA = before;
   }
 });
+
+test("HTTPS: a retry after a lost connection does not run past timeoutMs", async () => {
+  const sent = [];
+  const c = https(async (f) => {
+    sent.push(f);
+    await sleep(180);
+    return Object.getPrototypeOf(c.https).post.call(
+      { url: new URL("https://127.0.0.1:1/v2/rpc"), agent: c.https.agent }, f, 1000);
+  }, 100);
+  const t = Date.now();
+  await assert.rejects(c.call("decide", event("r1", "c1")), (e) => e instanceof SignerUnavailable && /0\.1s/.test(e.message));
+  assert.equal(sent.length, 1);
+  assert.ok(Date.now() - t < 600);
+});
+
+test("TCP: a stalled handshake stops within timeoutMs instead of waiting CONNECT_TIMEOUT_MS", async (t) => {
+  const held = [];
+  const srv = createServer((sock) => held.push(sock));
+  await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+  t.after(() => {
+    for (const s of held) s.destroy();
+    srv.close();
+  });
+  const before = process.env.TRACEKIT_SIGNER_TOKEN;
+  process.env.TRACEKIT_SIGNER_TOKEN = "0".repeat(32);
+  try {
+    const c = new Client({ signer: `tcp://127.0.0.1:${srv.address().port}`, timeoutMs: 120 });
+    const start = Date.now();
+    await assert.rejects(c.call("status", {}), SignerUnavailable);
+    assert.ok(Date.now() - start < 1000);
+  } finally {
+    if (before === undefined) delete process.env.TRACEKIT_SIGNER_TOKEN;
+    else process.env.TRACEKIT_SIGNER_TOKEN = before;
+  }
+});

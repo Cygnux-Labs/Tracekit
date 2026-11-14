@@ -508,6 +508,41 @@ class Transports(unittest.TestCase):
             c.close()
         self.assertEqual([conn.close.call_count for conn in conns], [1, 1])
 
+    def test_retry_after_lost_connection_stops_at_call_timeout(self):
+        sent = []
+
+        def answer(frame):
+            sent.append(frame)
+            time.sleep(0.18)
+            raise client._ConnectionLost("reset")
+        c = self.https(answer, timeout=0.1)
+        t = time.monotonic()
+        with self.assertRaises(client.SignerUnavailable):
+            c.decide({**EVENT, "tool_call_id": "c1", "args": {}})
+        self.assertEqual(len(sent), 1)
+        self.assertLess(time.monotonic() - t, 0.5)
+
+    def test_stalled_tcp_connect_stops_within_call_timeout(self):
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+        self.addCleanup(srv.close)
+        held = []
+
+        def accept_all():
+            with contextlib.suppress(OSError):
+                while True:
+                    conn, _ = srv.accept()
+                    held.append(conn)
+        threading.Thread(target=accept_all, daemon=True).start()
+        self.addCleanup(lambda: [s.close() for s in held])
+        port = srv.getsockname()[1]
+        c = Client(f"tcp://127.0.0.1:{port}", timeout=0.12, token="0" * 32)
+        t = time.monotonic()
+        with self.assertRaises(client.SignerUnavailable):
+            c.status()
+        self.assertLess(time.monotonic() - t, 1.0)
+
 
 HELLO = {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.getpid()}
 EVENT = {"run_id": "r1", "run_token": "t", "tool": "Bash", "args_source": "parsed"}
