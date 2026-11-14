@@ -1024,12 +1024,13 @@ ask:
     # it: --m, --mo, --mod) after up to 64 words: an s that a + or = adds, in any clause of a comma list and among
     # other letters (u+s, +sx, g+s,u+x, u=rwxs, u-x+s), or a numeric mode whose setuid/setgid digit is set (4 digits
     # starting with 2 to 7, also with leading zeros, + or =: 4755, 04755, =2755); and setcap granting cap_setuid,
-    # cap_setgid or cap_sys_admin (by name in any case, or by number: 7, 6, 21), or every capability (`all`, or an
+    # cap_setgid or cap_sys_admin (by name in any case, or by number as libcap's strtoul(…, 0) reads it: 7, 6 and 21 in
+    # decimal, octal or hex, 07, 006, 025, 0x7, 0X15), or every capability (`all`, or an
     # empty list before =: =ep), after up to sixteen words: a list of up to 64 names holding one of them, then
     # operators each with its flags, one a + or = that adds e, i or p (+ep, =eip, =+ep, -e+p). Removing it (chmod u-s,
     # install -m u-s, setcap -r, cap_setuid-ep, cap_setuid=), the sticky bit alone (1777) and setcap -v (verify only)
     # stay unheld. lean: the word and list bounds keep the fallback engine linear
-    pattern: '^(?:chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|install(?: [^ ]+){0,64}? (?:-[a-zA-Z]*m ?|--m(?:o(?:de?)?)?[ =])(?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|setcap(?: [^ ]+){0,16}? (?:(?:[A-Za-z0-9_]+,){0,64}?(?:[Cc][Aa][Pp]_(?:[Ss][Ee][Tt][Uu][Ii][Dd]|[Ss][Ee][Tt][Gg][Ii][Dd]|[Ss][Yy][Ss]_[Aa][Dd][Mm][Ii][Nn])|[Aa][Ll][Ll]|6|7|21)(?:,[A-Za-z0-9_]+){0,64})?(?:[-+=][EeIiPp]*){0,8}?[+=][EeIiPp])'
+    pattern: '^(?:chmod(?: -[^ ]+){0,8}? (?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|install(?: [^ ]+){0,64}? (?:-[a-zA-Z]*m ?|--m(?:o(?:de?)?)?[ =])(?:[+=]?0*?[2-7][0-7]{3}(?: |$)|[-+=,ugoarwxXst]*?[+=][rwxXtugo]*s)|setcap(?: [^ ]+){0,16}? (?:(?:[A-Za-z0-9_]+,){0,64}?(?:[Cc][Aa][Pp]_(?:[Ss][Ee][Tt][Uu][Ii][Dd]|[Ss][Ee][Tt][Gg][Ii][Dd]|[Ss][Yy][Ss]_[Aa][Dd][Mm][Ii][Nn])|[Aa][Ll][Ll]|0*[67]|21|0+25|0[Xx]0*(?:[67]|15))(?:,[A-Za-z0-9_]+){0,64})?(?:[-+=][EeIiPp]*){0,8}?[+=][EeIiPp])'
     unless: '^setcap(?: -(?:q|n [^ ]+)){0,4} -(?:q?v|vq)(?: |$)'
     reason: setting the setuid or setgid bit or privileged file capabilities
     remedy: Have a person set the bit or capabilities; a program that runs with elevated privileges needs a person's review.

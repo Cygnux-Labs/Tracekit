@@ -291,7 +291,10 @@ class CodingPack(unittest.TestCase):
             "setcap 'cap_setuid=+ep' x", "setcap cap_setuid-e+p x", "setcap 7+ep x", "setcap 6=ep x",
             "setcap 21+eip x", "setcap cap_net_raw,7+ep x", f"setcap {every_cap}+ep x", f"setcap {every_cap}=eip x",
             "install --mod=4755 x y", "install --m=4755 x y", "install --mo 4755 x y",
-            "install -c -o root -g wheel -b -S .bak -p -v -m 4755 x y", "install -d -m 2775 /srv/shared")] + [
+            "install -c -o root -g wheel -b -S .bak -p -v -m 4755 x y", "install -d -m 2775 /srv/shared",
+            # a capability number in octal or hex, as libcap's strtoul(…, 0) reads it (#850's review)
+            "setcap 0x7+ep ./x", "setcap 07+ep x", "setcap 006+ep x", "setcap 025+ep x", "setcap 0x15+ep x",
+            "setcap 0X15+ep x", "setcap 0x006=ep x", "setcap 0025+eip x", "setcap cap_net_raw,0x6+ep x")] + [
             (c, "TK-A011") for c in (
             "cp evil /var/spool/cron/crontabs/dev", "echo '* * * * * x' > /etc/cron.daily/x",
             "cp evil.sh /etc/cron.hourly/")] + [(c, "TK-A078") for c in (
@@ -314,7 +317,10 @@ class CodingPack(unittest.TestCase):
                   "setcap cap_setuid,cap_net_bind_service-ep x", "setcap cap_setuid= x",
                   "setcap -v cap_setuid+ep x", "setcap -q -v cap_setuid+ep x", "setcap =-ep x", "setcap -v all=ep x",
                   "setcap 10+ep x", "setcap 70+ep x", "setcap cap_setuidx+ep x", "setcap allx+ep x",
-                  "echo setcap all=ep x", "install --mod=0755 x y", f"setcap {every_cap}-ep x")
+                  "echo setcap all=ep x", "install --mod=0755 x y", f"setcap {every_cap}-ep x",
+                  # 17, octal 021 (17) and hex 0x70 aren't cap_setuid, cap_setgid or cap_sys_admin; `-` reads stdin
+                  "setcap 17+ep x", "setcap 021+ep x", "setcap 0x70+ep x", "setcap 0x21+ep x", "setcap 0+ep x",
+                  "setcap 007-ep x", "setcap - ./x")
         new = {want for _, want in held}
         for pack, engine, e in self.every_pack():
             for command, want in held:

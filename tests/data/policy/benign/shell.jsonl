@@ -335,4 +335,5 @@
 {"tool": "Bash", "args": {"command": "setcap -v cap_setuid+ep x"}, "expect": "allow", "note": "setcap verifying capabilities without modifying the file (#804)"}
 {"tool": "Bash", "args": {"command": "setcap =-ep x"}, "expect": "allow", "note": "setcap clearing every capability's flags (#834)"}
 {"tool": "Bash", "args": {"command": "setcap 10+ep x"}, "expect": "allow", "note": "setcap granting the bind capability by its number (#834)"}
+{"tool": "Bash", "args": {"command": "setcap 021+ep x"}, "expect": "allow", "note": "setcap granting capability 17 (octal 021), not a held one (#850)"}
 {"tool": "Bash", "args": {"command": "install --mod=0755 x /usr/local/bin/x"}, "expect": "allow", "note": "an ordinary install mode via a GNU prefix of --mode (#834)"}
