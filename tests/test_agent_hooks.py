@@ -1064,6 +1064,20 @@ class Harnesses(DaemonCase):
         with open(path) as f:
             self.assertEqual(json.load(f)["pending"], {})
 
+    def test_antigravity_denies_tools_whose_arguments_it_doesnt_read(self):
+        # send_command_input types into a running command, and run_workflow (1.5.9) runs a Python script the model
+        # wrote, which starts sub-agents; neither's arguments are documented, and both passed as unknown tools (flagged)
+        base = {"conversationId": "ag-unread", "workspacePaths": [self.d]}
+        for step, (name, args) in enumerate((("send_command_input", {"CommandId": "c1", "Input": "rm -rf ~\n"}),
+                                             ("run_workflow", {"Script": "import os; os.system('rm -rf ~')"}),
+                                             ("Run_Workflow", {"Code": "print(1)"})), 1):   # a name in any case
+            with self.subTest(tool=name):
+                code, out, err = self.hook("antigravity", {**base, "stepIdx": step,
+                                                           "toolCall": {"name": name, "args": args}}, "PreToolUse")
+                self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"))
+                self.assertIn(f"Blocked by Tracekit: agy's {name} ", json.loads(out)["reason"])
+        self.assertEqual(self.events("ag-unread"), [])   # denied before the pipeline
+
     def test_a_cursor_path_list_with_other_values_is_decided_on_its_paths(self):
         # a `paths` entry that isn't a string made the v1 hook raise, which under the default fail mode let the call
         # run unrecorded: the other entries and path keys are decided

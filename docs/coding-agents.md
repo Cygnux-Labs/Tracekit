@@ -659,13 +659,17 @@ Go decoder:
 | `view_file` | `Read` | `AbsolutePath` |
 | `write_to_file` | `Write` | `TargetFile` |
 | `replace_file_content`, `multi_replace_file_content` | `Edit` | `TargetFile` |
+| `read_file`, `edit_file`, `write_file` (agy 1.5) | `Read`, `Edit`, `Write` | `Path` |
 | `list_dir` | `LS` | `DirectoryPath` |
 | `find_by_name` | `Glob` | `SearchDirectory`, `Pattern` |
 | `grep_search` | `Grep` | `SearchPath`, `Query` |
 | `read_url_content` | `WebFetch` | `Url` |
 | `search_web`, `invoke_subagent` | `WebSearch`, `Task` | their arguments as sent |
 
-Any other tool passes under its own name, which the policy treats as an unknown tool. agy gives a call no id: Tracekit
+The hook denies `send_command_input` (it types into a running command) and `run_workflow` (it runs a Python script
+the model wrote, which starts sub-agents): their arguments aren't documented, so Tracekit can't decide what they run
+([limits](limits.md#signer-and-capture)). Any other tool passes under its own name, which the policy treats as an
+unknown tool. agy gives a call no id: Tracekit
 pairs a call's `PreToolUse` and `PostToolUse` by the step index (`stepIdx`), tool and arguments agy sends with both.
 On the v2 signer, a pre-tool payload with no `conversationId` or `stepIdx` is blocked. A result that matches no call
 exactly stays unpaired, and its call is left a `decided_not_completed` gap, never guessed. agy sends a failed call's

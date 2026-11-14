@@ -47,7 +47,9 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     agy     run_command, view_file, write_to_file, replace_file_content, multi_replace_file_content, list_dir,
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
             -> Bash (BypassSandbox as dangerouslyDisableSandbox), Read, Write, Edit, Edit, LS, Glob, Grep, WebFetch,
-            WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads)
+            WebSearch, Task, Bash (command = Input) (each decided on the argument the tool itself reads); 1.5's
+            read_file, edit_file and write_file -> Read, Edit, Write (on `Path`); send_command_input and run_workflow
+            are denied in the hook (their arguments aren't read)
     Kilo    OpenCode's tools, names and arguments, and OpenCode's plugin; its own background_process, notebook_read,
             notebook_edit, send_file, generate_image -> Bash, Read, NotebookEdit, Read, Write (decided on their `path`;
             generate_image with an `image` as a Read of it and the `path`); notebook_execute is blocked in the hook
@@ -191,14 +193,23 @@ DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart",
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
 # tool itself reads, so a decoy key the model sends beside it never moves the decision. BypassSandbox runs a
 # run_command outside agy's terminal sandbox (google-antigravity/antigravity-cli#1304): TK-A003 holds it
+# agy 1.5 also has read_file, edit_file and write_file, each on its `Path` (as its stream-json step_update events show
+# them), beside the older names
 AGY_TOOLS = {"run_command": "Bash", "view_file": "Read", "write_to_file": "Write", "replace_file_content": "Edit",
              "multi_replace_file_content": "Edit", "list_dir": "LS", "find_by_name": "Glob", "grep_search": "Grep",
-             "read_url_content": "WebFetch", "search_web": "WebSearch", "invoke_subagent": "Task"}
+             "read_url_content": "WebFetch", "search_web": "WebSearch", "invoke_subagent": "Task",
+             "read_file": "Read", "edit_file": "Edit", "write_file": "Write"}
 AGY_ARGS = {"run_command": {"command": "CommandLine", "dangerouslyDisableSandbox": "BypassSandbox"},
             "view_file": {"file_path": "AbsolutePath"}, "write_to_file": {"file_path": "TargetFile"},
             "replace_file_content": {"file_path": "TargetFile"}, "multi_replace_file_content": {"file_path": "TargetFile"},
             "list_dir": {"file_path": "DirectoryPath"}, "find_by_name": {"file_path": "SearchDirectory", "pattern": "Pattern"},
-            "grep_search": {"file_path": "SearchPath", "pattern": "Query"}, "read_url_content": {"url": "Url"}}
+            "grep_search": {"file_path": "SearchPath", "pattern": "Query"}, "read_url_content": {"url": "Url"},
+            **dict.fromkeys(("read_file", "edit_file", "write_file"), {"file_path": "Path"})}
+# agy tools the hook denies until their arguments are read: send_command_input types into a running command, and
+# run_workflow (1.5.9) runs a Python script the model wrote, which starts sub-agents; neither's arguments are
+# documented, so what they run can't be decided
+AGY_BLOCKED = {"send_command_input": "types input into a running command",
+               "run_workflow": "runs a Python workflow script, which starts sub-agents"}
 AGY_HOOK = "tracekit"   # the name Tracekit's hook has in agy's hooks.json, which maps each hook's name to its events
 AGY_EVENTS = ("PreToolUse", "PostToolUse")
 # Crush's built-in tools (internal/agent/tools/*.go): its payload and event names are Claude Code's, its tool names are
@@ -1251,7 +1262,12 @@ def _blocked(harness, p, raw=""):
     if harness == "antigravity":
         call = dict(json.loads(raw, object_pairs_hook=_Pairs)).get("toolCall") if raw.strip() else None
         call = dict(call) if isinstance(call, _Pairs) else {}
-        return _blocked_agy_args(str(call.get("name") or "?"), call.get("args"))
+        name = str(call.get("name") or "?")
+        if name.casefold() in AGY_BLOCKED:   # agy may match a tool's name ignoring case (tool())
+            return (f"Blocked by Tracekit: agy's {name} {AGY_BLOCKED[name.casefold()]}, and Tracekit doesn't read its "
+                    "arguments yet, so it can't decide what the call runs; run each command with run_command (or type "
+                    "into a background command with manage_task's send_input), which Tracekit decides.")
+        return _blocked_agy_args(name, call.get("args"))
     name = _named(harness, str(p.get("tool_name") or ""))
     twice = _repeated(dict(json.loads(raw, object_pairs_hook=_Pairs)).get("tool_input")) if harness == "devin" and \
         raw.strip() else None

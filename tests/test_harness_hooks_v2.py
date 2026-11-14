@@ -1034,6 +1034,29 @@ class OnTheDevPolicy(HarnessCase):
         self.assertEqual(self.hook("antigravity", pre(4, "run_command", dict(cmd, BypassSandbox=False)), "PreToolUse")[:2],
                          (0, '{"decision": "allow"}'))
 
+    def test_antigravity_15_file_tools_are_decided_on_their_path(self):
+        # agy 1.5's read_file, edit_file and write_file read `Path`; they passed as unknown tools (flagged), decided on
+        # no file: a credentials read, a key added to authorized_keys and agy's own hooks file rewritten all ran
+        def pre(step, name, args):
+            return {"toolCall": {"name": name, "args": args}, "stepIdx": step, "conversationId": "ag-15",
+                    "workspacePaths": ["/w"]}
+        for step, name, args, rule in (
+                (1, "read_file", {"Path": "/home/u/.aws/credentials"}, "TK-S004"),
+                (2, "write_file", {"Path": "/home/u/.ssh/authorized_keys", "Content": "k", "file_path": "/w/a.txt"},
+                 "TK-D005"),   # decided on Path, never a decoy beside it
+                (3, "write_file", {"Path": "/w/.agents/hooks.json", "Content": "{}"}, "TK-F009"),
+                (4, "edit_file", {"Path": "/w/.git/hooks/pre-commit", "Content": "x"}, "TK-A012")):
+            with self.subTest(name=name, args=args):
+                code, out, err = self.hook("antigravity", pre(step, name, args), "PreToolUse")
+                self.assertEqual((code, json.loads(out)["decision"]), (0, "deny"), err)   # a hold blocks at once
+                self.assertIn(rule, json.loads(out)["reason"])
+        # Path in another case, which agy's decoder may read: denied in the hook, as for the older names
+        code, out, err = self.hook("antigravity", pre(5, "write_file", {"Path": "/w/a.txt", "path": "/w/.agents/hooks.json"}),
+                                   "PreToolUse")
+        self.assertIn("so agy may run the call with other arguments", json.loads(out)["reason"])
+        self.assertEqual(self.hook("antigravity", pre(6, "write_file", {"Path": "/w/a.txt", "Content": "x"}),
+                                   "PreToolUse")[:2], (0, '{"decision": "allow"}'))
+
     def test_antigravity_denies_an_argument_agy_may_read_in_another_case(self):
         # agy is a Go binary: a decoder like encoding/json fills CommandLine from `commandline` too (the last such key;
         # a null keeps the value before it), while the hook reads the exact name: `ls` was decided, `rm -rf ~` ran
