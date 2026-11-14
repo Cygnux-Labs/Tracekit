@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-82'
+version: '2026.11-v2-83'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -575,11 +575,11 @@ ask:
   - id: TK-A071
     class: shell
     field: argv
-    # each command's argv: curl, wget, socat, nc, ncat or netcat, then any words, one that names docker.sock or
-    # podman.sock (`--unix-socket /var/run/docker.sock`, `UNIX-CONNECT:/run/podman/podman.sock`, `nc -U`, an
-    # http+unix:// URL). Lazy, so the fallback engine stays linear. `ls -la /var/run/docker.sock`, `docker ps` and text
-    # that names the socket aren't held
-    pattern: '^(?:curl|wget|socat|ncat|nc|netcat) [^\n]*?(?:docker|podman)\.sock(?:[^A-Za-z0-9_]|$)'
+    # each command's argv: curl, wget, socat, nc, ncat or netcat, then any words, one that names docker.sock,
+    # docker.raw.sock, podman.sock, podman-machine-<name>-api.sock or podman/<name>-api.sock (`--unix-socket
+    # /var/run/docker.sock`, `UNIX-CONNECT:/run/podman/podman.sock`, `nc -U`, an http+unix:// URL). Lazy, so the
+    # fallback engine stays linear. `ls -la /var/run/docker.sock`, `docker ps` and text that names the socket aren't held
+    pattern: '^(?:curl|wget|socat|ncat|nc|netcat) [^\n]*?(?:docker(?:\.raw)?\.sock|podman\.sock|podman(?:-machine-|/|%2[Ff])[A-Za-z0-9_.-]{1,100}-api\.sock)(?:[^A-Za-z0-9_]|$)'
     reason: a raw request through the Docker or Podman socket
     remedy: Use the docker or podman command, which shows what it does, or have a person approve the held call.
     rationale: A request to the container socket skips what the docker command shows a person, and can start a privileged container that mounts the host; a person confirms it.

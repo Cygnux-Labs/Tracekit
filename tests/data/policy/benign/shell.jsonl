@@ -310,3 +310,5 @@
 {"tool": "Bash", "args": {"command": "usermod -u 1001 dev"}, "expect": "allow", "note": "changing a login's uid to an ordinary one (#750)"}
 {"tool": "Bash", "args": {"command": "cat /etc/cron.daily/logrotate"}, "expect": "allow", "note": "reading a cron script (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'alias ports=\"nc -zv localhost\"' >> ~/.zshrc"}, "expect": "allow", "note": "an nc alias without -e in zshrc (#750)"}
+{"tool": "Bash", "args": {"command": "ls -la ~/Library/Containers/com.docker.docker/Data/docker.raw.sock"}, "expect": "allow", "note": "list the macOS Docker raw socket file (#808)"}
+{"tool": "Bash", "args": {"command": "ls -la ~/.local/share/containers/podman/machine/podman-machine-default-api.sock"}, "expect": "allow", "note": "list the macOS Podman machine socket file (#808)"}
