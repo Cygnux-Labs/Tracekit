@@ -147,15 +147,16 @@ class DocCommands(unittest.TestCase):
                    for m in COMMAND.findall(block) if m not in known]
         self.assertEqual(unknown, [])
 
-    def test_no_system_mode_command_needs_tracekit_on_roots_path(self):
+    def test_no_command_needs_tracekit_on_roots_path(self):
         """System-mode init installs Tracekit only into /opt/tracekit (install._install_venv) and puts no `tracekit`
-        command on root's PATH, so `sudo tracekit ...` finds none there. `tracekit deploy compose` isn't system mode."""
+        command on root's PATH, so `sudo tracekit ...` finds none there. Nor does `deploy compose` from a checkout's or a
+        venv's Tracekit, which docs/deploy-compose.md gave as `sudo tracekit deploy compose` (#464)."""
         pages = [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "tracekit_sdk.py")] + [
             p for pattern in ("docs/**/*.md", "plugin/**/*.md", "tracekit/**/*.py", "tracekit/**/*.yaml", "eval/*.py",
                               "eval/*.yaml")
             for p in glob.glob(os.path.join(ROOT, pattern), recursive=True)]
         hits = [f"{os.path.relpath(p, ROOT)}:{n}" for p in pages for n, line in enumerate(read(p).splitlines(), 1)
-                if re.search(r"sudo tracekit (?!deploy )", line)]
+                if "sudo tracekit " in line]
         self.assertEqual(hits, [])
 
     def test_signer_yaml_snippets_in_deploy_guide_load(self):

@@ -95,7 +95,7 @@ class WassetteBehindTheGateway(unittest.TestCase):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(os.path.join(self.dir, "signer"), policy=policy(self.dir),
                                    gateways=["mtls:spiffe://acme/*"],
-                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
+                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get", "export_run"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/mcp": ["decide", "complete", "approval_request",
                                                                          "approval_wait", "approval_consume", "observe"]})
         self.addCleanup(self.s.close)

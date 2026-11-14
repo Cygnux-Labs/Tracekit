@@ -36,8 +36,17 @@ retry of the same call after a person approved it ([approve, then retry](#approv
    tracekit approvals reject apr-…
    ```
 
-   `--signer` names the signer's socket or `tcp://host:port` (default: the same-user dev signer). The signer signs an
-   `approval` record with the decision, the approver's identity as its transport established it, the channel, the
+   `--signer` names the signer: its socket, `tcp://host:port`, or `https://host:port` (`http://` on a loopback
+   address) with the approver's token in `TRACEKIT_SIGNER_TOKEN_FILE` or `TRACEKIT_API_KEY`
+   ([remote clients](remote-ingest.md#on-the-agents-machine)). The default is `$TRACEKIT_SIGNER` (the system signer in
+   system mode), else the same-user dev signer, so a central signer's approver can run:
+
+   ```bash
+   TRACEKIT_SIGNER=https://signer.internal:8443 TRACEKIT_SIGNER_TOKEN_FILE=~/approver.token \
+     tracekit approvals list
+   ```
+
+   The signer signs an `approval` record with the decision, the approver's identity as its transport established it, the channel, the
    reason, `self_approved` and, when it applies, `break_glass`. What the approver sees is the signer's copy, never
    what the agent shows; a reason the agent gave is printed as unverified.
 4. Before the call runs, the adapter calls `approval_consume(tool_call_id, attempt, tool, args)`. The signer recomputes
