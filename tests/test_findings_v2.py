@@ -744,6 +744,8 @@ class Coverage(Base):
         text = findings_v2.render(out)
         self.assertIn("never counted as a pass", text)
         self.assertIn("content: {retain: true}", text)
+        self.assertIn("TK-X204 for 2 calls:", text)
+        self.assertNotIn("patch file", text)
 
     def test_an_open_run_is_partial(self):
         t = self.task()
@@ -883,6 +885,7 @@ class Bounded(unittest.TestCase):
                          dict.fromkeys(per_call, [{"reason": "budget", "n": 50}]))
         self.assertEqual(checks["TK-X208"]["not_checkable"], [{"reason": "budget", "n": 1}])
         self.assertIn("INCOMPLETE", out["summary"])
+        self.assertIn("TK-X204 for 50 calls:", findings_v2.render(out))
         ticks = iter(range(10 ** 6))   # the clock runs out once 20 of the 50 calls are checked
         out = findings_v2.analyze(recs, content, budget_s=0.5, clock=lambda: 0 if next(ticks) < 122 else 1)
         x202 = out["coverage"]["verdict"]["checks"]["TK-X202"]
