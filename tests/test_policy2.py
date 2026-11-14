@@ -1037,7 +1037,10 @@ class Speed(unittest.TestCase):
                 ("Bash", {"command": "curl -api.sock " + "podman-machine-" * (n // 15)}),
                 ("Bash", {"command": ";nice -n 5 nohup CONTAINER_HOST=unix://" * (n // 39)}),
                 ("Bash", {"command": "install " + "-m " * (n // 3)}),
-                ("Bash", {"command": "setcap " + "cap_setuid," * (n // 11)})]:
+                ("Bash", {"command": "setcap " + "cap_setuid," * (n // 11)}),
+                ("Bash", {"command": "setcap " + "all,7," * (n // 6)}),
+                ("Bash", {"command": "setcap cap_setuid" + "-e" * (n // 2)}),
+                ("Bash", {"command": "install " + "-c " * (n // 3)})]:
             with self.subTest(args=str(args)[:40]):
                 start = time.perf_counter()
                 d = e.decide(tool, args)
