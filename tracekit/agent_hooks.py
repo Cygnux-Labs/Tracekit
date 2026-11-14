@@ -41,7 +41,8 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
             payload names its event `event` and its
             working directory `working_dir`, and sends no tool result or error text: see docs/limits.md)
     Qwen Code (a Gemini CLI fork) sends Claude Code's payloads and names its events as Claude Code does, with Gemini's
-            tool names and its own edit, grep_search and agent -> Edit, Grep, Task
+            tool names and its own edit, grep_search, agent, and cron_create with a `gate` -> Edit, Grep, Task, Bash
+            (command = the gate)
     Droid   Execute, Create, ApplyPatch, FetchUrl -> Bash, Write, Edit (all patch file headers in paths), WebFetch
     agy     run_command, view_file, write_to_file, replace_file_content, multi_replace_file_content, list_dir,
             find_by_name, grep_search, read_url_content, search_web, invoke_subagent, manage_task send_input
@@ -179,12 +180,12 @@ OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edi
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
 GOOSE_PATH_ARG = {"write": "path", "edit": "path", "tree": "path", "read_image": "source"}
 # harness tools mapped to Bash whose effect comes after their post-tool hook: input typed into another running session
-# (Codex's write_stdin, agy's manage_task send_input, Devin's write_to_process) or a command left running (Qwen Code's
-# monitor, Kilo's background_process); normalise marks their payload `later`, and the hook takes no receipt of what
-# they write (tracekit.model_receipt)
-LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("antigravity", "manage_task"),
-                   ("devin", "write_to_process"), ("kilo", "background_process"), ("copilot", "write_bash"),
-                   ("copilot", "write_powershell")))
+# (Codex's write_stdin, agy's manage_task send_input, Devin's write_to_process), a command left running (Qwen Code's
+# monitor, Kilo's background_process) or run later (Qwen Code's cron_create gate); normalise marks their payload
+# `later`, and the hook takes no receipt of what they write (tracekit.model_receipt)
+LATER = frozenset((("codex", "write_stdin"), ("qwen", "monitor"), ("qwen", "cron_create"),
+                   ("antigravity", "manage_task"), ("devin", "write_to_process"), ("kilo", "background_process"),
+                   ("copilot", "write_bash"), ("copilot", "write_powershell")))
 DROID_TOOLS = {"Execute": "Bash", "Create": "Write", "ApplyPatch": "Edit", "FetchUrl": "WebFetch"}
 DROID_EVENTS = ("PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd")
 # Antigravity CLI's hooks reference (antigravity.google/docs/hooks): each Tracekit key is set from the argument the
@@ -632,6 +633,10 @@ def tool(harness, name, ti):
         return edit[0] if edit else CURSOR_TOOLS.get(name, name), ti
     if harness == "gemini" and name.startswith("mcp_"):   # mcp_<server>_<tool> (packages/core/src/tools/mcp-tool.ts)
         return "mcp__" + name[4:], ti
+    if harness == "qwen" and name == "cron_create" and isinstance(ti.get("gate"), str):
+        # its gate is a shell command the scheduler runs at each fire, unattended and with no hook
+        # (services/cron-gate.ts): decided as that command when the task is made
+        return "Bash", {**ti, "command": ti["gate"]}
     if harness in ("gemini", "qwen"):
         mapped = (QWEN_TOOLS if harness == "qwen" else GEMINI_TOOLS).get(name, name)
         if mapped != "Bash":   # a shell command's dir_path is where it runs, not a file it reads

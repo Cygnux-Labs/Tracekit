@@ -1933,6 +1933,19 @@ class QwenTools(unittest.TestCase):
             self.assertEqual(agent_hooks.tool("gemini", name, {"pattern": "x", "dir_path": "/w"})[:1], ("Grep",))
         self.assertEqual(agent_hooks.tool("gemini", "mcp_db_execute_sql", {"sql": "x"}), ("mcp__db_execute_sql", {"sql": "x"}))
 
+    def test_a_cron_gate_is_decided_as_the_command_it_runs(self):
+        # Qwen Code runs cron_create's `gate` in a shell at each fire, unattended and with no hook
+        # (services/cron-gate.ts): it is decided when the task is made, as that command, and was an unknown tool
+        task = {"cron": "*/5 * * * *", "prompt": "summarise", "recurring": True, "durable": True}
+        p = {"hook_event_name": "PreToolUse", "session_id": "qw-cron", "tool_use_id": "c1", "tool_name": "cron_create",
+             "tool_input": {**task, "gate": "rm -rf ~"}}
+        q = agent_hooks.normalise("qwen", p)
+        self.assertEqual((q["tool_name"], q["tool_input"]["command"]), ("Bash", "rm -rf ~"))
+        self.assertTrue(q["later"])   # it runs after the call's post-tool hook: no receipt of what it writes
+        self.assertEqual(load_policy().decide(q["tool_name"], q["tool_input"])["verdict"], "deny")
+        # with no gate a fire only prompts the agent, whose calls are each hooked: unchanged
+        self.assertEqual(agent_hooks.tool("qwen", "cron_create", task), ("cron_create", task))
+
 
 class CodeBuddyTools(unittest.TestCase):
     def test_its_own_file_tools_are_reads_of_the_path_each_reads(self):
