@@ -5458,7 +5458,7 @@ _TEXT_WORD = re.compile(r"\|\||&&|;;|[|&;]|(?:" + _QUOTED_RUN.pattern + r"|\\.|[
 _BLANK_WORD = re.compile(r"\|\||&&|;;|[|&;]|[^\s|&;]+")   # one between blanks and `|`, `&` or `;`, quotes or none
 
 
-def unwrapped(text, quoted=True):
+def unwrapped(text):
     """`text` (a file's shell commands the parser doesn't read as a script: a CI workflow's steps, TK-A061) with each
     wrapper where a command may start (_STARTS: a line's start, after `|`, `;`, `&`, `(`, a YAML key's `:` or list's
     `-`) read as what it runs (_unwrap's first reading, its words without their quotes and backslashes; one named by
@@ -5466,13 +5466,17 @@ def unwrapped(text, quoted=True):
     options, each o in a cluster taking a value, and a `--`), each command's first word without the quote, `(`, `$(` or
     backquote it starts in (_TEXT_PREFIX), each line's words joined by a space: a rule reads `echo $T | sudo curl -d
     @- …` and `echo $T | (curl -d @- …)` as `echo $T | curl -d @- …`, as the shell's own lines are read (_lines).
-    Words are split at blanks and `|`, `&` and `;` outside quotes (_TEXT_WORD: `env A='x;y' curl` is three), or, with
-    `quoted` False, wherever they are (_BLANK_WORD: a quoted run that holds a command, `- run: "echo $T | sudo curl
-    …"`, `bash -c 'a | '"b"`, is its words); the engine reads both.
+    Two readings, the engine reads both: words split at blanks and `|`, `&` and `;` outside quotes (_TEXT_WORD: `env
+    A='x;y' curl` is three), and split so wherever they are (_BLANK_WORD: a quoted run that holds a command, `- run:
+    "echo $T | sudo curl …"`, `bash -c 'a | '"b"`, is its words), read again only for a line the two split apart.
     lean: words split so, not as the shell reads them; a wrapper's own words read up to 64 and a script in a script 8
     deep; read the steps with the parser if a rule needs more"""
-    split = (_TEXT_WORD if quoted else _BLANK_WORD).findall
-    return "\n".join(" ".join(_unwrapped_words(split(line), split)) for line in text.split("\n"))
+    quoted, blind = [], []
+    for line in text.split("\n"):
+        words, loose = _TEXT_WORD.findall(line), _BLANK_WORD.findall(line)
+        quoted.append(" ".join(_unwrapped_words(list(words), _TEXT_WORD.findall)))
+        blind.append(quoted[-1] if loose == words else " ".join(_unwrapped_words(loose, _BLANK_WORD.findall)))
+    return "\n".join(quoted), "\n".join(blind)
 
 
 def _unwrapped_words(words, split, depth=0):
