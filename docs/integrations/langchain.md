@@ -75,8 +75,9 @@ calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The mess
 - **deny**: the tool does not run. The model gets an error ToolMessage, `Tool call blocked by policy: <reason or rule
   ids>`, and the agent run goes on.
 - **ask**: the middleware opens an approval and pauses the run with LangGraph `interrupt()`. The interrupt payload is
-  `{"tracekit": {"approval_id", "tool_call_id", "tool", "rule_ids"}}`. A person approves or rejects in the signer;
-  then the app resumes the thread:
+  `{"tracekit": {"approval_id", "tool_call_id", "tool", "rule_ids", "approvals"}}` (`approvals`: those four for each
+  call that asked, the first one included). A person approves or rejects in the signer; then the app resumes the
+  thread:
 
   ```python
   agent.invoke(Command(resume={"approval_id": approval_id}), config)
@@ -86,6 +87,27 @@ calls with `tracekit.instrument()` or the [LLM gateway](../gateway.md). The mess
   The signer, not the saved state, decides: the call runs only if that approval was granted for this exact call and
   these exact args, and was not used before. Otherwise the call is denied as above. The `approval_id` in the resume
   value is only a hint; leaving it out does not skip the check.
+
+LangGraph pairs resume values with a node's `interrupt()` calls by their order, and runs the node again from its start
+on each resume. So an `ask` pauses first in every pass of its node, answered or not, and a tool that calls `interrupt()`
+itself (a confirmation) pauses after it and gets the person's own answer. A call whose tool paused the run after its
+approval was consumed goes on when the run resumes, under that one consume.
+
+A `tracekit_tool_node`, or a `ToolNode` that `tracekit.instrument()` wired, runs every call of a model message in one
+node task. When a message has several calls (not counting a tool executor's, which the executor decides), all of them
+are decided before any runs, and when any asks, the run pauses once, before any tool runs: `approvals` lists every
+approval, so a person answers them all before the one resume. On resume each call allowed or approved runs once; one
+rejected or still unanswered is refused (`TK-APPROVAL-REQUESTED` names the approval: once a person grants it, the
+model's retry of the call pauses on it once more and runs on the resume). When a tool of the message then pauses the
+run itself, the calls that already ended aren't decided, asked, run or recorded again: the model reads what each
+gave. A `RetryPolicy` retry runs again only the call that raised, as a new attempt. A call that raises waits for its
+siblings to end before the node passes the error or pause on, so none is cut off mid-run.
+
+Resumed in another process (a durable checkpointer, a new gate), the node reads from the signer (`call_state`) what
+each call did: whether it was decided, consumed, refused or ended. A call that ended comes back to the model as
+`ran; its result is recorded at run_seq N`, since the signer keeps a commitment to the result, not the result; one
+whose tool failed runs again as a new attempt ([limits](../limits.md#approvals)). Single calls under `create_agent`
+keep their own task and the per-call gate.
 
 Exceptions raised by the tool are recorded and re-raised unchanged.
 

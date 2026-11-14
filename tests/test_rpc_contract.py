@@ -301,6 +301,39 @@ class SignerContract(Harness):
                                                            "approval_id": "apr-x"})
         self.refused("unknown_approval", "approval_get", {"approval_id": "apr-x"})
 
+    def state(self, tcid="tc-1", **kw):
+        return self.call("call_state", {"run_id": self.run_id, "run_token": self.token, "tool_call_id": tcid, **kw})
+
+    def test_call_state(self):
+        """What the signer recorded of a call's latest attempt (version 24): nothing before it is decided; its decision,
+        and whether arguments are the decided ones; its approval, and whether this attempt consumed it; a refused
+        consume; its result."""
+        self.register()
+        self.assertEqual(self.state(), {})
+        req, d = self.decide()
+        digest = event_hash({"tool": req["tool"], "args": req["args"]})
+        self.assertEqual(self.state(args_digest=digest), {"attempt": 0, "decision": "allow", "rule_ids": [],
+                                                          "decision_id": d["decision_id"], "same_args": True})
+        self.assertFalse(self.state(args_digest="sha256:" + "0" * 64)["same_args"])
+        seq = self.complete(req, d)["run_seq"]
+        self.assertEqual(self.state()["result"], {"run_seq": seq, "ok": True})
+        pay = {"tool_call_id": "tc-2", "tool": "pay", "args_source": "parsed", "args": {"amount": 5}}
+        self.decide(tool="pay", args={"amount": 5}, tcid="tc-2")
+        aid = self.call("approval_request", self.run_req(tool_call_id="tc-2"))["approval_id"]
+        s = self.state("tc-2")
+        self.assertEqual((s["decision"], s["approval_id"], s["approval"], s["consumed"]), ("ask", aid, "requested", False))
+        self.assertFalse(self.call("approval_consume", self.run_req(**pay))["ok"])
+        self.assertEqual(self.state("tc-2")["refused"], ["TK-APPROVAL-REQUESTED"])
+        self.decide(tool="pay", args={"amount": 5}, tcid="tc-2", attempt=1)   # its retry: a new attempt
+        aid = self.call("approval_request", self.run_req(tool_call_id="tc-2", attempt=1))["approval_id"]
+        self.approve(aid)
+        self.assertTrue(self.call("approval_consume", self.run_req(**pay, attempt=1))["ok"])
+        s = self.state("tc-2")
+        self.assertEqual((s["attempt"], s["approval_id"], s["approval"], s["consumed"]), (1, aid, "consumed", True))
+        self.assertNotIn("refused", s)
+        self.refused("run_token_invalid", "call_state", {"run_id": self.run_id, "run_token": "x" * 40,
+                                                         "tool_call_id": "tc-1"})
+
     def test_no_approval_after_close(self):
         aid = self.ask()
         self.call("close_run", self.run_req())

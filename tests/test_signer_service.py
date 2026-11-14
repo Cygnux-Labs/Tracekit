@@ -225,6 +225,40 @@ class TestService(unittest.TestCase):
             self.assertIn("state k ", g["reason"])
             self.assertFalse(any(d in g["reason"] for d in (d1, d2, d3, other)), g["reason"])
 
+    def test_call_state_is_the_same_after_a_restart(self):
+        """call_state reads what the records hold: a refused consume and a result survive a restart, from the
+        snapshot and from a replay of the records alone."""
+        s = self.open()
+        run = self.register(s)
+        call = {"run_id": run["run_id"], "run_token": run["run_token"], "tool_call_id": "tc", "tool": "pay",
+                "args_source": "parsed", "args": {"to": "a"}}
+        s.decide({**self.ev(run, 0), **call})
+        s.approval_request({"request_id": "r", **{k: call[k] for k in ("run_id", "run_token", "tool_call_id")}})
+        s.approval_consume({"request_id": "c", **call})
+        d = s.decide(self.ev(run, 1, tool_call_id="ok", tool="t", args_source="parsed", args={}))
+        s.complete(self.ev(run, 2, tool_call_id="ok", decision_id=d["decision_id"], status="error",
+                           args_digest=event_hash({"tool": "t", "args": {}})))
+        later = dict(call, tool_call_id="later")   # refused, then approved and consumed
+        s.decide({**self.ev(run, 3), **later})
+        aid = s.approval_request({"request_id": "r2", **{k: later[k] for k in ("run_id", "run_token",
+                                                                               "tool_call_id")}})["approval_id"]
+        s.approval_consume({"request_id": "c2", **later})
+        s.call(OTHER, "approval_decide", {"request_id": "ok", "approval_id": aid, "decision": "approve"})
+        self.assertTrue(s.approval_consume({"request_id": "c3", **later})["ok"])
+
+        def states(s):
+            return [s.call(ME, "call_state", {"run_id": run["run_id"], "run_token": run["run_token"], "tool_call_id": t})
+                    for t in ("tc", "ok", "later")]
+        before = states(s)
+        self.assertEqual((before[0]["refused"], before[1]["result"]["ok"], before[2]["consumed"], "refused" in before[2]),
+                         (["TK-APPROVAL-REQUESTED"], False, True, False))
+        s.close()
+        s = self.open()
+        self.assertEqual(states(s), before)   # from the snapshot a clean close wrote
+        s.close()
+        shutil.rmtree(os.path.join(self.dir, "store", "snapshots"))
+        self.assertEqual(states(self.open()), before)   # from the records alone
+
     def test_disk_error_is_unavailable_then_a_signed_gap(self):
         s = self.open()
         run = self.register(s)
