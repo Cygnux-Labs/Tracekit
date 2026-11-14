@@ -2256,24 +2256,29 @@ def _gh_order(args):
 
 
 def runner_at(name, args):
-    """Where in `args` the subcommand of runner `name` that runs a command is (RUNNERS: `uv run`, `pnpm exec`), after
-    the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`), yarn's
-    `workspaces foreach` and pnpm's `recursive`, `multi` or `m` (each read once: linear); None for none (`npm test`)."""
-    i, valued = 0, False   # (valued: the word before is an option, so this one may be its value)
+    """Each place in `args` the subcommand of runner `name` that runs a command may be (RUNNERS: `uv run`, `pnpm
+    exec`), after the runner's own options, each with a value or not (`pnpm -r --filter x exec`, `npm -w a exec`),
+    yarn's `workspaces foreach` or `workspace <name>` and pnpm's `recursive`, `multi` or `m`; one that may be an option's
+    value is read both ways (`uv --directory run run x`). Each word read once: linear; [] for none (`npm test`)."""
+    at, i, valued = [], 0, False   # (valued: the word before is an option, so this one may be its value)
     while i < len(args):
         a = args[i]
         if a in RUNNERS[name][0]:
-            return i
-        skip = 2 if name == "yarn" and args[i:i + 2] == ["workspaces", "foreach"] else \
+            at.append(i)
+            if not valued:
+                return at
+            i, valued = i + 1, False
+            continue
+        skip = 2 if name == "yarn" and (args[i:i + 2] == ["workspaces", "foreach"] or a == "workspace") else \
             1 if name == "pnpm" and a in ("recursive", "multi", "m") else 0
         if skip:
             i, valued = i + skip, False
             continue
         if not a.startswith("-") and not valued:
-            return None
+            return at
         valued = a.startswith("-") and a != "--"
         i += 1
-    return None
+    return at
 
 
 def _unwrap(name, args):
@@ -2320,10 +2325,10 @@ def _unwrap(name, args):
         yield inner
 
 
-def _shell_mode(args):
+def _shell_mode(args, shell=""):
     """('c', script) for sh -c, ('stdin', None) when the shell reads its script from stdin (or a stream such as
     /dev/stdin or <( ), or -c without a script, as xargs bash -c runs it), else (None, its script file). Options after
-    -c are skipped as the shell does: the script is the first operand."""
+    -c are skipped as the shell does: the script is the first operand. `shell`: the shell's name (_shell_takes)."""
     i, flags = 0, ""
     while i < len(args):
         a = args[i]
@@ -2334,7 +2339,7 @@ def _shell_mode(args):
             break
         if a[0] == "-" and not a.startswith("--"):
             flags += a[1:]
-        i += 1 + _shell_takes(a)
+        i += 1 + _shell_takes(a, shell)
     if "c" in flags:
         return ("c", args[i]) if i < len(args) else ("stdin", None)
     if "s" in flags or i >= len(args) or _stream(args[i]):
@@ -2342,24 +2347,26 @@ def _shell_mode(args):
     return None, args[i]   # a script file
 
 
-def _shell_takes(a):
-    """How many words after a shell's option word `a` are its values: one for --rcfile or --init-file, and one for
-    each o or O in a cluster (`-o pipefail`, `-euo pipefail`, `-oc pipefail 'cmd'`, `+O extglob`), as bash reads them."""
-    if a in ("--rcfile", "--init-file"):
+def _shell_takes(a, shell=""):
+    """How many words after option word `a` of the shell named `shell` are its values: one for --rcfile, --init-file
+    or zsh's --emulate, and one for each o or O in a cluster (`-o pipefail`, `-euo pipefail`, `-oc pipefail 'cmd'`,
+    `+O extglob`), as bash reads them, and each T of mksh's (`-T /dev/tty`)."""
+    if a in ("--rcfile", "--init-file", "--emulate"):
         return 1
-    return sum(ch in "oO" for ch in a[1:]) if a[:1] in ("-", "+") and not a.startswith("--") else 0
+    return sum(ch in "oO" or ch == "T" and shell in ("mksh", "lksh") for ch in a[1:]) if \
+        a[:1] in ("-", "+") and not a.startswith("--") else 0
 
 
-def _interactive(args):
+def _interactive(args, shell=""):
     """Whether a shell given `args` starts interactive, and so reads ENV: -i among its options (also bundled, -ic),
     or zsh's -o interactive and --interactive."""
     i = 0
     while i < len(args) and args[i][:1] in ("-", "+") and args[i] not in ("-", "--"):
         a = args[i]
-        named = args[i + 1] if _shell_takes(a) and i + 1 < len(args) else a
+        named = args[i + 1] if _shell_takes(a, shell) and i + 1 < len(args) else a
         if re.match(r"-[^-]*i", a) or a[0] == "-" and re.sub(r"[-_]", "", named).lower() == "interactive":
             return True
-        i += 1 + _shell_takes(a)
+        i += 1 + _shell_takes(a, shell)
     return False
 
 
@@ -4196,7 +4203,7 @@ class _Parser:
         a line that runs one (here, or where emit reaches it)."""
         kind = _CODE_VARIABLES[name]
         if value is None or kind is None or kind == "file" and _stream(value):
-            if name == "ENV" and not any(c["argv"][0] in SHELLS and _interactive(c["argv"][1:])
+            if name == "ENV" and not any(c["argv"][0] in SHELLS and _interactive(c["argv"][1:], c["argv"][0])
                                          for c in self.ctx["cmds"]):
                 self.ctx["env_unread"] = True
                 return
@@ -4374,14 +4381,14 @@ class _Parser:
                 self.charge(len(argv))
                 continue
             # (a runner at a version npx or corepack names, pnpm@9, is that runner; its subcommand comes after its own
-            # options: `pnpm -r exec`, `yarn workspaces foreach -A exec`)
-            elif name in WRAPPERS or (runner := name.partition("@")[0]) in RUNNERS and \
-                    (at := runner_at(runner, args)) is not None:
+            # options, `pnpm -r exec`, `yarn workspaces foreach -A exec`, each place it may be read in turn)
+            elif name in WRAPPERS or (runner := name.partition("@")[0]) in RUNNERS and (at := runner_at(runner, args)):
                 if name == "runuser" and _dash_c(args) is not None:
                     self.nested(self.code(cmd, [_dash_c(args)]), via + ["runuser -c"])
                 if name not in WRAPPERS:
-                    self.charge(at)
-                more = _unwrap(name, args) if name in WRAPPERS else _unwrap(runner, args[at:])
+                    self.charge(at[-1])
+                more = _unwrap(name, args) if name in WRAPPERS else \
+                    itertools.chain.from_iterable(_unwrap(runner, args[k:]) for k in at)
                 inner = next(more)
                 for other in more:   # what it may run where an option it doesn't know takes a value, each read once
                     if (key := (pid, name, tuple(other))) not in self.unwrapped:
@@ -4432,12 +4439,12 @@ class _Parser:
                 self.charge(len(argv))   # each wrapper level copies the words after it
                 continue
             elif name in SHELLS:
-                if self.ctx.get("env_unread") and _interactive(args):
+                if self.ctx.get("env_unread") and _interactive(args, name):
                     raise ParseError("ENV set to a value the parser can't read is not supported")
                 for k, a in enumerate(args[:-1]):   # the file an interactive shell sources first
                     if a in ("--rcfile", "--init-file") and not any(b == "--" for b in args[:k]):
                         self.run_file(args[k + 1], via + [name], cmd, unread=unreadable[k + 2])
-                mode, script = _shell_mode(args)
+                mode, script = _shell_mode(args, name)
                 if mode == "c":
                     given = args[args.index(script) + 1:] if script in args else []
                     self.positional(given if script in args else args)
@@ -5441,15 +5448,17 @@ _STAGE_ENDS = _LIST_ENDS | {"|", "|&"}   # the words that end a pipeline's stage
 # where a command may start in a file's text the parser doesn't read as a script (unwrapped): a word that is one of
 # these or ends in one of their characters (`run:`, `x;`), or a YAML list's `-`
 _STARTS = _STAGE_ENDS | KEYWORDS | {"-", "if", "while", "until", "elif", "!", "{"}
-_TEXT_PREFIX = re.compile(r"[\x27\"$(`{!]*")   # quotes, `$(`, a backquote or a brace a command's word may start in
+# what a command's first word may start in: quotes, `$(`, a backquote or a brace, after an assignment of a
+# substitution (`x="$(bash -c …)"`)
+_TEXT_PREFIX = re.compile(r"(?:[A-Za-z_]\w*=(?=[\x27\"]?(?:\$\(|`)))?[\x27\"$(`{!]*")
 # a word of such text: its quoted runs and backslash pairs kept in it (`env A='x;y'`, `a\;b`), between blanks and `|`,
-# `&` or `;` (`"$T"|sudo curl` is three words), or one of those, or a quote or backslash with no end. A double-quoted
-# run with a substitution in it is no run: its commands are read as words (`x="$(echo $T | sudo curl …)"`)
-_QUOTED_RUN = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\$`]|\$(?!\())*\"")
-_TEXT_WORD = re.compile(r"\|\||&&|;;|[|&;]|(?:" + _QUOTED_RUN.pattern + r"|\\.|[^\s|&;'\\])+|['\\]")
+# `&` or `;` (`"$T"|sudo curl` is three words), or one of those, or a quote or backslash with no end
+_QUOTED_RUN = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+_TEXT_WORD = re.compile(r"\|\||&&|;;|[|&;]|(?:" + _QUOTED_RUN.pattern + r"|\\.|[^\s|&;'\"\\])+|['\"\\]")
+_BLANK_WORD = re.compile(r"\|\||&&|;;|[|&;]|[^\s|&;]+")   # one between blanks and `|`, `&` or `;`, quotes or none
 
 
-def unwrapped(text):
+def unwrapped(text, quoted=True):
     """`text` (a file's shell commands the parser doesn't read as a script: a CI workflow's steps, TK-A061) with each
     wrapper where a command may start (_STARTS: a line's start, after `|`, `;`, `&`, `(`, a YAML key's `:` or list's
     `-`) read as what it runs (_unwrap's first reading, its words without their quotes and backslashes; one named by
@@ -5457,14 +5466,17 @@ def unwrapped(text):
     options, each o in a cluster taking a value, and a `--`), each command's first word without the quote, `(`, `$(` or
     backquote it starts in (_TEXT_PREFIX), each line's words joined by a space: a rule reads `echo $T | sudo curl -d
     @- …` and `echo $T | (curl -d @- …)` as `echo $T | curl -d @- …`, as the shell's own lines are read (_lines).
-    lean: words split at blanks and `|`, `&` and `;` outside quotes (_TEXT_WORD), not as the shell reads them; a
-    wrapper's own words read up to 64 and a script in a script 8 deep; read the steps with the parser if a rule needs
-    more"""
-    return "\n".join(" ".join(_unwrapped_words(_TEXT_WORD.findall(line))) for line in text.split("\n"))
+    Words are split at blanks and `|`, `&` and `;` outside quotes (_TEXT_WORD: `env A='x;y' curl` is three), or, with
+    `quoted` False, wherever they are (_BLANK_WORD: a quoted run that holds a command, `- run: "echo $T | sudo curl
+    …"`, `bash -c 'a | '"b"`, is its words); the engine reads both.
+    lean: words split so, not as the shell reads them; a wrapper's own words read up to 64 and a script in a script 8
+    deep; read the steps with the parser if a rule needs more"""
+    split = (_TEXT_WORD if quoted else _BLANK_WORD).findall
+    return "\n".join(" ".join(_unwrapped_words(split(line), split)) for line in text.split("\n"))
 
 
-def _unwrapped_words(words, depth=0):
-    """unwrapped()'s reading of one line's words (_TEXT_WORD), a quoted -c script's in turn (`depth`)."""
+def _unwrapped_words(words, split, depth=0):
+    """unwrapped()'s reading of one line's words (`split`), a quoted -c script's in turn (`depth`)."""
     kept, i, start = [], 0, True
     while i < len(words):
         w = words[i]
@@ -5481,11 +5493,11 @@ def _unwrapped_words(words, depth=0):
             j, script = i + 1, False   # its options, -c among them, then a `--` and the script
             while j < len(words) and (o := words[j].translate(_UNQUOTED))[:1] in ("-", "+") and o != "--":
                 script |= bool(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", o))
-                j += 1 + _shell_takes(o)
+                j += 1 + _shell_takes(o, name)
             j += j < len(words) and words[j].translate(_UNQUOTED) == "--"
             if script and j < len(words):
                 if depth < 8 and _QUOTED_RUN.fullmatch(words[j]):   # the script's own words, read so too
-                    kept += _unwrapped_words(_TEXT_WORD.findall(words[j][1:-1]), depth + 1)
+                    kept += _unwrapped_words(split(words[j][1:-1]), split, depth + 1)
                     i, start = j + 1, False
                     continue
                 words[j] = words[j].lstrip("\x27\"")
@@ -5692,7 +5704,7 @@ def _git_config_env(given):
 
 def _stdin_shell(cmds):
     """A shell reading its script from stdin, or at or batch, which read from it the commands they schedule."""
-    return next((c for c in cmds if c["argv"][0] in SHELLS and _shell_mode(c["argv"][1:])[0] == "stdin"
+    return next((c for c in cmds if c["argv"][0] in SHELLS and _shell_mode(c["argv"][1:], c["argv"][0])[0] == "stdin"
                  or c["argv"][0] in ("at", "batch")), None)
 
 

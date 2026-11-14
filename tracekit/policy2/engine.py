@@ -562,7 +562,8 @@ class Engine:
             return Engine._subjects(cls, "command", args, fields, parsed) + _slashes(parsed[1]) + list(dict.fromkeys(
                 p for c in parsed[0] if (p := _published(c["argv"]))))
         if cls == "fs" and field == "ci_workflow" and isinstance(fields.get(field), str):   # and its wrappers unwrapped
-            return list(dict.fromkeys([fields[field], shell.unwrapped(fields[field])]))
+            return list(dict.fromkeys([fields[field], shell.unwrapped(fields[field]),
+                                       shell.unwrapped(fields[field], False)]))
         if field is None:
             return [canonical(args)]
         if cls == "fs" and field == "path" and isinstance(args.get("paths"), list):   # a call on several files
@@ -1745,9 +1746,9 @@ def _published(argv):
     """`<program> publish` for a command that publishes a package, after any number of options (each with a value
     or not, read in one pass, where a pattern bounds them: TK-A056, TK-F004): _PUBLISHERS' publish (a program
     corepack or a package runner names with its version too: npm@10), npm's pu to publi, cargo's after a +toolchain,
-    pnpm's after recursive, multi or m, and yarn's npm publish (after its workspaces foreach); else None. The command
-    a package manager's exec, x or dlx runs, and a wrapper's, are commands of their own the parser gives
-    (shell.runner_at, shell._unwrap). The push and line fields read it beside the command as written."""
+    pnpm's after recursive, multi or m, and yarn's npm publish (after its workspaces foreach or workspace <name>); else
+    None. The command a package manager's exec, x or dlx runs, and a wrapper's, are commands of their own the parser
+    gives (shell.runner_at, shell._unwrap). The push and line fields read it beside the command as written."""
     prog = shell.base_name(argv[0]).partition("@")[0] if argv else ""
     if prog not in _PUBLISHERS:
         return None
@@ -1758,7 +1759,7 @@ def _published(argv):
         if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi") or prog == "yarn" and \
                 argv[i:i + 2] == ["npm", "publish"]:
             return f"{prog} publish"
-        skip = 2 if prog == "yarn" and argv[i:i + 2] == ["workspaces", "foreach"] else \
+        skip = 2 if prog == "yarn" and (argv[i:i + 2] == ["workspaces", "foreach"] or w == "workspace") else \
             1 if prog == "pnpm" and w in ("recursive", "multi", "m") else 0
         if skip:   # its command follows, after options of its own
             i, valued = i + skip, False
@@ -2890,10 +2891,10 @@ def _may_run_input(argv):
     on its own (TK-D002's system(), the parser's sed e), and so is what a wrapper or runner runs (env, nice, xargs:
     the parser gives it as a command of its own)."""
     name, args = argv[0], argv[1:]
-    if name in shell.WRAPPERS or name in shell.RUNNERS and shell.runner_at(name, args) is not None:
+    if name in shell.WRAPPERS or (runner := name.partition("@")[0]) in shell.RUNNERS and shell.runner_at(runner, args):
         return False
     if name in shell.SHELLS:
-        return shell._shell_mode(args)[0] == "stdin"
+        return shell._shell_mode(args, name)[0] == "stdin"
     if (kind := shell._kind(name)) and kind not in ("awk", "sed"):
         return shell._reads_stdin(kind, args)
     if name in ("tar", "gtar", "bsdtar"):

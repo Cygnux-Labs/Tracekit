@@ -304,9 +304,10 @@ first NUL as bash's C string is: `r$'\x00zz'm` is `rm`), `;` `|` `|&` `&&` `||` 
 `torsocks`, `firejail`, `gosu`, `tini`, …) and runners (`uv run`, `uv tool run`, `poetry run`, `pipenv run`, `pdm run`,
 `pipx run`, `hatch run`, `conda run`, `direnv exec DIR`, `mise exec … --`, `op run`, `doppler run`, `npm exec`,
 `pnpm dlx`, `yarn dlx`, `bun x`, `rustup run TOOLCHAIN`; a runner's subcommand after its own options too: `pnpm -r
-exec`, `npm -w a exec --`, `yarn workspaces foreach -A exec`, and a runner npx or corepack names at a version,
-`pnpm@9`) are resolved, a shell's option cluster with an `o` or `O` takes the next word (`bash -euo pipefail -c '…'`
-runs its script), a program
+exec`, `npm -w a exec --`, `yarn workspaces foreach -A exec`, `yarn workspace foo exec`, one spelled as an option's
+value read both ways, `uv --directory run run …`, and a runner npx or corepack names at a version, `pnpm@9`) are
+resolved, a shell's option cluster with an `o` or `O` takes the next word (`bash -euo pipefail -c '…'` runs its
+script), as do zsh's `--emulate` and mksh's `-T`, a program
 name is read casefolded and without `.exe`, `.cmd`, `.bat` or `.ps1` (npm's Windows shims: `npm.cmd` is npm; but `echo.bat`, `grep.cmd` or `sh.ps1`, a script named for a bash builtin, a shell or a program that reads data, is a script of its own; one named by a path with a `\` also as Windows runs it: `'C:\Git\bin\bash'`
 is bash), and the parser follows what a shell or interpreter runs: `bash -c`,
 `nix-shell --run`, a heredoc into a shell, `eval`, `ssh host '…'`, `find -exec`,

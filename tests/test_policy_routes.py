@@ -83,8 +83,18 @@ class Routes(unittest.TestCase):
                               "npm -w a exec -- rm -rf ~"), "deny", "TK-D004")
         self.expect(self.bash(f"pnpm --filter x exec {PUSH}"), "deny", "TK-D003")
         # and wherever a shell's options are read: -i after a cluster (ENV read), -O in one (an extglob pattern)
-        self.expect(self.bash("ENV=$(cat f) bash -eo pipefail -i -c true", "bash -eO extglob -c 'rm -rf ~/@(.ssh|x)'"),
-                    ("ask", "deny"), "TK-SHELL-PARSE")
+        self.expect(self.bash("ENV=$(cat f) bash -eo pipefail -i -c true", "bash -eO extglob -c 'rm -rf ~/@(.ssh|x)'",
+                              "ENV=$(cat f) zsh -o interactive -c true"), ("ask", "deny"), "TK-SHELL-PARSE")
+        # and the review of round 5: a runner's subcommand spelled as an option's value before it is read both ways;
+        # yarn's workspace <name> and pnpm's recursive or m before exec; zsh's --emulate, mksh's -T, +o, --rcfile and
+        # each o of a cluster take a value
+        self.expect(self.bash("uv --directory run run sudo id", "poetry -C run run sudo id", "conda -n run run sudo id",
+                              "pdm -p run run sudo id", "pipx --python run run sudo id", "bun --cwd x x sudo id",
+                              "npm -w x x sudo id", "yarn workspace foo exec sudo id", "pnpm recursive exec sudo id",
+                              "pnpm m exec sudo id", "zsh --emulate sh -c 'sudo id'", "mksh -T /dev/null -c 'sudo id'",
+                              "bash +o posix -c 'sudo id'", "bash +O extglob -c 'sudo id'", "bash --rcfile x -c 'sudo id'",
+                              "bash -oo posix errexit -c 'sudo id'"), "deny", "TK-D001")
+        self.expect(self.bash("uv --directory run run pytest", "bun --cwd x x vitest"), "allow")
         self.expect(self.bash("bash -euo pipefail scripts/build.sh", "pnpm -r exec -- vitest run", "npm --prefix x run build",
                               "npm test"), "allow")
         # a download piped into what an exec runs is read as piped into that (`… | jq` reads data, as plain)
@@ -804,7 +814,9 @@ class Routes(unittest.TestCase):
                           "yarn workspaces foreach -A exec npx npm@10 publish", "pnpm -r exec pnpm publish",
                           "pnpm --filter x exec npm publish", "yarn workspaces foreach -A exec rustup run stable cargo publish",
                           # and the re-check of round 4: a runner npx or corepack names at a version
-                          "corepack pnpm@9 -r exec npm publish", "npx pnpm@9 -r exec npm publish")
+                          "corepack pnpm@9 -r exec npm publish", "npx pnpm@9 -r exec npm publish",
+                          # and the review of round 5: yarn's workspace <name>
+                          "yarn workspace foo npm publish", "yarn workspace foo exec npm publish")
         self.expect(cases, "ask", "TK-A056", packs=("dev",))
         self.expect(cases, {"coding": "flag", "server": "flag", "strict": "ask"}, "TK-F004",
                     packs=("coding", "server", "strict"))
