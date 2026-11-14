@@ -1745,10 +1745,23 @@ def _published(argv):
     """`<program> publish` for a command that publishes a package, after any number of options (each with a value
     or not, read in one pass, where a pattern bounds them: TK-A056, TK-F004): _PUBLISHERS' publish (a program
     corepack or a package runner names with its version too: npm@10), npm's pu to publi, cargo's after a +toolchain,
-    pnpm's after recursive, multi or m, yarn's npm publish, and the publish of the command yarn's exec runs, each after
-    its workspaces foreach; else None. The push and line fields read it beside the command as written."""
-    i = 0   # (the program's word: each command yarn's exec runs in turn, each word read once)
-    while i < len(argv) and (prog := shell.base_name(argv[i]).partition("@")[0]) in _PUBLISHERS:
+    pnpm's after recursive, multi or m, yarn's npm publish (after its workspaces foreach), and the publish of the
+    command a package manager's exec, x or dlx (shell.RUNNERS: after pnpm's options too) or a wrapper (npx, env:
+    shell.WRAPPERS) runs, after its options and a `--` (shell._unwrap's first reading); else None. The push and line
+    fields read it beside the command as written."""
+
+    def runs(name, at):   # where what the wrapper or runner `name` at `at` runs starts, or None
+        window = argv[at:at + 65]   # (each word read at most a window's times: linear)
+        inner = next(shell._unwrap(name, window), [])
+        return at + len(window) - len(inner) if inner else None
+
+    i = 0   # (the program's word: each command an exec or a wrapper runs in turn)
+    while i is not None and i < len(argv):
+        name = shell.base_name(argv[i])
+        if (prog := name.partition("@")[0]) not in _PUBLISHERS:
+            i = runs(name, i + 1) if name in shell.WRAPPERS else runs(name, i + 1) if name in shell.RUNNERS and \
+                argv[i + 1:i + 2] != [] and argv[i + 1] in shell.RUNNERS[name][0] else None
+            continue
         i += 1 + (prog == "cargo" and argv[i + 1:i + 2] != [] and argv[i + 1].startswith("+"))
         valued = False   # (the word before is an option, so this one may be its value)
         while i < len(argv):
@@ -1756,8 +1769,8 @@ def _published(argv):
             if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi") or prog == "yarn" and \
                     argv[i:i + 2] == ["npm", "publish"]:
                 return f"{prog} publish"
-            if prog == "yarn" and w == "exec":
-                i += 1
+            if prog in shell.RUNNERS and w in shell.RUNNERS[prog][0]:   # its exec, x or dlx: what that runs
+                i = runs(prog, i)
                 break
             skip = 2 if prog == "yarn" and argv[i:i + 2] == ["workspaces", "foreach"] else \
                 1 if prog == "pnpm" and w in ("recursive", "multi", "m") else 0
@@ -1768,6 +1781,8 @@ def _published(argv):
                 return None
             valued = w.startswith("-")
             i += 1
+        else:
+            return None
     return None
 
 

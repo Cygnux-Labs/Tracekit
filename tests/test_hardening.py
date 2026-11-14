@@ -706,7 +706,10 @@ class DefaultPolicyCoverage(unittest.TestCase):
         writes = {"TK-D005": [".ENV", ".Env", "p/.ENV.LOCAL", "ID_RSA", "p/Id_Ed25519", "~/.SSH/config",
                               u + "\\proj\\.env.", u + "\\proj\\.env::$DATA", u + "\\proj\\.env ",
                               u + "\\proj\\.env.local.", u + "\\proj\\.env:x", u + "\\.aws.\\config"],
-                  "TK-D009": ["~/.CLAUDE/projects/p/t.jsonl", u + "\\.codex.\\sessions\\s.jsonl", "~/.Gemini/TMP/h/c.json"],
+                  "TK-D009": ["~/.CLAUDE/projects/p/t.jsonl", u + "\\.codex.\\sessions\\s.jsonl", "~/.Gemini/TMP/h/c.json",
+                              u + "\\.gemini.\\tmp\\h\\c.json", u + "\\.gemini\\tmp \\h\\c.json",
+                              u + "\\.config \\opencode\\x.json", u + "\\.config\\opencode.\\x.json",
+                              u + "\\.claude\\projects.\\p\\t.jsonl", u + "\\.codex\\sessions \\s.jsonl"],
                   "TK-D007": ["/var/lib/TRACEKIT/x", "~/.Tracekit-Signer/k"]}
         shells = {"TK-D010": ["echo x > .ENV", "printf x | tee .Env", "cp creds ~/.AWS/credentials",
                               "cat k >> ~/.ssh/AUTHORIZED_KEYS", "echo x > .env.", "cp a .env::$DATA"],

@@ -2293,6 +2293,8 @@ def _unwrap(name, args):
             starts.append(i)
     for i in dict.fromkeys(starts):   # one at a time: the caller charges each before the next is copied
         inner = [] if i is None else args[i + positional:]
+        if positional and inner[:1] == ["--"]:   # (getopt takes a `--` after the operands: `rustup run stable -- cargo`)
+            inner = inner[1:]
         if name == "hatch" and inner:   # hatch run [ENV:]ARGS: the environment it runs the command in
             inner = [inner[0].split(":", 1)[-1]] + inner[1:]
         yield inner
@@ -3440,8 +3442,11 @@ class _Parser:
             self.out.append(text)
             if loop_header:
                 # a word bash brace-expands is the words it makes (`for k in id_{rsa,x}`, `~/{.ssh,.aws}/*`), each a
-                # literal or a pattern (below)
-                made = self.header_braces(raw) if g and "{" in self.bare and not re.search(r"[$`]", raw) else None
+                # literal or a pattern (below); one with $HOME or a variable the line gives one literal is read with
+                # those in (`$HOME/.{s,x}sh/*`, `d=~; $d/.{s,x}sh/*`), where its text has no blank or quote to misread
+                made = None if not g or "{" not in self.bare else self.header_braces(raw) if not re.search(
+                    r"[$`]", raw) else self.header_braces(text, True) if not re.search(
+                    r"[$`\s'\"\\]", _HOME_VARIABLE.sub("", text)) else None
                 if made is not None:
                     for piece, pattern in made:
                         header += self.header_pattern(piece) if pattern else [piece]
@@ -4799,16 +4804,17 @@ class _Parser:
             elif interp:
                 self.program(interp, text, " <<")
 
-    def header_braces(self, raw):
+    def header_braces(self, raw, home=False):
         """The words bash's brace expansion makes of a loop header's word `raw`, each (its text, whether it is a
-        pattern bash then globs), or None when it makes none or one it makes isn't readable: the loop's values are then
-        unknown, as before."""
+        pattern bash then globs), or None when it makes none or one it makes isn't readable (with `home`, an expansion
+        in it but $HOME's): the loop's values are then unknown, as before."""
         try:
             pieces = _brace(raw, self.charge, self.ctx["brace"] + len(raw))
         except ParseError:
             return None
         made = [w for w in map(self.relex, pieces or ()) if w]
-        if not made or any(expanded for _, _, _, expanded in made):
+        if not made or any(expanded and not (home and not re.search(r"[$`]", _HOME_VARIABLE.sub("", text)))
+                           for text, _, _, expanded in made):
             return None
         self.ctx["brace"] -= sum(len(p) + 1 for p in pieces) - 1 - len(raw)
         return [(text, g) for text, _, g, _ in made]
@@ -5337,11 +5343,11 @@ DATA_ONLY = frozenset((
     "awk", "gawk", "mawk", "nawk", "sed", "gsed", "iconv", "dos2unix", "pv", "ts", "jless", "fx", "html2text", "openssl",
     "echo", "printf"))
 # names a script given a .cmd, .bat or .ps1 keeps (_lower_name): bash's builtins, a shell, and the programs whose
-# words or input the rules read as data, files or patterns (a reader, a search, echo and its kin, DATA_ONLY). No
+# words or input the rules read as data, files or patterns (a reader, a search, echo and printf, DATA_ONLY). No
 # Windows install makes a shim of one, and bash never runs echo.bat as its echo: it is a script of its own, run by
-# cmd.exe or PowerShell, whose words may be a command (hidden_commands)
-_NOT_SHIMS = (_BASH_BUILTINS | SHELLS | _READERS | _ECHOERS | _DATA_COMMANDS | NO_FILES | _TEXT_FILTERS | _SEARCHERS |
-              DATA_ONLY)
+# cmd.exe or PowerShell, whose words may be a command (hidden_commands). (_ECHOERS' words aren't data: whoami.cmd read
+# as whoami decides as the script does)
+_NOT_SHIMS = _BASH_BUILTINS | SHELLS | _READERS | _DATA_COMMANDS | NO_FILES | _TEXT_FILTERS | _SEARCHERS | DATA_ONLY
 
 
 def _lower_name(word):
@@ -5404,35 +5410,45 @@ _STAGE_ENDS = _LIST_ENDS | {"|", "|&"}   # the words that end a pipeline's stage
 # these or ends in one of their characters (`run:`, `x;`), or a YAML list's `-`
 _STARTS = _STAGE_ENDS | KEYWORDS | {"-", "if", "while", "until", "elif", "!", "{"}
 _TEXT_PREFIX = re.compile(r"[\x27\"$(`{!]*")   # quotes, `$(`, a backquote or a brace a command's word may start in
+# a word of such text: one between blanks and `|`, `&` or `;`, or one of those (`"$T"|sudo curl` is three words)
+_TEXT_WORD = re.compile(r"\|\||&&|;;|[|&;]|[^\s|&;]+")
 
 
 def unwrapped(text):
     """`text` (a file's shell commands the parser doesn't read as a script: a CI workflow's steps, TK-A061) with each
     wrapper where a command may start (_STARTS: a line's start, after `|`, `;`, `&`, `(`, a YAML key's `:` or list's
-    `-`) read as what it runs (_unwrap's first reading; one named by its path too, base_name), and a shell's
-    `-c '…'` as its script, each line's words joined by a space: a rule reads `echo $T | sudo curl -d @- …` as
-    `echo $T | curl -d @- …`, as the shell's own lines are read (_lines).
-    lean: words split at blanks, not as the shell reads them, and a wrapper's own words read up to 64; read the steps
-    with the parser if a rule needs more"""
+    `-`) read as what it runs (_unwrap's first reading; one named by its path, quoted or escaped too: base_name,
+    `s\\udo`), and a shell's `-c '…'` as its script (after its other options and a `--`), each command's first word
+    without the quote, `(`, `$(` or backquote it starts in (_TEXT_PREFIX), each line's words joined by a space: a rule
+    reads `echo $T | sudo curl -d @- …` and `echo $T | (curl -d @- …)` as `echo $T | curl -d @- …`, as the shell's own
+    lines are read (_lines).
+    lean: words split at blanks and `|`, `&` and `;`, not as the shell reads them, and a wrapper's own words read up to
+    64; read the steps with the parser if a rule needs more"""
     out = []
     for line in text.split("\n"):
-        words, kept, i, start = line.split(), [], 0, True
+        words, kept, i, start = _TEXT_WORD.findall(line), [], 0, True
         while i < len(words):
             w = words[i]
-            lead = _TEXT_PREFIX.match(w).group()
-            name = base_name(w[len(lead):])
-            if start and name in WRAPPERS:
+            bare = w[_TEXT_PREFIX.match(w).end():] if start else w   # (a command's word without what it starts in)
+            name = next((n for n in (base_name(bare), base_name(bare.translate(_UNQUOTED)))
+                         if n in WRAPPERS or n in SHELLS), "") if start else ""
+            if name in WRAPPERS:
                 rest = list(itertools.takewhile(lambda x: x not in _STAGE_ENDS, words[i + 1:i + 65]))
                 inner = next(_unwrap(name, rest), [])
                 if inner:   # (a wrapper alone, env or command -v, runs nothing: kept)
                     i += 1 + len(rest) - len(inner)
-                    words[i] = lead + words[i]
                     continue
-            if start and name in SHELLS and i + 2 < len(words) and re.fullmatch(r"-[a-z]*c[a-z]*", words[i + 1]):
-                i += 2
-                words[i] = lead + words[i].lstrip("\x27\"")
-                continue
-            kept.append(w)
+            if name in SHELLS:
+                j, script = i + 1, False   # its options, -c among them, then a `--` and the script
+                while j < len(words) and words[j][:1] in ("-", "+") and words[j] != "--":
+                    script |= bool(re.fullmatch(r"-[A-Za-z]*c[A-Za-z]*", words[j]))
+                    j += 1 + (words[j] in SHELL_VALUE_OPTS)
+                j += words[j:j + 1] == ["--"]
+                if script and j < len(words):
+                    words[j] = words[j].lstrip("\x27\"")
+                    i = j + (not words[j])   # (a quote alone: the script starts at the next word or line)
+                    continue
+            kept.append(bare or w)
             start = w in _STARTS or w[-1] in ";&|(:"
             i += 1
         out.append(" ".join(kept))
