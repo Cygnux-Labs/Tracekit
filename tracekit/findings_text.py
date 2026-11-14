@@ -151,7 +151,8 @@ KEPT = {"TK-X111": frozenset(("unpushed",)), "TK-X113": frozenset(("untouched", 
         "TK-X114": frozenset(("offline",))}
 LOCAL_VERBS = frozenset(("kept", "keep", "keeping", "left", "leave", "leaving", "remain", "remains", "stay", "stays",
                          "stayed", "still", "only"))
-# what makes a denial about the files a message doesn't name; not "beyond", which compares ("no change beyond noise")
+# what makes a denial about the files a message doesn't name; "beyond" only before an article, a file or the model's
+# work ("no changes beyond the docs", "beyond src/pager.py"; not "no change beyond noise", which compares)
 OTHER = frozenset(("else", "other", "others", "besides", "outside", "apart"))
 DENIED_WORDS = frozenset().union(*DENY.values(), *KEPT.values(), LOCAL_VERBS, NET_NOUNS, ("local", "locally"))
 KEPT_WORDS = frozenset().union(*KEPT.values())
@@ -195,8 +196,8 @@ ACTORS = frozenset(("his", "her", "their", "he", "she", "they", "you", "your", "
 ARTICLES = frozenset(("the", "a", "an", "this", "that", "these", "those", "his", "her", "their", "its", "my", "our",
                       "your"))   # "the unchanged policy", "an offline copy": an attribute of a thing, not a denial
 # a denial that covers the whole run, not only its task ("I haven't pushed anything during this session")
-WHOLE = frozenset((("ever",), ("at", "all"), ("this", "session"), ("the", "session"), ("whole", "session"),
-                   ("this", "task")))
+WHOLE = frozenset((("ever",), ("never",), ("at", "all"), ("this", "session"), ("the", "session"),
+                   ("whole", "session"), ("this", "task")))
 BE = frozenset(("is", "was", "are", "were", "been", "be", "isn't", "wasn't", "aren't", "weren't", "remains",
                 "stays", "stayed"))   # a state or a passive: "billing.py is untouched", "wasn't pushed"
 JOINS = frozenset(("and", "or", "then", "which", "who", "that"))   # a subject starts after one
@@ -401,11 +402,14 @@ def command_facts(cmd):
     targets; the words of its git pushes and the name of the repository each pushes from (its `-C` directory, else the
     last `cd` before it); what it sends off the machine or adds as a package (TK-X211): [(kind "send" or "install",
     what it did in words, the names that tell of it)]; the write and delete targets no denial is about: the run's own
-    scratch (under a temp directory, or relative where each `cd` of the line goes to one) and paths whose place depends
-    on a value the line doesn't settle (constraints.shell's variable)). Families: test, build, lint, commit, push,
+    scratch (under a temp directory, `..` resolved, or relative and so from each `cd` of the line), and the
+    paths whose place depends on a value the line doesn't settle (constraints.shell's variable) when its other paths
+    are such scratch (`R=/tmp/r && ... > $R/x`, read as /x too); the words of the branches,
+    refs and repositories its git commands name (a push's refs, a checkout's or switch's, the directory git runs
+    in)). Families: test, build, lint, commit, push,
     install, delete, network, deploy, merge, and the risky labels of TK-X120."""
     from .findings_v2 import _targets
-    fams, deletes, pushes, acts, cwd, cds = set(), [], [], [], None, []
+    fams, deletes, pushes, acts, cwd, cds, gits = set(), [], [], [], None, [], set()
     for words in _simple(cmd):
         prog, args, sudo = _argv(words)
         if sudo:
@@ -500,6 +504,10 @@ def command_facts(cmd):
                 repo = args[j + 1] if args[j] == "-C" and j + 1 < len(args) else repo
                 j += 2 if args[j] in ("-C", "-c") else 1
             gsub, rest = (args[j].lower(), args[j + 1:]) if j < len(args) else ("", [])
+            named = [a for a in rest[:rest.index("--") if "--" in rest else None] if not a.startswith("-")] \
+                if gsub in ("push", "checkout", "switch", "branch", "worktree") else []
+            gits |= {x for a in named + ([posixpath.basename(repo.rstrip("/"))] if repo else [])
+                     for x in PARTS.split(a.lower()) if x}
             fams.add({"commit": "commit", "push": "push", "merge": "merge", "rebase": "history rewrite",
                       "filter-branch": "history rewrite", "filter-repo": "history rewrite", "rm": "delete",
                       "clean": "delete", "pull": "network", "fetch": "network", "clone": "network",
@@ -530,9 +538,16 @@ def command_facts(cmd):
         acts.append(("send", "published a package", set(), set()))
     paths, _, unsettled = _targets(cmd)
     writes = [p for p in paths if not p.startswith("/dev/")]
-    temp = bool(cds) and all(d.startswith(TEMP) for d in cds)
-    scratch = {p for p in writes + deletes if p.startswith(TEMP) or temp and not p.startswith(("/", "~"))}
-    return fams, writes, deletes, pushes, acts, scratch | set(unsettled)
+    scratch = {p for p in writes + deletes if _temp(p) or cds and not p.startswith(("/", "~")) and all(
+        _temp(posixpath.join(d, p)) for d in cds)}
+    if scratch and set(writes) <= scratch | set(unsettled):   # its other readings of a word it doesn't settle: temp
+        scratch |= set(unsettled)
+    return fams, writes, deletes, pushes, acts, scratch, gits
+
+
+def _temp(path):
+    """Whether `path` is under a temp directory, `..` resolved (/tmp/../work is no temp path)."""
+    return path.startswith("/") and posixpath.normpath(path).startswith(TEMP)
 
 
 # --------------------------------------------------------------------------- results
@@ -678,7 +693,8 @@ def _objects(ts):
     """What a denial in clause `ts` is about: ("any",), ("else",) for "anything else", ("code",) for source files
     ("no code changes": a version bump in pyproject.toml is none), or ("named", names): the files and words it
     names; what an identifier owns ("E11's results") is about that identifier ("e11")."""
-    if set(ts) & OTHER:
+    if set(ts) & OTHER or any(t == "beyond" and (n in ARTICLES or n in WORK or "." in n[1:-1] or "/" in n)
+                              for t, n in zip(ts, ts[1:])):
         return ("else",)
     rest = []
     for k, t in enumerate(ts):
@@ -811,9 +827,10 @@ def read_message(text):
     """What one model message says: {"claims": categories it claims ("tests", "tests_run", "generic", "build",
     "lint", "deploy", "merge", "push", "commit", "install"), "denials": {rule: objects}, "whole": the rules of the
     denials whose sentence covers the whole run (WHOLE: "during this session", "at all", "ever"), "files": the file
-    names it names, "quote": {category or rule: the sentence}}. A denial with no subject and no verb of its own
-    ("…, not pushed") is about the identifiers its sentence names before it (a word with a letter and a digit:
-    "committed on sec08 as 9196110e (one commit, not pushed)"). A clause that admits a failure or does not work takes back
+    names it names, "quote": {category or rule: the sentence}}. A push denial with no subject and no verb of its own
+    ("…, not pushed") holds the identifiers its sentence names before it as ("ident", words) (a word with a letter
+    and a digit: "committed on sec08 as 9196110e (one commit, not pushed)"), which check() reads as its subject when
+    the run's git commands name one as a branch, ref or repository, else as any push. A clause that admits a failure or does not work takes back
     the message's success claims about what it names (_admitted: "2 tests still fail" the test claims, "it doesn't
     work yet" a generic one; not "the crash came from an off-by-one", about the bug, against "all tests pass"), an
     exception ("all tests pass except test_x") what its sentence claims."""
@@ -836,9 +853,9 @@ def read_message(text):
             if question:
                 continue
             for rule, obj in _denials(ts).items():
-                if obj == ("any",) and ident and ts[0] in ("no", "not") and not any(
+                if rule == "TK-X111" and obj == ("any",) and ident and ts[0] in ("no", "not") and not any(
                         t in BE or t in AUXILIARY or t in FIRST for t in ts):
-                    obj = ("named", ident[:MAX_NAMES])   # a fragment: "…, not pushed"
+                    obj = ("ident", ident[:MAX_NAMES])   # a fragment: "…, not pushed"
                 if rule not in denials or run_wide and rule not in whole:
                     denials[rule], quote[rule] = obj, sentence
                     whole |= {rule} if run_wide else set()
@@ -1013,6 +1030,7 @@ class _Pass:
         self.calls, self.results, self.msgs, self.got, self.seen = [], {}, [], set(), set()
         self.transcript = {}   # tool_use_id -> (run_seq of the transcript line with its result, why it failed)
         self.told, self.told_capped = set(), False   # what the model told the person, in words (told())
+        self.gits, self.mains = set(), {}   # words of the git names of the run's calls; exchange id -> main transcript
         for tcid, c in run.ran.items():
             d = c["decision"]["event"]
             cs = run.carrier(tcid)
@@ -1041,9 +1059,10 @@ class _Pass:
             if isinstance(body, dict) and call["tool"] in WRITE_TOOLS:
                 path = body.get("file_path") or body.get("notebook_path") or body.get("path")
                 call.update(fams={"write"}, writes=[path] if isinstance(path, str) else [],
-                            scratch={path} if isinstance(path, str) and path.startswith(TEMP) else set())
+                            scratch={path} if isinstance(path, str) and _temp(path) else set())
             elif cmd is not None:
-                fams, writes, deletes, pushes, acts, scratch = command_facts(cmd)
+                fams, writes, deletes, pushes, acts, scratch, gits = command_facts(cmd)
+                self.gits |= gits
                 call.update(fams=fams | ({"write"} if writes else set()), writes=writes, deletes=deletes,
                             pushes=pushes, acts=acts, cmd=_snip(cmd), scratch=scratch)
             else:
@@ -1064,6 +1083,8 @@ class _Pass:
             for tcid, why in _transcript_results(body).items():
                 self.transcript.setdefault(tcid, (seq, why))
         else:
+            main = not (self.v2._tailer(body) and body["transcript"] != "main")
+            self.mains.setdefault(d.get("exchange_id"), main)
             segs = self.v2.parsers.said(*self.v2._message(body, d))
             text = "\n".join(s["text"] for s in segs if s["kind"] == "text" and s["text"].strip())[:MAX_TEXT]
             said = "\n".join(s["text"] for s in segs if s["text"].strip())[:MAX_TEXT]
@@ -1078,7 +1099,7 @@ class _Pass:
             forged = self.run.conflicting(d.get("exchange_id")) and e["source"] != "gateway"
             words, kinds = (set(), set()) if forged else told(said)   # forged text clears nothing
             self.msgs.append({"seq": seq, "x": d.get("exchange_id"), "forged": forged,
-                              "main": not (self.v2._tailer(body) and body["transcript"] != "main"),
+                              "main": main,
                               "said": read_message(text) if text else None, "kinds": kinds,
                               "mentions": set() if forged else mentions(said)})
             if len(self.told) + len(words) > MAX_TOLD:
@@ -1185,16 +1206,23 @@ def check(run, content, out, cov, deadline, clock):
     # a denial's task: since the model's last answer (a main-transcript message that asked for no call) before the
     # person's latest prompt, as the hook recorded it when the person submitted it; never a transcript line, which the
     # agent can write. A prompt sent before the model answered (queued mid-task, or one whose line the tailer missed)
-    # ends no task. A run whose hook records no prompts is one task.
+    # ends no task, nor does an answer the main agent made a call after before the prompt (a model that answered
+    # waits; a line the agent wrote and worked past is no answer). A run whose hook records no prompts is one task.
     prompts, unknowns = sorted(run.hook_seqs), sorted(c["dseq"] for c in p.calls if c["fams"] is None)
     tooled = {x for x, seqs in run.groups.items() if any(run.by_seq[s]["event"]["data"].get("tool_uses") for s in seqs)}
     answers = sorted(m["seq"] for m in p.msgs if m["main"] and m["x"] is not None and m["x"] not in tooled)
+    mains = [c["dseq"] for c in p.calls if p.mains.get(c["x"], True)]   # in dseq order
+    starts = []   # per prompt: where the task its prompt follows starts
+    for k, at in enumerate(prompts):
+        j = bisect.bisect_left(answers, at)
+        a = answers[j - 1] if j else None
+        ended = a is not None and bisect.bisect_right(mains, a) == bisect.bisect_left(mains, at)
+        starts.append(a if ended else starts[-1] if starts else -1)
 
     def task(seq):
         """The run_seq after which the calls of the task of the model message at `seq` lie (-1: the run's start)."""
         k = bisect.bisect_left(prompts, seq)
-        j = bisect.bisect_left(answers, prompts[k - 1]) if k else 0
-        return answers[j - 1] if j else -1
+        return starts[k - 1] if k else -1
 
     for seq in unread:
         for rule in MESSAGE_CHECKS:
@@ -1241,6 +1269,8 @@ def check(run, content, out, cov, deadline, clock):
         # TK-X111..X114: a denial of what the run did before it, in its turn
         for rule in DENIED:
             obj, after, before = said["denials"].get(rule), -1 if rule in said["whole"] else task(seq), seq
+            if obj and obj[0] == "ident":   # its identifiers are its subject when the run's git commands name one
+                obj = ("named", obj[1]) if p.gits & set(obj[1]) else ("any",)
             blind = bisect.bisect_left(unknowns, before) > bisect.bisect_right(unknowns, after)   # a call it can't read
             hits, fam = [], {"TK-X111": "push", "TK-X112": "delete", "TK-X113": "write", "TK-X114": "network"}[rule]
             named_only = obj and obj[0] not in ("any", "else", "code") and rule != "TK-X114"
