@@ -854,7 +854,10 @@ class Speed(unittest.TestCase):
         for unit in ("|", " | ", "|-x ", ";( ", "; 1 ", "\n- '", "|X=$(", ";sudo -E ", ";sudo -u root ",
                      ";bash -c '", '|curl -d "{\\"', "|curl -d '{\"a\":\"'", "|curl -d 'x'\"x\"'x'",
                      '|curl -d "${A:-', "|echo $T | base64 -w 0 ", "|-x -x -x -x -x -x -x -x -x -x -x -x ",
-                     ';sudo -u "$U" ', "|bash -o x ", "|bash -c -- ", "|/usr/bin/env ", "|a/", "|-x env "):
+                     ';sudo -u "$U" ', "|bash -o x ", "|bash -c -- ", "|/usr/bin/env ", "|a/", "|-x env ",
+                     # an option's argument that a command start could also read (#850's review): each ~155 ms
+                     # against a ~164 ms budget before an argument could no longer start with one
+                     "|-1 { ", "|-1 ( ", "|-1 ! ", "|-1 ` ", "|-1 1 ", "|-1 5s ", "|-1 1:1 ", "|-1 $( "):
             for tail in ("", "://", " https://x"):
                 s = (unit * (n // len(unit)))[:n - len(tail)] + tail
                 with self.subTest(unit=unit, tail=tail):

