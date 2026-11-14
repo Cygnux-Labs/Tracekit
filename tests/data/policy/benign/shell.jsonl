@@ -272,6 +272,12 @@
 {"tool": "Bash", "args": {"command": "env | grep PATH"}, "expect": "allow", "note": "environment read locally"}
 {"tool": "Bash", "args": {"command": "env | sort > env.txt"}, "expect": "allow", "note": "environment written locally"}
 {"tool": "Bash", "args": {"command": "printenv HOME | tee home.txt"}, "expect": "allow", "note": "one variable written locally"}
+{"tool": "Bash", "args": {"command": "dd if=disk.img of=backup.img bs=4M"}, "expect": "allow", "note": "copying a disk image file"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/urandom of=key.bin bs=32 count=1"}, "expect": "allow", "note": "reading randomness into a key file"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 disk.img"}, "expect": "allow", "note": "making a filesystem inside a disk image file"}
+{"tool": "Bash", "args": {"command": "shred -u secrets.txt"}, "expect": "allow", "note": "shredding one ordinary file"}
+{"tool": "Bash", "args": {"command": "lsblk"}, "expect": "allow", "note": "listing block devices"}
+{"tool": "Bash", "args": {"command": "diskutil list"}, "expect": "allow", "note": "listing disks on macOS"}
 {"tool": "Bash", "args": {"command": "rm -rf ./var/cache"}, "expect": "allow", "note": "a project folder named var (#749)"}
 {"tool": "Bash", "args": {"command": "rm -rf /var/tmp/build-123"}, "expect": "allow", "note": "a temporary folder inside /var (#749)"}
 {"tool": "Bash", "args": {"command": "rm -rf /tmp/x"}, "expect": "allow", "note": "a temporary folder (#749)"}
@@ -294,6 +300,13 @@
 {"tool": "Bash", "args": {"command": "grep release_agent notes.txt"}, "expect": "allow", "note": "search notes for release_agent"}
 {"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps"}, "expect": "allow", "note": "docker by its path with an explicit socket"}
 {"tool": "Bash", "args": {"command": "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up"}, "expect": "allow", "note": "compose with an explicit socket"}
+{"tool": "Bash", "args": {"command": "nohup env DOCKER_HOST=unix:///var/run/docker.sock docker ps"}, "expect": "allow", "note": "docker after nohup env with an explicit socket"}
+{"tool": "Bash", "args": {"command": "nice -n 5 python x.py"}, "expect": "allow", "note": "a program under nice"}
+{"tool": "Bash", "args": {"command": "CONTAINER_HOST=unix:///run/podman/podman.sock podman ps"}, "expect": "allow", "note": "podman with an explicit socket"}
+{"tool": "Bash", "args": {"command": "CONTAINER_HOST=unix:///run/podman/podman.sock podman-compose up"}, "expect": "allow", "note": "podman-compose with an explicit socket"}
+{"tool": "Bash", "args": {"command": "export CONTAINER_HOST=unix:///run/podman/podman.sock && podman ps"}, "expect": "allow", "note": "exporting the Podman socket for podman"}
+{"tool": "Bash", "args": {"command": "grep CONTAINER_HOST=unix:// compose.yaml"}, "expect": "allow", "note": "searching for the Podman socket setting"}
+{"tool": "Bash", "args": {"command": "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remote ps"}, "expect": "allow", "note": "podman-remote with an explicit socket (#828)"}
 {"tool": "Bash", "args": {"command": "echo 'export PATH=$PATH:~/bin' >> ~/.bashrc"}, "expect": "allow", "note": "an ordinary startup-file edit stays as it is (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'alias ll=ls' >> ~/.bashrc"}, "expect": "allow", "note": "an alias in bashrc stays as it is (#750)"}
 {"tool": "Bash", "args": {"command": "crontab -l"}, "expect": "allow", "note": "listing the user's crontab (#750)"}
@@ -310,3 +323,17 @@
 {"tool": "Bash", "args": {"command": "usermod -u 1001 dev"}, "expect": "allow", "note": "changing a login's uid to an ordinary one (#750)"}
 {"tool": "Bash", "args": {"command": "cat /etc/cron.daily/logrotate"}, "expect": "allow", "note": "reading a cron script (#750)"}
 {"tool": "Bash", "args": {"command": "echo 'alias ports=\"nc -zv localhost\"' >> ~/.zshrc"}, "expect": "allow", "note": "an nc alias without -e in zshrc (#750)"}
+{"tool": "Bash", "args": {"command": "ls -la ~/Library/Containers/com.docker.docker/Data/docker.raw.sock"}, "expect": "allow", "note": "list the macOS Docker raw socket file (#808)"}
+{"tool": "Bash", "args": {"command": "ls -la ~/.local/share/containers/podman/machine/podman-machine-default-api.sock"}, "expect": "allow", "note": "list the macOS Podman machine socket file (#808)"}
+{"tool": "Bash", "args": {"command": "install -m 0755 x /usr/local/bin/x"}, "expect": "allow", "note": "ordinary executable install mode (#804)"}
+{"tool": "Bash", "args": {"command": "install -m 1777 x /tmp/x"}, "expect": "allow", "note": "install setting only the sticky bit (#804)"}
+{"tool": "Bash", "args": {"command": "install --mode=0644 x /usr/local/share/x"}, "expect": "allow", "note": "ordinary data file install mode (#804)"}
+{"tool": "Bash", "args": {"command": "install -m u-s x /usr/local/bin/x"}, "expect": "allow", "note": "install removing the setuid bit (#804)"}
+{"tool": "Bash", "args": {"command": "install -d /tmp/build"}, "expect": "allow", "note": "install creating a directory (#804)"}
+{"tool": "Bash", "args": {"command": "setcap cap_net_bind_service+ep x"}, "expect": "allow", "note": "setcap granting an unprivileged bind capability (#804)"}
+{"tool": "Bash", "args": {"command": "setcap -r x"}, "expect": "allow", "note": "setcap removing capabilities (#804)"}
+{"tool": "Bash", "args": {"command": "setcap -v cap_setuid+ep x"}, "expect": "allow", "note": "setcap verifying capabilities without modifying the file (#804)"}
+{"tool": "Bash", "args": {"command": "setcap =-ep x"}, "expect": "allow", "note": "setcap clearing every capability's flags (#834)"}
+{"tool": "Bash", "args": {"command": "setcap 10+ep x"}, "expect": "allow", "note": "setcap granting the bind capability by its number (#834)"}
+{"tool": "Bash", "args": {"command": "setcap 021+ep x"}, "expect": "allow", "note": "setcap granting capability 17 (octal 021), not a held one (#850)"}
+{"tool": "Bash", "args": {"command": "install --mod=0755 x /usr/local/bin/x"}, "expect": "allow", "note": "an ordinary install mode via a GNU prefix of --mode (#834)"}

@@ -1968,40 +1968,40 @@
   },
   "by_form": {
     "bash-c": {
-      "contained": 552,
+      "contained": 602,
       "missed": 0,
       "rate": 1.0,
-      "total": 552
+      "total": 602
     },
     "cd-dot-and": {
-      "contained": 565,
+      "contained": 615,
       "missed": 0,
       "rate": 1.0,
-      "total": 565
+      "total": 615
     },
     "command-prefix": {
-      "contained": 467,
+      "contained": 514,
       "missed": 0,
       "rate": 1.0,
-      "total": 467
+      "total": 514
     },
     "env-bash-c": {
-      "contained": 552,
+      "contained": 602,
       "missed": 0,
       "rate": 1.0,
-      "total": 552
+      "total": 602
     },
     "original": {
-      "contained": 901,
+      "contained": 951,
       "missed": 0,
       "rate": 1.0,
-      "total": 901
+      "total": 951
     },
     "true-semi": {
-      "contained": 565,
+      "contained": 615,
       "missed": 0,
       "rate": 1.0,
-      "total": 565
+      "total": 615
     }
   },
   "engine_mismatches": [],
@@ -2406,24 +2406,24 @@
         "total": 3
       },
       "TK-A071": {
-        "contained": 5,
+        "contained": 7,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 7,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 7,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 7
       },
       "TK-A072": {
-        "contained": 5,
+        "contained": 14,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 14,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 14,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 14
       },
       "TK-A073": {
         "contained": 2,
@@ -2456,16 +2456,36 @@
         "total": 4
       },
       "TK-A077": {
-        "contained": 10,
+        "contained": 29,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 10,
+        "covered_by_rule_or_parse": 29,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 10,
+        "same_rule": 29,
         "same_rule_rate": 1.0,
-        "total": 10
+        "total": 29
       },
       "TK-A078": {
+        "contained": 9,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 9,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 9,
+        "same_rule_rate": 1.0,
+        "total": 9
+      },
+      "TK-A079": {
+        "contained": 16,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 16,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 16,
+        "same_rule_rate": 1.0,
+        "total": 16
+      },
+      "TK-A080": {
         "contained": 9,
         "coverage_rate": 1.0,
         "covered_by_rule_or_parse": 9,
@@ -2968,24 +2988,24 @@
         "total": 3
       },
       "TK-A071": {
-        "contained": 5,
+        "contained": 7,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 7,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 7,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 7
       },
       "TK-A072": {
-        "contained": 5,
+        "contained": 14,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 14,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 14,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 14
       },
       "TK-A073": {
         "contained": 2,
@@ -3018,16 +3038,36 @@
         "total": 4
       },
       "TK-A077": {
-        "contained": 10,
+        "contained": 29,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 10,
+        "covered_by_rule_or_parse": 29,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 10,
+        "same_rule": 29,
         "same_rule_rate": 1.0,
-        "total": 10
+        "total": 29
       },
       "TK-A078": {
+        "contained": 9,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 9,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 9,
+        "same_rule_rate": 1.0,
+        "total": 9
+      },
+      "TK-A079": {
+        "contained": 16,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 16,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 16,
+        "same_rule_rate": 1.0,
+        "total": 16
+      },
+      "TK-A080": {
         "contained": 9,
         "coverage_rate": 1.0,
         "covered_by_rule_or_parse": 9,
@@ -3520,24 +3560,24 @@
         "total": 3
       },
       "TK-A071": {
-        "contained": 5,
+        "contained": 7,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 7,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 7,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 7
       },
       "TK-A072": {
-        "contained": 5,
+        "contained": 14,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 14,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 14,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 14
       },
       "TK-A075": {
         "contained": 6,
@@ -3550,14 +3590,34 @@
         "total": 6
       },
       "TK-A077": {
-        "contained": 9,
+        "contained": 28,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 9,
+        "covered_by_rule_or_parse": 28,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 9,
+        "same_rule": 28,
         "same_rule_rate": 1.0,
-        "total": 9
+        "total": 28
+      },
+      "TK-A079": {
+        "contained": 16,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 16,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 16,
+        "same_rule_rate": 1.0,
+        "total": 16
+      },
+      "TK-A080": {
+        "contained": 6,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 6,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 6,
+        "same_rule_rate": 1.0,
+        "total": 6
       },
       "TK-C001": {
         "contained": 30,
@@ -4002,24 +4062,24 @@
         "total": 3
       },
       "TK-A071": {
-        "contained": 5,
+        "contained": 7,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 7,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 7,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 7
       },
       "TK-A072": {
-        "contained": 5,
+        "contained": 14,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 14,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 14,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 14
       },
       "TK-A073": {
         "contained": 2,
@@ -4052,16 +4112,36 @@
         "total": 4
       },
       "TK-A077": {
-        "contained": 10,
+        "contained": 29,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 10,
+        "covered_by_rule_or_parse": 29,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 10,
+        "same_rule": 29,
         "same_rule_rate": 1.0,
-        "total": 10
+        "total": 29
       },
       "TK-A078": {
+        "contained": 9,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 9,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 9,
+        "same_rule_rate": 1.0,
+        "total": 9
+      },
+      "TK-A079": {
+        "contained": 16,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 16,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 16,
+        "same_rule_rate": 1.0,
+        "total": 16
+      },
+      "TK-A080": {
         "contained": 9,
         "coverage_rate": 1.0,
         "covered_by_rule_or_parse": 9,
@@ -4564,24 +4644,24 @@
         "total": 3
       },
       "TK-A071": {
-        "contained": 5,
+        "contained": 7,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 7,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 7,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 7
       },
       "TK-A072": {
-        "contained": 5,
+        "contained": 14,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 5,
+        "covered_by_rule_or_parse": 14,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 5,
+        "same_rule": 14,
         "same_rule_rate": 1.0,
-        "total": 5
+        "total": 14
       },
       "TK-A073": {
         "contained": 2,
@@ -4614,16 +4694,36 @@
         "total": 4
       },
       "TK-A077": {
-        "contained": 10,
+        "contained": 29,
         "coverage_rate": 1.0,
-        "covered_by_rule_or_parse": 10,
+        "covered_by_rule_or_parse": 29,
         "missed": 0,
         "rate": 1.0,
-        "same_rule": 10,
+        "same_rule": 29,
         "same_rule_rate": 1.0,
-        "total": 10
+        "total": 29
       },
       "TK-A078": {
+        "contained": 9,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 9,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 9,
+        "same_rule_rate": 1.0,
+        "total": 9
+      },
+      "TK-A079": {
+        "contained": 16,
+        "coverage_rate": 1.0,
+        "covered_by_rule_or_parse": 16,
+        "missed": 0,
+        "rate": 1.0,
+        "same_rule": 16,
+        "same_rule_rate": 1.0,
+        "total": 16
+      },
+      "TK-A080": {
         "contained": 9,
         "coverage_rate": 1.0,
         "covered_by_rule_or_parse": 9,
@@ -4845,12 +4945,12 @@
       }
     }
   },
-  "policy_hash": "sha256:f3aa490a97975166996b926a4ebb1fc7a141bdf3ac076a2483bfbe7b2597c8c6",
+  "policy_hash": "sha256:3aa64bacb2afb60763e155e0de58c711d8830b35fcfa77eed8cf0205371a01fd",
   "regressions": [],
   "rewrite_missed": [],
-  "rewritten_cases": 565,
+  "rewritten_cases": 615,
   "rule_missed": [],
-  "source_cases": 901,
+  "source_cases": 951,
   "source_missed": [],
   "transformations": {
     "bash-c": "Run the unchanged command text as a Bash command. This preserves Bash syntax such as here-strings; shlex quoting passes it as one -c argument.",

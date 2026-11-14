@@ -100,7 +100,10 @@ class Mapping(HarnessCase):
                 self.decision = case["decision"]
                 if self.decision == "ask":
                     self.approve_when_asked()
-                code, out, err = self.hook(harness, case["payload"], case.get("event"))   # agy: the command's event
+                payload = case["payload"]
+                if harness == "jcode":   # its payload is environment variables and stdin, as recorded
+                    payload = agent_hooks.jcode_payload(payload["stdin"], payload["env"])
+                code, out, err = self.hook(harness, payload, case.get("event"))   # agy: the command's event
                 self.assertEqual(code, CODEX_DENY if harness == "codex" and case["exit"] == 2 else case["exit"], err)
                 self.assertEqual(json.loads(out) if out else "", case["stdout"])
                 sent = self.sent[-1]
@@ -133,6 +136,54 @@ class Mapping(HarnessCase):
 
     def test_goose(self):
         self.check("goose")
+
+    def test_jcode(self):
+        self.check("jcode")
+
+    def jcode(self, event, name, ti, sid="jc-batch"):
+        """One jcode hook invocation, its payload built as jcode sends it (agent_hooks.jcode_payload)."""
+        text = json.dumps(ti, separators=(",", ":"))
+        env = {"JCODE_HOOK_EVENT": event, "JCODE_HOOK_SESSION_ID": sid, "JCODE_HOOK_CWD": "/w",
+               "JCODE_HOOK_TOOL_NAME": name, "JCODE_HOOK_TOOL_INPUT": text[:16384]}
+        return self.hook("jcode", agent_hooks.jcode_payload(text, env), "PreToolUse")
+
+    def test_jcode_batch_passes_its_gate_and_its_denied_call_is_denied_on_its_own(self):
+        # #720: every call in a batch reaches its own pre_tool gate, so the batch itself is decided as the tools it
+        # runs, never again on their arguments (which would decide each call twice and could hold it twice)
+        decisions = self.set_signer_policy(load_policy())
+        push = {"tool": "bash", "intent": "push", "command": "git push --force origin main"}
+        code, _, err = self.jcode("pre_tool", "batch", {"tool_calls": [push, {"tool": "read", "intent": "note",
+                                                                              "file_path": "note.txt"}]})
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.sent[-1]["args"], {"tool_calls": [{"tool": "bash"}, {"tool": "read"}]})
+        self.assertEqual(decisions[-1]["verdict"], "flag")   # an unknown tool, and nothing else
+        code, _, err = self.jcode("pre_tool", "bash", {"command": push["command"], "intent": "push"})
+        self.assertEqual(code, 2)
+        self.assertEqual(decisions[-1]["verdict"], "deny")
+        self.assertIn("BLOCKED", err)
+
+    def test_jcode_pairs_identical_batch_calls_and_inputs_cut_at_16_kb(self):
+        # #720: two calls of one batch with the same input carry the same JCODE_HOOK_TOOL_INPUT and run in parallel,
+        # so either post_tool pairs with either pre_tool, first in first out: harmless (the same input gets the same
+        # decision), and pinned here. A write over 16 KB pairs on the cut copy both events carry
+        read = {"file_path": "note.txt", "intent": "note"}
+        for _ in range(2):
+            self.assertEqual(self.jcode("pre_tool", "read", read, sid="jc-pair")[0], 0)
+        first, second = (s["tool_call_id"] for s in self.sent[-2:])
+        big = {"content": "x" * 20000, "file_path": "big.txt"}
+        self.assertEqual(self.jcode("pre_tool", "write", big, sid="jc-pair")[0], 0)
+        self.assertEqual(self.sent[-1]["args"]["content"], big["content"])   # decided on the whole input (stdin)
+        written = self.sent[-1]["tool_call_id"]
+        posts = []
+        for name, ti, status in (("read", read, "ok"), ("read", read, "error"), ("write", big, "ok")):
+            p = json.loads(agent_hooks.jcode_payload("", {
+                "JCODE_HOOK_EVENT": "post_tool", "JCODE_HOOK_SESSION_ID": "jc-pair", "JCODE_HOOK_TOOL_NAME": name,
+                "JCODE_HOOK_TOOL_INPUT": json.dumps(ti, separators=(",", ":"))[:16384], "JCODE_HOOK_STATUS": status,
+                "JCODE_HOOK_ERROR": "File not found: note.txt" if status == "error" else ""}))
+            posts.append(agent_hooks.normalise("jcode", p))
+        self.assertEqual([q["tool_use_id"] for q in posts], [first, second, written])
+        self.assertEqual([q["hook_event_name"] for q in posts], ["PostToolUse", "PostToolUseFailure", "PostToolUse"])
+        self.assertEqual(posts[1]["error"], "File not found: note.txt")
 
     def test_copilot_denies_mcp_names_at_or_above_64_characters(self):
         prefix = "notes-"
@@ -395,6 +446,72 @@ class Mapping(HarnessCase):
         done = [e["data"] for e in run["events"] if e["type"] == "tool.result"]
         self.assertEqual([(r["tool_call_id"], r["status"]) for r in done], [("call_h1", "error")])
         self.assertIn("NOT APPROVED, nothing ran", done[0]["error"])
+
+    def test_kiro(self):
+        self.check("kiro")
+
+    def test_kiro_results_prompts_and_session_events_answer_nothing(self):
+        # Kiro CLI 3.3.0's SessionStart, UserPromptSubmit, PostToolUse (no call id; its result a string) and Stop as
+        # recorded (tests/data/harness/kiro_events.json); SessionEnd, which `chat --no-interactive` never fired, is
+        # built. A payload the hook can't read blocks the call (exit 2, Kiro's block)
+        with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
+            rec = json.load(f)
+        post = rec["PostToolUse"]
+        pre = {k: v for k, v in post.items() if k != "tool_response"} | {"hook_event_name": "PreToolUse"}
+        self.assertEqual(self.hook("kiro", pre)[0], 0)
+        built = {"session_id": post["session_id"], "cwd": post["cwd"], "hook_event_name": "SessionEnd"}
+        for payload in (rec["SessionStart"], rec["UserPromptSubmit"], post, rec["Stop"], built):
+            with self.subTest(event=payload["hook_event_name"]):
+                self.assertEqual(self.hook("kiro", payload)[:2], (0, ""))
+        code, out, err = self.hook("kiro", "not json", "PreToolUse")
+        self.assertEqual((code, out), (2, ""), err)
+
+    def test_kiro_calls_denied_in_the_hook_never_reach_the_signer(self):
+        # recorded on 3.3.0: createHook writes a hook whose command no Tracekit hook decides, and invoke_sub_agent hands
+        # the sub-agent its contextFiles with no read_file of them
+        with open(os.path.join(DATA, "kiro_events.json"), encoding="utf-8") as f:
+            recorded = json.load(f)["denied_in_hook"]
+        create = recorded[0]
+        built = [dict(create, tool_name=name, tool_input=ti) for name, ti in (
+            ("subagent/reviewer", {"prompt": "x"}), ("kiro_powers", {"action": "list"}),
+            ("code", {"operation": "rename_symbol", "file_path": "C:\\work\\kiro-rec\\sample.py", "new_name": "x"}),
+            ("code", {"operation": "pattern_rewrite", "pattern": "a", "replacement": "b"}))]
+        for payload in (*recorded, *built):
+            with self.subTest(tool=payload["tool_name"], ti=payload["tool_input"]):
+                code, out, err = self.hook("kiro", payload)
+                self.assertEqual((code, out), (2, ""), err)
+                self.assertIn("Blocked by Tracekit: Kiro's", err)
+        self.assertEqual(self.sent, [])
+
+    def test_kiro_windows_pre_tool_command_fails_closed_under_cmd(self):
+        # Kiro runs a Windows hook under cmd.exe and the call on any exit but 2: a v2 PreToolUse hook that can't start
+        # exits 2; the other events, and a v1 hook, keep their command as it is
+        d = ac.tmpdir(self)
+        with mock.patch("os.name", "nt"), mock.patch.object(sys, "executable", r"C:\Python311\python.exe"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            for v2 in (True, False):
+                agent_hooks.install("kiro", d, v2=v2)
+                with open(agent_hooks.config_path("kiro", d)) as f:
+                    cmds = {h["trigger"]: h["action"]["command"] for h in json.load(f)["hooks"]}
+                for ev, c in cmds.items():
+                    with self.subTest(v2=v2, event=ev):
+                        self.assertEqual(c.endswith("& exit 2)"), v2 and ev == "PreToolUse", c)
+                        self.assertRegex(c, rf"\b{ev}\b")   # v1 too: a pre-tool payload it can't read is blocked
+
+    @unittest.skipUnless(os.name == "nt", "Kiro runs Windows hooks under cmd.exe")
+    def test_kiro_cmd_blocks_a_tool_call_whose_hook_cannot_start(self):
+        d = ac.tmpdir(self)
+        with mock.patch.object(sys, "executable", os.path.join(d, "gone", "python.exe")), \
+                contextlib.redirect_stdout(io.StringIO()):
+            agent_hooks.install("kiro", d, v2=True)
+        with open(agent_hooks.config_path("kiro", d)) as f:
+            cmds = {h["trigger"]: h["action"]["command"] for h in json.load(f)["hooks"]}
+        for ev, c in cmds.items():
+            with self.subTest(event=ev):
+                p = subprocess.run(c, shell=True, input="{}", capture_output=True, text=True, timeout=30)
+                self.assertEqual(p.returncode == 2, ev == "PreToolUse", (p.returncode, p.stderr))
+        p = subprocess.run(cmds["PreToolUse"], shell=True, input="{}", capture_output=True, text=True, timeout=30)
+        self.assertIn("call blocked (fail-closed)", p.stderr)
 
     def test_devin_calls_with_nothing_to_decide_them_on_are_denied_before_the_signer(self):
         # the review of #576: a read, write or edit with no path under a key the policy reads, a patch with no file
@@ -1103,7 +1220,7 @@ class Installer(unittest.TestCase):
         with mock.patch("os.getcwd", return_value=d):
             for harness in agent_hooks.HARNESSES:
                 with self.subTest(harness=harness):
-                    project = None if harness == "gptme" else d
+                    project = None if harness in ("gptme", "jcode") else d   # their user config only
                     path = agent_hooks.config_path(harness, project)
                     with contextlib.redirect_stdout(io.StringIO()):
                         agent_hooks.install(harness, project)   # v1
@@ -1122,6 +1239,13 @@ class Installer(unittest.TestCase):
                         self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
                         self.assertFalse(os.path.exists(bridge))
                         self.assertTrue(os.path.isfile(path))
+                        continue
+                    if harness == "jcode":   # a TOML table in its config.toml
+                        code, out = self.cli("uninstall", "--agent", harness)
+                        self.assertEqual(code, 0)
+                        self.assertEqual(out.splitlines()[0], f"Tracekit v2 hooks removed from {path}")
+                        with open(path, encoding="utf-8") as f:
+                            self.assertNotIn("tracekit", f.read())
                         continue
                     if harness in agent_hooks.PLUGIN_TOOLS:
                         with open(path) as f:
@@ -1180,8 +1304,10 @@ class Installer(unittest.TestCase):
                     with open(path) as f:
                         blob = json.load(f)
                     key = {"antigravity": agent_hooks.AGY_HOOK}.get(harness, "hooks")   # agy: Tracekit's named hook
-                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map
-                    hooks = [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
+                    # Droid's hooks.json and a Devin project's hooks.v1.json are the event map; Kiro's file a list of
+                    # hooks, each with its command under `action`
+                    hooks = [h["action"] for h in blob["hooks"]] if harness == "kiro" else \
+                        [h for hs in (blob if harness in ("droid", "devin") else blob[key]).values() for h in hs]
                     # Cursor's and Crush's configs are flat {command, ...} entries; the others nest them under `hooks`
                     cmds = [h["command"] if "command" in h else h["hooks"][0]["command"] for h in hooks]
                     self.assertEqual({agent_hooks._version(c) for c in cmds}, {"v2"})
@@ -1192,8 +1318,8 @@ class Installer(unittest.TestCase):
                     # PowerShell can't start a quoted first word; Cursor, Droid and Crush don't use it (Crush runs hooks
                     # through its own POSIX shell), OpenHands runs hooks with shell=True (cmd.exe), and Devin's shell
                     # isn't documented: a path with a space keeps cmd.exe's. CodeBuddy Code runs them under Git Bash, as
-                    # Claude Code does
-                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy"):
+                    # Claude Code does, and Kiro under cmd.exe
+                    if os.name == "nt" and harness not in ("cursor", "droid", "crush", "devin", "openhands", "codebuddy", "kiro"):
                         self.assertFalse(cmd.startswith('"'), cmd)
                     self.assertTrue(os.path.isabs(shlex.split(cmd.removeprefix("& "), posix=os.name != "nt")[0].strip('"')), cmd)
                     self.assertIn(harness_hooks.__name__, cmd)
@@ -1211,7 +1337,7 @@ class Installer(unittest.TestCase):
                                  "set it to true there for Devin to read Claude Code's hooks, rules, skills, commands "
                                  "and MCP servers again\n")
                     self.assertEqual(out, want)
-                    if harness in ("droid", "copilot"):   # left with no hooks, their own file goes
+                    if harness in ("droid", "copilot", "kiro"):   # left with no hooks, their own file goes
                         self.assertFalse(os.path.exists(path))
                         continue
                     with open(path) as f:
@@ -1313,9 +1439,14 @@ class Installer(unittest.TestCase):
                     with mock.patch.object(install, "_blocking", lambda run, unless="", pre=True, json_deny=False: old(run, unless, json_deny=json_deny)):
                         init()   # as init before 1.3 wrote it
                     init()
-                    with open(path) as f:
-                        blob = json.load(f)
-                    hooks = [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
+                    if harness == "jcode":
+                        table = agent_hooks.jcode_config(path)["hooks"]
+                        hooks = [(ev, {"command": table[key]}) for key, ev in agent_hooks.JCODE_EVENTS.items()]
+                    else:
+                        with open(path) as f:
+                            blob = json.load(f)
+                        hooks = [(h["trigger"], h["action"]) for h in blob["hooks"]] if harness == "kiro" else \
+                            [(ev, h) for ev, groups in (blob if harness == "droid" else blob["hooks"]).items()
                              for g in groups for h in (g["hooks"] if "hooks" in g else [g])]
                     for ev, h in hooks:
                         p = subprocess.run(h["command"], shell=True, input="{}", capture_output=True, text=True,
