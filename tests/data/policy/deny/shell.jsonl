@@ -344,6 +344,11 @@
 {"tool": "Bash", "args": {"command": "hf upload acme/model ./out"}, "expect": "ask", "note": "upload model weights via hf CLI"}
 {"tool": "Bash", "args": {"command": "ollama push acme/model"}, "expect": "ask", "note": "publish model weights to Ollama registry"}
 {"tool": "Bash", "args": {"command": "cp new.safetensors /srv/models/prod/model.safetensors"}, "expect": "ask", "note": "overwrite model weights in production"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/sda bs=1M"}, "expect": "ask", "note": "wiping a whole disk with dd"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition"}
+{"tool": "Bash", "args": {"command": "shred -n 3 -z /dev/sdb"}, "expect": "ask", "note": "shredding a whole disk"}
+{"tool": "Bash", "args": {"command": "wipefs -a /dev/sdb"}, "expect": "ask", "note": "wiping a disk's filesystem signatures"}
+{"tool": "Bash", "args": {"command": "diskutil eraseDisk JHFS+ Wiped /dev/disk2"}, "expect": "ask", "note": "erasing a whole disk on macOS"}
 {"tool": "Bash", "args": {"command": "rm -rf /var /etc"}, "expect": "deny", "note": "a recursive delete of two system folders (#749)"}
 {"tool": "Bash", "args": {"command": "chmod -R 000 /"}, "expect": "deny", "note": "locking every file from root down (#749)"}
 {"tool": "Bash", "args": {"command": "find /srv -type f -delete"}, "expect": "deny", "note": "every file under a system folder deleted with find (#749)"}
@@ -426,3 +431,18 @@
 {"tool": "Bash", "args": {"command": "setcap cap_chown,cap_dac_override,cap_dac_read_search,cap_fowner,cap_fsetid,cap_kill,cap_setgid,cap_setuid,cap_setpcap,cap_linux_immutable,cap_net_bind_service,cap_net_broadcast,cap_net_admin,cap_net_raw,cap_ipc_lock,cap_ipc_owner,cap_sys_module,cap_sys_rawio,cap_sys_chroot,cap_sys_ptrace,cap_sys_pacct,cap_sys_admin,cap_sys_boot,cap_sys_nice,cap_sys_resource,cap_sys_time,cap_sys_tty_config,cap_mknod,cap_lease,cap_audit_write,cap_audit_control,cap_setfcap,cap_mac_override,cap_mac_admin,cap_syslog,cap_wake_alarm,cap_block_suspend,cap_audit_read,cap_perfmon,cap_bpf,cap_checkpoint_restore+ep x"}, "expect": "ask", "note": "setcap granting a full capability list (#834)"}
 {"tool": "Bash", "args": {"command": "install --mod=4755 x /usr/local/bin/x"}, "expect": "ask", "note": "install setting setuid via a GNU prefix of --mode (#834)"}
 {"tool": "Bash", "args": {"command": "install -c -o root -g wheel -b -S .bak -p -v -m 4755 x /usr/local/bin/x"}, "expect": "ask", "note": "install setting setuid after eleven words (#834)"}
+{"tool": "Bash", "args": {"command": "dd if=img of=/dev/rdisk2 bs=1m"}, "expect": "ask", "note": "wiping a macOS raw disk with dd"}
+{"tool": "Bash", "args": {"command": "newfs_hfs /dev/rdisk3s1"}, "expect": "ask", "note": "making a filesystem on a macOS raw disk partition"}
+{"tool": "Bash", "args": {"command": "diskutil erasedisk JHFS+ Wiped disk2"}, "expect": "ask", "note": "erasing a whole disk on macOS, the verb in lower case"}
+{"tool": "Bash", "args": {"command": "diskutil ZERODISK /dev/disk3"}, "expect": "ask", "note": "zeroing a whole disk on macOS, the verb in upper case"}
+{"tool": "Bash", "args": {"command": "diskutil secureErase 0 /dev/disk2"}, "expect": "ask", "note": "secure-erasing a whole disk on macOS"}
+{"tool": "Bash", "args": {"command": "diskutil randomDisk /dev/disk2"}, "expect": "ask", "note": "writing random data over a whole disk on macOS"}
+{"tool": "Bash", "args": {"command": "diskutil reformat /dev/disk2s1"}, "expect": "ask", "note": "reformatting a disk partition on macOS"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=//dev/sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device with an extra slash"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev//sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device with a doubled slash"}
+{"tool": "Bash", "args": {"command": "dd if=/dev/zero of=/dev/./sda"}, "expect": "ask", "note": "wiping a whole disk with dd, the device spelled with a dot"}
+{"tool": "Bash", "args": {"command": "cat ubuntu.iso > /dev/sdb"}, "expect": "ask", "note": "writing an image to a whole disk with cat"}
+{"tool": "Bash", "args": {"command": "cp ubuntu.iso /dev/sdb"}, "expect": "ask", "note": "copying an image onto a whole disk"}
+{"tool": "Bash", "args": {"command": "head -c 1G /dev/zero > /dev/sda"}, "expect": "ask", "note": "writing zeros to a whole disk with head"}
+{"tool": "Bash", "args": {"command": "tee /dev/sda < image.bin"}, "expect": "ask", "note": "writing an image to a whole disk with tee"}
+{"tool": "Bash", "args": {"command": "mkfs.ext4 -F -L root -O ^has_journal -E lazy_itable_init=0 -m 0 /dev/sda1"}, "expect": "ask", "note": "making a filesystem on a disk partition after nine options"}
