@@ -5,6 +5,9 @@ reason, and the person rejects it. Then the run is exported and verified, and it
 printed: the bundle is the receipt. docs/quickstarts/agent-spending.md walks through it.
 
     python examples/v2/openai_agents/spending.py [--scripted]
+
+`--scripted` plays the person: it runs their `tracekit approvals` commands as a second process. Without it, the
+example prints those commands and waits for you to run them from another terminal.
 """
 import asyncio
 import json

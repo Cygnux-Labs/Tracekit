@@ -5,7 +5,9 @@
 
 When an agent pays bills for you, you want three things. It pays only the payees you named. It stays under a limit
 you set. And afterwards you hold a record of what it paid that you can check yourself. Tracekit's [intent
-grants](../intent-grants.md) do this for an agent you run yourself, on a server or in your app:
+grants](../intent-grants.md) do this for an agent whose payments go through Tracekit, on a server or in your app: the
+agent pays through a tool Tracekit gates, which takes the amount, currency and payee as arguments ([what the receipt
+shows, and its limits](#what-the-receipt-shows-and-its-limits)):
 
 - the first payment is held for you;
 - you approve it with a grant: who may be paid, the most for one payment, the total, and for how long;
@@ -103,8 +105,8 @@ call-2: (pretend) paid 45.00 USD to acct-hosting
 call-3: (pretend) paid 25.00 USD to acct-print-shop
 ```
 
-The signer records each as within the grant, with what is left (the signed decisions, as the example prints them
-from the bundle in step 5):
+The signer records each as within the grant, with what is left (the signed decisions, which the example prints from
+the exported bundle after its verify report):
 
 ```text
   #9 policy.decision {"decision": "flag", "reasons": ["within grant g-be6e67519621e4e9: 45 USD to acct-hosting; 45 of 120 USD left"], "rule_ids": ["TK-M001", "TK-M002", "TK-F021", "TK-GRANT"], "tool": "send_payment", "tool_use_id": "call-2"}
@@ -180,8 +182,9 @@ The receipt holds what the signer decided and signed: the grant, who issued it, 
 totals after it, the payment it held with the reason, and each approval and rejection. What it proves depends on where
 the signer ran.
 
-- **On the dev signer it isn't proof against the agent.** The signer runs as your user, so the agent could reach its
-  key, and the grant and approvals are recorded self-approved (`approvals: self`, assurance `dev`). For an agent on a
+- **On the dev signer it isn't proof against the agent.** The signer runs as your user and can't tell you from your
+  agent. So the agent itself could have issued the grant or approved a payment, and it could reach the signer's key.
+  The records mark the grant and the approvals self-approved (`approvals: self`, assurance `dev`). For an agent on a
   server, [deploy the signer](../deploy.md) where the agent can't reach it, with an `approvals` section in
   signer.yaml, so only an approver it names issues grants. The `intent grants` line then names that person
   ([who may issue a grant](../intent-grants.md#who-may-issue-a-grant)).
