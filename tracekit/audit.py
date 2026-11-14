@@ -196,23 +196,22 @@ def _codex(root: str, since_ts: float, unreadable: list):
                     continue
                 try:
                     mapped = _codex_tool(item)
-                except (RecursionError, ValueError, TypeError):
+                except RecursionError:
                     yield None
                     continue
                 if mapped is None:  # no PreToolUse (write_stdin, text, tool output, or missing call id)
                     continue
                 tool, args = mapped
-                if not isinstance(args, dict):
-                    yield None
-                    continue
+                call_id = item.get("call_id")
                 try:  # copies dedup by id + mapped content; reused ids with other args still count
-                    key = hashlib.sha256(json.dumps([item["call_id"], tool, args], sort_keys=True,
-                                                    default=str).encode()).digest()
-                except (RecursionError, ValueError, TypeError):
+                    key = (hashlib.sha256(json.dumps([call_id, tool, args], sort_keys=True,
+                                                     default=str).encode()).digest()
+                           if isinstance(call_id, str) and call_id else None)
+                except RecursionError:
                     key = None
-                if key in seen:
+                if key is not None and key in seen:
                     continue
-                if key:
+                if key is not None:
                     seen.add(key)
                 yield at, session, tool, args
         except OSError as e:

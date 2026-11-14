@@ -31,8 +31,8 @@ denied and held calls (--all for every call):
 
 (The numbers above are an example, not a measurement.)
 
-- `ROOT` is a Claude Code transcripts' folder (Cursor's with `--agent cursor`, Cline's with `--agent cline`,
-  Gemini CLI's with `--agent gemini`, and another agent's once it has a reader); a folder that doesn't exist is
+- `ROOT` is a Claude Code transcripts' folder (Codex's with `--agent codex`, Cursor's with `--agent cursor`,
+  Cline's with `--agent cline`, Gemini CLI's with `--agent gemini`, and another agent's once it has a reader); a folder that doesn't exist is
   an error (exit 2). With no ROOT and no `--calls`, audit reads every known agent's default folder that exists
   (see [What it reads](#what-it-reads)), and exits 2 when there is none.
 - `--calls FILE` reads the calls from a [calls file](#calls-file) instead (`-` for stdin). FILE must be a regular
@@ -96,9 +96,11 @@ was read already (a resumed or forked session's file repeats the calls it copied
 Codex's reader reads `rollout-*.jsonl` files under `$CODEX_HOME/sessions/YYYY/MM/DD/` when `CODEX_HOME` is set, else
 `~/.codex/sessions/YYYY/MM/DD/`. To replay Codex only, use `tracekit audit "$CODEX_HOME/sessions" --agent codex --since 7d`,
 or `tracekit audit ~/.codex/sessions --agent codex --since 7d` when `CODEX_HOME` is unset. Each `response_item` call
-is mapped to the form Codex sends to its PreToolUse hook before policy evaluation: `exec_command` becomes `Bash`,
-`apply_patch` becomes `Edit`, and MCP tools keep their mapped names. A call without a matching PreToolUse hook, such as
-`write_stdin`, is skipped. Repeated calls with the same id and mapped contents count once.
+is rebuilt as the PreToolUse payload Codex sends for it (`exec_command` arrives as `Bash` with its `cmd` as `command`,
+and MCP tools arrive as `mcp__<server>__<tool>`), then decided as Tracekit's Codex hook decides that payload
+(`apply_patch` as an `Edit` of the files its patch names). Calls without a matching PreToolUse hook, such as
+`write_stdin`, are skipped. Repeated calls with the same id and mapped contents count once; calls with no valid id
+are counted without deduplication.
 
 Cursor's reader reads the agent transcripts Cursor writes for each chat, of its IDE's agent and of the `cursor-agent`
 CLI: `<project>/agent-transcripts/<id>/<id>.jsonl` under its folder (an older build's flat `<id>.jsonl`, and a

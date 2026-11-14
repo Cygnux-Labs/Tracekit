@@ -885,9 +885,18 @@ class TestAudit(unittest.TestCase):
                "arguments": json.dumps({"cmd": "ls"})}
         old = {**new, "call_id": "old"}
         changed = {**new, "arguments": json.dumps({"cmd": "pwd"})}
+        no_id = {"type": "function_call", "name": "exec_command",
+                 "arguments": json.dumps({"cmd": "rm -rf /"})}
+        empty_id = {**no_id, "call_id": ""}
+        numeric_id = {**no_id, "call_id": 7}
+        invalid_namespace = {"type": "function_call", "name": "read_file", "namespace": 5,
+                             "call_id": "namespace", "arguments": json.dumps({"path": "note.txt"})}
+        deeply_nested = {"type": "function_call", "name": "exec_command", "call_id": "deep",
+                         "arguments": "[" * 100_000}
         _write_jsonl(self.root / "rollout-a.jsonl", [
             _rollout(old, 30), _rollout(new), _rollout(new), _rollout(changed),
-            _rollout({"type": "function_call", "name": "exec_command", "arguments": json.dumps({"cmd": "no-id"})}),
+            _rollout(no_id), _rollout(empty_id), _rollout(numeric_id), _rollout(invalid_namespace),
+            _rollout(deeply_nested),
             _rollout({"type": "function_call", "name": "exec_command", "call_id": "bad", "arguments": "bad json"}),
             _rollout(None), "not json", _call("Bash", {"command": "rm -rf /"}),
         ])
@@ -896,8 +905,14 @@ class TestAudit(unittest.TestCase):
                          "arguments": json.dumps({"cmd": "pwd"})}
         _write_jsonl(self.root / "rollout-b.jsonl", [_rollout(new), _rollout(other_session)])
         report = audit.audit(str(self.root), agent="codex", since="7d")
-        self.assertEqual((len(report["calls"]), report["sessions"], report["skipped_malformed"]), (3, 2, 2))
+        self.assertEqual((len(report["calls"]), report["sessions"], report["skipped_malformed"]), (7, 2, 3))
         self.assertEqual(report["counts"]["allow"], 3)
+        self.assertEqual(report["counts"]["deny"], 3)
+        self.assertEqual([c["tool"] for c in report["calls"]].count("Bash"), 6)
+        self.assertTrue(any(c["tool"] == "read_file" for c in report["calls"]))
+        self.assertIsNone(harness_hooks._use(no_id))
+        self.assertIsNone(harness_hooks._use(empty_id))
+        self.assertIsNone(harness_hooks._use(numeric_id))
 
     def test_codex_home_default_both_readers_and_redaction(self):
         home = self.root / "home"

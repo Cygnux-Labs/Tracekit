@@ -203,7 +203,7 @@ def _codex_tool(item):
     apply_patch.rs:394-398; mcp.rs:114-131, 449-457) and apply the live hook's
     mapping. Audit decides each call in the form Codex's PreToolUse hook gets it.
     """
-    t, name, cid = item.get("type"), str(item.get("name") or ""), item.get("call_id")
+    t, name = item.get("type"), str(item.get("name") or "")
     if t == "custom_tool_call" and name == "apply_patch":
         hook, ti = "apply_patch", {"command": item.get("input")}
     elif t == "function_call" and name and name not in NO_HOOK:
@@ -226,13 +226,13 @@ def _codex_tool(item):
             hook = name if name == "spawn_agent" else ns + name
     else:
         return None
-    if not isinstance(cid, str) or not cid:
-        return None
     return agent_hooks.tool("codex", hook, ti)
 
 
 def _use(item):
     """Describe a Codex call in a model record without exposing its arguments."""
+    if not isinstance(item.get("call_id"), str) or not item["call_id"]:
+        return None
     mapped = _codex_tool(item)
     if mapped is None:
         return None
