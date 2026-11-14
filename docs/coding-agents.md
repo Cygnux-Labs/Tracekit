@@ -328,7 +328,7 @@ Code also a `systemMessage`, which it shows you, and the deny reason, which the 
 Why: uploading to cloud storage
 Instead: Have a person approve the held call, or write the files locally and let a person upload them.
 Person: look with `! tracekit approvals show apr-…`; allow once with `! tracekit approvals approve apr-…`; refuse with `! tracekit approvals reject apr-…`.
-Agent: tell the person what this call was for and pass on these commands, then wait for their answer; a subagent puts them in its final report. Once it is approved, make the identical call again. If the Instead line is a step you can take yourself, you may take it and say so. Never hide what a call runs to get past the policy: every call is signed and kept.
+Agent: ask the person: approve or skip? Don't reword around the hold, but do take an Instead step that's yours and say so; otherwise wait for their answer. Pass on the Person line and say what the call was for; a subagent puts both in its final report. Once it is approved, make the identical call again. Never hide what a call runs to get past the policy: every call is signed and kept.
 ```
 
 A call the policy denies says so, in the same form, with no commands: no one can approve it.
