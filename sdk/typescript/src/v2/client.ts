@@ -9,15 +9,17 @@
  *
  * The signer is the Unix socket in $TRACEKIT_SIGNER, `tcp://host:port` with $TRACEKIT_SIGNER_TOKEN (the loopback dev
  * transport, mutual HMAC proof of the token), or an `https://host:port` URL (each call is one POST /v2/rpc;
- * $TRACEKIT_SIGNER_TOKEN_FILE names a bearer token file re-read per call, $TRACEKIT_SIGNER_CERT/_KEY a client
- * certificate for mTLS, $TRACEKIT_SIGNER_CA the signer's CA). In system mode the signer is the one the root-owned
- * /etc/tracekit/client.json names, and a $TRACEKIT_SIGNER naming another is refused. Without either, the same-user dev
- * signer of the runtime dir is used, started with `tracekit up --json` (found as src/v2/launcher.ts says) when none answers.
+ * $TRACEKIT_SIGNER_TOKEN_FILE names a bearer token file re-read per call, else $TRACEKIT_API_KEY is the token itself;
+ * $TRACEKIT_SIGNER_CERT/_KEY a client certificate for mTLS, $TRACEKIT_SIGNER_CA the signer's CA). In system mode the
+ * signer is the one the root-owned /etc/tracekit/client.json names, and a $TRACEKIT_SIGNER naming another is refused.
+ * Without either, the same-user dev signer of the runtime dir is used, started with `tracekit up --json` (found as src/v2/launcher.ts says) when none answers.
  * Requests go out in order on one connection and are answered in order; `approval_wait` gets a connection of its own.
  * Every request is validated against the RPC contract before it is sent. Calls that change state carry a `request_id`
  * and are resent with it when the connection drops. Event calls carry this client's `stream` and a `client_seq` per run;
- * a run's events go out one at a time, each once the one before it is answered, so they reach the signer in order.
- * The client writes nothing to disk.
+ * a run's events go out one at a time, each once the one before it is answered, so they reach the signer in order. An
+ * event call the signer refuses with `quota_exceeded` (a rate or count limit: one with `retry_after_ms`) or
+ * `unavailable` is sent again as it was, within the call's timeout (retryWait); no other call is. The client writes
+ * nothing to disk.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
@@ -27,6 +29,7 @@ import { Agent, request } from "node:https";
 import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { basename, extname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { TracekitAgents } from "./adapters/openai-agents.js";
 import { tracekitAI } from "./adapters/vercel-ai.js";
 import { argsDigest } from "./jcs.js";
@@ -39,7 +42,8 @@ export { argsDigest, canonicalize, digest, strictParse, StrictJSONError } from "
 
 export const SYSTEM_CONFIG = "/etc/tracekit/client.json";
 const CONNECT_TIMEOUT_MS = 2000;
-const RETRIES = 3;
+const RETRIES = 3;   // tries of a call while its connection is lost; apart, while the signer refuses an event call (retryWait)
+const BACKOFF_MS = 100, BACKOFF_CAP_MS = 2000;   // the wait before an event call's second try, doubled for each next
 
 export type Frame = Record<string, any>;
 
@@ -65,6 +69,19 @@ export class RPCError extends Error {
 }
 
 class ConnectionLost extends Error {}
+
+/** Milliseconds to wait before sending a call of `schema` again after its `tries`th try was refused with `e`; null: not
+ * again. Only an event call (one with a client_seq): the signer refuses a client_seq it already recorded before it
+ * writes anything, even after a restart or a write whose outcome it couldn't tell, so a retry is recorded once or
+ * refused (then the call rejects with that `unavailable`, as without a retry); any other call's request_id is
+ * remembered in memory only (tracekit/sdk/client.py _retry_wait). A quota_exceeded without retry_after_ms is a size
+ * limit the same request never fits. */
+function retryWait(schema: Frame, e: Frame, tries: number): number | null {
+  const limited = e.code === "quota_exceeded" && typeof e.retry_after_ms === "number";
+  if (!("client_seq" in schema.properties) || !(limited || e.code === "unavailable")) return null;
+  const backoff = Math.min(BACKOFF_CAP_MS, BACKOFF_MS * 2 ** (tries - 1)) * (0.5 + Math.random() / 2);   // jitter
+  return Math.max(typeof e.retry_after_ms === "number" ? e.retry_after_ms : 0, backoff);
+}
 
 const newId = () => randomUUID().replaceAll("-", "");
 const hmac = (token: string, label: string, nonce: string) => createHmac("sha256", token).update(`${label}\n${nonce}`).digest("hex");
@@ -282,16 +299,21 @@ class Https {
       key: cert ? file(env.TRACEKIT_SIGNER_KEY || cert) : undefined });
   }
 
-  /** The answer frame; ConnectionLost when the request may not have arrived, SignerUnavailable on a timeout. */
+  /** The answer frame, read from the body whatever the HTTP status. The client doesn't ask for error statuses
+   * (Tracekit-Errors), so a proxy in front sees 200 for a refusal and acts on none (no retry of a 503, no host ejected).
+   * ConnectionLost when the request may not have arrived, SignerUnavailable on a timeout. */
   post(frame: Frame, timeoutMs: number): Promise<Frame> {
     const body = JSON.stringify(frame), tokenFile = process.env.TRACEKIT_SIGNER_TOKEN_FILE;
+    const apiKey = process.env.TRACEKIT_API_KEY?.trim();
     const headers: Record<string, string | number> = { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) };
-    if (tokenFile) {
+    if (tokenFile) {   // wins over an API key: it is re-read per call, so a rotated token is picked up
       try {
-        headers.Authorization = "Bearer " + readFileSync(tokenFile, "utf8").trim();   // re-read: a rotated token is picked up
+        headers.Authorization = "Bearer " + readFileSync(tokenFile, "utf8").trim();
       } catch (e) {
         throw new SignerUnavailable(`cannot read the signer token file: ${(e as Error).message}`);
       }
+    } else if (apiKey) {
+      headers.Authorization = "Bearer " + apiKey;
     }
     return new Promise((resolve, reject) => {
       const req = request(routeUrl(this.url, frame), { method: "POST", agent: this.agent, headers, timeout: timeoutMs }, (res) => {
@@ -424,8 +446,10 @@ export class Client {
         throw e;
       }
     }
+    // tries: the signer's refusals of an event call (retryWait), counted apart from lost connections
+    let losses = 0, tries = 0, outage: RPCError | null = null;
     try {
-      for (let i = 0; i < RETRIES; i++) {
+      while (losses < RETRIES) {
         const left = Math.max(deadline - Date.now(), 1);
         let reply: Frame;
         try {
@@ -439,14 +463,23 @@ export class Client {
             reply = await withTimeout(conn.send(frame()), left, () => conn.sock.destroy());
           }
         } catch (e) {
-          if (e instanceof ConnectionLost) continue;
+          if (e instanceof ConnectionLost) {
+            losses++;
+            continue;
+          }
           if (e instanceof SignerUnavailable) frame();   // used up: the signer's client_counter_gap covers a call it never saw
           throw e;
         }
         if (reply.error) {
-          const e = reply.error;
+          const e = reply.error, err = new RPCError(e.code, e.message ?? "", e.retry_after_ms);
           if (["run_closed", "unknown_run"].includes(e.code)) this.seqs.delete(req.run_id);   // no more events for it
-          throw new RPCError(e.code, e.message ?? "", e.retry_after_ms);
+          // the try the signer answered unavailable was written after all: that answer stands (the caller's outage path)
+          if (outage && e.code === "client_seq_reused") throw outage;
+          const wait = retryWait(schema, e, ++tries);
+          if (wait === null || tries === RETRIES || Date.now() + wait >= deadline) throw err;
+          if (e.code === "unavailable") outage = err;
+          await sleep(wait);   // then the same request: its request_id, stream and client_seq
+          continue;
         }
         if (method === "close_run") this.seqs.delete(req.run_id);
         return reply;

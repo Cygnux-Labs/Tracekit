@@ -53,7 +53,10 @@ await client.close();                                     // waits for what is i
 
 - **Signer:** `$TRACEKIT_SIGNER` names a Unix socket, `tcp://127.0.0.1:port` (with `$TRACEKIT_SIGNER_TOKEN`; both sides
   prove they hold it, it never goes on the wire) or `https://host:port` (`$TRACEKIT_SIGNER_TOKEN_FILE`: a bearer token
-  re-read per call; `$TRACEKIT_SIGNER_CERT`/`_KEY`: mTLS; `$TRACEKIT_SIGNER_CA`: the signer's CA). In system mode the
+  re-read per call, else `$TRACEKIT_API_KEY`: the token itself; `$TRACEKIT_SIGNER_CERT`/`_KEY`: mTLS;
+  `$TRACEKIT_SIGNER_CA`: the signer's CA). An event call (decide, complete, observe, state_write, model_event) the
+  signer refuses with a rate limit or an outage is sent again within the call's timeout
+  ([remote clients](../../docs/remote-ingest.md#calling-the-signer-over-http)). In system mode the
   signer named by the root-owned `/etc/tracekit/client.json` is used and a different `$TRACEKIT_SIGNER` is refused.
   Otherwise the same-user dev signer is found, or started with `tracekit up --json`: `$TRACEKIT_PYTHON -m tracekit` if
   set, else a pip-installed `tracekit` on PATH, else the Python bundled in this platform's

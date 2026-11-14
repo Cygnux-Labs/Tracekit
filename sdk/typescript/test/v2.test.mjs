@@ -182,6 +182,37 @@ run(srv, {"port": srv.server_address[1], "ca": pki.path, "token": "t" * 40})`);
   assert.ok(await run.complete("h1"));
 });
 
+test("HTTPS: TRACEKIT_API_KEY is the token, a token file wins over it, and no error status is asked for (Python's server)", { skip: NO_PKI }, async (t) => {
+  const info = await pyServer(t, PY_FAKE + `
+import os, tempfile
+sys.path.insert(0, ${JSON.stringify(join(ROOT, "tests"))})
+from test_identity_mtls import Pki
+from tracekit.transport import http as tk_http
+d = tempfile.mkdtemp()
+pki, token = Pki(d), os.path.join(d, "bearer")
+cert, key = pki.issue("server")
+with open(token, "w") as f:
+    f.write("t" * 40)
+asked = []
+class Handler(tk_http._Handler):
+    def do_POST(self):
+        asked.append(self.headers.get("Tracekit-Errors"))
+        super().do_POST()
+_, auths, tls = tk_http.configure({"listen": "127.0.0.1:0", "cert": cert, "key": key, "authenticators": ["token"], "token_file": token})
+srv = tk_http.HttpServer(("127.0.0.1", 0), auths, tls, lambda i, f: {**handle(i, f), "asked": asked[-1]}, handler=Handler)
+run(srv, {"port": srv.server_address[1], "ca": pki.path, "token": "t" * 40})`);
+  const wrong = join(tmp(t), "wrong");
+  writeFileSync(wrong, "wrong-token\n");
+  Object.assign(process.env, { TRACEKIT_SIGNER_CA: info.ca, TRACEKIT_API_KEY: ` ${info.token}\n` });
+  t.after(() => ["TRACEKIT_SIGNER_CA", "TRACEKIT_API_KEY", "TRACEKIT_SIGNER_TOKEN_FILE"].forEach((k) => delete process.env[k]));
+  const c = new Client({ signer: `https://127.0.0.1:${info.port}` });
+  const status = await c.call("status");
+  assert.equal(status.rpc_version, RPC_VERSION);
+  assert.equal(status.asked, null);   // the body says it all: a proxy in front sees 200 for a refusal and acts on none
+  process.env.TRACEKIT_SIGNER_TOKEN_FILE = wrong;
+  await assert.rejects(c.call("status"), (e) => e instanceof RPCError && e.code === "unauthenticated");
+});
+
 // An in-test signer on a Unix socket: "pay" asks, "rm" is denied, everything else allowed; approvals are granted after
 // 300 ms. `handle(frame)` may answer first. `frames` records each request with the number of its connection.
 async function fake(t, { hello = { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 }, failModes = { default: "closed" }, handle = () => null, path = join(tmp(t), "s.sock") } = {}) {
@@ -389,6 +420,59 @@ test("HTTPS: a run's events reach the signer in client_seq order", async () => {
   });
   await Promise.all(Array.from({ length: 40 }, (_, i) => c.call("decide", event(`r${i % 2}`, `c${i}`))));
   assert.deepEqual(arrived, { r0: [...Array(20).keys()], r1: [...Array(20).keys()] });
+});
+
+test("HTTPS: an event call refused by a rate limit or an outage is sent again as it was, and no other call is", async () => {
+  const base = { run_id: "r1", run_token: "t" }, digest = "sha256:" + "0".repeat(64);
+  const events = {
+    decide: { tool_call_id: "c1", tool: "Bash", args_source: "parsed", args: {} },
+    complete: { tool_call_id: "c1", decision_id: "dec-1", args_digest: digest, status: "ok" },
+    observe: { source: "mail", trust: "untrusted", value: "a mail" },
+    state_write: { key: "k", value_digest: digest },
+    model_event: { provider: "openai", model: "m", phase: "request" },
+  };
+  const limit = { code: "quota_exceeded", message: "event rate limit", retry_after_ms: 5 };
+  for (const [method, fields] of Object.entries(events)) {
+    for (const refusal of [limit, { code: "unavailable", message: "storage refused writes", retry_after_ms: 10 }]) {
+      const sent = [];
+      const c = https(async (f) => (sent.push(f), sent.length === 1 ? { error: refusal } : { run_seq: 1 }));
+      assert.deepEqual(await c.call(method, { ...base, ...fields }), { run_seq: 1 }, method);
+      assert.equal(sent.length, 2, method);
+      assert.deepEqual(sent[1], sent[0], method);   // its request_id, stream and client_seq
+    }
+  }
+  const size = { code: "quota_exceeded", message: "string longer than 1048576 characters" };   // never fits
+  for (const [method, fields, refusal] of [["register_run", { agent: { name: "a" } }, limit], ["close_run", base, limit],
+    ["approval_request", { ...base, tool_call_id: "c1" }, limit], ["decide", { ...base, ...events.decide }, size]]) {
+    const sent = [];
+    const c = https(async (f) => (sent.push(f), { error: refusal }));
+    await assert.rejects(c.call(method, fields), (e) => e instanceof RPCError && e.code === refusal.code);
+    assert.equal(sent.length, 1, method);
+  }
+});
+
+test("HTTPS: refusals and lost connections are counted apart; a retry refused as recorded is the first try's outage", async () => {
+  const limit = { error: { code: "quota_exceeded", message: "event rate limit", retry_after_ms: 5 } };
+  const outage = { error: { code: "unavailable", message: "storage refused writes" } };
+  const reused = { error: { code: "client_seq_reused", message: "s/0" } };
+  const decide = (answers) => {
+    const sent = [];
+    const c = https(async (f) => {
+      sent.push(f);
+      const a = answers.shift();   // "lost": the client's own post to a port nothing listens on
+      return a !== "lost" ? a : Object.getPrototypeOf(c.https).post.call(
+        { url: new URL("https://127.0.0.1:1/v2/rpc"), agent: c.https.agent }, f, 1000);
+    });
+    return { sent, call: c.call("decide", event("r1", "c1")) };
+  };
+  // two rate limits and a lost connection are not three lost connections: the refusals that run out are the signer's
+  const mixed = decide([limit, limit, "lost", limit]);
+  await assert.rejects(mixed.call, (e) => e instanceof RPCError && e.code === "quota_exceeded");
+  assert.equal(mixed.sent.length, 4);
+  assert.equal(new Set(mixed.sent.map((f) => `${f.request_id}/${f.stream}/${f.client_seq}`)).size, 1);
+  await assert.rejects(decide([outage, reused]).call,
+    (e) => e instanceof RPCError && e.code === "unavailable" && e.message === "unavailable: storage refused writes");
+  await assert.rejects(decide([reused]).call, (e) => e instanceof RPCError && e.code === "client_seq_reused");
 });
 
 test("HTTPS: an event waiting behind an unanswered one gives up in time and uses its client_seq", async () => {
