@@ -905,6 +905,22 @@ class NoHooksChosen(unittest.TestCase):
             got = next(r for r in doctor.v2_checks({"data_dir": d}, no_hooks=chosen) if r["id"] == "D-HOOKS-PRESENT")
             self.assertEqual((got["status"], got["detail"]), want)
 
+    def test_the_reinit_fix_keeps_no_hooks_where_init_was_told_it_or_the_plugin_hooks(self):
+        """Doctor's re-init fix had no --no-hooks, while plugin/README.md runs system init with it: a plugin user who
+        followed the fix got init's hooks beside the plugin's (D-HOOKS-PRESENT then warned), and an SDK agent's
+        host got Claude Code hooks it had declined (#464)."""
+        row = doctor.result("D-TAILER-CONFIG", "warn", "detail", doctor.REINIT)
+        plugin = ("/home/a/.claude/settings.json", install.PLUGIN)
+        for hooks, enabled, want in (({"no_hooks": True}, None, True), ({}, plugin, True),
+                                     ({"agent": "codex"}, plugin, False), ({}, None, False)):
+            sc = {"signer": "/run/s.sock", "hooks": {"user": "a", **hooks}}
+            with self.subTest(hooks=hooks, plugin=enabled), \
+                    mock.patch.object(doctor.client, "system_config", return_value=sc), \
+                    mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
+                    mock.patch.object(install, "plugin_enabled", return_value=enabled), \
+                    mock.patch.object(doctor, "v2_checks", return_value=[row]):
+                self.assertEqual(doctor.collect()[-1]["fix"], doctor.REINIT + " --no-hooks" * want)
+
 
 class FirstDay(unittest.TestCase):
     """A new user's healthy dev setup got three warnings: no hooks where there is no Claude Code, no witness (the dev
