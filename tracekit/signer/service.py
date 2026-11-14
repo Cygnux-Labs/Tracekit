@@ -445,7 +445,12 @@ NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_e
                            "approval_agents", "tailer_heartbeat", "observe_effect", "channel_open",
                            "export_run"}) | OPERATOR
 EXPORT_CHUNK = (MAX_LINE - 4096) // 4 * 3   # bundle bytes per export_run answer: their base64 fits one frame
-EXPORTS_KEPT = 4   # bundles export_run keeps whole in memory for their later chunks, the least recently used dropped
+# export_run: bundles kept whole in memory for their later chunks, in all and per tenant; one unused for EXPORT_IDLE_S
+# may be dropped for another tenant's. Bundles built at once, one per tenant; builds per identity and per tenant.
+# lean: fixed sizes and rates; make them config keys, or spill bundles to disk, once tenants download large runs at once
+EXPORT_KEPT_BYTES, EXPORT_TENANT_BYTES, EXPORT_IDLE_S = 1 << 30, 1 << 28, 300
+EXPORT_BUILDS, EXPORT_RETRY_MS = 2, 1000
+EXPORT_RATES = Limits(events_per_s=1 / 6, burst=10), Limits(events_per_s=1 / 2, burst=30)   # per identity, per tenant
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
 CONTENT_SWEEP_S = 3600.0
@@ -934,6 +939,18 @@ class SignerService:
             raise ValueError(f"authorize grants {', '.join(both)} both register_run and containment's operator calls: "
                              "an agent's identity can't operate its own containment; give operators an identity of "
                              f"their own ({wiki_url('docs/incidents.md')})")
+        exporters = [k for k, m in authorize.items() if "export_run" in m]
+        both = sorted(k for k in exporters if "register_run" in authorize[k])
+        if both:
+            raise ValueError(f"authorize grants {', '.join(both)} both register_run and export_run: an agent's identity "
+                             "would download every run of its tenant and the policy they cite; give the people who "
+                             f"download runs an identity of their own ({wiki_url('docs/remote-ingest.md')})")
+        # a token or OIDC identity can carry its tenant (a token's --tenant, an issuer's tenant claim): checked per call
+        loose = sorted(k for k in exporters if k.split(":", 1)[0] not in ("token", "oidc", "person", "group")
+                       and lookup(dict(tenants or {}), k) is None)
+        if loose:
+            raise ValueError(f"authorize grants export_run to {', '.join(loose)}, which `tenants` gives no tenant: "
+                             "export_run reads the caller's own tenant, never the default one; map each in `tenants`")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
@@ -1035,8 +1052,10 @@ class SignerService:
         self._passkeys_lock = threading.Lock()
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
-        # run key -> (the latest note's size then, digest, bytes) of the bundles export_run built last
-        self._exports, self._exports_lock = collections.OrderedDict(), threading.Lock()
+        # export_run: run key -> {latest: the latest note's size when built, sha, data, used: monotonic}, least recently
+        # used first; tenant -> the run it is building; and the build rates per identity and per tenant (EXPORT_RATES)
+        self._exports, self._exports_lock, self._building = collections.OrderedDict(), threading.Lock(), {}
+        self._export_quotas = tuple(Quotas(r) for r in EXPORT_RATES)
         self._stop, self._nudged, self._checkpointing = threading.Event(), threading.Event(), threading.Lock()
         self.origin = origin or f"tracekit.local/{self.log.log_id}"
         self.contact, self.witnesses = contact or self.origin, list(witnesses)
@@ -2272,10 +2291,14 @@ class SignerService:
             raise RPCError("forbidden", "not from the run's harness process")
 
     def _tenant_of(self, identity):
-        """The identity's tenant: `tenants`, else the tenant its named token was issued for (or its OIDC issuer's
-        tenant claim, or a box channel's box run's), else the default."""
+        """The identity's tenant: its own (_own_tenant), else the default."""
+        return self._own_tenant(identity) or self.tenant
+
+    def _own_tenant(self, identity):
+        """`tenants`' tenant for the identity, else the tenant its named token was issued for (or its OIDC issuer's
+        tenant claim, or a box channel's box run's), else None."""
         token = identity.claims.get("tenant") if identity.scheme in ("token", "oidc", "box") else None
-        return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token or self.tenant
+        return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token
 
     def _certified(self, tenant):
         """RPCError forbidden for a tenant the record key's certificate does not cover: its records would not verify."""
@@ -4640,33 +4663,87 @@ class SignerService:
         return {"events": events, "next_seq": next_seq}
 
     def _export_run(self, identity, req):
-        """Bytes `offset` on of the .tkb bundle of run `run_id` of the caller's tenant: with `digest`, of that bundle
-        (kept from a chunk before, else built again, which must give it), else of its bundle now (one kept since the
-        latest checkpoint, else built). The tenant is the identity's, so another tenant's run is refused as a run that
-        doesn't exist."""
-        key, digest = (self._tenant_of(identity), req["run_id"]), req.get("digest")
+        """Bytes `offset` on of the .tkb bundle of run `run_id` of the caller's tenant: with `digest`, of that bundle,
+        kept since a chunk before (else conflict: the download starts again); else of its bundle now, kept since the
+        latest checkpoint or built. The tenant is the identity's own (_export_tenant), so another tenant's run is
+        refused as a run that doesn't exist. No build waits for another: one at a time per tenant and EXPORT_BUILDS in
+        all, else unavailable; each spends one of the identity's and one of the tenant's (EXPORT_RATES)."""
+        key, digest = (self._export_tenant(identity), req["run_id"]), req.get("digest")
         if key not in self.log.runs:
             raise RPCError("unknown_run", req["run_id"])
-        # lean: one bundle built at a time and EXPORTS_KEPT held whole in memory; spill them to disk once tenants
-        # download large runs at once
-        with self._exports_lock:
+        self.quotas.take_event(identity)
+        with self._exports_lock:   # never held while a bundle is built
             latest, kept = (self.log.storage.checkpoint_latest() or (0,))[0], self._exports.get(key)
-            if kept is None or kept[1] != digest and (digest or kept[0] != latest):
-                self.quotas.take_event(identity)
+            if digest is not None and (kept is None or kept["sha"] != digest):
+                raise RPCError("conflict", f"the signer no longer holds that bundle of run {key[1]} (a newer checkpoint, "
+                                           "or unused too long): download it again from its first chunk")
+            if kept is not None and (digest is not None or kept["latest"] == latest):
+                kept["used"] = time.monotonic()
+                self._exports.move_to_end(key)
+            elif key[0] in self._building or len(self._building) >= EXPORT_BUILDS:
+                raise RPCError("unavailable", "the signer is building another bundle" + (
+                    " of your tenant" if key[0] in self._building else "s") + ": ask again", retry_after_ms=EXPORT_RETRY_MS)
+            else:
+                for spend in (0, 1):   # check both, then spend both
+                    for quotas, bucket, whose in zip(self._export_quotas, (quota_key(identity), key[0]),
+                                                     ("your identity's", "your tenant's")):
+                        quotas.take(bucket, f"{whose} bundle builds are spent for now (export_run)", spend)
+                self._building[key[0]], kept = key[1], None
+        if kept is None:
+            try:
                 data = self._export_bytes(key)
-                kept = self._exports[key] = (latest, "sha256:" + hashlib.sha256(data).hexdigest(), data)
-            self._exports.move_to_end(key)
-            while len(self._exports) > EXPORTS_KEPT:
-                self._exports.popitem(last=False)
-        _, sha, data = kept
-        if digest not in (None, sha):
-            raise RPCError("conflict", f"the bundle of run {key[1]} changed since this download began (a newer "
-                                       "checkpoint): download it again from its first chunk")
-        offset = req.get("offset", 0)
+                kept = {"latest": latest, "sha": "sha256:" + hashlib.sha256(data).hexdigest(), "data": data,
+                        "used": time.monotonic()}
+                with self._exports_lock:
+                    self._keep(key, kept)
+            finally:
+                with self._exports_lock:
+                    del self._building[key[0]]
+        offset, data = req.get("offset", 0), kept["data"]
         if offset > len(data):
             raise RPCError("invalid_request", f"offset {offset} is past the bundle's {len(data)} bytes")
-        return {"digest": sha, "size": len(data), "offset": offset,
+        return {"digest": kept["sha"], "size": len(data), "offset": offset,
                 "data": base64.b64encode(data[offset:offset + EXPORT_CHUNK]).decode("ascii")}
+
+    def _export_tenant(self, identity):
+        """The tenant export_run reads: the caller's own, as `tenants` or its token or OIDC issuer names it, never the
+        default one. An identity its keys together also grant register_run (the startup check sees each `authorize`
+        entry alone) is an agent's: refused."""
+        try:
+            self._grant(identity, "register_run")
+        except RPCError:
+            pass
+        else:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is also granted register_run: runs are downloaded by "
+                                        "an identity that runs no agent")
+        tenant = self._own_tenant(identity)
+        if tenant is None:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} has no tenant of its own: export_run needs one, from "
+                                        "`tenants` or a token issued with --tenant")
+        return tenant
+
+    def _keep(self, key, entry):
+        """Keep bundle `entry` of run `key` for its later chunks (under _exports_lock), within EXPORT_TENANT_BYTES for
+        its tenant and EXPORT_KEPT_BYTES in all: bundles unused for EXPORT_IDLE_S go first, then the tenant's own,
+        least recently used first. Another tenant's bundle in use is never dropped: then unavailable."""
+        size = len(entry["data"])
+        if size > EXPORT_TENANT_BYTES:
+            raise RPCError("quota_exceeded", f"the bundle of run {key[1]} is {size >> 20} MiB, over the "
+                                             f"{EXPORT_TENANT_BYTES >> 20} MiB a tenant's downloads may hold: ask the "
+                                             "signer's operator for it")
+        self._exports.pop(key, None)
+        for k in [k for k, e in self._exports.items() if entry["used"] - e["used"] > EXPORT_IDLE_S]:
+            del self._exports[k]
+
+        def held(tenant=None):
+            return sum(len(e["data"]) for k, e in self._exports.items() if tenant in (None, k[0]))
+        mine = [k for k in self._exports if k[0] == key[0]]
+        while mine and (held(key[0]) + size > EXPORT_TENANT_BYTES or held() + size > EXPORT_KEPT_BYTES):
+            del self._exports[mine.pop(0)]
+        if held() + size > EXPORT_KEPT_BYTES:
+            raise RPCError("unavailable", "the signer holds as many bundles as it keeps, for other tenants' downloads: "
+                                          "ask again", retry_after_ms=EXPORT_RETRY_MS)
+        self._exports[key] = entry
 
     def _export_bytes(self, key):
         """The .tkb bytes of run `key`, as `tracekit export --v2 --run` writes them from this signer's store: read to
@@ -4695,6 +4772,13 @@ class SignerService:
             raise RPCError("quota_exceeded", str(e)) from None
         except (OSError, StorageUnavailable, StorageCorrupt) as e:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
+        # lean: refused whole; per-tenant record keys or a blinded tenant list in certificates is a format change
+        named = {t for line in files["keys/records.jsonl"].splitlines()
+                 for k in json.loads(line)["event"]["data"].get("keys", ()) if "cert" in k
+                 for t in k["cert"]["certificate"]["cert"]["tenants"]}
+        if named - {key[0]}:
+            raise RPCError("forbidden", "a bundle of this signer holds its record-key certificates, which name tenants "
+                                        "other than yours: ask the signer's operator to export the run")
         return bundle_v2.zipped(files)
 
     def _checkpoint_nudge(self, identity, req):

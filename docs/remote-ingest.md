@@ -70,6 +70,7 @@ tenants:
 ```
 
 ```bash
+(umask 077 && echo "$TOKEN" > /etc/tracekit/audit-token)   # owner-only, as every token file
 export TRACEKIT_SIGNER=https://tracekit.example:8443 TRACEKIT_SIGNER_TOKEN_FILE=/etc/tracekit/audit-token
 export TRACEKIT_SIGNER_CA=signer-ca.pem
 tracekit export --v2 --run <run id> -o run.tkb
@@ -79,12 +80,21 @@ tracekit verify run.tkb --trust trust.json   # the trust config the signer's ope
 - The file is the one the operator's `tracekit export --v2 --config signer.yaml --run <run id>` writes from the same
   checkpoint, byte for byte: the run's records (commitments, not the content vault's content), the signer's key records
   (public keys), inclusion proofs, the checkpoint note, and the compiled policy where the run's records cite one. No
-  verification code. Of the rest of the signer it shows what every bundle of it does: the log's size and hashes, and
-  its key records, which with a [record-key issuer](issuer.md) carry the certificate's list of tenants.
-- The tenant is the caller's own, from its identity. Another tenant's run is refused as `unknown_run`, as a run that
-  doesn't exist is.
-- No identity has `export_run` unless `authorize` lists it, the dev signer's included. An identity with it can download
-  any run of its tenant.
+  verification code. Of the rest of the signer it shows what every bundle of it does: the log's size and the run's
+  place in it, and the signer's one policy.
+- With a [record-key issuer](issuer.md) whose certificates name more tenants than the caller's, the signer refuses the
+  download (`forbidden`): every bundle's key records carry the certificates, so they would name the other tenants. The
+  operator exports such runs.
+- The tenant is the caller's own: `tenants`' entry for the identity, or the tenant its token was issued for, never the
+  signer's default tenant. An identity with neither is refused, and the signer doesn't start when `authorize` grants
+  `export_run` to an identity that can carry no tenant and `tenants` names none. Another tenant's run is refused as
+  `unknown_run`, as a run that doesn't exist is.
+- No identity has `export_run` unless `authorize` lists it, the dev signer's included, and never with `register_run`:
+  the signer doesn't start with both in one entry, and refuses an identity its entries grant both. An identity with
+  it can download any run of its tenant.
+- The signer builds a bundle at a time per tenant, two at once in all, at a limited rate per identity and per tenant,
+  and keeps the bundles it built in memory for their later chunks, with a share per tenant. When it is busy it answers
+  `unavailable` with a time to ask again, which the client follows until its timeout.
 - A run still open is exported up to the latest checkpoint. When no checkpoint covers the run yet, the signer writes one
   and the client asks again a second later, until its timeout.
 - Verify against a trust config you got from the operator or your own sources, not from the signer that sent the bundle.
