@@ -303,8 +303,8 @@ first NUL as bash's C string is: `r$'\x00zz'm` is `rm`), `;` `|` `|&` `&&` `||` 
 `exec`, `command`, `taskset`, `chrt`, `unbuffer`, `fakeroot`, `dbus-run-session`, `caffeinate`, `npx`, `uvx`, `dotenv`,
 `torsocks`, `firejail`, `gosu`, `tini`, …) and runners (`uv run`, `uv tool run`, `poetry run`, `pipenv run`, `pdm run`,
 `pipx run`, `hatch run`, `conda run`, `direnv exec DIR`, `mise exec … --`, `op run`, `doppler run`, `npm exec`,
-`pnpm dlx`, `yarn dlx`, `bun x`) are resolved, a program
-name is read casefolded and without `.exe`, `.cmd`, `.bat` or `.ps1` (npm's Windows shims: `npm.cmd` is npm; one named by a path with a `\` also as Windows runs it: `'C:\Git\bin\bash'`
+`pnpm dlx`, `yarn dlx`, `bun x`, `rustup run TOOLCHAIN`) are resolved, a program
+name is read casefolded and without `.exe`, `.cmd`, `.bat` or `.ps1` (npm's Windows shims: `npm.cmd` is npm; but `echo.bat`, `grep.cmd` or `sh.ps1`, a script named for a bash builtin, a shell or a program that reads data, is a script of its own; one named by a path with a `\` also as Windows runs it: `'C:\Git\bin\bash'`
 is bash), and the parser follows what a shell or interpreter runs: `bash -c`,
 `nix-shell --run`, a heredoc into a shell, `eval`, `ssh host '…'`, `find -exec`,
 `watch` and `parallel`, `env -S` (also in a cluster, `env -iS`), `npx -c` and `npm exec -c`/`--call`, `python -c` /

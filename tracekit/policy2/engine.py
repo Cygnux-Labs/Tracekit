@@ -1741,27 +1741,31 @@ _PUBLISH_FLAGS = {"--provenance", "--workspaces", "--ws", "--include-workspace-r
 
 def _published(argv):
     """`<program> publish` for a command that publishes a package, after any number of options (each with a value
-    or not, read in one pass, where a pattern bounds them: TK-A056, TK-F004): _PUBLISHERS' publish, npm's pu to publi,
-    cargo's after a +toolchain, pnpm's recursive, multi or m publish, yarn's npm publish and its workspaces foreach's
-    publish; else None. The push and line fields read it beside the command as written."""
-    prog, words = _program(argv), argv[1:]
-    if prog not in _PUBLISHERS:
-        return None
-    if prog == "cargo" and words[:1] and words[0].startswith("+"):
-        words = words[1:]
-    i, valued = 0, False   # (valued: the word before is an option, so this one may be its value)
-    while i < len(words):
-        w, rest = words[i], words[i + 1:i + 2]
-        if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi") or prog == "pnpm" and \
-                w in ("recursive", "multi", "m") and rest == ["publish"] or prog == "yarn" and w == "npm" and \
-                rest == ["publish"]:
-            return f"{prog} publish"
-        if prog == "yarn" and words[i:i + 2] == ["workspaces", "foreach"]:
-            return _published(["yarn", *words[i + 2:]])
-        if not w.startswith("-") and not valued:
-            return None
-        valued = w.startswith("-")
-        i += 1
+    or not, read in one pass, where a pattern bounds them: TK-A056, TK-F004): _PUBLISHERS' publish (a program
+    corepack or a package runner names with its version too: npm@10), npm's pu to publi, cargo's after a +toolchain,
+    pnpm's after recursive, multi or m, yarn's npm publish, and the publish of the command yarn's exec runs, each after
+    its workspaces foreach; else None. The push and line fields read it beside the command as written."""
+    i = 0   # (the program's word: each command yarn's exec runs in turn, each word read once)
+    while i < len(argv) and (prog := shell.base_name(argv[i]).partition("@")[0]) in _PUBLISHERS:
+        i += 1 + (prog == "cargo" and argv[i + 1:i + 2] != [] and argv[i + 1].startswith("+"))
+        valued = False   # (the word before is an option, so this one may be its value)
+        while i < len(argv):
+            w = argv[i]
+            if w == "publish" or prog == "npm" and w in ("pu", "pub", "publ", "publi") or prog == "yarn" and \
+                    argv[i:i + 2] == ["npm", "publish"]:
+                return f"{prog} publish"
+            if prog == "yarn" and w == "exec":
+                i += 1
+                break
+            skip = 2 if prog == "yarn" and argv[i:i + 2] == ["workspaces", "foreach"] else \
+                1 if prog == "pnpm" and w in ("recursive", "multi", "m") else 0
+            if skip:   # its command follows, after options of its own
+                i, valued = i + skip, False
+                continue
+            if not w.startswith("-") and not valued:
+                return None
+            valued = w.startswith("-")
+            i += 1
     return None
 
 
@@ -2879,19 +2883,9 @@ def _runs_code(argv):
     return argv[0] in shell.SHELLS or argv[0] in ("source", ".") or shell._kind(argv[0]) not in (None, "awk", "sed")
 
 
-# programs that only read, print, check or reformat their input (a pager, a hash, a filter, jq's language)
-_DATA_ONLY = {"jq", "yq", "gojq", "jaq", "grep", "egrep", "fgrep", "zgrep", "rg", "ag", "tee", "cat", "less", "more",
-              "most", "bat", "head", "tail", "wc", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum",
-              "shasum", "md5sum", "md5", "b2sum", "cksum", "sort", "uniq", "cut", "tr", "column", "nl", "fold", "fmt",
-              "od", "xxd", "hexdump", "base64", "strings", "file", "diff", "cmp", "comm", "paste", "rev", "tac",
-              "gunzip", "zcat", "gzip", "bzip2", "bunzip2", "xz", "unxz", "zstd", "unzstd", "xmllint", "pbcopy",
-              "wl-copy", "xclip", "true", ":", "read", "mapfile", "readarray", "awk", "gawk", "mawk", "nawk", "sed",
-              "gsed", "iconv", "dos2unix", "pv", "ts", "jless", "fx", "html2text", "openssl", "echo", "printf"}
-
-
 def _may_run_input(argv):
     """Whether a program a download is piped into may run what it reads: a shell or interpreter reading its code from
-    stdin, or any program not known to read only data (_DATA_ONLY; tar only listing). awk's and sed's code is read
+    stdin, or any program not known to read only data (shell.DATA_ONLY; tar only listing). awk's and sed's code is read
     on its own (TK-D002's system(), the parser's sed e), and so is what a wrapper or runner runs (env, nice, xargs:
     the parser gives it as a command of its own)."""
     name, args = argv[0], argv[1:]
@@ -2904,7 +2898,7 @@ def _may_run_input(argv):
     if name in ("tar", "gtar", "bsdtar"):
         return not any(a == "--list" or re.fullmatch(r"-?[A-Za-z]*t[A-Za-z]*", a) for a in args[:1] + [
             a for a in args if a.startswith("-") and not a.startswith("--")])
-    return name not in _DATA_ONLY
+    return name not in shell.DATA_ONLY
 
 
 # what a saved download may be read as without running it
@@ -3051,7 +3045,7 @@ def _download_runs(commands):
         if tool not in ("curl", "wget"):
             continue
         # a later stage of its pipeline that may run what it reads: any program but one known to read only data
-        # (_DATA_ONLY, tar listing), a shell or an interpreter that reads its code from stdin; one given its code
+        # (shell.DATA_ONLY, tar listing), a shell or an interpreter that reads its code from stdin; one given its code
         # (-c, a script) is TK-A046's
         for c in commands:
             if c["pipeline"] == d["pipeline"] and c.get("stage", 0) > d.get("stage", 0) and _may_run_input(c["argv"]):

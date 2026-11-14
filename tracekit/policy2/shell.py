@@ -221,7 +221,7 @@ RUNNERS = {"uv": (("run",), UV_OPTS, 0), "hatch": (("run",), (), 0),
            "pixi": (("run", "exec"), ("-e", "--environment", "--manifest-path", "-s", "--spec", "-c", "--channel"), 0),
            "micromamba": (("run",), ("-n", "--name", "-p", "--prefix", "-r", "--root-prefix", "--cwd", "-a",
                                      "--attach", "--label"), 0),
-           "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0)}
+           "mamba": (("run",), ("-n", "--name", "-p", "--prefix", "--cwd"), 0), "rustup": (("run",), (), 1)}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -269,6 +269,13 @@ _NAME_BUILTINS = {"read", "unset", "declare", "typeset", "local", "readonly", "e
                   "getopts", "wait", "test", "[", "[[", "printf"}
 _VARIABLE_SETTING_BUILTINS = {"read", "mapfile", "readarray", "declare", "typeset", "local", "export", "readonly",
                              "let", "eval", "unset"}
+# bash's builtins (enable -a)
+_BASH_BUILTINS = frozenset((
+    ".", ":", "[", "alias", "bg", "bind", "break", "builtin", "caller", "cd", "command", "compgen", "complete", "compopt",
+    "continue", "declare", "dirs", "disown", "echo", "enable", "eval", "exec", "exit", "export", "false", "fc", "fg",
+    "getopts", "hash", "help", "history", "jobs", "kill", "let", "local", "logout", "mapfile", "popd", "printf", "pushd",
+    "pwd", "read", "readarray", "readonly", "return", "set", "shift", "shopt", "source", "suspend", "test", "times",
+    "trap", "true", "type", "typeset", "ulimit", "umask", "unalias", "unset", "wait"))
 # what may set any variable of the shell, now or later (a DEBUG trap, an alias with expand_aliases on, a sourced file)
 _SETS_ANY = _VARIABLE_SETTING_BUILTINS | {"source", ".", "trap", "getopts", "wait", "alias", "shopt", "enable",
                                           "compgen"}   # compgen -V NAME (bash 5.3)
@@ -474,6 +481,7 @@ _NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*|[0-9@*#?$!-]")
 # a pathname pattern in a word's unquoted text; a ] first in a bracket is one of its characters ([]x], [!]x])
 _GLOB = re.compile(r"[*?]|\[[!^]?(?:\][^][]*|[^][]+)\]")
 _HOME_WORD = re.compile(r"\$(?:HOME|\{HOME\})")   # the one bare variable the packs name as a word
+_HOME_VARIABLE = re.compile(r"\$(?:HOME(?!\w)|\{HOME\})")   # one in a word's text
 _DEFAULT = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):?[-=?][^{}]*\}")   # a variable with a default, assignment or check
 # arithmetic, a subscript, an indirect name or an offset (of a special parameter too: ${@:x}, ${1:x}): bash may
 # evaluate a value of the line there (_Parser.word)
@@ -1540,8 +1548,10 @@ def _searches(argv):
     if argv[0] == "git":
         sub = _git_sub(argv[1:])
         return sub is not None and argv[1 + sub] == "grep"
-    return argv[0] in ("grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "pgrep") and not any(
-        a == "--pre" or a.startswith("--pre=") for a in argv[1:])
+    return argv[0] in _SEARCHERS and not any(a == "--pre" or a.startswith("--pre=") for a in argv[1:])
+
+
+_SEARCHERS = frozenset(("grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ack", "pgrep"))
 
 
 def charge(work, n):
@@ -3429,18 +3439,17 @@ class _Parser:
                 raise ParseError("a backslash-newline inside a redirection is not supported")   # bash reads 2\⏎> as 2>
             self.out.append(text)
             if loop_header:
-                # a word bash brace-expands is the words it makes (`for k in id_{rsa,x}`), when each is a literal
+                # a word bash brace-expands is the words it makes (`for k in id_{rsa,x}`, `~/{.ssh,.aws}/*`), each a
+                # literal or a pattern (below)
                 made = self.header_braces(raw) if g and "{" in self.bare and not re.search(r"[$`]", raw) else None
                 if made is not None:
-                    header += made
+                    for piece, pattern in made:
+                        header += self.header_pattern(piece) if pattern else [piece]
                     continue
-                # a pattern is each name it matches: read as the pattern written in the body would be, as written and
-                # as each name it may make (_unglob), and as empty, as a value the line can't name is (second readings,
-                # as the pattern's own names are); on a line that makes files, it may match one the line names
-                if g and not re.search(r"[$`]", raw) and not self.ctx["files"]:
-                    made = _unglob(text, self.ctx["globopts"], self.ctx["work"]) + [""] if self.ctx["readings"] else []
-                    self.ctx["more"] |= bool(made)
-                    header += [text] + made
+                # a pattern, as written or with only $HOME and the variables the line gives one literal (word():
+                # given) in it, is each name it matches (header_pattern)
+                if g and not re.search(r"[$`]", _HOME_VARIABLE.sub("", text)):
+                    header += self.header_pattern(text)
                     continue
                 # a word whose every expansion is a variable's one known literal (word(): given) is that literal
                 header.append(None if g or re.search(r"[$`]", text) or re.search(r"[$`]", raw) and not self.given
@@ -3906,8 +3915,8 @@ class _Parser:
             if name in self.ctx["namerefs"] and self.ctx["namerefs"][name] is None:   # each word is its target
                 raise ParseError(f"a loop over the nameref {name}, which has no target, is not supported")
             # what it holds: text the line makes (`for x in $(printf …)`, `for y in $x` of such an x); a value the
-            # parser can't name (an expansion it can't, the parameters, a reply, a pattern on a line that makes files);
-            # else readers' or literals
+            # parser can't name (an expansion it can't, the parameters, a reply, a word not read on a line that makes
+            # files); else readers' or literals
             parameters = kind == "for" and rest[:1] != ["in"]   # `for x; do`: "$@"
             if not literal and (self.feeding or loop[3] or parameters and "@" in self.ctx["unread_values"]):
                 self.ctx["unread_values"].add(name)
@@ -4791,17 +4800,27 @@ class _Parser:
                 self.program(interp, text, " <<")
 
     def header_braces(self, raw):
-        """The literal words bash's brace expansion makes of a loop header's word `raw`, or None when it makes none or
-        one it makes is a pattern (a later glob) or isn't readable: the loop's values are then unknown, as before."""
+        """The words bash's brace expansion makes of a loop header's word `raw`, each (its text, whether it is a
+        pattern bash then globs), or None when it makes none or one it makes isn't readable: the loop's values are then
+        unknown, as before."""
         try:
             pieces = _brace(raw, self.charge, self.ctx["brace"] + len(raw))
         except ParseError:
             return None
         made = [w for w in map(self.relex, pieces or ()) if w]
-        if not made or any(g or expanded for _, _, g, expanded in made):
+        if not made or any(expanded for _, _, _, expanded in made):
             return None
         self.ctx["brace"] -= sum(len(p) + 1 for p in pieces) - 1 - len(raw)
-        return [text for text, *_ in made]
+        return [(text, g) for text, _, g, _ in made]
+
+    def header_pattern(self, text):
+        """The values a loop header's pattern `text` gives the loop's variable: the pattern as the body would read it
+        written in, each name it may make (_unglob), and empty, as a value the line can't name is (second readings, as
+        the pattern's own names are). On a line that makes files the pattern may name one: a reading that runs the
+        pattern as a script or code holds it (emit's unreadable word)."""
+        made = _unglob(text, self.ctx["globopts"], self.ctx["work"]) + [""] if self.ctx["readings"] else []
+        self.ctx["more"] |= bool(made)
+        return [text] + made
 
     def relex(self, piece):
         """word() over one word a brace expansion or $IFS made (_brace refuses a substitution in it), or None for an
@@ -5307,13 +5326,35 @@ class _Parser:
         return _Expansion(self.s[start:self.i])
 
 
+# programs that only read, print, check or reformat their input (a pager, a hash, a filter, jq's language): what a
+# download piped into one can't run (Engine's _may_run_input)
+DATA_ONLY = frozenset((
+    "jq", "yq", "gojq", "jaq", "grep", "egrep", "fgrep", "zgrep", "rg", "ag", "tee", "cat", "less", "more", "most", "bat",
+    "head", "tail", "wc", "sha1sum", "sha224sum", "sha256sum", "sha384sum", "sha512sum", "shasum", "md5sum", "md5",
+    "b2sum", "cksum", "sort", "uniq", "cut", "tr", "column", "nl", "fold", "fmt", "od", "xxd", "hexdump", "base64",
+    "strings", "file", "diff", "cmp", "comm", "paste", "rev", "tac", "gunzip", "zcat", "gzip", "bzip2", "bunzip2", "xz",
+    "unxz", "zstd", "unzstd", "xmllint", "pbcopy", "wl-copy", "xclip", "true", ":", "read", "mapfile", "readarray",
+    "awk", "gawk", "mawk", "nawk", "sed", "gsed", "iconv", "dos2unix", "pv", "ts", "jless", "fx", "html2text", "openssl",
+    "echo", "printf"))
+# names a script given a .cmd, .bat or .ps1 keeps (_lower_name): bash's builtins, a shell, and the programs whose
+# words or input the rules read as data, files or patterns (a reader, a search, echo and its kin, DATA_ONLY). No
+# Windows install makes a shim of one, and bash never runs echo.bat as its echo: it is a script of its own, run by
+# cmd.exe or PowerShell, whose words may be a command (hidden_commands)
+_NOT_SHIMS = (_BASH_BUILTINS | SHELLS | _READERS | _ECHOERS | _DATA_COMMANDS | NO_FILES | _TEXT_FILTERS | _SEARCHERS |
+              DATA_ONLY)
+
+
 def _lower_name(word):
-    """`word` with the name after its last / or \\ casefolded and without a `.exe`, `.cmd`, `.bat` or `.ps1` (Windows
-    runs git.exe for git, and npm's npm.cmd or npm.ps1 shim for npm, as a package's other commands; macOS runs /bin/sh
-    for `ſh`, its file system folding case as casefold does): the directories keep their case."""
+    """`word` with the name after its last / or \\ casefolded and without a `.exe`, or a `.cmd`, `.bat` or `.ps1` but
+    on a name of _NOT_SHIMS or PURE_READERS (Windows runs git.exe for git, and npm's npm.cmd or npm.ps1 shim for npm,
+    as a package's other commands; macOS runs /bin/sh for `ſh`, its file system folding case as casefold does): the
+    directories keep their case."""
     i = max(word.rfind("/"), word.rfind("\\")) + 1
-    name = word[i:].casefold()
-    return word[:i] + (name[:-4] if name.endswith((".exe", ".cmd", ".bat", ".ps1")) and len(name) > 4 else name)
+    stem, _, ext = (name := word[i:].casefold()).rpartition(".")
+    if stem and (ext == "exe" or ext in ("cmd", "bat", "ps1") and stem not in _NOT_SHIMS and
+                 not PURE_READERS.fullmatch(stem)):
+        name = stem
+    return word[:i] + name
 
 
 @functools.lru_cache(maxsize=256)   # (a decision asks it of each command's program many times)
