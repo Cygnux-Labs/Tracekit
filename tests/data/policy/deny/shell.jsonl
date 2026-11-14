@@ -371,6 +371,9 @@
 {"tool": "Bash", "args": {"command": "/usr/bin/nohup env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nohup by its path"}
 {"tool": "Bash", "args": {"command": "CONTAINER_HOST=unix:///run/podman/podman.sock python x.py"}, "expect": "ask", "note": "a program pointed at the Podman socket through CONTAINER_HOST"}
 {"tool": "Bash", "args": {"command": "env CONTAINER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration"}, "expect": "ask", "note": "CONTAINER_HOST to the Podman socket after env"}
+{"tool": "Bash", "args": {"command": "nice -n5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nice -n5 env (#828)"}
+{"tool": "Bash", "args": {"command": "nice --adjustment=5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nice --adjustment=5 env (#828)"}
+{"tool": "Bash", "args": {"command": "nohup nice env DOCKER_HOST=unix:///var/run/docker.sock python x.py"}, "expect": "ask", "note": "DOCKER_HOST to the Docker socket after nohup nice env (#828)"}
 {"tool": "Bash", "args": {"command": "useradd -m -s /bin/bash -G sudo backdoor"}, "expect": "ask", "note": "a new login in the sudo group (#750)"}
 {"tool": "Bash", "args": {"command": "adduser backdoor"}, "expect": "ask", "note": "a new login (#750)"}
 {"tool": "Bash", "args": {"command": "usermod -aG wheel dev"}, "expect": "ask", "note": "adding a user to an administrator group (#750)"}

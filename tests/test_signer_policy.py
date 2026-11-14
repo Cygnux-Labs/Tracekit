@@ -363,7 +363,11 @@ class CodingPack(unittest.TestCase):
                 "nice -n +5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
                 "/usr/bin/nohup env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
                 "CONTAINER_HOST=unix:///run/podman/podman.sock python x.py",
-                "env CONTAINER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration"]
+                "env CONTAINER_HOST=unix:///run/user/1000/podman/podman.sock pytest tests/integration",
+                "nice -n5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "nice --adjustment=5 env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "nohup nice env DOCKER_HOST=unix:///var/run/docker.sock python x.py",
+                "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remotex ps"]
         benign = ["docker ps", "docker run --rm hello-world", "ls -la /var/run/docker.sock",
                   "DOCKER_HOST=unix:///var/run/docker.sock /usr/bin/docker ps",
                   "DOCKER_HOST=unix:///run/podman/podman.sock docker-compose up",
@@ -382,7 +386,9 @@ class CodingPack(unittest.TestCase):
                   "CONTAINER_HOST=unix:///run/podman/podman.sock podman ps",
                   "CONTAINER_HOST=unix:///run/podman/podman.sock podman-compose up",
                   "export CONTAINER_HOST=unix:///run/podman/podman.sock && podman ps",
-                  "grep CONTAINER_HOST=unix:// compose.yaml"]
+                  "grep CONTAINER_HOST=unix:// compose.yaml",
+                  "CONTAINER_HOST=unix:///run/podman/podman.sock podman-remote ps",
+                  "CONTAINER_HOST=unix:///run/podman/podman.sock /usr/bin/podman-remote info"]
         rules = {"TK-A071", "TK-A072", "TK-A073"}
         files = (("Write", "/sys/fs/cgroup/x/release_agent", True), ("Edit", "/sys/fs/cgroup/x/notify_on_release", True),
                  ("Read", "/sys/fs/cgroup/x/release_agent", False), ("Write", "/w/notes/release_agent_notes.md", False))
