@@ -319,3 +319,11 @@
 {"tool": "Bash", "args": {"command": "echo 'alias ports=\"nc -zv localhost\"' >> ~/.zshrc"}, "expect": "allow", "note": "an nc alias without -e in zshrc (#750)"}
 {"tool": "Bash", "args": {"command": "ls -la ~/Library/Containers/com.docker.docker/Data/docker.raw.sock"}, "expect": "allow", "note": "list the macOS Docker raw socket file (#808)"}
 {"tool": "Bash", "args": {"command": "ls -la ~/.local/share/containers/podman/machine/podman-machine-default-api.sock"}, "expect": "allow", "note": "list the macOS Podman machine socket file (#808)"}
+{"tool": "Bash", "args": {"command": "install -m 0755 x /usr/local/bin/x"}, "expect": "allow", "note": "ordinary executable install mode (#804)"}
+{"tool": "Bash", "args": {"command": "install -m 1777 x /tmp/x"}, "expect": "allow", "note": "install setting only the sticky bit (#804)"}
+{"tool": "Bash", "args": {"command": "install --mode=0644 x /usr/local/share/x"}, "expect": "allow", "note": "ordinary data file install mode (#804)"}
+{"tool": "Bash", "args": {"command": "install -m u-s x /usr/local/bin/x"}, "expect": "allow", "note": "install removing the setuid bit (#804)"}
+{"tool": "Bash", "args": {"command": "install -d /tmp/build"}, "expect": "allow", "note": "install creating a directory (#804)"}
+{"tool": "Bash", "args": {"command": "setcap cap_net_bind_service+ep x"}, "expect": "allow", "note": "setcap granting an unprivileged bind capability (#804)"}
+{"tool": "Bash", "args": {"command": "setcap -r x"}, "expect": "allow", "note": "setcap removing capabilities (#804)"}
+{"tool": "Bash", "args": {"command": "setcap -v cap_setuid+ep x"}, "expect": "allow", "note": "setcap verifying capabilities without modifying the file (#804)"}
