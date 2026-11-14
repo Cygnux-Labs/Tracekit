@@ -793,6 +793,25 @@ class Permissions(unittest.TestCase):
                                   ["c2", "all flag", "RAN · FLAGGED", None, None], ["c1", "all deny", "BLOCKED", None, None]])
         self.assertEqual(out[1], [["c9", "all ask expired", "NOT ANSWERED", None, None]])
 
+    def test_a_call_that_ran_anyway_says_so_on_the_tape_and_in_permissions(self):
+        """A result under a deny, or under a hold nobody answered, is a call that ran: the rows still read BLOCKED."""
+        needs_node(self)
+        done = lambda seq, call, did: {"event": "PostToolUse", "session_id": "r1", "tool_use_id": call,  # noqa: E731
+                                       "tk_seq": seq, "v2": {"decision_id": did}}
+        recs = [hold(1, "c1", decision="deny", decision_id="d1"), done(2, "c1", "d1"),
+                hold(3, "c2", decision_id="d2"), done(4, "c2", "d2"), hold(5, "c3", decision="deny", decision_id="d3")]
+        out = json.loads(page_js(["ANSWER", "permRows", "used", "foldsOf", "FOLDS", "callKey", "actsOf", "latestAct", "couldRun", "tuid",
+                                  "permOf", "lastAnswer", "ended", "callState", "didFact"], f"""
+            const ALL = {json.dumps(recs)}, LOADED = new Map(), runRows = () => ALL; let scope = null, permKey = [], permList = [];
+            const post = {{ tk_seq: 2 }}, ask = {{ v2: {{ decision: "ask" }}, approvals: [], flags: [], post }}, deny = {{ denied: true, flags: [], post }};
+            process.stdout.write(JSON.stringify([permRows().map(x => [x.rec.tool_use_id, x.tabs.filter(Boolean).join(" "), ...x.out]),
+                                                 callState(deny), callState(ask), didFact(deny)[1], didFact(ask)[1]]));"""))
+        self.assertEqual(out, [[["c3", "all deny", "s-deny", "BLOCKED"],
+                                ["c2", "all ask expired", "s-err", "NOT ANSWERED · RAN ANYWAY"],
+                                ["c1", "all deny", "s-err", "BLOCKED · RAN ANYWAY"]],
+                               ["s-err", "BLOCKED · RAN ANYWAY"], ["s-err", "NOT ANSWERED · RAN ANYWAY"],
+                               "blocked by the signer, and it ran anyway", "held, not approved, and it ran anyway"])
+
     def test_a_use_refused_after_a_rejection_or_a_revoke_reads_as_the_run_review_says(self):
         """A use the signer refused because a person rejected the approval read rejected in the run review and the
         report, and REFUSED in PERMISSIONS; one of an approval a person revoked read rejected and REFUSED."""

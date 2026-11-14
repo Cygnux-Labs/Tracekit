@@ -847,7 +847,8 @@ def review(records, rep, verdict, outcomes=None):
     # a call is its decision's run_seq: perms -> its outcome, asked: those held; calls: approval_id -> its tool_use_id;
     # cur: tool_use_id, and (tool_use_id, attempt) -> its latest call; ids: call -> its tool_use_id; folds and owners as
     # held_calls has them
-    perms, calls, asked, cur, ids = {}, {}, set(), {}, {}
+    # dids: decision_id -> its call; ran: the calls a tool.result names
+    perms, calls, asked, cur, ids, dids, ran = {}, {}, set(), {}, {}, {}, set()
     folds, owners = held_calls(records)
     for rec in records:
         e = rec["event"]
@@ -864,10 +865,12 @@ def review(records, rep, verdict, outcomes=None):
         elif t == "policy.decision" and e.get("run_seq") in folds:
             out["retries"] += 1   # the held call's retry with its id (LangGraph): that call
             cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = folds[e["run_seq"]]
+            dids[d.get("decision_id")] = folds[e["run_seq"]]
         elif t == "policy.decision":
             out["decisions"][d.get("decision")] += 1
             out["constraint_holds"] += "TK-CONSTRAINT" in (d.get("rule_ids") or ())
             key, seq = d.get("decision"), e.get("run_seq")
+            dids[d.get("decision_id")] = seq
             cur[d.get("tool_use_id")] = cur[(d.get("tool_use_id"), e.get("attempt"))] = seq
             ids[seq] = d.get("tool_use_id")
             if key != "allow":
@@ -875,6 +878,8 @@ def review(records, rep, verdict, outcomes=None):
                     else {"deny": "blocked", "flag": "flagged"}.get(key, OPEN)
             if key == "ask":
                 asked.add(seq)
+        elif t == "tool.result" and d.get("decision_id") and d["decision_id"] in dids:
+            ran.add(dids[d["decision_id"]])
         elif t == "constraint.added":
             out["constraints"].append({"kind": CONSTRAINTS.get(d.get("kind"), d.get("kind")), "seq": e.get("seq")})
         elif t == "approval":
@@ -931,7 +936,9 @@ def review(records, rep, verdict, outcomes=None):
         if key and key not in out["first"]:
             out["first"][key] = e.get("seq")
     # a hold the run ended without an answer to
-    ended = {c: "not answered" if o == OPEN and out["state"] == "final" else o for c, o in perms.items()}
+    ended = {c: "not answered" if o == OPEN and (out["state"] == "final" or c in ran) else o for c, o in perms.items()}
+    # one the policy refused, or nobody answered, whose result the signer signed under that decision: it ran
+    ended = {c: f"{o} · ran anyway" if c in ran and o in ("blocked", "not answered") else o for c, o in ended.items()}
     out["permissions"] = collections.Counter(ended.values())
     held = {c: o for c, o in ended.items() if c in asked}
     out["holds"] = collections.Counter(held.values())

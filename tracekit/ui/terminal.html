@@ -3834,12 +3834,13 @@
     // a call's final state: [class, words]; only a call that may still be running is RUNNING. A held call blocked at once,
     // approved, then sent again by the agent: RETRY RAN, its retry APPROVED · RAN
     function callState(a) {
-      if (a.denied) return ["s-deny", "BLOCKED"];
+      if (a.denied) return a.post ? ["s-err", "BLOCKED · RAN ANYWAY"] : ["s-deny", "BLOCKED"];
       if (a.error) return ["s-err", "FAILED"];
       if (a.v2?.decision === "ask") {
         const ap = lastAnswer(a);
         if (ap === "approve") return ["s-ok", a.ranBy ? "APPROVED · RETRY RAN" : used(a.approvals) ? "APPROVED · RAN" : "APPROVED"];
         if (ap) return ["s-deny", ANSWER[ap]];
+        if (a.post) return ["s-err", "NOT ANSWERED · RAN ANYWAY"];
         return ["s-flag", ended(a) ? "NOT ANSWERED" : "TO ANSWER"];
       }
       if (a.post) return a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"];
@@ -5471,9 +5472,9 @@
       return rows.filter(row => !row.retry).reverse().map(row => {
         const d = row.rec.v2.decision, ans = row.answers.filter(x => x.v2.approval in ANSWER).pop(), a = ans?.v2.approval, done = ended.has(row.rec.session_id);
         // a payment a person's grant released (docs/intent-grants.md): it ran without a stop, within the grant's limits
-        const [tab, out] = row.rec.v2.grant ? ["granted", row.post ? ["s-ok", "RAN · WITHIN GRANT"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]] : d === "deny" ? ["", ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
+        const [tab, out] = row.rec.v2.grant ? ["granted", row.post ? ["s-ok", "RAN · WITHIN GRANT"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]] : d === "deny" ? ["", row.post ? ["s-err", "BLOCKED · RAN ANYWAY"] : ["s-deny", "BLOCKED"]] : d === "flag" ? ["", row.post ? ["s-flag", "RAN · FLAGGED"] : done ? ["dim", "NO RESULT"] : ["s-run", "RUNNING"]]
           : a === "approve" ? ["approved", ["s-ok", row.ranBy ? "APPROVED · RETRY RAN" : used(row.answers) ? "APPROVED · RAN" : "APPROVED"]] : ["expired", "timeout", "abandoned"].includes(a) ? ["expired", ["dim", ANSWER[a]]]
-          : a ? ["rejected", ["s-deny", ANSWER[a]]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "TO ANSWER"]];
+          : a ? ["rejected", ["s-deny", ANSWER[a]]] : row.post ? ["expired", ["s-err", "NOT ANSWERED · RAN ANYWAY"]] : done ? ["expired", ["dim", "NOT ANSWERED"]] : ["waiting", ["s-flag", "TO ANSWER"]];
         return { ...row, ans, who: row.answers.filter(x => x.v2.approver).pop(), req: row.answers.find(x => x.v2.approval === "requested"), out, tabs: ["all", d, tab] };
       });
     }
@@ -5846,6 +5847,8 @@
     // a call's signed outcome: [mark, words, the record that shows it]
     function didFact(c) {
       const p = c.post || c.ranBy?.post;
+      if (c.post && (c.denied || c.v2?.decision === "ask" && lastAnswer(c) !== "approve"))
+        return ["x", c.denied ? "blocked by the signer, and it ran anyway" : "held, not approved, and it ran anyway", c.post];
       if (c.denied) return ["x", "blocked by the signer: it never ran", c.pre];
       if (c.v2?.decision === "ask" && lastAnswer(c) !== "approve") return ["x", `held, ${callState(c)[1].toLowerCase()}: it has not run`, c.approvals.at(-1) || c.pre];
       if (!p) return ["w", "no result recorded", c.pre];
