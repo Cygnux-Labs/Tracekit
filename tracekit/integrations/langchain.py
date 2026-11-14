@@ -36,6 +36,7 @@ A response that can't be recorded only warns. A `tracekit_tool_node` graph has n
 recorded by `tracekit.instrument()` or the LLM gateway.
 """
 import asyncio
+import collections
 import contextvars
 import copy
 import hashlib
@@ -167,8 +168,9 @@ class TracekitMiddleware(AgentMiddleware):
         retry runs it as a new attempt). A result comes back as a stand-in: the signer keeps a commitment to it, not
         the result."""
         digest = event_hash({"tool": call["name"], "args": call["args"]})
+        state = getattr(self.signer, "call_state", None)   # a SignerAPI of the app's own may have none
         try:
-            s = self.signer.call_state({**self.run, "tool_call_id": call["id"], "args_digest": digest})
+            s = state({**self.run, "tool_call_id": call["id"], "args_digest": digest}) if state else {}
         except (RPCError, SignerUnavailable):   # decided again (_new), and judged by the signer then
             return None
         if "attempt" not in s:
@@ -211,14 +213,20 @@ class TracekitMiddleware(AgentMiddleware):
         process planned, else what the signer recorded (a resume, maybe in another process), else decided now. Then the
         pass pauses once, before any tool runs, when any call asked, answered or not, so a tool's own interrupt() comes
         after it and gets the person's answer. Then each call allowed or approved is consumed (approval_consume, under
-        its own approval) and one refused is done. A call that ended isn't decided, consumed or run again."""
+        its own approval) and one refused is done. A call that ended isn't decided, consumed or run again. Calls that
+        share an id are refused, undecided: what the signer keeps of a call, so what a pass goes on from, is by id."""
         ns, answered, plans = _ns(config), _answered(config), {}
+        ids = collections.Counter(c["id"] for c in calls)
         for call in calls:
-            p = self._plans.get((ns, call["id"]))
+            if ids[call["id"]] > 1:   # each refused in its own message (_gate)
+                plans[call["id"]] = {"d": None, "entry": None, "held": True, "state": "done", "twice": ids[call["id"]]}
+                continue
+            p = _resumed(self._plans.get((ns, call["id"])))
             if p is None and answered:
                 p = self._recorded(call)
             if p is None or p["state"] == "raised":
                 p = self._new(call, config, self._attempts.get(call["id"], 0))
+            p["held"] = True   # its plan stays until the node ends
             plans[call["id"]] = self._plans[ns, call["id"]] = p
         asked = [p["entry"] for p in plans.values() if p["entry"]]
         self._opened(plans.values(), answered, asked)
@@ -244,11 +252,14 @@ class TracekitMiddleware(AgentMiddleware):
         held = _PASS.get()
         if held is not None and held["ns"] == _ns(config) and call["id"] in held["plans"]:
             p = held["plans"][call["id"]]
+            if p.get("twice"):
+                return self._refusal(call, f"the message has {p['twice']} calls with id {call['id']!r}, so none of "
+                                           "them runs"), p
             if p["state"] != "done" and event_hash({"tool": call["name"], "args": call["args"]}) != p["digest"]:
                 _done(p, self._refusal(call, "the call's arguments changed after the decision"))   # an outer wrapper's
             return p["out"], p
         key, answered = (_ns(config), call["id"]), _answered(config)
-        p = self._plans.pop(key, None)
+        p = _resumed(self._plans.pop(key, None))
         if p is None and answered:
             p = self._recorded(call)
             if p is not None:
@@ -268,12 +279,23 @@ class TracekitMiddleware(AgentMiddleware):
         return ToolMessage(f"Tool call blocked by policy: {why}", tool_call_id=call["id"], name=call["name"],
                            status="error")
 
-    def _paused(self, request, p):
+    def _start(self, request, p):
+        """The call's tool starts. Its plan is kept, `running`, until the tool ends: a pass of its node that finds it so
+        (cut off in this process: a cancellation, a KeyboardInterrupt) has the signer judge it again (_resumed)."""
+        p["state"] = "running"
+        self._plans[_ns(request.runtime.config), request.tool_call["id"]] = p
+
+    def _ended(self, request, p):
+        """The call's tool ended: a single call's plan goes; a held pass's stays until its node ends."""
+        if not p.get("held"):
+            self._plans.pop((_ns(request.runtime.config), request.tool_call["id"]), None)
+
+    @staticmethod
+    def _paused(p):
         """The call's tool paused the run (interrupt(), a handoff): it goes on when its node runs again, an approved
         call under its one consume, an allowed one consumed again."""
         if p["d"] is not None:
             p["state"] = "decide" if p["d"]["decision"] == "allow" else "paused"
-        self._plans[_ns(request.runtime.config), request.tool_call["id"]] = p
 
     def _complete(self, call, p, out=None, exc=None):
         """Records the outcome; never raises, so the tool's result or exception reaches the framework unchanged."""
@@ -314,15 +336,18 @@ class TracekitMiddleware(AgentMiddleware):
             return blocked
         if p["d"] is not None and "args" in p["d"]:
             request = request.override(tool_call={**request.tool_call, "args": p["d"]["args"]})
+        self._start(request, p)
         try:
             out = handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
-            self._paused(request, p)
+            self._paused(p)
             raise
         except Exception as e:
             self._complete(request.tool_call, p, exc=e)
+            self._ended(request, p)
             raise
         self._complete(request.tool_call, p, out)
+        self._ended(request, p)
         return out
 
     async def awrap_tool_call(self, request, handler):
@@ -338,21 +363,33 @@ class TracekitMiddleware(AgentMiddleware):
             return blocked
         if p["d"] is not None and "args" in p["d"]:
             request = request.override(tool_call={**request.tool_call, "args": p["d"]["args"]})
+        self._start(request, p)
         try:
             out = await handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
-            self._paused(request, p)
+            self._paused(p)
             raise
         except Exception as e:
             await asyncio.to_thread(self._complete, request.tool_call, p, exc=e)
+            self._ended(request, p)
             raise
         await asyncio.to_thread(self._complete, request.tool_call, p, out)
+        self._ended(request, p)
         return out
 
 
 def _done(p, out):
     """Plan `p` is done: the model reads `out` (a refusal, or what the call gave) in each pass of its node."""
     p.update(state="done", out=out)
+    return p
+
+
+def _resumed(p):
+    """Plan `p` (or None) as its node runs again. A call whose tool started and never ended in this process (cut off:
+    a cancellation, a KeyboardInterrupt) is judged by the signer again: its consume refuses an approval it already used
+    (TK-APPROVAL-CONSUMED), so it never runs twice on one approval; an allowed one runs again, as a new decide would."""
+    if p is not None and p["state"] == "running":
+        p["state"] = "decide" if p["d"] is not None else "run"
     return p
 
 

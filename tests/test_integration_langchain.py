@@ -649,6 +649,117 @@ class ToolPauses(Driven):
                                          sorted([call["id"], "q"]))
                         self.assertEqual(len(self.recorded("approval.request")), int(label == "approved"))
 
+    def test_a_call_id_twice_in_one_message_runs_neither_call(self):   # probe851.py dup, probe851_dupslow.py
+        """Two pays under one call id, beside echo. What the signer keeps of a call is by id: at e7158780b5 the second
+        pay took up the first's consumed plan, so one approval paid twice and one result was recorded. Both are
+        refused now, undecided, each in a message of its own; echo runs."""
+        @tool("pay")
+        def slow_pay(to: str, cents: int) -> str:
+            """Send money, slowly."""
+            PAID.append(cents)
+            time.sleep(0.2)
+            return f"paid {cents}"
+        pay, echo = ({"name": "pay", "args": {"to": "mallory", "cents": 500}, "id": "c1"},
+                     {"name": "echo", "args": {"text": "hi"}, "id": "e"})
+        refused = "Tool call blocked by policy: the message has 2 calls with id 'c1', so none of them runs"
+        for mode in ("sync", "async"):
+            for how, node in self.nodes(tools=[slow_pay, TOOLS[0]]):
+                with self.subTest(mode=mode, wired=how):
+                    out, pauses = self.drive(runner(tool_graph(node()), mode), message([pay, pay, echo]),
+                                             approve={"c1"})
+                    self.assertEqual((PAID, ac.RAN, pauses), ([], ["echo"], []))
+                    self.assertEqual([m.content for m in out["messages"]
+                                      if isinstance(m, ToolMessage) and m.tool_call_id == "c1"], [refused] * 2)
+                    self.assertEqual([d["tool_call_id"] for d in self.recorded("policy.decision")], ["e"])
+
+    def test_an_approved_call_cut_off_mid_run_never_runs_again_on_its_approval(self):   # probe851.py cancel, crash
+        """The resume's ainvoke cancelled by asyncio.wait_for while the approved pay ran, or a BaseException out of the
+        tool, then the run resumed again in the same process. At e7158780b5 its plan still said it could run, and it
+        paid twice on one consume. The signer judges it again now: its approval was used (TK-APPROVAL-CONSUMED)."""
+        class Cut(BaseException):
+            """The process dying mid-tool."""
+        cut = []
+
+        @tool("pay")
+        async def hanging_pay(to: str, cents: int) -> str:
+            """Send money, then wait for a slow confirmation."""
+            PAID.append(cents)
+            await asyncio.sleep(5)
+            return f"paid {cents}"
+
+        @tool("pay")
+        def dying_pay(to: str, cents: int) -> str:
+            """Send money; its first run dies before it ends."""
+            PAID.append(cents)
+            if not cut:
+                cut.append(1)
+                raise Cut()
+            return f"paid {cents}"
+        calls = [{"name": "pay", "args": {"to": "bob", "cents": 120}, "id": "p0"},
+                 {"name": "echo", "args": {"text": "hi"}, "id": "e"}]
+        for how_cut, pay in (("asyncio.wait_for", hanging_pay), ("BaseException", dying_pay)):
+            for how, node in self.nodes(tools=[pay, TOOLS[0]]):
+                with self.subTest(cut=how_cut, wired=how):
+                    cut.clear()
+                    graph = tool_graph(node())
+                    go = runner(graph, "async" if how_cut == "asyncio.wait_for" else "sync")
+                    shown = go(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                    self.approve(shown["approval_id"])
+                    resume = Command(resume={"approval_id": shown["approval_id"]})
+                    if how_cut == "asyncio.wait_for":
+                        with self.assertRaises(asyncio.TimeoutError):
+                            asyncio.run(asyncio.wait_for(graph.ainvoke(resume, THREAD), 0.5))
+                    else:
+                        with self.assertRaises(Cut):
+                            graph.invoke(resume, THREAD)
+                    self.assertEqual(PAID, [120])
+                    out = go(resume, THREAD)
+                    self.assertEqual(PAID, [120])   # never again on the one approval
+                    self.assertTrue(read(out)["p0"].startswith("Tool call blocked by policy: TK-APPROVAL-CONSUMED"),
+                                    read(out)["p0"])
+                    self.assertEqual(read(out)["e"], "hi")
+
+    def test_a_signer_of_the_apps_own_without_call_state_still_approves(self):
+        """A SignerAPI of the app's own that predates call_state: a resumed node decides its calls again, as 1.6 did.
+        At e7158780b5 a single call's resume raised AttributeError, so no approved call of it ran."""
+        class Older:
+            def __init__(self, signer):
+                self.signer = signer
+
+            def __getattr__(self, name):
+                if name == "call_state":
+                    raise AttributeError(name)
+                return getattr(self.signer, name)
+        pay = {"name": "pay", "args": {"to": "a", "cents": 1}, "id": "p"}
+        for calls in ([pay], [pay, {"name": "echo", "args": {"text": "hi"}, "id": "e"}]):
+            for mode in ("sync", "async"):
+                with self.subTest(calls=len(calls), mode=mode):
+                    ac.RAN.clear()
+                    self.signer = FakeSigner(ac._rule)
+                    self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+                    node = tracekit_tool_node(TOOLS, Older(self.signer), self.run)
+                    out, pauses = self.drive(runner(tool_graph(node), mode), message(calls), approve={"p"})
+                    self.assertEqual((pauses, read(out)["p"], ac.RAN.count("pay")), (["tracekit"], "paid 1", 1))
+
+    def test_a_wrapper_outside_the_gate_cannot_change_a_decided_call(self):   # probe851_wrap.py
+        """instrument() puts the gate inside a ToolNode's own wrap_tool_call, which sees each call after the pass
+        decided it: a wrapper that changes an approved pay's amount (5 to 99999) has the call refused, not run."""
+        def outer(request, handler):
+            if request.tool_call["name"] == "pay":
+                request = request.override(tool_call={**request.tool_call,
+                                                      "args": {**request.tool_call["args"], "cents": 99999}})
+            return handler(request)
+        calls = [{"name": "pay", "args": {"to": "a", "cents": 5}, "id": "p"},
+                 {"name": "echo", "args": {"text": "hi"}, "id": "e"}]
+        for mode in ("sync", "async"):
+            for how, node in self.nodes(tools=[counted_pay, TOOLS[0]], wrap_tool_call=outer):
+                if how == "by hand":   # tracekit_tool_node takes no wrapper of the app's
+                    continue
+                with self.subTest(mode=mode):
+                    out, _ = self.drive(runner(tool_graph(node()), mode), message(calls), approve={"p"})
+                    self.assertEqual((PAID, read(out)), ([], {
+                        "p": "Tool call blocked by policy: the call's arguments changed after the decision", "e": "hi"}))
+
 
 class Agent:
     """A SignerService called in this process as identity `who`."""
@@ -696,14 +807,23 @@ class AnotherProcess(unittest.TestCase):
             return a
         self.pay, self.asking_pay, self.echo, self.asking = pay, asking_pay, echo, asking
 
+    def signer(self):
+        """(the signer, it as the agent's identity, a run of it)"""
+        s = svc.SignerService(ac.tmpdir(self), policy=PAY_ASKS, grace_s=0, fsck_every_s=0)
+        self.addCleanup(s.close)
+        agent = Agent(s, ME)
+        return s, agent, agent.register_run({"request_id": "reg", "agent": {"name": "p"}})
+
+    @staticmethod
+    def approve(s, aid):
+        s.call(OTHER, "approval_decide", {"request_id": aid, "decision": "approve", "approval_id": aid})
+
     def scenario(self, tools, calls, mode, switch):
         """(what the model read, each pause, the run's records once closed): each pay approved by another identity,
         each tool's question answered "yes", a new gate and graph before the nth resume when `switch(n)`"""
         ac.RAN.clear()
-        s = svc.SignerService(ac.tmpdir(self), policy=PAY_ASKS, grace_s=0, fsck_every_s=0)
-        self.addCleanup(s.close)
-        agent, saver = Agent(s, ME), InMemorySaver()
-        run = agent.register_run({"request_id": "reg", "agent": {"name": "p"}})
+        s, agent, run = self.signer()
+        saver = InMemorySaver()
         go = runner(tool_graph(tracekit_tool_node(tools, agent, run), saver), mode)
         out, pauses = go(message(calls), THREAD), []
         while "__interrupt__" in out and len(pauses) < 8:
@@ -714,8 +834,7 @@ class AnotherProcess(unittest.TestCase):
                 pauses.append("tracekit")
                 for a in v["tracekit"].get("approvals", [v["tracekit"]]):
                     if s.log.approvals[a["approval_id"]]["state"] == "requested":
-                        s.call(OTHER, "approval_decide", {"request_id": a["approval_id"], "decision": "approve",
-                                                          "approval_id": a["approval_id"]})
+                        self.approve(s, a["approval_id"])
                 out = go(Command(resume={"approval_id": v["tracekit"]["approval_id"]}), THREAD)
             else:
                 pauses.append(v)
@@ -785,6 +904,64 @@ class AnotherProcess(unittest.TestCase):
                 seen, _, events = self.scenario([self.pay, self.asking, self.echo], calls, mode, lambda n: True)
                 self.assertEqual(seen["q"], "yes")
                 self.check(events, calls, ["pay0", "confirm:yes", "echo"])
+
+    def test_a_paused_call_whose_saved_args_changed_does_not_go_on(self):
+        """[a pay that asks the person itself, echo]: approved and consumed, its tool paused; then the saved checkpoint's
+        amount is changed (2 to 99999) and another process resumes. The signer says these aren't the decided
+        arguments (call_state's same_args), so the call isn't taken up as paused: approval_consume refuses it."""
+        calls = [{"name": "pay", "args": {"to": "a", "cents": 2}, "id": "p2"},
+                 {"name": "echo", "args": {"text": "hi"}, "id": "e"}]
+        for mode in ("sync", "async"):
+            with self.subTest(mode=mode):
+                ac.RAN.clear()
+                (s, agent, run), saver = self.signer(), InMemorySaver()
+                go = runner(tool_graph(tracekit_tool_node([self.asking_pay, self.echo], agent, run), saver), mode)
+                shown = go(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                self.approve(s, shown["approval_id"])
+                out = go(Command(resume={"approval_id": shown["approval_id"]}), THREAD)
+                self.assertEqual(out["__interrupt__"][0].value, "pay 2?")   # consumed: its tool asks the person
+                t = saver.get_tuple(THREAD)
+                t.checkpoint["channel_values"]["messages"][-1].tool_calls[0]["args"]["cents"] = 99999
+                saver.put(t.parent_config, t.checkpoint, t.metadata,
+                          {"messages": t.checkpoint["channel_versions"]["messages"]})
+                go = runner(tool_graph(tracekit_tool_node([self.asking_pay, self.echo], agent, run), saver), mode)
+                out = go(Command(resume="yes"), THREAD)
+                self.assertNotIn("pay99999:yes", ac.RAN)
+                self.assertTrue(read(out)["p2"].startswith("Tool call blocked by policy: TK-APPROVAL-MISMATCH"),
+                                read(out)["p2"])
+
+    def test_a_call_whose_recorded_result_failed_runs_again_as_a_new_attempt(self):
+        """[pay-0 (asks), flaky]: approved; on the resume flaky raises and the run fails. Another process runs the node
+        again: pay-0 ran (the stand-in), and flaky, whose recorded result failed, runs again as attempt 1."""
+        failed = []
+
+        @tool
+        def flaky(x: int) -> str:
+            """Fails the first time."""
+            ac.RAN.append("flaky")
+            if not failed:
+                failed.append(1)
+                raise ConnectionError("transient")
+            return "ok"
+        calls = [{"name": "pay", "args": {"to": "a", "cents": 0}, "id": "p0"},
+                 {"name": "flaky", "args": {"x": 1}, "id": "f"}]
+        for mode in ("sync", "async"):
+            with self.subTest(mode=mode):
+                ac.RAN.clear()
+                failed.clear()
+                (s, agent, run), saver = self.signer(), InMemorySaver()
+                go = runner(tool_graph(tracekit_tool_node([self.pay, flaky], agent, run), saver), mode)
+                shown = go(message(calls), THREAD)["__interrupt__"][0].value["tracekit"]
+                self.approve(s, shown["approval_id"])
+                with self.assertRaises(ConnectionError):
+                    go(Command(resume={"approval_id": shown["approval_id"]}), THREAD)
+                go = runner(tool_graph(tracekit_tool_node([self.pay, flaky], agent, run), saver), mode)
+                out = go(None, THREAD)
+                self.assertEqual((read(out)["f"], sorted(ac.RAN)), ("ok", ["flaky", "flaky", "pay0"]))
+                self.assertTrue(read(out)["p0"].startswith("ran; its result is recorded at run_seq "), read(out)["p0"])
+                self.assertEqual(sorted((e.get("attempt", 0), e["data"]["ok"]) for e in s.log.storage.iter_run(
+                    "default", run["run_id"]) for e in [e["event"]] if e["type"] == "tool.result"
+                    and e["tool_call_id"] == "f"), [(0, False), (1, True)])
 
 
 class Jittery:

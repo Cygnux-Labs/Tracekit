@@ -116,6 +116,21 @@ def ran(a):
     return tuple(a.get("used_by") or (a["tool_call_id"], a["attempt"], a["decision_id"]))
 
 
+def outcome(calls, e):
+    """What record `e` says of its call's latest attempt in `calls` (a run's): `ended`, [run_seq, ok] of its
+    tool.result; `refused`, a refused consume's rule ids, which a consume that went through clears. The writer keeps
+    them as it writes (SignerService._complete, _approval_consume), for call_state."""
+    latest = calls.get(e.get("tool_call_id"))
+    if not latest or latest["attempt"] != e.get("attempt", 0):
+        return
+    if e["type"] == "tool.result" and "decision_id" in e["data"]:
+        latest["ended"] = [e["run_seq"], e["data"].get("ok") is True]
+    elif e["type"] in ("approval.refused", "approval.binding_mismatch"):
+        latest["refused"] = e["data"].get("rule_ids") or ["TK-APPROVAL-MISMATCH"]
+    elif e["type"] == "approval.consumed":
+        latest["refused"] = None
+
+
 def person_only_keys(a):
     """The keys a call whose agent answer said no is a person's to answer by, in its run, from then on: the same tool
     with the same arguments (`args_key`), and the same tool call id in any attempt."""
@@ -530,6 +545,9 @@ class RecordLog:
                                  for x in s.iter_run(r["tenant"], r["run_id"]) if x["event"]["type"] == "policy.decision"}
                         for c in calls:
                             c["tool"] = tools.get(c["decision_id"])
+                    if any("ended" not in c for c in r["calls"].values()):   # before call_state (RPC 24)
+                        for x in s.iter_run(r["tenant"], r["run_id"]):
+                            outcome(r["calls"], x["event"])
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             agent, contain = st.get("agent", agent), st.get("contain", contain)
@@ -626,18 +644,11 @@ class RecordLog:
                         [d["decision_id"], out["hash"], d.get("ok") is True and out.get("size") != NO_RESULT,
                          out.get("redacted") is True, None]]
                 run["decisions"].pop(e["data"]["decision_id"], None)
-                latest = run["calls"].get(e.get("tool_call_id"))
-                if latest and latest["attempt"] == e.get("attempt", 0):   # SignerService._complete
-                    latest["ended"] = [e["run_seq"], e["data"].get("ok") is True]
                 used = (e["tool_call_id"], e.get("attempt", 0))
                 a = approvals.get(index.get((e["tenant"], e["run_id"], *used)))
                 if a and a["state"] == "consumed" and ran(a)[:2] == used:   # it ran under it (Service._complete)
                     # lean: by call and attempt; the writer also checks the arguments against the approval's
                     run["decisions"].pop(ran(a)[2], None)
-            elif e["type"] in ("approval.refused", "approval.binding_mismatch"):   # SignerService._approval_consume
-                latest = run["calls"].get(e.get("tool_call_id"))
-                if latest and latest["attempt"] == e.get("attempt", 0):
-                    latest["refused"] = e["data"].get("rule_ids") or ["TK-APPROVAL-MISMATCH"]
             elif e["type"] == "approval.request":
                 a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"], e["ts"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
@@ -652,11 +663,10 @@ class RecordLog:
                 if e["type"] == "approval.consumed" and used != [a["tool_call_id"], a["attempt"]]:   # a later call's
                     a["used_by"] = [*used, (run["calls"].get(used[0]) or {}).get("decision_id")]     # (ran)
                     index[(e["tenant"], e["run_id"], *used)] = e["data"]["approval_id"]
-                latest = run["calls"].get(used[0])
-                if e["type"] == "approval.consumed" and latest and latest["attempt"] == used[1]:
-                    latest["refused"] = None   # a refused consume before it (SignerService._approval_consume)
             elif e["type"] == "ext" and e["data"].get("name") == "pcm.grant" and e["data"].get("approval_id"):
                 approvals[e["data"]["approval_id"]]["granted"] = True   # Service._pcm_grant: one grant per approval
+            if "calls" in run:   # a final run's state keeps none
+                outcome(run["calls"], e)
             if not run["final"]:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
                 contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)

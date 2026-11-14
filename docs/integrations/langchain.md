@@ -101,13 +101,17 @@ rejected or still unanswered is refused (`TK-APPROVAL-REQUESTED` names the appro
 model's retry of the call pauses on it once more and runs on the resume). When a tool of the message then pauses the
 run itself, the calls that already ended aren't decided, asked, run or recorded again: the model reads what each
 gave. A `RetryPolicy` retry runs again only the call that raised, as a new attempt. A call that raises waits for its
-siblings to end before the node passes the error or pause on, so none is cut off mid-run.
+siblings to end before the node passes the error or pause on, so none is cut off mid-run. A call cut off anyway (its
+`ainvoke` cancelled, a `KeyboardInterrupt`) never runs again on the approval it used: the next pass has the signer
+judge it, which refuses a used approval (`TK-APPROVAL-CONSUMED`). Calls of one message that share an id are refused
+and not decided: give each call an id of its own.
 
 Resumed in another process (a durable checkpointer, a new gate), the node reads from the signer (`call_state`) what
 each call did: whether it was decided, consumed, refused or ended. A call that ended comes back to the model as
 `ran; its result is recorded at run_seq N`, since the signer keeps a commitment to the result, not the result; one
-whose tool failed runs again as a new attempt ([limits](../limits.md#approvals)). Single calls under `create_agent`
-keep their own task and the per-call gate.
+whose tool failed runs again as a new attempt ([limits](../limits.md#approvals)). An identity with an explicit
+`authorize` list needs `call_state` granted beside `decide` and `approval_consume`; without it the node decides each
+call again. Single calls under `create_agent` keep their own task and the per-call gate.
 
 Exceptions raised by the tool are recorded and re-raised unchanged.
 

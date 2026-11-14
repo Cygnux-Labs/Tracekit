@@ -334,6 +334,34 @@ class SignerContract(Harness):
         self.refused("run_token_invalid", "call_state", {"run_id": self.run_id, "run_token": "x" * 40,
                                                          "tool_call_id": "tc-1"})
 
+    def test_call_state_after_a_refused_consume_then_one_that_goes_through(self):
+        """The consume that goes through is the attempt's last word: an earlier refusal of it no longer stands."""
+        self.register()
+        pay = {"tool_call_id": "tc-1", "tool": "pay", "args_source": "parsed", "args": {"amount": 5}}
+        self.decide(tool="pay", args={"amount": 5})
+        aid = self.call("approval_request", self.run_req(tool_call_id="tc-1"))["approval_id"]
+        self.assertFalse(self.call("approval_consume", self.run_req(**pay))["ok"])
+        self.approve(aid)
+        self.assertTrue(self.call("approval_consume", self.run_req(**pay))["ok"])
+        s = self.state()
+        self.assertEqual((s["approval"], s["consumed"], "refused" in s), ("consumed", True, False))
+
+    def test_call_state_of_a_call_whose_approval_its_retry_used(self):
+        """Approve, then retry: a refused call's approval, granted later, is consumed by the agent's retry of the call
+        (another call id). call_state says the retry consumed it, not the call it was asked for."""
+        self.register()
+        pay = {"tool": "pay", "args_source": "parsed", "args": {"amount": 5}}
+        self.decide(tool="pay", args={"amount": 5}, tcid="tc-2")
+        aid = self.call("approval_request", self.run_req(tool_call_id="tc-2"))["approval_id"]
+        self.assertFalse(self.call("approval_consume", self.run_req(tool_call_id="tc-2", **pay))["ok"])
+        self.approve(aid)
+        self.decide(tool="pay", args={"amount": 5}, tcid="tc-3")
+        self.assertEqual(self.call("approval_request", self.run_req(tool_call_id="tc-3"))["approval_id"], aid)
+        self.assertTrue(self.call("approval_consume", self.run_req(tool_call_id="tc-3", approval_id_hint=aid,
+                                                                   **pay))["ok"])
+        self.assertEqual([(self.state(t)["approval"], self.state(t)["consumed"]) for t in ("tc-2", "tc-3")],
+                         [("consumed", False), ("consumed", True)])
+
     def test_no_approval_after_close(self):
         aid = self.ask()
         self.call("close_run", self.run_req())
