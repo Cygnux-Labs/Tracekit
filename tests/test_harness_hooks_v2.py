@@ -172,6 +172,16 @@ class Mapping(HarnessCase):
                 assert "Blocked by Tracekit: Copilot's write_bash" in error
                 assert self.sent == []
 
+    def test_cursor_write_shell_stdin_is_denied_before_the_signer(self):
+        # Cursor's WriteShellStdin types into a running shell, but its payload holds only the shell's id and the text's
+        # length (3.29.15): it passed as an unknown tool, flagged, so text the policy denies as a command ran
+        code, out, err = self.hook("cursor", {"conversation_id": "cu-stdin", "hook_event_name": "preToolUse",
+                                              "tool_name": "WriteShellStdin", "tool_use_id": "c-stdin",
+                                              "tool_input": {"shell_id": "1", "length": 12}})
+        self.assertEqual((code, json.loads(out)["permission"]), (2, "deny"))
+        self.assertIn("Blocked by Tracekit: Cursor's WriteShellStdin", err)
+        self.assertEqual(self.sent, [])
+
     def set_signer_policy(self, policy):
         decisions = []
 

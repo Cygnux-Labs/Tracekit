@@ -30,7 +30,7 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t (its hook sends an
             edit as a Write of the file); its transcripts' StrReplace, ApplyPatch, EditNotebook, search_replace, write,
             delete_file, edit_notebook -> Edit, Edit (all patch file headers in paths), NotebookEdit, Edit, Write, Edit,
-            NotebookEdit
+            NotebookEdit; WriteShellStdin, whose payload lacks the text it types, is denied in the hook
     Gemini  run_shell_command, read_file, read_many_files, write_file, replace, glob, search_file_content,
             list_directory, web_fetch, google_web_search
             -> Bash, Read, Read, Write, Edit, Glob, Grep, LS, WebFetch, WebSearch (every path a file tool reads, under
@@ -1348,6 +1348,11 @@ def _blocked(harness, p, raw=""):
             reason = _typed(f"Copilot's {cname}", v)
             if reason:
                 return reason
+    elif harness == "cursor" and name == "WriteShellStdin":   # typed into a running shell, as Devin's write_to_process,
+        # but its preToolUse payload holds only the shell's id and the text's length (Cursor 3.29.15)
+        return ("Blocked by Tracekit: Cursor's WriteShellStdin types text into a running shell, and its hook sends the "
+                "text's length but not the text, so Tracekit can't decide what it runs; run the command in a Shell call "
+                "of its own instead.")
     return _blocked_tool(harness, name, raw)
 
 
