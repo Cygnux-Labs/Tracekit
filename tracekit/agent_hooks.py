@@ -1,6 +1,6 @@
 """Hooks for Codex CLI, Cursor, Gemini CLI, OpenCode, Kilo Code, goose, Qwen Code, Factory Droid, Antigravity CLI, Crush,
-Devin (CLI and Desktop), Cline (CLI and VS Code extension), GitHub Copilot CLI and CodeBuddy Code, on the Claude
-Code pipeline.
+Devin (CLI and Desktop), Cline (CLI and VS Code extension), GitHub Copilot CLI, CodeBuddy Code and Open Interpreter,
+on the Claude Code pipeline.
 
     tracekit init --dev --agent codex        # ~/.codex/hooks.json
     tracekit init --dev --agent cursor       # ~/.cursor/hooks.json
@@ -16,6 +16,7 @@ Code pipeline.
     tracekit init --dev --agent cline        # ~/Documents/Cline/Hooks/<event> (project: .clinerules/hooks/<event>)
     tracekit init --dev --agent copilot      # ~/.copilot/hooks/tracekit.json (project: .github/hooks/tracekit.json)
     tracekit init --dev --agent codebuddy    # ~/.codebuddy/settings.json (project: .codebuddy/settings.json)
+    tracekit init --dev --agent interpreter  # ~/.openinterpreter/hooks.json (project: .openinterpreter/hooks.json)
     (add --project to write the project-level file instead)
 
 Each harness's hook payload is translated into the Claude Code hook shape, then handled by tracekit.hook: the same
@@ -27,6 +28,10 @@ Tool names are mapped onto Tracekit's policy vocabulary so the default rules app
     harness            -> Tracekit
     Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars), Edit (paths: every file the
                                                           patch adds, updates, deletes or moves to), mcp__s__t
+    Open Interpreter  Codex's (a Codex fork, 0.0.61 recorded): Bash (its exec_command), apply_patch (the patch in
+            `command`), mcp__s__t, decided as Codex's are; view_image, and spawn_agent or send_input with file items
+            (local_image, local_audio, skill), as a Read of each file; get_goal and other tools, Claude Code's under
+            harness = "claude-code" among them, by name. A call from Code Mode's exec has an exec-<uuid> call id
     Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Edit, mcp__cursor__t (its hook sends an
             edit as a Write of the file); its transcripts' StrReplace, ApplyPatch, EditNotebook, search_replace, write,
             delete_file, edit_notebook -> Edit, Edit (all patch file headers in paths), NotebookEdit, Edit, Write, Edit,
@@ -117,7 +122,7 @@ from .policy2.classes import PATH_KEYS, first
 AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli", "opencode": "opencode", "kilo": "kilo",
                "goose": "goose", "qwen": "qwen-code", "droid": "droid", "antigravity": "antigravity", "crush": "crush",
                "devin": "devin", "cline": "cline", "gptme": "gptme", "openhands": "openhands",
-               "copilot": "copilot", "codebuddy": "codebuddy-code"}
+               "copilot": "copilot", "codebuddy": "codebuddy-code", "interpreter": "open-interpreter"}
 HARNESSES = tuple(AGENT_NAMES)
 V2_MODULE = "tracekit.integrations.harness_hooks"
 CURSOR_SAID = ("afterAgentThought", "afterAgentResponse")   # Cursor's events with what its model said (v2 records them)
@@ -323,6 +328,11 @@ CLINE_HEREDOC = re.compile(r"""(?<![<])<<-?\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9
 # CodeBuddy Code's tools are Claude Code's by name and arguments (its bundled code, @tencent-ai/codebuddy-code
 # 2.183.0); of its own, these read a file: each is a Read of the path it reads, never of a decoy beside it
 CODEBUDDY_READS = {"NotebookRead": "notebook_path", "ViewImage": "image_path"}
+# Open Interpreter (0.0.61): spawn_agent (the hook's name for the model's multi_agent_v1_spawn_agent, recorded) and
+# send_input take `items`; an item of these types names a file (`path`) read into the agent's context. A mention's path
+# is an app:// or plugin:// target, not a file
+INTERPRETER_ITEM_TOOLS = ("spawn_agent", "send_input")
+INTERPRETER_FILE_ITEMS = ("local_image", "local_audio", "skill")
 
 
 def _each(v, *keys):
@@ -572,7 +582,16 @@ def tool(harness, name, ti):
             ti["paths"] = files
             ti["file_path"] = files[0] if files else None
         return (DROID_TOOLS if harness == "droid" else DEVIN_TOOLS).get(name, name), ti
-    if harness == "codex":
+    if harness == "interpreter":   # the files a call reads into the model's context, each decided as a Read of its path
+        if name == "view_image":
+            ti.pop("paths", None)
+            ti["file_path"] = ti.get("path")
+            return "Read", ti
+        files = _interpreter_files(ti) if name in INTERPRETER_ITEM_TOOLS else []
+        if files:
+            ti["file_path"], ti["paths"] = files[0], files
+            return "Read", ti
+    if harness in ("codex", "interpreter"):
         if name == "apply_patch":
             patch = ti.get("patch") or ti.get("input") or ti.get("command") or ""
             if isinstance(patch, list):
@@ -876,7 +895,8 @@ def normalise(harness, p):
             pass   # an undecided tool may have run without a confirmation preview
         return dict(out, hook_event_name=ev, session_id=p.get("session_id"), tool_use_id=p.get("tool_use_id"),
                     tool_name=name, tool_input=args, tool_response=p.get("tool_response"))
-    if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme", "openhands", "codebuddy"):   # Claude Code's
+    if harness in ("codex", "qwen", "droid", "crush", "devin", "gptme", "openhands", "codebuddy",
+                   "interpreter"):   # Claude Code's
         # payloads; Qwen Code, Crush and CodeBuddy Code add PostToolUseFailure (Crush's and CodeBuddy's payloads are
         # Claude Code's own: same field and event names)
         out["session_id"] = p.get("session_id")
@@ -1238,6 +1258,14 @@ def _repeated(args):
     return None
 
 
+def _interpreter_files(ti):
+    """The `path` of each item in an Open Interpreter call's `items` that names a file, as sent (None for one sent
+    without a string path, which _blocked denies)."""
+    items = ti.get("items") if isinstance(ti.get("items"), list) else []
+    return [i.get("path") if isinstance(i.get("path"), str) and i.get("path") else None
+            for i in items if isinstance(i, dict) and i.get("type") in INTERPRETER_FILE_ITEMS]
+
+
 def _blocked(harness, p, raw=""):
     """The reason a pre-tool call is denied in the hook itself, before it is mapped, else None. raw: the payload as
     received."""
@@ -1274,6 +1302,10 @@ def _blocked(harness, p, raw=""):
             reason = _typed(f"Devin's {name}", v, name == "write_to_process")
             if reason:
                 return reason
+    elif harness == "interpreter" and (name == "view_image" and not tool(harness, name, p.get("tool_input"))[1].get(
+            "file_path") or name in INTERPRETER_ITEM_TOOLS and None in _interpreter_files(_input(p.get("tool_input")))):
+        return (f"Blocked by Tracekit: Open Interpreter's {name} call names a file without a path Tracekit can read, "
+                "so it can't decide which file the model is given.")
     elif harness == "copilot":
         cname = str(p.get("toolName") or "")
         if len(cname) >= COPILOT_NAME_MAX:
@@ -1384,7 +1416,7 @@ def _exit(harness, code, is_pre):
         return 0
     if code and not is_pre:
         return 1
-    return 0 if harness == "codex" and is_pre and os.name == "nt" else code
+    return 0 if harness in ("codex", "interpreter") and is_pre and os.name == "nt" else code
 
 
 def _reply(harness, stdout, allowed, msg, is_pre):
@@ -1418,7 +1450,7 @@ def _reply(harness, stdout, allowed, msg, is_pre):
     elif harness == "copilot" and not allowed and is_pre:
         # Copilot denies the call at any exit but 0, and shows the reason only from this JSON (1.0.107)
         stdout.write(json.dumps({"permissionDecision": "deny", "permissionDecisionReason": msg or "Blocked by Tracekit"}))
-    elif harness in ("codex", "droid", "codebuddy") and not allowed and is_pre:
+    elif harness in ("codex", "interpreter", "droid", "codebuddy") and not allowed and is_pre:
         stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                                         "permissionDecisionReason": msg or "Blocked by tracekit"}}))
     stdout.flush()
@@ -1436,13 +1468,17 @@ def config_path(harness, project=None, home=None):
         return os.path.join(home or os.path.expanduser("~"), ".config", "gptme", "config.toml")
     codex = os.path.realpath(os.environ["CODEX_HOME"]) if not (project or home) and os.environ.get("CODEX_HOME") \
         else os.path.join(base, ".codex")
+    # Open Interpreter, a Codex fork, reads $INTERPRETER_HOME in place of ~/.openinterpreter, and never CODEX_HOME
+    oi = os.path.realpath(os.environ["INTERPRETER_HOME"]) \
+        if not (project or home) and os.environ.get("INTERPRETER_HOME") else os.path.join(base, ".openinterpreter")
     xdg = (None if home else os.environ.get("XDG_CONFIG_HOME")) or os.path.join(base, ".config")
     # CodeBuddy Code reads its user settings from $CODEBUDDY_CONFIG_DIR, and a project's from
     # $CODEBUDDY_PROJECT_CONFIG_DIR (absolute, or in the project), when each is set to more than blanks
     moved = os.environ.get("CODEBUDDY_PROJECT_CONFIG_DIR" if project else "CODEBUDDY_CONFIG_DIR", "")
     codebuddy = os.path.join(project, moved.strip()) if project and moved.strip() else moved \
         if not home and moved.strip() else os.path.join(base, ".codebuddy")
-    return {"codex": os.path.join(codex, "hooks.json"), "cursor": os.path.join(base, ".cursor", "hooks.json"),
+    return {"codex": os.path.join(codex, "hooks.json"), "interpreter": os.path.join(oi, "hooks.json"),
+            "cursor": os.path.join(base, ".cursor", "hooks.json"),
             "codebuddy": os.path.join(codebuddy, "settings.json"),
             "gemini": os.path.join(base, ".gemini", "settings.json"),
             "goose": os.path.join(base, ".agents", "plugins", "tracekit", "hooks", "hooks.json"),
@@ -1572,26 +1608,34 @@ def reasoning_line(path, value, changed):
             "the model's reasoning; set it to \"auto\" to check it")
 
 
-def codex_trust_store(home=None):
+# what each harness that keeps Codex's hook trust is called, its command and the variable that moves its home
+TRUSTING = {"codex": ("Codex", "codex", "CODEX_HOME"),
+            "interpreter": ("Open Interpreter", "interpreter", "INTERPRETER_HOME")}
+
+
+def codex_trust_store(home=None, harness="codex"):
     """The config.toml where Codex records which hooks a person trusted (in /hooks): this user's Codex home's
-    ($CODEX_HOME, else ~/.codex), or that of the user whose home is `home`."""
-    return os.path.join(os.path.dirname(config_path("codex", home=home)), "config.toml")
+    ($CODEX_HOME, else ~/.codex), or that of the user whose home is `home`. Open Interpreter, a Codex fork, records it
+    the same way in its own home ($INTERPRETER_HOME, else ~/.openinterpreter)."""
+    return os.path.join(os.path.dirname(config_path(harness, home=home)), "config.toml")
 
 
-def codex_trust_line(user=None, home=None):
-    """What init says last for Codex: it runs a hook only once a person trusted it as it is now, and skips it until
-    then; interactive codex asks at startup, `codex exec` says nothing (learn.chatgpt.com/docs/hooks; codex-rs tui
-    startup_hooks_review.rs); doctor's D-CODEX-HOOK-TRUST checks. user, home: system mode's agent user."""
+def codex_trust_line(user=None, home=None, harness="codex"):
+    """What init says last for Codex (or Open Interpreter): it runs a hook only once a person trusted it as it is now,
+    and skips it until then; the interactive CLI asks at startup, `exec` says nothing (learn.chatgpt.com/docs/hooks;
+    codex-rs tui startup_hooks_review.rs); doctor's D-CODEX-HOOK-TRUST (D-INTERPRETER-HOOK-TRUST) checks. user, home:
+    system mode's agent user."""
+    name, cmd, var = TRUSTING[harness]
     run = f"As {user}, run" if user else "Run"
-    if not user and os.environ.get("CODEX_HOME"):   # the Codex that reads it, not one that reads ~/.codex
-        run += f" codex with CODEX_HOME={os.environ['CODEX_HOME']}"
+    if not user and os.environ.get(var):   # the one that reads it, not one that reads its default home
+        run += f" {cmd} with {var}={os.environ[var]}"
     else:
-        run += " codex"
-    return ("next, trust these hooks in Codex: it runs none of them until a person has, so until then no Codex call is "
-            f"recorded or decided. {run} in a terminal, type /hooks and trust Tracekit's hooks (Codex records that in "
-            f"{codex_trust_store(home)}). Interactive codex also asks at startup whenever they are new or changed (as "
-            "after tracekit init); `codex exec` never asks and skips them without a word. `tracekit doctor` says "
-            "whether they are trusted")
+        run += f" {cmd}"
+    return (f"next, trust these hooks in {name}: it runs none of them until a person has, so until then no {name} call "
+            f"is recorded or decided. {run} in a terminal, type /hooks and trust Tracekit's hooks ({name} records that "
+            f"in {codex_trust_store(home, harness)}). Interactive {cmd} also asks at startup whenever they are new or "
+            f"changed (as after tracekit init); `{cmd} exec` never asks and skips them without a word. `tracekit "
+            "doctor` says whether they are trusted")
 
 
 def _version(cmd):
@@ -2187,7 +2231,8 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     else:
         events = (DROID_EVENTS if harness == "droid" else AGY_EVENTS if harness == "antigravity" else
                   DEVIN_EVENTS if harness == "devin" else OPENHANDS_EVENTS if harness == "openhands" else
-                  ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"] if harness == "codex"
+                  ["PreToolUse", "PostToolUse", "UserPromptSubmit", "SessionStart", "SessionEnd"]
+                  if harness in ("codex", "interpreter")
                   else ["PreToolUse", "PostToolUse", "PostToolUseFailure", "UserPromptSubmit", "SessionStart", "SessionEnd"]
                   if harness in ("qwen", "codebuddy") else
                   ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
@@ -2203,7 +2248,9 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                     # of the command for cmd.exe leaves a quoted program path it can't run
                     h["shell"] = "powershell"
             else:
-                h["timeout"] = 600 if ev == "PreToolUse" else 30
+                # Open Interpreter holds SessionEnd to 3 s, and says so at each start for a longer one
+                h["timeout"] = 600 if ev == "PreToolUse" else (
+                    3 if harness == "interpreter" and ev == "SessionEnd" else 30)
             # Devin's matcher is a regex, which "*" isn't: a group with none matches every tool
             return {"matcher": "*", "hooks": [h]} if ev in tools and harness != "devin" else {"hooks": [h]}
         if fields:   # a file in OpenHands' own field names keeps them: Tracekit's hooks go under pre_tool_use, ...
