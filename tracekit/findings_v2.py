@@ -951,10 +951,13 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
     agent's: only TK-X212 reads them. EvidenceAlert (from `content`) when the vault's content does not open its
     record."""
     run, deadline = _Run(records), clock() + budget_s
-    if (findings_box.label(run.records) or (None, True))[1] is None:   # a box run
+    box_run = (findings_box.label(run.records) or (None, True))[1] is None
+    if box_run:
         run.calls, run.ran = {}, {}
     out = {"run_id": run.run_id, "agent": run.agent, "findings": [],
            "shown": {"details": [], "constraints": [], "prompts": [], "calls": {}}}
+    if box_run:
+        out["shown"]["box_run"] = True
     needed = run.needed()
     got = iter(content(needed) if content else ())
     nxt = next(got, None)
@@ -1063,6 +1066,8 @@ def render(out):
             plain, fix = REASONS[why]
             unit = "prompt line" if r == "TK-X208" else findings_box.unit(why) if r in findings_box.CHECKS else \
                 findings_effects.unit(r, why)
+            if r == "TK-X204" and out["shown"].get("box_run"):
+                unit = "patch file"
             lines += [f"  {r} for {n} {unit}{'s' * (n != 1)}: {plain}.", f"    To make it checkable: {fix}"]
         lines.append("")
     if out["shown"]["constraints"]:
