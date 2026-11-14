@@ -16,7 +16,7 @@ your customers and auditors can verify the record themselves, offline.**
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>901 of 901</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 944 (E17)</sub></td>
+<td align="center" width="25%"><h3>911 of 911</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 952 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -344,8 +344,8 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up, and
 | **Cross-check** (E10): a skipped hook, a made-up call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **Three verifiers, one verdict** (E22): 63 bundles, 33 of them forged, each checked by the Python CLI, the TypeScript CLI and the browser page | **All three agree on all 63**; no forgery verifies. A 50,000-call run verifies in the browser in 14 s |
 | **Overhead** (E9): signer round trip over a Unix socket | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
-| **Policy packs, known cases** (E17): 901 harmful, 944 benign calls | 901 stopped, 1 false alarm |
-| **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (279 now, with rules added after reading the pool); 18 benign held |
+| **Policy packs, known cases** (E17): 911 harmful, 952 benign calls | 911 stopped, 1 false alarm |
+| **Policy packs, written blind to the rules** (E21): 420 harmful, 432 benign | 211 of 420 stopped or held on the one blind run (281 now, with rules added after reading the pool); 18 benign held |
 
 That last row is on purpose. **Policy rules are tripwires, not a wall.** They match text, and a determined agent can
 reword a command. What makes the record trustworthy is the signer's isolation and the witness, and those are what the

