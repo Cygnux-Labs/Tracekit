@@ -11,6 +11,9 @@ alone.
 
 Payments are the first kind of call a grant covers (the intent `payment.send`). A grant covers one run.
 
+For an agent you run yourself, [spending limits and receipts](quickstarts/agent-spending.md) runs the same steps with
+the OpenAI Agents SDK, with no API key, and keeps the exported bundle as the user's receipt.
+
 ## A worked example
 
 A Claude Code agent on a laptop pays through an MCP tool, `mcp__payments__send_money`. The dev signer holds money-moving

@@ -830,6 +830,9 @@ What Tracekit guarantees and doesn't, per deployment, on one page: [guarantees](
 
 ## Intent grants (experimental)
 
+What a run's bundle shows about its payments, as a receipt: [spending limits and
+receipts](quickstarts/agent-spending.md#what-the-receipt-shows-and-its-limits).
+
 | Limit | Why it is so | What to do | Details |
 |---|---|---|---|
 | A grant covers one run: a new run of the same agent asks again. | A grant's totals are counted in its run's records, so that run's bundle is enough to recount them. | Grant each run (`tracekit grant add --run RUN`). A grant over several runs is a later step. | [intent grants](intent-grants.md#the-grant) |
