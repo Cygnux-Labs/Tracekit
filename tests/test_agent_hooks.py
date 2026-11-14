@@ -1651,10 +1651,24 @@ class JcodeTools(unittest.TestCase):
                 bash = agent_hooks.tool("jcode", "bash", {"command": shlex.join([command, *args])})
                 self.assertEqual(mapped, bash)
                 self.assertEqual(policy.decide(*mapped)["verdict"], verdict)
+        # an env value that needs quoting stays an assignment, so the policy still reads the program it starts
+        for command, args in (("git", ["push", "--force", "origin", "main"]),
+                              ("sh", ["-c", "git push --force origin main"])):
+            with self.subTest(command=command, env="spaced"):
+                mapped = agent_hooks.tool("jcode", "mcp", {"action": "connect", "server": "x", "command": command,
+                                                           "args": args, "env": {"X": "a b", "Y": "q'r"}})
+                self.assertEqual(policy.decide(*mapped)["verdict"], "deny")
+        # a key that isn't a shell name can't be written as an assignment: the hook blocks the connect
+        for key in ("A-B", "1X", "A B", ""):
+            with self.subTest(key=key):
+                self.assertIn("isn't a shell name", agent_hooks._blocked("jcode", {
+                    "tool_name": "mcp", "tool_input": {"action": "connect", "command": "git", "env": {key: "v"}}}))
+        self.assertIsNone(agent_hooks._blocked("jcode", {
+            "tool_name": "mcp", "tool_input": {"action": "connect", "command": "npx", "env": {"_A1": "v"}}}))
         self.assertEqual(agent_hooks.tool("jcode", "mcp", {"action": "connect", "command": "npx",
                                                           "args": ["-y", "some-mcp-server"],
                                                           "env": {"A": "two words", "B": "x'y"}}),
-                         ("Bash", {"command": "'A=two words' 'B=x'\"'\"'y' npx -y some-mcp-server"}))
+                         ("Bash", {"command": "A='two words' B='x'\"'\"'y' npx -y some-mcp-server"}))
         self.assertEqual(agent_hooks.tool("jcode", "mcp", {"action": "connect", "url": "https://example.com/mcp"}),
                          ("WebFetch", {"url": "https://example.com/mcp"}))
         self.assertEqual(agent_hooks.tool("jcode", "mcp", {"action": "connect", "server": "configured"})[0], "mcp")
