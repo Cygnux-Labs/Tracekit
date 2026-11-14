@@ -23,6 +23,7 @@ from .agent_hooks import AGENT_NAMES, UnreadableCall, _blocked, tool as hook_too
 from .core import scrub
 from .graph import _open_regular
 from .hook import transcript_entries
+from .integrations.harness_hooks import _codex_tool
 from .report import DECISIONS, _counts, _days, _wait, call_text, share_rules, when
 from .policy2.compile import ENGINE_REASONS
 from .signer.service import DEFAULT_POLICY, _dotenv, _escaped, _shown, evaluate, load_policy
@@ -34,6 +35,13 @@ def default_root():
     another config dir), else in ~/.claude, as install.user_settings finds its settings."""
     return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"),
                         "projects")
+
+
+def codex_root():
+    """Codex sessions in $CODEX_HOME/sessions when set, else ~/.codex/sessions."""
+    home = os.environ.get("CODEX_HOME")
+    return os.path.join(os.path.realpath(home) if home else os.path.join(os.path.expanduser("~"), ".codex"),
+                        "sessions")
 
 
 def _session_from_path(path: str) -> str:
@@ -153,6 +161,60 @@ def _claude_code(root: str, since_ts: float, unreadable: list):
                         seen.add(key)
                     yield at, session, tool, args
         except OSError as e:   # a read that fails (a line nested past what json.loads takes is malformed)
+            unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
+        finally:
+            f.close()
+
+
+def _codex(root: str, since_ts: float, unreadable: list):
+    """Read Codex rollouts as (time, session, tool, args), or None for an unreadable line.
+
+    A response_item holds the Responses API item returned by the model. _codex_tool builds the PreToolUse payload
+    Codex would give its hook; audit decides that form.
+    """
+    seen: set[bytes] = set()
+    for path, session in _iter_transcripts(root, unreadable):
+        if not os.path.basename(path).startswith("rollout-"):
+            continue
+        f, err = _safe_open(path)
+        if err:
+            unreadable.append({"path": path, "error": err})
+            continue
+        try:
+            for _n, entry in transcript_entries(f, final=True):
+                if entry is None:
+                    yield None
+                    continue
+                if entry.get("type") != "response_item":
+                    continue
+                at = _entry_time(entry)
+                if at is not None and at.timestamp() < since_ts:
+                    continue
+                item = entry.get("payload")
+                if not isinstance(item, dict):
+                    yield None
+                    continue
+                try:
+                    mapped = _codex_tool(item)
+                except RecursionError:
+                    yield None
+                    continue
+                if mapped is None:  # no PreToolUse (write_stdin, text, tool output, or missing call id)
+                    continue
+                tool, args = mapped
+                call_id = item.get("call_id")
+                try:  # copies dedup by id + mapped content; reused ids with other args still count
+                    key = (hashlib.sha256(json.dumps([call_id, tool, args], sort_keys=True,
+                                                     default=str).encode()).digest()
+                           if isinstance(call_id, str) and call_id else None)
+                except RecursionError:
+                    key = None
+                if key is not None and key in seen:
+                    continue
+                if key is not None:
+                    seen.add(key)
+                yield at, session, tool, args
+        except OSError as e:
             unreadable.append({"path": path, "error": f"cannot read: {type(e).__name__}: {e}"})
         finally:
             f.close()
@@ -387,6 +449,7 @@ def _cline(root: str, since_ts: float, unreadable: list):
 # (time, session, tool, args), None for a line it counts as malformed
 READERS = {"claude": (default_root, "$CLAUDE_CONFIG_DIR/projects when it is set, else ~/.claude/projects",
                       _claude_code),
+           "codex": (codex_root, "$CODEX_HOME/sessions when it is set, else ~/.codex/sessions", _codex),
            "cursor": (cursor_root, "~/.cursor/projects", _cursor),
            "cline": (cline_roots, "$CLINE_SESSION_DATA_DIR, else $CLINE_DATA_DIR/sessions, else "
                      "~/.cline/data/sessions ($CLINE_DIR moves ~/.cline); and before 4.0, saoudrizwan.claude-dev/tasks "
