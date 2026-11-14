@@ -174,9 +174,10 @@ CURSOR_EDITS = {"StrReplace": ("Edit", "path"), "search_replace": ("Edit", "file
                 "delete_file": ("Edit", "target_file"), "EditNotebook": ("NotebookEdit", "target_notebook"),
                 "edit_notebook": ("NotebookEdit", "target_notebook")}
 CURSOR_PATH_ARGS = ("file_path", "path", "target_file", "filePath", "target_notebook")
+# OpenCode 2.x names bash `shell` and task `subagent`, and its read, write and edit read `path` (1.x: `filePath`)
 OPENCODE_TOOLS = {"bash": "Bash", "read": "Read", "write": "Write", "edit": "Edit", "apply_patch": "Edit",
                   "patch": "Edit", "glob": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch",
-                  "task": "Task", "todowrite": "TodoWrite"}
+                  "task": "Task", "todowrite": "TodoWrite", "shell": "Bash", "subagent": "Task"}
 # goose's hooks guide, Tool Input Keys: the path a tool itself reads decides, as for OpenCode (read_image reads
 # `source`, not `path`: a decoy `path` beside it must not move the decision)
 GOOSE_TOOLS = {"shell": "Bash", "write": "Write", "edit": "Edit", "tree": "LS", "read_image": "Read"}
@@ -714,6 +715,9 @@ def tool(harness, name, ti):
         # unknown keys before the tool runs, so a decoy `file_path` would be decided but never used)
         if name in path_arg:
             ti["file_path"] = ti.get(path_arg[name])
+            if path_arg[name] == "filePath" and isinstance(ti.get("path"), str):   # 2.x reads `path`: each is decided
+                ti["paths"] = list(dict.fromkeys(p for p in (ti["file_path"], ti["path"]) if isinstance(p, str)))
+                ti["file_path"] = ti["paths"][0]
         if harness == "kilo" and name == "notebook_edit":   # v1 decides a NotebookEdit on its notebook_path
             ti["notebook_path"] = ti["file_path"]
         if harness == "kilo" and name == "generate_image":
@@ -1668,11 +1672,12 @@ def _plugin_marker(harness):
 
 
 def _opencode_plugin(python, v2, harness="opencode"):
-    """The local OpenCode plugin (Kilo's too: harness). OpenCode runs plugins with Bun and awaits a before hook, so the
-    hook's process, spawned without blocking OpenCode's event loop (parallel calls are decided at once), holds the call
-    until Tracekit allows or denies it (or a person approves it); one that doesn't answer in time is killed and its call
-    blocked. Each event's command names the event, and runs the hook as install._hook_command does (python, or this
-    interpreter)."""
+    """The local OpenCode plugin (Kilo's too: harness), in the forms OpenCode 1.x and 2.x load: the named export 1.x
+    reads, and the default export {id, setup} 2.x requires (packages/core/src/plugin/module.ts), whose `server` is the
+    1.x plugin. OpenCode runs plugins with Bun and awaits a before hook, so the hook's process, spawned without blocking
+    OpenCode's event loop (parallel calls are decided at once), holds the call until Tracekit allows or denies it (or a
+    person approves it); one that doesn't answer in time is killed and its call blocked. Each event's command names the
+    event, and runs the hook as install._hook_command does (python, or this interpreter)."""
     from .install import _dev_hook_argv
     module = V2_MODULE if v2 else "tracekit.agent_hooks"
     commands = {ev: [python, "-I", "-m", module, harness, ev] if python else
@@ -1730,6 +1735,26 @@ export const TracekitPlugin = async ({{ directory }}) => ({{
     if (result.code !== 0) console.error(result.message);
   }},
 }});
+
+// OpenCode 2.x loads a plugin only from its default export, {{id, setup}}: without it, it logs a warning and runs every
+// call undecided. 1.x reads that object's server (its plugin above); a throw in execute.before blocks the call there too
+export default {{
+  id: "tracekit",
+  server: TracekitPlugin,
+  setup: async (ctx) => {{
+    const call = (event) => ({{ sessionID: event.sessionID, callID: event.id, tool: event.tool,
+                               cwd: ctx.location.directory }});
+    await ctx.tool.hook("execute.before", async (event) => {{
+      const result = await tracekit("tool.execute.before", call(event), event.input);
+      if (result.code !== 0) throw new Error(result.message || "Blocked by Tracekit: the hook could not decide this call");
+    }});
+    await ctx.tool.hook("execute.after", async (event) => {{
+      const result = await tracekit("tool.execute.after", call(event), event.input,
+                                    event.status === "completed" ? event.result : {{ error: event.error }});
+      if (result.code !== 0) console.error(result.message);
+    }});
+  }},
+}};
 '''
 
 

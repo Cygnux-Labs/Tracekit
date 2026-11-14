@@ -1183,6 +1183,67 @@ class Harnesses(DaemonCase):
         self.assertEqual([e["data"]["tool_use_id"] for e in self.events("oc-node") if e["type"] == "tool.call"],
                          ["n1", "n2"])
 
+    @unittest.skipUnless(shutil.which("node"), "runs the OpenCode plugin under Node, with Bun's spawn stood in")
+    def test_opencode_2_loads_the_plugin_from_its_default_export_and_it_decides_each_call(self):
+        # OpenCode 2.x loads a plugin only from `export default {id, setup | effect}` (core/src/plugin/module.ts) and
+        # hooks a call with ctx.tool.hook("execute.before" | "execute.after"); the plugin had only the named export, so
+        # 2.x logged it as failed to load and ran every call undecided. 1.x reads the default's `server`
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "tracekit.mjs"), "w") as f:
+            f.write(agent_hooks._opencode_plugin(None, False))
+        with open(os.path.join(d, "drive.mjs"), "w") as f:
+            f.write('import { spawn } from "node:child_process";\n'
+                    'import { Readable } from "node:stream";\n'
+                    'globalThis.Bun = { spawn: ({ cmd, cwd, stdin }) => {\n'
+                    '  const p = spawn(cmd[0], cmd.slice(1), { cwd, stdio: ["pipe", "ignore", "pipe"] });\n'
+                    '  p.stdin.end(stdin);\n'
+                    '  return { stderr: Readable.toWeb(p.stderr), exited: new Promise((done) => p.on("close", done)),\n'
+                    '           get exitCode() { return p.exitCode; }, kill: (signal) => p.kill(signal) };\n} };\n'
+                    'const mod = await import("./tracekit.mjs");\n'
+                    'const plugin = mod.default, hooks = {};\n'
+                    'const shape = [typeof plugin.id, typeof plugin.setup, plugin.server === mod.TracekitPlugin];\n'
+                    'await plugin.setup({ location: { directory: process.argv[2] },\n'
+                    '                     tool: { hook: async (name, cb) => { hooks[name] = cb; } } });\n'
+                    'const out = [];\n'
+                    'for (const [tool, input] of JSON.parse(process.argv[3])) {\n'
+                    '  const event = { tool, sessionID: "oc2-node", id: `c${out.length}`, input };\n'
+                    '  try {\n'
+                    '    await hooks["execute.before"](event);\n'
+                    '    await hooks["execute.after"]({ ...event, status: "completed", result: { output: "ok" } });\n'
+                    '    out.push("ran");\n'
+                    '  } catch (e) { out.push(e.message); }\n}\n'
+                    'process.stdout.write(JSON.stringify({ shape, hooks: Object.keys(hooks).sort(), out }));\n')
+        calls = [["shell", {"command": "rm -rf ~"}], ["shell", {"command": "ls"}],
+                 ["write", {"path": "/w/.env", "filePath": "/w/notes.txt", "content": "A=1"}]]   # 2.x reads `path`
+        p = subprocess.run(["node", os.path.join(d, "drive.mjs"), self.d, json.dumps(calls)], capture_output=True,
+                           text=True, timeout=120)
+        got = json.loads(p.stdout or "null") or self.fail(p.stderr)
+        self.assertEqual(got["shape"], ["string", "function", True])
+        self.assertEqual(got["hooks"], ["execute.after", "execute.before"])
+        denied, ls, key = got["out"]
+        self.assertIn("Blocked by tracekit policy: TK-D004", denied)
+        self.assertEqual(ls, "ran")
+        self.assertIn("Blocked by tracekit policy: TK-D005", key)
+        evs = self.events("oc2-node")
+        self.assertEqual([(e["data"]["tool_use_id"], e["data"]["name"]) for e in evs if e["type"] == "tool.call"],
+                         [("c0", "Bash"), ("c1", "Bash"), ("c2", "Write")])
+        self.assertEqual([e["data"]["tool_use_id"] for e in evs if e["type"] == "tool.result"], ["c1"])
+
+
+class OpenCodeTools(unittest.TestCase):
+    def test_opencode_2_names_are_decided_as_1x_names_are(self):
+        # OpenCode 2.x's shell, subagent, and read, write and edit on `path` (1.x: bash, task, `filePath`), as its tool
+        # schemas name them (2.2.0 and 2.3.0)
+        self.assertEqual(agent_hooks.tool("opencode", "shell", {"command": "ls", "workdir": "/w"}),
+                         ("Bash", {"command": "ls", "workdir": "/w"}))
+        self.assertEqual(agent_hooks.tool("opencode", "subagent", {"prompt": "p"})[0], "Task")
+        _, ti = agent_hooks.tool("opencode", "read", {"path": "/home/u/.aws/credentials"})
+        self.assertEqual(load_policy().decide("Read", ti)["verdict"], "deny")
+        _, ti = agent_hooks.tool("opencode", "read", {"filePath": "/w/a.txt", "path": "/home/u/.aws/credentials"})   # both decided
+        self.assertEqual((ti["file_path"], ti["paths"]), ("/w/a.txt", ["/w/a.txt", "/home/u/.aws/credentials"]))
+        self.assertEqual(load_policy().decide("Read", ti)["verdict"], "deny")
+
 
 class GptmeTools(unittest.TestCase):
     def test_gptme_native_shell_background_matches_gptme_truth_values(self):
