@@ -11,7 +11,7 @@
 # agent's file system may ignore case). Rules stay tripwires: the protection is the signer, its storage and the
 # witnesses.
 
-version: '2026.11-v2-89'
+version: '2026.11-v2-90'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -402,7 +402,7 @@ ask:
     reason: starting an agent harness with settings the agent chose
     remedy: Have a person approve the held call, or start the harness with the person's own settings, which record its calls.
     rationale: A nested agent run under another home or settings skips Tracekit's hooks, so none of its calls would be decided or recorded.
-  - id: TK-A081
+  - id: TK-A084
     class: shell
     field: gh_runs
     # gh running what its own commands don't say (engine._gh_runs): an alias set or imported (a --shell one runs a
@@ -1037,7 +1037,7 @@ ask:
     reason: adding something that runs at every login or boot
     remedy: Have a person approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
-  - id: TK-A079
+  - id: TK-A082
     class: shell
     field: effects
     # TK-A010's places as every file a command writes (engine._effects, as TK-D023 reads them), so sed -i, perl -i
@@ -1069,7 +1069,7 @@ ask:
     reason: writing a Git hook or moving where hooks live
     remedy: Have a person approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
-  - id: TK-A080
+  - id: TK-A083
     class: shell
     field: effects
     # TK-A012's hooks folders as every file a command writes (engine._effects, as TK-D023 reads them): perl -i and
@@ -1137,7 +1137,7 @@ ask:
     # are .agents/hooks.json; goose's plugins are under .agents/plugins/, and its recipes and sub-agents, whose stdio
     # extensions (cmd and args) goose starts with no hook when one runs, under .agents/ or .goose/, recipes/ and
     # agents/, in a project or the home folder (the folder's skills/ is ordinary work, but for an OpenHands skill that
-    # runs a command: TK-A083); Factory Droid keeps its hooks and settings in .factory/, goose its settings in
+    # runs a command: TK-A085); Factory Droid keeps its hooks and settings in .factory/, goose its settings in
     # ~/.config/goose (on Windows AppData/Roaming/Block/goose/config). Crush reads crush.json, .crush.json, crushrc and .crushrc in a project or
     # home, and ~/.config/crush/. Kilo Code's are OpenCode's under its own names: .kilo, .kilocode, ~/.config/kilo and
     # kilo.json. Devin reads .devin/ in a project and ~/.config/devin (on Windows AppData/Roaming/devin), and OpenHands
@@ -1183,7 +1183,7 @@ ask:
     # $XDG_CONFIG_HOME itself, are matched by the variable's name. The agy, goose, Droid and Devin paths are TK-F009's,
     # and a delete of a whole .agents folder (agy's hooks.json with it), or .clinerules or Cline folder (its hooks).
     # So is .agents/skills/ (a project's or the home's), whose skills OpenHands runs each !`cmd` line of: a shell write's
-    # text isn't read, so every one there is held (a file tool's only with a !`cmd`: TK-A083).
+    # text isn't read, so every one there is held (a file tool's only with a !`cmd`: TK-A085).
     # PowerShell's profiles are TK-F009's, and
     # $PROFILE by name (`$PROFILE`, `${PROFILE}`, `$global:PROFILE`, `$PROFILE.CurrentUserAllHosts` and the other
     # three), in any case.
@@ -1204,8 +1204,8 @@ ask:
 
   # --- a skill that runs commands, written: the commands a harness runs from a file it loads are held when the file is
   # written (goose's recipes, TK-F009 and TK-F015; an OpenHands skill, TK-F015 and this rule), and running one is
-  # flagged (TK-F025, TK-F026), as running a script the repository already has isn't held
-  - id: TK-A083
+  # flagged (TK-F026, TK-F027), as running a script the repository already has isn't held
+  - id: TK-A085
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: agent_skill
@@ -1348,7 +1348,7 @@ flag:
     tool: LibraryUpload
     pattern: '^'
     label: egress
-  - id: TK-F025
+  - id: TK-F026
     tool: delegate
     field: source
     # goose's delegate with a `source` runs that recipe or sub-agent, first starting the stdio extensions it names (a
@@ -1356,9 +1356,9 @@ flag:
     # delegate with only `instructions` names none. Writing a recipe where goose loads it is held (TK-F009, TK-F015)
     pattern: '^'
     label: recipe_run
-  - id: TK-F026
+  - id: TK-F027
     tool: invoke_skill
     # OpenHands' invoke_skill renders a loaded skill, running each !`cmd` in it with shell=True (openhands-sdk
-    # skills/execute.py): the commands are in the skill's file, not the call. Writing one is held (TK-A083, TK-F015)
+    # skills/execute.py): the commands are in the skill's file, not the call. Writing one is held (TK-A085, TK-F015)
     pattern: '^'
     label: skill_run

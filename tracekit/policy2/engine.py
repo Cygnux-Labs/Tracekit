@@ -906,7 +906,7 @@ def _set_names(commands, refs, given=()):
 
 
 def _gh_runs(commands):
-    """What gh runs that its own commands don't say, which TK-A081 holds (`GH: <words>`): an alias set or imported
+    """What gh runs that its own commands don't say, which TK-A084 holds (`GH: <words>`): an alias set or imported
     (`gh alias set m 'pr merge --admin'`; a --shell one runs a shell), an extension installed, upgraded, browsed for or
     run by exec, and a command that is none of gh's own (shell.GH_COMMANDS: an alias's or an extension's, a program of
     its own), and the editor, pager or browser it is set to run."""

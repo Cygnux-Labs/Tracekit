@@ -281,16 +281,16 @@ class CodingPack(unittest.TestCase):
                 # a shell write's text isn't read: every one under .agents/skills/ is held
                 "printf 'Status: ok' > .agents/skills/a/SKILL.md", "sed -i 's/X/!/' .agents/skills/a/SKILL.md",
                 "cp skill.md ~/.agents/skills/x/SKILL.md")] + [
-            ("Write", {"file_path": "/w/.agents/skills/x/SKILL.md", "content": skill}, "TK-A083"),
-            ("Write", {"file_path": "/w/.agents/skills/x/SKILL.MD", "content": skill}, "TK-A083"),   # any case
+            ("Write", {"file_path": "/w/.agents/skills/x/SKILL.md", "content": skill}, "TK-A085"),
+            ("Write", {"file_path": "/w/.agents/skills/x/SKILL.MD", "content": skill}, "TK-A085"),   # any case
             # the skill second among the files a call writes
             ("Write", {"file_path": "/w/ok.md", "paths": ["/w/ok.md", "/w/.agents/skills/x/SKILL.md"], "content": skill},
-             "TK-A083"),
+             "TK-A085"),
             # OpenHands' file_editor sends the text as file_text, its str_replace as new_str
-            ("Write", {"file_path": "/home/u/.agents/skills/notes.md", "file_text": skill}, "TK-A083"),
-            ("Edit", {"file_path": "/w/.agents/skills/x/SKILL.md", "old_str": "a", "new_str": "!`id`"}, "TK-A083")]
-        flagged = [("delegate", {"source": "deploy", "instructions": "deploy to staging"}, "TK-F025"),
-                   ("invoke_skill", {"name": "x"}, "TK-F026")]
+            ("Write", {"file_path": "/home/u/.agents/skills/notes.md", "file_text": skill}, "TK-A085"),
+            ("Edit", {"file_path": "/w/.agents/skills/x/SKILL.md", "old_str": "a", "new_str": "!`id`"}, "TK-A085")]
+        flagged = [("delegate", {"source": "deploy", "instructions": "deploy to staging"}, "TK-F026"),
+                   ("invoke_skill", {"name": "x"}, "TK-F027")]
         benign = [("delegate", {"instructions": "summarise the README"}),
                   ("Write", {"file_path": "/w/.agents/skills/x/SKILL.md",
                              "content": "Run `git status` first; the syntax is \\!`cmd`.\n"}),
