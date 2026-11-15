@@ -199,7 +199,7 @@ def _codex(root: str, since_ts: float, unreadable: list):
                 except RecursionError:
                     yield None
                     continue
-                if mapped is None:  # no PreToolUse (write_stdin, text, tool output, or missing call id)
+                if mapped is None:  # no PreToolUse (write_stdin, text, or tool output)
                     continue
                 tool, args = mapped
                 call_id = item.get("call_id")
